@@ -1,0 +1,48 @@
+{
+  "ruleset": "2026.08-v2.1",
+  "source": "PAI_LOOP v7 sheet 08; executable registry for MVP validation",
+  "evaluation_order": ["PASS", "LINKED_REVIEW", "DF-000"],
+  "pass_rules": [
+    {"id": "P-EVIDENCE-GATE", "group": "G-GLOBAL-PASS", "logic": "AND"},
+    {"id": "P-QUAL-CODE-ANY", "group": "G-QUAL-ANY", "logic": "OR"},
+    {"id": "P-QUAL-CODE-ALL", "group": "G-QUAL-ALL", "logic": "AND"},
+    {"id": "P-ENTITY", "group": "G-ENTITY", "logic": "OR"},
+    {"id": "P-SME-CERT", "group": "G-ENTITY", "logic": "OR"},
+    {"id": "P-CERT-DIRECT", "group": "G-CERT", "logic": "AND"},
+    {"id": "P-BIZ-TEXT", "group": "G-BIZ", "logic": "AND"},
+    {"id": "P-REGION", "group": "G-REGION", "logic": "AND"},
+    {"id": "P-JOB-LICENSE", "group": "G-JOB", "logic": "OR"},
+    {"id": "P-EDU-FACILITY", "group": "G-EDU", "logic": "OR"},
+    {"id": "P-CONSORTIUM", "group": "G-JOINT", "logic": "AND"},
+    {"id": "P-PERFORMANCE", "group": "G-PERF", "logic": "AND"},
+    {"id": "P-RESOURCE", "group": "G-RESOURCE", "logic": "AND"},
+    {"id": "P-SANCTION-CLEAR", "group": "G-SANCTION", "logic": "AND"},
+    {"id": "P-DOCUMENT", "group": "G-DOC", "logic": "AND"}
+  ],
+  "review_rules": [
+    {"id": "R01-ALT-SCOPE", "code": "R01", "linked_pass": ["P-CERT-DIRECT", "P-ENTITY"]},
+    {"id": "R02-CONSORTIUM", "code": "R02", "linked_pass": ["P-CONSORTIUM"]},
+    {"id": "R03-AGENCY-EXCEPTION", "code": "R03", "linked_pass": ["P-RESOURCE", "P-CERT-DIRECT", "P-PERFORMANCE"]},
+    {"id": "R04-EVIDENCE-PENDING", "code": "R04", "linked_pass": ["P-EVIDENCE-GATE"]},
+    {"id": "R05-LOGIC-AMBIGUOUS", "code": "R05", "linked_pass": ["P-QUAL-CODE-ANY", "P-CONSORTIUM"]},
+    {"id": "R06-DATE-VALIDITY", "code": "R06", "linked_pass": ["P-QUAL-CODE-ANY", "P-ENTITY", "P-SME-CERT"]},
+    {"id": "R07-PARSE-ATTACH", "code": "R07", "linked_pass": ["P-DOCUMENT"]},
+    {"id": "R09-PERFORMANCE-PM", "code": "R09", "linked_pass": ["P-PERFORMANCE"]}
+  ],
+  "aggregation_rules": [
+    {"id": "AGG-ATOMIC", "rule": "PASS_MATCH then linked REVIEW_MATCH then DF-000"},
+    {"id": "AGG-AND", "rule": "FAIL if any FAIL; else REVIEW if any REVIEW; else PASS"},
+    {"id": "AGG-OR", "rule": "PASS if any complete PASS path; else REVIEW if any linked REVIEW; else FAIL"}
+  ],
+  "default_fail": {
+    "id": "DF-000",
+    "required_explanation_fields": [
+      "failed_condition",
+      "required_value",
+      "current_value",
+      "unmatched_pass_paths",
+      "review_not_matched_reason"
+    ]
+  }
+}
+

@@ -7,10 +7,7 @@
       "name": "When clicking Execute Workflow",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [
-        260,
-        300
-      ]
+      "position": [260, 300]
     },
     {
       "parameters": {},
@@ -18,26 +15,13 @@
       "name": "Deployment verified",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [
-        500,
-        300
-      ]
+      "position": [500, 300]
     }
   ],
   "connections": {
     "When clicking Execute Workflow": {
-      "main": [
-        [
-          {
-            "node": "Deployment verified",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{"node": "Deployment verified", "type": "main", "index": 0}]]
     }
   },
-  "settings": {
-    "executionOrder": "v1"
-  }
+  "settings": {"executionOrder": "v1"}
 }

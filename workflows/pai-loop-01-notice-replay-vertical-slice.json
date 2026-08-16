@@ -1,0 +1,324 @@
+{
+  "name": "PAI_LOOP 01 - Notice Replay Vertical Slice",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2820,
+        "height": 300,
+        "color": 7,
+        "content": "# 01 · Notice Replay Vertical Slice\n\n백엔드의 실제 계약을 따라 **합성 fixture replay → 공고 키 확장 → 공고 상세 조회 → REVIEW 선택 → `latest_evaluation` 정규화**까지 통과시킵니다.\n\n- Backend: `POST /api/v1/ingestion/replay` 후 `GET /api/v1/notices/{notice_key}`\n- 수동 실행: API URL이 없으면 외부 통신 없이 동일한 REVIEW 출력 계약을 검증합니다.\n- 자격 enum은 `PASS | REVIEW | FAIL`입니다. 기본실패는 별도 enum이 아니라 `eligibility=FAIL`이면서 `reason_code=DF-000`인 경우입니다.\n- 공개 활성화 전 Webhook 인증과 rate limit이 필요합니다. manifest는 현재 **비활성**을 강제합니다."
+      },
+      "id": "replay-note-overview",
+      "name": "Replay overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1180, -540]
+    },
+    {
+      "parameters": {
+        "width": 520,
+        "height": 390,
+        "color": 5,
+        "content": "## 입력 계약\n\n```json\n{\n  \"apiBaseUrl\": \"https://backend.example\",\n  \"options\": {\n    \"targetEligibility\": \"REVIEW\"\n  }\n}\n```\n\n운영에서는 `$env.PAI_LOOP_API_BASE_URL`이 입력값보다 우선합니다. Webhook이 직접 공급하는 URL은 HTTPS만 허용하고, URL 내 계정정보는 거부합니다."
+      },
+      "id": "replay-note-input",
+      "name": "Input contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1180, -120]
+    },
+    {
+      "parameters": {
+        "width": 920,
+        "height": 390,
+        "color": 4,
+        "content": "## 실제 Backend 경로\n\n1. `POST /api/v1/ingestion/replay`\n2. `{ fixture_version, created, existing, notice_keys, note }` 검증\n3. `notice_keys[]`를 개별 item으로 확장\n4. `GET /api/v1/notices/{notice_key}`\n5. `latest_evaluation.eligibility === REVIEW`인 상세 한 건 선택\n6. snake_case 응답을 PAI_LOOP 공통 결과 계약으로 정규화\n\nAPI URL이 없으면 이 경로를 호출하지 않고 내장 합성 상세로 같은 validator를 실행합니다."
+      },
+      "id": "replay-note-routing",
+      "name": "Backend contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-640, -120]
+    },
+    {
+      "parameters": {
+        "width": 1340,
+        "height": 390,
+        "color": 6,
+        "content": "## 출력 계약\n\n- `assessment.documentStatus`: COMPLETE / INCOMPLETE\n- `assessment.eligibility`: PASS / REVIEW / FAIL\n- `assessment.reasonCode`: 평가 사유코드 (`DF-000`은 기본실패 사유)\n- `assessment.defaultFail`: `eligibility === FAIL && reasonCode === DF-000`\n- `assessment.readinessStatus`: GREEN / YELLOW / RED / GRAY\n- `assessment.riskBand`: GO / CONDITIONAL_GO / NO_GO / UNKNOWN\n- `assessment.atomicResults[]`: 조건별 판정과 근거\n\n자격, 준비도, 증빙 커버리지, 리스크를 서로 다른 필드로 유지합니다. 지원하지 않는 enum 또는 REVIEW 상세 0건은 조용히 보정하지 않고 실패시킵니다."
+      },
+      "id": "replay-note-output",
+      "name": "Output contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [300, -120]
+    },
+    {
+      "parameters": {},
+      "id": "replay-manual-trigger",
+      "name": "Run Safe Demo",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1100, 560]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pai-loop/v1/notices/replay",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "replay-webhook-trigger",
+      "name": "Replay Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1100, 780],
+      "webhookId": "pai-loop-notice-replay-v1"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    triggerSource: 'manual',\n    apiBaseUrl: '',\n    options: { targetEligibility: 'REVIEW' }\n  }\n}];"
+      },
+      "id": "replay-demo-input",
+      "name": "Load Safe Replay Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-880, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $json ?? {};\nconst body = source.body && typeof source.body === 'object' ? source.body : source;\nlet envBaseUrl = '';\ntry {\n  envBaseUrl = String($env.PAI_LOOP_API_BASE_URL ?? '').trim();\n} catch {\n  envBaseUrl = '';\n}\nconst inputBaseUrl = String(body.apiBaseUrl ?? body.api_base_url ?? '').trim();\nconst selectedBaseUrl = envBaseUrl || inputBaseUrl;\nlet apiBaseUrl = '';\nif (selectedBaseUrl) {\n  let parsed;\n  try {\n    parsed = new URL(selectedBaseUrl);\n  } catch {\n    throw new Error('apiBaseUrl must be an absolute HTTP(S) URL');\n  }\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {\n    throw new Error('apiBaseUrl must use HTTP(S) without embedded credentials');\n  }\n  if (!envBaseUrl && source.headers && parsed.protocol !== 'https:') {\n    throw new Error('Webhook-supplied apiBaseUrl must use HTTPS');\n  }\n  apiBaseUrl = parsed.toString().replace(/\\/+$/, '');\n}\nconst targetEligibility = String(body.options?.targetEligibility ?? 'REVIEW').toUpperCase();\nif (targetEligibility !== 'REVIEW') {\n  throw new Error('This vertical slice intentionally selects targetEligibility=REVIEW');\n}\nreturn [{\n  json: {\n    triggerSource: source.headers ? 'webhook' : (body.triggerSource ?? 'manual'),\n    runtime: {\n      apiBaseUrl,\n      dryRun: apiBaseUrl.length === 0,\n      apiBaseUrlSource: envBaseUrl ? 'environment' : (inputBaseUrl ? 'workflow-input' : 'none')\n    },\n    request: { targetEligibility }\n  }\n}];"
+      },
+      "id": "replay-normalize-request",
+      "name": "Normalize Replay Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-620, 670]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "replay-backend-configured-condition",
+              "leftValue": "={{ $json.runtime.dryRun }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "replay-backend-configured",
+      "name": "Backend configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-360, 670]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/ingestion/replay' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Accept", "value": "application/json"},
+            {"name": "X-PAI-Request-Source", "value": "n8n-notice-replay-v1"}
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "replay-call-backend",
+      "name": "POST Synthetic Replay",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-80, 500],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {},
+      "id": "replay-carry-runtime",
+      "name": "Carry Replay Runtime",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-80, 640]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "replay-merge-response-runtime",
+      "name": "Merge Replay Response + Runtime",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [180, 540]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json ?? {};\nconst replay = response.body && typeof response.body === 'object' ? response.body : response;\nif (typeof replay.fixture_version !== 'string' || !replay.fixture_version) {\n  throw new Error('Replay response.fixture_version is required');\n}\nif (!Number.isInteger(replay.created) || !Number.isInteger(replay.existing)) {\n  throw new Error('Replay response.created and existing must be integers');\n}\nif (!Array.isArray(replay.notice_keys) || replay.notice_keys.length === 0) {\n  throw new Error('Replay response.notice_keys must be a non-empty array');\n}\nconst apiBaseUrl = response.runtime?.apiBaseUrl;\nif (!apiBaseUrl) {\n  throw new Error('Merged replay runtime is missing apiBaseUrl');\n}\nconst summary = {\n  fixtureVersion: replay.fixture_version,\n  created: replay.created,\n  existing: replay.existing,\n  noticeKeys: replay.notice_keys.map(String),\n  note: String(replay.note ?? '')\n};\nreturn summary.noticeKeys.map((noticeKey) => ({\n  json: {\n    apiBaseUrl,\n    targetEligibility: response.request?.targetEligibility ?? 'REVIEW',\n    noticeKey,\n    replay: summary\n  },\n  pairedItem: { item: 0 }\n}));"
+      },
+      "id": "replay-expand-keys",
+      "name": "Expand Replay Notice Keys",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 540]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.apiBaseUrl + '/api/v1/notices/' + encodeURIComponent($json.noticeKey) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Accept", "value": "application/json"},
+            {"name": "X-PAI-Request-Source", "value": "n8n-notice-detail-v1"}
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "replay-get-notice-detail",
+      "name": "GET Notice Detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 460],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {},
+      "id": "replay-carry-notice-context",
+      "name": "Carry Notice Context",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [680, 640]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "replay-merge-detail-context",
+      "name": "Merge Detail + Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [920, 540]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst reviews = items.filter((item) => item.json?.latest_evaluation?.eligibility === 'REVIEW');\nif (reviews.length !== 1) {\n  throw new Error(`Expected exactly one REVIEW notice detail, received ${reviews.length}`);\n}\nreturn reviews;"
+      },
+      "id": "replay-select-review",
+      "name": "Select REVIEW Notice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 540]
+    },
+    {
+      "parameters": {
+        "jsCode": "const normalized = $json;\nconst notice = {\n  notice_key: 'SYN-REVIEW-001',\n  bid_notice_no: 'SYN-2026-0002',\n  revision_no: '00',\n  title: '[합성] 비영리 직접생산 예외 검토 용역',\n  agency: '가상 발주기관',\n  deadline: '2026-08-31T09:00:00Z',\n  status: 'OPEN',\n  estimated_amount: 200000000,\n  source_url: null,\n  versions: [{\n    version_no: 1,\n    document_complete: true,\n    extraction_status: 'COMPLETE',\n    extraction_confidence: 0.98\n  }],\n  latest_evaluation: {\n    eligibility: 'REVIEW',\n    reason_code: 'REVIEW_MATCH',\n    readiness_score: 99.6,\n    readiness_status: 'GREEN',\n    evidence_coverage: 100,\n    risk_score: 40.8,\n    risk_band: 'CONDITIONAL_GO',\n    ruleset_version: '2026.08-v2.1',\n    atomic_results: [{\n      requirement_key: 'SYN-REVIEW-001-REQ-01',\n      label: '가상 핵심 참가자격',\n      result: 'REVIEW',\n      reason_code: 'R01',\n      source_location: 'synthetic://fixture/requirement/1',\n      message: '연결된 REVIEW 조건이 일치하여 사람의 확인이 필요합니다.'\n    }],\n    explanation: {\n      decision_order: ['PASS_RULE', 'LINKED_REVIEW', 'DF-000'],\n      review_codes: ['R01'],\n      default_fail_details: [],\n      separation_notice: '참가자격, 준비도, 증빙 커버리지, 리스크는 독립 지표입니다.'\n    }\n  },\n  replay: {\n    fixtureVersion: 'synthetic-v1-local',\n    created: 0,\n    existing: 0,\n    noticeKeys: ['SYN-REVIEW-001'],\n    note: '외부 통신 없는 로컬 계약 검증 fixture'\n  },\n  _execution_mode: 'dry-run',\n  _target_eligibility: normalized.request?.targetEligibility ?? 'REVIEW'\n};\nreturn [{ json: notice }];"
+      },
+      "id": "replay-dry-run",
+      "name": "Run Built-in Safe Replay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "const detail = $json ?? {};\nconst evaluation = detail.latest_evaluation;\nif (!evaluation || typeof evaluation !== 'object') {\n  throw new Error('Notice detail.latest_evaluation is required');\n}\nconst requireEnum = (field, value, allowed) => {\n  if (!allowed.includes(value)) {\n    throw new Error(`${field} must be one of: ${allowed.join(', ')}`);\n  }\n  return value;\n};\nconst eligibility = requireEnum('eligibility', evaluation.eligibility, ['PASS', 'REVIEW', 'FAIL']);\nconst reasonCode = String(evaluation.reason_code ?? '');\nif (!reasonCode) {\n  throw new Error('latest_evaluation.reason_code is required');\n}\nif (reasonCode === 'DF-000' && eligibility !== 'FAIL') {\n  throw new Error('reason_code=DF-000 is only valid with eligibility=FAIL');\n}\nconst readinessStatus = requireEnum(\n  'readiness_status',\n  evaluation.readiness_status,\n  ['GREEN', 'YELLOW', 'RED', 'GRAY']\n);\nconst riskBand = requireEnum(\n  'risk_band',\n  evaluation.risk_band,\n  ['GO', 'CONDITIONAL_GO', 'NO_GO', 'UNKNOWN']\n);\nconst versions = Array.isArray(detail.versions) ? [...detail.versions] : [];\nversions.sort((a, b) => Number(b.version_no ?? 0) - Number(a.version_no ?? 0));\nconst latestVersion = versions[0] ?? null;\nconst documentStatus = latestVersion?.document_complete === true && latestVersion?.extraction_status === 'COMPLETE'\n  ? 'COMPLETE'\n  : 'INCOMPLETE';\nconst atomicResults = Array.isArray(evaluation.atomic_results) ? evaluation.atomic_results : [];\nreturn [{\n  json: {\n    schemaVersion: '1.0',\n    executionMode: String(detail._execution_mode ?? 'backend'),\n    replay: detail.replay ?? null,\n    notice: {\n      noticeKey: String(detail.notice_key ?? ''),\n      bidNoticeNo: String(detail.bid_notice_no ?? ''),\n      revisionNo: String(detail.revision_no ?? ''),\n      title: String(detail.title ?? ''),\n      agency: String(detail.agency ?? ''),\n      deadline: detail.deadline ?? null,\n      status: String(detail.status ?? ''),\n      estimatedAmount: detail.estimated_amount ?? null,\n      sourceUrl: detail.source_url ?? null,\n      latestVersion\n    },\n    assessment: {\n      documentStatus,\n      eligibility,\n      reasonCode,\n      defaultFail: eligibility === 'FAIL' && reasonCode === 'DF-000',\n      readinessScore: Number(evaluation.readiness_score),\n      readinessStatus,\n      evidenceCoverage: Number(evaluation.evidence_coverage),\n      riskScore: evaluation.risk_score == null ? null : Number(evaluation.risk_score),\n      riskBand,\n      rulesetVersion: String(evaluation.ruleset_version ?? ''),\n      atomicResults,\n      explanation: evaluation.explanation ?? {}\n    },\n    completedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "replay-normalize-result",
+      "name": "Validate REVIEW Notice Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 670]
+    }
+  ],
+  "connections": {
+    "Run Safe Demo": {
+      "main": [[{"node": "Load Safe Replay Config", "type": "main", "index": 0}]]
+    },
+    "Load Safe Replay Config": {
+      "main": [[{"node": "Normalize Replay Request", "type": "main", "index": 0}]]
+    },
+    "Replay Webhook": {
+      "main": [[{"node": "Normalize Replay Request", "type": "main", "index": 0}]]
+    },
+    "Normalize Replay Request": {
+      "main": [[{"node": "Backend configured?", "type": "main", "index": 0}]]
+    },
+    "Backend configured?": {
+      "main": [
+        [
+          {"node": "POST Synthetic Replay", "type": "main", "index": 0},
+          {"node": "Carry Replay Runtime", "type": "main", "index": 0}
+        ],
+        [{"node": "Run Built-in Safe Replay", "type": "main", "index": 0}]
+      ]
+    },
+    "POST Synthetic Replay": {
+      "main": [[{"node": "Merge Replay Response + Runtime", "type": "main", "index": 0}]]
+    },
+    "Carry Replay Runtime": {
+      "main": [[{"node": "Merge Replay Response + Runtime", "type": "main", "index": 1}]]
+    },
+    "Merge Replay Response + Runtime": {
+      "main": [[{"node": "Expand Replay Notice Keys", "type": "main", "index": 0}]]
+    },
+    "Expand Replay Notice Keys": {
+      "main": [[
+        {"node": "GET Notice Detail", "type": "main", "index": 0},
+        {"node": "Carry Notice Context", "type": "main", "index": 0}
+      ]]
+    },
+    "GET Notice Detail": {
+      "main": [[{"node": "Merge Detail + Context", "type": "main", "index": 0}]]
+    },
+    "Carry Notice Context": {
+      "main": [[{"node": "Merge Detail + Context", "type": "main", "index": 1}]]
+    },
+    "Merge Detail + Context": {
+      "main": [[{"node": "Select REVIEW Notice", "type": "main", "index": 0}]]
+    },
+    "Select REVIEW Notice": {
+      "main": [[{"node": "Validate REVIEW Notice Contract", "type": "main", "index": 0}]]
+    },
+    "Run Built-in Safe Replay": {
+      "main": [[{"node": "Validate REVIEW Notice Contract", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

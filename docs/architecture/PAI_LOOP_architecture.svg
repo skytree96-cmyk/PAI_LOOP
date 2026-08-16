@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">PAI_LOOP 시스템 아키텍처</title>
+  <desc id="desc">조달청 공고와 회사 증빙을 n8n이 수집하고 문서 처리, OpenAI 구조화 추출, 결정론적 규칙 엔진을 거쳐 웹 대시보드와 Teams에 전달한 뒤 결과를 환류하는 구조</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8FAFD"/>
+      <stop offset="1" stop-color="#EDF3F9"/>
+    </linearGradient>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0B1739"/>
+      <stop offset="0.66" stop-color="#132A55"/>
+      <stop offset="1" stop-color="#0B1739"/>
+    </linearGradient>
+    <linearGradient id="discover" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8FBF8"/>
+      <stop offset="1" stop-color="#D7F5F0"/>
+    </linearGradient>
+    <linearGradient id="decide" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF6EC"/>
+      <stop offset="1" stop-color="#FFE9D2"/>
+    </linearGradient>
+    <linearGradient id="learn" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EFF3FF"/>
+      <stop offset="1" stop-color="#DFE8FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0B1739" flood-opacity="0.10"/>
+    </filter>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0B1739" flood-opacity="0.08"/>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17325D" stroke-opacity="0.035"/>
+    </pattern>
+    <marker id="arrowTeal" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#00A995"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#F47A28"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#5271D8"/>
+    </marker>
+    <style>
+      text { font-family: Pretendard, "Malgun Gothic", "Noto Sans KR", "Segoe UI", Arial, sans-serif; }
+      .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 2.4px; }
+      .phase { font-size: 20px; font-weight: 800; letter-spacing: .6px; }
+      .nodeTitle { font-size: 17px; font-weight: 800; fill: #102347; }
+      .nodeBody { font-size: 13px; font-weight: 500; fill: #54637C; }
+      .small { font-size: 12px; font-weight: 600; fill: #61708A; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+
+  <rect x="40" y="28" width="1520" height="112" rx="28" fill="url(#hero)" filter="url(#shadow)"/>
+  <g transform="translate(76 58)">
+    <rect width="52" height="52" rx="15" fill="#00B8A9"/>
+    <path d="M15 34V17h12.5c7 0 11 3.2 11 8.8 0 5.7-4 8.9-11 8.9h-5.2V40H15zm7.3-5.2h4.6c3 0 4.5-1 4.5-3s-1.5-3-4.5-3h-4.6z" fill="#FFF"/>
+  </g>
+  <text x="150" y="78" fill="#FFF" font-size="30" font-weight="850">PAI_<tspan fill="#FF8A3D">LOOP</tspan></text>
+  <text x="150" y="108" fill="#B9C7DF" font-size="15" font-weight="600">PUBLIC PROCUREMENT DECISION INTELLIGENCE</text>
+  <text x="1515" y="75" fill="#D9E4F7" font-size="17" font-weight="700" text-anchor="end">DISCOVER → DECIDE → LEARN</text>
+  <text x="1515" y="106" fill="#90A4C6" font-size="13" font-weight="600" text-anchor="end">Evidence first · Human accountable · Result feedback</text>
+
+  <g transform="translate(70 174)">
+    <rect width="410" height="648" rx="26" fill="url(#discover)" stroke="#A5DED6"/>
+    <text x="28" y="40" class="eyebrow" fill="#008C7C">01 · DISCOVER</text>
+    <text x="28" y="72" class="phase" fill="#0B5B54">공고와 증빙을 놓치지 않는다</text>
+  </g>
+  <g transform="translate(500 174)">
+    <rect width="620" height="648" rx="26" fill="url(#decide)" stroke="#F6C99E"/>
+    <text x="28" y="40" class="eyebrow" fill="#D85B0C">02 · DECIDE</text>
+    <text x="28" y="72" class="phase" fill="#7D3A0B">LLM은 구조화하고 규칙이 판정한다</text>
+  </g>
+  <g transform="translate(1140 174)">
+    <rect width="390" height="648" rx="26" fill="url(#learn)" stroke="#BAC9F2"/>
+    <text x="28" y="40" class="eyebrow" fill="#415FBE">03 · LEARN</text>
+    <text x="28" y="72" class="phase" fill="#2E4386">사람의 결정과 결과를 환류한다</text>
+  </g>
+
+  <!-- DISCOVER -->
+  <g transform="translate(102 282)" filter="url(#softShadow)">
+    <rect width="164" height="106" rx="18" fill="#FFF" stroke="#B8E6DF"/>
+    <circle cx="28" cy="29" r="13" fill="#00A995"/>
+    <path d="M22 29h12M28 23v12" stroke="#FFF" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="50" y="34" class="nodeTitle">조달청 API</text>
+    <text x="22" y="65" class="nodeBody">공고 · 개찰 · 낙찰</text>
+    <text x="22" y="86" class="nodeBody">계약 · 사전규격</text>
+  </g>
+  <g transform="translate(284 282)" filter="url(#softShadow)">
+    <rect width="164" height="106" rx="18" fill="#FFF" stroke="#B8E6DF"/>
+    <circle cx="28" cy="29" r="13" fill="#0D877B"/>
+    <path d="M22 31c0-5 12-5 12 0v5H22zM25 23a3 3 0 1 0 6 0 3 3 0 0 0-6 0" fill="#FFF"/>
+    <text x="50" y="34" class="nodeTitle">회사 증빙</text>
+    <text x="22" y="65" class="nodeBody">자격 · 실적 · 인력</text>
+    <text x="22" y="86" class="nodeBody">마감일 기준 스냅샷</text>
+  </g>
+
+  <path d="M184 404v46h84" fill="none" stroke="#00A995" stroke-width="3" marker-end="url(#arrowTeal)"/>
+  <path d="M366 404v46h-84" fill="none" stroke="#00A995" stroke-width="3" marker-end="url(#arrowTeal)"/>
+  <g transform="translate(126 454)" filter="url(#softShadow)">
+    <rect width="296" height="116" rx="20" fill="#0D766E"/>
+    <rect x="18" y="18" width="44" height="44" rx="12" fill="#18A99C"/>
+    <path d="M30 31h20M30 39h14M30 47h17" stroke="#FFF" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="78" y="42" fill="#FFF" font-size="19" font-weight="800">n8n Orchestrator</text>
+    <text x="78" y="66" fill="#C8F0EC" font-size="12.5" font-weight="600">일정 · 페이징 · 재시도 · 중복방지</text>
+    <text x="22" y="95" fill="#E8FFFC" font-size="12.5" font-weight="600">원본 파일 + SHA-256 + 수집 이력 보존</text>
+  </g>
+  <g transform="translate(102 602)">
+    <rect width="346" height="118" rx="18" fill="#FFF" stroke="#B8E6DF" stroke-dasharray="5 5"/>
+    <text x="20" y="32" class="nodeTitle">수집 실패 안전장치</text>
+    <text x="20" y="61" class="nodeBody">첨부 누락 · 파싱 실패 · 데이터 불일치</text>
+    <rect x="20" y="78" width="106" height="24" rx="12" fill="#FFE9D2"/>
+    <text x="73" y="95" text-anchor="middle" font-size="11" font-weight="800" fill="#C45510">REVIEW로 전환</text>
+    <text x="138" y="95" class="small">자동 PASS 금지</text>
+  </g>
+
+  <!-- DECIDE -->
+  <path d="M422 512h106" fill="none" stroke="#F47A28" stroke-width="3" marker-end="url(#arrowOrange)"/>
+  <g transform="translate(532 282)" filter="url(#softShadow)">
+    <rect width="172" height="118" rx="18" fill="#FFF" stroke="#F2C599"/>
+    <rect x="18" y="18" width="38" height="38" rx="10" fill="#F47A28"/>
+    <path d="M29 26h15l5 5v18H29zM44 26v6h5" fill="none" stroke="#FFF" stroke-width="2" stroke-linejoin="round"/>
+    <text x="68" y="42" class="nodeTitle">문서 Worker</text>
+    <text x="18" y="78" class="nodeBody">PDF · HWPX · HWP</text>
+    <text x="18" y="99" class="nodeBody">표·페이지·OCR 품질</text>
+  </g>
+  <path d="M704 341h32" stroke="#F47A28" stroke-width="3" marker-end="url(#arrowOrange)"/>
+  <g transform="translate(742 282)" filter="url(#softShadow)">
+    <rect width="172" height="118" rx="18" fill="#FFF" stroke="#F2C599"/>
+    <rect x="18" y="18" width="38" height="38" rx="10" fill="#7B61C8"/>
+    <path d="M28 37h18M37 28v18M31 31l12 12M43 31L31 43" stroke="#FFF" stroke-width="1.8" stroke-linecap="round" opacity=".95"/>
+    <text x="68" y="42" class="nodeTitle">OpenAI 추출</text>
+    <text x="18" y="78" class="nodeBody">조건 · 배점 · 근거위치</text>
+    <text x="18" y="99" class="nodeBody">고정 JSON + confidence</text>
+  </g>
+  <path d="M914 341h32" stroke="#F47A28" stroke-width="3" marker-end="url(#arrowOrange)"/>
+  <g transform="translate(952 282)" filter="url(#softShadow)">
+    <rect width="136" height="118" rx="18" fill="#102347"/>
+    <circle cx="28" cy="29" r="13" fill="#FF8A3D"/>
+    <path d="M22 29l4 4 8-9" fill="none" stroke="#FFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="49" y="35" fill="#FFF" font-size="16" font-weight="800">규칙 엔진</text>
+    <text x="18" y="78" fill="#CFD9EB" font-size="12.5" font-weight="600">결정론적 판정</text>
+    <text x="18" y="99" fill="#FFBE8F" font-size="12" font-weight="800">FAIL · DF-000</text>
+  </g>
+
+  <g transform="translate(532 438)">
+    <rect width="556" height="132" rx="20" fill="#FFF" stroke="#F2C599"/>
+    <text x="20" y="31" class="eyebrow" fill="#D85B0C">DECISION CONTRACT</text>
+    <g transform="translate(20 49)">
+      <rect width="98" height="28" rx="14" fill="#EAF8F5"/><text x="49" y="19" text-anchor="middle" font-size="11" font-weight="800" fill="#0B766B">DOCUMENT</text>
+      <rect x="108" width="108" height="28" rx="14" fill="#FFF0E2"/><text x="162" y="19" text-anchor="middle" font-size="11" font-weight="800" fill="#C45510">ELIGIBILITY</text>
+      <rect x="226" width="122" height="28" rx="14" fill="#F0ECFF"/><text x="287" y="19" text-anchor="middle" font-size="11" font-weight="800" fill="#6550AD">QUANTITATIVE</text>
+      <rect x="358" width="92" height="28" rx="14" fill="#ECF1FF"/><text x="404" y="19" text-anchor="middle" font-size="11" font-weight="800" fill="#415FBE">READINESS</text>
+      <rect x="460" width="76" height="28" rx="14" fill="#F3F5F8"/><text x="498" y="19" text-anchor="middle" font-size="11" font-weight="800" fill="#4B5B73">RISK</text>
+    </g>
+    <text x="20" y="105" class="nodeBody">PASS / REVIEW / FAIL · 기본실패 사유 DF-000 · GREEN / YELLOW / RED / GRAY</text>
+  </g>
+  <g transform="translate(532 602)">
+    <rect width="270" height="118" rx="18" fill="#FFF" stroke="#F2C599" stroke-dasharray="5 5"/>
+    <text x="20" y="32" class="nodeTitle">원칙 1</text>
+    <text x="20" y="61" class="nodeBody">LLM은 조건을 구조화한다</text>
+    <text x="20" y="86" font-size="13" font-weight="800" fill="#D85B0C">최종 판정은 규칙 엔진</text>
+  </g>
+  <g transform="translate(818 602)">
+    <rect width="270" height="118" rx="18" fill="#FFF" stroke="#F2C599" stroke-dasharray="5 5"/>
+    <text x="20" y="32" class="nodeTitle">원칙 2</text>
+    <text x="20" y="61" class="nodeBody">현재 회사 상태를 과거에 소급하지 않는다</text>
+    <text x="20" y="86" font-size="13" font-weight="800" fill="#D85B0C">마감일 증빙 스냅샷 기준</text>
+  </g>
+
+  <!-- LEARN -->
+  <path d="M1088 341h80" fill="none" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <g transform="translate(1172 282)" filter="url(#softShadow)">
+    <rect width="326" height="106" rx="18" fill="#FFF" stroke="#C8D4F4"/>
+    <ellipse cx="42" cy="28" rx="18" ry="8" fill="#5271D8"/>
+    <path d="M24 28v31c0 4 8 8 18 8s18-4 18-8V28" fill="#E4EAFF" stroke="#5271D8" stroke-width="2"/>
+    <ellipse cx="42" cy="28" rx="18" ry="8" fill="#FFF" stroke="#5271D8" stroke-width="2"/>
+    <text x="76" y="34" class="nodeTitle">PostgreSQL + Object Storage</text>
+    <text x="76" y="62" class="nodeBody">판정 이력 · 증빙 버전 · 예외 승인</text>
+    <text x="76" y="84" class="nodeBody">원본 파일 · 변환본 · SHA-256</text>
+  </g>
+  <path d="M1335 388v38" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <g transform="translate(1172 438)" filter="url(#softShadow)">
+    <rect width="154" height="112" rx="18" fill="#FFF" stroke="#C8D4F4"/>
+    <rect x="18" y="18" width="38" height="30" rx="5" fill="#5271D8"/>
+    <path d="M25 55h24" stroke="#5271D8" stroke-width="3" stroke-linecap="round"/>
+    <text x="68" y="40" class="nodeTitle">웹</text>
+    <text x="18" y="78" class="nodeBody">근거 검토</text>
+    <text x="18" y="98" class="nodeBody">GO / 보류 / 포기</text>
+  </g>
+  <g transform="translate(1344 438)" filter="url(#softShadow)">
+    <rect width="154" height="112" rx="18" fill="#FFF" stroke="#C8D4F4"/>
+    <rect x="18" y="18" width="38" height="38" rx="10" fill="#6550AD"/>
+    <text x="37" y="45" text-anchor="middle" fill="#FFF" font-size="20" font-weight="800">T</text>
+    <text x="68" y="40" class="nodeTitle">Teams</text>
+    <text x="18" y="78" class="nodeBody">알림 카드</text>
+    <text x="18" y="98" class="nodeBody">대시보드 진입</text>
+  </g>
+  <path d="M1249 550v28h86" fill="none" stroke="#5271D8" stroke-width="3"/>
+  <path d="M1421 550v28h-86v28" fill="none" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <g transform="translate(1172 614)">
+    <rect width="326" height="106" rx="18" fill="#233B78"/>
+    <circle cx="38" cy="34" r="17" fill="#6F88E8"/>
+    <path d="M30 34l6 6 11-13" fill="none" stroke="#FFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="70" y="39" fill="#FFF" font-size="18" font-weight="800">Outcome Feedback</text>
+    <text x="22" y="72" fill="#DCE4FF" font-size="12.5" font-weight="600">입찰 · 개찰 · 낙찰 · 계약 결과</text>
+    <text x="22" y="93" fill="#AFC0F4" font-size="12.5" font-weight="600">담당자 override와 사유까지 기록</text>
+  </g>
+
+  <!-- Feedback loop -->
+  <path d="M1335 720v46c0 35-28 62-62 62H292c-43 0-78-35-78-78v-12" fill="none" stroke="#5271D8" stroke-width="3" stroke-dasharray="8 7" marker-end="url(#arrowBlue)"/>
+  <rect x="665" y="804" width="320" height="36" rx="18" fill="#FFF" stroke="#C8D4F4"/>
+  <text x="825" y="827" text-anchor="middle" font-size="12.5" font-weight="800" fill="#415FBE">검토 가능한 결과 기록이 다음 의사결정을 개선</text>
+
+  <g transform="translate(70 854)">
+    <circle cx="7" cy="7" r="7" fill="#00A995"/><text x="22" y="11" class="small">DISCOVER</text>
+    <circle cx="132" cy="7" r="7" fill="#F47A28"/><text x="147" y="11" class="small">DECIDE</text>
+    <circle cx="238" cy="7" r="7" fill="#5271D8"/><text x="253" y="11" class="small">LEARN</text>
+  </g>
+  <text x="1530" y="867" text-anchor="end" class="small">PAI_LOOP architecture · v1.0 · 2026-08-16</text>
+</svg>

@@ -1,5 +1,14 @@
 {
+  "manifestVersion": 2,
   "workflows": {
+    "pai-loop-00-architecture": {
+      "file": "workflows/pai-loop-00-architecture.json",
+      "publish": false
+    },
+    "pai-loop-01-notice-replay-vertical-slice": {
+      "file": "workflows/pai-loop-01-notice-replay-vertical-slice.json",
+      "publish": false
+    },
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
       "n8nWorkflowId": "JDy3nFbWEkV2Jrhl",

@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-validate:
+    name: Test, validate, and scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install application and test dependencies
+        run: python -m pip install --disable-pip-version-check -e ".[test]"
+
+      - name: Compile Python sources
+        run: python -m compileall -q src tests tools
+
+      - name: Run tests with coverage gate
+        run: >-
+          python -m pytest
+          --cov=pai_loop
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=85
+
+      - name: Build and inspect release wheel
+        shell: python
+        run: |
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheel_dir = Path("dist")
+          subprocess.run(
+              [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--wheel-dir", str(wheel_dir)],
+              check=True,
+          )
+          wheels = sorted(wheel_dir.glob("pai_loop-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected exactly one PAI_LOOP wheel, found {len(wheels)}")
+          required = {
+              "pai_loop/static/index.html",
+              "pai_loop/static/styles.css",
+              "pai_loop/static/app.js",
+              "pai_loop/static/favicon.svg",
+              "pai_loop/data/rules_v2_1.json",
+          }
+          with zipfile.ZipFile(wheels[0]) as package:
+              missing = required.difference(package.namelist())
+          if missing:
+              raise SystemExit("Release wheel is missing: " + ", ".join(sorted(missing)))
+          print(f"Release wheel contains all {len(required)} required runtime asset(s)")
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate deployment script and n8n workflows
+        run: |
+          node --check scripts/deploy-workflows.mjs
+          node scripts/deploy-workflows.mjs --validate-only
+
+      - name: Verify local frontend assets
+        shell: python
+        run: |
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          root = Path("src/pai_loop/static")
+          index = root / "index.html"
+
+          class AssetParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.assets = []
+
+              def handle_starttag(self, tag, attrs):
+                  values = dict(attrs)
+                  if tag == "script" and values.get("src"):
+                      self.assets.append(values["src"])
+                  if tag == "link" and values.get("href"):
+                      self.assets.append(values["href"])
+
+          parser = AssetParser()
+          parser.feed(index.read_text(encoding="utf-8"))
+          missing = []
+          for reference in parser.assets:
+              parsed = urlsplit(reference)
+              if parsed.scheme or parsed.netloc or reference.startswith(("#", "data:")):
+                  continue
+              target = root / parsed.path.lstrip("./")
+              if not target.is_file():
+                  missing.append(reference)
+          if missing:
+              raise SystemExit("Missing frontend asset(s): " + ", ".join(sorted(missing)))
+          print(f"Verified {len(parser.assets)} frontend asset reference(s)")
+
+      - name: Scan tracked files for secrets and source artifacts
+        shell: python
+        run: |
+          import re
+          import subprocess
+          from pathlib import Path
+
+          forbidden_artifacts = {
+              ".doc", ".docx", ".hwp", ".hwpx", ".pdf", ".ppt", ".pptx",
+              ".xls", ".xlsx", ".zip", ".7z", ".db", ".sqlite", ".sqlite3",
+          }
+          binary_allowlist = {Path("docs/architecture/PAI_LOOP_architecture.png")}
+          patterns = {
+              "OpenAI API key": re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+              "GitHub token": re.compile(
+                  rb"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b"
+              ),
+              "AWS access key": re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+              "private key": re.compile(
+                  rb"-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"
+              ),
+              "JWT-like credential": re.compile(
+                  rb"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
+              ),
+              "credential in URL": re.compile(rb"https?://[^\s/:]+:[^\s/@]+@"),
+              "PPS service key value": re.compile(
+                  rb"(?i)(?:serviceKey|PPS_API_KEY)\s*[=:]\s*[A-Za-z0-9%+/_-]{16,}"
+              ),
+              "n8n API key value": re.compile(
+                  rb"(?i)N8N_API_KEY\s*[=:]\s*[A-Za-z0-9._-]{16,}"
+              ),
+              "email address": re.compile(
+                  rb"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
+              ),
+              "Korean phone number": re.compile(rb"\b0\d{1,2}-\d{3,4}-\d{4}\b"),
+              "Korean resident identifier": re.compile(rb"\b\d{6}-[1-4]\d{6}\b"),
+              "Korean business identifier": re.compile(rb"\b\d{3}-\d{2}-\d{5}\b"),
+          }
+
+          output = subprocess.check_output(["git", "ls-files", "-z"])
+          tracked = [Path(raw.decode("utf-8")) for raw in output.split(b"\0") if raw]
+          violations = []
+          for path in tracked:
+              if path.name == "secrets.txt" or (
+                  path.name.startswith(".env") and path.name != ".env.example"
+              ):
+                  violations.append((str(path), "credential file is not allowed"))
+                  continue
+              suffix = path.suffix.lower()
+              if suffix in forbidden_artifacts and path not in binary_allowlist:
+                  violations.append((str(path), "source/binary artifact is not allowed"))
+                  continue
+              data = path.read_bytes()
+              if b"\0" in data:
+                  continue
+              for label, pattern in patterns.items():
+                  if pattern.search(data):
+                      violations.append((str(path), label))
+
+          if violations:
+              for path, label in sorted(set(violations)):
+                  print(f"::error file={path}::{label} detected")
+              raise SystemExit(
+                  f"Secret/source scan failed with {len(set(violations))} finding(s); values suppressed"
+              )
+          print(f"Secret/source scan passed for {len(tracked)} tracked file(s)")
