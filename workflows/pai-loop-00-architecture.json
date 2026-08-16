@@ -1,0 +1,209 @@
+{
+  "name": "PAI_LOOP 00 - Architecture",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2520,
+        "height": 620,
+        "color": 7,
+        "content": "# PAI_LOOP — 공공입찰 의사결정 루프\n\n![PAI_LOOP architecture](https://raw.githubusercontent.com/skytree96-cmyk/PAI_LOOP/main/docs/architecture/PAI_LOOP_architecture.png)\n\n> 이미지는 GitHub의 공개 HTTPS 원본만 읽으며 인증정보를 포함하지 않습니다. 저장소를 비공개로 전환하면 아래 노드 맵과 `docs/architecture/PAI_LOOP_architecture.svg`를 기준으로 확인하세요."
+      },
+      "id": "arch-note-hero",
+      "name": "Architecture image",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1040, -820]
+    },
+    {
+      "parameters": {
+        "width": 480,
+        "height": 420,
+        "color": 5,
+        "content": "## DISCOVER · 수집\n\n- 조달청 공고 API\n- 첨부파일 원본·해시\n- 회사 자격·실적 증빙\n- n8n은 일정, 재시도, 중복방지 담당\n\n**실패 원칙**\n원문 또는 첨부 수집 실패는 자동 PASS가 아니라 REVIEW로 보냅니다."
+      },
+      "id": "arch-note-discover",
+      "name": "DISCOVER layer",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1040, 40]
+    },
+    {
+      "parameters": {
+        "width": 920,
+        "height": 420,
+        "color": 4,
+        "content": "## DECIDE · 해석과 판정\n\n1. 문서 Worker가 PDF/HWPX/HWP를 구조화합니다.\n2. OpenAI는 조건·배점·근거 위치를 고정 JSON으로 추출합니다.\n3. 결정론적 규칙 엔진이 자격상태 PASS / REVIEW / FAIL을 계산합니다.\n4. 어떤 PASS·연결 REVIEW 경로도 성립하지 않은 FAIL은 `reason_code=DF-000`으로 설명합니다.\n5. 정량점수, 준비도, 리스크는 자격상태와 분리해 저장합니다.\n\n**LLM은 최종 자격 판정자가 아닙니다.**"
+      },
+      "id": "arch-note-decide",
+      "name": "DECIDE layer",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-540, 40]
+    },
+    {
+      "parameters": {
+        "width": 1000,
+        "height": 420,
+        "color": 6,
+        "content": "## LEARN · 전달과 환류\n\n- PostgreSQL: 공고, 마감일 스냅샷, 판정, 예외, 결과 이력\n- Object Storage: 원본 첨부, 변환본, SHA-256\n- Web Dashboard: 근거 검토와 담당자 GO/보류/포기\n- Teams: 새 공고 알림과 대시보드 진입점\n- 개찰·낙찰·계약 결과를 다음 판단에 환류\n\n결과 환류는 모델 자동학습이 아니라 검토 가능한 기록부터 시작합니다."
+      },
+      "id": "arch-note-learn",
+      "name": "LEARN layer",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [400, 40]
+    },
+    {
+      "parameters": {},
+      "id": "arch-manual-trigger",
+      "name": "Review Architecture",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-960, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "arch-event-type",
+              "name": "eventType",
+              "value": "notice.received",
+              "type": "string"
+            },
+            {
+              "id": "arch-notice-id",
+              "name": "noticeId",
+              "value": "ARCHITECTURE-DEMO",
+              "type": "string"
+            },
+            {
+              "id": "arch-source",
+              "name": "source",
+              "value": "manual-review",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "arch-reference-event",
+      "name": "Reference Notice Event",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-760, 300]
+    },
+    {
+      "parameters": {},
+      "id": "arch-pps-intake",
+      "name": "PPS API Intake",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-560, 300]
+    },
+    {
+      "parameters": {},
+      "id": "arch-orchestrator",
+      "name": "n8n Orchestrator",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-360, 300]
+    },
+    {
+      "parameters": {},
+      "id": "arch-document-worker",
+      "name": "Document Worker",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-120, 220]
+    },
+    {
+      "parameters": {},
+      "id": "arch-openai-extractor",
+      "name": "OpenAI Structured Extractor",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [100, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nreturn [{\n  json: {\n    ...input,\n    decisionContract: {\n      documentStatus: 'COMPLETE_OR_INCOMPLETE',\n      eligibility: 'PASS_REVIEW_FAIL',\n      defaultFailReasonCode: 'DF-000',\n      quantitative: 'CONFIRMED_RANGE_OR_UNCONFIRMED',\n      readiness: 'GREEN_YELLOW_RED_GRAY',\n      riskBand: 'GO_CONDITIONAL_GO_NO_GO_UNKNOWN',\n      evidence: 'VERIFIED_PROVISIONAL_MISSING_OVERRIDDEN'\n    }\n  }\n}];"
+      },
+      "id": "arch-rule-gate",
+      "name": "Deterministic Rule Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 220]
+    },
+    {
+      "parameters": {},
+      "id": "arch-persistence",
+      "name": "PostgreSQL + Object Store",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [560, 300]
+    },
+    {
+      "parameters": {},
+      "id": "arch-dashboard",
+      "name": "Web Dashboard",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [800, 220]
+    },
+    {
+      "parameters": {},
+      "id": "arch-teams",
+      "name": "Teams Workflows",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [800, 380]
+    },
+    {
+      "parameters": {},
+      "id": "arch-feedback",
+      "name": "Outcome Feedback",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1060, 300]
+    }
+  ],
+  "connections": {
+    "Review Architecture": {
+      "main": [[{"node": "Reference Notice Event", "type": "main", "index": 0}]]
+    },
+    "Reference Notice Event": {
+      "main": [[{"node": "PPS API Intake", "type": "main", "index": 0}]]
+    },
+    "PPS API Intake": {
+      "main": [[{"node": "n8n Orchestrator", "type": "main", "index": 0}]]
+    },
+    "n8n Orchestrator": {
+      "main": [[{"node": "Document Worker", "type": "main", "index": 0}]]
+    },
+    "Document Worker": {
+      "main": [[{"node": "OpenAI Structured Extractor", "type": "main", "index": 0}]]
+    },
+    "OpenAI Structured Extractor": {
+      "main": [[{"node": "Deterministic Rule Gate", "type": "main", "index": 0}]]
+    },
+    "Deterministic Rule Gate": {
+      "main": [[{"node": "PostgreSQL + Object Store", "type": "main", "index": 0}]]
+    },
+    "PostgreSQL + Object Store": {
+      "main": [[
+        {"node": "Web Dashboard", "type": "main", "index": 0},
+        {"node": "Teams Workflows", "type": "main", "index": 0}
+      ]]
+    },
+    "Web Dashboard": {
+      "main": [[{"node": "Outcome Feedback", "type": "main", "index": 0}]]
+    },
+    "Teams Workflows": {
+      "main": [[{"node": "Outcome Feedback", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -3,3 +3,17 @@ secrets.txt
 .env.*
 !.env.example
 node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+/data/
+.local/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.coverage
+htmlcov/
+*.db
+*.sqlite*
