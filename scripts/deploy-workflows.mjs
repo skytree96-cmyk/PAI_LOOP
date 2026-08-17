@@ -102,7 +102,7 @@ function validateRepositorySafetyContracts(definitions) {
   const httpNodes = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.httpRequest",
   );
-  assert(httpNodes.length === 6, "daily live branch must expose exactly six protected backend HTTP boundaries");
+  assert(httpNodes.length === 7, "daily live branch must expose exactly seven protected backend HTTP boundaries");
   for (const node of httpNodes) {
     const url = String(node.parameters?.url ?? "");
     assert(
@@ -128,6 +128,8 @@ function validateRepositorySafetyContracts(definitions) {
   const serialised = JSON.stringify(daily.workflow);
   for (const gate of [
     "PAI_LOOP_DAILY_LIVE_ENABLED",
+    "PAI_LOOP_ANALYSIS_BATCH_ENABLED",
+    "PAI_LOOP_ANALYSIS_BATCH_WRITE_ENABLED",
     "PAI_LOOP_RETENTION_LIVE_ENABLED",
     "PAI_LOOP_AWARD_REFRESH_ENABLED",
     "PAI_LOOP_AWARD_REFRESH_WRITE_ENABLED",
@@ -140,10 +142,34 @@ function validateRepositorySafetyContracts(definitions) {
     "daily workflow must contain the public Render origin fallback",
   );
   assert(serialised.includes("retentionDays: 7"), "daily workflow must declare seven-day retention");
+  assert(
+    serialised.includes("/api/v1/notices/analysis/batch"),
+    "daily workflow must route PPS notice keys through the backend batch analysis endpoint",
+  );
+  assert(
+    serialised.includes("maxAnalysisBatchNotices: boundedInt('PAI_LOOP_ANALYSIS_BATCH_LIMIT', 5, 1, 10)"),
+    "daily batch analysis must remain bounded to at most ten notices",
+  );
+  const targets = (source, lane = 0) =>
+    (daily.workflow.connections?.[source]?.main?.[lane] ?? []).map((connection) => connection.node);
+  assert(
+    JSON.stringify(targets("Validate PPS Ingestion Contract"))
+      === JSON.stringify(["Build Bounded Batch Analysis Plan"]),
+    "validated PPS notice keys must enter the batch analysis plan",
+  );
+  assert(
+    JSON.stringify(targets("Validate Batch Analysis Contract"))
+      === JSON.stringify(["Verify Batch Analysis Aggregate Invariants"])
+      && JSON.stringify(targets("Verify Batch Analysis Aggregate Invariants"))
+        === JSON.stringify(["Preview or Apply Seven-Day Log Retention"])
+      && JSON.stringify(targets("Record Batch Analysis Skipped"))
+        === JSON.stringify(["Preview or Apply Seven-Day Log Retention"]),
+    "analysis completion or explicit skip must precede retention and award refresh",
+  );
   assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
   assert(
-    daily.config.contractVersion === "daily-briefing-1.1",
-    "daily workflow manifest contractVersion must be daily-briefing-1.1",
+    daily.config.contractVersion === "daily-briefing-1.2",
+    "daily workflow manifest contractVersion must be daily-briefing-1.2",
   );
 
   const preservationProbe = preserveRemoteNodeCredentials(

@@ -11,6 +11,7 @@ from .models import AtomicRequirement, CompanyFact, Notice, NoticeVersion
 
 RULESET_VERSION = "2026.08-v1"
 MIN_EXTRACTION_CONFIDENCE = 0.90
+DOCUMENT_QUALITY_ACCEPTED_STATUSES = frozenset({"COMPLETE", "ACCEPTED"})
 
 
 @dataclass(slots=True)
@@ -280,7 +281,11 @@ def evaluate_notice(
     facts = _select_facts(company_facts, notice.deadline)
     document_quality_ok = (
         version.document_complete
-        and version.extraction_status == "COMPLETE"
+        # ``COMPLETE`` is the legacy/manual materialisation status. The strict
+        # OpenAI boundary persists a schema-and-anchor-validated extraction as
+        # ``ACCEPTED``. Both mean that the deterministic evaluator may consume
+        # the document; PARTIAL/REVIEW/failed attempts remain fail-closed R07.
+        and version.extraction_status in DOCUMENT_QUALITY_ACCEPTED_STATUSES
         and version.extraction_confidence >= MIN_EXTRACTION_CONFIDENCE
     )
     atomics = [

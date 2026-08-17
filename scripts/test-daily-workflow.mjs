@@ -51,14 +51,27 @@ const scheduledPreview = executeCodeNode("Scheduled Runtime Gates", {}, { env: {
 assert.equal(scheduledPreview.runtime.apiBaseUrl, "https://pai-loop-demo.onrender.com");
 assert.equal(scheduledPreview.runtime.webBaseUrl, "https://pai-loop-demo.onrender.com");
 assert.equal(scheduledPreview.runtime.dailyLiveEnabled, false);
+assert.equal(scheduledPreview.runtime.analysisBatchEnabled, false);
+assert.equal(scheduledPreview.runtime.analysisBatchWriteEnabled, false);
+assert.equal(scheduledPreview.runtime.maxAnalysisBatchNotices, 5);
 assert.equal(scheduledPreview.runtime.retentionLiveEnabled, false);
 assert.equal(scheduledPreview.runtime.awardRefreshEnabled, false);
 assert.equal(scheduledPreview.runtime.awardRefreshWriteEnabled, false);
 assert.equal(scheduledPreview.runtime.teamsMockLogEnabled, false);
 assert.equal(scheduledPreview.runtime.maxAwardRefreshNotices, 3);
 
+const scheduledAnalysisDry = executeCodeNode("Scheduled Runtime Gates", {}, {
+  env: {
+    PAI_LOOP_DAILY_LIVE_ENABLED: "true",
+    PAI_LOOP_ANALYSIS_BATCH_ENABLED: "true",
+  },
+});
+assert.equal(scheduledAnalysisDry.runtime.dailyLiveEnabled, true);
+assert.equal(scheduledAnalysisDry.runtime.analysisBatchEnabled, true);
+assert.equal(scheduledAnalysisDry.runtime.analysisBatchWriteEnabled, false);
+
 const httpNodes = workflow.nodes.filter((node) => node.type === "n8n-nodes-base.httpRequest");
-assert.equal(httpNodes.length, 6);
+assert.equal(httpNodes.length, 7);
 for (const node of httpNodes) {
   assert.equal(node.parameters.authentication, "genericCredentialType", `${node.name}: auth mode`);
   assert.equal(node.parameters.genericAuthType, "httpHeaderAuth", `${node.name}: auth type`);
@@ -70,6 +83,109 @@ for (const node of httpNodes) {
     `${node.name}: API key header must come from the credential store`,
   );
 }
+
+const connectionTargets = (name, lane = 0) =>
+  (workflow.connections?.[name]?.main?.[lane] ?? []).map((connection) => connection.node);
+assert.deepEqual(connectionTargets("Validate PPS Ingestion Contract"), [
+  "Build Bounded Batch Analysis Plan",
+]);
+assert.deepEqual(connectionTargets("Batch Analysis Gate Open?", 0), [
+  "Analyze Evaluate and Snapshot PPS Notices",
+]);
+assert.deepEqual(connectionTargets("Batch Analysis Gate Open?", 1), [
+  "Record Batch Analysis Skipped",
+]);
+assert.deepEqual(connectionTargets("Validate Batch Analysis Contract"), [
+  "Verify Batch Analysis Aggregate Invariants",
+]);
+assert.deepEqual(connectionTargets("Verify Batch Analysis Aggregate Invariants"), [
+  "Preview or Apply Seven-Day Log Retention",
+]);
+assert.deepEqual(connectionTargets("Record Batch Analysis Skipped"), [
+  "Preview or Apply Seven-Day Log Retention",
+]);
+assert.deepEqual(connectionTargets("Validate Seven-Day Retention Contract"), [
+  "Fetch Award Candidates from Seven-Day Briefing",
+]);
+
+// Exercise the PPS notice-key -> batch analysis planning and strict response
+// validator entirely in memory.  Writes are disabled, so the request contract
+// remains a bounded dry-run and reports no persisted artifacts or OpenAI call.
+const analysisRuntime = {
+  ...scheduledPreview.runtime,
+  dailyLiveEnabled: true,
+  analysisBatchEnabled: true,
+  analysisBatchWriteEnabled: false,
+  maxAnalysisBatchNotices: 5,
+};
+const analysisPlan = executeCodeNode(
+  "Build Bounded Batch Analysis Plan",
+  {
+    runtime: analysisRuntime,
+    ingestion: {
+      noticeKeys: ["notice-a", "notice-b", "notice-a", "notice-c", "notice-d", "notice-e", "notice-f"],
+    },
+  },
+);
+assert.equal(analysisPlan.analysisBatch.status, "PLANNED");
+assert.equal(analysisPlan.analysisBatch.requested, 5);
+assert.equal(analysisPlan.analysisBatch.dryRun, true);
+assert.deepEqual(analysisPlan.analysisBatch.noticeKeys, [
+  "notice-a",
+  "notice-b",
+  "notice-c",
+  "notice-d",
+  "notice-e",
+]);
+const analysisResponse = {
+  job_id: "offline-analysis",
+  status: "COMPLETED",
+  dry_run: true,
+  requested: 5,
+  processed: 5,
+  completed: 0,
+  skipped: 5,
+  failed: 0,
+  document_materialized: 0,
+  evaluations_created: 0,
+  snapshots_refreshed: 0,
+  openai_calls: 0,
+  results: analysisPlan.analysisBatch.noticeKeys.map((noticeKey) => ({
+    notice_key: noticeKey,
+    status: "SKIPPED",
+    document_status: "DRY_RUN",
+    evaluation_status: "DRY_RUN",
+    snapshot_status: "DRY_RUN",
+    analysis_run_id: null,
+    evaluation_id: null,
+    notice_version_id: null,
+    input_sha256: null,
+    reused: false,
+    materialized_requirements: 0,
+    requirement_snapshots: 0,
+    score_snapshots: 0,
+    recommendation_snapshots: 0,
+    warnings: [],
+  })),
+  warnings: [],
+};
+const analysisValidated = executeCodeNode(
+  "Validate Batch Analysis Contract",
+  analysisResponse,
+  { node: { "Build Bounded Batch Analysis Plan": { json: analysisPlan } } },
+);
+assert.equal(analysisValidated.analysisBatch.status, "COMPLETED");
+assert.equal(analysisValidated.analysisBatch.processed, 5);
+assert.equal(analysisValidated.analysisBatch.openaiCalls, 0);
+const analysisConsistent = executeCodeNode(
+  "Verify Batch Analysis Aggregate Invariants",
+  analysisValidated,
+);
+assert.equal(analysisConsistent.analysisBatch.results.length, 5);
+assert.deepEqual(analysisValidated.analysisBatch.privacyBoundary, {
+  documentBodiesEmitted: false,
+  piiFieldsEmitted: false,
+});
 
 // Exercise the bounded award branch without invoking an HTTP node.  An enabled
 // refresh with writes disabled must select no more than three candidates and
@@ -179,6 +295,7 @@ item.notices[0].pricing_intelligence = {
   },
 };
 item = executeCodeNode("Build Consolidated Teams Adaptive Card", item);
+item = executeCodeNode("Annotate Batch Analysis on Card", item);
 item = executeCodeNode("Render Score Range and Sample Concentration", item);
 const backendMockRequest = executeCodeNode("Build Backend Teams Mock Request", item);
 const backendMockRecord = executeCodeNode(
@@ -198,6 +315,7 @@ assert.equal(backendMockRecord.pushMock.persisted, true);
 assert.equal(backendMockRecord.pushMock.actualTeamsRequestSent, false);
 assert.equal(backendMockRecord.source_calls.teams_mock_log, 1);
 item = executeCodeNode("Record One Push Mock Locally", item);
+item = executeCodeNode("Validate End-to-End Analysis Boundary", item);
 item = executeCodeNode("Validate Complete Dry-Run Contract", item);
 
 assert.equal(item.status, "DRY_RUN_PASSED");
@@ -214,8 +332,22 @@ assert.equal(item.notificationMock.status, "MOCK_LOCAL_ONLY");
 assert.equal(item.notificationMock.persisted, false);
 assert.equal(item.awardRefresh.status, "SKIPPED");
 assert.equal(item.awardRefresh.attempted, 0);
+assert.deepEqual(item.enrichmentContract.analysis_batch_summary, {
+  status: "SKIPPED",
+  dry_run: true,
+  requested: 0,
+  processed: 0,
+  completed: 0,
+  skipped: 0,
+  failed: 0,
+  document_materialized: 0,
+  evaluations_created: 0,
+  snapshots_refreshed: 0,
+  openai_calls: 0,
+});
 assert.equal(item.adaptiveCard.type, "AdaptiveCard");
 assert.equal(item.adaptiveCard.version, "1.5");
+assert.match(item.adaptiveCard.body[1].text, /신규 분석 SKIPPED 0\/0건/);
 assert.equal(item.briefing.noticeKeys.length, 2);
 const facts = item.adaptiveCard.body
   .filter((block) => block.type === "Container")

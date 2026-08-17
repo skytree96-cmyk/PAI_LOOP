@@ -12,13 +12,18 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from . import __version__
+from .analysis_api import router as analysis_persistence_router
 from .api import router
 from .config import Settings
 from .database import Base, build_engine, build_session_factory
 from .daily_operations import router as daily_operations_router
 from .demo import seed_synthetic_replay
+from .migrations import apply_additive_migrations
+from .outcomes_api import router as bid_outcomes_router
 from .public_performance import public_performance_router
 from .quantitative_scoring import quantitative_scoring_router
+from .reference_api import router as reference_data_router
+from .reference_registry import sync_packaged_reference_data, sync_public_company_profile
 from .schemas import HealthResponse
 
 
@@ -48,9 +53,13 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         Base.metadata.create_all(engine)
-        if settings.seed_synthetic:
-            with session_factory() as session:
+        apply_additive_migrations(engine)
+        with session_factory() as session:
+            sync_packaged_reference_data(session)
+            sync_public_company_profile(session)
+            if settings.seed_synthetic:
                 seed_synthetic_replay(session)
+            session.commit()
         yield
         engine.dispose()
 
@@ -80,6 +89,9 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(public_performance_router)
     application.include_router(daily_operations_router)
     application.include_router(quantitative_scoring_router)
+    application.include_router(reference_data_router)
+    application.include_router(bid_outcomes_router)
+    application.include_router(analysis_persistence_router)
 
     @application.get("/healthz", response_model=HealthResponse, tags=["operations"])
     def health(request: Request) -> HealthResponse:

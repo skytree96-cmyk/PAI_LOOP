@@ -65,6 +65,7 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
     )
     assert body["notices"][0]["competition_risk"]["status"] == "UNKNOWN"
     assert body["notices"][0]["competition_risk"]["score"] is None
+    assert body["notices"][0]["analysis_snapshot"] is None
     assert body["source_calls"] == {"pps": 0, "openai": 0, "teams": 0}
     assert body["delivery"] == {
         "channel": "teams",

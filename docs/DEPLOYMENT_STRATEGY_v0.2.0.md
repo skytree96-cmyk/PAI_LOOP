@@ -164,7 +164,8 @@ Streamlit은 새로운 분석 화면을 빠르게 실험하는 보조 앱에는 
   build context에서 제외한다.
 - `PAI_LOOP_PUBLIC_READ_ONLY=true`에서는 명시적으로 허용한 공개 GET만 익명
   조회할 수 있고, 모든 write/internal route는 서버 API key가 필요하다.
-- 실제 공개 인천 공고 seed는 컨테이너 시작 전에
+- 컨테이너 시작 시 `pai-loop-migrate --create-base`로 checksum ledger가 있는
+  additive migration을 먼저 적용하고, 실제 공개 인천 공고 seed는 이어서
   `pai-loop-seed-public-notice --create-schema`로 멱등 적재하며, 로컬 원본에
   의존하지 않는다. seed 실패 시 API 서버도 시작하지 않아 빈 production을
   정상 상태로 오인하지 않는다.
@@ -191,8 +192,10 @@ Docker만으로 Render, Railway, Cloud Run 중 어느 하나를 선택할 수 �
 
 - [ ] 로컬 SQLite 경로가 deployment 환경변수에 존재하지 않는다.
 - [ ] 원격 PostgreSQL 연결은 TLS이며 최소 권한 계정을 사용한다.
-- [ ] DB migration을 별도 job으로 실행하고 웹 인스턴스의 동시 `create_all`
-  의존을 제거한다.
+- [x] 단일 인스턴스 베타는 additive migration CLI/checksum ledger를 시작 명령에
+  연결했다.
+- [ ] 전사 다중 인스턴스 배포에서는 migration을 별도 release job으로 분리하고
+  동시 startup DDL을 제거한다.
 - [ ] 공개 seed가 직접식별자/secret/내부 메모/원문 바이너리를 포함하지 않는다.
 - [ ] 첨부파일은 private bucket + 짧은 signed URL + 보존기한을 사용한다.
 - [ ] CORS는 실제 origin만 허용하고, cookie write에는 CSRF 방어를 적용한다.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pai-loop"
-version = "0.5.0"
+version = "0.6.0"
 description = "Evidence-first public procurement decision support API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,7 @@ test = [
 [project.scripts]
 pai-loop = "pai_loop.main:run"
 pai-loop-seed-public-notice = "pai_loop.public_notice_cli:main"
+pai-loop-migrate = "pai_loop.migrations:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pai_loop"]

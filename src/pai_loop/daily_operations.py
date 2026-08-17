@@ -14,6 +14,7 @@ from .auth import require_api_key
 from .award_intelligence import build_award_intelligence
 from .department_ranking import rank_notice_across_departments
 from .models import (
+    AnalysisRun,
     AwardHistoryItem,
     Evaluation,
     IngestionJob,
@@ -71,6 +72,43 @@ def _latest_evaluation(notice: Notice) -> Evaluation | None:
     if not notice.evaluations:
         return None
     return max(notice.evaluations, key=lambda item: _as_utc(item.evaluated_at))
+
+
+def _latest_analysis_snapshot(notice: Notice) -> dict[str, Any] | None:
+    if not notice.analysis_runs:
+        return None
+    run = max(notice.analysis_runs, key=lambda item: _as_utc(item.generated_at))
+    return {
+        "analysis_run_id": run.id,
+        "status": run.status,
+        "generated_at": run.generated_at,
+        "input_sha256": run.input_sha256,
+        "basis_versions": run.basis_versions,
+        "output_summary": run.output_summary,
+        "scores": [
+            {
+                "score_key": item.score_key,
+                "value": item.value,
+                "lower_value": item.lower_value,
+                "upper_value": item.upper_value,
+                "status": item.status,
+                "band": item.band,
+                "method_version": item.method_version,
+            }
+            for item in run.scores
+        ],
+        "recommendations": [
+            {
+                "recommendation_key": item.recommendation_key,
+                "department_id": item.department_id,
+                "rank": item.rank,
+                "priority_score": item.priority_score,
+                "recommendation": item.recommendation,
+                "risk_band": item.risk_band,
+            }
+            for item in run.recommendations
+        ],
+    }
 
 
 def _award_snapshot(items: list[AwardHistoryItem]) -> dict[str, Any]:
@@ -150,6 +188,7 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         "competition_risk": pricing_intelligence["competition_risk"],
         "quantitative_estimate": estimate_for_notice(notice).model_dump(mode="json"),
         "pricing_intelligence": pricing_intelligence,
+        "analysis_snapshot": _latest_analysis_snapshot(notice),
     }
 
 
@@ -172,6 +211,8 @@ def daily_briefing(
             .options(
                 selectinload(Notice.evaluations),
                 selectinload(Notice.award_history),
+                selectinload(Notice.analysis_runs).selectinload(AnalysisRun.scores),
+                selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
             )
             .order_by(observed_at.desc())
         ).all()

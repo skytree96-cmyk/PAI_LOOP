@@ -25,7 +25,7 @@
       "file": "workflows/pai-loop-10-daily-opportunity-briefing.json",
       "publish": false,
       "n8nWorkflowId": "WimY5yV3aWqMZRsx",
-      "contractVersion": "daily-briefing-1.1",
+      "contractVersion": "daily-briefing-1.2",
       "operatorEntryPoint": true
     },
     "pai-loop-deployment-smoke-test": {

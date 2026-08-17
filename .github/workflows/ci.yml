@@ -111,6 +111,12 @@ jobs:
               "pai_loop/public_notice_seed.py",
               "pai_loop/public_notice_cli.py",
               "pai_loop/integrations/awards.py",
+              "pai_loop/analysis_pipeline.py",
+              "pai_loop/analysis_api.py",
+              "pai_loop/reference_registry.py",
+              "pai_loop/reference_api.py",
+              "pai_loop/outcomes_api.py",
+              "pai_loop/migrations.py",
           }
           forbidden = {
               "pai_loop/private_import.py",
