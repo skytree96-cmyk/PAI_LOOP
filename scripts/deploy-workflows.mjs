@@ -76,11 +76,24 @@ function validateRepositorySafetyContracts(definitions) {
   const daily = definitions.find(({ key }) => key === "pai-loop-10-daily-opportunity-briefing");
   assert(daily, "daily operator workflow is required");
   assert(daily.config.operatorEntryPoint === true, "daily workflow must be the explicit operator entry point");
+  const continuation = definitions.find(({ key }) => key === "pai-loop-11-analysis-backfill");
+  assert(continuation, "analysis continuation workflow is required");
   for (const definition of definitions) {
-    if (definition.key === daily.key) continue;
+    if (definition.key === daily.key || definition.key === continuation.key) continue;
     assert(
       definition.config.publish === false,
-      `${definition.key}: only the daily operator entry point may be published`,
+      `${definition.key}: only workflows 10 and 11 may be published`,
+    );
+  }
+  if (continuation.config.publish === true) {
+    assert(
+      continuation.config.promotionState === "verified-live-e2e",
+      "workflow 11 may publish only after verified-live-e2e promotion",
+    );
+  } else {
+    assert(
+      continuation.config.promotionState === "awaiting-live-e2e",
+      "inactive workflow 11 must remain awaiting-live-e2e",
     );
   }
   assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
@@ -111,7 +124,7 @@ function validateRepositorySafetyContracts(definitions) {
   const httpNodes = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.httpRequest",
   );
-  assert(httpNodes.length === 7, "daily live branch must expose exactly seven protected backend HTTP boundaries");
+  assert(httpNodes.length === 9, "daily live branch must expose exactly nine protected backend HTTP boundaries");
   for (const node of httpNodes) {
     const url = String(node.parameters?.url ?? "");
     assert(
@@ -158,10 +171,28 @@ function validateRepositorySafetyContracts(definitions) {
     "daily batch analysis must remain bounded to three notices and one attachment each",
   );
   assert(
+    serialised.includes("created_notice_keys")
+      && serialised.includes("updated_notice_keys")
+      && serialised.includes("refresh_notice_keys")
+      && serialised.includes("retry_notice_keys")
+      && serialised.includes("retry_epoch")
+      && serialised.includes("request_token")
+      && serialised.includes("$execution.id")
+      && serialised.includes("execution_limit: 30")
+      && serialised.includes("max_continuations: 128")
+      && serialised.includes("segment_id")
+      && serialised.includes("chunk_indices")
+      && serialised.includes("refusing silent truncation")
+      && serialised.includes("splitInBatches"),
+    "daily analysis must durably lease exact created+updated keys without silent truncation",
+  );
+  assert(
     serialised.includes("useProfileKeywords: true")
       && serialised.includes("profileDepartmentIds: []")
-      && serialised.includes("ppsMaxPages: 1"),
-    "daily ingestion must use the organization profile with a one-page provider bound",
+      && serialised.includes("ppsPageSize: 999")
+      && serialised.includes("ppsMaxPages: 3")
+      && serialised.includes("page-limited PPS ingestion must be PARTIAL"),
+    "daily ingestion must paginate the organization profile and fail closed on page caps",
   );
   assert(
     serialised.includes("use_profile_keywords:")
@@ -189,6 +220,13 @@ function validateRepositorySafetyContracts(definitions) {
     "daily top-three enrichment must have a bounded ten-minute n8n timeout",
   );
   assert(
+    analysisNode?.retryOnFail === true
+      && analysisNode?.maxTries === 2
+      && analysisNode?.waitBetweenTries >= 1500
+      && analysisNode?.waitBetweenTries <= 3000,
+    "daily analysis chunk request must safely retry its exact leased chunk once",
+  );
+  assert(
     awardNode?.parameters?.options?.timeout === 600000
       && serialised.includes("maxAwardRefreshNotices: 1")
       && serialised.includes("Math.min(3, Math.max(1"),
@@ -203,8 +241,10 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     JSON.stringify(targets("Validate Batch Analysis Contract"))
-      === JSON.stringify(["Verify Batch Analysis Aggregate Invariants"])
+      === JSON.stringify(["Process Daily Chunks Serially"])
       && JSON.stringify(targets("Verify Batch Analysis Aggregate Invariants"))
+        === JSON.stringify(["Finalize Daily Analysis Segment"])
+      && JSON.stringify(targets("Validate Daily Continuation State"))
         === JSON.stringify(["Fetch Ranked Seven-Day Briefing"])
       && JSON.stringify(targets("Record Batch Analysis Skipped"))
         === JSON.stringify(["Fetch Ranked Seven-Day Briefing"]),
@@ -221,8 +261,50 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
   assert(
-    daily.config.contractVersion === "daily-briefing-1.3",
-    "daily workflow manifest contractVersion must be daily-briefing-1.3",
+    daily.config.contractVersion === "daily-briefing-1.5",
+    "daily workflow manifest contractVersion must be daily-briefing-1.5",
+  );
+
+  const continuationSerialised = JSON.stringify(continuation.workflow);
+  const continuationHttp = continuation.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.httpRequest",
+  );
+  assert(
+    continuationHttp.length === 3
+      && continuationHttp.every((node) => (
+        node.parameters?.authentication === "genericCredentialType"
+        && node.parameters?.genericAuthType === "httpHeaderAuth"
+      )),
+    "workflow 11 must expose exactly three protected backend HTTP boundaries",
+  );
+  assert(
+    continuation.config.contractVersion === "analysis-backfill-1.2"
+      && continuationSerialised.includes("executionLimit: 30")
+      && continuationSerialised.includes("maxTotal: 3000")
+      && continuationSerialised.includes("maxContinuations: 128")
+      && continuationSerialised.includes("queueName: 'ANY'")
+      && continuationSerialised.includes("resumeOnly: true")
+      && continuationSerialised.includes("segment_id")
+      && continuationSerialised.includes("chunk_indices"),
+    "workflow 11 must use the resumable 30-notice durable segment contract",
+  );
+  const continuationChunkNode = continuation.workflow.nodes.find(
+    (node) => node.name === "Analyze One Bounded Chunk",
+  );
+  assert(
+    continuationChunkNode?.retryOnFail === true
+      && continuationChunkNode?.maxTries === 2
+      && continuationChunkNode?.waitBetweenTries >= 1500
+      && continuationChunkNode?.waitBetweenTries <= 3000,
+    "workflow 11 analysis chunk request must safely retry its exact leased chunk once",
+  );
+  const continuationSchedules = continuation.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.scheduleTrigger",
+  );
+  assert(
+    continuationSchedules.length === 1
+      && continuationSchedules[0].parameters?.rule?.interval?.[0]?.expression === "*/15 * * * *",
+    "workflow 11 continuation schedule must poll every 15 minutes",
   );
 
   const preservationProbe = preserveRemoteNodeCredentials(
@@ -379,6 +461,42 @@ function preserveRemoteNodeCredentials(payload, remote) {
   };
 }
 
+function extractSingleBackendCredential(workflow) {
+  const credentials = (workflow?.nodes ?? [])
+    .filter((node) => node.type === "n8n-nodes-base.httpRequest")
+    .map((node) => node.credentials?.httpHeaderAuth)
+    .filter(Boolean);
+  if (!credentials.length) return undefined;
+  const ids = new Set(credentials.map((credential) => String(credential.id ?? "")));
+  assert(ids.size === 1 && !ids.has(""), "backend HTTP nodes must share one Generic Header credential");
+  return { httpHeaderAuth: credentials[0] };
+}
+
+function inheritApprovedBackendCredential(payload, credential, approvedNodeNames) {
+  if (!approvedNodeNames.size) return payload;
+  assert(credential?.httpHeaderAuth?.id, "approved new backend HTTP nodes require an inherited credential");
+  return {
+    ...payload,
+    nodes: payload.nodes.map((node) => (
+      approvedNodeNames.has(node.name)
+        ? { ...node, credentials: node.credentials ?? credential }
+        : node
+    )),
+  };
+}
+
+const approvedCredentialInheritance = new Map([
+  ["pai-loop-10-daily-opportunity-briefing", new Set([
+    "Reserve or Resume Daily Analysis Operation",
+    "Finalize Daily Analysis Segment",
+  ])],
+  ["pai-loop-11-analysis-backfill", new Set([
+    "Reserve or Resume Backfill Plan",
+    "Analyze One Bounded Chunk",
+    "Finalize Backfill Audit",
+  ])],
+]);
+
 const remoteWorkflows = await listAllWorkflows();
 const remoteByName = new Map();
 for (const workflow of remoteWorkflows) {
@@ -386,6 +504,8 @@ for (const workflow of remoteWorkflows) {
   matches.push(workflow);
   remoteByName.set(workflow.name, matches);
 }
+
+let sharedBackendCredential;
 
 for (const { key, config, workflow } of definitions.filter(
   (definition) => !onlyKey || definition.key === onlyKey,
@@ -424,6 +544,9 @@ for (const { key, config, workflow } of definitions.filter(
     if (!remote?.nodes) {
       remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
     }
+    if (key === "pai-loop-10-daily-opportunity-briefing") {
+      sharedBackendCredential = extractSingleBackendCredential(remote);
+    }
     // Archived workflows cannot be updated through the public API.  Treat an
     // archived, inactive legacy definition as intentionally retired instead
     // of failing an otherwise idempotent deployment after newer workflows
@@ -434,6 +557,11 @@ for (const { key, config, workflow } of definitions.filter(
       continue;
     }
     payload = preserveRemoteNodeCredentials(payload, remote);
+    payload = inheritApprovedBackendCredential(
+      payload,
+      sharedBackendCredential ?? extractSingleBackendCredential(remote),
+      approvedCredentialInheritance.get(key) ?? new Set(),
+    );
     const updated = await request(`/workflows/${encodeURIComponent(workflowId)}`, {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -441,6 +569,11 @@ for (const { key, config, workflow } of definitions.filter(
     remote = updated.body;
     console.log(`Updated ${key} (${workflowId})`);
   } else {
+    payload = inheritApprovedBackendCredential(
+      payload,
+      sharedBackendCredential,
+      approvedCredentialInheritance.get(key) ?? new Set(),
+    );
     const created = await request("/workflows", {
       method: "POST",
       body: JSON.stringify(payload),

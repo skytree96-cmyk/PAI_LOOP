@@ -6,7 +6,7 @@
         "width": 2920,
         "height": 300,
         "color": 7,
-        "content": "# 10 · Daily Opportunity Briefing · 운영 진입점 v0.7\n\n매일 **09:00 Asia/Seoul**에 전사 공통 `교육·컨설팅` 및 backend 전체 조직 프로필 키워드로 전일~당일 PPS 공고를 수집합니다. 조직 ranking 상위 공고의 3년 낙찰을 먼저 refresh(기본 1건·hard max 3)한 뒤 신규 key 최대 3건을 첨부 1개 enrichment·OpenAI 추출·평가·snapshot 대상으로 제한하여, 당일 가격·경쟁 리스크와 7일 로그·Teams Adaptive Card mock을 한 흐름으로 조립합니다.\n\n예약 경로의 명시적 workflow 기본값은 live입니다. `PAI_LOOP_EMERGENCY_DISABLE=true`일 때만 모든 외부 경계를 fail-closed합니다. 수동 dry-run은 PPS·분석·낙찰·OpenAI·Teams·backend를 한 번도 호출하지 않습니다. 실제 Teams 전송 노드는 없습니다."
+        "content": "# 10 · Daily Opportunity Briefing · 운영 진입점 v0.8\n\n매일 **09:00 Asia/Seoul**에 전사 공통 `교육·컨설팅` 및 backend 전체 조직 프로필 키워드로 전일~당일 PPS 공고를 수집합니다. 조직 ranking 상위 공고의 3년 낙찰을 먼저 refresh(기본 1건·hard max 3)한 뒤 오늘 신규·변경 key 최대 3,000건과 backlog 최대 3건을 durable queue로 예약하고 실행당 최대 30건·chunk당 3건을 첨부 1개 enrichment·OpenAI 추출·평가·snapshot 대상으로 제한하여, 당일 가격·경쟁 리스크와 7일 로그·Teams Adaptive Card mock을 한 흐름으로 조립합니다.\n\n예약 경로의 명시적 workflow 기본값은 live입니다. `PAI_LOOP_EMERGENCY_DISABLE=true`일 때만 모든 외부 경계를 fail-closed합니다. 수동 dry-run은 PPS·분석·낙찰·OpenAI·Teams·backend를 한 번도 호출하지 않습니다. 실제 Teams 전송 노드는 없습니다."
       },
       "id": "daily-note-overview",
       "name": "Daily briefing overview",
@@ -22,7 +22,7 @@
         "width": 1500,
         "height": 360,
         "color": 5,
-        "content": "## 명시적 예약 설정 · emergency fail-closed\n\n- backend/web 기본 origin: `https://pai-loop-demo.onrender.com` (`$env` URL이 있으면 우선)\n- workflow 기본값: PPS write·최대 3건 enrichment/analysis write·7일 retention·낙찰 refresh 기본 1건(hard max 3)·backend Teams mock log 허용\n- PPS 범위: 전일~당일, 기본 `교육`, `컨설팅` + backend 전체 조직 profile, 100행 × keyword당 최대 1페이지\n- 분석 범위: 신규 key 최대 3개, 공고당 첨부 최대 1개, `enrich_missing=true`\n- `PAI_LOOP_EMERGENCY_DISABLE=true`: 예약 PPS·분석·retention·낙찰·mock 기록을 모두 즉시 차단\n- n8n host `$env`를 읽지 못해도 workflow의 명시적 기본값으로 동작하며, 운영자는 workflow 비활성화로도 즉시 중지 가능\n\n모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구합니다. export에는 key 값과 credential ID가 없습니다. 실제 Teams 전송 노드는 없습니다."
+        "content": "## 명시적 예약 설정 · emergency fail-closed\n\n- backend/web 기본 origin: `https://pai-loop-demo.onrender.com` (`$env` URL이 있으면 우선)\n- workflow 기본값: PPS write·신규·변경 전량을 3건 chunk로 enrichment/analysis write·7일 retention·낙찰 refresh 기본 1건(hard max 3)·backend Teams mock log 허용\n- PPS 범위: 전일~당일, 기본 `교육`, `컨설팅` + backend 전체 조직 profile, 100행 × keyword당 최대 1페이지\n- 분석 범위: 오늘 신규·변경 key 최대 3,000개 + backlog 최대 3개, durable segment당 최대 30개·chunk당 3개, 공고당 첨부 최대 1개, `enrich_missing=true`\n- `PAI_LOOP_EMERGENCY_DISABLE=true`: 예약 PPS·분석·retention·낙찰·mock 기록을 모두 즉시 차단\n- n8n host `$env`를 읽지 못해도 workflow의 명시적 기본값으로 동작하며, 운영자는 workflow 비활성화로도 즉시 중지 가능\n\n모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구합니다. export에는 key 값과 credential ID가 없습니다. 실제 Teams 전송 노드는 없습니다."
       },
       "id": "daily-note-gates",
       "name": "Safety gates",
@@ -82,7 +82,7 @@
     },
     {
       "parameters": {
-        "jsCode": "return [{ json: { runtime: { executionMode: 'manual-fixture', triggerSource: 'manual', configSource: 'manual-zero-call-fixture', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl: 'https://pai-loop-demo.onrender.com', webBaseUrl: 'https://pai-loop-demo.onrender.com', backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', emergencyDisabled: false, collectionKeywords: ['교육','컨설팅'], useProfileKeywords: true, profileDepartmentIds: [], ppsPageSize: 100, ppsMaxPages: 1, dailyLiveEnabled: false, analysisBatchEnabled: false, analysisBatchWriteEnabled: false, enrichMissing: true, maxAnalysisBatchNotices: 3, maxAttachmentsPerNotice: 1, retentionLiveEnabled: false, awardRefreshEnabled: false, awardRefreshWriteEnabled: false, maxAwardRefreshNotices: 3, teamsMockLogEnabled: false, externalCallsAllowed: false } } }];"
+        "jsCode": "return [{ json: { runtime: { executionMode: 'manual-fixture', triggerSource: 'manual', configSource: 'manual-zero-call-fixture', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl: 'https://pai-loop-demo.onrender.com', webBaseUrl: 'https://pai-loop-demo.onrender.com', backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', emergencyDisabled: false, collectionKeywords: ['교육','컨설팅'], useProfileKeywords: true, profileDepartmentIds: [], ppsPageSize: 999, ppsMaxPages: 3, dailyLiveEnabled: false, analysisBatchEnabled: false, analysisBatchWriteEnabled: false, enrichMissing: true, maxAnalysisBatchNotices: 3, maxDailyNewNotices: 3000, maxBacklogRetryNotices: 3, maxAttachmentsPerNotice: 1, retentionLiveEnabled: false, awardRefreshEnabled: false, awardRefreshWriteEnabled: false, maxAwardRefreshNotices: 3, teamsMockLogEnabled: false, externalCallsAllowed: false } } }];"
       },
       "id": "daily-manual-context",
       "name": "Force Zero-Call Manual Context",
@@ -95,7 +95,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst trueValue = (value) => String(value ?? '').trim().toLowerCase() === 'true';\nconst safeUrl = (raw, name, fallback) => {\n  const value = String(raw || fallback).trim().replace(/\\/+$/, '');\n  if (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(value) || value.includes('@') || value.includes('\\\\')) throw new Error(`${name} is unsafe`);\n  return value;\n};\nconst config = Object.freeze({ collectionKeywords: ['교육','컨설팅'], useProfileKeywords: true, profileDepartmentIds: [], ppsPageSize: 100, ppsMaxPages: 1, maxAnalysisBatchNotices: 3, maxAttachmentsPerNotice: 1, maxAwardRefreshNotices: 1, retentionDays: 7 });\nconst publicOrigin = 'https://pai-loop-demo.onrender.com';\nconst apiBaseUrl = safeUrl(read('PAI_LOOP_API_BASE_URL'), 'PAI_LOOP_API_BASE_URL', publicOrigin);\nconst webBaseUrl = safeUrl(read('PAI_LOOP_WEB_BASE_URL'), 'PAI_LOOP_WEB_BASE_URL', publicOrigin);\nconst emergencyDisabled = trueValue(read('PAI_LOOP_EMERGENCY_DISABLE'));\nconst dailyLiveEnabled = !emergencyDisabled;\nreturn [{ json: { runtime: { executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-emergency-disabled', triggerSource: 'schedule', configSource: 'workflow-defaults-v0.7-with-emergency-env', timezone: 'Asia/Seoul', retentionDays: config.retentionDays, apiBaseUrl, webBaseUrl, backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', emergencyDisabled, collectionKeywords: config.collectionKeywords, useProfileKeywords: config.useProfileKeywords, profileDepartmentIds: config.profileDepartmentIds, ppsPageSize: config.ppsPageSize, ppsMaxPages: config.ppsMaxPages, dailyLiveEnabled, analysisBatchEnabled: dailyLiveEnabled, analysisBatchWriteEnabled: dailyLiveEnabled, enrichMissing: true, maxAnalysisBatchNotices: config.maxAnalysisBatchNotices, maxAttachmentsPerNotice: config.maxAttachmentsPerNotice, retentionLiveEnabled: dailyLiveEnabled, awardRefreshEnabled: dailyLiveEnabled, awardRefreshWriteEnabled: dailyLiveEnabled, maxAwardRefreshNotices: config.maxAwardRefreshNotices, teamsMockLogEnabled: dailyLiveEnabled, externalCallsAllowed: dailyLiveEnabled } } }];"
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst trueValue = (value) => String(value ?? '').trim().toLowerCase() === 'true';\nconst safeUrl = (raw, name, fallback) => {\n  const value = String(raw || fallback).trim().replace(/\\/+$/, '');\n  if (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(value) || value.includes('@') || value.includes('\\\\')) throw new Error(`${name} is unsafe`);\n  return value;\n};\nconst config = Object.freeze({ collectionKeywords: ['교육','컨설팅'], useProfileKeywords: true, profileDepartmentIds: [], ppsPageSize: 999, ppsMaxPages: 3, maxAnalysisBatchNotices: 3, maxDailyNewNotices: 3000, maxBacklogRetryNotices: 3, maxAttachmentsPerNotice: 1, maxAwardRefreshNotices: 1, retentionDays: 7 });\nconst publicOrigin = 'https://pai-loop-demo.onrender.com';\nconst apiBaseUrl = safeUrl(read('PAI_LOOP_API_BASE_URL'), 'PAI_LOOP_API_BASE_URL', publicOrigin);\nconst webBaseUrl = safeUrl(read('PAI_LOOP_WEB_BASE_URL'), 'PAI_LOOP_WEB_BASE_URL', publicOrigin);\nconst emergencyDisabled = trueValue(read('PAI_LOOP_EMERGENCY_DISABLE'));\nconst dailyLiveEnabled = !emergencyDisabled;\nreturn [{ json: { runtime: { executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-emergency-disabled', triggerSource: 'schedule', configSource: 'workflow-defaults-v0.8-all-new-chunked', timezone: 'Asia/Seoul', retentionDays: config.retentionDays, apiBaseUrl, webBaseUrl, backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', emergencyDisabled, collectionKeywords: config.collectionKeywords, useProfileKeywords: config.useProfileKeywords, profileDepartmentIds: config.profileDepartmentIds, ppsPageSize: config.ppsPageSize, ppsMaxPages: config.ppsMaxPages, dailyLiveEnabled, analysisBatchEnabled: dailyLiveEnabled, analysisBatchWriteEnabled: dailyLiveEnabled, enrichMissing: true, maxAnalysisBatchNotices: config.maxAnalysisBatchNotices, maxDailyNewNotices: config.maxDailyNewNotices, maxBacklogRetryNotices: config.maxBacklogRetryNotices, maxAttachmentsPerNotice: config.maxAttachmentsPerNotice, retentionLiveEnabled: dailyLiveEnabled, awardRefreshEnabled: dailyLiveEnabled, awardRefreshWriteEnabled: dailyLiveEnabled, maxAwardRefreshNotices: config.maxAwardRefreshNotices, teamsMockLogEnabled: dailyLiveEnabled, externalCallsAllowed: dailyLiveEnabled } } }];"
       },
       "id": "daily-scheduled-context",
       "name": "Scheduled Runtime Gates",
@@ -257,7 +257,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst retention = $node['Validate Seven-Day Retention Contract'].json.retention;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet analysisBatch = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 1, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'unavailable' };\ntry { analysisBatch = $node['Validate Batch Analysis Contract'].json.analysisBatch; } catch {}\nif (analysisBatch.status === 'SKIPPED' && analysisBatch.skippedReason === 'unavailable') { try { analysisBatch = $node['Record Batch Analysis Skipped'].json.analysisBatch; } catch {} }\nlet awardRefresh = { status: 'SKIPPED', enabled: false, dryRun: true, selected: 0, attempted: 0, completed: 0, candidates: [], skippedReason: 'unavailable' };\ntry { awardRefresh = $node['Validate Award Refresh Batch'].json.awardRefresh; } catch {}\nif (awardRefresh.status === 'SKIPPED' && awardRefresh.skippedReason === 'unavailable') { try { awardRefresh = $node['Record Award Refresh Skipped'].json.awardRefresh; } catch {} }\nconst analysisHttpCalls = ['COMPLETED','PARTIAL'].includes(analysisBatch.status) ? 1 : 0;\nreturn [{ json: { ...body, runtime, retention, ingestion, analysis_batch: analysisBatch, award_refresh: awardRefresh, source_calls: { backend: 4 + analysisHttpCalls + Number(awardRefresh.attempted ?? 0), pps: 1, awards: Number(awardRefresh.attempted ?? 0), openai: Number(analysisBatch.openaiCalls ?? 0), teams_mock_log: 0, teams: 0 } } }];"
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst retention = $node['Validate Seven-Day Retention Contract'].json.retention;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet analysisBatch = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 1, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'unavailable' };\ntry { analysisBatch = $node['Verify Batch Analysis Aggregate Invariants'].json.analysisBatch; } catch {}\nif (analysisBatch.status === 'SKIPPED' && analysisBatch.skippedReason === 'unavailable') { try { analysisBatch = $node['Record Batch Analysis Skipped'].json.analysisBatch; } catch {} }\nlet awardRefresh = { status: 'SKIPPED', enabled: false, dryRun: true, selected: 0, attempted: 0, completed: 0, candidates: [], skippedReason: 'unavailable' };\ntry { awardRefresh = $node['Validate Award Refresh Batch'].json.awardRefresh; } catch {}\nif (awardRefresh.status === 'SKIPPED' && awardRefresh.skippedReason === 'unavailable') { try { awardRefresh = $node['Record Award Refresh Skipped'].json.awardRefresh; } catch {} }\nlet analysisOperation = null; try { analysisOperation = $node['Validate Daily Continuation State'].json.analysisOperation; } catch {} if (!analysisOperation) { try { analysisOperation = $node['Validate Daily Analysis Operation'].json.analysisOperation; } catch {} }\nconst analysisHttpCalls = Number(analysisBatch.chunksExecuted ?? 0);\nreturn [{ json: { ...body, runtime, retention, ingestion, analysisOperation, analysis_batch: analysisBatch, award_refresh: awardRefresh, source_calls: { backend: 5 + analysisHttpCalls + (analysisHttpCalls > 0 ? 1 : 0) + Number(awardRefresh.attempted ?? 0), pps: 1, awards: Number(awardRefresh.attempted ?? 0), openai: Number(analysisBatch.openaiCalls ?? 0), teams_mock_log: 0, teams: 0 } } }];"
       },
       "id": "daily-attach-live-context",
       "name": "Attach Live Runtime Contract",
@@ -296,7 +296,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nconst batch = input.analysis_batch ?? { status: 'SKIPPED', completed: 0, requested: 0 };\nconst ingestion = input.ingestion ?? { status: 'OFFLINE', keywordsUsed: [], counts: { providerQueries: 0 } };\nconst summary = input.adaptiveCard?.body?.[1];\nif (!summary || summary.type !== 'TextBlock' || typeof summary.text !== 'string') throw new Error('Adaptive Card summary block is missing');\nsummary.text = `수집 ${ingestion.status} ${Number(ingestion.counts?.providerQueries ?? 0)}/${Number(ingestion.keywordsUsed?.length ?? 0)} query · 신규 분석 ${batch.status} ${Number(batch.completed ?? 0)}/${Number(batch.requested ?? 0)}건 · ${summary.text}`;\ninput.teamsWebhookPayload.attachments[0].content = input.adaptiveCard;\nreturn [{ json: input }];"
+        "jsCode": "const input = $json;\nconst batch = input.analysis_batch ?? { status: 'SKIPPED', completed: 0, requested: 0 };\nconst operation = input.analysisOperation ?? { planned: 0, attempted: 0, remaining: 0 };\nconst ingestion = input.ingestion ?? { status: 'OFFLINE', keywordsUsed: [], counts: { providerQueries: 0 } };\nconst summary = input.adaptiveCard?.body?.[1];\nif (!summary || summary.type !== 'TextBlock' || typeof summary.text !== 'string') throw new Error('Adaptive Card summary block is missing');\nsummary.text = `수집 ${ingestion.status} ${Number(ingestion.counts?.providerQueries ?? 0)}/${Number(ingestion.keywordsUsed?.length ?? 0)} query · 이번 분석 ${batch.status} ${Number(batch.processed ?? 0)}/${Number(batch.requested ?? 0)}건 · 전체 진행 ${Number(operation.attempted ?? 0)}/${Number(operation.planned ?? 0)}건 · 남음 ${Number(operation.remaining ?? 0)}건 · ${summary.text}`;\ninput.teamsWebhookPayload.attachments[0].content = input.adaptiveCard;\nreturn [{ json: input }];"
       },
       "id": "daily-card-analysis-summary",
       "name": "Annotate Batch Analysis on Card",
@@ -335,7 +335,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [] };\nconst fallback = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 1, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'manual-fixture', privacyBoundary: { documentBodiesEmitted: false, piiFieldsEmitted: false } };\nconst analysis = input.analysis_batch ?? fallback;\nif (!['SKIPPED','COMPLETED','PARTIAL'].includes(analysis.status)) throw new Error('analysis batch final status invalid');\nfor (const field of ['requested','processed','completed','skipped','failed','documentMaterialized','evaluationsCreated','snapshotsRefreshed','openaiCalls']) { const value = Number(analysis[field] ?? 0); if (!Number.isSafeInteger(value) || value < 0) throw new Error(`analysis batch ${field} invalid`); }\nif (Number(analysis.requested) > 3 || Number(analysis.processed) > Number(analysis.requested) || Number(analysis.processed) !== Number(analysis.completed) + Number(analysis.skipped) + Number(analysis.failed)) throw new Error('analysis batch must remain top-three bounded and count-consistent');\nif (!Array.isArray(analysis.noticeKeys) || analysis.noticeKeys.length !== Number(analysis.requested) || !Array.isArray(analysis.results) || analysis.results.length !== Number(analysis.processed)) throw new Error('analysis batch key/result counts invalid');\nif (analysis.dryRun === true && (Number(analysis.documentMaterialized) || Number(analysis.evaluationsCreated) || Number(analysis.snapshotsRefreshed) || Number(analysis.openaiCalls))) throw new Error('analysis dry-run cannot persist artifacts or call OpenAI');\nif (Number(analysis.openaiCalls) > Number(analysis.requested) * Number(analysis.maxAttachmentsPerNotice ?? 1)) throw new Error('OpenAI calls exceed the attachment budget');\nif (input.runtime?.executionMode === 'manual-fixture') { if (analysis.status !== 'SKIPPED' || analysis.requested !== 0 || input.runtime.analysisBatchEnabled !== false || input.runtime.analysisBatchWriteEnabled !== false) throw new Error('manual analysis batch gate must remain closed'); if (Number(input.source_calls?.openai ?? 0) !== 0) throw new Error('manual analysis path cannot call OpenAI'); }\nreturn [{ json: { ...input, analysis_batch: analysis, enrichment_contract: { ...(input.enrichment_contract ?? {}), analysis_batch: 'top-three-single-attachment-backend-enrichment-or-skipped', analysis_batch_summary: { status: analysis.status, dry_run: analysis.dryRun, requested: analysis.requested, processed: analysis.processed, completed: analysis.completed, skipped: analysis.skipped, failed: analysis.failed, document_materialized: analysis.documentMaterialized, evaluations_created: analysis.evaluationsCreated, snapshots_refreshed: analysis.snapshotsRefreshed, openai_calls: analysis.openaiCalls, enrichment: analysis.enrichment ?? emptyEnrichment } } } }];"
+        "jsCode": "const input = $json;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [] };\nconst fallback = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 1, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'manual-fixture', privacyBoundary: { documentBodiesEmitted: false, piiFieldsEmitted: false } };\nconst analysis = input.analysis_batch ?? fallback;\nif (!['SKIPPED','COMPLETED','PARTIAL'].includes(analysis.status)) throw new Error('analysis batch final status invalid');\nfor (const field of ['requested','processed','completed','skipped','failed','documentMaterialized','evaluationsCreated','snapshotsRefreshed','openaiCalls']) { const value = Number(analysis[field] ?? 0); if (!Number.isSafeInteger(value) || value < 0) throw new Error(`analysis batch ${field} invalid`); }\nif (Number(analysis.requested) > 30 || Number(analysis.processed) > Number(analysis.requested) || Number(analysis.processed) !== Number(analysis.completed) + Number(analysis.skipped) + Number(analysis.failed)) throw new Error('analysis batch must remain daily-new-all plus bounded-backlog and count-consistent');\nif (!Array.isArray(analysis.noticeKeys) || analysis.noticeKeys.length !== Number(analysis.requested) || !Array.isArray(analysis.results) || analysis.results.length !== Number(analysis.processed)) throw new Error('analysis batch key/result counts invalid');\nif (analysis.dryRun === true && (Number(analysis.documentMaterialized) || Number(analysis.evaluationsCreated) || Number(analysis.snapshotsRefreshed) || Number(analysis.openaiCalls))) throw new Error('analysis dry-run cannot persist artifacts or call OpenAI');\nif (Number(analysis.openaiCalls) > Number(analysis.requested) * Number(analysis.maxAttachmentsPerNotice ?? 1)) throw new Error('OpenAI calls exceed the attachment budget');\nif (input.runtime?.executionMode === 'manual-fixture') { if (analysis.status !== 'SKIPPED' || analysis.requested !== 0 || input.runtime.analysisBatchEnabled !== false || input.runtime.analysisBatchWriteEnabled !== false) throw new Error('manual analysis batch gate must remain closed'); if (Number(input.source_calls?.openai ?? 0) !== 0) throw new Error('manual analysis path cannot call OpenAI'); }\nreturn [{ json: { ...input, analysis_batch: analysis, enrichment_contract: { ...(input.enrichment_contract ?? {}), analysis_batch: 'three-per-chunk-daily-new-all-backend-enrichment-or-skipped', analysis_batch_summary: { status: analysis.status, dry_run: analysis.dryRun, requested: analysis.requested, processed: analysis.processed, completed: analysis.completed, skipped: analysis.skipped, failed: analysis.failed, document_materialized: analysis.documentMaterialized, evaluations_created: analysis.evaluationsCreated, snapshots_refreshed: analysis.snapshotsRefreshed, openai_calls: analysis.openaiCalls, enrichment: analysis.enrichment ?? emptyEnrichment } } } }];"
       },
       "id": "daily-analysis-final-validate",
       "name": "Validate End-to-End Analysis Boundary",
@@ -372,7 +372,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('PPS ingestion response must be an object');\nconst requireString = (field) => { const value = response[field]; if (typeof value !== 'string' || !value) throw new Error(`${field} must be a non-empty string`); return value; };\nconst requireCount = (field) => { const value = response[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`); return value; };\nconst ingestionStatus = requireString('status');\nif (requireString('source') !== 'PPS' || requireString('mode') !== 'live' || !['COMPLETED','PARTIAL'].includes(ingestionStatus)) throw new Error('PPS source/mode/status contract failed');\nif (!response.window || typeof response.window.from !== 'string' || typeof response.window.to !== 'string') throw new Error('PPS window must contain from/to');\nif (!Array.isArray(response.notice_keys) || !response.notice_keys.every((value) => typeof value === 'string' && value.length <= 160)) throw new Error('notice_keys must be bounded strings');\nif (!Array.isArray(response.keywords_used) || response.keywords_used.length > 30 || !response.keywords_used.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 100)) throw new Error('keywords_used must be a bounded string array');\nif (!Array.isArray(response.warnings) || !response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('warnings must be bounded strings');\nif (typeof response.dry_run !== 'boolean' || response.dry_run !== false) throw new Error('scheduled PPS ingestion must be a live metadata write');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst providerQueryCount = requireCount('provider_queries');\nif (ingestionStatus === 'COMPLETED' && providerQueryCount !== response.keywords_used.length) throw new Error('completed PPS ingestion must execute every planned keyword query');\nif (ingestionStatus === 'PARTIAL' && (response.warnings.length === 0 || providerQueryCount > response.keywords_used.length)) throw new Error('partial PPS ingestion requires bounded executed queries and warning evidence');\nconst departmentCoverageCount = requireCount('department_coverage_count');\nif (runtime.useProfileKeywords === true) { const baseline = runtime.collectionKeywords ?? []; if (departmentCoverageCount !== 24 || response.keywords_used.length < baseline.length + 24 || baseline.some((value, index) => response.keywords_used[index] !== value)) throw new Error('organization keyword coverage contract failed'); }\nreturn [{ json: { runtime, ingestion: { status: ingestionStatus, jobId: requireString('job_id'), window: response.window, dryRun: response.dry_run, keywordsUsed: response.keywords_used.slice(0, 30), profileDepartmentIds: runtime.profileDepartmentIds, counts: { apiCalls: requireCount('api_calls'), providerQueries: providerQueryCount, departmentCoverageCount, fetched: requireCount('fetched'), matched: requireCount('matched'), created: requireCount('created'), updated: requireCount('updated'), duplicates: requireCount('duplicates'), quarantined: requireCount('quarantined'), manifestsCreated: requireCount('manifests_created'), manifestsReused: requireCount('manifests_reused'), attachmentsDiscovered: requireCount('attachments_discovered') }, noticeKeys: [...new Set(response.notice_keys)].slice(0, 300), warnings: response.warnings.slice(0, 20) } } }];"
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('PPS ingestion response must be an object');\nconst requireString = (field) => { const value = response[field]; if (typeof value !== 'string' || !value) throw new Error(`${field} must be a non-empty string`); return value; };\nconst requireCount = (field) => { const value = response[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`); return value; };\nconst ingestionStatus = requireString('status');\nif (requireString('source') !== 'PPS' || requireString('mode') !== 'live' || !['COMPLETED','PARTIAL'].includes(ingestionStatus)) throw new Error('PPS source/mode/status contract failed');\nif (!response.window || typeof response.window.from !== 'string' || typeof response.window.to !== 'string') throw new Error('PPS window must contain from/to');\nif (!Array.isArray(response.notice_keys) || response.notice_keys.length > 3000 || !response.notice_keys.every((value) => typeof value === 'string' && value.length <= 160)) throw new Error('notice_keys must be bounded strings');\nfor (const field of ['created_notice_keys','updated_notice_keys']) if (!Array.isArray(response[field]) || !response[field].every((value) => typeof value === 'string' && value.length > 0 && value.length <= 160 && response.notice_keys.includes(value))) throw new Error(`${field} must be a bounded subset of notice_keys`);\nif (!Array.isArray(response.keywords_used) || response.keywords_used.length > 30 || !response.keywords_used.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 100)) throw new Error('keywords_used must be a bounded string array');\nif (!Array.isArray(response.warnings) || !response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('warnings must be bounded strings');\nif (typeof response.dry_run !== 'boolean' || response.dry_run !== false) throw new Error('scheduled PPS ingestion must be a live metadata write');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst providerQueryCount = requireCount('provider_queries');\nif (ingestionStatus === 'COMPLETED' && providerQueryCount !== response.keywords_used.length) throw new Error('completed PPS ingestion must execute every planned keyword query');\nif (ingestionStatus === 'COMPLETED' && response.warnings.some((value) => value.includes('max_pages 제한'))) throw new Error('page-limited PPS ingestion must be PARTIAL');\nif (ingestionStatus === 'PARTIAL' && (response.warnings.length === 0 || providerQueryCount > response.keywords_used.length)) throw new Error('partial PPS ingestion requires bounded executed queries and warning evidence');\nconst departmentCoverageCount = requireCount('department_coverage_count');\nif (runtime.useProfileKeywords === true) { const baseline = runtime.collectionKeywords ?? []; if (departmentCoverageCount !== 24 || response.keywords_used.length < baseline.length + 24 || baseline.some((value, index) => response.keywords_used[index] !== value)) throw new Error('organization keyword coverage contract failed'); }\nreturn [{ json: { runtime, ingestion: { status: ingestionStatus, jobId: requireString('job_id'), window: response.window, dryRun: response.dry_run, keywordsUsed: response.keywords_used.slice(0, 30), profileDepartmentIds: runtime.profileDepartmentIds, counts: { apiCalls: requireCount('api_calls'), providerQueries: providerQueryCount, departmentCoverageCount, fetched: requireCount('fetched'), matched: requireCount('matched'), created: requireCount('created'), updated: requireCount('updated'), duplicates: requireCount('duplicates'), quarantined: requireCount('quarantined'), manifestsCreated: requireCount('manifests_created'), manifestsReused: requireCount('manifests_reused'), attachmentsDiscovered: requireCount('attachments_discovered') }, noticeKeys: [...new Set(response.notice_keys)], createdNoticeKeys: [...new Set(response.created_notice_keys)], updatedNoticeKeys: [...new Set(response.updated_notice_keys)], warnings: response.warnings.slice(0, 20) } } }];"
       },
       "id": "daily-validate-pps",
       "name": "Validate PPS Ingestion Contract",
@@ -385,7 +385,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const current = $json;\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst briefing = $node['Fetch Award Candidates from Seven-Day Briefing'].json;\nconst validated = { ...current, runtime, ingestion };\nif (!runtime || !Array.isArray(ingestion?.noticeKeys)) throw new Error('validated PPS ingestion context is required');\nconst maxItems = Math.min(3, Math.max(1, Number(runtime.maxAnalysisBatchNotices ?? 3)));\nconst maxAttachmentsPerNotice = Math.min(1, Math.max(1, Number(runtime.maxAttachmentsPerNotice ?? 1)));\nconst queue = briefing?.analysis_queue;\nconst hasQueueContract = queue && Array.isArray(queue.notice_keys) && queue.policy === 'NEVER_ATTEMPTED_THEN_OLDEST_RETRY';\nconst candidates = hasQueueContract ? queue.notice_keys : validated.ingestion.noticeKeys;\nconst noticeKeys = [...new Set(candidates.map((value) => String(value).trim()).filter((value) => value && value.length <= 160 && !/[\\u0000-\\u001f\\u007f]/.test(value)))].slice(0, maxItems);\nconst enabled = runtime.analysisBatchEnabled === true && noticeKeys.length > 0;\nreturn [{ json: { ...validated, analysisBatch: { status: enabled ? 'PLANNED' : 'SKIPPED', enabled, writeEnabled: runtime.analysisBatchWriteEnabled === true, dryRun: runtime.analysisBatchWriteEnabled !== true, force: false, enrichMissing: runtime.enrichMissing === true, maxAttachmentsPerNotice, limit: maxItems, noticeKeys, requested: noticeKeys.length, queuePolicy: hasQueueContract ? queue.policy : 'INGESTION_FALLBACK', pendingTotal: hasQueueContract ? Number(queue.pending_total ?? noticeKeys.length) : noticeKeys.length, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [] }, results: [], warnings: [], skippedReason: enabled ? null : (runtime.analysisBatchEnabled === true ? 'analysis-backlog-empty' : 'gate-closed'), privacyBoundary: { documentBodiesEmitted: false, piiFieldsEmitted: false } } } }];"
+        "jsCode": "const current = $json;\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst briefing = $node['Fetch Award Candidates from Seven-Day Briefing'].json;\nif (!runtime || !Array.isArray(ingestion?.createdNoticeKeys) || !Array.isArray(ingestion?.updatedNoticeKeys)) throw new Error('exact PPS created/updated partitions are required');\nconst valid = (value) => { const key = String(value ?? '').trim(); return key && key.length <= 160 && !/[\\u0000-\\u001f\\u007f]/.test(key) ? key : null; };\nconst unique = (values) => [...new Set(values.map(valid).filter(Boolean))];\nconst chunkSize = Math.min(3, Math.max(1, Number(runtime.maxAnalysisBatchNotices ?? 3)));\nconst maxDailyNew = Math.min(3000, Math.max(1, Number(runtime.maxDailyNewNotices ?? 3000)));\nconst maxBacklog = Math.min(3, Math.max(0, Number(runtime.maxBacklogRetryNotices ?? 3)));\nconst createdNoticeKeys = unique(ingestion.createdNoticeKeys);\nconst updatedNoticeKeys = unique(ingestion.updatedNoticeKeys);\nconst newNoticeKeys = unique([...createdNoticeKeys, ...updatedNoticeKeys]);\nif (newNoticeKeys.length > maxDailyNew) throw new Error('created+updated daily scope exceeds the durable 3000-key contract; refusing silent truncation');\nconst queue = briefing?.analysis_queue;\nconst hasQueueContract = queue && Array.isArray(queue.notice_keys) && Array.isArray(queue.never_attempted_notice_keys) && Array.isArray(queue.retryable_notice_keys) && queue.policy === 'NEVER_ATTEMPTED_THEN_OLDEST_RETRY';\nconst queueNoticeKeys = hasQueueContract ? unique(queue.notice_keys) : [];\nconst queueNeverAttemptedKeys = hasQueueContract ? unique(queue.never_attempted_notice_keys) : [];\nconst queueRetryableKeys = hasQueueContract ? unique(queue.retryable_notice_keys) : [];\nif (hasQueueContract && JSON.stringify([...queueNeverAttemptedKeys, ...queueRetryableKeys]) !== JSON.stringify(queueNoticeKeys)) throw new Error('analysis queue partitions must be ordered, disjoint, and exactly cover notice_keys');\nconst newSet = new Set(newNoticeKeys);\nconst backlogKeys = hasQueueContract ? queueNoticeKeys.filter((key) => !newSet.has(key)).slice(0, maxBacklog) : [];\nconst retryableSet = new Set(queueRetryableKeys);\nconst retryableBacklogKeys = backlogKeys.filter((key) => retryableSet.has(key));\nconst neverAttemptedBacklogKeys = backlogKeys.filter((key) => !retryableSet.has(key));\nconst retryEpoch = String(ingestion.window?.to ?? '').slice(0, 10);\nif (retryableBacklogKeys.length && !/^\\d{4}-\\d{2}-\\d{2}$/.test(retryEpoch)) throw new Error('cooled retry epoch is invalid');\nconst noticeKeys = unique([...newNoticeKeys, ...backlogKeys]);\nif (noticeKeys.length > 3003) throw new Error('daily analysis durable plan hard limit exceeded');\nconst chunks = []; for (let index = 0; index < noticeKeys.length; index += chunkSize) chunks.push(noticeKeys.slice(index, index + chunkSize));\nconst enabled = runtime.analysisBatchEnabled === true && chunks.length > 0;\nreturn [{ json: { ...current, runtime, ingestion, analysisBatch: { status: enabled ? 'PLANNED' : 'SKIPPED', enabled, writeEnabled: runtime.analysisBatchWriteEnabled === true, dryRun: runtime.analysisBatchWriteEnabled !== true, force: false, enrichMissing: runtime.enrichMissing === true, maxAttachmentsPerNotice: 1, chunkSize, chunks, chunkCount: chunks.length, createdNoticeKeys, updatedNoticeKeys, newNoticeKeys, backlogKeys, neverAttemptedBacklogKeys, retryableBacklogKeys, retryEpoch, noticeKeys, requested: noticeKeys.length, queuePolicy: hasQueueContract ? 'TODAY_NEW_ALL_THEN_BOUNDED_BACKLOG' : 'TODAY_NEW_ALL', pendingTotal: hasQueueContract ? Number(queue.pending_total ?? noticeKeys.length) : noticeKeys.length, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, results: [], warnings: [], skippedReason: enabled ? null : (runtime.analysisBatchEnabled === true ? 'analysis-queue-empty' : 'gate-closed') } } }];"
       },
       "id": "daily-analysis-plan",
       "name": "Build Bounded Batch Analysis Plan",
@@ -445,7 +445,7 @@
             },
             {
               "name": "Idempotency-Key",
-              "value": "={{ 'analysis:daily:' + $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd') + ':' + $json.analysisBatch.dryRun }}"
+              "value": "={{ 'analysis:daily:' + $node['Validate Daily Analysis Operation'].json.analysisOperation.jobId + ':' + $json.analysisChunk.segmentId + ':' + $json.analysisChunk.chunkIndex }}"
             },
             {
               "name": "X-PAI-Request-Source",
@@ -456,7 +456,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ notice_keys: $json.analysisBatch.noticeKeys, dry_run: $json.analysisBatch.dryRun, force: false, enrich_missing: $json.analysisBatch.enrichMissing, max_notices: $json.analysisBatch.limit, max_attachments_per_notice: $json.analysisBatch.maxAttachmentsPerNotice }) }}",
+        "body": "={{ JSON.stringify({ notice_keys: $json.analysisChunk.noticeKeys, dry_run: $json.analysisRoot.dryRun, force: false, enrich_missing: $json.analysisRoot.enrichMissing, max_notices: $json.analysisChunk.noticeKeys.length, max_attachments_per_notice: 1, operation_id: $node['Validate Daily Analysis Operation'].json.analysisOperation.jobId, segment_id: $json.analysisChunk.segmentId, chunk_index: $json.analysisChunk.chunkIndex }) }}",
         "options": {
           "timeout": 600000
         }
@@ -468,11 +468,15 @@
       "position": [
         180,
         1180
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
     },
     {
       "parameters": {
-        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst plan = $node['Build Bounded Batch Analysis Plan'].json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('batch analysis response must be an object');\nconst required = new Set(['job_id','status','dry_run','requested','processed','completed','skipped','failed','document_materialized','evaluations_created','snapshots_refreshed','openai_calls','results','warnings']);\nconst allowed = new Set([...required, 'enrichment']);\nconst unexpected = Object.keys(response).filter((key) => !allowed.has(key));\nif (unexpected.length) throw new Error(`batch analysis unexpected fields: ${unexpected.join(',')}`);\nfor (const key of required) if (!Object.prototype.hasOwnProperty.call(response, key)) throw new Error(`batch analysis missing ${key}`);\nif (typeof response.job_id !== 'string' || !response.job_id || !['COMPLETED','PARTIAL'].includes(response.status) || typeof response.dry_run !== 'boolean') throw new Error('batch analysis identity/status contract failed');\nif (response.dry_run !== plan.analysisBatch.dryRun) throw new Error('batch analysis dry-run contract failed');\nconst count = (object, field) => { const value = object[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`); return value; };\nconst requested = count(response, 'requested'); const processed = count(response, 'processed'); const completed = count(response, 'completed'); const skipped = count(response, 'skipped'); const failed = count(response, 'failed');\nconst documentMaterialized = count(response, 'document_materialized'); const evaluationsCreated = count(response, 'evaluations_created'); const snapshotsRefreshed = count(response, 'snapshots_refreshed'); const openaiCalls = count(response, 'openai_calls');\nif (requested !== plan.analysisBatch.noticeKeys.length || processed !== completed + skipped + failed || processed > requested) throw new Error('batch analysis aggregate counts are inconsistent');\nif (!Array.isArray(response.results) || response.results.length !== processed || !Array.isArray(response.warnings)) throw new Error('batch analysis results/warnings contract failed');\nif (!response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('batch analysis warnings must be bounded strings');\nif (response.status === 'PARTIAL' && failed === 0 && response.warnings.length === 0) throw new Error('PARTIAL batch analysis requires failure or warning evidence');\nif (response.dry_run === true && (documentMaterialized || evaluationsCreated || snapshotsRefreshed || openaiCalls)) throw new Error('dry-run batch analysis cannot persist artifacts or call OpenAI');\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet enrichment = emptyEnrichment;\nif (response.enrichment != null) {\n  const value = response.enrichment;\n  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('enrichment must be an object');\n  const enrichmentFields = new Set(['requested','attempted','completed','skipped','failed','attachments_discovered','attachments_processed','openai_calls','warnings']);\n  const extra = Object.keys(value).filter((key) => !enrichmentFields.has(key)); if (extra.length) throw new Error(`enrichment unexpected fields: ${extra.join(',')}`);\n  for (const key of enrichmentFields) if (!Object.prototype.hasOwnProperty.call(value, key)) throw new Error(`enrichment missing ${key}`);\n  const enrichmentRequested = count(value, 'requested'); const attempted = count(value, 'attempted'); const enrichmentCompleted = count(value, 'completed'); const enrichmentSkipped = count(value, 'skipped'); const enrichmentFailed = count(value, 'failed'); const attachmentsDiscovered = count(value, 'attachments_discovered'); const attachmentsProcessed = count(value, 'attachments_processed'); const enrichmentOpenaiCalls = count(value, 'openai_calls');\n  if (enrichmentRequested > requested || attempted !== enrichmentCompleted + enrichmentSkipped + enrichmentFailed || attempted > enrichmentRequested) throw new Error('enrichment aggregate counts are inconsistent');\n  if (attachmentsProcessed > attempted * Number(plan.analysisBatch.maxAttachmentsPerNotice ?? 1) || enrichmentOpenaiCalls > attachmentsProcessed || enrichmentOpenaiCalls !== openaiCalls) throw new Error('enrichment attachment/OpenAI budget is inconsistent');\n  if (!Array.isArray(value.warnings) || !value.warnings.every((item) => typeof item === 'string' && item.length <= 500)) throw new Error('enrichment warnings must be bounded strings');\n  enrichment = { requested: enrichmentRequested, attempted, completed: enrichmentCompleted, skipped: enrichmentSkipped, failed: enrichmentFailed, attachmentsDiscovered, attachmentsProcessed, openaiCalls: enrichmentOpenaiCalls, warnings: value.warnings.slice(0, 20), available: true };\n}\nconst allowedResult = new Set(['notice_key','status','document_status','evaluation_status','snapshot_status','analysis_state','analysis_reason_code','analysis_reason','analysis_run_id','evaluation_id','notice_version_id','input_sha256','reused','materialized_requirements','requirement_snapshots','score_snapshots','recommendation_snapshots','warnings']);\nconst planned = new Set(plan.analysisBatch.noticeKeys); const seen = new Set();\nconst results = response.results.map((item) => { if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('batch result must be an object'); const extra = Object.keys(item).filter((key) => !allowedResult.has(key)); if (extra.length) throw new Error(`batch result unexpected fields: ${extra.join(',')}`); for (const key of allowedResult) if (!Object.prototype.hasOwnProperty.call(item, key)) throw new Error(`batch result missing ${key}`); const noticeKey = String(item.notice_key ?? ''); if (!planned.has(noticeKey) || seen.has(noticeKey)) throw new Error('batch result notice key is unplanned or duplicated'); seen.add(noticeKey); if (!['COMPLETED','SKIPPED','FAILED'].includes(item.status)) throw new Error('batch result status invalid'); if (!['ANALYZED','REVIEW','PENDING'].includes(item.analysis_state)) throw new Error('batch result analysis_state invalid'); if (!['ANALYZED','ATTACHMENT_NONE','HWP_ONLY_UNSUPPORTED','HWPX_EXTRACT_FAILED','PDF_EXTRACT_FAILED','OPENAI_REVIEW','QUOTE_UNVERIFIED','NOT_SELECTED'].includes(item.analysis_reason_code)) throw new Error('batch result analysis_reason_code invalid'); if (typeof item.analysis_reason !== 'string' || !item.analysis_reason.trim() || item.analysis_reason.length > 500) throw new Error('batch result analysis_reason invalid'); for (const field of ['document_status','evaluation_status','snapshot_status']) if (typeof item[field] !== 'string' || !item[field] || item[field].length > 80) throw new Error(`batch result ${field} invalid`); for (const field of ['analysis_run_id','evaluation_id','notice_version_id']) if (item[field] != null && (typeof item[field] !== 'string' || !item[field] || item[field].length > 160)) throw new Error(`batch result ${field} invalid`); if (item.input_sha256 != null && (typeof item.input_sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(item.input_sha256))) throw new Error('batch result input_sha256 invalid'); if (typeof item.reused !== 'boolean') throw new Error('batch result reused must be boolean'); for (const field of ['materialized_requirements','requirement_snapshots','score_snapshots','recommendation_snapshots']) if (!Number.isSafeInteger(item[field]) || item[field] < 0) throw new Error(`batch result ${field} invalid`); if (!Array.isArray(item.warnings) || !item.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('batch result warnings invalid'); return { noticeKey, status: item.status, documentStatus: item.document_status, evaluationStatus: item.evaluation_status, snapshotStatus: item.snapshot_status, analysisState: item.analysis_state, analysisReasonCode: item.analysis_reason_code, analysisReason: item.analysis_reason, analysisRunId: item.analysis_run_id ?? null, evaluationId: item.evaluation_id ?? null, noticeVersionId: item.notice_version_id ?? null, inputSha256: item.input_sha256 ?? null, reused: item.reused, materializedRequirements: item.materialized_requirements, requirementSnapshots: item.requirement_snapshots, scoreSnapshots: item.score_snapshots, recommendationSnapshots: item.recommendation_snapshots, warnings: item.warnings.slice(0, 20) }; });\nreturn [{ json: { ...plan, analysisBatch: { ...plan.analysisBatch, status: response.status, jobId: response.job_id, requested, processed, completed, skipped, failed, documentMaterialized, evaluationsCreated, snapshotsRefreshed, openaiCalls, enrichment, results, warnings: response.warnings.slice(0, 20), skippedReason: null } } }];"
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('batch analysis response must be an object');\nconst required = ['job_id','status','dry_run','requested','processed','completed','skipped','failed','document_materialized','evaluations_created','snapshots_refreshed','openai_calls','results','warnings','enrichment'];\nfor (const key of required) if (!Object.prototype.hasOwnProperty.call(response, key)) throw new Error(`batch analysis missing ${key}`);\nif (typeof response.job_id !== 'string' || !response.job_id || !['COMPLETED','PARTIAL'].includes(response.status) || response.dry_run !== false) throw new Error('batch analysis identity/status contract failed');\nconst count = (object, field) => { const value = object[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative integer`); return value; };\nconst requested = count(response,'requested'), processed = count(response,'processed'), completed = count(response,'completed'), skipped = count(response,'skipped'), failed = count(response,'failed'), openaiCalls = count(response,'openai_calls');\nif (requested < 1 || requested > 3 || processed !== completed + skipped + failed || processed > requested || openaiCalls > requested) throw new Error('analysis chunk hard bounds/counts invalid');\nif (!Array.isArray(response.results) || response.results.length !== processed || !Array.isArray(response.warnings) || !response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('analysis chunk result/warning contract failed');\nconst seen = new Set();\nconst results = response.results.map((item) => { const noticeKey = String(item?.notice_key ?? ''); if (!noticeKey || noticeKey.length > 160 || seen.has(noticeKey)) throw new Error('analysis chunk key invalid or duplicated'); seen.add(noticeKey); if (!['COMPLETED','SKIPPED','FAILED'].includes(item.status) || !['ANALYZED','REVIEW','PENDING'].includes(item.analysis_state)) throw new Error('analysis result state invalid'); if (typeof item.analysis_reason !== 'string' || !item.analysis_reason.trim() || item.analysis_reason.length > 500) throw new Error('analysis reason invalid'); return { noticeKey, status: item.status, analysisState: item.analysis_state, analysisReasonCode: item.analysis_reason_code, analysisReason: item.analysis_reason, warnings: Array.isArray(item.warnings) ? item.warnings.slice(0,20) : [] }; });\nconst enrichment = response.enrichment; if (!enrichment || typeof enrichment !== 'object') throw new Error('analysis enrichment missing');\nfor (const field of ['requested','attempted','completed','skipped','failed','attachments_discovered','attachments_processed','openai_calls']) count(enrichment, field);\nif (enrichment.attempted !== enrichment.completed + enrichment.skipped + enrichment.failed || enrichment.openai_calls !== openaiCalls || enrichment.attachments_processed > requested) throw new Error('analysis enrichment aggregate invalid');\nreturn { json: { chunkResult: { childJobId: response.job_id, status: response.status, requested, processed, completed, skipped, failed, documentMaterialized: count(response,'document_materialized'), evaluationsCreated: count(response,'evaluations_created'), snapshotsRefreshed: count(response,'snapshots_refreshed'), openaiCalls, results, warnings: response.warnings.slice(0,20), enrichment: { requested: enrichment.requested, attempted: enrichment.attempted, completed: enrichment.completed, skipped: enrichment.skipped, failed: enrichment.failed, attachmentsDiscovered: enrichment.attachments_discovered, attachmentsProcessed: enrichment.attachments_processed, openaiCalls: enrichment.openai_calls, warnings: Array.isArray(enrichment.warnings) ? enrichment.warnings.slice(0,20) : [] } } } };",
+        "mode": "runOnceForEachItem"
       },
       "id": "daily-analysis-validate",
       "name": "Validate Batch Analysis Contract",
@@ -485,7 +489,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nconst batch = input.analysisBatch;\nif (!batch || !Array.isArray(batch.results)) throw new Error('validated analysis batch summary is required');\nconst byStatus = { COMPLETED: 0, SKIPPED: 0, FAILED: 0 };\nfor (const result of batch.results) { if (!Object.prototype.hasOwnProperty.call(byStatus, result.status)) throw new Error('analysis batch normalized result status invalid'); byStatus[result.status] += 1; }\nif (byStatus.COMPLETED !== Number(batch.completed) || byStatus.SKIPPED !== Number(batch.skipped) || byStatus.FAILED !== Number(batch.failed)) throw new Error('analysis batch aggregate counts do not match result rows');\nif (Number(batch.documentMaterialized) > Number(batch.completed) || Number(batch.evaluationsCreated) > Number(batch.completed) || Number(batch.snapshotsRefreshed) > Number(batch.completed)) throw new Error('analysis batch persisted counts exceed completed notices');\nif (Number(batch.requested) > 3 || Number(batch.openaiCalls) > Number(batch.requested) * Number(batch.maxAttachmentsPerNotice ?? 1)) throw new Error('analysis batch exceeds the top-three single-attachment OpenAI budget');\nif (batch.enrichment?.available === true && Number(batch.enrichment.openaiCalls) !== Number(batch.openaiCalls)) throw new Error('analysis and enrichment OpenAI counts must agree');\nreturn [{ json: input }];"
+        "jsCode": "const root = $node['Validate Daily Analysis Operation'].json;\nconst rows = $input.all().map((item) => item.json.chunkResult);\nif (!rows.length || rows.length !== root.analysisBatch.chunkCount) throw new Error('daily analysis did not return every planned chunk');\nconst totals = { requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0 };\nconst enrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: true };\nconst results = [], warnings = [], childJobIds = [];\nfor (const row of rows) { for (const field of Object.keys(totals)) totals[field] += Number(row[field] ?? 0); for (const field of ['requested','attempted','completed','skipped','failed','attachmentsDiscovered','attachmentsProcessed','openaiCalls']) enrichment[field] += Number(row.enrichment?.[field] ?? 0); results.push(...row.results); warnings.push(...row.warnings); enrichment.warnings.push(...(row.enrichment?.warnings ?? [])); childJobIds.push(row.childJobId); }\nconst expected = root.analysisBatch.noticeKeys;\nconst actual = results.map((item) => item.noticeKey);\nif (totals.requested !== expected.length || totals.processed !== totals.completed + totals.skipped + totals.failed || actual.length !== totals.processed || new Set(actual).size !== actual.length || actual.some((key) => !expected.includes(key))) throw new Error('daily chunk aggregate is incomplete or duplicated');\nif (totals.requested > 30 || root.analysisBatch.newNoticeKeys.length > 3000 || root.analysisBatch.backlogKeys.length > 3 || root.analysisBatch.newNoticeKeys.length + root.analysisBatch.backlogKeys.length > 3003 || totals.openaiCalls > totals.requested) throw new Error('daily segment/operation hard limit exceeded');\nif (enrichment.attempted !== enrichment.completed + enrichment.skipped + enrichment.failed || enrichment.openaiCalls !== totals.openaiCalls) throw new Error('daily enrichment totals invalid');\nconst byStatus = { COMPLETED: 0, SKIPPED: 0, FAILED: 0 }; for (const item of results) byStatus[item.status] += 1;\nif (byStatus.COMPLETED !== totals.completed || byStatus.SKIPPED !== totals.skipped || byStatus.FAILED !== totals.failed) throw new Error('daily result totals invalid');\nreturn [{ json: { ...root, analysisBatch: { ...root.analysisBatch, status: rows.some((row) => row.status === 'PARTIAL') ? 'PARTIAL' : 'COMPLETED', ...totals, chunksExecuted: rows.length, childJobIds, enrichment: { ...enrichment, warnings: [...new Set(enrichment.warnings)].slice(0,50) }, results, warnings: [...new Set(warnings)].slice(0,50), skippedReason: null } } }];"
       },
       "id": "daily-analysis-invariants",
       "name": "Verify Batch Analysis Aggregate Invariants",
@@ -778,6 +782,139 @@
         3820,
         620
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (!input.analysisBatch?.enabled || !Array.isArray(input.analysisBatch.chunks) || !Array.isArray(input.analysisOperation?.chunkIndices) || input.analysisOperation.chunkIndices.length !== input.analysisBatch.chunks.length || !input.analysisOperation.segmentId) throw new Error('durably leased daily chunks required');\nreturn input.analysisBatch.chunks.map((noticeKeys, localIndex) => ({ json: { runtime: input.runtime, analysisRoot: { ...input.analysisBatch, chunks: undefined }, analysisChunk: { segmentId: input.analysisOperation.segmentId, chunkIndex: input.analysisOperation.chunkIndices[localIndex], noticeKeys } } }));"
+      },
+      "id": "daily-analysis-expand-chunks",
+      "name": "Expand Daily Three-Notice Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/analysis-backfills/plan' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-analysis-operation-v1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ queue_name: 'DAILY', notice_keys: $json.analysisBatch.noticeKeys, refresh_notice_keys: $json.analysisBatch.updatedNoticeKeys, retry_notice_keys: $json.analysisBatch.retryableBacklogKeys, retry_epoch: $json.analysisBatch.retryableBacklogKeys.length ? $json.analysisBatch.retryEpoch : undefined, request_token: 'w10:' + $execution.id + ':' + $json.ingestion.jobId, dry_run: $json.analysisBatch.dryRun, chunk_size: 3, max_total: 3003, execution_limit: 30, max_continuations: 128, include_retryable: false, retry_cooldown_hours: 24, reservation_ttl_hours: 6, resume_active: true }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "daily-analysis-operation-plan-http",
+      "name": "Reserve or Resume Daily Analysis Operation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -60,
+        1260
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst root = $node['Build Bounded Batch Analysis Plan'].json;\nif (!response || response.queue_name !== 'DAILY' || response.policy !== 'OPEN_NOT_SELECTED_THEN_COOLED_RETRY' || !/^[0-9a-f-]{36}$/i.test(String(response.job_id ?? ''))) throw new Error('daily analysis operation identity invalid');\nif (!['RUNNING','PARTIAL','COMPLETED','DEAD_LETTER'].includes(response.status)) throw new Error('daily analysis operation status invalid');\nfor (const field of ['planned','attempted','remaining','in_flight','offered','continuation_round','max_continuations']) if (!Number.isSafeInteger(response[field]) || response[field] < 0) throw new Error(`daily operation ${field} invalid`);\nif (response.planned !== response.attempted + response.remaining || response.offered > 30 || response.continuation_round > response.max_continuations + 1) throw new Error('daily operation counts/budget invalid');\nif (!Array.isArray(response.notice_keys) || response.notice_keys.length !== response.offered || !Array.isArray(response.chunks) || response.chunks.flat().length !== response.offered || response.chunks.some((chunk) => chunk.length < 1 || chunk.length > 3) || !Array.isArray(response.chunk_indices) || response.chunk_indices.length !== response.chunks.length) throw new Error('daily operation chunk continuation invalid');\nconst offeredKeys = response.notice_keys.map((value) => String(value));\nconst flattened = response.chunks.flat().map((value) => String(value));\nif (new Set(offeredKeys).size !== offeredKeys.length || offeredKeys.some((key) => !key || key.length > 160) || JSON.stringify(flattened) !== JSON.stringify(offeredKeys)) throw new Error('daily operation keys invalid');\nif (new Set(response.chunk_indices).size !== response.chunk_indices.length || response.chunk_indices.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new Error('daily operation chunk indices invalid');\nconst segmentId = response.segment_id;\nif (response.offered > 0 && !/^[0-9a-f-]{36}$/i.test(String(segmentId ?? ''))) throw new Error('offered daily chunks require a segment lease');\nif (response.offered === 0 && (response.chunks.length !== 0 || response.chunk_indices.length !== 0)) throw new Error('zero-offer daily response must not fan out');\nconst enabled = root.runtime.analysisBatchEnabled === true && response.status !== 'DEAD_LETTER' && response.offered > 0;\nreturn [{ json: { ...root, analysisOperation: { jobId: response.job_id, segmentId, status: response.status, planned: response.planned, attemptedBefore: response.attempted, remainingBefore: response.remaining, inFlight: response.in_flight, offered: response.offered, chunkIndices: response.chunk_indices, continuationRequired: response.continuation_required, continuationRound: response.continuation_round, maxContinuations: response.max_continuations, warnings: response.warnings ?? [] }, analysisBatch: { ...root.analysisBatch, status: enabled ? 'PLANNED' : 'SKIPPED', enabled, chunks: response.chunks, chunkCount: response.chunks.length, noticeKeys: offeredKeys, requested: response.offered, skippedReason: enabled ? null : (response.status === 'DEAD_LETTER' ? 'dead-letter' : 'no-offered-work') } } }];"
+      },
+      "id": "daily-analysis-operation-validate",
+      "name": "Validate Daily Analysis Operation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        1260
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "daily-analysis-serial-loop",
+      "name": "Process Daily Chunks Serially",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        420,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/analysis-backfills/' + encodeURIComponent($json.analysisOperation.jobId) + '/complete' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-analysis-operation-v1"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ segment_id: $json.analysisOperation.segmentId }) }}"
+      },
+      "id": "daily-analysis-operation-finalize-http",
+      "name": "Finalize Daily Analysis Segment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        1180
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst root = $node['Verify Batch Analysis Aggregate Invariants'].json;\nif (!response || response.queue_name !== 'DAILY' || response.job_id !== root.analysisOperation.jobId || response.segment_id !== null || !['COMPLETED','PARTIAL','DEAD_LETTER'].includes(response.status)) throw new Error('daily continuation identity/status invalid');\nfor (const field of ['planned','attempted','remaining','in_flight','completed','partial','failed','offered']) if (!Number.isSafeInteger(response[field]) || response[field] < 0) throw new Error(`daily continuation ${field} invalid`);\nif (response.planned !== response.attempted + response.remaining || response.offered !== 0 || response.in_flight !== 0 || response.chunks?.length !== 0 || response.chunk_indices?.length !== 0) throw new Error('daily continuation aggregate/lease clear invalid');\nreturn [{ json: { ...root, analysisOperation: { ...root.analysisOperation, segmentId: null, status: response.status, planned: response.planned, attempted: response.attempted, processedThisSegment: root.analysisBatch.processed, remaining: response.remaining, inFlight: response.in_flight, continuationRequired: response.remaining > 0 && response.status !== 'DEAD_LETTER', continuationRound: response.continuation_round, failed: response.failed, warnings: response.warnings ?? [] } } }];"
+      },
+      "id": "daily-analysis-continuation-validate",
+      "name": "Validate Daily Continuation State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        1180
+      ]
     }
   ],
   "connections": {
@@ -869,7 +1006,7 @@
       "main": [
         [
           {
-            "node": "Batch Analysis Gate Open?",
+            "node": "Reserve or Resume Daily Analysis Operation",
             "type": "main",
             "index": 0
           }
@@ -880,7 +1017,7 @@
       "main": [
         [
           {
-            "node": "Analyze Evaluate and Snapshot PPS Notices",
+            "node": "Expand Daily Three-Notice Chunks",
             "type": "main",
             "index": 0
           }
@@ -909,7 +1046,7 @@
       "main": [
         [
           {
-            "node": "Verify Batch Analysis Aggregate Invariants",
+            "node": "Process Daily Chunks Serially",
             "type": "main",
             "index": 0
           }
@@ -920,7 +1057,7 @@
       "main": [
         [
           {
-            "node": "Fetch Ranked Seven-Day Briefing",
+            "node": "Finalize Daily Analysis Segment",
             "type": "main",
             "index": 0
           }
@@ -1199,6 +1336,79 @@
         [
           {
             "node": "Ready for Operator Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Daily Three-Notice Chunks": {
+      "main": [
+        [
+          {
+            "node": "Process Daily Chunks Serially",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve or Resume Daily Analysis Operation": {
+      "main": [
+        [
+          {
+            "node": "Validate Daily Analysis Operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Daily Analysis Operation": {
+      "main": [
+        [
+          {
+            "node": "Batch Analysis Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Daily Chunks Serially": {
+      "main": [
+        [
+          {
+            "node": "Verify Batch Analysis Aggregate Invariants",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Analyze Evaluate and Snapshot PPS Notices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Daily Analysis Segment": {
+      "main": [
+        [
+          {
+            "node": "Validate Daily Continuation State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Daily Continuation State": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ranked Seven-Day Briefing",
             "type": "main",
             "index": 0
           }

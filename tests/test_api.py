@@ -48,6 +48,12 @@ class _BrokenPpsClient(_FakePpsClient):
         yield  # pragma: no cover
 
 
+class _PageLimitedPpsClient(_FakePpsClient):
+    def iter_notices(self, **kwargs: object):
+        self.hit_page_limit = True
+        yield from super().iter_notices(**kwargs)
+
+
 class _FakeOpenAIExtractionClient:
     def __init__(self, **_kwargs: object) -> None:
         pass
@@ -334,11 +340,15 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
         assert first.json()["created"] == 1
         assert first.json()["matched"] == 1
         assert first.json()["source"] == "PPS"
+        assert first.json()["created_notice_keys"] == first.json()["notice_keys"]
+        assert first.json()["updated_notice_keys"] == []
 
         second = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert second.status_code == 200
         assert second.json()["created"] == 0
         assert second.json()["duplicates"] == 1
+        assert second.json()["created_notice_keys"] == []
+        assert second.json()["updated_notice_keys"] == []
 
         notices = live_client.get("/api/v1/notices").json()
         assert len(notices) == 1
@@ -430,6 +440,32 @@ def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
     assert len(body["keywords_used"]) == 26
     assert body["department_coverage_count"] == 24
     assert any("시간 제한" in warning for warning in body["warnings"])
+
+
+def test_pps_page_cap_is_never_reported_as_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setattr("pai_loop.api.PpsClient", _PageLimitedPpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-17",
+                "keywords": ["교육"],
+                "page_size": 100,
+                "max_pages": 1,
+                "dry_run": True,
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["provider_queries"] == 1
+    assert body["created_notice_keys"]
+    assert any("max_pages 제한" in warning for warning in body["warnings"])
 
 
 def test_pps_unexpected_client_error_finishes_failed_audit(

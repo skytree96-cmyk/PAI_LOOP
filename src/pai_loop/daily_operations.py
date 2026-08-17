@@ -275,6 +275,20 @@ def daily_briefing(
         or datetime.min.replace(tzinfo=timezone.utc)
     )
     pending_analysis = never_attempted + retryable
+    bounded_pending_analysis = pending_analysis[:50]
+    never_attempted_keys = {
+        item["notice_key"] for item in never_attempted
+    }
+    bounded_never_attempted_notice_keys = [
+        item["notice_key"]
+        for item in bounded_pending_analysis
+        if item["notice_key"] in never_attempted_keys
+    ]
+    bounded_retryable_notice_keys = [
+        item["notice_key"]
+        for item in bounded_pending_analysis
+        if item["notice_key"] not in never_attempted_keys
+    ]
     deferred_terminal_total = len(without_snapshot) - len(pending_analysis)
     eligibility_counts = dict(Counter(item["fit"]["eligibility"] for item in selected))
     return {
@@ -301,7 +315,12 @@ def daily_briefing(
             "never_attempted_total": len(never_attempted),
             "retryable_total": len(retryable),
             "deferred_terminal_total": deferred_terminal_total,
-            "notice_keys": [item["notice_key"] for item in pending_analysis[:50]],
+            "notice_keys": [
+                *bounded_never_attempted_notice_keys,
+                *bounded_retryable_notice_keys,
+            ],
+            "never_attempted_notice_keys": bounded_never_attempted_notice_keys,
+            "retryable_notice_keys": bounded_retryable_notice_keys,
             "limit": 50,
             "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·구형 HWP 전용은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
         },

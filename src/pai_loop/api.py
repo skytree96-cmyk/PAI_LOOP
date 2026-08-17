@@ -806,6 +806,8 @@ def _persist_pps_ingestion_result(
     created = updated = manifests_created = manifests_reused = attachments_discovered = 0
     duplicates = provider_duplicates + superseded_revisions
     notice_keys: list[str] = []
+    created_notice_keys: list[str] = []
+    updated_notice_keys: list[str] = []
 
     if cancelled_notice_nos and not payload.dry_run:
         cancelled_rows = list(
@@ -840,8 +842,11 @@ def _persist_pps_ingestion_result(
             updated += len(superseded_rows)
 
         existing = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+        existed_before_run = existing is not None
+        candidate_changed = False
         if existing is None:
             created += 1
+            created_notice_keys.append(notice_key)
             if not payload.dry_run:
                 source_url = item.get("source_url")
                 existing = Notice(
@@ -896,6 +901,7 @@ def _persist_pps_ingestion_result(
                     changes["source_url"] = safe_source_url
             if changes:
                 updated += 1
+                candidate_changed = True
             else:
                 duplicates += 1
             if not payload.dry_run:
@@ -918,10 +924,20 @@ def _persist_pps_ingestion_result(
             manifests_created += int(manifest_result.created)
             manifests_reused += int(manifest_result.reused)
             attachments_discovered += manifest_result.attachment_count
+            # A new attachment manifest is a material input change even when
+            # the notice metadata itself is byte-for-byte unchanged.
+            candidate_changed = candidate_changed or (
+                existed_before_run and manifest_result.created
+            )
+
+        if existed_before_run and candidate_changed:
+            updated_notice_keys.append(notice_key)
 
     job.status = (
         "PARTIAL"
-        if provider_query_count < expected_provider_queries or hit_time_limit
+        if provider_query_count < expected_provider_queries
+        or hit_time_limit
+        or hit_page_limit
         else "COMPLETED"
     )
     job.api_calls = api_calls
@@ -948,6 +964,8 @@ def _persist_pps_ingestion_result(
         duplicates=duplicates,
         quarantined=quarantined,
         notice_keys=notice_keys,
+        created_notice_keys=created_notice_keys,
+        updated_notice_keys=updated_notice_keys,
         next_watermark=payload.to_date.isoformat(),
         warnings=warnings,
         dry_run=payload.dry_run,
