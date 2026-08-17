@@ -145,8 +145,9 @@ credential store 또는 서버 환경변수에서만 주입합니다. n8n 화면
 ## 배포 방향
 
 공모전 데모는 **FastAPI + 현재 SPA 단일 컨테이너 + 관리형 PostgreSQL**로
-배포합니다. [`render.yaml`](render.yaml)은 CI 통과 후 자동 배포, production
-보안 기본값과 실제 공개 공고 최초 적재를 선언합니다. Streamlit 계정은
+배포합니다. [`render.yaml`](render.yaml)은 CI 통과 후 자동 배포와 production
+보안 기본값을 선언하고, 컨테이너는 시작 전에 실제 공개 공고 seed를 멱등
+적재합니다. Streamlit 계정은
 있지만 현재 앱을 다시 작성하고 인증 경계를 이중화해야 하므로 이번 호스트로
 사용하지 않습니다.
 

@@ -8,7 +8,6 @@ services:
     dockerContext: .
     healthCheckPath: /healthz
     autoDeployTrigger: checksPass
-    initialDeployHook: pai-loop-seed-public-notice --create-schema
     envVars:
       - key: PAI_LOOP_ENV
         value: production

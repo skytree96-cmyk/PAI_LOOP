@@ -164,11 +164,13 @@ Streamlit은 새로운 분석 화면을 빠르게 실험하는 보조 앱에는 
   build context에서 제외한다.
 - `PAI_LOOP_PUBLIC_READ_ONLY=true`에서는 명시적으로 허용한 공개 GET만 익명
   조회할 수 있고, 모든 write/internal route는 서버 API key가 필요하다.
-- 실제 공개 인천 공고 seed는 `pai-loop-seed-public-notice --create-schema`로
-  멱등 적재하며, 자동 startup seed나 로컬 원본 의존이 없다.
+- 실제 공개 인천 공고 seed는 컨테이너 시작 전에
+  `pai-loop-seed-public-notice --create-schema`로 멱등 적재하며, 로컬 원본에
+  의존하지 않는다. seed 실패 시 API 서버도 시작하지 않아 빈 production을
+  정상 상태로 오인하지 않는다.
 - 공개 실적·회사 자격·부서 키워드는 버전·digest를 검증하는 wheel 자산이다.
 - 루트 [`render.yaml`](../render.yaml)은 Singapore 무료 Web Service/PostgreSQL,
-  production 안전 기본값, 최초 seed hook, CI 통과 후 자동 배포를 선언한다.
+  production 안전 기본값과 CI 통과 후 자동 배포를 선언한다.
 
 Docker만으로 Render, Railway, Cloud Run 중 어느 하나를 선택할 수 있다.
 저장소의 Blueprint는 재현 가능한 배포 명세일 뿐이며, 실제 외부 계정/OAuth와
