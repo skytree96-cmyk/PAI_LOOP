@@ -403,6 +403,11 @@ class PpsIngestionResponse(ApiModel):
     duplicates: int
     quarantined: int
     notice_keys: list[str]
+    # Exact partitions let the daily orchestrator analyse every newly-created
+    # or materially-updated notice without reprocessing every PPS search hit.
+    # ``notice_keys`` remains the full matched set for backwards compatibility.
+    created_notice_keys: list[str] = Field(default_factory=list)
+    updated_notice_keys: list[str] = Field(default_factory=list)
     next_watermark: str
     warnings: list[str]
     dry_run: bool

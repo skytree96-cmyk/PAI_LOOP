@@ -1,0 +1,571 @@
+{
+  "name": "PAI_LOOP 11 - Analysis Backfill Queue",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "# 11 · Resumable Analysis Backfill · v0.8\n\n수동 최초 실행은 현재 OPEN 미시도 공고를 최대 3,000건까지 durable parent로 예약합니다. 한 n8n 실행은 최대 30건만, batch HTTP 호출당 최대 3건을 직렬 처리합니다. 15분 schedule은 DAILY를 먼저, 그다음 BACKFILL을 재개하며 활성 작업이 없으면 audit를 만들지 않습니다.\n\n각 segment는 서버에 lease와 exact chunk map을 저장합니다. 겹친 실행은 zero-offer, 동일 chunk retry는 저장 응답 재사용, stale lease는 bounded recovery, 128회 초과는 DEAD_LETTER입니다. Workflow 11은 live E2E와 3개 HTTP credential 확인 전 비활성 상태를 유지합니다.",
+        "height": 250,
+        "width": 760
+      },
+      "id": "backfill-overview",
+      "name": "Backfill safety contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1280,
+        -420
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "backfill-manual-trigger",
+      "name": "Run Backfill Manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1240,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst rawOrigin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\nif (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(rawOrigin) || rawOrigin.includes('@') || rawOrigin.includes('\\\\')) throw new Error('PAI_LOOP_API_BASE_URL is unsafe');\nconst emergencyDisabled = String(read('PAI_LOOP_EMERGENCY_DISABLE')).toLowerCase() === 'true';\nreturn [{ json: { runtime: { apiBaseUrl: rawOrigin.replace(/\\/+$/, ''), enabled: !emergencyDisabled, emergencyDisabled, triggerSource: 'manual', queueName: 'BACKFILL', resumeOnly: false, dryRun: false, chunkSize: 3, maxTotal: 3000, executionLimit: 30, includeRetryable: false, retryCooldownHours: 24, reservationTtlHours: 6, maxContinuations: 128 } } }];"
+      },
+      "id": "backfill-runtime",
+      "name": "Build Fail-Closed Backfill Runtime",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "backfill-enabled-condition",
+              "leftValue": "={{ $json.runtime.enabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "backfill-gate",
+      "name": "Backfill Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -760,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { status: 'SKIPPED', reason: 'PAI_LOOP_EMERGENCY_DISABLE', externalCalls: 0 } }];"
+      },
+      "id": "backfill-disabled",
+      "name": "Backfill Disabled Safely",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/analysis-backfills/plan' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-analysis-backfill-v1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ queue_name: $json.runtime.queueName, request_token: 'w11:' + $execution.id + ':' + $json.runtime.triggerSource, dry_run: $json.runtime.dryRun, chunk_size: $json.runtime.chunkSize, max_total: $json.runtime.maxTotal, execution_limit: $json.runtime.executionLimit, max_continuations: $json.runtime.maxContinuations, include_retryable: $json.runtime.includeRetryable, retry_cooldown_hours: $json.runtime.retryCooldownHours, reservation_ttl_hours: $json.runtime.reservationTtlHours, resume_active: true, resume_only: $json.runtime.resumeOnly }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "backfill-plan-http",
+      "name": "Reserve or Resume Backfill Plan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -520,
+        -40
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nlet runtime = null; try { runtime = $node['Build Scheduled Continuation Runtime'].json.runtime; } catch {} if (!runtime) { runtime = $node['Build Fail-Closed Backfill Runtime'].json.runtime; }\nif (!response || !['RUNNING','COMPLETED','PARTIAL','DEAD_LETTER','NO_ACTIVE'].includes(response.status)) throw new Error('continuation plan status invalid');\nif (response.status === 'NO_ACTIVE') { if (response.job_id !== null || response.segment_id !== null || response.planned !== 0 || response.offered !== 0 || response.chunks?.length !== 0 || response.chunk_indices?.length !== 0) throw new Error('NO_ACTIVE must be a zero-work response'); return [{ json: { runtime, operation: { jobId: null, segmentId: null, status: 'NO_ACTIVE', queueName: response.queue_name, planned: 0, attempted: 0, remaining: 0, inFlight: 0, offered: 0, chunks: [], chunkIndices: [], continuationRequired: false, continuationRound: 0 } } }]; }\nif (!/^[0-9a-f-]{36}$/i.test(String(response.job_id ?? '')) || !['BACKFILL','DAILY'].includes(response.queue_name) || response.policy !== 'OPEN_NOT_SELECTED_THEN_COOLED_RETRY') throw new Error('continuation operation identity invalid');\nfor (const field of ['planned','attempted','remaining','in_flight','offered','continuation_round','max_continuations']) if (!Number.isSafeInteger(response[field]) || response[field] < 0) throw new Error(`continuation ${field} invalid`);\nif (response.planned !== response.attempted + response.remaining || response.offered > runtime.executionLimit || response.max_continuations > 128) throw new Error('continuation hard budget invalid');\nif (!Array.isArray(response.notice_keys) || response.notice_keys.length !== response.offered || !Array.isArray(response.chunks) || response.chunks.flat().length !== response.offered || response.chunks.some((chunk) => chunk.length < 1 || chunk.length > 3) || !Array.isArray(response.chunk_indices) || response.chunk_indices.length !== response.chunks.length) throw new Error('continuation chunks invalid');\nconst keys = response.notice_keys.map((value) => String(value));\nif (new Set(keys).size !== keys.length || keys.some((key) => !key || key.length > 160) || JSON.stringify(response.chunks.flat().map(String)) !== JSON.stringify(keys)) throw new Error('continuation keys invalid');\nif (new Set(response.chunk_indices).size !== response.chunk_indices.length || response.chunk_indices.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new Error('continuation chunk indices invalid');\nif (response.offered > 0 && !/^[0-9a-f-]{36}$/i.test(String(response.segment_id ?? ''))) throw new Error('offered continuation requires a segment lease');\nif (response.offered === 0 && (response.chunks.length !== 0 || response.chunk_indices.length !== 0)) throw new Error('zero-offer continuation must not fan out');\nreturn [{ json: { runtime, operation: { jobId: response.job_id, segmentId: response.segment_id, status: response.status, queueName: response.queue_name, planned: response.planned, attempted: response.attempted, remaining: response.remaining, inFlight: response.in_flight, offered: response.offered, chunks: response.chunks, chunkIndices: response.chunk_indices, continuationRequired: response.continuation_required, continuationRound: response.continuation_round, maxContinuations: response.max_continuations, warnings: response.warnings ?? [] } } }];"
+      },
+      "id": "backfill-plan-validate",
+      "name": "Validate Backfill Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -280,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "backfill-has-chunks",
+              "leftValue": "={{ $json.operation.chunks.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "backfill-chunks-gate",
+      "name": "Backfill Has Remaining Chunks?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -40,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (!input.operation.segmentId || !Array.isArray(input.operation.chunkIndices) || input.operation.chunkIndices.length !== input.operation.chunks.length) throw new Error('durably leased continuation chunks required');\nreturn input.operation.chunks.map((noticeKeys, localIndex) => ({ json: { runtime: input.runtime, operation: { jobId: input.operation.jobId, segmentId: input.operation.segmentId }, analysisChunk: { segmentId: input.operation.segmentId, chunkIndex: input.operation.chunkIndices[localIndex], noticeKeys } } }));"
+      },
+      "id": "backfill-expand-chunks",
+      "name": "Expand Bounded Three-Notice Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/notices/analysis/batch' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'analysis-backfill:' + $json.operation.jobId + ':' + $json.analysisChunk.segmentId + ':' + $json.analysisChunk.chunkIndex }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-analysis-backfill-v1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ notice_keys: $json.analysisChunk.noticeKeys, dry_run: $json.runtime.dryRun, force: false, enrich_missing: true, max_notices: $json.analysisChunk.noticeKeys.length, max_attachments_per_notice: 1, operation_id: $json.operation.jobId, segment_id: $json.analysisChunk.segmentId, chunk_index: $json.analysisChunk.chunkIndex }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "backfill-run-chunk",
+      "name": "Analyze One Bounded Chunk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        -120
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || !['COMPLETED','PARTIAL'].includes(response.status) || !/^[0-9a-f-]{36}$/i.test(String(response.job_id ?? ''))) throw new Error('analysis chunk identity/status invalid');\nfor (const field of ['requested','processed','completed','skipped','failed','openai_calls']) if (!Number.isSafeInteger(response[field]) || response[field] < 0) throw new Error(`analysis chunk ${field} invalid`);\nif (response.requested < 1 || response.requested > 3 || response.processed !== response.completed + response.skipped + response.failed || response.processed > response.requested || response.openai_calls > response.requested) throw new Error('analysis chunk bounds/counts invalid');\nif (!Array.isArray(response.results) || response.results.length !== response.processed || !Array.isArray(response.warnings)) throw new Error('analysis chunk results invalid');\nconst keys = response.results.map((item) => String(item.notice_key ?? ''));\nif (new Set(keys).size !== keys.length || keys.some((key) => !key || key.length > 160)) throw new Error('analysis chunk result keys invalid');\nreturn { json: { childJobId: response.job_id, status: response.status, requested: response.requested, processed: response.processed, completed: response.completed, skipped: response.skipped, failed: response.failed, openaiCalls: response.openai_calls, noticeKeys: keys, warnings: response.warnings.slice(0, 20) } };"
+      },
+      "id": "backfill-validate-chunk",
+      "name": "Validate Chunk Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map((item) => item.json);\nconst operation = $node['Validate Backfill Plan'].json.operation;\nconst totals = { requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, openaiCalls: 0 };\nconst keys = [];\nfor (const row of rows) { for (const field of Object.keys(totals)) totals[field] += Number(row[field] ?? 0); keys.push(...row.noticeKeys); }\nif (rows.length !== operation.chunks.length || new Set(keys).size !== keys.length || totals.requested !== operation.offered || totals.processed !== totals.completed + totals.skipped + totals.failed) throw new Error('continuation aggregate is duplicated or incomplete');\nreturn [{ json: { runtime: $node['Validate Backfill Plan'].json.runtime, operation: { ...operation, chunksExecuted: rows.length, ...totals, childJobs: rows.map((row) => row.childJobId), warnings: [...new Set(rows.flatMap((row) => row.warnings ?? []))].slice(0, 50) } } }];"
+      },
+      "id": "backfill-aggregate",
+      "name": "Aggregate Backfill Progress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { runtime: $json.runtime, operation: { ...$json.operation, chunksExecuted: 0, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, openaiCalls: 0, childJobs: [] } } }];"
+      },
+      "id": "backfill-empty",
+      "name": "Record Empty or Already Complete Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/analysis-backfills/' + encodeURIComponent($json.operation.jobId) + '/complete' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-analysis-backfill-v1"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ segment_id: $json.operation.segmentId }) }}"
+      },
+      "id": "backfill-finalize-http",
+      "name": "Finalize Backfill Audit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        -20
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || !['COMPLETED','PARTIAL','DEAD_LETTER'].includes(response.status)) throw new Error('continuation final status invalid');\nif (response.segment_id !== null || response.offered !== 0 || response.in_flight !== 0 || response.chunks?.length !== 0 || response.chunk_indices?.length !== 0) throw new Error('continuation segment lease was not cleared');\nif (!Number.isSafeInteger(response.planned) || !Number.isSafeInteger(response.attempted) || !Number.isSafeInteger(response.remaining) || !Number.isSafeInteger(response.openai_calls) || response.openai_calls < 0 || response.attempted + response.remaining !== response.planned) throw new Error('continuation final counts invalid');\nreturn [{ json: { jobId: response.job_id, queueName: response.queue_name, status: response.status, planned: response.planned, attempted: response.attempted, completed: response.completed, partial: response.partial, failed: response.failed, remaining: response.remaining, inFlight: response.in_flight, openaiCalls: response.openai_calls, continuationRequired: response.remaining > 0 && response.status !== 'DEAD_LETTER', continuationRound: response.continuation_round, childJobs: response.child_jobs, warnings: response.warnings, notificationEvent: response.status === 'COMPLETED' ? 'ANALYSIS_OPERATION_COMPLETED' : (response.status === 'DEAD_LETTER' ? 'ANALYSIS_OPERATION_DEAD_LETTER' : 'ANALYSIS_OPERATION_PROGRESS') } }];"
+      },
+      "id": "backfill-final-validate",
+      "name": "Backfill Complete for Operator Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "analysis-continuation-schedule",
+      "name": "Every 15 Minutes Continue Active Queue",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst rawOrigin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\nif (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(rawOrigin) || rawOrigin.includes('@') || rawOrigin.includes('\\\\')) throw new Error('PAI_LOOP_API_BASE_URL is unsafe');\nconst emergencyDisabled = String(read('PAI_LOOP_EMERGENCY_DISABLE')).toLowerCase() === 'true';\nreturn [{ json: { runtime: { apiBaseUrl: rawOrigin.replace(/\\/+$/, ''), enabled: !emergencyDisabled, emergencyDisabled, triggerSource: 'schedule', queueName: 'ANY', resumeOnly: true, dryRun: false, chunkSize: 3, maxTotal: 3000, executionLimit: 30, includeRetryable: false, retryCooldownHours: 24, reservationTtlHours: 6, maxContinuations: 128 } } }];"
+      },
+      "id": "analysis-continuation-runtime",
+      "name": "Build Scheduled Continuation Runtime",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "analysis-continuation-serial-loop",
+      "name": "Process Continuation Chunks Serially",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        420,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { status: $json.operation.status, queueName: $json.operation.queueName, planned: $json.operation.planned, attempted: $json.operation.attempted, remaining: $json.operation.remaining, inFlight: $json.operation.inFlight, externalCallsAfterPlan: 0, auditRowsCreated: 0 } }];"
+      },
+      "id": "analysis-continuation-no-work",
+      "name": "No Active or Claimable Continuation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Run Backfill Manually": {
+      "main": [
+        [
+          {
+            "node": "Build Fail-Closed Backfill Runtime",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fail-Closed Backfill Runtime": {
+      "main": [
+        [
+          {
+            "node": "Backfill Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backfill Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Reserve or Resume Backfill Plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Backfill Disabled Safely",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve or Resume Backfill Plan": {
+      "main": [
+        [
+          {
+            "node": "Validate Backfill Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Backfill Plan": {
+      "main": [
+        [
+          {
+            "node": "Backfill Has Remaining Chunks?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backfill Has Remaining Chunks?": {
+      "main": [
+        [
+          {
+            "node": "Expand Bounded Three-Notice Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Active or Claimable Continuation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Bounded Three-Notice Chunks": {
+      "main": [
+        [
+          {
+            "node": "Process Continuation Chunks Serially",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze One Bounded Chunk": {
+      "main": [
+        [
+          {
+            "node": "Validate Chunk Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Chunk Result": {
+      "main": [
+        [
+          {
+            "node": "Process Continuation Chunks Serially",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Backfill Progress": {
+      "main": [
+        [
+          {
+            "node": "Finalize Backfill Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Backfill Audit": {
+      "main": [
+        [
+          {
+            "node": "Backfill Complete for Operator Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 15 Minutes Continue Active Queue": {
+      "main": [
+        [
+          {
+            "node": "Build Scheduled Continuation Runtime",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Scheduled Continuation Runtime": {
+      "main": [
+        [
+          {
+            "node": "Backfill Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Continuation Chunks Serially": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Backfill Progress",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Analyze One Bounded Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}

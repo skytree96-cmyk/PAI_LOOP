@@ -1,0 +1,371 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">PAI_LOOP 채널별 운영 워크플로우 아키텍처 v1.6</title>
+  <desc id="desc">n8n, Render 웹, Teams의 채널별 역할과 조달청 및 OpenAI API 사용 지점, 판단 기준 데이터베이스와 판단 완료 학습 후보 데이터베이스의 유지 방식을 보여주는 16대9 아키텍처</desc>
+  <defs>
+    <linearGradient id="pageBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7F9FC"/>
+      <stop offset="1" stop-color="#EEF3F8"/>
+    </linearGradient>
+    <linearGradient id="heroBg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0C1836"/>
+      <stop offset="0.62" stop-color="#17325D"/>
+      <stop offset="1" stop-color="#102244"/>
+    </linearGradient>
+    <linearGradient id="referenceDb" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8F8F5"/>
+      <stop offset="1" stop-color="#D7F1EC"/>
+    </linearGradient>
+    <linearGradient id="learningDb" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EEF2FF"/>
+      <stop offset="1" stop-color="#E0E8FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#0C1836" flood-opacity="0.10"/>
+    </filter>
+    <filter id="softShadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0C1836" flood-opacity="0.08"/>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17325D" stroke-opacity="0.035"/>
+    </pattern>
+    <marker id="arrowN8n" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#F36B3D"/>
+    </marker>
+    <marker id="arrowWeb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#087F8C"/>
+    </marker>
+    <marker id="arrowTeams" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#6264A7"/>
+    </marker>
+    <marker id="arrowData" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#5271D8"/>
+    </marker>
+    <style>
+      @font-face { font-family: Pretendard; src: url('./assets/PretendardVariable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+      text { font-family: Pretendard, "Malgun Gothic", "Noto Sans KR", "Segoe UI", Arial, sans-serif; }
+      .laneName { font-size: 22px; font-weight: 850; letter-spacing: -.2px; }
+      .laneSub { font-size: 12px; font-weight: 650; }
+      .stage { font-size: 12px; font-weight: 800; letter-spacing: 1.5px; }
+      .nodeTitle { font-size: 16px; font-weight: 850; fill: #102347; }
+      .nodeBody { font-size: 12px; font-weight: 600; fill: #596A83; }
+      .nodeSmall { font-size: 10.5px; font-weight: 650; fill: #6C7B92; }
+      .apiText { font-size: 10.5px; font-weight: 800; }
+      .dbTitle { font-size: 18px; font-weight: 850; fill: #102347; }
+      .dbBody { font-size: 11.5px; font-weight: 650; fill: #4E607A; }
+      .badge { font-size: 10px; font-weight: 850; letter-spacing: .4px; }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#pageBg)"/>
+  <rect width="1920" height="1080" fill="url(#grid)"/>
+
+  <!-- Header -->
+  <rect x="34" y="26" width="1852" height="116" rx="28" fill="url(#heroBg)" filter="url(#shadow)"/>
+  <g transform="translate(70 53)">
+    <rect width="62" height="62" rx="18" fill="#00A995"/>
+    <path d="M18 42V20h14.5c8.2 0 13 4 13 10.9 0 7-4.8 11-13 11h-5.8v7H18zm8.7-7h5.1c3.6 0 5.3-1.4 5.3-4.1 0-2.6-1.7-4-5.3-4h-5.1z" fill="#FFF"/>
+  </g>
+  <text x="152" y="76" fill="#FFF" font-size="30" font-weight="900">PAI_<tspan fill="#FF8A3D">LOOP</tspan></text>
+  <text x="152" y="107" fill="#C9D5E9" font-size="15" font-weight="650">매일 공고를 놓치지 않는 근거 기반 입찰 의사결정 루프</text>
+  <text x="1846" y="72" fill="#FFF" font-size="20" font-weight="850" text-anchor="end">09:00 DISCOVER → ANALYZE → DECIDE → LEARN</text>
+  <text x="1846" y="104" fill="#AFC0DB" font-size="12.5" font-weight="650" text-anchor="end">현재 운영 경계 + 승인 후 연결할 목표 경계를 함께 표시</text>
+
+  <!-- Stage ribbon -->
+  <g transform="translate(206 153)">
+    <text x="115" y="18" class="stage" fill="#C45510">01 · DISCOVER</text>
+    <line x1="0" y1="29" x2="330" y2="29" stroke="#F36B3D" stroke-width="3" stroke-linecap="round"/>
+    <text x="540" y="18" class="stage" fill="#087F8C">02 · ANALYZE</text>
+    <line x1="350" y1="29" x2="800" y2="29" stroke="#087F8C" stroke-width="3" stroke-linecap="round"/>
+    <text x="1010" y="18" class="stage" fill="#415FBE">03 · DECIDE</text>
+    <line x1="820" y1="29" x2="1240" y2="29" stroke="#5271D8" stroke-width="3" stroke-linecap="round"/>
+    <text x="1445" y="18" class="stage" fill="#5A58A5">04 · SHARE &amp; LEARN</text>
+    <line x1="1260" y1="29" x2="1670" y2="29" stroke="#6264A7" stroke-width="3" stroke-linecap="round"/>
+  </g>
+
+  <!-- Lane backgrounds -->
+  <rect x="34" y="196" width="1852" height="190" rx="24" fill="#FFF7F2" stroke="#F2C8B7"/>
+  <rect x="34" y="402" width="1852" height="246" rx="24" fill="#F1FAFB" stroke="#B7DDE2"/>
+  <rect x="34" y="664" width="1852" height="128" rx="24" fill="#F4F2FB" stroke="#CAC8E8"/>
+  <rect x="34" y="808" width="1852" height="226" rx="24" fill="#F5F7FC" stroke="#C7D1E4"/>
+
+  <!-- Lane labels -->
+  <g transform="translate(52 216)">
+    <rect width="130" height="150" rx="20" fill="#F36B3D"/>
+    <circle cx="65" cy="39" r="20" fill="#FFF" fill-opacity=".18"/>
+    <path d="M52 39h26M65 26v26" stroke="#FFF" stroke-width="3" stroke-linecap="round"/>
+    <text x="65" y="80" text-anchor="middle" class="laneName" fill="#FFF">n8n</text>
+    <text x="65" y="103" text-anchor="middle" class="laneSub" fill="#FFE8DE">오케스트레이션</text>
+    <rect x="23" y="119" width="84" height="22" rx="11" fill="#FFF" fill-opacity=".20"/>
+    <text x="65" y="134" text-anchor="middle" class="badge" fill="#FFF">ACTIVE</text>
+  </g>
+  <g transform="translate(52 422)">
+    <rect width="130" height="206" rx="20" fill="#087F8C"/>
+    <circle cx="65" cy="39" r="20" fill="#FFF" fill-opacity=".18"/>
+    <path d="M50 33h30v19H50zM56 52v5m18-5v5M52 57h26" fill="none" stroke="#FFF" stroke-width="2.5" stroke-linecap="round"/>
+    <text x="65" y="84" text-anchor="middle" class="laneName" fill="#FFF">WEB</text>
+    <text x="65" y="107" text-anchor="middle" class="laneSub" fill="#D7F4F6">Render · FastAPI</text>
+    <text x="65" y="125" text-anchor="middle" class="laneSub" fill="#D7F4F6">SPA Dashboard</text>
+    <rect x="23" y="158" width="84" height="22" rx="11" fill="#FFF" fill-opacity=".20"/>
+    <text x="65" y="173" text-anchor="middle" class="badge" fill="#FFF">DEPLOYED</text>
+  </g>
+  <g transform="translate(52 681)">
+    <rect width="130" height="94" rx="20" fill="#6264A7"/>
+    <text x="65" y="39" text-anchor="middle" class="laneName" fill="#FFF">TEAMS</text>
+    <text x="65" y="62" text-anchor="middle" class="laneSub" fill="#E4E3F5">알림 · 사람 결정</text>
+    <rect x="31" y="69" width="68" height="18" rx="9" fill="#FFF" fill-opacity=".20"/>
+    <text x="65" y="82" text-anchor="middle" font-size="8.5" font-weight="850" fill="#FFF">MOCK NOW</text>
+  </g>
+  <g transform="translate(52 826)">
+    <rect width="130" height="190" rx="20" fill="#17325D"/>
+    <path d="M47 27c0-6 36-6 36 0v18c0 6-36 6-36 0zM47 27c0 6 36 6 36 0m-36 9c0 6 36 6 36 0" fill="none" stroke="#FFF" stroke-width="2.2"/>
+    <text x="65" y="79" text-anchor="middle" class="laneName" fill="#FFF">DATA</text>
+    <text x="65" y="102" text-anchor="middle" class="laneSub" fill="#CCD8EB">PostgreSQL</text>
+    <text x="65" y="121" text-anchor="middle" class="laneSub" fill="#CCD8EB">버전 · 감사 이력</text>
+    <rect x="20" y="146" width="90" height="24" rx="12" fill="#5271D8"/>
+    <text x="65" y="162" text-anchor="middle" class="badge" fill="#FFF">PERSISTENT</text>
+  </g>
+
+  <!-- n8n flow connectors -->
+  <path d="M386 291H429" fill="none" stroke="#F36B3D" stroke-width="3" marker-end="url(#arrowN8n)"/>
+  <path d="M603 291H646" fill="none" stroke="#F36B3D" stroke-width="3" marker-end="url(#arrowN8n)"/>
+  <path d="M820 291H863" fill="none" stroke="#F36B3D" stroke-width="3" marker-end="url(#arrowN8n)"/>
+  <path d="M1037 291H1080" fill="none" stroke="#F36B3D" stroke-width="3" marker-end="url(#arrowN8n)"/>
+  <path d="M1254 291H1297" fill="none" stroke="#F36B3D" stroke-width="3" marker-end="url(#arrowN8n)"/>
+  <path d="M1471 291H1514" fill="none" stroke="#F36B3D" stroke-width="3" marker-end="url(#arrowN8n)"/>
+
+  <!-- n8n nodes -->
+  <g transform="translate(212 226)" filter="url(#softShadow)">
+    <rect width="174" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <circle cx="25" cy="26" r="11" fill="#F36B3D"/>
+    <path d="M25 19v7l5 3" fill="none" stroke="#FFF" stroke-width="2" stroke-linecap="round"/>
+    <text x="45" y="31" class="nodeTitle">09:00 Trigger</text>
+    <text x="18" y="61" class="nodeBody">매일 신규 공고 전체</text>
+    <text x="18" y="81" class="nodeBody">09:00 KST 정기 실행</text>
+    <rect x="18" y="99" width="111" height="20" rx="10" fill="#FFF0E9"/>
+    <text x="73.5" y="113" text-anchor="middle" class="apiText" fill="#C45510">n8n Schedule</text>
+  </g>
+  <g transform="translate(429 226)" filter="url(#softShadow)">
+    <rect width="174" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <text x="18" y="31" class="nodeTitle">공고 수집</text>
+    <text x="18" y="61" class="nodeBody">입찰공고 · 사전규격</text>
+    <text x="18" y="81" class="nodeBody">개찰 · 계약 후보</text>
+    <rect x="18" y="99" width="136" height="20" rx="10" fill="#E8F8F5"/>
+    <text x="86" y="113" text-anchor="middle" class="apiText" fill="#087F8C">조달청 PPS API</text>
+  </g>
+  <g transform="translate(646 226)" filter="url(#softShadow)">
+    <rect width="174" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <text x="18" y="31" class="nodeTitle">분석 큐</text>
+    <text x="18" y="61" class="nodeBody">당일 신규 전체 우선</text>
+    <text x="18" y="81" class="nodeBody">실패는 오래된 순 순환</text>
+    <rect x="18" y="99" width="132" height="20" rx="10" fill="#FFF0E9"/>
+    <text x="84" y="113" text-anchor="middle" class="apiText" fill="#C45510">IDEMPOTENT KEY</text>
+  </g>
+  <g>
+    <rect x="212" y="362" width="360" height="20" rx="10" fill="#FFE5D9" stroke="#F0BCA7"/>
+    <text x="392" y="376" text-anchor="middle" class="apiText" fill="#C45510">ONE-TIME · 기존 미분석 전량 백필 (초기 89건)</text>
+    <path d="M572 372H733V357" fill="none" stroke="#F36B3D" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrowN8n)"/>
+  </g>
+  <g transform="translate(863 226)" filter="url(#softShadow)">
+    <rect width="174" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <text x="18" y="31" class="nodeTitle">분석 실행 요청</text>
+    <text x="18" y="61" class="nodeBody">첨부 · 평가 · snapshot</text>
+    <text x="18" y="81" class="nodeBody">쓰기 결과 계약 검증</text>
+    <rect x="18" y="99" width="140" height="20" rx="10" fill="#E9F3FF"/>
+    <text x="88" y="113" text-anchor="middle" class="apiText" fill="#295AA8">FastAPI REST API</text>
+  </g>
+  <g transform="translate(1080 226)" filter="url(#softShadow)">
+    <rect width="174" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <text x="18" y="31" class="nodeTitle">3년 낙찰 신호</text>
+    <text x="18" y="61" class="nodeBody">낙찰자 집중 · 금액·율</text>
+    <text x="18" y="81" class="nodeBody">유사도 기반 후보 표시</text>
+    <rect x="18" y="99" width="136" height="20" rx="10" fill="#E8F8F5"/>
+    <text x="86" y="113" text-anchor="middle" class="apiText" fill="#087F8C">PPS 낙찰/개찰 API</text>
+  </g>
+  <g transform="translate(1297 226)" filter="url(#softShadow)">
+    <rect width="174" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <text x="18" y="31" class="nodeTitle">7일 아침 피드</text>
+    <text x="18" y="61" class="nodeBody">PASS → REVIEW 우선</text>
+    <text x="18" y="81" class="nodeBody">부서별 추천 · 근거 요약</text>
+    <rect x="18" y="99" width="136" height="20" rx="10" fill="#FFF0E9"/>
+    <text x="86" y="113" text-anchor="middle" class="apiText" fill="#C45510">n8n Briefing</text>
+  </g>
+  <g transform="translate(1514 226)" filter="url(#softShadow)">
+    <rect width="326" height="130" rx="18" fill="#FFF" stroke="#F0BCA7"/>
+    <text x="18" y="31" class="nodeTitle">채널별 배포</text>
+    <text x="18" y="61" class="nodeBody">웹은 즉시 조회 · Teams는 승인 후 push</text>
+    <text x="18" y="81" class="nodeBody">실패 시 재시도 로그, 알림은 중복 방지</text>
+    <rect x="18" y="99" width="115" height="20" rx="10" fill="#E9F3FF"/>
+    <text x="75.5" y="113" text-anchor="middle" class="apiText" fill="#295AA8">Render HTTPS</text>
+    <rect x="141" y="99" width="157" height="20" rx="10" fill="#EFEEFA"/>
+    <text x="219.5" y="113" text-anchor="middle" class="apiText" fill="#5A58A5">Teams Workflows · TARGET</text>
+  </g>
+
+  <!-- Cross-lane entry -->
+  <path d="M950 356V410H631V441" fill="none" stroke="#087F8C" stroke-width="3" marker-end="url(#arrowWeb)"/>
+  <rect x="794" y="373" width="312" height="22" rx="11" fill="#E7F4F5" stroke="#87C7CE"/>
+  <text x="950" y="388" text-anchor="middle" class="apiText" fill="#087F8C">POST /api/v1/notices/analysis/batch</text>
+
+  <!-- Web connectors -->
+  <path d="M488 519H526" fill="none" stroke="#087F8C" stroke-width="3" marker-end="url(#arrowWeb)"/>
+  <path d="M737 519H775" fill="none" stroke="#087F8C" stroke-width="3" marker-end="url(#arrowWeb)"/>
+  <path d="M986 519H1024" fill="none" stroke="#087F8C" stroke-width="3" marker-end="url(#arrowWeb)"/>
+  <path d="M1235 519H1273" fill="none" stroke="#087F8C" stroke-width="3" marker-end="url(#arrowWeb)"/>
+  <path d="M1484 519H1522" fill="none" stroke="#087F8C" stroke-width="3" marker-end="url(#arrowWeb)"/>
+
+  <!-- Web nodes -->
+  <g transform="translate(210 443)" filter="url(#softShadow)">
+    <rect width="278" height="152" rx="18" fill="#FFF" stroke="#A9D6DA"/>
+    <text x="18" y="32" class="nodeTitle">GitHub → Render</text>
+    <text x="18" y="61" class="nodeBody">main merge 시 자동 배포</text>
+    <text x="18" y="81" class="nodeBody">migration → health check → rollout</text>
+    <rect x="18" y="103" width="103" height="21" rx="10.5" fill="#EDF0F5"/>
+    <text x="69.5" y="118" text-anchor="middle" class="apiText" fill="#344056">GitHub Actions</text>
+    <rect x="129" y="103" width="126" height="21" rx="10.5" fill="#E9F3FF"/>
+    <text x="192" y="118" text-anchor="middle" class="apiText" fill="#295AA8">Render Deploy API</text>
+    <text x="18" y="143" class="nodeSmall">immutable commit · rollback 가능한 release</text>
+  </g>
+  <g transform="translate(526 443)" filter="url(#softShadow)">
+    <rect width="211" height="152" rx="18" fill="#FFF" stroke="#A9D6DA"/>
+    <text x="18" y="32" class="nodeTitle">FastAPI 서비스</text>
+    <text x="18" y="61" class="nodeBody">수집 upsert · 버전 관리</text>
+    <text x="18" y="81" class="nodeBody">인증 · 계약 검증 · 재사용</text>
+    <rect x="18" y="103" width="138" height="21" rx="10.5" fill="#E7F4F5"/>
+    <text x="87" y="118" text-anchor="middle" class="apiText" fill="#087F8C">n8n ↔ REST API</text>
+    <text x="18" y="143" class="nodeSmall">SQLAlchemy transaction</text>
+  </g>
+  <g transform="translate(775 443)" filter="url(#softShadow)">
+    <rect width="211" height="152" rx="18" fill="#FFF" stroke="#A9D6DA"/>
+    <text x="18" y="32" class="nodeTitle">Document Worker</text>
+    <text x="18" y="61" class="nodeBody">PDF · HWPX 구조/표 추출</text>
+    <text x="18" y="81" class="nodeBody">페이지·인용 근거 앵커</text>
+    <rect x="18" y="103" width="155" height="21" rx="10.5" fill="#FFF0E9"/>
+    <text x="95.5" y="118" text-anchor="middle" class="apiText" fill="#C45510">binary HWP → REVIEW</text>
+    <text x="18" y="143" class="nodeSmall">제한: 구형 HWP 자동변환 미연결</text>
+  </g>
+  <g transform="translate(1024 443)" filter="url(#softShadow)">
+    <rect width="211" height="152" rx="18" fill="#FFF" stroke="#A9D6DA"/>
+    <text x="18" y="32" class="nodeTitle">조건 구조화</text>
+    <text x="18" y="61" class="nodeBody">자격 · 배점 · 가격 조건</text>
+    <text x="18" y="81" class="nodeBody">고정 JSON schema 출력</text>
+    <rect x="18" y="103" width="166" height="21" rx="10.5" fill="#E8F8F5"/>
+    <text x="101" y="118" text-anchor="middle" class="apiText" fill="#087F8C">OpenAI Responses API</text>
+    <text x="18" y="143" class="nodeSmall">LLM은 추출 보조 · 최종판정 아님</text>
+  </g>
+  <g transform="translate(1273 443)" filter="url(#softShadow)">
+    <rect width="211" height="152" rx="18" fill="#FFF" stroke="#A9D6DA"/>
+    <text x="18" y="32" class="nodeTitle">Rule &amp; Score</text>
+    <text x="18" y="61" class="nodeBody">적격 · 정량 · 준비도</text>
+    <text x="18" y="81" class="nodeBody">가격 · 경쟁집중 리스크</text>
+    <rect x="18" y="103" width="163" height="21" rx="10.5" fill="#EEF2FF"/>
+    <text x="99.5" y="118" text-anchor="middle" class="apiText" fill="#415FBE">결정론적 Rule Engine</text>
+    <text x="18" y="143" class="nodeSmall">근거 없으면 REVIEW · 사람 책임</text>
+  </g>
+  <g transform="translate(1522 443)" filter="url(#softShadow)">
+    <rect width="318" height="152" rx="18" fill="#0C5963" stroke="#0C5963"/>
+    <text x="20" y="32" font-size="17" font-weight="850" fill="#FFF">웹 대시보드 · SPA</text>
+    <text x="20" y="61" font-size="12" font-weight="650" fill="#D8F4F6">PASS → REVIEW → 미분석 → FAIL</text>
+    <text x="20" y="82" font-size="12" font-weight="650" fill="#D8F4F6">부서 추천 · 정량점수 · 3년 낙찰 신호</text>
+    <text x="20" y="103" font-size="12" font-weight="650" fill="#D8F4F6">근거 원문 · 분석 실패 사유 · 이력 비교</text>
+    <rect x="20" y="119" width="129" height="21" rx="10.5" fill="#18A99C"/>
+    <text x="84.5" y="134" text-anchor="middle" class="apiText" fill="#FFF">Render Public URL</text>
+    <rect x="157" y="119" width="136" height="21" rx="10.5" fill="#FFF" fill-opacity=".16"/>
+    <text x="225" y="134" text-anchor="middle" class="apiText" fill="#FFF">FastAPI JSON API</text>
+  </g>
+
+  <!-- Teams flow -->
+  <path d="M1384 595V706H1161" fill="none" stroke="#6264A7" stroke-width="3" marker-end="url(#arrowTeams)"/>
+  <path d="M1331 728H1363" fill="none" stroke="#6264A7" stroke-width="3" marker-end="url(#arrowTeams)"/>
+  <path d="M1543 728H1575" fill="none" stroke="#6264A7" stroke-width="3" marker-end="url(#arrowTeams)"/>
+  <g transform="translate(205 687)">
+    <rect width="890" height="82" rx="18" fill="#FFF" stroke="#CAC8E8" stroke-dasharray="5 4"/>
+    <text x="20" y="29" class="nodeTitle">현재: Teams 카드 MOCK 저장</text>
+    <text x="20" y="54" class="nodeBody">알림 payload · 수신자 · 전송 상태만 테스트하며 실제 Teams 전송은 하지 않음</text>
+    <rect x="700" y="19" width="166" height="24" rx="12" fill="#EFEEFA"/>
+    <text x="783" y="35" text-anchor="middle" class="apiText" fill="#5A58A5">NO COMPANY APPROVAL</text>
+    <text x="700" y="61" class="nodeSmall">승인·Credential 등록 후 교체</text>
+  </g>
+  <g transform="translate(1161 687)" filter="url(#softShadow)">
+    <rect width="170" height="82" rx="18" fill="#FFF" stroke="#CAC8E8"/>
+    <text x="18" y="28" class="nodeTitle">승인 Gate</text>
+    <text x="18" y="52" class="nodeBody">회사 Tenant · 권한</text>
+    <text x="18" y="69" class="nodeSmall">Credential 별도 보관</text>
+  </g>
+  <g transform="translate(1363 687)" filter="url(#softShadow)">
+    <rect width="180" height="82" rx="18" fill="#6264A7"/>
+    <text x="18" y="28" font-size="16" font-weight="850" fill="#FFF">Teams Push</text>
+    <text x="18" y="51" font-size="11.5" font-weight="650" fill="#E7E6F7">Adaptive Card · 담당자</text>
+    <text x="18" y="69" font-size="10.5" font-weight="700" fill="#D7D6EF">Workflows / Bot · TARGET</text>
+  </g>
+  <g transform="translate(1575 687)" filter="url(#softShadow)">
+    <rect width="265" height="82" rx="18" fill="#FFF" stroke="#CAC8E8"/>
+    <text x="18" y="28" class="nodeTitle">사람 결정 · 결과 환류</text>
+    <text x="18" y="52" class="nodeBody">입찰/포기 · 낙찰/실주 · 실제 금액</text>
+    <rect x="171" y="56" width="74" height="18" rx="9" fill="#EFEEFA"/>
+    <text x="208" y="69" text-anchor="middle" font-size="8.5" font-weight="850" fill="#5A58A5">TARGET</text>
+  </g>
+
+  <!-- Data arrows from application -->
+  <path d="M629 595V852H759" fill="none" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowData)"/>
+  <path d="M1378 595V852H1216" fill="none" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowData)"/>
+  <path d="M1707 769V824H1588" fill="none" stroke="#6264A7" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrowTeams)"/>
+
+  <!-- Data: immutable seeds -->
+  <g transform="translate(205 832)" filter="url(#softShadow)">
+    <rect width="236" height="178" rx="18" fill="#FFF" stroke="#C7D1E4"/>
+    <text x="18" y="31" class="dbTitle">Git immutable seed</text>
+    <text x="18" y="60" class="dbBody">회사 공개 프로필 · 실적</text>
+    <text x="18" y="81" class="dbBody">부서 keyword · 규칙</text>
+    <text x="18" y="102" class="dbBody">정량 · 가격 · 증빙 기준</text>
+    <rect x="18" y="121" width="199" height="22" rx="11" fill="#EDF0F5"/>
+    <text x="117.5" y="136" text-anchor="middle" class="apiText" fill="#344056">commit SHA + dataset version</text>
+    <text x="18" y="162" class="nodeSmall">원본 보존 · PR 검토 후 변경</text>
+  </g>
+  <path d="M441 921H474" fill="none" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowData)"/>
+  <rect x="441" y="881" width="142" height="23" rx="11.5" fill="#E8EEFF"/>
+  <text x="512" y="897" text-anchor="middle" class="apiText" fill="#415FBE">hash/version sync</text>
+
+  <!-- Reference DB -->
+  <g transform="translate(474 832)" filter="url(#softShadow)">
+    <rect width="596" height="178" rx="18" fill="url(#referenceDb)" stroke="#90CFC5"/>
+    <ellipse cx="42" cy="36" rx="22" ry="9" fill="#00A995"/>
+    <path d="M20 36v18c0 5 44 5 44 0V36M20 45c0 5 44 5 44 0" fill="none" stroke="#00A995" stroke-width="2"/>
+    <text x="80" y="35" class="dbTitle">판단 기준 DB</text>
+    <text x="80" y="57" class="nodeSmall">reference · company · keywords · rules · performance · evidence</text>
+    <line x1="20" y1="72" x2="576" y2="72" stroke="#ABD9D2"/>
+    <text x="20" y="96" class="dbBody">• dataset_key + version 멱등 동기화</text>
+    <text x="20" y="118" class="dbBody">• 신규 ACTIVE 전환, 직전 버전은 RETIRED로 이력 보존</text>
+    <text x="20" y="140" class="dbBody">• 규칙/프로필/증빙 변경 시 해당 공고 새 analysis run</text>
+    <rect x="386" y="91" width="170" height="48" rx="12" fill="#FFF" fill-opacity=".72"/>
+    <text x="471" y="110" text-anchor="middle" class="apiText" fill="#087F8C">REVIEWED SOURCE OF TRUTH</text>
+    <text x="471" y="129" text-anchor="middle" class="nodeSmall">자동 학습으로 덮어쓰지 않음</text>
+    <text x="20" y="163" class="nodeSmall">운영: PostgreSQL · 로컬 SQLite는 개발/테스트 전용</text>
+  </g>
+
+  <!-- Learning / completed DB -->
+  <g transform="translate(1094 832)" filter="url(#softShadow)">
+    <rect width="746" height="178" rx="18" fill="url(#learningDb)" stroke="#AFC0ED"/>
+    <ellipse cx="42" cy="36" rx="22" ry="9" fill="#5271D8"/>
+    <path d="M20 36v18c0 5 44 5 44 0V36M20 45c0 5 44 5 44 0" fill="none" stroke="#5271D8" stroke-width="2"/>
+    <text x="80" y="35" class="dbTitle">판단 완료 · 학습 후보 DB</text>
+    <text x="80" y="57" class="nodeSmall">notices · versions · extractions · evaluations · snapshots · decisions · outcomes · award history</text>
+    <line x1="20" y1="72" x2="726" y2="72" stroke="#C0CBED"/>
+    <text x="20" y="96" class="dbBody">• 공고/낙찰은 stable key upsert · 문서/평가/점수 snapshot은 append-only</text>
+    <text x="20" y="118" class="dbBody">• 현재 화면은 최신 COMPLETED run · 과거 run은 재현/감사 이력으로 유지</text>
+    <text x="20" y="140" class="dbBody">• 7일 보존은 briefing 운영로그만 · 판단·결정·낙찰 이력은 장기 유지</text>
+    <rect x="538" y="91" width="188" height="48" rx="12" fill="#FFF" fill-opacity=".72"/>
+    <text x="632" y="110" text-anchor="middle" class="apiText" fill="#415FBE">CURATED LEARNING CANDIDATE</text>
+    <text x="632" y="129" text-anchor="middle" class="nodeSmall">사람 검수 후 규칙/프롬프트 개선</text>
+    <text x="20" y="163" class="nodeSmall">보안: 원문·provider 원응답·API key·PII 저장 금지, SHA-256와 근거 앵커만 기록</text>
+  </g>
+
+  <!-- Footer legend -->
+  <g transform="translate(42 1046)">
+    <rect width="10" height="10" rx="3" fill="#00A995"/>
+    <text x="18" y="10" class="nodeSmall">현재 연결</text>
+    <rect x="105" width="10" height="10" rx="3" fill="#6264A7"/>
+    <text x="123" y="10" class="nodeSmall">승인 후 TARGET</text>
+    <rect x="250" width="10" height="10" rx="3" fill="#F36B3D"/>
+    <text x="268" y="10" class="nodeSmall">제한/REVIEW</text>
+    <text x="1870" y="10" text-anchor="end" class="nodeSmall">v1.6 · 2026-08-17 · PAI_LOOP</text>
+  </g>
+</svg>

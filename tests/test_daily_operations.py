@@ -80,6 +80,8 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         "retryable_total": 0,
         "deferred_terminal_total": 0,
         "notice_keys": ["DAILY-RECENT"],
+        "never_attempted_notice_keys": ["DAILY-RECENT"],
+        "retryable_notice_keys": [],
         "limit": 50,
         "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·구형 HWP 전용은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
     }
@@ -207,6 +209,12 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
     assert response.status_code == 200
     queue = response.json()["analysis_queue"]
     assert queue["notice_keys"] == ["PPS-NEVER", "PPS-RETRY"]
+    assert queue["never_attempted_notice_keys"] == ["PPS-NEVER"]
+    assert queue["retryable_notice_keys"] == ["PPS-RETRY"]
+    assert (
+        queue["never_attempted_notice_keys"] + queue["retryable_notice_keys"]
+        == queue["notice_keys"]
+    )
     assert queue["never_attempted_total"] == 1
     assert queue["retryable_total"] == 1
     assert queue["deferred_terminal_total"] == 1
