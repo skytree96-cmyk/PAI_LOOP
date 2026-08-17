@@ -253,6 +253,15 @@ const analysisPlan = executeCodeNode(
           },
         },
       },
+      "Fetch Award Candidates from Seven-Day Briefing": {
+        json: {
+          analysis_queue: {
+            policy: "NOT_ANALYZED_FIRST",
+            pending_total: 5,
+            notice_keys: ["pending-review", "pending-hwpx", "pending-pdf", "pending-four", "pending-five"],
+          },
+        },
+      },
     },
   },
 );
@@ -263,10 +272,12 @@ assert.equal(analysisPlan.analysisBatch.dryRun, true);
 assert.equal(analysisPlan.analysisBatch.enrichMissing, true);
 assert.equal(analysisPlan.analysisBatch.maxAttachmentsPerNotice, 1);
 assert.deepEqual(analysisPlan.analysisBatch.noticeKeys, [
-  "notice-a",
-  "notice-b",
-  "notice-c",
+  "pending-review",
+  "pending-hwpx",
+  "pending-pdf",
 ]);
+assert.equal(analysisPlan.analysisBatch.queuePolicy, "NOT_ANALYZED_FIRST");
+assert.equal(analysisPlan.analysisBatch.pendingTotal, 5);
 const analysisResponse = {
   job_id: "offline-analysis",
   status: "COMPLETED",
@@ -297,6 +308,9 @@ const analysisResponse = {
     document_status: "DRY_RUN",
     evaluation_status: "DRY_RUN",
     snapshot_status: "DRY_RUN",
+    analysis_state: "PENDING",
+    analysis_reason_code: "NOT_SELECTED",
+    analysis_reason: "Dry-run validation did not persist an analysis result.",
     analysis_run_id: null,
     evaluation_id: null,
     notice_version_id: null,
@@ -319,6 +333,47 @@ assert.equal(analysisValidated.analysisBatch.status, "COMPLETED");
 assert.equal(analysisValidated.analysisBatch.processed, 3);
 assert.equal(analysisValidated.analysisBatch.openaiCalls, 0);
 assert.equal(analysisValidated.analysisBatch.enrichment.available, true);
+assert.deepEqual(
+  analysisValidated.analysisBatch.results.map((result) => ({
+    state: result.analysisState,
+    reasonCode: result.analysisReasonCode,
+  })),
+  Array.from({ length: 3 }, () => ({ state: "PENDING", reasonCode: "NOT_SELECTED" })),
+);
+assert.equal(
+  analysisValidated.analysisBatch.results[0].analysisReason,
+  "Dry-run validation did not persist an analysis result.",
+);
+const analysisMissingReason = structuredClone(analysisResponse);
+delete analysisMissingReason.results[0].analysis_reason;
+assert.throws(
+  () => executeCodeNode(
+    "Validate Batch Analysis Contract",
+    analysisMissingReason,
+    { node: { "Build Bounded Batch Analysis Plan": { json: analysisPlan } } },
+  ),
+  /batch result missing analysis_reason/,
+);
+const analysisInvalidState = structuredClone(analysisResponse);
+analysisInvalidState.results[0].analysis_state = "DONE";
+assert.throws(
+  () => executeCodeNode(
+    "Validate Batch Analysis Contract",
+    analysisInvalidState,
+    { node: { "Build Bounded Batch Analysis Plan": { json: analysisPlan } } },
+  ),
+  /batch result analysis_state invalid/,
+);
+const analysisInvalidReasonCode = structuredClone(analysisResponse);
+analysisInvalidReasonCode.results[0].analysis_reason_code = "UNKNOWN";
+assert.throws(
+  () => executeCodeNode(
+    "Validate Batch Analysis Contract",
+    analysisInvalidReasonCode,
+    { node: { "Build Bounded Batch Analysis Plan": { json: analysisPlan } } },
+  ),
+  /batch result analysis_reason_code invalid/,
+);
 const analysisConsistent = executeCodeNode(
   "Verify Batch Analysis Aggregate Invariants",
   analysisValidated,
@@ -366,6 +421,11 @@ const analysisLiveResponse = {
     document_status: index < 2 ? "READY" : "ENRICHMENT_FAILED",
     evaluation_status: index < 2 ? "CREATED" : "NOT_CREATED",
     snapshot_status: index < 2 ? "CREATED" : "NOT_CREATED",
+    analysis_state: index < 2 ? "ANALYZED" : "REVIEW",
+    analysis_reason_code: index < 2 ? "ANALYZED" : "PDF_EXTRACT_FAILED",
+    analysis_reason: index < 2
+      ? "A verified extraction and evaluation snapshot is available."
+      : "The selected PDF could not be extracted and needs review.",
     analysis_run_id: index < 2 ? `run-${index}` : null,
     evaluation_id: index < 2 ? `evaluation-${index}` : null,
     notice_version_id: index < 2 ? `version-${index}` : null,
@@ -387,6 +447,10 @@ const analysisLiveValidated = executeCodeNode(
 assert.equal(analysisLiveValidated.analysisBatch.status, "PARTIAL");
 assert.equal(analysisLiveValidated.analysisBatch.openaiCalls, 2);
 assert.equal(analysisLiveValidated.analysisBatch.enrichment.attachmentsProcessed, 2);
+assert.equal(analysisLiveValidated.analysisBatch.results[0].analysisState, "ANALYZED");
+assert.equal(analysisLiveValidated.analysisBatch.results[0].analysisReasonCode, "ANALYZED");
+assert.equal(analysisLiveValidated.analysisBatch.results[2].analysisState, "REVIEW");
+assert.equal(analysisLiveValidated.analysisBatch.results[2].analysisReasonCode, "PDF_EXTRACT_FAILED");
 assert.equal(
   executeCodeNode("Verify Batch Analysis Aggregate Invariants", analysisLiveValidated)
     .analysisBatch.results.length,
@@ -426,6 +490,9 @@ const analysisReuseResponse = {
     document_status: "COMPLETED",
     evaluation_status: "REUSED",
     snapshot_status: "REUSED",
+    analysis_state: "ANALYZED",
+    analysis_reason_code: "ANALYZED",
+    analysis_reason: "The accepted extraction and evaluation snapshot was reused.",
     analysis_run_id: `reused-run-${index}`,
     evaluation_id: `reused-evaluation-${index}`,
     notice_version_id: `reused-version-${index}`,
@@ -450,6 +517,12 @@ assert.equal(analysisReuseValidated.analysisBatch.openaiCalls, 0);
 assert.equal(
   executeCodeNode("Verify Batch Analysis Aggregate Invariants", analysisReuseValidated)
     .analysisBatch.results.every((result) => result.reused === true),
+  true,
+);
+assert.equal(
+  analysisReuseValidated.analysisBatch.results.every(
+    (result) => result.analysisState === "ANALYZED" && result.analysisReasonCode === "ANALYZED",
+  ),
   true,
 );
 

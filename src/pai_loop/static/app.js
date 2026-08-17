@@ -65,6 +65,21 @@
     NO_GO: "NO-GO",
   };
 
+  const ANALYSIS_REASON_LABELS = {
+    NOT_SELECTED: "자동 분석 우선순위에 아직 선정되지 않아 분석 대기 중입니다. 폐기된 공고가 아닙니다.",
+    ATTACHMENT_MANIFEST_MISSING: "조달청 응답에 분석할 첨부파일 목록이 없어 문서 분석을 시작하지 못했습니다.",
+    ATTACHMENT_MANIFEST_EMPTY: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않았습니다.",
+    ATTACHMENT_NONE: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않아 자동 문서 분석을 시작하지 못했습니다.",
+    HWP_ONLY_UNSUPPORTED: "첨부가 구형 HWP 형식뿐이라 현재 온라인 추출기가 읽지 못했습니다. HWP를 HWPX 또는 PDF로 변환하는 보완 경로가 필요합니다.",
+    HWPX_EXTRACT_FAILED: "HWPX 첨부는 확인했지만 본문 추출에 실패해 재처리 또는 문서 변환이 필요합니다.",
+    PDF_EXTRACT_FAILED: "PDF 첨부는 확인했지만 본문 추출에 실패해 OCR 또는 재처리가 필요합니다.",
+    OPENAI_REVIEW: "첨부 본문은 읽었지만 AI 구조화 결과가 검토 기준을 통과하지 못해 담당자 확인을 기다리고 있습니다.",
+    UNVERIFIED_QUOTE: "AI가 제시한 인용문을 추출 본문에서 검증하지 못해 확정 판정을 보류했습니다.",
+    QUOTE_UNVERIFIED: "AI가 제시한 인용문을 추출 본문에서 검증하지 못해 확정 판정을 보류했습니다.",
+    READY: "첨부 분석 준비가 완료되어 다음 자동 분석 배치를 기다리고 있습니다.",
+    PARTIAL: "일부 첨부만 처리되어 나머지 문서 분석 또는 담당자 확인이 필요합니다.",
+  };
+
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
@@ -841,6 +856,7 @@
     const topDepartmentRankings = arrayValue(firstValue(source.top_department_rankings, source.topDepartmentRankings))
       .map(normalizeDepartmentRanking)
       .filter(Boolean);
+    const analysisReason = normalizeAnalysisReason(source, analysisState, latestVersion);
 
     return {
       raw: safeRaw,
@@ -883,6 +899,8 @@
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
       analysisState,
+      analysisReasonCode: analysisReason.code,
+      analysisReason: analysisReason.message,
       sourceKind,
       isSynthetic: sourceKind === "SYNTHETIC",
       explanation,
@@ -1292,11 +1310,29 @@
   }
 
   function compareNotices(a, b, sort) {
-    if (sort === "department") return nullableNumberSort(b.departmentRanking?.score ?? null, a.departmentRanking?.score ?? null);
-    if (sort === "readiness") return nullableNumberSort(b.readinessScore, a.readinessScore);
-    if (sort === "risk") return nullableNumberSort(a.riskScore, b.riskScore);
-    if (sort === "newest") return nullableDateSort(b.collectedAt, a.collectedAt);
-    return nullableDateSort(a.deadline, b.deadline);
+    const priority = analysisPriorityRank(a) - analysisPriorityRank(b);
+    if (priority !== 0) return priority;
+
+    let selectedOrder = 0;
+    if (sort === "department") selectedOrder = nullableNumberSort(b.departmentRanking?.score ?? null, a.departmentRanking?.score ?? null);
+    else if (sort === "readiness") selectedOrder = nullableNumberSort(b.readinessScore, a.readinessScore);
+    else if (sort === "risk") selectedOrder = nullableNumberSort(a.riskScore, b.riskScore);
+    else if (sort === "newest") selectedOrder = nullableDateSort(b.collectedAt, a.collectedAt);
+    else selectedOrder = nullableDateSort(a.deadline, b.deadline);
+    if (selectedOrder !== 0) return selectedOrder;
+
+    const deadlineOrder = nullableDateSort(a.deadline, b.deadline);
+    if (deadlineOrder !== 0) return deadlineOrder;
+    const departmentOrder = nullableNumberSort(b.departmentRanking?.score ?? null, a.departmentRanking?.score ?? null);
+    if (departmentOrder !== 0) return departmentOrder;
+    return nullableDateSort(b.collectedAt, a.collectedAt);
+  }
+
+  function analysisPriorityRank(notice) {
+    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "PASS") return 0;
+    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "REVIEW") return 1;
+    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "FAIL") return 3;
+    return 2;
   }
 
   function nullableNumberSort(a, b) {
@@ -1352,6 +1388,7 @@
           <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
             <span class="notice-meta">${sourceKindBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
+            ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
         </td>
@@ -1375,6 +1412,7 @@
         </span>
         <h3>${escapeHtml(notice.title)}</h3>
         <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
+        ${analyzed ? "" : `<span class="notice-card__analysis-reason">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
         ${departmentPriorityBadge(notice)}
         <span class="notice-card__metrics">
           <span class="notice-card__metric"><small>준비도</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
@@ -1591,7 +1629,7 @@
       summaryMetric("AI 추천", analyzed ? RECOMMENDATION_LABELS[notice.recommendation] : "분석 전", analyzed ? "summary-metric--recommendation" : "summary-metric--pending"),
     ].join("");
     els.analysisPipeline.innerHTML = renderPipeline(notice);
-    els.detailSummary.textContent = notice.summary;
+    els.detailSummary.textContent = analyzed ? notice.summary : notice.analysisReason;
     els.briefEvidenceLabel.innerHTML = analyzed && evidence.length
       ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>근거 연결'
       : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>분석 대기';
@@ -1655,16 +1693,16 @@
     const versionCount = notice.versions.length;
     let stateLabel = "수집 완료";
     let title = "공고 원문 수집 완료";
-    let description = "첨부문서 버전이 등록되면 구조화 분석 상태를 표시합니다.";
+    let description = notice.analysisReason;
 
     if (notice.analysisState === "VERSIONED") {
       stateLabel = "문서 버전 수집됨";
       title = `첨부문서 버전 ${versionCount || 1}건 수집 완료`;
-      description = "AI 구조화 분석을 기다리고 있습니다. 분석 전에는 요구조건 수나 적합성 점수를 추정하지 않습니다.";
+      description = notice.analysisReason;
     } else if (notice.analysisState === "FAILED") {
       stateLabel = "분석 확인 필요";
       title = "첨부문서 분석이 완료되지 않았습니다";
-      description = "수집 로그와 문서 버전을 확인한 뒤 재처리하세요.";
+      description = notice.analysisReason;
       els.documentAnalysisState.classList.add("is-review");
     } else if (notice.analysisState === "EVALUATED") {
       stateLabel = "평가 완료";
@@ -1735,18 +1773,27 @@
   function normalizePrivateMatchItem(item, index) {
     const source = item && typeof item === "object" ? item : {};
     const evidence = firstObject(source.evidence);
+    const condition = stringValue(firstValue(
+      source.condition,
+      source.normalized_condition,
+      source.normalizedCondition,
+      source.description,
+      source.source_excerpt,
+      source.sourceExcerpt,
+    ), `구조화 요구조건 ${index + 1}`);
     return {
       requirementId: stringValue(firstValue(source.requirement_id, source.requirementId), `requirement-${index + 1}`),
       category: stringValue(firstValue(source.policy_class, source.policyClass), "INFORMATION").toUpperCase(),
       sourceCategory: stringValue(firstValue(source.source_category, source.sourceCategory), "OTHER").toUpperCase(),
-      condition: stringValue(source.condition, `구조화 요구조건 ${index + 1}`),
+      condition,
       mandatory: booleanValue(source.mandatory) ?? true,
       outcome: stringValue(source.outcome, "INFORMATION").toUpperCase(),
       blocking: booleanValue(source.blocking) ?? false,
-      companyFactKey: stringValue(firstValue(source.company_fact_key, source.companyFactKey)),
+      companyFactKey: normalizeCompanyFactKey(firstValue(source.company_fact_key, source.companyFactKey)),
       evidenceState: stringValue(firstValue(source.evidence_state, source.evidenceState), "NOT_REQUIRED"),
       deadlineCheckRequired: booleanValue(firstValue(source.deadline_check_required, source.deadlineCheckRequired)) ?? false,
       message: stringValue(source.message),
+      detailLines: collectPrivateMatchDetails(source, condition),
       evidence: Object.keys(evidence).length ? {
         name: stringValue(firstValue(evidence.display_name, evidence.displayName), "공개 증빙"),
         fileName: stringValue(firstValue(evidence.source_file_name, evidence.sourceFileName)),
@@ -1756,6 +1803,42 @@
         validUntil: firstValue(evidence.valid_until, evidence.validUntil, null),
       } : null,
     };
+  }
+
+  function normalizeCompanyFactKey(value) {
+    const key = stringValue(value);
+    if (key.toUpperCase().endsWith(":__NONE__")) return "";
+    const sentinel = key.replace(/[\s_\/-]+/g, "").toUpperCase();
+    if (["", "NONE", "NULL", "NA", "NOTREQUIRED", "별도회사증빙불필요", "회사증빙불필요"].includes(sentinel)) return "";
+    return key;
+  }
+
+  function collectPrivateMatchDetails(source, condition) {
+    const fields = [
+      ["정규화 조건", firstValue(source.normalized_condition, source.normalizedCondition)],
+      ["공고 원문", firstValue(source.source_excerpt, source.sourceExcerpt)],
+      ["설명", source.description],
+      ["확인할 일", source.action],
+      ["판단 이유", source.why],
+      ["판정 안내", source.message],
+    ];
+    const seen = new Set([stringValue(condition).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR")]);
+    const details = [];
+    fields.forEach(([label, rawValue]) => {
+      const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+      values.forEach((value) => {
+        if (typeof value !== "string" && typeof value !== "number") return;
+        const text = stringValue(value).replace(/\s+/g, " ").trim();
+        const key = text.toLocaleLowerCase("ko-KR");
+        if (!text || seen.has(key)) return;
+        seen.add(key);
+        details.push({ label, text: truncateText(text, 600) });
+      });
+    });
+    return details.length ? details : [{
+      label: "판단 안내",
+      text: "공개 가능한 상세 판단 근거가 아직 연결되지 않았습니다. 공고 원문과 담당자 확인이 필요합니다.",
+    }];
   }
 
   function renderPrivateMatchPreview(notice) {
@@ -1822,10 +1905,14 @@
           ? "is-action"
           : "is-unmapped";
     const evidenceMarkup = item.evidence
-      ? `<span>${escapeHtml(item.evidence.name)}</span><code class="private-fact-key" title="${escapeAttribute(item.evidence.sha256)}">SHA-256 ${escapeHtml(item.evidence.sha256.slice(0, 12))}…</code><span>${escapeHtml(item.evidence.fileName)}</span>`
+      ? `<div class="private-match-candidates"><span>공개 근거</span><span>${escapeHtml(item.evidence.name)}</span><code class="private-fact-key" title="${escapeAttribute(item.evidence.sha256)}">SHA-256 ${escapeHtml(item.evidence.sha256.slice(0, 12))}…</code><span>${escapeHtml(item.evidence.fileName)}</span></div>`
       : item.companyFactKey
-        ? `<code class="private-fact-key">${escapeHtml(item.companyFactKey)}</code>`
-        : '<span>별도 회사 증빙 불필요</span>';
+        ? `<div class="private-match-candidates"><span>판단 기준</span><code class="private-fact-key">${escapeHtml(item.companyFactKey)}</code></div>`
+        : "";
+    const detailLines = item.detailLines.slice();
+    if (!item.evidence && !item.companyFactKey && item.evidenceState === "NOT_REQUIRED") {
+      detailLines.push({ label: "증빙 적용", text: "회사 증빙 대조 대상이 아닌 공고 정보·체크 항목입니다." });
+    }
     return `
       <article class="private-match-item">
         <div class="private-match-item__head">
@@ -1833,8 +1920,8 @@
           <span class="private-match-state ${stateClass}">${escapeHtml(outcomeLabels[item.outcome] || item.outcome)}</span>
         </div>
         <p class="private-match-condition">${escapeHtml(item.condition)}</p>
-        <p class="private-match-message">${escapeHtml(item.message)}</p>
-        <div class="private-match-candidates"><span>${item.evidence ? "공개 근거" : "판단 기준"}</span>${evidenceMarkup}</div>
+        <ul class="private-match-details">${detailLines.map((detail) => `<li><strong>${escapeHtml(detail.label)}</strong><span>${escapeHtml(detail.text)}</span></li>`).join("")}</ul>
+        ${evidenceMarkup}
       </article>`;
   }
 
@@ -2954,6 +3041,51 @@
     if (["FAILED", "ERROR", "ANALYSIS_FAILED"].includes(normalized) || ["FAILED", "ERROR"].includes(String(noticeStatus ?? "").toUpperCase())) return "FAILED";
     if (normalized === "VERSIONED") return "VERSIONED";
     return "COLLECTED";
+  }
+
+  function normalizeAnalysisReason(source, analysisState, latestVersion) {
+    if (analysisState === "EVALUATED") return { code: "EVALUATED", message: "분석과 판정이 완료되었습니다." };
+    const reasonObject = firstObject(source.analysis_reason, source.analysisReason);
+    let code = stringValue(firstValue(
+      source.analysis_reason_code,
+      source.analysisReasonCode,
+      reasonObject.code,
+      reasonObject.reason_code,
+      reasonObject.reasonCode,
+      source.pending_reason_code,
+      source.pendingReasonCode,
+    )).toUpperCase().replace(/[\s-]+/g, "_");
+    const explicitDetail = firstValue(
+      reasonObject.message,
+      reasonObject.description,
+      typeof source.analysis_reason === "string" ? source.analysis_reason : null,
+      typeof source.analysisReason === "string" ? source.analysisReason : null,
+      source.analysis_reason_description,
+      source.analysisReasonDescription,
+      source.analysis_reason_detail,
+      source.analysisReasonDetail,
+      source.pending_reason,
+      source.pendingReason,
+    );
+    const detail = typeof explicitDetail === "string" || typeof explicitDetail === "number" ? stringValue(explicitDetail) : "";
+    if (!code && detail && /^[A-Z][A-Z0-9_-]+$/.test(detail)) code = detail.replace(/[\s-]+/g, "_");
+
+    const mapped = ANALYSIS_REASON_LABELS[code];
+    if (mapped) return { code, message: mapped };
+    if (detail && detail.toUpperCase() !== code) return { code: code || "PUBLIC_DESCRIPTION", message: detail };
+
+    const noticeStatus = stringValue(firstValue(source.status, source.notice_status)).toUpperCase();
+    if (["CLOSED", "CANCELLED", "CANCELED", "EXPIRED"].includes(noticeStatus)) {
+      return { code: noticeStatus, message: "공고가 마감·취소 또는 종료 상태여서 자동 분석 대상에서 제외되었습니다." };
+    }
+    const extractionStatus = stringValue(latestVersion?.extractionStatus).toUpperCase();
+    if (["REVIEW", "FAILED", "ERROR", "INCOMPLETE"].includes(extractionStatus) || analysisState === "FAILED") {
+      return { code: extractionStatus || "ANALYSIS_FAILED", message: "첨부문서 추출 또는 구조화 분석이 완료되지 않아 재처리와 담당자 확인이 필요합니다." };
+    }
+    if (analysisState === "VERSIONED") {
+      return { code: "READY", message: ANALYSIS_REASON_LABELS.READY };
+    }
+    return { code: "NOT_SELECTED", message: ANALYSIS_REASON_LABELS.NOT_SELECTED };
   }
 
   function normalizeRecommendation(value) {

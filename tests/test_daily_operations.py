@@ -69,6 +69,13 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
     assert body["notices"][0]["competition_risk"]["status"] == "UNKNOWN"
     assert body["notices"][0]["competition_risk"]["score"] is None
     assert body["notices"][0]["analysis_snapshot"] is None
+    assert body["analysis_queue"] == {
+        "policy": "NOT_ANALYZED_FIRST",
+        "pending_total": 1,
+        "notice_keys": ["DAILY-RECENT"],
+        "limit": 50,
+        "note": "최근 7일의 진행 공고 중 분석 스냅샷이 없는 건을 우선순위·마감일 순으로 제공합니다.",
+    }
     assert body["source_calls"] == {"pps": 0, "openai": 0, "teams": 0}
     assert body["delivery"] == {
         "channel": "teams",

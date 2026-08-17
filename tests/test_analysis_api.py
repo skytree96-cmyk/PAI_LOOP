@@ -36,6 +36,9 @@ def test_analysis_batch_persists_and_reuses_snapshot(client: TestClient) -> None
     assert body["results"][0]["requirement_snapshots"] == 23
     assert body["results"][0]["score_snapshots"] == 8
     assert body["results"][0]["recommendation_snapshots"] >= 1
+    assert body["results"][0]["analysis_state"] == "ANALYZED"
+    assert body["results"][0]["analysis_reason_code"] == "ANALYZED"
+    assert body["results"][0]["analysis_reason"]
 
     repeated = client.post(
         "/api/v1/notices/analysis/batch",

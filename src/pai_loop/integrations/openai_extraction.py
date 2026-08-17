@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import unicodedata
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -74,7 +75,36 @@ class ExtractionOutcome(BaseModel):
 
 
 def _normalise_text(value: str) -> str:
-    return " ".join(value.split())
+    # NFC changes representation only, not meaning. HWPX can also carry
+    # zero-width formatting controls between visible characters; remove those
+    # from both sides before applying the strict contiguous check.
+    normalized = unicodedata.normalize("NFC", value)
+    visible = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    return " ".join(visible.split())
+
+
+def _verified_quote_in_source(quote: str, source: str) -> bool:
+    """Allow formatting-only HWPX variance, never fuzzy or semantic matching."""
+
+    normalized_quote = _normalise_text(quote)
+    normalized_source = _normalise_text(source)
+    if not normalized_quote:
+        return False
+    if normalized_quote in normalized_source:
+        return True
+
+    # Some HWPX tables/runs introduce spaces between every visible glyph. A
+    # whitespace-free comparison is still exact in character and punctuation
+    # order, but is allowed only for a substantial anchor to avoid accepting a
+    # coincidental short token. No edit distance, synonym, punctuation folding,
+    # or paraphrase recovery is permitted.
+    compact_quote = "".join(normalized_quote.split())
+    compact_source = "".join(normalized_source.split())
+    return len(compact_quote) >= 8 and compact_quote in compact_source
 
 
 class OpenAIExtractionClient:
@@ -281,7 +311,6 @@ class OpenAIExtractionClient:
                 model=response_model,
             )
 
-        source = _normalise_text(document_text)
         for requirement in data.requirements:
             for anchor in requirement.evidence:
                 if anchor.attachment_id not in allowed_attachment_ids:
@@ -291,7 +320,7 @@ class OpenAIExtractionClient:
                         response_id=response_id,
                         model=response_model,
                     )
-                if not anchor.quote.strip() or _normalise_text(anchor.quote) not in source:
+                if not _verified_quote_in_source(anchor.quote, document_text):
                     return self._review(
                         "UNVERIFIED_QUOTE",
                         "모델의 근거 인용문을 원문에서 확인할 수 없습니다.",

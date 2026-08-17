@@ -182,6 +182,20 @@ class NoticeSummary(ApiModel):
     source_kind: Literal["SYNTHETIC", "PPS", "MANUAL"]
     ingestion_state: Literal["COLLECTED", "VERSIONED", "EVALUATED"]
     analysis_updated_at: datetime | None = None
+    analysis_state: Literal["ANALYZED", "REVIEW", "PENDING"]
+    analysis_reason_code: Literal[
+        "ANALYZED",
+        "ATTACHMENT_NONE",
+        "HWP_ONLY_UNSUPPORTED",
+        "HWPX_EXTRACT_FAILED",
+        "PDF_EXTRACT_FAILED",
+        "OPENAI_REVIEW",
+        "QUOTE_UNVERIFIED",
+        "NOT_SELECTED",
+    ]
+    analysis_reason: str
+    analysis_attachment_count: int = Field(default=0, ge=0, le=10)
+    analysis_attempted: bool = False
     latest_evaluation: EvaluationOut | None = None
     department_ranking: DepartmentRankingOut | None = None
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)

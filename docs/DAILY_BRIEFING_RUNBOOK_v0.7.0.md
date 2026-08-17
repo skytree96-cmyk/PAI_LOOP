@@ -23,7 +23,7 @@
   → ranking score DESC, published_at DESC notice_keys
   → 완료 수집로그와 Teams mock 로그 7일 retention
   → 조직 ranking 상위 공고의 3년 낙찰 이력 갱신(기본 1건, hard max 3)
-  → 상위 최대 3건 첨부 보강(공고당 최대 1개)·평가·snapshot
+  → 최근 7일 미분석 backlog에서 최대 3건 첨부 보강(공고당 최대 1개)·평가·snapshot
   → 최근 7일 브리핑과 Adaptive Card 1.5 조립
   → backend Teams mock 기록(실제 Teams 전송 없음)
 ```
@@ -61,17 +61,36 @@ Backend contract는 기본 `교육`, `컨설팅`과 24개 부서의 첫 unique s
 Workflow는 기존 응답 계약에 더해 `keywords_used`, `provider_queries`,
 `manifests_created`, `manifests_reused`, `attachments_discovered`를 검증한다.
 `notice_keys` 순서는 backend가 latest valid revision만 남긴 후 조직 ranking과
-게시일로 정렬한 결과이므로, n8n은 이 배열의 앞에서 최대 3건만 분석한다.
+게시일로 정렬한 결과다. 분석 대상은 이 배열을 매일 다시 자르는 대신, 같은 실행의
+daily briefing이 제공하는 `analysis_queue`에서 고른다. 큐는 최근 7일 OPEN 공고 중
+분석 snapshot이 없는 건을 우선순위·마감일 순으로 최대 50건 제공하고 n8n이 앞의
+3건을 처리한다. 따라서 미분석 backlog가 매일 순차적으로 줄어들며, 큐 계약이 없는
+이전 backend에서만 ingestion `notice_keys`를 호환 fallback으로 사용한다.
 `COMPLETED`이면 `provider_queries == keywords_used.length`를 요구한다. 190초 backend
 wall budget 등으로 일부 query만 끝나면 `PARTIAL`과 warning을 허용하고, 성공한
 `notice_keys`는 계속 award·analysis로 보내되 최종 workflow 출력에 ingestion 상태와
 경고를 남긴다.
 
-## 상위 3건 분석·첨부 보강
+## 미분석 큐 3건 분석·첨부 보강
+
+공개 목록은 미분석을 한 상태로 뭉개지 않고 다음 사유를 구분한다.
+
+- `NOT_SELECTED`: 폐기·파일 오류가 아니라 아직 bounded 일일 큐에 선택되지 않음;
+- `ATTACHMENT_NONE`: 공개 첨부 manifest에서 분석 가능한 파일을 찾지 못함;
+- `HWP_ONLY_UNSUPPORTED`: 구형 binary HWP만 있어 현재 온라인 추출 경계가 지원하지 않음;
+- `HWPX_EXTRACT_FAILED` / `PDF_EXTRACT_FAILED`: 해당 형식의 다운로드·본문 추출 실패;
+- `QUOTE_UNVERIFIED`: 본문은 읽었지만 LLM 인용문을 원문과 정확히 대조하지 못함;
+- `OPENAI_REVIEW`: 구조화 응답이 검증 계약을 통과하지 못함.
+
+HWPX는 XML paragraph/run을 복원해 문단 경계를 유지하고, NFC·zero-width·공백 차이만
+허용하는 exact anchor 검증을 사용한다. 편집거리·동의어·문장 의역은 근거로 인정하지
+않는다. 구형 HWP는 허위 PASS를 만들지 않고 `HWP_ONLY_UNSUPPORTED`로 격리한다. 운영
+고도화 시 별도 격리 변환 worker에서 HWP→HWPX/PDF 변환 후 동일 SHA·근거 검증 경계를
+다시 통과시키며, 변환 실패는 REVIEW로 유지한다.
 
 ```json
 {
-  "notice_keys": ["ranked notice key, 최대 3건"],
+  "notice_keys": ["analysis_queue의 미분석 notice key, 최대 3건"],
   "dry_run": false,
   "force": false,
   "enrich_missing": true,
@@ -83,6 +102,12 @@ wall budget 등으로 일부 query만 끝나면 `PARTIAL`과 warning을 허용�
 응답의 기존 aggregate/result 계약을 유지하고 선택 필드 `enrichment`를 허용한다.
 새 backend는 다음 요약을 반환한다.
 
+각 `results[]` 행은 공개 가능한 분석 커버리지 필드 `analysis_state`,
+`analysis_reason_code`, `analysis_reason`을 반드시 포함한다. Workflow는 상태를
+`ANALYZED / REVIEW / PENDING`으로, 사유 코드를 backend 공개 enum으로 제한하고,
+빈 값 또는 500자를 넘는 사유를 거부한다. 따라서 첨부 없음·HWP 미지원·추출 실패처럼
+분석 근거가 비어 보이는 이유가 n8n 요약 단계에서 유실되지 않는다.
+
 ```text
 requested, attempted, completed, skipped, failed,
 attachments_discovered, attachments_processed, openai_calls, warnings
@@ -91,7 +116,7 @@ attachments_discovered, attachments_processed, openai_calls, warnings
 Workflow는 처리 합계, 공고당 첨부 1개 상한, OpenAI 실제 호출 수와 전체
 `openai_calls` 일치를 검증한다. 문서 본문·개인정보·provider 원문은 n8n item이나
 Teams card에 싣지 않고 DB의 공개 근거 anchor와 상태 요약만 사용한다.
-상위 3건의 동기 첨부 처리를 위해 n8n HTTP 경계는 최대 10분으로 제한한다. Backend는
+큐에서 고른 3건의 동기 첨부 처리를 위해 n8n HTTP 경계는 최대 10분으로 제한한다. Backend는
 개별 공고 실패를 `FAILED` result와 전체 `PARTIAL`로 반환하므로 성공한 다른 공고의
 결과를 버리지 않는다.
 

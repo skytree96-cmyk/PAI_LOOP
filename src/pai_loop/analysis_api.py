@@ -17,6 +17,7 @@ from .pps_enrichment import (
     PpsEnrichmentResult,
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
+    public_analysis_reason,
 )
 
 
@@ -58,6 +59,18 @@ class AnalysisBatchItemOut(ApiModel):
     requirement_snapshots: int = 0
     score_snapshots: int = 0
     recommendation_snapshots: int = 0
+    analysis_state: Literal["ANALYZED", "REVIEW", "PENDING"] | None = None
+    analysis_reason_code: Literal[
+        "ANALYZED",
+        "ATTACHMENT_NONE",
+        "HWP_ONLY_UNSUPPORTED",
+        "HWPX_EXTRACT_FAILED",
+        "PDF_EXTRACT_FAILED",
+        "OPENAI_REVIEW",
+        "QUOTE_UNVERIFIED",
+        "NOT_SELECTED",
+    ] | None = None
+    analysis_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -197,6 +210,38 @@ def _dry_run_item(request: Request, notice_key: str) -> AnalysisBatchItemOut:
 def _has_accepted_pps_extraction(request: Request, notice_id: str) -> bool:
     with request.app.state.session_factory() as session:
         return has_current_accepted_pps_extraction(session, notice_id)
+
+
+def _attach_public_analysis_reason(
+    request: Request,
+    item: AnalysisBatchItemOut,
+) -> AnalysisBatchItemOut:
+    """Add the same safe coverage reason exposed by notice list/detail APIs."""
+
+    with request.app.state.session_factory() as session:
+        notice = session.scalar(
+            select(Notice)
+            .where(Notice.notice_key == item.notice_key)
+            .options(
+                selectinload(Notice.versions),
+                selectinload(Notice.evaluations),
+            )
+        )
+        if notice is None:
+            return item
+        source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
+        reason = public_analysis_reason(
+            notice.versions,
+            evaluated=bool(notice.evaluations),
+            source_kind=source_kind,
+        )
+    return item.model_copy(
+        update={
+            "analysis_state": reason.state,
+            "analysis_reason_code": reason.reason_code,
+            "analysis_reason": reason.reason,
+        }
+    )
 
 
 def _enrich_one_notice(
@@ -400,6 +445,7 @@ def _execute_notice_analysis_batch(
             )
         )
 
+    rows = [_attach_public_analysis_reason(request, row) for row in rows]
     warnings = sorted({warning for row in rows for warning in row.warnings})
     partial = failed > 0 or enrichment_failed > 0 or any(
         row.document_status not in {"READY", "COMPLETED"} for row in rows

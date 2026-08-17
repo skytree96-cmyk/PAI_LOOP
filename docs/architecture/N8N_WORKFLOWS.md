@@ -198,7 +198,7 @@ workflow가 나중에 활성화되더라도 `PAI_LOOP_DAILY_LIVE_ENABLED=true` �
 2. `POST /api/v1/notices/analysis/batch` — PPS가 반환한 중복 제거 key 중 최대 5건
    (환경 상한 10)의 문서분석·평가·snapshot. 별도 write gate 전에는 `dry_run=true`;
 3. `POST /api/v1/operations/retention` — 기본 preview, 별도 retention gate 후 적용;
-4. `GET /api/v1/operations/daily-briefing?days=7&limit=20` — refresh 후보를 위한 저장 데이터 조립;
+4. `GET /api/v1/operations/daily-briefing?days=7&limit=20` — refresh 후보와 최근 7일 미분석 `analysis_queue` 조립;
 5. `POST /api/v1/notices/{notice_key}/award-history/refresh` — 비-FAIL 상위 최대 3건,
    최근 3년·100행·구간당 1페이지. 별도 write gate 전에는 `dry_run=true`;
 6. 같은 daily-briefing GET 재조회 — 저장 refresh가 있으면 당일 카드에 반영;

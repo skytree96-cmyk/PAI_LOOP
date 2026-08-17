@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -109,6 +110,48 @@ class PpsEnrichmentResult:
     openai_calls: int = 0
     version_id: str | None = None
     warnings: list[str] = field(default_factory=list)
+
+
+AnalysisState = Literal["ANALYZED", "REVIEW", "PENDING"]
+AnalysisReasonCode = Literal[
+    "ANALYZED",
+    "ATTACHMENT_NONE",
+    "HWP_ONLY_UNSUPPORTED",
+    "HWPX_EXTRACT_FAILED",
+    "PDF_EXTRACT_FAILED",
+    "OPENAI_REVIEW",
+    "QUOTE_UNVERIFIED",
+    "NOT_SELECTED",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class PublicAnalysisReason:
+    """A deliberately small, public-safe explanation of analysis coverage.
+
+    Raw provider errors, filenames, URLs, model response identifiers and
+    internal exception names never cross this boundary. The reason is derived
+    only from the current PPS attachment manifest and its latest bound
+    extraction attempt, so a corrected notice cannot inherit stale history.
+    """
+
+    state: AnalysisState
+    reason_code: AnalysisReasonCode
+    reason: str
+    attachment_count: int
+    attempted: bool
+
+
+_PUBLIC_ANALYSIS_MESSAGES: dict[AnalysisReasonCode, str] = {
+    "ANALYZED": "현재 공고 첨부의 근거 추출과 검증이 완료되었습니다.",
+    "ATTACHMENT_NONE": "조달청 공고에서 자동 분석 가능한 공개 첨부를 찾지 못했습니다.",
+    "HWP_ONLY_UNSUPPORTED": "공개 첨부가 구형 HWP뿐이어서 현재 자동 텍스트 추출 대상이 아닙니다.",
+    "HWPX_EXTRACT_FAILED": "HWPX 첨부의 다운로드 또는 텍스트 추출을 완료하지 못했습니다.",
+    "PDF_EXTRACT_FAILED": "PDF 첨부의 다운로드 또는 텍스트 추출을 완료하지 못했습니다.",
+    "OPENAI_REVIEW": "문서는 읽었지만 LLM 구조화 또는 검증 단계를 완료하지 못해 재검토가 필요합니다.",
+    "QUOTE_UNVERIFIED": "LLM이 제시한 인용문을 첨부 원문에서 정확히 대조하지 못했습니다.",
+    "NOT_SELECTED": "아직 일일 분석 대상으로 선택되지 않은 공고입니다.",
+}
 
 
 def _digest(value: Any) -> str:
@@ -430,6 +473,149 @@ def select_preferred_attachments(
     return supported[:limit], []
 
 
+def public_analysis_reason(
+    versions: list[NoticeVersion],
+    *,
+    evaluated: bool = False,
+    source_kind: str = "PPS",
+) -> PublicAnalysisReason:
+    """Classify why a notice is or is not analysed without exposing raw errors.
+
+    ``NOT_SELECTED`` is intentionally distinct from a processing failure. It
+    is the normal state for notices outside the bounded daily analysis slice.
+    """
+
+    def result(
+        state: AnalysisState,
+        code: AnalysisReasonCode,
+        *,
+        attachment_count: int = 0,
+        attempted: bool = False,
+    ) -> PublicAnalysisReason:
+        return PublicAnalysisReason(
+            state=state,
+            reason_code=code,
+            reason=_PUBLIC_ANALYSIS_MESSAGES[code],
+            attachment_count=attachment_count,
+            attempted=attempted,
+        )
+
+    # Curated/manual sources do not use a PPS manifest. Their evaluation is
+    # still a legitimate completed analysis, while an untouched row remains a
+    # pending selection rather than being mislabeled as a missing attachment.
+    if source_kind != "PPS":
+        return result("ANALYZED", "ANALYZED", attempted=True) if evaluated else result(
+            "PENDING", "NOT_SELECTED"
+        )
+
+    ordered = sorted(versions, key=lambda item: item.version_no)
+    metadata = next(
+        (
+            item
+            for item in reversed(ordered)
+            if isinstance(item.source_payload, dict)
+            and item.source_payload.get("kind") == PPS_METADATA_KIND
+            and isinstance(item.source_payload.get("attachment_manifest"), list)
+        ),
+        None,
+    )
+    if metadata is None:
+        # A legacy evaluated PPS row may predate manifest persistence. Do not
+        # regress a known completed result to a false attachment failure.
+        if evaluated:
+            return result("ANALYZED", "ANALYZED", attempted=True)
+        return result("REVIEW", "ATTACHMENT_NONE")
+
+    manifest = [
+        dict(item)
+        for item in metadata.source_payload.get("attachment_manifest", [])
+        if isinstance(item, dict)
+    ]
+    selected, selection_warnings = select_preferred_attachments(manifest, limit=1)
+    attachment_count = len(manifest)
+    if not selected:
+        code: AnalysisReasonCode = (
+            "HWP_ONLY_UNSUPPORTED"
+            if "HWP_ONLY_UNSUPPORTED_R07" in selection_warnings
+            else "ATTACHMENT_NONE"
+        )
+        return result(
+            "REVIEW",
+            code,
+            attachment_count=attachment_count,
+            attempted=code == "HWP_ONLY_UNSUPPORTED",
+        )
+
+    attachment = selected[0]
+    manifest_sha256 = _digest(attachment)
+    attempts = [
+        item
+        for item in ordered
+        if isinstance(item.source_payload, dict)
+        and item.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+        and item.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        and item.source_payload.get("attachment_id") == attachment["attachment_id"]
+        and item.source_payload.get("manifest_sha256") == manifest_sha256
+        and item.source_payload.get("prompt_version") == PROMPT_VERSION
+    ]
+    if not attempts:
+        return result(
+            "PENDING",
+            "NOT_SELECTED",
+            attachment_count=attachment_count,
+        )
+
+    latest = attempts[-1]
+    payload = latest.source_payload
+    if payload.get("status") == "ACCEPTED" and latest.extraction_status in {
+        "ACCEPTED",
+        "COMPLETE",
+    }:
+        return result(
+            "ANALYZED",
+            "ANALYZED",
+            attachment_count=attachment_count,
+            attempted=True,
+        )
+
+    error_code = str(payload.get("error_code") or "")
+    extension = PurePath(str(attachment.get("file_name") or "")).suffix.casefold()
+    if error_code == "UNVERIFIED_QUOTE":
+        code = "QUOTE_UNVERIFIED"
+    elif error_code in {"HWP_ONLY_UNSUPPORTED_R07", "HWP_BINARY_UNSUPPORTED"}:
+        code = "HWP_ONLY_UNSUPPORTED"
+    elif extension == ".hwpx" and (
+        error_code.startswith("HWPX_")
+        or error_code.startswith("ATTACHMENT_")
+        or error_code in {
+            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+            "DOCUMENT_TEXT_TOO_LARGE",
+            "INVALID_CONTENT_LENGTH",
+            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+        }
+    ):
+        code = "HWPX_EXTRACT_FAILED"
+    elif extension == ".pdf" and (
+        error_code.startswith("PDF_")
+        or error_code.startswith("ATTACHMENT_")
+        or error_code in {
+            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+            "DOCUMENT_TEXT_TOO_LARGE",
+            "INVALID_CONTENT_LENGTH",
+            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+        }
+    ):
+        code = "PDF_EXTRACT_FAILED"
+    else:
+        code = "OPENAI_REVIEW"
+    return result(
+        "REVIEW",
+        code,
+        attachment_count=attachment_count,
+        attempted=True,
+    )
+
+
 def download_public_attachment(
     attachment: dict[str, Any],
     *,
@@ -547,11 +733,32 @@ def _extract_hwpx_text(content: bytes) -> str:
                 root = ElementTree.fromstring(archive.read(name))
             except ElementTree.ParseError as exc:
                 raise PpsEnrichmentError("HWPX_XML_INVALID") from exc
-            text = " ".join(value.strip() for value in root.itertext() if value.strip())
-            total += len(text)
-            if total > MAX_DOCUMENT_CHARS:
-                raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
-            if text:
+            # HWPX commonly splits one word across multiple hp:run/hp:t nodes.
+            # Joining every XML text node with a space turns e.g. ``과업지시서``
+            # into ``과 업 지 시 서`` and also removes all paragraph boundaries.
+            # Rebuild each hp:p from its hp:t descendants without inventing
+            # characters, then keep paragraph boundaries for reliable quotes.
+            for paragraph in root.iter():
+                if str(paragraph.tag).rsplit("}", 1)[-1] != "p":
+                    continue
+                fragments: list[str] = []
+                found_text_node = False
+                for text_node in paragraph.iter():
+                    if str(text_node.tag).rsplit("}", 1)[-1] != "t":
+                        continue
+                    found_text_node = True
+                    fragments.extend(text_node.itertext())
+                # Minimal/legacy HWPX producers (and our format fixtures) may
+                # place character data directly below the paragraph element.
+                if not found_text_node:
+                    fragments.extend(paragraph.itertext())
+                text = unicodedata.normalize("NFC", "".join(fragments))
+                text = re.sub(r"\s+", " ", text).strip()
+                if not text:
+                    continue
+                total += len(text) + 1
+                if total > MAX_DOCUMENT_CHARS:
+                    raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
                 parts.append(text)
     return "\n".join(parts).strip()
 

@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.7.0 live procurement evidence slice
+## 현재 구현 범위: v0.7.1 live procurement evidence slice
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 전사 공통 `교육·컨설팅`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위

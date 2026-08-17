@@ -1143,6 +1143,19 @@ svg {
   content: "·";
 }
 
+.notice-analysis-reason {
+  display: -webkit-box;
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #765716;
+  font-size: 8px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .department-priority {
   display: flex;
   width: fit-content;
@@ -1487,6 +1500,18 @@ svg {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.notice-card__analysis-reason {
+  display: -webkit-box;
+  margin-top: 7px;
+  overflow: hidden;
+  color: #765716;
+  font-size: 9px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .notice-card__metrics {
@@ -2323,6 +2348,30 @@ svg {
   color: var(--muted);
   font-size: 7px;
   line-height: 1.55;
+}
+
+.private-match-details {
+  display: grid;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.private-match-details li {
+  display: grid;
+  grid-template-columns: minmax(62px, auto) minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  color: var(--muted);
+  font-size: 7px;
+  line-height: 1.55;
+}
+
+.private-match-details strong {
+  color: var(--ink-soft);
+  font-size: 7px;
+  font-weight: 800;
 }
 
 .private-match-candidates {

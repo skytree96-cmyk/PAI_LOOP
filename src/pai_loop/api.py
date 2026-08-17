@@ -50,6 +50,7 @@ from .pps_enrichment import (
     build_attachment_manifest,
     department_keyword_coverage_count,
     persist_pps_metadata_version,
+    public_analysis_reason,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
 )
@@ -103,6 +104,11 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
     latest = _latest_evaluation(notice)
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     source_kind = _source_kind(notice)
+    analysis_reason = public_analysis_reason(
+        notice.versions,
+        evaluated=latest is not None,
+        source_kind=source_kind,
+    )
     ingestion_state = "EVALUATED" if latest else "VERSIONED" if latest_version else "COLLECTED"
     evaluation = EvaluationOut.model_validate(latest) if latest else None
     if evaluation is not None and public_view:
@@ -127,6 +133,11 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
         source_kind=source_kind,
         ingestion_state=ingestion_state,
         analysis_updated_at=(latest.evaluated_at if latest else latest_version.created_at if latest_version else None),
+        analysis_state=analysis_reason.state,
+        analysis_reason_code=analysis_reason.reason_code,
+        analysis_reason=analysis_reason.reason,
+        analysis_attachment_count=analysis_reason.attachment_count,
+        analysis_attempted=analysis_reason.attempted,
         latest_evaluation=evaluation,
     )
 

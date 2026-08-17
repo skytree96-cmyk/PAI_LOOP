@@ -142,6 +142,42 @@ def test_untrusted_anchor_never_reaches_decision_engine(output: dict, expected_e
     assert outcome.data is None
 
 
+@pytest.mark.parametrize(
+    ("document_text", "quote", "accepted"),
+    [
+        ("부산광역시에 소재한 업체", "부산광역시에 소재한 업체", True),
+        ("입찰\u200b참가 자격 등록을 완료해야 합니다.", "입찰참가 자격 등록을 완료해야 합니다.", True),
+        ("입 찰 참 가 자 격 등 록 을 완료해야 합니다.", "입찰참가자격등록을 완료해야 합니다.", True),
+        ("부 산 업 체", "부산업체", False),
+        ("입찰참가자격등록을 완료해야 합니다.", "별도 회사 증빙 불필요", False),
+    ],
+)
+def test_quote_verification_allows_only_substantial_formatting_variance(
+    document_text: str,
+    quote: str,
+    accepted: bool,
+) -> None:
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json=response_payload(valid_output(quote=quote)),
+            )
+        ),
+        base_url="https://api.openai.test/v1",
+    )
+    outcome = client.extract(
+        document_text=document_text,
+        allowed_attachment_ids={"ATT-1"},
+    )
+    client.close()
+
+    assert (outcome.status == "ACCEPTED") is accepted
+    if not accepted:
+        assert outcome.error_code == "UNVERIFIED_QUOTE"
+
+
 def test_http_error_does_not_expose_server_key() -> None:
     client = OpenAIExtractionClient(
         api_key="DO-NOT-LEAK",

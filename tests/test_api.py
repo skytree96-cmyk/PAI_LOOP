@@ -344,6 +344,13 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
         assert len(notices) == 1
         assert notices[0]["source_kind"] == "PPS"
         assert notices[0]["ingestion_state"] == "VERSIONED"
+        assert notices[0]["analysis_state"] in {"PENDING", "REVIEW"}
+        assert notices[0]["analysis_reason_code"] in {
+            "NOT_SELECTED",
+            "ATTACHMENT_NONE",
+            "HWP_ONLY_UNSUPPORTED",
+        }
+        assert notices[0]["analysis_reason"]
         detail = live_client.get(f"/api/v1/notices/{notices[0]['notice_key']}").json()
         assert "redacted" not in detail["source_url"]
         assert "%2A%2A%2A" in detail["source_url"]

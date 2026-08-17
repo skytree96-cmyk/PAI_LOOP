@@ -9,7 +9,10 @@ import httpx
 import pytest
 
 from pai_loop.pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
+    PPS_METADATA_KIND,
     PpsEnrichmentError,
+    _digest,
     build_attachment_manifest,
     build_notice_metadata,
     download_public_attachment,
@@ -18,12 +21,14 @@ from pai_loop.pps_enrichment import (
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     persist_pps_metadata_version,
+    public_analysis_reason,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
     select_preferred_attachments,
 )
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import (
+    PROMPT_VERSION,
     EvidenceAnchor,
     ExtractedRequirement,
     ExtractionOutcome,
@@ -114,6 +119,107 @@ def test_hwpx_is_extracted_in_memory_with_archive_limits() -> None:
 
     with pytest.raises(PpsEnrichmentError, match="HWP_BINARY_UNSUPPORTED"):
         extract_document_text("제안요청서.hwp", b"binary-hwp")
+
+
+def test_hwpx_preserves_paragraphs_and_does_not_insert_spaces_between_runs() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/hwp+zip")
+        archive.writestr(
+            "Contents/section0.xml",
+            "<hs:sec xmlns:hs='urn:hancom:section' xmlns:hp='urn:hancom:paragraph'>"
+            "<hp:p><hp:run><hp:t>입찰참가</hp:t></hp:run>"
+            "<hp:run><hp:t>자격등록을 완료해야 합니다.</hp:t></hp:run></hp:p>"
+            "<hp:p><hp:run><hp:t>제안설명회 참석이 필수입니다.</hp:t></hp:run></hp:p>"
+            "</hs:sec>",
+        )
+
+    text = extract_document_text("과업지시서.hwpx", buffer.getvalue())
+
+    assert text == "입찰참가자격등록을 완료해야 합니다.\n제안설명회 참석이 필수입니다."
+
+
+def _analysis_versions(
+    extension: str,
+    *,
+    error_code: str | None = None,
+    status: str = "REVIEW",
+) -> list[NoticeVersion]:
+    manifest = build_attachment_manifest(
+        {
+            "bidNtceNo": "R26BK00000009",
+            "bidNtceOrd": "000",
+            "ntceSpecFileNm1": f"제안요청서{extension}",
+            "ntceSpecDocUrl1": G2B_DOWNLOAD,
+        }
+    )
+    metadata = NoticeVersion(
+        notice_id="notice",
+        version_no=1,
+        file_sha256="1" * 64,
+        document_complete=False,
+        extraction_status="METADATA",
+        extraction_confidence=1.0,
+        source_payload={
+            "kind": PPS_METADATA_KIND,
+            "attachment_manifest": manifest,
+        },
+    )
+    if error_code is None and status == "REVIEW":
+        return [metadata]
+    attachment = manifest[0]
+    attempt = NoticeVersion(
+        notice_id="notice",
+        version_no=2,
+        file_sha256="2" * 64,
+        document_complete=status == "ACCEPTED",
+        extraction_status=status,
+        extraction_confidence=1.0 if status == "ACCEPTED" else 0.0,
+        source_payload={
+            "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+            "source_kind": PPS_ATTACHMENT_SOURCE,
+            "attachment_id": attachment["attachment_id"],
+            "manifest_sha256": _digest(attachment),
+            "prompt_version": PROMPT_VERSION,
+            "status": status,
+            "error_code": error_code,
+        },
+    )
+    return [metadata, attempt]
+
+
+@pytest.mark.parametrize(
+    ("extension", "error_code", "status", "reason_code"),
+    [
+        (".pdf", None, "REVIEW", "NOT_SELECTED"),
+        (".hwp", None, "REVIEW", "HWP_ONLY_UNSUPPORTED"),
+        (".hwpx", "HWPX_XML_INVALID", "REVIEW", "HWPX_EXTRACT_FAILED"),
+        (".pdf", "PDF_TEXT_EXTRACTION_FAILED", "REVIEW", "PDF_EXTRACT_FAILED"),
+        (".hwpx", "UNVERIFIED_QUOTE", "REVIEW", "QUOTE_UNVERIFIED"),
+        (".pdf", "SCHEMA_VALIDATION_ERROR", "REVIEW", "OPENAI_REVIEW"),
+        (".pdf", None, "ACCEPTED", "ANALYZED"),
+    ],
+)
+def test_public_analysis_reason_is_current_manifest_bound_and_public_safe(
+    extension: str,
+    error_code: str | None,
+    status: str,
+    reason_code: str,
+) -> None:
+    reason = public_analysis_reason(
+        _analysis_versions(extension, error_code=error_code, status=status)
+    )
+
+    assert reason.reason_code == reason_code
+    assert reason.state == (
+        "ANALYZED"
+        if reason_code == "ANALYZED"
+        else "PENDING"
+        if reason_code == "NOT_SELECTED"
+        else "REVIEW"
+    )
+    assert "http" not in reason.reason.casefold()
+    assert "PPS-ATT" not in reason.reason
 
 
 def test_download_rejects_unsafe_redirect_and_limits_bytes() -> None:

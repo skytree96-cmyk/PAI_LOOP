@@ -230,6 +230,10 @@ def daily_briefing(
         )
     )
     selected = items[:limit]
+    # Keep the operator-facing ranking separate from the bounded analysis queue.
+    # The latter must advance through the backlog instead of repeatedly sending
+    # the same top three newly-ingested notices to the enrichment pipeline.
+    pending_analysis = [item for item in items if item["analysis_snapshot"] is None]
     eligibility_counts = dict(Counter(item["fit"]["eligibility"] for item in selected))
     return {
         "schema_version": "1.0",
@@ -249,6 +253,13 @@ def daily_briefing(
             "eligibility": eligibility_counts,
         },
         "notices": selected,
+        "analysis_queue": {
+            "policy": "NOT_ANALYZED_FIRST",
+            "pending_total": len(pending_analysis),
+            "notice_keys": [item["notice_key"] for item in pending_analysis[:50]],
+            "limit": 50,
+            "note": "최근 7일의 진행 공고 중 분석 스냅샷이 없는 건을 우선순위·마감일 순으로 제공합니다.",
+        },
         "delivery": {
             "channel": "teams",
             "mode": "mock",
