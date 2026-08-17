@@ -63,8 +63,9 @@ Workflow는 기존 응답 계약에 더해 `keywords_used`, `provider_queries`,
 `notice_keys` 순서는 backend가 latest valid revision만 남긴 후 조직 ranking과
 게시일로 정렬한 결과다. 분석 대상은 이 배열을 매일 다시 자르는 대신, 같은 실행의
 daily briefing이 제공하는 `analysis_queue`에서 고른다. 큐는 최근 7일 OPEN 공고 중
-분석 snapshot이 없는 건을 우선순위·마감일 순으로 최대 50건 제공하고 n8n이 앞의
-3건을 처리한다. 따라서 미분석 backlog가 매일 순차적으로 줄어들며, 큐 계약이 없는
+`NOT_SELECTED` 미시도 건을 먼저, 재처리 가능한 실패 건은 가장 오래된 시도부터 최대
+50건 제공하고 n8n이 앞의 3건을 처리한다. 첨부 없음·구형 HWP 전용은 manifest가
+바뀔 때까지 자동 재시도하지 않아 실패 3건이 큐를 독점하지 않는다. 큐 계약이 없는
 이전 backend에서만 ingestion `notice_keys`를 호환 fallback으로 사용한다.
 `COMPLETED`이면 `provider_queries == keywords_used.length`를 요구한다. 190초 backend
 wall budget 등으로 일부 query만 끝나면 `PARTIAL`과 warning을 허용하고, 성공한
