@@ -15,7 +15,10 @@ from . import __version__
 from .api import router
 from .config import Settings
 from .database import Base, build_engine, build_session_factory
+from .daily_operations import router as daily_operations_router
 from .demo import seed_synthetic_replay
+from .public_performance import public_performance_router
+from .quantitative_scoring import quantitative_scoring_router
 from .schemas import HealthResponse
 
 
@@ -29,7 +32,13 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             cors_origins=settings.cors_origins,
             log_level=settings.log_level,
             api_key=settings.api_key,
+            public_read_only=settings.public_read_only,
+            openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
+            pps_api_key=settings.pps_api_key,
+            pps_base_url=settings.pps_base_url,
+            pps_notice_operation=settings.pps_notice_operation,
+            pps_award_operation=settings.pps_award_operation,
         )
     settings.validate_security()
     settings.ensure_local_directories()
@@ -50,7 +59,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         summary="근거 우선 공공입찰 의사결정 지원",
         description=(
             "LLM은 조건을 구조화하고, 이 API의 결정론적 규칙 엔진이 "
-            "마감일 기준 증빙으로 PASS/REVIEW/DEFAULT FAIL을 판정합니다."
+            "마감일 기준 증빙으로 PASS/REVIEW/FAIL을 판정하며, 기본 실패 사유는 DF-000으로 구분합니다."
         ),
         version=__version__,
         lifespan=lifespan,
@@ -68,6 +77,9 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         allow_headers=["*"],
     )
     application.include_router(router)
+    application.include_router(public_performance_router)
+    application.include_router(daily_operations_router)
+    application.include_router(quantitative_scoring_router)
 
     @application.get("/healthz", response_model=HealthResponse, tags=["operations"])
     def health(request: Request) -> HealthResponse:

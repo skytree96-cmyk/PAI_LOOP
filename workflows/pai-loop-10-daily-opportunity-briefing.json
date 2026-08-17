@@ -1,0 +1,350 @@
+{
+  "name": "PAI_LOOP 10 - Daily Opportunity Briefing",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2920,
+        "height": 300,
+        "color": 7,
+        "content": "# 10 · Daily Opportunity Briefing · 운영 진입점\n\n매일 **09:00 Asia/Seoul**에 공고 수집 → 저장 평가/부서 우선순위 → 3년 낙찰·가격·정량 정보(있을 때) → 7일 피드/로그 정리 → Teams Adaptive Card mock을 한 흐름으로 조립합니다.\n\n현재 workflow와 모든 외부 gate는 비활성입니다. `Run Complete Offline Dry-Run`은 PPS·OpenAI·Teams·backend를 한 번도 호출하지 않고 전체 카드 계약을 검증합니다."
+      },
+      "id": "daily-note-overview",
+      "name": "Daily briefing overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1380, -640]
+    },
+    {
+      "parameters": {
+        "width": 1500,
+        "height": 360,
+        "color": 5,
+        "content": "## 외부 호출 Gate · 기본값 모두 false\n\n- `PAI_LOOP_DAILY_LIVE_ENABLED=true`: 예약 실행에서만 backend PPS 수집 경로 허용\n- `PAI_LOOP_RETENTION_LIVE_ENABLED=true`: 완료 수집 로그·mock 알림의 7일 초과분만 삭제\n- `PAI_LOOP_API_BASE_URL`, `PAI_LOOP_API_KEY`: n8n credential/env에서만 주입\n- PPS/OpenAI/Teams 자격증명이나 webhook은 이 export에 없음\n\n수동 실행은 환경변수와 무관하게 `manual-fixture`, source call 0, actual push false입니다."
+      },
+      "id": "daily-note-gates",
+      "name": "Safety gates",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1380, -300]
+    },
+    {
+      "parameters": {
+        "width": 1380,
+        "height": 360,
+        "color": 6,
+        "content": "## 7일은 ‘아침 피드 + 단기 운영 로그’ 범위\n\n공고 원장·평가·담당자 결정·3년 낙찰 관측을 지우면 감사와 가격 분석이 무너집니다. 따라서 7일 창은 아침 피드 조회와 완료 ingestion job/mock 알림에만 적용합니다. 핵심 의사결정 기록은 보존합니다.\n\n이 카드에는 선택적 `quantitative_estimate`/`pricing_intelligence` 필드가 있으면 표시하고, 없으면 `분석 대기`로 남깁니다. 근거 없는 숫자를 만들지 않습니다."
+      },
+      "id": "daily-note-retention",
+      "name": "Retention and optional intelligence",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [160, -300]
+    },
+    {
+      "parameters": {},
+      "id": "daily-manual-trigger",
+      "name": "Run Complete Offline Dry-Run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1320, 480]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "daily-schedule-trigger",
+      "name": "Every Day 09:00 KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1320, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { runtime: { executionMode: 'manual-fixture', timezone: 'Asia/Seoul', retentionDays: 7, webBaseUrl: 'https://example.invalid/pai-loop', backendConfigured: false, dailyLiveEnabled: false, retentionLiveEnabled: false, externalCallsAllowed: false } } }];"
+      },
+      "id": "daily-manual-context",
+      "name": "Force Zero-Call Manual Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1080, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst enabled = (name) => read(name).toLowerCase() === 'true';\nconst safeUrl = (raw, name, fallback = '') => {\n  if (!raw) return fallback;\n  const parsed = new URL(raw);\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error(`${name} is unsafe`);\n  return parsed.toString().replace(/\\/+$/, '');\n};\nconst apiBaseUrl = safeUrl(read('PAI_LOOP_API_BASE_URL'), 'PAI_LOOP_API_BASE_URL');\nconst webBaseUrl = safeUrl(read('PAI_LOOP_WEB_BASE_URL'), 'PAI_LOOP_WEB_BASE_URL', 'https://example.invalid/pai-loop');\nconst backendConfigured = apiBaseUrl.length > 0;\nconst dailyLiveEnabled = backendConfigured && enabled('PAI_LOOP_DAILY_LIVE_ENABLED');\nconst retentionLiveEnabled = dailyLiveEnabled && enabled('PAI_LOOP_RETENTION_LIVE_ENABLED');\nreturn [{ json: { runtime: { executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-safe-preview', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl, webBaseUrl, backendConfigured, dailyLiveEnabled, retentionLiveEnabled, externalCallsAllowed: dailyLiveEnabled } } }];"
+      },
+      "id": "daily-scheduled-context",
+      "name": "Scheduled Runtime Gates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1080, 760]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-live-condition",
+              "leftValue": "={{ $json.runtime.dailyLiveEnabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-live-gate",
+      "name": "Scheduled Live Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-820, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "const runtime = $json.runtime;\nconst now = new Date();\nconst generatedAt = now.toISOString();\nconst daysAgo = new Date(now.getTime() - 6 * 86400000).toISOString();\nconst notices = [\n  { notice_key: 'FIXTURE-EDU-001', bid_notice_no: 'FIXTURE-2026-001', title: '[합성] 공공기관 AI 역량강화 교육 및 컨설팅', agency: '가상 인재개발원', published_at: daysAgo, deadline: new Date(now.getTime() + 9 * 86400000).toISOString(), estimated_amount: 180000000, priority_score: 91, fit: { eligibility: 'PASS', reason_code: 'P-ENTITY', readiness_score: 88, readiness_status: 'GREEN', evidence_coverage: 92, risk_band: 'GO' }, top_departments: [{ department_id: 'ai_future_education', department_name: 'AI미래교육본부', score: 86, priority: 'HIGH' }], award_snapshot: { observations: 4, distinct_winners: 2, dominant_winner: '가상 수행기관 A', dominant_share_pct: 75, median_award_rate_pct: 87.42 }, quantitative_estimate: { estimated_points: 82, max_points: 100, coverage_pct: 90, confidence: 'MEDIUM', opinion: '공개 실적 기준 예상치이며 증빙 원문 확인이 필요합니다.' }, pricing_intelligence: { observation_count: 4, predicted_award_rate_pct: 87.35, lower_rate_pct: 86.9, upper_rate_pct: 87.8, confidence: 'MEDIUM' } },\n  { notice_key: 'FIXTURE-CONSULT-002', bid_notice_no: 'FIXTURE-2026-002', title: '[합성] 지역 일자리 정책 연구 및 컨설팅', agency: '가상 지방자치단체', published_at: generatedAt, deadline: new Date(now.getTime() + 6 * 86400000).toISOString(), estimated_amount: 95000000, priority_score: 76, fit: { eligibility: 'REVIEW', reason_code: 'R01', readiness_score: 74, readiness_status: 'YELLOW', evidence_coverage: 70, risk_band: 'CONDITIONAL_GO' }, top_departments: [{ department_id: 'job_creation', department_name: '일자리창출본부', score: 68, priority: 'HIGH' }], award_snapshot: { observations: 0, distinct_winners: 0, dominant_winner: null, dominant_share_pct: null, median_award_rate_pct: null }, quantitative_estimate: null, pricing_intelligence: null }\n];\nreturn [{ json: { schema_version: '1.0', generated_at: generatedAt, timezone: 'Asia/Seoul', window: { days: 7, from: new Date(now.getTime() - 7 * 86400000).toISOString(), to: generatedAt }, totals: { observed: notices.length, included: notices.length, pending_or_review: 1, eligibility: { PASS: 1, REVIEW: 1 } }, notices, delivery: { channel: 'teams', mode: 'mock', actual_push_sent: false }, source_calls: { pps: 0, openai: 0, teams: 0 }, runtime, retention: { days: 7, mode: 'preview', eligible: { ingestion_jobs: 2, mock_notifications: 1 }, deleted: { ingestion_jobs: 0, mock_notifications: 0 }, canonical_records_preserved: true } } }];"
+      },
+      "id": "daily-fixture",
+      "name": "Build Seven-Day Offline Fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-540, 540]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/ingestion/pps/notices' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-LOOP-API-KEY",
+              "value": "={{ $env.PAI_LOOP_API_KEY }}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'daily:' + $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd') }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ from_date: $now.setZone('Asia/Seoul').minus({ days: 1 }).toFormat('yyyy-MM-dd'), to_date: $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd'), page_size: 100, max_pages: 3, dry_run: false }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "daily-refresh-pps",
+      "name": "Refresh PPS Notices Behind Gate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-540, 920],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/operations/retention' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-LOOP-API-KEY",
+              "value": "={{ $env.PAI_LOOP_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ retention_days: 7, dry_run: $node['Scheduled Runtime Gates'].json.runtime.retentionLiveEnabled !== true }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-retention",
+      "name": "Preview or Apply Seven-Day Log Retention",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-280, 920]
+    },
+    {
+      "parameters": {
+        "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=20' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-LOOP-API-KEY",
+              "value": "={{ $env.PAI_LOOP_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-fetch-briefing",
+      "name": "Fetch Ranked Seven-Day Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-20, 920]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nreturn [{ json: { ...body, runtime, retention: { days: 7, mode: runtime.retentionLiveEnabled ? 'applied' : 'preview', canonical_records_preserved: true } } }];"
+      },
+      "id": "daily-attach-live-context",
+      "name": "Attach Live Runtime Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 920]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (input.timezone !== 'Asia/Seoul' || Number(input.window?.days) !== 7) throw new Error('briefing must use Asia/Seoul and a seven-day window');\nconst notices = Array.isArray(input.notices) ? input.notices.slice(0, 20) : [];\nconst sorted = notices.sort((a, b) => Number(b.priority_score ?? 0) - Number(a.priority_score ?? 0));\nconst enriched = sorted.map((notice) => ({ ...notice, quantitative_estimate: notice.quantitative_estimate ?? notice.quantitative_score ?? null, pricing_intelligence: notice.pricing_intelligence ?? notice.pricing_prediction ?? null }));\nreturn [{ json: { ...input, notices: enriched, totals: { ...(input.totals ?? {}), included: enriched.length }, enrichment_contract: { quantitative: 'optional-evidence-bound', pricing: 'optional-observation-bound', missing_value_policy: 'PENDING_NOT_INVENTED' } } }];"
+      },
+      "id": "daily-normalize",
+      "name": "Normalize Optional Quant and Pricing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst top = input.notices.slice(0, 6);\nconst won = (value) => value == null ? '미정' : `${new Intl.NumberFormat('ko-KR').format(Number(value))}원`;\nconst lines = top.map((item, index) => {\n  const fit = item.fit ?? {};\n  const dept = item.top_departments?.[0];\n  const quant = item.quantitative_estimate;\n  const pricing = item.pricing_intelligence;\n  const qEstimate = quant?.estimated_points ?? quant?.estimated_score;\n  const qMax = quant?.total_max_points ?? quant?.max_points ?? quant?.maximum_score;\n  const qRange = quant && quant.lower_points != null && quant.upper_points != null ? ` · ${quant.lower_points}~${quant.upper_points}` : '';\n  const qText = quant && qEstimate != null ? `${qEstimate} / ${qMax ?? '?'}점${qRange}` : '분석 대기';\n  const awardRate = pricing?.prediction?.award_rate;\n  const rate = awardRate?.center ?? pricing?.predicted_award_rate_pct ?? pricing?.predicted_rate_pct ?? item.award_snapshot?.median_award_rate_pct;\n  const rateRange = awardRate && awardRate.range_low != null && awardRate.range_high != null ? ` (${Number(awardRate.range_low).toFixed(2)}~${Number(awardRate.range_high).toFixed(2)}%)` : '';\n  const priceText = rate == null ? '관측 부족' : `예상/중앙 낙찰률 ${Number(rate).toFixed(2)}%${rateRange}`;\n  return { type: 'Container', separator: index > 0, spacing: 'Medium', items: [\n    { type: 'TextBlock', text: `${index + 1}. ${String(item.title ?? '').slice(0, 180)}`, weight: 'Bolder', wrap: true },\n    { type: 'FactSet', facts: [\n      { title: '발주기관', value: String(item.agency ?? '미상') },\n      { title: '부서 우선순위', value: dept ? `${dept.department_name ?? dept.name ?? '부서'} · ${dept.score ?? 0}점` : '미분류' },\n      { title: '적합성', value: `${fit.eligibility ?? 'PENDING'} · ${fit.readiness_status ?? 'GRAY'}` },\n      { title: '정량 예상', value: qText },\n      { title: '가격 신호', value: priceText },\n      { title: '추정금액', value: won(item.estimated_amount) }\n    ] }\n  ] };\n});\nconst webBaseUrl = String(input.runtime?.webBaseUrl ?? 'https://example.invalid/pai-loop');\nconst card = { '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.5', msteams: { width: 'Full' }, body: [\n  { type: 'TextBlock', text: 'PAI_LOOP · 오전 9시 공고 브리핑', size: 'Large', weight: 'Bolder', color: 'Accent', wrap: true },\n  { type: 'TextBlock', text: `최근 7일 ${input.totals?.observed ?? input.notices.length}건 · 오늘 표시 ${input.notices.length}건 · 실제 Teams 전송 없음`, wrap: true, isSubtle: true },\n  ...lines,\n  { type: 'TextBlock', text: '정량점수와 가격은 공개 근거·관측치 기반 예상입니다. 원문과 증빙을 확인한 담당자가 최종 판단합니다.', wrap: true, size: 'Small', isSubtle: true, spacing: 'Large' }\n], actions: [{ type: 'Action.OpenUrl', title: '웹에서 근거 확인', url: webBaseUrl }] };\nreturn [{ json: { ...input, adaptiveCard: card, teamsWebhookPayload: { type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: card }] } } }];"
+      },
+      "id": "daily-build-card",
+      "name": "Build Consolidated Teams Adaptive Card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst containers = input.adaptiveCard.body.filter((item) => item.type === 'Container');\ninput.notices.slice(0, containers.length).forEach((notice, index) => {\n  const factSet = containers[index].items?.find((item) => item.type === 'FactSet');\n  if (!factSet || !Array.isArray(factSet.facts)) return;\n  const quant = notice.quantitative_estimate;\n  const quantFact = factSet.facts.find((fact) => fact.title === '정량 예상');\n  if (quantFact && quant?.total_max_points != null && quant?.estimated_points == null && quant?.lower_points != null && quant?.upper_points != null) {\n    quantFact.value = String(quant.lower_points) + '~' + String(quant.upper_points) + ' / ' + String(quant.total_max_points) + '점';\n  }\n  const concentration = notice.pricing_intelligence?.concentration;\n  const top = concentration?.top_winner;\n  let signal = null;\n  if (top?.winner_name && top?.count != null && top?.share != null) {\n    signal = '표본 상위 ' + top.winner_name + ' · ' + top.count + '건 / ' + (Number(top.share) * 100).toFixed(1) + '%';\n  } else if (notice.award_snapshot?.dominant_winner && notice.award_snapshot?.dominant_share_pct != null) {\n    signal = '표본 상위 ' + notice.award_snapshot.dominant_winner + ' · ' + Number(notice.award_snapshot.dominant_share_pct).toFixed(1) + '%';\n  } else if (concentration?.hhi_interpretation) {\n    signal = '표본 HHI ' + concentration.hhi_interpretation;\n  }\n  if (signal) factSet.facts.push({ title: '표본 집중도', value: signal + ' · 독점 확정 아님' });\n});\ninput.teamsWebhookPayload.attachments[0].content = input.adaptiveCard;\nreturn [{ json: input }];"
+      },
+      "id": "daily-card-signals",
+      "name": "Render Score Range and Sample Concentration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nreturn [{ json: { ...input, pushMock: { status: 'MOCK_RECORDED', channel: 'teams', delivery_mode: 'mock', actualTeamsRequestSent: false, actualPushSent: false, correlation_id: `daily-mock:${new Date().toISOString().slice(0, 10)}` } } }];"
+      },
+      "id": "daily-mock-push",
+      "name": "Record One Push Mock Locally",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 680]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (input.adaptiveCard?.type !== 'AdaptiveCard' || input.adaptiveCard?.version !== '1.5') throw new Error('Adaptive Card 1.5 required');\nconst bytes = new TextEncoder().encode(JSON.stringify(input.adaptiveCard)).length;\nif (bytes > 28 * 1024) throw new Error('Adaptive Card exceeds 28KB');\nif (input.pushMock?.actualTeamsRequestSent !== false || input.pushMock?.actualPushSent !== false) throw new Error('push must remain mock');\nif (Number(input.window?.days) !== 7 || Number(input.retention?.days) !== 7) throw new Error('seven-day policy required');\nif (input.runtime?.executionMode === 'manual-fixture') {\n  const calls = input.source_calls ?? {};\n  if (Number(calls.pps ?? 0) + Number(calls.openai ?? 0) + Number(calls.teams ?? 0) !== 0) throw new Error('manual fixture made an external source call');\n  if (input.runtime.externalCallsAllowed !== false) throw new Error('manual fixture external gate must be closed');\n}\nreturn [{ json: { schemaVersion: '1.0', status: 'DRY_RUN_PASSED', executionMode: input.runtime?.executionMode, schedule: { cron: '0 9 * * *', timezone: 'Asia/Seoul', workflowActive: false }, retention: input.retention, briefing: { generatedAt: input.generated_at, window: input.window, totals: input.totals, noticeKeys: input.notices.map((item) => item.notice_key) }, enrichmentContract: input.enrichment_contract, adaptiveCard: input.adaptiveCard, teamsWebhookPayload: input.teamsWebhookPayload, externalCalls: input.source_calls ?? { backend: 3, pps: 'backend-gated', openai: 0, teams: 0 }, actualTeamsRequestSent: false, actualPushSent: false } }];"
+      },
+      "id": "daily-validate",
+      "name": "Validate Complete Dry-Run Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 680]
+    },
+    {
+      "parameters": {},
+      "id": "daily-complete",
+      "name": "Inactive and Ready for Review",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1760, 680]
+    }
+  ],
+  "connections": {
+    "Run Complete Offline Dry-Run": {
+      "main": [[{"node": "Force Zero-Call Manual Context", "type": "main", "index": 0}]]
+    },
+    "Force Zero-Call Manual Context": {
+      "main": [[{"node": "Build Seven-Day Offline Fixture", "type": "main", "index": 0}]]
+    },
+    "Every Day 09:00 KST": {
+      "main": [[{"node": "Scheduled Runtime Gates", "type": "main", "index": 0}]]
+    },
+    "Scheduled Runtime Gates": {
+      "main": [[{"node": "Scheduled Live Gate Open?", "type": "main", "index": 0}]]
+    },
+    "Scheduled Live Gate Open?": {
+      "main": [
+        [{"node": "Refresh PPS Notices Behind Gate", "type": "main", "index": 0}],
+        [{"node": "Build Seven-Day Offline Fixture", "type": "main", "index": 0}]
+      ]
+    },
+    "Refresh PPS Notices Behind Gate": {
+      "main": [[{"node": "Preview or Apply Seven-Day Log Retention", "type": "main", "index": 0}]]
+    },
+    "Preview or Apply Seven-Day Log Retention": {
+      "main": [[{"node": "Fetch Ranked Seven-Day Briefing", "type": "main", "index": 0}]]
+    },
+    "Fetch Ranked Seven-Day Briefing": {
+      "main": [[{"node": "Attach Live Runtime Contract", "type": "main", "index": 0}]]
+    },
+    "Attach Live Runtime Contract": {
+      "main": [[{"node": "Normalize Optional Quant and Pricing", "type": "main", "index": 0}]]
+    },
+    "Build Seven-Day Offline Fixture": {
+      "main": [[{"node": "Normalize Optional Quant and Pricing", "type": "main", "index": 0}]]
+    },
+    "Normalize Optional Quant and Pricing": {
+      "main": [[{"node": "Build Consolidated Teams Adaptive Card", "type": "main", "index": 0}]]
+    },
+    "Build Consolidated Teams Adaptive Card": {
+      "main": [[{"node": "Render Score Range and Sample Concentration", "type": "main", "index": 0}]]
+    },
+    "Render Score Range and Sample Concentration": {
+      "main": [[{"node": "Record One Push Mock Locally", "type": "main", "index": 0}]]
+    },
+    "Record One Push Mock Locally": {
+      "main": [[{"node": "Validate Complete Dry-Run Contract", "type": "main", "index": 0}]]
+    },
+    "Validate Complete Dry-Run Contract": {
+      "main": [[{"node": "Inactive and Ready for Review", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

@@ -47,6 +47,16 @@ class Notice(Base, TimestampMixin):
     decisions: Mapped[list["UserDecision"]] = relationship(
         back_populates="notice", cascade="all, delete-orphan", order_by="UserDecision.created_at"
     )
+    mock_notifications: Mapped[list["MockNotification"]] = relationship(
+        back_populates="notice",
+        cascade="all, delete-orphan",
+        order_by="MockNotification.created_at",
+    )
+    award_history: Mapped[list["AwardHistoryItem"]] = relationship(
+        back_populates="target_notice",
+        cascade="all, delete-orphan",
+        order_by="AwardHistoryItem.awarded_at",
+    )
 
 
 class NoticeVersion(Base):
@@ -179,3 +189,80 @@ class UserDecision(Base):
     notice: Mapped[Notice] = relationship(back_populates="decisions")
     evaluation: Mapped[Evaluation] = relationship(back_populates="decisions")
 
+
+class IngestionJob(Base):
+    """Sanitised operational audit for a bounded source ingestion run.
+
+    Raw provider payloads and credentials are deliberately not persisted here.
+    """
+
+    __tablename__ = "ingestion_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source: Mapped[str] = mapped_column(String(32), default="PPS", index=True)
+    mode: Mapped[str] = mapped_column(String(24), default="LIVE", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="RUNNING", index=True)
+    window_json: Mapped[dict[str, str]] = mapped_column(JSON)
+    keyword: Mapped[str | None] = mapped_column(String(100))
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    api_calls: Mapped[int] = mapped_column(Integer, default=0)
+    fetched: Mapped[int] = mapped_column(Integer, default=0)
+    matched: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    quarantined_count: Mapped[int] = mapped_column(Integer, default=0)
+    notice_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MockNotification(Base):
+    """Local Teams-shaped delivery record used until tenant approval exists."""
+
+    __tablename__ = "mock_notifications"
+    __table_args__ = (UniqueConstraint("correlation_id", name="uq_mock_notification_correlation"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    notice_id: Mapped[str] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="teams")
+    delivery_mode: Mapped[str] = mapped_column(String(16), default="mock")
+    status: Mapped[str] = mapped_column(String(24), default="RECORDED", index=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    card: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    notice: Mapped[Notice] = relationship(back_populates="mock_notifications")
+
+
+class AwardHistoryItem(Base):
+    """Public winning-bid fact linked as a similarity candidate to one notice."""
+
+    __tablename__ = "award_history_items"
+    __table_args__ = (
+        UniqueConstraint("target_notice_id", "external_identity", name="uq_notice_award_identity"),
+        Index("ix_award_history_target_date", "target_notice_id", "awarded_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    target_notice_id: Mapped[str] = mapped_column(
+        ForeignKey("notices.id", ondelete="CASCADE"), index=True
+    )
+    external_identity: Mapped[str] = mapped_column(String(220))
+    bid_notice_no: Mapped[str] = mapped_column(String(80), index=True)
+    revision_no: Mapped[str] = mapped_column(String(20), default="000")
+    title: Mapped[str] = mapped_column(String(500))
+    agency: Mapped[str] = mapped_column(String(255), default="")
+    winner_name: Mapped[str] = mapped_column(String(255))
+    participant_count: Mapped[int | None] = mapped_column(Integer)
+    award_amount: Mapped[float | None] = mapped_column(Float)
+    award_rate: Mapped[float | None] = mapped_column(Float)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    awarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    similarity_score: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32), default="PPS")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    target_notice: Mapped[Notice] = relationship(back_populates="award_history")

@@ -92,9 +92,59 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
         "estimated_amount": _number(
             item.get("presmptPrce") or item.get("asignBdgtAmt") or item.get("estimated_amount")
         ),
-        "source_url": item.get("bidNtceUrl") or item.get("source_url"),
+        "source_url": (
+            item.get("bidNtceDtlUrl")
+            or item.get("bidNtceUrl")
+            or item.get("source_url")
+        ),
         "raw": item,
     }
+
+
+def parse_paged_response(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """Validate the common PPS envelope and return object items plus total count."""
+
+    if "OpenAPI_ServiceResponse" in payload:
+        envelope = payload.get("OpenAPI_ServiceResponse")
+        header = envelope.get("cmmMsgHeader", {}) if isinstance(envelope, dict) else {}
+        message = (
+            header.get("errMsg")
+            or header.get("returnAuthMsg")
+            or "OpenAPI service error"
+        ) if isinstance(header, dict) else "OpenAPI service error"
+        raise PpsApiError(f"PPS API service error: {str(message)[:300]}")
+    response = payload.get("response")
+    if not isinstance(response, dict):
+        raise PpsApiError("PPS API 표준 response envelope가 없습니다.")
+    header = response.get("header")
+    body = response.get("body")
+    if not isinstance(header, dict) or "resultCode" not in header:
+        raise PpsApiError("PPS API response.header/resultCode가 없습니다.")
+    if not isinstance(body, dict):
+        raise PpsApiError("PPS API response.body가 없습니다.")
+    result_code = str(header["resultCode"])
+    if result_code not in {"0", "00"}:
+        message = str(header.get("resultMsg", "unknown PPS error"))[:300]
+        raise PpsApiError(f"PPS API resultCode={result_code}: {message}")
+    if "totalCount" not in body:
+        raise PpsApiError("PPS API response.body/totalCount가 없습니다.")
+    item_container = body.get("items", {})
+    if isinstance(item_container, list):
+        raw_items = item_container
+    elif isinstance(item_container, dict):
+        raw_items = item_container.get("item", [])
+    else:
+        raw_items = []
+    if isinstance(raw_items, dict):
+        raw_items = [raw_items]
+    if not isinstance(raw_items, list):
+        raise PpsApiError("PPS API items.item 형식이 배열이 아닙니다.")
+    items = [item for item in raw_items if isinstance(item, dict)]
+    try:
+        total = int(body["totalCount"] or 0)
+    except (TypeError, ValueError) as exc:
+        raise PpsApiError("PPS API totalCount가 숫자가 아닙니다.") from exc
+    return items, total
 
 
 class PpsClient:
@@ -123,6 +173,8 @@ class PpsClient:
         self._service_key = unquote(service_key)
         self._max_retries = max_retries
         self._sleep = sleep
+        self.request_count = 0
+        self.hit_page_limit = False
         self._client = httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout_seconds,
@@ -142,6 +194,7 @@ class PpsClient:
         request_params = {**params, "serviceKey": self._service_key, "type": "json"}
         for attempt in range(self._max_retries + 1):
             try:
+                self.request_count += 1
                 response = self._client.get(operation_path.lstrip("/"), params=request_params)
             except httpx.RequestError as exc:
                 if attempt >= self._max_retries:
@@ -172,10 +225,14 @@ class PpsClient:
         rows: int = 100,
         max_window_days: int = 30,
         inquiry_division: str = "1",
+        max_pages: int | None = None,
         extra_params: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         if not 1 <= rows <= 999:
             raise ValueError("rows must be between 1 and 999")
+        if max_pages is not None and max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        self.hit_page_limit = False
         for window in split_date_range(start, end, max_days=max_window_days):
             page = 1
             while True:
@@ -193,50 +250,12 @@ class PpsClient:
                         "numOfRows": rows,
                     },
                 )
-                if "OpenAPI_ServiceResponse" in payload:
-                    envelope = payload.get("OpenAPI_ServiceResponse")
-                    header = envelope.get("cmmMsgHeader", {}) if isinstance(envelope, dict) else {}
-                    message = (
-                        header.get("errMsg")
-                        or header.get("returnAuthMsg")
-                        or "OpenAPI service error"
-                    ) if isinstance(header, dict) else "OpenAPI service error"
-                    raise PpsApiError(f"PPS API service error: {str(message)[:300]}")
-                response = payload.get("response")
-                if not isinstance(response, dict):
-                    raise PpsApiError("PPS API 표준 response envelope가 없습니다.")
-                header = response.get("header")
-                body = response.get("body")
-                if not isinstance(header, dict) or "resultCode" not in header:
-                    raise PpsApiError("PPS API response.header/resultCode가 없습니다.")
-                if not isinstance(body, dict):
-                    raise PpsApiError("PPS API response.body가 없습니다.")
-                result_code = str(header["resultCode"])
-                if result_code not in {"0", "00"}:
-                    message = str(header.get("resultMsg", "unknown PPS error"))[:300]
-                    raise PpsApiError(f"PPS API resultCode={result_code}: {message}")
-                if "totalCount" not in body:
-                    raise PpsApiError("PPS API response.body/totalCount가 없습니다.")
-                item_container = body.get("items", {})
-                # Current PPS JSON can expose System.Object[] directly while
-                # legacy endpoints use {"item": [...]}; support both.
-                if isinstance(item_container, list):
-                    raw_items = item_container
-                elif isinstance(item_container, dict):
-                    raw_items = item_container.get("item", [])
-                else:
-                    raw_items = []
-                if isinstance(raw_items, dict):
-                    raw_items = [raw_items]
-                if not isinstance(raw_items, list):
-                    raise PpsApiError("PPS API items.item 형식이 배열이 아닙니다.")
+                raw_items, total = parse_paged_response(payload)
                 for item in raw_items:
-                    if isinstance(item, dict):
-                        yield normalise_notice(item)
-                try:
-                    total = int(body["totalCount"] or 0)
-                except (TypeError, ValueError) as exc:
-                    raise PpsApiError("PPS API totalCount가 숫자가 아닙니다.") from exc
+                    yield normalise_notice(item)
                 if page * rows >= total or not raw_items:
+                    break
+                if max_pages is not None and page >= max_pages:
+                    self.hit_page_limit = True
                     break
                 page += 1

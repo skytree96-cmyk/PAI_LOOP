@@ -45,6 +45,78 @@ async function loadWorkflowDefinitions() {
   return definitions;
 }
 
+function reachableNodeNames(workflow, startName) {
+  const visited = new Set();
+  const pending = [startName];
+  while (pending.length) {
+    const name = pending.pop();
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const groups = workflow.connections?.[name] ?? {};
+    for (const outputs of Object.values(groups)) {
+      for (const lane of outputs) {
+        for (const connection of lane) pending.push(connection.node);
+      }
+    }
+  }
+  return visited;
+}
+
+function validateRepositorySafetyContracts(definitions) {
+  for (const { key, workflow } of definitions) {
+    for (const node of workflow.nodes) {
+      assert(!node.credentials, `${key}/${node.name}: credential IDs must not be committed`);
+    }
+  }
+
+  const daily = definitions.find(({ key }) => key === "pai-loop-10-daily-opportunity-briefing");
+  assert(daily, "daily operator workflow is required");
+  assert(daily.config.publish === false, "daily operator workflow must deploy inactive");
+  assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
+  const schedules = daily.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.scheduleTrigger",
+  );
+  assert(schedules.length === 1, "daily workflow must have exactly one schedule trigger");
+  assert(
+    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 9 * * *",
+    "daily workflow schedule must be 09:00 every day",
+  );
+
+  const manualName = "Run Complete Offline Dry-Run";
+  const manualReachable = reachableNodeNames(daily.workflow, manualName);
+  const nodeByName = new Map(daily.workflow.nodes.map((node) => [node.name, node]));
+  const manualHttpNodes = [...manualReachable]
+    .map((name) => nodeByName.get(name))
+    .filter((node) => node?.type === "n8n-nodes-base.httpRequest");
+  assert(
+    manualHttpNodes.length === 0,
+    `daily manual dry-run must not reach HTTP nodes: ${manualHttpNodes.map((node) => node.name).join(", ")}`,
+  );
+
+  const httpNodes = daily.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.httpRequest",
+  );
+  assert(httpNodes.length === 3, "daily live branch must expose exactly three backend HTTP boundaries");
+  for (const node of httpNodes) {
+    const url = String(node.parameters?.url ?? "");
+    assert(
+      url.includes("runtime.apiBaseUrl") || url.includes("Scheduled Runtime Gates"),
+      `daily/${node.name}: HTTP URL must resolve from the approved backend runtime`,
+    );
+    assert(
+      !/https?:\/\/(?:[^'\"}\s]*\.)?(?:microsoft|office|powerautomate|openai|data\.go\.kr)/i.test(url),
+      `daily/${node.name}: direct provider or Teams URL is forbidden`,
+    );
+  }
+
+  const serialised = JSON.stringify(daily.workflow);
+  for (const gate of ["PAI_LOOP_DAILY_LIVE_ENABLED", "PAI_LOOP_RETENTION_LIVE_ENABLED"]) {
+    assert(serialised.includes(gate), `daily workflow is missing safety gate ${gate}`);
+  }
+  assert(serialised.includes("retentionDays: 7"), "daily workflow must declare seven-day retention");
+  assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
+}
+
 function validateWorkflow(key, workflow) {
   assert(workflow && typeof workflow === "object", `${key}: workflow must be an object`);
   assert(typeof workflow.name === "string" && workflow.name.trim(), `${key}: workflow name is required`);
@@ -87,6 +159,7 @@ function validateWorkflow(key, workflow) {
 }
 
 const definitions = await loadWorkflowDefinitions();
+validateRepositorySafetyContracts(definitions);
 console.log(`Validated ${definitions.length} workflow definition(s)`);
 if (validateOnly) process.exit(0);
 

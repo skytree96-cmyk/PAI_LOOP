@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: pai-loop-demo
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    initialDeployHook: pai-loop-seed-public-notice --create-schema
+    envVars:
+      - key: PAI_LOOP_ENV
+        value: production
+      - key: PAI_LOOP_DATABASE_URL
+        fromDatabase:
+          name: pai-loop-demo-db
+          property: connectionString
+      - key: PAI_LOOP_API_KEY
+        generateValue: true
+      - key: PAI_LOOP_PUBLIC_READ_ONLY
+        value: "true"
+      - key: PAI_LOOP_SEED_SYNTHETIC
+        value: "false"
+      - key: PAI_LOOP_OPENAI_MODEL
+        value: gpt-5.6-luna
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PPS_API_KEY
+        sync: false
+
+databases:
+  - name: pai-loop-demo-db
+    plan: free
+    region: singapore
+    ipAllowList: []

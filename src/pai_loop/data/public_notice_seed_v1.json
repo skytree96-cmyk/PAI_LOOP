@@ -1,0 +1,512 @@
+{
+  "schema_version": "public-procurement-notice-seed-1.0.0",
+  "seed_version": "2026.08.17-v1",
+  "classification": "PUBLIC_PROCUREMENT_DERIVED",
+  "allowlist": {
+    "notice": [
+      "notice_key",
+      "bid_notice_no",
+      "revision_no",
+      "title",
+      "agency",
+      "published_at",
+      "deadline",
+      "category",
+      "source_url"
+    ],
+    "extraction": [
+      "kind",
+      "status",
+      "prompt_version",
+      "schema_version",
+      "document_type",
+      "summary",
+      "requirements"
+    ],
+    "requirement": [
+      "requirement_id",
+      "category",
+      "logic",
+      "normalized_condition",
+      "mandatory",
+      "deadline_basis",
+      "evidence",
+      "ambiguity_reason"
+    ],
+    "evidence": [
+      "attachment_id",
+      "page",
+      "section",
+      "quote",
+      "confidence"
+    ]
+  },
+  "provenance": {
+    "method": "read-only-allowlist-public-procurement-extraction",
+    "source_label": "입찰공고문.pdf",
+    "source_kind": "PUBLIC_NOTICE",
+    "document_sha256": "cca0dd3c0262d02801806671dc77fabb24dcb42f6ff551941888d84d5f7faa9c",
+    "source_version_no": 4,
+    "document_complete": false,
+    "extraction_confidence": 0.99,
+    "requirement_count": 23,
+    "evidence_anchor_count": 26,
+    "payload_sha256": "116eb0e0bda59931e8788c0e0bd689eb519e13622b6b5dc66bb85744b47ef381"
+  },
+  "notice": {
+    "notice_key": "MANUAL-INCHON-2025-17",
+    "bid_notice_no": "인천광역시인재개발원-2025-17",
+    "revision_no": "00",
+    "title": "2026년 7급 승진후보자 역량(시책교육) 위탁운영 용역",
+    "agency": "인천광역시인재개발원",
+    "published_at": "2026-01-02T00:00:00+09:00",
+    "deadline": "2026-01-15T16:00:00+09:00",
+    "category": "용역",
+    "source_url": "https://www.g2b.go.kr/"
+  },
+  "extraction": {
+    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+    "status": "ACCEPTED",
+    "prompt_version": "pai-loop-extraction-0.2.1",
+    "schema_version": "pai-loop-requirements-0.1.0",
+    "document_type": "NOTICE",
+    "summary": "본 공고는 2026년 7급 승진후보자 역량교육 위탁운영 용역에 관한 제한경쟁·협상계약 공고이다. 입찰자는 관련 법령상 자격을 갖추고 소기업·소상공인 확인서 요건을 충족해야 하며, 단독입찰만 가능하고 하도급은 불가하다. 가격제안서는 나라장터로, 제안서는 2026년 1월 15일 10:00~16:00에 직접 방문 제출해야 한다. 제안서 심사는 PT 방식이며 사업책임자가 발표하고 발표자 포함 2인 이내 참석해야 한다. 용역기간은 계약체결일부터 2026년 12월 31일까지이며, 세부 제출서류와 과업은 제안요청서·과업지시서를 확인해야 한다.",
+    "requirements": [
+      {
+        "requirement_id": "REQ-001",
+        "category": "ENTITY",
+        "logic": "SINGLE",
+        "normalized_condition": "지방계약법령상 입찰참가 자격요건을 갖춘 업체여야 함.",
+        "mandatory": true,
+        "deadline_basis": "입찰 참여 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 가",
+            "quote": "｢지방자치단체를 당사자로 하는 계약에 관한 법률 시행령｣제13조 및 같은 법 시행규칙 제14조에 따른 입찰참가 자격요건을 갖춘자",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-002",
+        "category": "SANCTION",
+        "logic": "SINGLE",
+        "normalized_condition": "부정당업자 입찰참가자격 제한을 받고 있지 않아야 함.",
+        "mandatory": true,
+        "deadline_basis": "입찰 참여 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 나",
+            "quote": "부정당업자의 입찰참가 자격제한을 받지 아니한 자",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-003",
+        "category": "CONSORTIUM",
+        "logic": "SINGLE",
+        "normalized_condition": "단독입찰만 허용되며 하도급은 허용되지 않음.",
+        "mandatory": true,
+        "deadline_basis": "입찰 참여 및 용역 수행 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 다",
+            "quote": "단독입찰만 가능, 하도급 불가",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-004",
+        "category": "ENTITY",
+        "logic": "OR",
+        "normalized_condition": "소기업 또는 소상공인이면서 유효한 소기업·소상공인 확인서를 보유해야 하며, 일정 요건의 비영리법인은 참여 가능함.",
+        "mandatory": true,
+        "deadline_basis": "입찰 참여 시 및 확인서 유효기간 내",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 라",
+            "quote": "소기업 또는 ｢소상공인 보호 및 지원에 관한 법률｣ 제2조에 따른 소상공인",
+            "confidence": 0.99
+          },
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 라",
+            "quote": "<소기업・소상공인 확인서>를 소지한 자",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": "비영리법인 예외의 적용 여부는 해당 법령상 요건 확인이 필요함."
+      },
+      {
+        "requirement_id": "REQ-005",
+        "category": "CERTIFICATION",
+        "logic": "SINGLE",
+        "normalized_condition": "소기업·소상공인 확인서는 중소기업공공구매 종합정보망에서 확인되고 유효기간 내에 있어야 함.",
+        "mandatory": true,
+        "deadline_basis": "입찰 참여 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 라",
+            "quote": "“소기업·소상공인 확인서”는 중소기업공공구매 종합정보망(http://www.smpp.go.kr) 에서 확인되어야 하며 유효기간 내에 있어야 함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-006",
+        "category": "SANCTION",
+        "logic": "SINGLE",
+        "normalized_condition": "조세포탈 등으로 유죄판결이 확정된 날부터 2년이 지나지 않은 자는 참여할 수 없음.",
+        "mandatory": true,
+        "deadline_basis": "입찰 참여 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 마",
+            "quote": "‘조세포탈 등을 한 자’로서 유죄판결이 확정된 날부터 2년이 지나지 아니한 자는 입찰에 참여할 수 없음.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-007",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "입찰서 제출 시 조세포탈 등 해당 없음 서약서를 제출해야 하며, 전자입찰은 전자입찰서 제출로 갈음함.",
+        "mandatory": true,
+        "deadline_basis": "입찰서 제출 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 2,
+            "section": "3. 입찰참가자격 마",
+            "quote": "입찰자는 입찰서 제출 시 ｢지방계약법 시행령｣ 제93조에 해당하지 아니한다는 서약서를 제출하여야 함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-008",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "가격제안서는 나라장터 전자입찰로 제출해야 함.",
+        "mandatory": true,
+        "deadline_basis": "2026. 1. 5.(월) 09:00 ~ 2026. 1. 15.(목) 16:00",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 가",
+            "quote": "입찰참가등록 및 가격제안서 제출 방법 (전자입찰-나라장터)",
+            "confidence": 0.99
+          },
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 가",
+            "quote": "2026. 1. 5.(월) 09:00 ~ 2026. 1. 15.(목) 16:00",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-009",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "나라장터 입찰참가자격 등록을 2026년 1월 14일 18시까지 완료해야 함.",
+        "mandatory": true,
+        "deadline_basis": "2026. 1. 14.(수) 18:00까지",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 가",
+            "quote": "나라장터 입찰참가자격 등록은 2026. 1. 14.(수) 18:00까지 완료하여야 함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-010",
+        "category": "PERFORMANCE",
+        "logic": "SINGLE",
+        "normalized_condition": "입찰가격은 부가가치세를 포함한 총액으로 제출해야 함.",
+        "mandatory": true,
+        "deadline_basis": "가격제안서 제출 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 가",
+            "quote": "입찰가격은 부가가치세를 포함하여 총액으로 제출하여야 하고",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-011",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "제안서는 인천광역시 인재개발원에 직접 방문하여 제출해야 하며 우편·인터넷·이메일 접수는 불가함.",
+        "mandatory": true,
+        "deadline_basis": "2026. 1. 15.(목) 10:00~16:00",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 다",
+            "quote": "직접 방문접수(우편, 인터넷, 이메일 등 접수 불가)",
+            "confidence": 0.99
+          },
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 다",
+            "quote": "2026. 1. 15.(목) 10:00~16:00",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-012",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "제안서는 대표자 인감이 날인된 공문에 의한 방문접수로 제출해야 함.",
+        "mandatory": true,
+        "deadline_basis": "제출기한 내",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "6. 제안서 제출방법",
+            "quote": "제안서는 대표자의 인감이 날인된 공문에 의한 방문접수이여야 하며",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-013",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "제출기한 내 제안서를 제출하지 않으면 제안 의사가 없는 것으로 처리됨.",
+        "mandatory": true,
+        "deadline_basis": "제안서 제출기한 내",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "6. 제안서 제출방법",
+            "quote": "제출기한 내에 미제출시에는 제안 의사가 없는 것으로 처리함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-014",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "제안요청서에 대한 질의는 반드시 문서로 해야 하며 전화·구두 질의응답은 법적 효력이 없음.",
+        "mandatory": true,
+        "deadline_basis": "제안요청서 관련 질의 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "6. 제안서 제출방법",
+            "quote": "제안요청서에 대한 의문사항은 반드시 문서로 질의하여야 하며",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-015",
+        "category": "PERSONNEL",
+        "logic": "SINGLE",
+        "normalized_condition": "제안서 발표는 제안서에 명시된 사업책임자가 직접 해야 함.",
+        "mandatory": true,
+        "deadline_basis": "2026. 1. 26.(월) 14:00 예정인 제안서 심사·평가 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "7. 제안서 심사 및 평가",
+            "quote": "제안서에 명시된 사업책임자가 직접 발표 및 질의에 대해 답변",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": "심사 일정이 ‘예정’으로 표시되어 최종 일정은 확정 공지 여부 확인이 필요함."
+      },
+      {
+        "requirement_id": "REQ-016",
+        "category": "PERSONNEL",
+        "logic": "SINGLE",
+        "normalized_condition": "발표자와 참석자는 합계 2인 이내로 제한됨.",
+        "mandatory": true,
+        "deadline_basis": "제안서 심사·평가 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "7. 제안서 심사 및 평가",
+            "quote": "발표자 포함 2인 이내 제한",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-017",
+        "category": "PERSONNEL",
+        "logic": "AND",
+        "normalized_condition": "발표자 및 참석자는 재직증명서, 고용보험가입증명자료, 신분증 등 정해진 신분증명자료를 제시해야 함.",
+        "mandatory": true,
+        "deadline_basis": "제안서 심사·평가 참석 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "7. 제안서 심사 및 평가",
+            "quote": "발표자 및 참석자는 재직증명서, 고용보험가입증명자료, 신분증 등 소정 신분을 증명하여야 하며",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": "‘등 소정 신분’에 포함되는 추가 자료의 구체 목록은 본문에 제시되지 않음."
+      },
+      {
+        "requirement_id": "REQ-018",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "제안설명회에 참여해야 하며 불참 시 사업신청 포기로 간주됨.",
+        "mandatory": true,
+        "deadline_basis": "제안서 심사·평가 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 4,
+            "section": "7. 제안서 심사 및 평가",
+            "quote": "제안설명회에 참여하지 않은 업체는 사업신청 포기로 간주함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-019",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "최종 낙찰자로 선정된 업체는 계약 체결 시 청렴계약이행서약서를 서명 또는 날인하여 제출해야 함.",
+        "mandatory": true,
+        "deadline_basis": "계약 체결 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 5,
+            "section": "10. 청렴계약 이행 준수",
+            "quote": "최종 낙찰자로 선정된 업체는 계약체결 시 청렴계약이행서약서를 서명 또는 날인하여 제출하여야 함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-020",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "낙찰업체 대표자가 계약 체결 시 안전보건관리 준수 서약서를 서명하여 제출해야 함.",
+        "mandatory": true,
+        "deadline_basis": "계약 체결 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 5,
+            "section": "11. 안전보건관리 준수 서약제 실시",
+            "quote": "계약 체결 시에는 낙찰업체의 대표자가 서명한 서약서를 제출해야 합니다.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-021",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "입찰 참여자는 안전보건관리 준수 서약서를 숙지해야 하며 입찰서 제출로 서약서 제출을 갈음함.",
+        "mandatory": true,
+        "deadline_basis": "입찰서 제출 전 및 제출 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 5,
+            "section": "11. 안전보건관리 준수 서약제 실시",
+            "quote": "입찰서를 제출한 자는「안전보건관리 준수 서약서」를 제출한 것으로 간주합니다.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-022",
+        "category": "PERFORMANCE",
+        "logic": "SINGLE",
+        "normalized_condition": "용역기간은 계약체결일부터 2026년 12월 31일까지임.",
+        "mandatory": true,
+        "deadline_basis": "계약체결일 ~ 2026. 12. 31.",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 1,
+            "section": "1. 입찰에 부치는 사항",
+            "quote": "계약체결일 ~ 2026. 12. 31.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      },
+      {
+        "requirement_id": "REQ-023",
+        "category": "SUBMISSION",
+        "logic": "SINGLE",
+        "normalized_condition": "세부 산출내역서는 산출근거를 포함하여 작성하고 협상 시 제출해야 함.",
+        "mandatory": true,
+        "deadline_basis": "협상 시",
+        "evidence": [
+          {
+            "attachment_id": "ATT-7a90a1a88c4153a15a24ce0249af407ef9cbe5931cea9b044dd66697f4c7e3e3",
+            "page": 3,
+            "section": "6. 입찰참가등록 및 제안서 제출 가",
+            "quote": "세부 산출내역서는 산출근거를 포함하여 작성하고 협상 시 제출함.",
+            "confidence": 0.99
+          }
+        ],
+        "ambiguity_reason": null
+      }
+    ]
+  }
+}

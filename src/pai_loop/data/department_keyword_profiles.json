@@ -1,0 +1,273 @@
+{
+  "version": "2026.08.17-1",
+  "source": "2026 조직도와 조직별 사업영역(개인 이름 제외)",
+  "description": "공고 검색과 부서별 검토 우선순위를 위한 설명 가능한 키워드 프로필입니다. 교육·컨설팅을 전사 공통 기본값으로 사용합니다.",
+  "baseline": {
+    "id": "organization",
+    "name": "전사 공통",
+    "aliases": ["전사", "공통", "전체 부서"],
+    "strong_keywords": ["교육", "컨설팅"],
+    "supporting_keywords": ["연수", "훈련", "역량강화", "역량 강화", "과정개발", "과정 개발", "워크숍", "세미나", "위탁운영", "위탁 운영", "연구용역"],
+    "excluded_keywords": ["시설공사", "토목공사", "전기공사", "소방공사", "식자재", "급식", "청소용역", "경비용역", "폐기물", "단순 물품구매", "장비 납품"],
+    "regions": [],
+    "weights": {
+      "user_keyword": 24,
+      "baseline_strong": 10,
+      "baseline_supporting": 5,
+      "department_strong": 18,
+      "department_supporting": 9,
+      "region": 14,
+      "exclusion": -30
+    }
+  },
+  "departments": [
+    {
+      "id": "management-planning",
+      "group": "경영기획실",
+      "name": "경영기획실·경영기획팀",
+      "aliases": ["경영기획실", "경영기획팀", "사업기획"],
+      "strong_keywords": ["사업기획", "경영전략", "성과관리", "경영혁신"],
+      "supporting_keywords": ["정책연구", "조직진단", "중장기 전략", "사업 타당성", "성과평가", "경영계획"],
+      "excluded_keywords": [],
+      "regions": [],
+      "weights": {
+        "department_strong": 10,
+        "department_supporting": 4
+      }
+    },
+    {
+      "id": "finance-support",
+      "group": "경영기획실",
+      "name": "재무팀",
+      "aliases": ["재무", "회계", "계약관리"],
+      "strong_keywords": ["재무교육", "회계교육", "세무교육", "재무 컨설팅"],
+      "supporting_keywords": ["재무관리", "회계", "세무", "원가분석", "원가 관리", "계약관리", "예산관리"],
+      "excluded_keywords": [],
+      "regions": [],
+      "weights": {
+        "department_strong": 10,
+        "department_supporting": 4
+      }
+    },
+    {
+      "id": "future-ai-education",
+      "group": "미래혁신그룹",
+      "name": "AI미래교육본부",
+      "aliases": ["AI 미래교육", "미래교육", "K-12 교육"],
+      "strong_keywords": ["K-12", "K12", "초중고 AI", "디지털교육", "디지털 교육", "교직원 AI", "교원 AI", "대학 해외연수"],
+      "supporting_keywords": ["초중고", "교직원", "교원연수", "대학생", "대학교직원", "대학 교직원", "AI교육", "AI 교육", "디지털 연수", "해외연수"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-ai-capability",
+      "group": "미래혁신그룹",
+      "name": "AI역량개발본부",
+      "aliases": ["AI 역량개발", "AI역량", "디지털역량"],
+      "strong_keywords": ["산업별 특화 AI", "산업별특화AI", "재직자 AI", "전국민 디지털", "AI 디지털 역량", "성인 역량개발"],
+      "supporting_keywords": ["금융 AI", "양자", "지역특화산업", "재직자", "성인교육", "AI 역량강화", "디지털 역량강화", "전국민 AI"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-creative-innovation",
+      "group": "미래혁신그룹",
+      "name": "AI창의혁신본부",
+      "aliases": ["창의혁신", "문화예술체육", "K-컬처"],
+      "strong_keywords": ["문화예술교육", "문화예술 교육", "장애인 문화예술", "스포츠교육", "스포츠 교육", "소상공인 AI", "희망리턴패키지", "K-컬처", "K컬처", "공익교류"],
+      "supporting_keywords": ["지역문화센터", "관광", "K-콘텐츠", "콘텐츠 교육", "소상공인", "기업재단", "한국어교육", "통일교육"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-competency-solution",
+      "group": "미래혁신그룹",
+      "name": "역량솔루션본부",
+      "aliases": ["역량솔루션", "역량평가", "AC DC"],
+      "strong_keywords": ["역량평가", "승진후보자", "승진 후보자", "역량개발센터", "Assessment Center", "Development Center"],
+      "supporting_keywords": ["AC", "DC", "역량교육", "역량 교육", "조직활성화", "팀빌딩", "중앙정부", "지자체"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-job-creation",
+      "group": "미래혁신그룹",
+      "name": "일자리창출본부",
+      "aliases": ["일자리창출", "고용정책", "지역정책"],
+      "strong_keywords": ["일자리정책", "일자리 정책", "일자리창출", "일자리 창출", "지역고용", "취창업", "고용창출", "RISE", "글로컬대학", "대학 컨설팅"],
+      "supporting_keywords": ["고용정책", "정책거버넌스", "센터운영", "센터 운영", "지역정책", "정책연구", "지역개발", "주민교육", "교육과정 개발", "대학혁신"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-lifelong-education",
+      "group": "미래혁신그룹",
+      "name": "평생교육본부",
+      "aliases": ["평생교육", "격차해소", "시니어교육"],
+      "strong_keywords": ["평생교육", "격차해소", "서울런", "시니어 디지털", "시니어 AI", "은퇴설계", "재취업지원"],
+      "supporting_keywords": ["학력격차", "소득격차", "지역격차", "교육격차", "시니어", "중장년", "은퇴", "재취업", "디지털배움터"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-global-education",
+      "group": "미래혁신그룹",
+      "name": "글로벌교육본부",
+      "aliases": ["글로벌교육", "해외연수"],
+      "strong_keywords": ["해외연수", "국외연수", "글로벌 연수", "해외 교육"],
+      "supporting_keywords": ["국제교류", "글로벌 역량", "연수 기획", "연수 운영", "해외탐방"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-qualification-assessment",
+      "group": "미래혁신그룹",
+      "name": "자격인증평가센터",
+      "aliases": ["자격인증", "자격평가", "자격개발"],
+      "strong_keywords": ["자격개발", "자격 개발", "자격평가", "자격 평가", "자격과정", "AI 자격", "자격 고도화"],
+      "supporting_keywords": ["자격인증", "자격 취득", "자격교육", "대학생 자격", "평가도구", "인증체계"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-sustainability",
+      "group": "미래혁신그룹",
+      "name": "지속가능경영센터",
+      "aliases": ["지속가능경영", "ESG"],
+      "strong_keywords": ["ESG 컨설팅", "지속가능경영보고서", "지속가능 경영보고서", "기후공시", "ESG 정책", "ESG 교육"],
+      "supporting_keywords": ["지속가능경영", "경영전략", "정책입안", "ESG 확산", "ESG 자격", "시니어 ESG"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "future-ax-strategy",
+      "group": "미래혁신그룹",
+      "name": "AI전략TFT",
+      "aliases": ["AI전략", "AX전략", "AX정책"],
+      "strong_keywords": ["AX 정책", "AX정책", "AI 전환", "AI전환", "AX 도구", "AX도구"],
+      "supporting_keywords": ["AI 전략", "디지털전환", "업무혁신", "AI 도입", "생성형 AI", "AI 에이전트"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "talent-development",
+      "group": "인재혁신그룹",
+      "name": "인재개발센터",
+      "aliases": ["인재개발", "기업교육", "HRD"],
+      "strong_keywords": ["AI 리터러시", "AI리터러시", "AI 에이전트", "리더십 교육", "HRD 컨설팅", "교육체계 수립", "조직문화 진단"],
+      "supporting_keywords": ["직무교육", "직급별 교육", "역량별 교육", "경영교육", "명사특강", "트립형 프로그램", "팀빌딩", "조직문화", "교육체계"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "talent-public-sector",
+      "group": "인재혁신그룹",
+      "name": "공공인재개발센터",
+      "aliases": ["공공인재개발", "공공기관 교육"],
+      "strong_keywords": ["공공기관 사내교육", "공공기관 교육", "공공인재", "역량개발 DC", "인력양성사업"],
+      "supporting_keywords": ["역량강화 교육", "조직활성화", "피드백", "코칭", "워크숍", "사내교육", "인력양성"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "talent-open-education",
+      "group": "인재혁신그룹",
+      "name": "공개교육센터",
+      "aliases": ["공개교육", "대관사업"],
+      "strong_keywords": ["공개교육", "기업맞춤형 공개교육", "고용보험 환급과정", "교육과정 기획", "교육과정 운영", "공간대관"],
+      "supporting_keywords": ["HRD", "환급과정", "교육장 대관", "전임교수", "과정개발", "과정운영"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "customer-membership",
+      "group": "고객성장그룹",
+      "name": "회원서비스센터",
+      "aliases": ["회원서비스", "회원유치"],
+      "strong_keywords": ["회원유치", "회원 유지", "조찬세미나", "경영자상"],
+      "supporting_keywords": ["회원관리", "멤버십", "회원서비스", "조찬포럼", "시상식"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "customer-marketing",
+      "group": "고객성장그룹",
+      "name": "마케팅팀",
+      "aliases": ["마케팅", "브랜딩"],
+      "strong_keywords": ["전사 브랜딩", "브랜드 컨설팅", "마케팅 지원", "마케팅 전략", "플랫폼 운영"],
+      "supporting_keywords": ["브랜딩", "홍보", "신사업 마케팅", "고객성장", "시스템 운영", "콘텐츠 마케팅"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "customer-executive-education",
+      "group": "고객성장그룹",
+      "name": "경영자교육센터",
+      "aliases": ["경영자교육", "CEO교육"],
+      "strong_keywords": ["경영자교육", "경영자 교육", "CEO 교육", "경영자 세미나", "경영자 해외연수"],
+      "supporting_keywords": ["최고경영자", "임원교육", "리더 세미나", "CEO 과정", "임원 연수"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "customer-external-cooperation",
+      "group": "고객성장그룹",
+      "name": "대외협력팀",
+      "aliases": ["대외협력", "HR Society", "CTF"],
+      "strong_keywords": ["HR Society", "CTF", "대외협력", "산학협력", "민관협력"],
+      "supporting_keywords": ["협력 네트워크", "교류회", "파트너십", "HR 네트워크", "포럼 운영"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "risk-management",
+      "group": "직속",
+      "name": "RM팀",
+      "aliases": ["리스크관리", "공공사업 컴플라이언스"],
+      "strong_keywords": ["공공사업 컴플라이언스", "컴플라이언스 교육", "리스크 교육", "공공사업 생산성"],
+      "supporting_keywords": ["준법교육", "윤리경영", "리스크관리", "내부통제", "공공사업 지원"],
+      "excluded_keywords": [],
+      "regions": []
+    },
+    {
+      "id": "region-busan-gyeongnam",
+      "group": "지역그룹",
+      "name": "부산경남본부",
+      "aliases": ["부산경남", "부울경"],
+      "strong_keywords": ["부산 교육", "경남 교육", "부산 컨설팅", "경남 컨설팅", "부울경"],
+      "supporting_keywords": ["부산광역시", "경상남도", "울산광역시"],
+      "excluded_keywords": [],
+      "regions": ["부산", "경남", "울산", "부울경"]
+    },
+    {
+      "id": "region-daegu-gyeongbuk",
+      "group": "지역그룹",
+      "name": "대구경북본부",
+      "aliases": ["대구경북", "대경권"],
+      "strong_keywords": ["대구 교육", "경북 교육", "대구 컨설팅", "경북 컨설팅", "대경권"],
+      "supporting_keywords": ["대구광역시", "경상북도"],
+      "excluded_keywords": [],
+      "regions": ["대구", "경북", "경상북도"]
+    },
+    {
+      "id": "region-central",
+      "group": "지역그룹",
+      "name": "중부본부",
+      "aliases": ["중부권", "충청권", "수도권"],
+      "strong_keywords": ["중부권 교육", "충청권 교육", "수도권 교육", "중부권 컨설팅"],
+      "supporting_keywords": ["서울", "경기", "인천", "대전", "세종", "충북", "충남", "강원"],
+      "excluded_keywords": [],
+      "regions": ["서울", "경기", "인천", "대전", "세종", "충북", "충남", "강원", "충청"]
+    },
+    {
+      "id": "region-honam-jeju",
+      "group": "지역그룹",
+      "name": "광주전남전북본부(제주사무소)",
+      "aliases": ["광주전남전북", "호남권", "제주사무소"],
+      "strong_keywords": ["호남권 교육", "광주 교육", "전남 교육", "전북 교육", "제주 교육", "호남권 컨설팅"],
+      "supporting_keywords": ["광주광역시", "전라남도", "전북특별자치도", "제주특별자치도"],
+      "excluded_keywords": [],
+      "regions": ["광주", "전남", "전북", "전라남도", "전북특별자치도", "제주"]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "fixture_version": "SYNTHETIC_AWARD_INTELLIGENCE_1.0.0",
+  "classification": "SYNTHETIC_TEST_ONLY",
+  "records": [
+    {"id":"s-1","bid_notice_no":"SYN-001","title":"합성 리더십 교육 1","agency":"합성 발주기관","winner_name":"합성 수행사 A","award_amount":88000000,"estimated_price":100000000,"submitted_bid_price":87500000,"award_rate":88.0,"technical_score":86.5,"price_score":12.0,"awarded_at":"2023-03-01T00:00:00+09:00"},
+    {"id":"s-2","bid_notice_no":"SYN-002","title":"합성 리더십 교육 2","agency":"합성 발주기관","winner_name":"합성 수행사 B","award_amount":89000000,"estimated_price":100000000,"submitted_bid_price":88500000,"award_rate":89.0,"technical_score":null,"price_score":null,"awarded_at":"2023-10-01T00:00:00+09:00"},
+    {"id":"s-3","bid_notice_no":"SYN-003","title":"합성 리더십 교육 3","agency":"합성 발주기관","winner_name":"합성 수행사 A","award_amount":90000000,"estimated_price":100000000,"submitted_bid_price":null,"award_rate":90.0,"technical_score":null,"price_score":null,"awarded_at":"2024-04-01T00:00:00+09:00"},
+    {"id":"s-4","bid_notice_no":"SYN-004","title":"합성 리더십 교육 4","agency":"합성 발주기관","winner_name":"합성 수행사 C","award_amount":91000000,"estimated_price":100000000,"submitted_bid_price":null,"award_rate":91.0,"technical_score":null,"price_score":null,"awarded_at":"2024-11-01T00:00:00+09:00"},
+    {"id":"s-5","bid_notice_no":"SYN-005","title":"합성 리더십 교육 5","agency":"합성 발주기관","winner_name":"합성 수행사 B","award_amount":92000000,"estimated_price":100000000,"submitted_bid_price":null,"award_rate":92.0,"technical_score":null,"price_score":null,"awarded_at":"2025-05-01T00:00:00+09:00"},
+    {"id":"s-6","bid_notice_no":"SYN-006","title":"합성 리더십 교육 6","agency":"합성 발주기관","winner_name":"합성 수행사 A","award_amount":93000000,"estimated_price":100000000,"submitted_bid_price":null,"award_rate":93.0,"technical_score":null,"price_score":null,"awarded_at":"2025-11-01T00:00:00+09:00"}
+  ]
+}

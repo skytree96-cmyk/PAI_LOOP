@@ -1,0 +1,173 @@
+{
+  "name": "PAI_LOOP 02 - Live PPS Ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2240,
+        "height": 300,
+        "color": 7,
+        "content": "# 02 · Live PPS Ingestion\n\n보호된 PAI_LOOP backend를 통해 조달청(PPS) 공고를 제한된 기간·페이지 범위로 수집합니다. n8n은 **스케줄과 요청 경계**만 담당하고 PPS 키·정규화·DB upsert는 backend가 담당합니다.\n\n- Endpoint: `POST /api/v1/ingestion/pps/notices`\n- 인증: `X-PAI-LOOP-API-KEY` (환경변수 또는 배포 시 n8n Header Auth credential)\n- 안전 기본값: workflow inactive, 수동 실행은 dry-run, 일일 실행도 `PAI_LOOP_LIVE_INGESTION_ENABLED=true` 전에는 강제 dry-run\n- export에는 PPS 키, backend 키, credential ID, 회사 데이터가 없습니다."
+      },
+      "id": "pps-note-overview",
+      "name": "Live ingestion overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1080, -500]
+    },
+    {
+      "parameters": {
+        "width": 760,
+        "height": 390,
+        "color": 5,
+        "content": "## 배포 환경 계약\n\n- `PAI_LOOP_API_BASE_URL` — API origin, 예: `https://pai-loop.example`\n- `PAI_LOOP_API_KEY` — backend API key; item JSON에 복사하지 않음\n- `PAI_LOOP_LIVE_INGESTION_ENABLED` — 정확히 `true`일 때만 scheduled request의 `dry_run=false` 허용\n\n환경변수 접근을 차단한 n8n에서는 HTTP Request 노드에 **Generic Header Auth credential**을 UI에서 연결하세요. credential ID는 Git export에 커밋하지 않습니다."
+      },
+      "id": "pps-note-config",
+      "name": "Protected API configuration",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1080, -100]
+    },
+    {
+      "parameters": {
+        "width": 1460,
+        "height": 390,
+        "color": 6,
+        "content": "## Backend 요청·응답 계약\n\n**Request**\n`{ from_date, to_date, keyword?, page_size, max_pages, dry_run }`\n\n**Response**\n`{ job_id, status, source, mode, window, api_calls, fetched, matched, created, updated, duplicates, quarantined, notice_keys, next_watermark, warnings, dry_run }`\n\n`source=PPS`, `mode=live`, `status=COMPLETED`를 요구합니다. 숫자 필드는 0 이상의 정수, `notice_keys`와 `warnings`는 배열이어야 합니다. validator는 API 응답을 조용히 추정하지 않습니다."
+      },
+      "id": "pps-note-contract",
+      "name": "Live ingestion contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-300, -100]
+    },
+    {
+      "parameters": {},
+      "id": "pps-manual-trigger",
+      "name": "Run PPS Dry-run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-980, 520]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "10 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "pps-schedule-trigger",
+      "name": "Daily 08:10 KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-980, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    triggerSource: 'manual',\n    options: {\n      dryRun: true,\n      lookbackDays: 1,\n      pageSize: 100,\n      maxPages: 3,\n      keyword: null\n    }\n  }\n}];"
+      },
+      "id": "pps-manual-config",
+      "name": "Load Dry-run Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-740, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    triggerSource: 'schedule',\n    options: {\n      dryRun: false,\n      lookbackDays: 1,\n      pageSize: 100,\n      maxPages: 3,\n      keyword: null\n    }\n  }\n}];"
+      },
+      "id": "pps-schedule-config",
+      "name": "Load Scheduled Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-740, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nlet apiBaseUrlRaw = '';\nlet liveEnabled = false;\ntry {\n  apiBaseUrlRaw = String($env.PAI_LOOP_API_BASE_URL ?? '').trim();\n  liveEnabled = String($env.PAI_LOOP_LIVE_INGESTION_ENABLED ?? '').trim().toLowerCase() === 'true';\n} catch {\n  apiBaseUrlRaw = '';\n  liveEnabled = false;\n}\nif (!apiBaseUrlRaw) {\n  throw new Error('PAI_LOOP_API_BASE_URL is required for protected PPS ingestion');\n}\nlet parsedBaseUrl;\ntry {\n  parsedBaseUrl = new URL(apiBaseUrlRaw);\n} catch {\n  throw new Error('PAI_LOOP_API_BASE_URL must be an absolute HTTP(S) URL');\n}\nif (!['http:', 'https:'].includes(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password) {\n  throw new Error('PAI_LOOP_API_BASE_URL must use HTTP(S) without embedded credentials');\n}\nconst apiBaseUrl = parsedBaseUrl.toString().replace(/\\/+$/, '');\nconst options = input.options ?? {};\nconst lookbackDays = Math.min(7, Math.max(1, Number(options.lookbackDays ?? 1)));\nconst pageSize = Math.min(100, Math.max(1, Math.trunc(Number(options.pageSize ?? 100))));\nconst maxPages = Math.min(10, Math.max(1, Math.trunc(Number(options.maxPages ?? 3))));\nconst to = new Date();\nconst from = new Date(to.getTime() - lookbackDays * 86400000);\nconst fromDate = from.toISOString().slice(0, 10);\nconst toDate = to.toISOString().slice(0, 10);\nconst keywordRaw = options.keyword == null ? '' : String(options.keyword).trim();\nconst keyword = keywordRaw ? keywordRaw.slice(0, 100) : null;\nconst dryRun = options.dryRun !== false || !liveEnabled;\nconst request = {\n  from_date: fromDate,\n  to_date: toDate,\n  page_size: pageSize,\n  max_pages: maxPages,\n  dry_run: dryRun,\n  ...(keyword ? { keyword } : {})\n};\nconst keywordKey = keyword ? keyword.replace(/[^a-zA-Z0-9가-힣_-]/g, '_').slice(0, 32) : 'all';\nreturn [{\n  json: {\n    runtime: {\n      apiBaseUrl,\n      triggerSource: input.triggerSource ?? 'unknown',\n      liveEnabled,\n      forcedDryRun: options.dryRun === false && !liveEnabled\n    },\n    idempotencyKey: `pps:${fromDate}:${toDate}:${keywordKey}:${dryRun ? 'dry' : 'live'}`,\n    request\n  }\n}];"
+      },
+      "id": "pps-build-request",
+      "name": "Build Bounded PPS Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-440, 640]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/ingestion/pps/notices' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Accept", "value": "application/json"},
+            {"name": "X-PAI-LOOP-API-KEY", "value": "={{ $env.PAI_LOOP_API_KEY }}"},
+            {"name": "Idempotency-Key", "value": "={{ $json.idempotencyKey }}"},
+            {"name": "X-PAI-Request-Source", "value": "n8n-live-pps-v1"}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "pps-call-backend",
+      "name": "POST Protected PPS Ingestion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-120, 640],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object') {\n  throw new Error('PPS ingestion response must be an object');\n}\nconst requireString = (field) => {\n  const value = response[field];\n  if (typeof value !== 'string' || !value) throw new Error(`${field} must be a non-empty string`);\n  return value;\n};\nconst requireCount = (field) => {\n  const value = response[field];\n  if (!Number.isInteger(value) || value < 0) throw new Error(`${field} must be a non-negative integer`);\n  return value;\n};\nconst noticeKeys = response.notice_keys;\nconst warnings = response.warnings;\nif (!Array.isArray(noticeKeys) || !noticeKeys.every((value) => typeof value === 'string')) {\n  throw new Error('notice_keys must be a string array');\n}\nif (!Array.isArray(warnings) || !warnings.every((value) => typeof value === 'string')) {\n  throw new Error('warnings must be a string array');\n}\nif (!response.window || typeof response.window.from !== 'string' || typeof response.window.to !== 'string') {\n  throw new Error('window must contain string from/to fields');\n}\nif (typeof response.dry_run !== 'boolean') throw new Error('dry_run must be boolean');\nconst source = requireString('source');\nconst mode = requireString('mode');\nconst status = requireString('status');\nif (source !== 'PPS') throw new Error('source must be PPS');\nif (mode !== 'live') throw new Error('mode must be live');\nif (status !== 'COMPLETED') throw new Error('status must be COMPLETED');\nreturn [{\n  json: {\n    schemaVersion: '1.0',\n    jobId: requireString('job_id'),\n    status,\n    source,\n    mode,\n    dryRun: response.dry_run,\n    window: response.window,\n    counts: {\n      apiCalls: requireCount('api_calls'),\n      fetched: requireCount('fetched'),\n      matched: requireCount('matched'),\n      created: requireCount('created'),\n      updated: requireCount('updated'),\n      duplicates: requireCount('duplicates'),\n      quarantined: requireCount('quarantined')\n    },\n    noticeKeys,\n    nextWatermark: requireString('next_watermark'),\n    warnings,\n    completedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "pps-validate-response",
+      "name": "Validate PPS Job Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 640]
+    }
+  ],
+  "connections": {
+    "Run PPS Dry-run": {
+      "main": [[{"node": "Load Dry-run Limits", "type": "main", "index": 0}]]
+    },
+    "Daily 08:10 KST": {
+      "main": [[{"node": "Load Scheduled Limits", "type": "main", "index": 0}]]
+    },
+    "Load Dry-run Limits": {
+      "main": [[{"node": "Build Bounded PPS Request", "type": "main", "index": 0}]]
+    },
+    "Load Scheduled Limits": {
+      "main": [[{"node": "Build Bounded PPS Request", "type": "main", "index": 0}]]
+    },
+    "Build Bounded PPS Request": {
+      "main": [[{"node": "POST Protected PPS Ingestion", "type": "main", "index": 0}]]
+    },
+    "POST Protected PPS Ingestion": {
+      "main": [[{"node": "Validate PPS Job Contract", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

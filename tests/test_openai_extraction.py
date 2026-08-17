@@ -72,6 +72,7 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert outcome.data is not None
     assert outcome.data.requirements[0].category == "REGION"
     assert captured["store"] is False
+    assert captured["max_output_tokens"] == 12_000
     assert captured["text"]["format"]["type"] == "json_schema"
     assert captured["text"]["format"]["strict"] is True
     evidence_schema = captured["text"]["format"]["schema"]["$defs"]["EvidenceAnchor"]
@@ -79,6 +80,13 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
         "attachment_id", "page", "section", "quote", "confidence"
     }
     assert "PASS" in captured["input"][0]["content"][0]["text"]
+    system_prompt = captured["input"][0]["content"][0]["text"]
+    assert "human-readable fields in Korean" in system_prompt
+    assert "never translate or paraphrase a quote" in system_prompt
+    assert "Keep those derived fields concise" in system_prompt
+    user_prompt = captured["input"][1]["content"][0]["text"]
+    assert "normally 5-120 characters" in user_prompt
+    assert "verify each quote can be found verbatim" in user_prompt
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
   <title id="title">PAI_LOOP 시스템 아키텍처</title>
-  <desc id="desc">조달청 공고와 회사 증빙을 n8n이 수집하고 문서 처리, OpenAI 구조화 추출, 결정론적 규칙 엔진을 거쳐 웹 대시보드와 Teams에 전달한 뒤 결과를 환류하는 구조</desc>
+  <desc id="desc">매일 오전 9시 통합 n8n 오케스트레이터가 조달청 공고와 최근 3년 낙찰 유사 후보를 수집하고 7일 피드, 정량·가격·자격 평가를 웹과 Teams mock으로 전달한 뒤 결과를 환류하는 구조</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#F8FAFD"/>
@@ -86,8 +86,8 @@
     <circle cx="28" cy="29" r="13" fill="#00A995"/>
     <path d="M22 29h12M28 23v12" stroke="#FFF" stroke-width="2.4" stroke-linecap="round"/>
     <text x="50" y="34" class="nodeTitle">조달청 API</text>
-    <text x="22" y="65" class="nodeBody">공고 · 개찰 · 낙찰</text>
-    <text x="22" y="86" class="nodeBody">계약 · 사전규격</text>
+    <text x="22" y="65" class="nodeBody">공고 · 3년 낙찰 후보</text>
+    <text x="22" y="86" class="nodeBody">개찰 · 계약 · 사전규격</text>
   </g>
   <g transform="translate(284 282)" filter="url(#softShadow)">
     <rect width="164" height="106" rx="18" fill="#FFF" stroke="#B8E6DF"/>
@@ -104,17 +104,17 @@
     <rect width="296" height="116" rx="20" fill="#0D766E"/>
     <rect x="18" y="18" width="44" height="44" rx="12" fill="#18A99C"/>
     <path d="M30 31h20M30 39h14M30 47h17" stroke="#FFF" stroke-width="2.4" stroke-linecap="round"/>
-    <text x="78" y="42" fill="#FFF" font-size="19" font-weight="800">n8n Orchestrator</text>
-    <text x="78" y="66" fill="#C8F0EC" font-size="12.5" font-weight="600">일정 · 페이징 · 재시도 · 중복방지</text>
-    <text x="22" y="95" fill="#E8FFFC" font-size="12.5" font-weight="600">원본 파일 + SHA-256 + 수집 이력 보존</text>
+    <text x="78" y="42" fill="#FFF" font-size="19" font-weight="800">n8n · 09:00 통합</text>
+    <text x="78" y="66" fill="#C8F0EC" font-size="12.5" font-weight="600">매일 수집 · 3년 후보 · 우선순위 · push</text>
+    <text x="22" y="95" fill="#E8FFFC" font-size="12.5" font-weight="600">7일 피드 · 단기 로그 정리 · 핵심 감사기록 보존</text>
   </g>
   <g transform="translate(102 602)">
     <rect width="346" height="118" rx="18" fill="#FFF" stroke="#B8E6DF" stroke-dasharray="5 5"/>
-    <text x="20" y="32" class="nodeTitle">수집 실패 안전장치</text>
-    <text x="20" y="61" class="nodeBody">첨부 누락 · 파싱 실패 · 데이터 불일치</text>
-    <rect x="20" y="78" width="106" height="24" rx="12" fill="#FFE9D2"/>
-    <text x="73" y="95" text-anchor="middle" font-size="11" font-weight="800" fill="#C45510">REVIEW로 전환</text>
-    <text x="138" y="95" class="small">자동 PASS 금지</text>
+    <text x="20" y="32" class="nodeTitle">수집 · 낙찰 후보 안전장치</text>
+    <text x="20" y="61" class="nodeBody">첨부 누락 · 파싱 실패 · 조회 구간 실패</text>
+    <rect x="20" y="78" width="132" height="24" rx="12" fill="#FFE9D2"/>
+    <text x="86" y="95" text-anchor="middle" font-size="11" font-weight="800" fill="#C45510">REVIEW / PARTIAL</text>
+    <text x="164" y="95" class="small">자동 확정 금지</text>
   </g>
 
   <!-- DECIDE -->
@@ -179,8 +179,8 @@
     <path d="M24 28v31c0 4 8 8 18 8s18-4 18-8V28" fill="#E4EAFF" stroke="#5271D8" stroke-width="2"/>
     <ellipse cx="42" cy="28" rx="18" ry="8" fill="#FFF" stroke="#5271D8" stroke-width="2"/>
     <text x="76" y="34" class="nodeTitle">PostgreSQL + Object Storage</text>
-    <text x="76" y="62" class="nodeBody">판정 이력 · 증빙 버전 · 예외 승인</text>
-    <text x="76" y="84" class="nodeBody">원본 파일 · 변환본 · SHA-256</text>
+    <text x="76" y="62" class="nodeBody">판정 · 3년 낙찰 후보 · 예외 승인</text>
+    <text x="76" y="84" class="nodeBody">7일 피드 · 평가/낙찰 감사기록 보존</text>
   </g>
   <path d="M1335 388v38" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowBlue)"/>
   <g transform="translate(1172 438)" filter="url(#softShadow)">
@@ -188,7 +188,7 @@
     <rect x="18" y="18" width="38" height="30" rx="5" fill="#5271D8"/>
     <path d="M25 55h24" stroke="#5271D8" stroke-width="3" stroke-linecap="round"/>
     <text x="68" y="40" class="nodeTitle">웹</text>
-    <text x="18" y="78" class="nodeBody">근거 검토</text>
+    <text x="18" y="78" class="nodeBody">근거 · 유사도 검토</text>
     <text x="18" y="98" class="nodeBody">GO / 보류 / 포기</text>
   </g>
   <g transform="translate(1344 438)" filter="url(#softShadow)">
@@ -196,8 +196,8 @@
     <rect x="18" y="18" width="38" height="38" rx="10" fill="#6550AD"/>
     <text x="37" y="45" text-anchor="middle" fill="#FFF" font-size="20" font-weight="800">T</text>
     <text x="68" y="40" class="nodeTitle">Teams</text>
-    <text x="18" y="78" class="nodeBody">알림 카드</text>
-    <text x="18" y="98" class="nodeBody">대시보드 진입</text>
+    <text x="18" y="78" class="nodeBody">Adaptive Card</text>
+    <text x="18" y="98" class="nodeBody">Mock → Webhook</text>
   </g>
   <path d="M1249 550v28h86" fill="none" stroke="#5271D8" stroke-width="3"/>
   <path d="M1421 550v28h-86v28" fill="none" stroke="#5271D8" stroke-width="3" marker-end="url(#arrowBlue)"/>
@@ -220,5 +220,5 @@
     <circle cx="132" cy="7" r="7" fill="#F47A28"/><text x="147" y="11" class="small">DECIDE</text>
     <circle cx="238" cy="7" r="7" fill="#5271D8"/><text x="253" y="11" class="small">LEARN</text>
   </g>
-  <text x="1530" y="867" text-anchor="end" class="small">PAI_LOOP architecture · v1.0 · 2026-08-16</text>
+  <text x="1530" y="867" text-anchor="end" class="small">PAI_LOOP architecture · v1.3 · 2026-08-17</text>
 </svg>

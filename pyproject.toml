@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pai-loop"
-version = "0.1.0"
+version = "0.4.0"
 description = "Evidence-first public procurement decision support API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,12 +26,24 @@ test = [
 
 [project.scripts]
 pai-loop = "pai_loop.main:run"
+pai-loop-seed-public-notice = "pai_loop.public_notice_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pai_loop"]
+exclude = [
+  "src/pai_loop/private_import.py",
+  "src/pai_loop/private_fact_matching.py",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/pai_loop/data/rules_v2_1.json" = "pai_loop/data/rules_v2_1.json"
+"src/pai_loop/data/company_public_profile.json" = "pai_loop/data/company_public_profile.json"
+"src/pai_loop/data/public_performance_seed_v1.json" = "pai_loop/data/public_performance_seed_v1.json"
+"src/pai_loop/data/public_notice_seed_v1.json" = "pai_loop/data/public_notice_seed_v1.json"
+"src/pai_loop/data/public_award_history_seed_v1.json" = "pai_loop/data/public_award_history_seed_v1.json"
+"src/pai_loop/data/pricing_method_profiles_v1.json" = "pai_loop/data/pricing_method_profiles_v1.json"
+"src/pai_loop/data/department_keyword_profiles.json" = "pai_loop/data/department_keyword_profiles.json"
+"src/pai_loop/data/quantitative_notice_profiles.json" = "pai_loop/data/quantitative_notice_profiles.json"
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers --disable-warnings"
@@ -40,6 +52,10 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["pai_loop"]
+omit = [
+  "src/pai_loop/private_import.py",
+  "src/pai_loop/private_fact_matching.py",
+]
 
 [tool.coverage.report]
 show_missing = true

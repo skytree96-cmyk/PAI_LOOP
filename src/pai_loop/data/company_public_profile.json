@@ -1,0 +1,102 @@
+{
+  "profile_version": "2026.08.17-v1",
+  "published_at": "2026-08-17T00:00:00+09:00",
+  "classification": "PUBLIC_SAFE_COMPANY_PROFILE",
+  "organization": {
+    "display_name": "사단법인 한국능률협회",
+    "entity_type": "NONPROFIT_CORPORATION"
+  },
+  "evidence": [
+    {
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "display_name": "경쟁입찰참가자격등록증",
+      "source_file_name": "★경쟁입찰참가자격등록증(8.1 갱신).pdf",
+      "sha256": "226fd25c6decfd56e51f87d6c9d98b3d1e9a64987ee3bed9cf53c89eb39cad49",
+      "valid_from": "2001-08-01",
+      "last_observed_at": "2026-08-05",
+      "valid_until": null,
+      "validity_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    {
+      "evidence_key": "EVIDENCE-NONPROFIT-PERMIT",
+      "display_name": "비영리법인 설립허가증",
+      "source_file_name": "비영리법인 설립허가증_(사)한국능률협회.pdf",
+      "sha256": "922028bbde429d00c7c70730f56594a976ac5ed5d90e0eb6d829490c229db4e1",
+      "valid_from": "1977-04-20",
+      "last_observed_at": "2017-08-17",
+      "valid_until": null,
+      "validity_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    }
+  ],
+  "facts": {
+    "bidder_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",
+      "effective_from": "2001-08-01",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "nonprofit_entity": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "1977-04-20",
+      "effective_to": null,
+      "last_verified_at": "2017-08-17",
+      "evidence_key": "EVIDENCE-NONPROFIT-PERMIT",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "sanction_clear": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",
+      "effective_from": "2001-08-01",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "conviction_clear": {
+      "value": true,
+      "evidence_state": "COMPANY_DECLARATION",
+      "effective_from": "1977-04-20",
+      "effective_to": "2026-08-17",
+      "last_verified_at": "2026-08-17",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    }
+  },
+  "capabilities": {
+    "electronic_bidding": true,
+    "total_price_submission": true,
+    "direct_visit_submission": true,
+    "sealed_cover_letter": true,
+    "proposal_submission": true,
+    "written_question_submission": true,
+    "pm_presentation": true,
+    "attendee_limit_two": true,
+    "attendee_documents": true,
+    "standard_pledges": true,
+    "integrity_pledge": true,
+    "safety_health_pledge": true,
+    "contract_schedule_review": true,
+    "cost_breakdown": true,
+    "subcontracting_restriction_acknowledged": true
+  },
+  "capability_basis": {
+    "state": "COMPANY_CONFIRMED",
+    "confirmed_at": "2026-08-17",
+    "deadline_policy": "CONFIRM_OWNER_AND_COMPLETION_AT_EACH_NOTICE"
+  },
+  "publication_guard": {
+    "excluded": [
+      "certificate_body",
+      "registration_numbers",
+      "addresses",
+      "personal_names",
+      "contact_details",
+      "sensitive_identifiers"
+    ],
+    "note": "원문 증명서는 공개하지 않으며 공개 프로필은 비민감 사실, 파일명, 문서 해시 및 유효성 메타데이터만 포함합니다."
+  }
+}

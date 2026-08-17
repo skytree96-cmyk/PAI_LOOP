@@ -4,16 +4,31 @@ secrets.txt
 !.env.example
 node_modules/
 .venv/
+dist/
+dist-public/
+build/
+*.whl
+*.egg-info/
 __pycache__/
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 /data/
 .local/
-.pytest_cache/
-__pycache__/
 *.py[cod]
-.coverage
-htmlcov/
 *.db
 *.sqlite*
+
+# Local-only source adapters and their schema-level tests/docs never enter the
+# public release. The web runtime consumes only reviewed, digest-verified seeds.
+/src/pai_loop/private_import.py
+/src/pai_loop/private_fact_matching.py
+/tools/import_private_company_data.py
+/tools/extract_workspace_catalog.py
+/tools/build_public_performance_seed.py
+/tests/test_private_import.py
+/tests/test_private_fact_matching.py
+/docs/PRIVATE_DATA_IMPORT.md
+/docs/REAL_DATA_RUNBOOK_v0.2.0.md
+/docs/RELEASE_CHECKLIST_v0.2.0.md
