@@ -1343,6 +1343,15 @@ def _default_teams_card(notice: Notice) -> dict[str, Any]:
     evaluation = _latest_evaluation(notice)
     eligibility = evaluation.eligibility if evaluation else "분석 대기"
     readiness = evaluation.readiness_status if evaluation else "미산정"
+    competition = build_award_intelligence(
+        notice.award_history,
+        as_of=_comparable_utc(notice.published_at) if notice.published_at else datetime.now(timezone.utc),
+    )["competition_risk"]
+    competition_value = (
+        f"{competition['band']} · {competition['score']}/100 · {competition['confidence']}"
+        if competition["status"] == "MODEL_ESTIMATE"
+        else "UNKNOWN · 표본/커버리지 부족"
+    )
     body: list[dict[str, Any]] = [
         {
             "type": "TextBlock",
@@ -1358,11 +1367,12 @@ def _default_teams_card(notice: Notice) -> dict[str, Any]:
                 {"title": "마감", "value": notice.deadline.isoformat()},
                 {"title": "참가자격", "value": eligibility},
                 {"title": "준비도", "value": readiness},
+                {"title": "경쟁·집중 리스크", "value": competition_value},
             ],
         },
         {
             "type": "TextBlock",
-            "text": "회사 Teams 승인 전이므로 실제 전송하지 않고 로컬 로그에만 기록합니다.",
+            "text": "회사 Teams 승인 전이므로 실제 전송하지 않고 로컬 로그에만 기록합니다. 경쟁·집중 점수는 저장 유사후보 기반 예상이며 참가자격과 별도입니다.",
             "wrap": True,
             "isSubtle": True,
         },

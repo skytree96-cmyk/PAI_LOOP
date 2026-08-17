@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.4.0 daily decision-intelligence slice
+## 현재 구현 범위: v0.5.0 daily decision-intelligence slice
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 전사 공통 `교육·컨설팅`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
@@ -26,7 +26,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 원문 대신 해시·유효 메타데이터만 공개하는 회사 자격 프로필
 - 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
 - GitHub Actions 검증, n8n 이름 기반 멱등 배포, Teams 승인 전 Adaptive Card mock
-- 매일 09:00 KST에 최근 7일 공고·부서 우선순위·정량·가격 신호를 한 카드로 묶는 통합 n8n 진입점
+- 매일 09:00 KST에 최근 7일 공고·부서 우선순위·정량·가격·리스크와 bounded 3년 낙찰 refresh를 한 카드로 묶는 통합 n8n 진입점
 - 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
 
 GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마친 불변 seed만 둡니다.
@@ -118,9 +118,15 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 ## n8n 배포
 
 운영자가 실행할 통합 진입점은 `PAI_LOOP 10 - Daily Opportunity Briefing`이다.
-매일 09:00 Asia/Seoul, 최근 7일 피드, 부서 우선순위, 저장된 적합성·선택적
-정량/가격 신호, Teams 통합 카드 mock을 한 번에 검증한다. 기존 00~04는
+매일 09:00 Asia/Seoul, 최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/
+리스크 신호, 상위 최대 3건의 bounded 3년 낙찰 refresh와 backend Teams 통합 카드
+mock 기록을 한 번에 검증한다. 기존 00~04는
 비활성 계약 시험/rollback 자산이며 실제 운영 시 따로 누르지 않는다.
+
+현재 09:00 자동 경로는 PPS 공고 메타데이터와 이미 저장된 분석을 사용한다. 첨부
+획득·PDF/HWP 변환·OpenAI atomic requirement materialize·자동 평가, 그리고
+입찰/개찰/낙찰/계약 결과 자동 환류는 목표 아키텍처이며 아직 10번에 연결되지 않았다.
+아키텍처 이미지에서는 이 구간을 `TARGET · 현재 미연결`로 표시한다.
 
 `main`에 `workflows/**`, `manifest.json` 또는 배포 스크립트 변경이 push되면
 GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
@@ -137,10 +143,13 @@ dry-run이고, schedule/sub-workflow의 저장 실행은
 - `N8N_BASE_URL`
 - `N8N_API_KEY`
 
-OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON에 넣지 않습니다. n8n
-credential store 또는 서버 환경변수에서만 주입합니다. n8n 화면에서 직접
-수정했다면 JSON을 먼저 GitHub에 동기화해야 하며, GitHub를 소스 오브
-트루스로 유지합니다.
+OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON에 넣지 않습니다.
+10번의 모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구하며,
+소스에는 credential ID도 없습니다. n8n UI에서 같은 노드 이름에 연결한 credential은
+후속 GitHub 배포 시 보존됩니다. API/Web origin은 `$env`를 우선하고 없으면 공개
+Render origin `https://pai-loop-demo.onrender.com`을 사용하지만, 모든 live gate는
+`$env` 미설정 시 false입니다. 자세한 운영 절차는
+[`docs/DAILY_BRIEFING_RUNBOOK_v0.5.0.md`](docs/DAILY_BRIEFING_RUNBOOK_v0.5.0.md)에 있습니다.
 
 ## 배포 방향
 
@@ -188,7 +197,8 @@ OpenAI 계약은
 - [Department keyword ranking v0.3.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.3.0.md)
 - [Quantitative scoring v0.3.0](docs/QUANTITATIVE_SCORING_v0.3.0.md)
 - [Award and pricing intelligence v0.3.0](docs/PPS_AWARD_INTELLIGENCE_v0.3.0.md)
-- [Daily 09:00 briefing runbook v0.4.0](docs/DAILY_BRIEFING_RUNBOOK_v0.4.0.md)
+- [Daily 09:00 briefing runbook v0.5.0](docs/DAILY_BRIEFING_RUNBOOK_v0.5.0.md)
+- [Competition and concentration risk v0.4.0](docs/PPS_AWARD_COMPETITION_RISK_v0.4.0.md)
 - [Morning decision backlog v0.4.0](docs/MORNING_REVIEW_BACKLOG_v0.4.0.md)
 - [Company public profile and requirement policy v0.3.0](docs/COMPANY_PUBLIC_PROFILE_AND_REQUIREMENT_POLICY_v0.3.0.md)
 - [Public performance data v0.3.0](docs/PUBLIC_PERFORMANCE_DATA_v0.3.0.md)

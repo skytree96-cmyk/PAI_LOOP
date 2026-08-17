@@ -2058,12 +2058,16 @@
 
     const top = concentration?.top_winner;
     const hhi = numberOrNull(concentration?.hhi);
-    const hhiLabel = concentration?.hhi_interpretation === "HIGH" ? "높음" : concentration?.hhi_interpretation === "MODERATE" ? "보통" : concentration?.hhi_interpretation === "LOW" ? "낮음" : "미산정";
+    const competition = intelligence?.competition_risk;
+    const competitionAvailable = competition?.status === "MODEL_ESTIMATE" && numberOrNull(competition?.score) !== null;
+    const competitionBand = ({ LOW: "낮음", MODERATE: "보통", HIGH: "높음", VERY_HIGH: "매우 높음", UNKNOWN: "미산정" })[competition?.band] || "미산정";
+    const participantMedian = numberOrNull(competition?.components?.participant_count?.value);
     els.historyConcentration.innerHTML = `
-      <p class="section-kicker">WINNER CONCENTRATION</p><h4>수주 집중도 ${escapeHtml(hhiLabel)}</h4>
-      <strong class="history-intel-value">${hhi === null ? "—" : formatNumber(hhi, 0)} <small>HHI</small></strong>
-      <p>${top ? `최다 ${escapeHtml(top.winner_name)} · ${formatNumber(top.count)}건 (${formatNumber(top.share * 100, 1)}%)` : "명시적 낙찰자 표본 없음"}</p>
-      <small>반복 수주사 ${formatNumber(concentration?.repeat_winner_count || 0)}곳 · 시장점유율이 아닌 유사 후보 표본 내 빈도</small>`;
+      <p class="section-kicker">COMPETITION RISK · ELIGIBILITY와 별도</p><h4>경쟁·집중 리스크 ${escapeHtml(competitionBand)}</h4>
+      <strong class="history-intel-value">${competitionAvailable ? formatNumber(competition.score, 1) : "—"} <small>${competitionAvailable ? "/ 100" : "UNKNOWN"}</small></strong>
+      <p>HHI ${hhi === null ? "미산정" : formatNumber(hhi, 0)} · 상위 수주 비중 ${top ? `${formatNumber(top.share * 100, 1)}%` : "미확인"} · 참여 중앙값 ${participantMedian === null ? "미확인" : `${formatNumber(participantMedian, 1)}곳`}</p>
+      <small>${escapeHtml(competition?.rationale || "필수 사실 커버리지가 부족해 점수를 보류했습니다.")}</small>
+      <small>신뢰도 ${escapeHtml(competition?.confidence || "INSUFFICIENT")} · ${top ? `표본 상위 ${escapeHtml(top.winner_name)} ${formatNumber(top.count)}건` : "낙찰자 표본 없음"} · 법적 독점 판정 아님</small>`;
 
     const award = prediction?.award_rate;
     const submitted = prediction?.submitted_bid_rate;
@@ -2084,8 +2088,11 @@
     };
     els.historyCoverage.innerHTML = `
       <p class="section-kicker">FIELD COVERAGE</p><h4>사실 필드 충족도</h4>
-      <div class="history-coverage-grid">${coverageCell("낙찰자", "winner")}${coverageCell("낙찰금액", "award_amount")}${coverageCell("예정가격", "estimated_price")}${coverageCell("투찰금액", "submitted_bid_price")}${coverageCell("기술점수", "technical_score")}${coverageCell("가격점수", "price_score")}</div>`;
-    const warnings = Array.isArray(intelligence.warnings) ? intelligence.warnings : [];
+      <div class="history-coverage-grid">${coverageCell("낙찰자", "winner")}${coverageCell("참여기관 수", "participant_count")}${coverageCell("낙찰금액", "award_amount")}${coverageCell("예정가격", "estimated_price")}${coverageCell("투찰금액", "submitted_bid_price")}${coverageCell("기술점수", "technical_score")}${coverageCell("가격점수", "price_score")}</div>`;
+    const warnings = [...new Set([
+      ...(Array.isArray(intelligence.warnings) ? intelligence.warnings : []),
+      ...(Array.isArray(competition?.warnings) ? competition.warnings : []),
+    ])];
     els.historyWarnings.innerHTML = warnings.length ? `<strong>해석 주의</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : "";
   }
 

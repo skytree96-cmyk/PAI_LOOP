@@ -6,39 +6,48 @@
         "width": 2920,
         "height": 300,
         "color": 7,
-        "content": "# 10 · Daily Opportunity Briefing · 운영 진입점\n\n매일 **09:00 Asia/Seoul**에 공고 수집 → 저장 평가/부서 우선순위 → 3년 낙찰·가격·정량 정보(있을 때) → 7일 피드/로그 정리 → Teams Adaptive Card mock을 한 흐름으로 조립합니다.\n\n현재 workflow와 모든 외부 gate는 비활성입니다. `Run Complete Offline Dry-Run`은 PPS·OpenAI·Teams·backend를 한 번도 호출하지 않고 전체 카드 계약을 검증합니다."
+        "content": "# 10 · Daily Opportunity Briefing · 운영 진입점 v0.5\n\n매일 **09:00 Asia/Seoul**에 공고 수집 → 최근 7일 부서 우선순위 → 상위 최대 3건의 3년 낙찰 refresh → 정량·가격·리스크 → 7일 단기 로그 정리 → Teams Adaptive Card mock 기록을 한 흐름으로 조립합니다.\n\n현재 workflow와 모든 외부 gate는 비활성입니다. 수동 dry-run은 PPS·낙찰·OpenAI·Teams·backend를 한 번도 호출하지 않습니다."
       },
       "id": "daily-note-overview",
       "name": "Daily briefing overview",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [-1380, -640]
+      "position": [
+        -1380,
+        -640
+      ]
     },
     {
       "parameters": {
         "width": 1500,
         "height": 360,
         "color": 5,
-        "content": "## 외부 호출 Gate · 기본값 모두 false\n\n- `PAI_LOOP_DAILY_LIVE_ENABLED=true`: 예약 실행에서만 backend PPS 수집 경로 허용\n- `PAI_LOOP_RETENTION_LIVE_ENABLED=true`: 완료 수집 로그·mock 알림의 7일 초과분만 삭제\n- `PAI_LOOP_API_BASE_URL`, `PAI_LOOP_API_KEY`: n8n credential/env에서만 주입\n- PPS/OpenAI/Teams 자격증명이나 webhook은 이 export에 없음\n\n수동 실행은 환경변수와 무관하게 `manual-fixture`, source call 0, actual push false입니다."
+        "content": "## 외부 호출 Gate · 미설정 시 모두 false\n\n- backend/web 기본 origin: `https://pai-loop-demo.onrender.com` (공개 URL, `$env`가 있으면 우선)\n- `PAI_LOOP_DAILY_LIVE_ENABLED=true`: 예약 backend 경계 허용\n- `PAI_LOOP_RETENTION_LIVE_ENABLED=true`: 7일 초과 단기 로그 삭제 허용\n- `PAI_LOOP_AWARD_REFRESH_ENABLED=true`: 최근 7일 상위 공고의 bounded 낙찰 조회 허용\n- `PAI_LOOP_AWARD_REFRESH_WRITE_ENABLED=true`: 낙찰 dry-run 결과 저장 허용\n- `PAI_LOOP_TEAMS_MOCK_LOG_ENABLED=true`: 통합 카드 backend mock 기록 허용\n\n모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구합니다. export에는 key 값과 credential ID가 없습니다. 실제 Teams 전송 노드는 없습니다."
       },
       "id": "daily-note-gates",
       "name": "Safety gates",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [-1380, -300]
+      "position": [
+        -1380,
+        -300
+      ]
     },
     {
       "parameters": {
         "width": 1380,
         "height": 360,
         "color": 6,
-        "content": "## 7일은 ‘아침 피드 + 단기 운영 로그’ 범위\n\n공고 원장·평가·담당자 결정·3년 낙찰 관측을 지우면 감사와 가격 분석이 무너집니다. 따라서 7일 창은 아침 피드 조회와 완료 ingestion job/mock 알림에만 적용합니다. 핵심 의사결정 기록은 보존합니다.\n\n이 카드에는 선택적 `quantitative_estimate`/`pricing_intelligence` 필드가 있으면 표시하고, 없으면 `분석 대기`로 남깁니다. 근거 없는 숫자를 만들지 않습니다."
+        "content": "## 7일 피드 · 3년 낙찰 · mock 기록 경계\n\n7일은 아침 피드와 완료 ingestion/mock 같은 단기 운영 로그 범위입니다. 공고·평가·결정·3년 낙찰 관측은 감사와 가격 분석을 위해 보존합니다.\n\n낙찰 refresh는 7일 브리핑의 비-FAIL 상위 후보 중 최대 3건, 각 3년·100행·구간당 1페이지로 제한합니다. 정량·가격·리스크 값이 없으면 `분석 대기`로 남기며 숫자를 만들지 않습니다. 통합 카드는 승인 전까지 backend mock 기록만 가능하고 Teams로는 전송하지 않습니다."
       },
       "id": "daily-note-retention",
       "name": "Retention and optional intelligence",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [160, -300]
+      "position": [
+        160,
+        -300
+      ]
     },
     {
       "parameters": {},
@@ -46,7 +55,10 @@
       "name": "Run Complete Offline Dry-Run",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [-1320, 480]
+      "position": [
+        -1320,
+        480
+      ]
     },
     {
       "parameters": {
@@ -63,27 +75,36 @@
       "name": "Every Day 09:00 KST",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [-1320, 760]
+      "position": [
+        -1320,
+        760
+      ]
     },
     {
       "parameters": {
-        "jsCode": "return [{ json: { runtime: { executionMode: 'manual-fixture', timezone: 'Asia/Seoul', retentionDays: 7, webBaseUrl: 'https://example.invalid/pai-loop', backendConfigured: false, dailyLiveEnabled: false, retentionLiveEnabled: false, externalCallsAllowed: false } } }];"
+        "jsCode": "return [{ json: { runtime: { executionMode: 'manual-fixture', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl: 'https://pai-loop-demo.onrender.com', webBaseUrl: 'https://pai-loop-demo.onrender.com', backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', dailyLiveEnabled: false, retentionLiveEnabled: false, awardRefreshEnabled: false, awardRefreshWriteEnabled: false, maxAwardRefreshNotices: 3, teamsMockLogEnabled: false, externalCallsAllowed: false } } }];"
       },
       "id": "daily-manual-context",
       "name": "Force Zero-Call Manual Context",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-1080, 480]
+      "position": [
+        -1080,
+        480
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst enabled = (name) => read(name).toLowerCase() === 'true';\nconst safeUrl = (raw, name, fallback = '') => {\n  if (!raw) return fallback;\n  const parsed = new URL(raw);\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error(`${name} is unsafe`);\n  return parsed.toString().replace(/\\/+$/, '');\n};\nconst apiBaseUrl = safeUrl(read('PAI_LOOP_API_BASE_URL'), 'PAI_LOOP_API_BASE_URL');\nconst webBaseUrl = safeUrl(read('PAI_LOOP_WEB_BASE_URL'), 'PAI_LOOP_WEB_BASE_URL', 'https://example.invalid/pai-loop');\nconst backendConfigured = apiBaseUrl.length > 0;\nconst dailyLiveEnabled = backendConfigured && enabled('PAI_LOOP_DAILY_LIVE_ENABLED');\nconst retentionLiveEnabled = dailyLiveEnabled && enabled('PAI_LOOP_RETENTION_LIVE_ENABLED');\nreturn [{ json: { runtime: { executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-safe-preview', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl, webBaseUrl, backendConfigured, dailyLiveEnabled, retentionLiveEnabled, externalCallsAllowed: dailyLiveEnabled } } }];"
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst enabled = (name) => read(name).toLowerCase() === 'true';\nconst boundedInt = (name, fallback, min, max) => { const raw = read(name); if (!raw) return fallback; const parsed = Number(raw); return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.trunc(parsed))) : fallback; };\nconst safeUrl = (raw, name, fallback) => {\n  const value = raw || fallback;\n  const parsed = new URL(value);\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error(`${name} is unsafe`);\n  return parsed.toString().replace(/\\/+$/, '');\n};\nconst publicOrigin = 'https://pai-loop-demo.onrender.com';\nconst apiBaseUrl = safeUrl(read('PAI_LOOP_API_BASE_URL'), 'PAI_LOOP_API_BASE_URL', publicOrigin);\nconst webBaseUrl = safeUrl(read('PAI_LOOP_WEB_BASE_URL'), 'PAI_LOOP_WEB_BASE_URL', publicOrigin);\nconst dailyLiveEnabled = enabled('PAI_LOOP_DAILY_LIVE_ENABLED');\nconst retentionLiveEnabled = dailyLiveEnabled && enabled('PAI_LOOP_RETENTION_LIVE_ENABLED');\nconst awardRefreshEnabled = dailyLiveEnabled && enabled('PAI_LOOP_AWARD_REFRESH_ENABLED');\nconst awardRefreshWriteEnabled = awardRefreshEnabled && enabled('PAI_LOOP_AWARD_REFRESH_WRITE_ENABLED');\nconst teamsMockLogEnabled = dailyLiveEnabled && enabled('PAI_LOOP_TEAMS_MOCK_LOG_ENABLED');\nreturn [{ json: { runtime: { executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-safe-preview', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl, webBaseUrl, backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', dailyLiveEnabled, retentionLiveEnabled, awardRefreshEnabled, awardRefreshWriteEnabled, maxAwardRefreshNotices: boundedInt('PAI_LOOP_AWARD_REFRESH_LIMIT', 3, 1, 5), teamsMockLogEnabled, externalCallsAllowed: dailyLiveEnabled } } }];"
       },
       "id": "daily-scheduled-context",
       "name": "Scheduled Runtime Gates",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-1080, 760]
+      "position": [
+        -1080,
+        760
+      ]
     },
     {
       "parameters": {
@@ -114,20 +135,28 @@
       "name": "Scheduled Live Gate Open?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [-820, 760]
+      "position": [
+        -820,
+        760
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const runtime = $json.runtime;\nconst now = new Date();\nconst generatedAt = now.toISOString();\nconst daysAgo = new Date(now.getTime() - 6 * 86400000).toISOString();\nconst notices = [\n  { notice_key: 'FIXTURE-EDU-001', bid_notice_no: 'FIXTURE-2026-001', title: '[합성] 공공기관 AI 역량강화 교육 및 컨설팅', agency: '가상 인재개발원', published_at: daysAgo, deadline: new Date(now.getTime() + 9 * 86400000).toISOString(), estimated_amount: 180000000, priority_score: 91, fit: { eligibility: 'PASS', reason_code: 'P-ENTITY', readiness_score: 88, readiness_status: 'GREEN', evidence_coverage: 92, risk_band: 'GO' }, top_departments: [{ department_id: 'ai_future_education', department_name: 'AI미래교육본부', score: 86, priority: 'HIGH' }], award_snapshot: { observations: 4, distinct_winners: 2, dominant_winner: '가상 수행기관 A', dominant_share_pct: 75, median_award_rate_pct: 87.42 }, quantitative_estimate: { estimated_points: 82, max_points: 100, coverage_pct: 90, confidence: 'MEDIUM', opinion: '공개 실적 기준 예상치이며 증빙 원문 확인이 필요합니다.' }, pricing_intelligence: { observation_count: 4, predicted_award_rate_pct: 87.35, lower_rate_pct: 86.9, upper_rate_pct: 87.8, confidence: 'MEDIUM' } },\n  { notice_key: 'FIXTURE-CONSULT-002', bid_notice_no: 'FIXTURE-2026-002', title: '[합성] 지역 일자리 정책 연구 및 컨설팅', agency: '가상 지방자치단체', published_at: generatedAt, deadline: new Date(now.getTime() + 6 * 86400000).toISOString(), estimated_amount: 95000000, priority_score: 76, fit: { eligibility: 'REVIEW', reason_code: 'R01', readiness_score: 74, readiness_status: 'YELLOW', evidence_coverage: 70, risk_band: 'CONDITIONAL_GO' }, top_departments: [{ department_id: 'job_creation', department_name: '일자리창출본부', score: 68, priority: 'HIGH' }], award_snapshot: { observations: 0, distinct_winners: 0, dominant_winner: null, dominant_share_pct: null, median_award_rate_pct: null }, quantitative_estimate: null, pricing_intelligence: null }\n];\nreturn [{ json: { schema_version: '1.0', generated_at: generatedAt, timezone: 'Asia/Seoul', window: { days: 7, from: new Date(now.getTime() - 7 * 86400000).toISOString(), to: generatedAt }, totals: { observed: notices.length, included: notices.length, pending_or_review: 1, eligibility: { PASS: 1, REVIEW: 1 } }, notices, delivery: { channel: 'teams', mode: 'mock', actual_push_sent: false }, source_calls: { pps: 0, openai: 0, teams: 0 }, runtime, retention: { days: 7, mode: 'preview', eligible: { ingestion_jobs: 2, mock_notifications: 1 }, deleted: { ingestion_jobs: 0, mock_notifications: 0 }, canonical_records_preserved: true } } }];"
+        "jsCode": "const runtime = $json.runtime;\nconst now = new Date();\nconst generatedAt = now.toISOString();\nconst daysAgo = new Date(now.getTime() - 6 * 86400000).toISOString();\nconst notices = [\n  { notice_key: 'FIXTURE-EDU-001', bid_notice_no: 'FIXTURE-2026-001', title: '[합성] 공공기관 AI 역량강화 교육 및 컨설팅', agency: '가상 인재개발원', published_at: daysAgo, deadline: new Date(now.getTime() + 9 * 86400000).toISOString(), estimated_amount: 180000000, priority_score: 91, fit: { eligibility: 'PASS', reason_code: 'P-ENTITY', readiness_score: 88, readiness_status: 'GREEN', evidence_coverage: 92, risk_score: 18.4, risk_band: 'GO' }, top_departments: [{ department_id: 'ai_future_education', department_name: 'AI미래교육본부', score: 86, priority: 'HIGH' }], award_snapshot: { observations: 4, distinct_winners: 2, dominant_winner: '가상 수행기관 A', dominant_share_pct: 75, median_award_rate_pct: 87.42 }, quantitative_estimate: { overall_status: 'ESTIMATED', estimated_points: 82, total_max_points: 100, lower_points: 78, upper_points: 86, evidence_coverage_pct: 90, confidence: 0.72, opinion: '공개 실적 기준 예상치이며 증빙 원문 확인이 필요합니다.' }, pricing_intelligence: { observation_count: 4, predicted_award_rate_pct: 87.35, lower_rate_pct: 86.9, upper_rate_pct: 87.8, confidence: 'MEDIUM' }, competition_risk: { method_version: 'competition-risk-1.0.0', scope: 'STORED_3Y_SIMILARITY_CANDIDATES', status: 'MODEL_ESTIMATE', score: 71.2, band: 'HIGH', confidence: 'MEDIUM', market_claim: 'NOT_DETERMINED' } },\n  { notice_key: 'FIXTURE-CONSULT-002', bid_notice_no: 'FIXTURE-2026-002', title: '[합성] 지역 일자리 정책 연구 및 컨설팅', agency: '가상 지방자치단체', published_at: generatedAt, deadline: new Date(now.getTime() + 6 * 86400000).toISOString(), estimated_amount: 95000000, priority_score: 76, fit: { eligibility: 'REVIEW', reason_code: 'R01', readiness_score: 74, readiness_status: 'YELLOW', evidence_coverage: 70, risk_score: 42.1, risk_band: 'CONDITIONAL_GO' }, top_departments: [{ department_id: 'job_creation', department_name: '일자리창출본부', score: 68, priority: 'HIGH' }], award_snapshot: { observations: 0, distinct_winners: 0, dominant_winner: null, dominant_share_pct: null, median_award_rate_pct: null }, quantitative_estimate: null, pricing_intelligence: null, competition_risk: { method_version: 'competition-risk-1.0.0', scope: 'STORED_3Y_SIMILARITY_CANDIDATES', status: 'UNKNOWN', score: null, band: 'UNKNOWN', confidence: 'INSUFFICIENT', market_claim: 'NOT_DETERMINED' } }\n];\nreturn [{ json: { schema_version: '1.1', generated_at: generatedAt, timezone: 'Asia/Seoul', window: { days: 7, from: new Date(now.getTime() - 7 * 86400000).toISOString(), to: generatedAt }, totals: { observed: notices.length, included: notices.length, pending_or_review: 1, eligibility: { PASS: 1, REVIEW: 1 } }, notices, delivery: { channel: 'teams', mode: 'mock', actual_push_sent: false }, source_calls: { backend: 0, pps: 0, awards: 0, openai: 0, teams_mock_log: 0, teams: 0 }, runtime, award_refresh: { status: 'SKIPPED', enabled: false, dry_run: true, selected: 0, attempted: 0, completed: 0, candidates: [], skipped_reason: 'manual-fixture' }, retention: { days: 7, mode: 'preview', eligible: { ingestion_jobs: 2, mock_notifications: 1 }, deleted: { ingestion_jobs: 0, mock_notifications: 0 }, canonical_records_preserved: true } } }];"
       },
       "id": "daily-fixture",
       "name": "Build Seven-Day Offline Fixture",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-540, 540]
+      "position": [
+        -540,
+        540
+      ]
     },
     {
       "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "method": "POST",
         "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/ingestion/pps/notices' }}",
         "sendHeaders": true,
@@ -138,12 +167,12 @@
               "value": "application/json"
             },
             {
-              "name": "X-PAI-LOOP-API-KEY",
-              "value": "={{ $env.PAI_LOOP_API_KEY }}"
-            },
-            {
               "name": "Idempotency-Key",
               "value": "={{ 'daily:' + $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd') }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-v2"
             }
           ]
         },
@@ -152,39 +181,40 @@
         "rawContentType": "application/json",
         "body": "={{ JSON.stringify({ from_date: $now.setZone('Asia/Seoul').minus({ days: 1 }).toFormat('yyyy-MM-dd'), to_date: $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd'), page_size: 100, max_pages: 3, dry_run: false }) }}",
         "options": {
-          "timeout": 60000
+          "timeout": 120000
         }
       },
       "id": "daily-refresh-pps",
       "name": "Refresh PPS Notices Behind Gate",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-540, 920],
+      "position": [
+        -540,
+        980
+      ],
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 1500
     },
     {
       "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "method": "POST",
-        "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/operations/retention' }}",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/retention' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "Accept",
               "value": "application/json"
-            },
-            {
-              "name": "X-PAI-LOOP-API-KEY",
-              "value": "={{ $env.PAI_LOOP_API_KEY }}"
             }
           ]
         },
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ retention_days: 7, dry_run: $node['Scheduled Runtime Gates'].json.runtime.retentionLiveEnabled !== true }) }}",
+        "body": "={{ JSON.stringify({ retention_days: 7, dry_run: $json.runtime.retentionLiveEnabled !== true }) }}",
         "options": {
           "timeout": 30000
         }
@@ -193,10 +223,15 @@
       "name": "Preview or Apply Seven-Day Log Retention",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-280, 920]
+      "position": [
+        -60,
+        980
+      ]
     },
     {
       "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=20' }}",
         "sendHeaders": true,
         "headerParameters": {
@@ -204,10 +239,6 @@
             {
               "name": "Accept",
               "value": "application/json"
-            },
-            {
-              "name": "X-PAI-LOOP-API-KEY",
-              "value": "={{ $env.PAI_LOOP_API_KEY }}"
             }
           ]
         },
@@ -219,37 +250,49 @@
       "name": "Fetch Ranked Seven-Day Briefing",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-20, 920]
+      "position": [
+        1860,
+        980
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nreturn [{ json: { ...body, runtime, retention: { days: 7, mode: runtime.retentionLiveEnabled ? 'applied' : 'preview', canonical_records_preserved: true } } }];"
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst retention = $node['Validate Seven-Day Retention Contract'].json.retention;\nlet awardRefresh = { status: 'SKIPPED', enabled: false, dryRun: true, selected: 0, attempted: 0, completed: 0, candidates: [], skippedReason: 'unavailable' };\ntry { awardRefresh = $node['Validate Award Refresh Batch'].json.awardRefresh; } catch {}\nif (awardRefresh.status === 'SKIPPED' && awardRefresh.skippedReason === 'unavailable') { try { awardRefresh = $node['Record Award Refresh Skipped'].json.awardRefresh; } catch {} }\nreturn [{ json: { ...body, runtime, retention, award_refresh: awardRefresh, source_calls: { backend: 4 + Number(awardRefresh.attempted ?? 0), pps: 1, awards: Number(awardRefresh.attempted ?? 0), openai: 0, teams_mock_log: 0, teams: 0 } } }];"
       },
       "id": "daily-attach-live-context",
       "name": "Attach Live Runtime Contract",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 920]
+      "position": [
+        2100,
+        980
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nif (input.timezone !== 'Asia/Seoul' || Number(input.window?.days) !== 7) throw new Error('briefing must use Asia/Seoul and a seven-day window');\nconst notices = Array.isArray(input.notices) ? input.notices.slice(0, 20) : [];\nconst sorted = notices.sort((a, b) => Number(b.priority_score ?? 0) - Number(a.priority_score ?? 0));\nconst enriched = sorted.map((notice) => ({ ...notice, quantitative_estimate: notice.quantitative_estimate ?? notice.quantitative_score ?? null, pricing_intelligence: notice.pricing_intelligence ?? notice.pricing_prediction ?? null }));\nreturn [{ json: { ...input, notices: enriched, totals: { ...(input.totals ?? {}), included: enriched.length }, enrichment_contract: { quantitative: 'optional-evidence-bound', pricing: 'optional-observation-bound', missing_value_policy: 'PENDING_NOT_INVENTED' } } }];"
+        "jsCode": "const input = $json;\nif (input.timezone !== 'Asia/Seoul' || Number(input.window?.days) !== 7) throw new Error('briefing must use Asia/Seoul and a seven-day window');\nconst notices = Array.isArray(input.notices) ? input.notices.slice(0, 20) : [];\nconst sorted = notices.sort((a, b) => Number(b.priority_score ?? 0) - Number(a.priority_score ?? 0));\nconst enriched = sorted.map((notice) => ({ ...notice, quantitative_estimate: notice.quantitative_estimate ?? notice.quantitative_score ?? null, pricing_intelligence: notice.pricing_intelligence ?? notice.pricing_prediction ?? null, competition_risk: notice.competition_risk ?? notice.pricing_intelligence?.competition_risk ?? null, fit: { eligibility: notice.fit?.eligibility ?? 'PENDING', reason_code: notice.fit?.reason_code ?? 'NOT_EVALUATED', readiness_score: notice.fit?.readiness_score ?? null, readiness_status: notice.fit?.readiness_status ?? 'GRAY', evidence_coverage: notice.fit?.evidence_coverage ?? null, risk_score: notice.fit?.risk_score ?? null, risk_band: notice.fit?.risk_band ?? 'UNKNOWN' } }));\nreturn [{ json: { ...input, notices: enriched, totals: { ...(input.totals ?? {}), included: enriched.length }, enrichment_contract: { quantitative: 'evidence-bound-or-pending', pricing: 'observation-bound-or-pending', risk: 'stored-evaluation-or-unknown', competition: 'stored-three-year-observations-or-unknown', departments: '24-profile-ranking', missing_value_policy: 'PENDING_NOT_INVENTED' } } }];"
       },
       "id": "daily-normalize",
       "name": "Normalize Optional Quant and Pricing",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [520, 680]
+      "position": [
+        2360,
+        700
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nconst top = input.notices.slice(0, 6);\nconst won = (value) => value == null ? '미정' : `${new Intl.NumberFormat('ko-KR').format(Number(value))}원`;\nconst lines = top.map((item, index) => {\n  const fit = item.fit ?? {};\n  const dept = item.top_departments?.[0];\n  const quant = item.quantitative_estimate;\n  const pricing = item.pricing_intelligence;\n  const qEstimate = quant?.estimated_points ?? quant?.estimated_score;\n  const qMax = quant?.total_max_points ?? quant?.max_points ?? quant?.maximum_score;\n  const qRange = quant && quant.lower_points != null && quant.upper_points != null ? ` · ${quant.lower_points}~${quant.upper_points}` : '';\n  const qText = quant && qEstimate != null ? `${qEstimate} / ${qMax ?? '?'}점${qRange}` : '분석 대기';\n  const awardRate = pricing?.prediction?.award_rate;\n  const rate = awardRate?.center ?? pricing?.predicted_award_rate_pct ?? pricing?.predicted_rate_pct ?? item.award_snapshot?.median_award_rate_pct;\n  const rateRange = awardRate && awardRate.range_low != null && awardRate.range_high != null ? ` (${Number(awardRate.range_low).toFixed(2)}~${Number(awardRate.range_high).toFixed(2)}%)` : '';\n  const priceText = rate == null ? '관측 부족' : `예상/중앙 낙찰률 ${Number(rate).toFixed(2)}%${rateRange}`;\n  return { type: 'Container', separator: index > 0, spacing: 'Medium', items: [\n    { type: 'TextBlock', text: `${index + 1}. ${String(item.title ?? '').slice(0, 180)}`, weight: 'Bolder', wrap: true },\n    { type: 'FactSet', facts: [\n      { title: '발주기관', value: String(item.agency ?? '미상') },\n      { title: '부서 우선순위', value: dept ? `${dept.department_name ?? dept.name ?? '부서'} · ${dept.score ?? 0}점` : '미분류' },\n      { title: '적합성', value: `${fit.eligibility ?? 'PENDING'} · ${fit.readiness_status ?? 'GRAY'}` },\n      { title: '정량 예상', value: qText },\n      { title: '가격 신호', value: priceText },\n      { title: '추정금액', value: won(item.estimated_amount) }\n    ] }\n  ] };\n});\nconst webBaseUrl = String(input.runtime?.webBaseUrl ?? 'https://example.invalid/pai-loop');\nconst card = { '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.5', msteams: { width: 'Full' }, body: [\n  { type: 'TextBlock', text: 'PAI_LOOP · 오전 9시 공고 브리핑', size: 'Large', weight: 'Bolder', color: 'Accent', wrap: true },\n  { type: 'TextBlock', text: `최근 7일 ${input.totals?.observed ?? input.notices.length}건 · 오늘 표시 ${input.notices.length}건 · 실제 Teams 전송 없음`, wrap: true, isSubtle: true },\n  ...lines,\n  { type: 'TextBlock', text: '정량점수와 가격은 공개 근거·관측치 기반 예상입니다. 원문과 증빙을 확인한 담당자가 최종 판단합니다.', wrap: true, size: 'Small', isSubtle: true, spacing: 'Large' }\n], actions: [{ type: 'Action.OpenUrl', title: '웹에서 근거 확인', url: webBaseUrl }] };\nreturn [{ json: { ...input, adaptiveCard: card, teamsWebhookPayload: { type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: card }] } } }];"
+        "jsCode": "const input = $json;\nconst top = input.notices.slice(0, 6);\nconst won = (value) => value == null ? '미정' : `${new Intl.NumberFormat('ko-KR').format(Number(value))}원`;\nconst lines = top.map((item, index) => {\n  const fit = item.fit ?? {}; const dept = item.top_departments?.[0]; const quant = item.quantitative_estimate; const pricing = item.pricing_intelligence;\n  const qEstimate = quant?.estimated_points ?? quant?.estimated_score; const qMax = quant?.total_max_points ?? quant?.max_points ?? quant?.maximum_score;\n  const qRange = quant && quant.lower_points != null && quant.upper_points != null ? `${quant.lower_points}~${quant.upper_points} / ${qMax ?? '?'}점` : null;\n  const qText = qEstimate != null ? `${qEstimate} / ${qMax ?? '?'}점` : (qRange ?? '분석 대기');\n  const awardRate = pricing?.prediction?.award_rate; const rate = awardRate?.center ?? pricing?.predicted_award_rate_pct ?? pricing?.predicted_rate_pct ?? item.award_snapshot?.median_award_rate_pct;\n  const rateRange = awardRate && awardRate.range_low != null && awardRate.range_high != null ? ` (${Number(awardRate.range_low).toFixed(2)}~${Number(awardRate.range_high).toFixed(2)}%)` : '';\n  const priceText = rate == null ? '관측 부족' : `예상/중앙 낙찰률 ${Number(rate).toFixed(2)}%${rateRange}`;\n  const riskText = fit.risk_score == null ? `${fit.risk_band ?? 'UNKNOWN'} · 점수 미산정` : `${fit.risk_band ?? 'UNKNOWN'} · ${Number(fit.risk_score).toFixed(1)}점`;\n  const competition = item.competition_risk ?? pricing?.competition_risk; const competitionText = competition?.status === 'MODEL_ESTIMATE' && competition.score != null ? `${competition.band} · ${Number(competition.score).toFixed(1)}/100 · ${competition.confidence}` : 'UNKNOWN · 표본/커버리지 부족';\n  return { type: 'Container', separator: index > 0, spacing: 'Medium', items: [ { type: 'TextBlock', text: `${index + 1}. ${String(item.title ?? '').slice(0, 180)}`, weight: 'Bolder', wrap: true }, { type: 'FactSet', facts: [\n    { title: '발주기관', value: String(item.agency ?? '미상') }, { title: '부서 우선순위', value: dept ? `${dept.department_name ?? dept.name ?? '부서'} · ${dept.score ?? 0}점` : '미분류' }, { title: '적합성', value: `${fit.eligibility ?? 'PENDING'} · ${fit.readiness_status ?? 'GRAY'}` }, { title: '리스크', value: riskText }, { title: '경쟁·집중 리스크', value: competitionText }, { title: '정량 예상', value: qText }, { title: '가격 신호', value: priceText }, { title: '추정금액', value: won(item.estimated_amount) } ] } ] };\n});\nconst webBaseUrl = String(input.runtime?.webBaseUrl ?? 'https://pai-loop-demo.onrender.com');\nconst card = { '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.5', msteams: { width: 'Full' }, body: [ { type: 'TextBlock', text: 'PAI_LOOP · 오전 9시 공고 브리핑', size: 'Large', weight: 'Bolder', color: 'Accent', wrap: true }, { type: 'TextBlock', text: `최근 7일 ${input.totals?.observed ?? input.notices.length}건 · 오늘 표시 ${input.notices.length}건 · 3년 낙찰 refresh ${input.award_refresh?.status ?? 'SKIPPED'} · 실제 Teams 전송 없음`, wrap: true, isSubtle: true }, ...lines, { type: 'TextBlock', text: '정량·가격·리스크는 공개 근거와 저장 평가 기반 보조정보입니다. 경쟁·집중 리스크는 참가자격 risk_band와 별도이며 법적 독점 판정이 아닙니다. 원문과 증빙을 확인한 담당자가 최종 판단합니다.', wrap: true, size: 'Small', isSubtle: true, spacing: 'Large' } ], actions: [{ type: 'Action.OpenUrl', title: '웹에서 근거 확인', url: webBaseUrl }] };\nreturn [{ json: { ...input, adaptiveCard: card, teamsWebhookPayload: { type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: card }] } } }];"
       },
       "id": "daily-build-card",
       "name": "Build Consolidated Teams Adaptive Card",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [800, 680]
+      "position": [
+        2620,
+        700
+      ]
     },
     {
       "parameters": {
@@ -259,27 +302,36 @@
       "name": "Render Score Range and Sample Concentration",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1040, 680]
+      "position": [
+        2860,
+        700
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nreturn [{ json: { ...input, pushMock: { status: 'MOCK_RECORDED', channel: 'teams', delivery_mode: 'mock', actualTeamsRequestSent: false, actualPushSent: false, correlation_id: `daily-mock:${new Date().toISOString().slice(0, 10)}` } } }];"
+        "jsCode": "const input = $json;\nreturn [{ json: { ...input, pushMock: { status: 'MOCK_LOCAL_ONLY', channel: 'teams', delivery_mode: 'mock', persisted: false, correlation_id: `daily-mock:${new Date().toISOString().slice(0, 10)}`, actualTeamsRequestSent: false, actualPushSent: false } } }];"
       },
       "id": "daily-mock-push",
       "name": "Record One Push Mock Locally",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1280, 680]
+      "position": [
+        3340,
+        800
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const input = $json;\nif (input.adaptiveCard?.type !== 'AdaptiveCard' || input.adaptiveCard?.version !== '1.5') throw new Error('Adaptive Card 1.5 required');\nconst bytes = new TextEncoder().encode(JSON.stringify(input.adaptiveCard)).length;\nif (bytes > 28 * 1024) throw new Error('Adaptive Card exceeds 28KB');\nif (input.pushMock?.actualTeamsRequestSent !== false || input.pushMock?.actualPushSent !== false) throw new Error('push must remain mock');\nif (Number(input.window?.days) !== 7 || Number(input.retention?.days) !== 7) throw new Error('seven-day policy required');\nif (input.runtime?.executionMode === 'manual-fixture') {\n  const calls = input.source_calls ?? {};\n  if (Number(calls.pps ?? 0) + Number(calls.openai ?? 0) + Number(calls.teams ?? 0) !== 0) throw new Error('manual fixture made an external source call');\n  if (input.runtime.externalCallsAllowed !== false) throw new Error('manual fixture external gate must be closed');\n}\nreturn [{ json: { schemaVersion: '1.0', status: 'DRY_RUN_PASSED', executionMode: input.runtime?.executionMode, schedule: { cron: '0 9 * * *', timezone: 'Asia/Seoul', workflowActive: false }, retention: input.retention, briefing: { generatedAt: input.generated_at, window: input.window, totals: input.totals, noticeKeys: input.notices.map((item) => item.notice_key) }, enrichmentContract: input.enrichment_contract, adaptiveCard: input.adaptiveCard, teamsWebhookPayload: input.teamsWebhookPayload, externalCalls: input.source_calls ?? { backend: 3, pps: 'backend-gated', openai: 0, teams: 0 }, actualTeamsRequestSent: false, actualPushSent: false } }];"
+        "jsCode": "const input = $json;\nif (input.adaptiveCard?.type !== 'AdaptiveCard' || input.adaptiveCard?.version !== '1.5') throw new Error('Adaptive Card 1.5 required');\nconst bytes = new TextEncoder().encode(JSON.stringify(input.adaptiveCard)).length; if (bytes > 28 * 1024) throw new Error('Adaptive Card exceeds 28KB');\nif (!Array.isArray(input.adaptiveCard.actions) || !input.adaptiveCard.actions.every((action) => action.type === 'Action.OpenUrl')) throw new Error('card actions must be safe OpenUrl only');\nfor (const action of input.adaptiveCard.actions) { const url = new URL(action.url); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error('card action URL is unsafe'); }\nif (input.pushMock?.actualTeamsRequestSent !== false || input.pushMock?.actualPushSent !== false) throw new Error('actual Teams/push must remain false');\nif (!['MOCK_LOCAL_ONLY','MOCK_RECORDED'].includes(input.pushMock?.status)) throw new Error('mock status contract failed');\nif (Number(input.window?.days) !== 7 || Number(input.retention?.days) !== 7) throw new Error('seven-day policy required');\nif (!Array.isArray(input.notices)) throw new Error('notices must be an array');\nfor (const notice of input.notices) { const fit = notice.fit ?? {}; if (!['PASS','REVIEW','FAIL','PENDING'].includes(fit.eligibility)) throw new Error('eligibility contract failed'); if (!['GO','CONDITIONAL_GO','NO_GO','UNKNOWN'].includes(fit.risk_band)) throw new Error('risk band contract failed'); if (fit.risk_score != null && (!Number.isFinite(Number(fit.risk_score)) || Number(fit.risk_score) < 0 || Number(fit.risk_score) > 100)) throw new Error('risk score contract failed'); const competition = notice.competition_risk ?? notice.pricing_intelligence?.competition_risk; if (competition) { if (!['MODEL_ESTIMATE','UNKNOWN'].includes(competition.status) || !['LOW','MODERATE','HIGH','VERY_HIGH','UNKNOWN'].includes(competition.band) || competition.market_claim !== 'NOT_DETERMINED') throw new Error('competition risk contract failed'); if (competition.status === 'UNKNOWN' && competition.score != null) throw new Error('unknown competition risk must not invent a score'); if (competition.status === 'MODEL_ESTIMATE' && (!Number.isFinite(Number(competition.score)) || Number(competition.score) < 0 || Number(competition.score) > 100)) throw new Error('competition risk score contract failed'); } const quant = notice.quantitative_estimate; if (quant?.lower_points != null && quant?.upper_points != null && Number(quant.lower_points) > Number(quant.upper_points)) throw new Error('quantitative range contract failed'); }\nconst award = input.award_refresh ?? { status: 'SKIPPED', attempted: 0, selected: 0 }; if (!['SKIPPED','COMPLETED','PARTIAL'].includes(award.status) || Number(award.attempted ?? 0) > 5 || Number(award.selected ?? 0) > 5) throw new Error('bounded award refresh contract failed');\nif (input.runtime?.executionMode === 'manual-fixture') { const calls = input.source_calls ?? {}; const total = ['backend','pps','awards','openai','teams_mock_log','teams'].reduce((sum, key) => sum + Number(calls[key] ?? 0), 0); if (total !== 0) throw new Error('manual fixture made an external call'); if (input.runtime.externalCallsAllowed !== false || input.runtime.awardRefreshEnabled !== false || input.runtime.teamsMockLogEnabled !== false) throw new Error('manual fixture gates must be closed'); if (award.status !== 'SKIPPED' || input.pushMock.persisted !== false) throw new Error('manual fixture must skip remote refresh and mock persistence'); }\nconst status = input.runtime?.executionMode === 'manual-fixture' ? 'DRY_RUN_PASSED' : (input.runtime?.executionMode === 'scheduled-live' ? 'BRIEFING_READY' : 'BRIEFING_PREVIEW_READY');\nreturn [{ json: { schemaVersion: '1.1', status, executionMode: input.runtime?.executionMode, schedule: { cron: '0 9 * * *', timezone: 'Asia/Seoul', workflowActive: false }, retention: input.retention, awardRefresh: award, briefing: { generatedAt: input.generated_at, window: input.window, totals: input.totals, noticeKeys: input.notices.map((item) => item.notice_key) }, enrichmentContract: input.enrichment_contract, notificationMock: input.pushMock, adaptiveCard: input.adaptiveCard, teamsWebhookPayload: input.teamsWebhookPayload, externalCalls: input.source_calls ?? { backend: 0, pps: 0, awards: 0, openai: 0, teams_mock_log: 0, teams: 0 }, actualTeamsRequestSent: false, actualPushSent: false } }];"
       },
       "id": "daily-validate",
       "name": "Validate Complete Dry-Run Contract",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1520, 680]
+      "position": [
+        4060,
+        700
+      ]
     },
     {
       "parameters": {},
@@ -287,57 +339,624 @@
       "name": "Inactive and Ready for Review",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [1760, 680]
+      "position": [
+        4300,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('PPS ingestion response must be an object');\nconst requireString = (field) => { const value = response[field]; if (typeof value !== 'string' || !value) throw new Error(`${field} must be a non-empty string`); return value; };\nconst requireCount = (field) => { const value = response[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`); return value; };\nif (requireString('source') !== 'PPS' || requireString('mode') !== 'live' || requireString('status') !== 'COMPLETED') throw new Error('PPS source/mode/status contract failed');\nif (!response.window || typeof response.window.from !== 'string' || typeof response.window.to !== 'string') throw new Error('PPS window must contain from/to');\nif (!Array.isArray(response.notice_keys) || !response.notice_keys.every((value) => typeof value === 'string' && value.length <= 160)) throw new Error('notice_keys must be bounded strings');\nif (!Array.isArray(response.warnings) || !response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('warnings must be bounded strings');\nif (typeof response.dry_run !== 'boolean') throw new Error('dry_run must be boolean');\nreturn [{ json: { runtime: $node['Scheduled Runtime Gates'].json.runtime, ingestion: { jobId: requireString('job_id'), window: response.window, dryRun: response.dry_run, counts: { apiCalls: requireCount('api_calls'), fetched: requireCount('fetched'), matched: requireCount('matched'), created: requireCount('created'), updated: requireCount('updated'), duplicates: requireCount('duplicates'), quarantined: requireCount('quarantined') }, noticeKeys: [...new Set(response.notice_keys)].slice(0, 300), warnings: response.warnings.slice(0, 20) } } }];"
+      },
+      "id": "daily-validate-pps",
+      "name": "Validate PPS Ingestion Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || Number(response.retention_days) !== 7 || typeof response.dry_run !== 'boolean') throw new Error('seven-day retention response contract failed');\nconst safeCounts = (value, label) => { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`); const result = {}; for (const [key, count] of Object.entries(value)) { if (!Number.isSafeInteger(count) || count < 0) throw new Error(`${label}.${key} must be a non-negative integer`); result[key] = count; } return result; };\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nif (runtime.retentionLiveEnabled !== true && response.dry_run !== true) throw new Error('retention must remain dry-run while its gate is closed');\nreturn [{ json: { runtime, retention: { days: 7, mode: response.dry_run ? 'preview' : 'applied', cutoff_at: response.cutoff_at ?? null, eligible: safeCounts(response.eligible, 'eligible'), deleted: safeCounts(response.deleted, 'deleted'), canonical_records_preserved: Array.isArray(response.preserved) && response.preserved.includes('notices') && response.preserved.includes('award_history_items') } } }];"
+      },
+      "id": "daily-validate-retention",
+      "name": "Validate Seven-Day Retention Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=20' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-fetch-award-candidates",
+      "name": "Fetch Award Candidates from Seven-Day Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!body || body.timezone !== 'Asia/Seoul' || Number(body.window?.days) !== 7 || !Array.isArray(body.notices)) throw new Error('pre-refresh briefing must be a seven-day Asia/Seoul notice list');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst ingested = new Set($node['Validate PPS Ingestion Contract'].json.ingestion.noticeKeys ?? []);\nconst maxItems = Math.min(5, Math.max(1, Number(runtime.maxAwardRefreshNotices ?? 3)));\nconst ranked = body.notices.filter((item) => item && typeof item.notice_key === 'string' && item.notice_key && item.fit?.eligibility !== 'FAIL').map((item) => ({ noticeKey: item.notice_key, title: String(item.title ?? '').slice(0, 500), priorityScore: Number(item.priority_score ?? 0), observations: Number(item.award_snapshot?.observations ?? 0), source: ingested.has(item.notice_key) ? 'INGESTED_TODAY' : 'SEVEN_DAY_BRIEFING' })).sort((a, b) => Number(ingested.has(b.noticeKey)) - Number(ingested.has(a.noticeKey)) || a.observations - b.observations || b.priorityScore - a.priorityScore);\nconst candidates = ranked.slice(0, maxItems);\nconst enabled = runtime.awardRefreshEnabled === true && candidates.length > 0;\nreturn [{ json: { runtime, awardRefresh: { status: enabled ? 'PLANNED' : 'SKIPPED', enabled, writeEnabled: runtime.awardRefreshWriteEnabled === true, dryRun: runtime.awardRefreshWriteEnabled !== true, years: 3, pageSize: 100, maxPagesPerWindow: 1, limit: maxItems, candidates, selected: candidates.length, attempted: 0, completed: 0, skippedReason: enabled ? null : (runtime.awardRefreshEnabled === true ? 'no-eligible-candidates' : 'gate-closed') } } }];"
+      },
+      "id": "daily-award-plan",
+      "name": "Build Bounded Award Refresh Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-award-gate-condition",
+              "leftValue": "={{ $json.awardRefresh.enabled === true && $json.awardRefresh.candidates.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-award-gate",
+      "name": "Award Refresh Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $json;\nif (plan.runtime?.awardRefreshEnabled !== true || !Array.isArray(plan.awardRefresh?.candidates)) throw new Error('award refresh gate or candidate contract missing');\nreturn plan.awardRefresh.candidates.slice(0, plan.awardRefresh.limit).map((candidate) => { const noticeKey = String(candidate.noticeKey ?? ''); if (!noticeKey || noticeKey.length > 160 || /[\\/\\u0000-\\u001f\\u007f]/.test(noticeKey)) throw new Error('unsafe award notice key'); const day = new Date().toISOString().slice(0, 10); return { json: { runtime: plan.runtime, candidate, endpointPath: `/api/v1/notices/${encodeURIComponent(noticeKey)}/award-history/refresh`, idempotencyKey: `award:daily:${noticeKey.replace(/[^a-zA-Z0-9가-힣._:-]/g, '_').slice(0, 60)}:${day}:3y:${plan.awardRefresh.dryRun ? 'dry' : 'live'}`, request: { years: 3, page_size: 100, max_pages_per_window: 1, dry_run: plan.awardRefresh.dryRun } } }; });"
+      },
+      "id": "daily-award-expand",
+      "name": "Expand Bounded Award Refresh Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + $json.endpointPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.idempotencyKey }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-award-v2"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "daily-award-refresh",
+      "name": "Refresh Bounded Three-Year Award History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst plan = $node['Build Bounded Award Refresh Plan'].json;\nif (!items.length || items.length > plan.awardRefresh.limit) throw new Error('award refresh batch size is invalid');\nconst allowed = new Set(['job_id','status','notice_key','keyword','window','api_calls','fetched','created','updated','duplicates','records','dry_run','warnings']);\nconst summaries = items.map((item) => { const response = item.json?.body && typeof item.json.body === 'object' ? item.json.body : item.json; if (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('award response must be an object'); const unexpected = Object.keys(response).filter((key) => !allowed.has(key)); if (unexpected.length) throw new Error(`award response unexpected fields: ${unexpected.join(',')}`); for (const key of allowed) if (!Object.prototype.hasOwnProperty.call(response, key)) throw new Error(`award response missing ${key}`); if (!['COMPLETED','PARTIAL'].includes(response.status)) throw new Error('award status invalid'); if (typeof response.notice_key !== 'string' || !response.notice_key || typeof response.keyword !== 'string' || response.keyword.length < 2) throw new Error('award identity fields invalid'); if (!response.window || !/^\\d{4}-\\d{2}-\\d{2}$/.test(response.window.from) || !/^\\d{4}-\\d{2}-\\d{2}$/.test(response.window.to)) throw new Error('award window invalid'); if (typeof response.dry_run !== 'boolean' || response.dry_run !== plan.awardRefresh.dryRun) throw new Error('award dry-run contract failed'); if (!Array.isArray(response.warnings) || (response.status === 'PARTIAL' && response.warnings.length === 0)) throw new Error('award warnings contract failed'); for (const field of ['api_calls','fetched','created','updated','duplicates','records']) if (!Number.isSafeInteger(response[field]) || response[field] < 0) throw new Error(`award ${field} invalid`); return { noticeKey: response.notice_key, status: response.status, records: response.records, dryRun: response.dry_run, warnings: response.warnings.slice(0, 20) }; });\nreturn [{ json: { runtime: plan.runtime, awardRefresh: { ...plan.awardRefresh, status: summaries.some((item) => item.status === 'PARTIAL') ? 'PARTIAL' : 'COMPLETED', attempted: summaries.length, completed: summaries.filter((item) => item.status === 'COMPLETED').length, summaries, privacyBoundary: { candidateRowsEmitted: false, piiFieldsEmitted: false } } } }];",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "daily-award-validate-batch",
+      "name": "Validate Award Refresh Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $json;\nreturn [{ json: { runtime: plan.runtime, awardRefresh: { ...plan.awardRefresh, status: 'SKIPPED', attempted: 0, completed: 0, summaries: [], privacyBoundary: { candidateRowsEmitted: false, piiFieldsEmitted: false } } } }];"
+      },
+      "id": "daily-award-skipped",
+      "name": "Record Award Refresh Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        1080
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-mock-log-gate-condition",
+              "leftValue": "={{ $json.runtime?.teamsMockLogEnabled === true && Array.isArray($json.notices) && $json.notices.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-mock-log-gate",
+      "name": "Backend Teams Mock Log Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3100,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst noticeKey = String(input.notices?.[0]?.notice_key ?? '');\nif (!noticeKey || noticeKey.length > 160 || /[\\/\\u0000-\\u001f\\u007f]/.test(noticeKey)) throw new Error('a safe anchor notice key is required for mock logging');\nconst correlationId = `daily-mock:${new Date().toISOString().slice(0, 10)}`;\nreturn [{ json: { ...input, mockRequest: { noticeKey, endpointPath: `/api/v1/notices/${encodeURIComponent(noticeKey)}/notifications/teams/mock`, correlationId, body: { card: input.adaptiveCard, channel: 'teams', delivery_mode: 'mock', correlation_id: correlationId } } } }];"
+      },
+      "id": "daily-build-mock-request",
+      "name": "Build Backend Teams Mock Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + $json.mockRequest.endpointPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.mockRequest.correlationId }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-teams-mock-v2"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.mockRequest.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-record-backend-mock",
+      "name": "Record Consolidated Teams Mock in Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3580,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst input = $node['Build Backend Teams Mock Request'].json;\nif (!response || response.channel !== 'teams' || response.delivery_mode !== 'mock' || response.status !== 'MOCK_RECORDED') throw new Error('backend Teams mock record contract failed');\nif (response.notice_key !== input.mockRequest.noticeKey || response.correlation_id !== input.mockRequest.correlationId) throw new Error('backend Teams mock identity contract failed');\nif (!response.card || response.card.type !== 'AdaptiveCard' || response.card.version !== '1.5') throw new Error('backend Teams mock card contract failed');\nreturn [{ json: { ...input, source_calls: { ...(input.source_calls ?? {}), backend: Number(input.source_calls?.backend ?? 0) + 1, teams_mock_log: 1, teams: 0 }, pushMock: { status: 'MOCK_RECORDED', channel: 'teams', delivery_mode: 'mock', persisted: true, record_id: String(response.id ?? ''), correlation_id: response.correlation_id, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "daily-attach-backend-mock",
+      "name": "Validate Backend Teams Mock Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3820,
+        620
+      ]
     }
   ],
   "connections": {
     "Run Complete Offline Dry-Run": {
-      "main": [[{"node": "Force Zero-Call Manual Context", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Force Zero-Call Manual Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Force Zero-Call Manual Context": {
-      "main": [[{"node": "Build Seven-Day Offline Fixture", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Build Seven-Day Offline Fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Every Day 09:00 KST": {
-      "main": [[{"node": "Scheduled Runtime Gates", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Scheduled Runtime Gates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Scheduled Runtime Gates": {
-      "main": [[{"node": "Scheduled Live Gate Open?", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Scheduled Live Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Scheduled Live Gate Open?": {
       "main": [
-        [{"node": "Refresh PPS Notices Behind Gate", "type": "main", "index": 0}],
-        [{"node": "Build Seven-Day Offline Fixture", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Refresh PPS Notices Behind Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Seven-Day Offline Fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Refresh PPS Notices Behind Gate": {
-      "main": [[{"node": "Preview or Apply Seven-Day Log Retention", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Validate PPS Ingestion Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate PPS Ingestion Contract": {
+      "main": [
+        [
+          {
+            "node": "Preview or Apply Seven-Day Log Retention",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Preview or Apply Seven-Day Log Retention": {
-      "main": [[{"node": "Fetch Ranked Seven-Day Briefing", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Validate Seven-Day Retention Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Seven-Day Retention Contract": {
+      "main": [
+        [
+          {
+            "node": "Fetch Award Candidates from Seven-Day Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Award Candidates from Seven-Day Briefing": {
+      "main": [
+        [
+          {
+            "node": "Build Bounded Award Refresh Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Bounded Award Refresh Plan": {
+      "main": [
+        [
+          {
+            "node": "Award Refresh Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Award Refresh Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Expand Bounded Award Refresh Requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Award Refresh Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Bounded Award Refresh Requests": {
+      "main": [
+        [
+          {
+            "node": "Refresh Bounded Three-Year Award History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Bounded Three-Year Award History": {
+      "main": [
+        [
+          {
+            "node": "Validate Award Refresh Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Award Refresh Batch": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ranked Seven-Day Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Award Refresh Skipped": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ranked Seven-Day Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Fetch Ranked Seven-Day Briefing": {
-      "main": [[{"node": "Attach Live Runtime Contract", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Attach Live Runtime Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Attach Live Runtime Contract": {
-      "main": [[{"node": "Normalize Optional Quant and Pricing", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Normalize Optional Quant and Pricing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Seven-Day Offline Fixture": {
-      "main": [[{"node": "Normalize Optional Quant and Pricing", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Normalize Optional Quant and Pricing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Normalize Optional Quant and Pricing": {
-      "main": [[{"node": "Build Consolidated Teams Adaptive Card", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Build Consolidated Teams Adaptive Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Consolidated Teams Adaptive Card": {
-      "main": [[{"node": "Render Score Range and Sample Concentration", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Render Score Range and Sample Concentration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Render Score Range and Sample Concentration": {
-      "main": [[{"node": "Record One Push Mock Locally", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Backend Teams Mock Log Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backend Teams Mock Log Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Build Backend Teams Mock Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record One Push Mock Locally",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Backend Teams Mock Request": {
+      "main": [
+        [
+          {
+            "node": "Record Consolidated Teams Mock in Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Consolidated Teams Mock in Backend": {
+      "main": [
+        [
+          {
+            "node": "Validate Backend Teams Mock Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Backend Teams Mock Record": {
+      "main": [
+        [
+          {
+            "node": "Validate Complete Dry-Run Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Record One Push Mock Locally": {
-      "main": [[{"node": "Validate Complete Dry-Run Contract", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Validate Complete Dry-Run Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Validate Complete Dry-Run Contract": {
-      "main": [[{"node": "Inactive and Ready for Review", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Inactive and Ready for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {

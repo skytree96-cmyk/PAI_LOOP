@@ -371,6 +371,9 @@ def test_teams_mock_records_real_adaptive_card_without_external_delivery(client:
     assert first.json()["status"] == "MOCK_RECORDED"
     assert first.json()["delivery_mode"] == "mock"
     assert first.json()["card"]["type"] == "AdaptiveCard"
+    fact_set = next(item for item in first.json()["card"]["body"] if item["type"] == "FactSet")
+    competition_fact = next(item for item in fact_set["facts"] if item["title"] == "경쟁·집중 리스크")
+    assert competition_fact["value"] == "UNKNOWN · 표본/커버리지 부족"
 
     duplicate = client.post(
         "/api/v1/notices/SYN-REVIEW-001/notifications/teams/mock",

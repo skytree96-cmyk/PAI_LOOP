@@ -45,7 +45,7 @@ async function loadWorkflowDefinitions() {
   return definitions;
 }
 
-function reachableNodeNames(workflow, startName) {
+function reachableNodeNames(workflow, startName, branchChoices = {}) {
   const visited = new Set();
   const pending = [startName];
   while (pending.length) {
@@ -54,7 +54,9 @@ function reachableNodeNames(workflow, startName) {
     visited.add(name);
     const groups = workflow.connections?.[name] ?? {};
     for (const outputs of Object.values(groups)) {
-      for (const lane of outputs) {
+      const selectedLane = branchChoices[name];
+      const lanes = selectedLane == null ? outputs : [outputs[selectedLane] ?? []];
+      for (const lane of lanes) {
         for (const connection of lane) pending.push(connection.node);
       }
     }
@@ -83,7 +85,11 @@ function validateRepositorySafetyContracts(definitions) {
   );
 
   const manualName = "Run Complete Offline Dry-Run";
-  const manualReachable = reachableNodeNames(daily.workflow, manualName);
+  const manualReachable = reachableNodeNames(daily.workflow, manualName, {
+    // Manual fixture sets teamsMockLogEnabled=false.  Pin the known false lane
+    // so this graph audit proves that path has no HTTP boundary.
+    "Backend Teams Mock Log Gate Open?": 1,
+  });
   const nodeByName = new Map(daily.workflow.nodes.map((node) => [node.name, node]));
   const manualHttpNodes = [...manualReachable]
     .map((name) => nodeByName.get(name))
@@ -96,7 +102,7 @@ function validateRepositorySafetyContracts(definitions) {
   const httpNodes = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.httpRequest",
   );
-  assert(httpNodes.length === 3, "daily live branch must expose exactly three backend HTTP boundaries");
+  assert(httpNodes.length === 6, "daily live branch must expose exactly six protected backend HTTP boundaries");
   for (const node of httpNodes) {
     const url = String(node.parameters?.url ?? "");
     assert(
@@ -107,14 +113,70 @@ function validateRepositorySafetyContracts(definitions) {
       !/https?:\/\/(?:[^'\"}\s]*\.)?(?:microsoft|office|powerautomate|openai|data\.go\.kr)/i.test(url),
       `daily/${node.name}: direct provider or Teams URL is forbidden`,
     );
+    assert(
+      node.parameters?.authentication === "genericCredentialType"
+        && node.parameters?.genericAuthType === "httpHeaderAuth",
+      `daily/${node.name}: protected backend calls must require Generic Header Auth`,
+    );
+    const headers = node.parameters?.headerParameters?.parameters ?? [];
+    assert(
+      !headers.some((header) => String(header.name).toLowerCase() === "x-pai-loop-api-key"),
+      `daily/${node.name}: API key must come from the n8n credential, not workflow JSON`,
+    );
   }
 
   const serialised = JSON.stringify(daily.workflow);
-  for (const gate of ["PAI_LOOP_DAILY_LIVE_ENABLED", "PAI_LOOP_RETENTION_LIVE_ENABLED"]) {
+  for (const gate of [
+    "PAI_LOOP_DAILY_LIVE_ENABLED",
+    "PAI_LOOP_RETENTION_LIVE_ENABLED",
+    "PAI_LOOP_AWARD_REFRESH_ENABLED",
+    "PAI_LOOP_AWARD_REFRESH_WRITE_ENABLED",
+    "PAI_LOOP_TEAMS_MOCK_LOG_ENABLED",
+  ]) {
     assert(serialised.includes(gate), `daily workflow is missing safety gate ${gate}`);
   }
+  assert(
+    serialised.includes("https://pai-loop-demo.onrender.com"),
+    "daily workflow must contain the public Render origin fallback",
+  );
   assert(serialised.includes("retentionDays: 7"), "daily workflow must declare seven-day retention");
   assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
+  assert(
+    daily.config.contractVersion === "daily-briefing-1.1",
+    "daily workflow manifest contractVersion must be daily-briefing-1.1",
+  );
+
+  const preservationProbe = preserveRemoteNodeCredentials(
+    {
+      nodes: [
+        { name: "same", type: "n8n-nodes-base.httpRequest" },
+        { name: "type-changed", type: "n8n-nodes-base.code" },
+        { name: "new", type: "n8n-nodes-base.httpRequest" },
+      ],
+    },
+    {
+      nodes: [
+        {
+          name: "same",
+          type: "n8n-nodes-base.httpRequest",
+          credentials: { httpHeaderAuth: { id: "opaque-probe", name: "probe" } },
+        },
+        {
+          name: "type-changed",
+          type: "n8n-nodes-base.httpRequest",
+          credentials: { httpHeaderAuth: { id: "must-not-copy", name: "probe" } },
+        },
+      ],
+    },
+  );
+  assert(
+    preservationProbe.nodes[0].credentials?.httpHeaderAuth?.id === "opaque-probe",
+    "exact node-name/type credential preservation failed",
+  );
+  assert(
+    !preservationProbe.nodes[1].credentials && !preservationProbe.nodes[2].credentials,
+    "credential preservation must reject type changes and new nodes",
+  );
 }
 
 function validateWorkflow(key, workflow) {
@@ -217,6 +279,20 @@ function deploymentPayload(workflow) {
   };
 }
 
+function preserveRemoteNodeCredentials(payload, remote) {
+  const remoteByName = new Map((remote?.nodes ?? []).map((node) => [node.name, node]));
+  return {
+    ...payload,
+    nodes: payload.nodes.map((node) => {
+      const prior = remoteByName.get(node.name);
+      if (!prior || prior.type !== node.type || !prior.credentials) return node;
+      // Credentials are environment-owned.  Preserve only an exact node-name
+      // and node-type match; never print or write the IDs back to the repo.
+      return { ...node, credentials: prior.credentials };
+    }),
+  };
+}
+
 const remoteWorkflows = await listAllWorkflows();
 const remoteByName = new Map();
 for (const workflow of remoteWorkflows) {
@@ -226,7 +302,7 @@ for (const workflow of remoteWorkflows) {
 }
 
 for (const { key, config, workflow } of definitions) {
-  const payload = deploymentPayload(workflow);
+  let payload = deploymentPayload(workflow);
   let workflowId = config.n8nWorkflowId;
   let remote;
 
@@ -255,6 +331,21 @@ for (const { key, config, workflow } of definitions) {
   }
 
   if (workflowId) {
+    // Exact-name lookup may come from a compact list response. Fetch the full
+    // workflow before PUT so credentials selected in the n8n UI survive.
+    if (!remote?.nodes) {
+      remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
+    }
+    // Archived workflows cannot be updated through the public API.  Treat an
+    // archived, inactive legacy definition as intentionally retired instead
+    // of failing an otherwise idempotent deployment after newer workflows
+    // have already been updated.  A publish=true entry must never be skipped.
+    if (remote.isArchived === true) {
+      assert(config.publish === false, `${key}: archived workflow cannot be published`);
+      console.log(`Skipped archived ${key} (${workflowId})`);
+      continue;
+    }
+    payload = preserveRemoteNodeCredentials(payload, remote);
     const updated = await request(`/workflows/${encodeURIComponent(workflowId)}`, {
       method: "PUT",
       body: JSON.stringify(payload),

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from pai_loop.models import IngestionJob, MockNotification, Notice
+from pai_loop.models import AwardHistoryItem, IngestionJob, MockNotification, Notice
 
 
 def _create_notice(
@@ -54,6 +54,8 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
     assert body["totals"]["observed"] == 1
     assert [item["notice_key"] for item in body["notices"]] == ["DAILY-RECENT"]
     assert body["notices"][0]["fit"]["eligibility"] == "PENDING"
+    assert body["notices"][0]["fit"]["risk_score"] is None
+    assert body["notices"][0]["fit"]["risk_band"] == "UNKNOWN"
     assert body["notices"][0]["top_departments"]
     assert body["notices"][0]["quantitative_estimate"]["overall_status"] == "REVIEW"
     assert body["notices"][0]["pricing_intelligence"]["record_count"] == 0
@@ -61,12 +63,57 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         body["notices"][0]["pricing_intelligence"]["prediction"]["award_rate"]["status"]
         == "INSUFFICIENT_DATA"
     )
+    assert body["notices"][0]["competition_risk"]["status"] == "UNKNOWN"
+    assert body["notices"][0]["competition_risk"]["score"] is None
     assert body["source_calls"] == {"pps": 0, "openai": 0, "teams": 0}
     assert body["delivery"] == {
         "channel": "teams",
         "mode": "mock",
         "actual_push_sent": False,
     }
+
+
+def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(
+    client: TestClient,
+) -> None:
+    _create_notice(
+        client,
+        notice_key="DAILY-RISK",
+        published_at="2026-08-16T08:30:00+09:00",
+    )
+    winners = ["합성 수행사 A", "합성 수행사 B", "합성 수행사 A", "합성 수행사 C", "합성 수행사 B", "합성 수행사 A"]
+    participants = [2, 3, 2, 4, 3, 2]
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key="DAILY-RISK").one()
+        for index, (winner, participant_count) in enumerate(zip(winners, participants), start=1):
+            session.add(
+                AwardHistoryItem(
+                    target_notice_id=notice.id,
+                    external_identity=f"DAILY-RISK-{index}",
+                    bid_notice_no=f"SYN-DAILY-{index}",
+                    title=f"합성 AI 교육 {index}",
+                    agency="합성 발주기관",
+                    winner_name=winner,
+                    participant_count=participant_count,
+                    award_amount=90_000_000 + index,
+                    award_rate=90 + index / 10,
+                    awarded_at=datetime(2025, index, 1, tzinfo=timezone.utc),
+                    similarity_score=80,
+                    source="SYNTHETIC_TEST_ONLY",
+                )
+            )
+        session.commit()
+
+    response = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={"days": 7, "as_of": "2026-08-17T09:00:00+09:00"},
+    )
+    assert response.status_code == 200
+    item = response.json()["notices"][0]
+    assert item["fit"]["risk_band"] == "UNKNOWN"
+    assert item["competition_risk"]["score"] == 62.83
+    assert item["competition_risk"]["band"] == "HIGH"
+    assert item["pricing_intelligence"]["competition_risk"] == item["competition_risk"]
 
 
 def test_retention_defaults_to_preview_and_preserves_canonical_records(

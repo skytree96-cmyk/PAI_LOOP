@@ -2,9 +2,18 @@
 
 `PAI_LOOP_architecture.svg`가 편집 가능한 기준본이고, `PAI_LOOP_architecture.png`는 문서·n8n Sticky Note에서 빠르게 표시하기 위한 렌더링본이다.
 
-현재 기준본은 v1.3이며 **오전 9시 통합 n8n 진입점**, 최근 7일 아침 피드,
-최근 3년 낙찰 유사 후보, 정량·가격 신호, Teams mock 흐름을 표시한다. 후보는
+현재 기준본은 v1.4이며 **오전 9시 통합 n8n 진입점**, 최근 7일 아침 피드,
+bounded 최근 3년 낙찰 refresh, 정량·가격·적합성·경쟁집중 리스크와 backend
+Teams mock 기록 흐름을 표시한다. 후보는
 동일 사업 또는 경쟁사 확정 이력을 뜻하지 않으며 가격 신호도 관측 기반 예상이다.
+
+도식은 **현재 연결된 경로**와 **목표 아키텍처**를 함께 보여준다. 주황 점선과
+`TARGET · 현재 미연결` 배지가 붙은 Document Worker → OpenAI → 자동 규칙판정
+materialize 레인은 API/엔진 구성요소는 있으나 09:00 n8n 흐름에 아직 연결되지
+않았다. `Outcome Feedback · TARGET`도 입찰·개찰·낙찰·계약 결과를 자동 수집해
+환류하는 API가 아직 없다. 현재 구현 완료 범위는 PPS 메타데이터 수집, 저장 데이터
+평가/정량/부서랭킹, bounded 낙찰 refresh, 7일 피드·단기로그, 웹 조회와 backend
+Teams mock 기록이다.
 
 ## 표시 방식
 
@@ -15,7 +24,7 @@
 
 ## 책임 경계
 
-- n8n: 09:00 일정, API 페이징, 재시도, 중복 방지, 7일 피드와 통합 push 카드
+- n8n: 09:00 일정, API 페이징, bounded 3년 낙찰 refresh, 7일 피드와 통합 mock 카드
 - Document Worker: PDF/HWPX/HWP 변환과 구조·페이지 근거 추출
 - OpenAI: 고정 스키마를 따르는 조건·배점·근거 구조화
 - Rule Engine: 결정론적 자격·정량·준비도·리스크 판정

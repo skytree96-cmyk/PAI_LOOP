@@ -225,16 +225,73 @@ class AwardIntelligenceRecordOut(ApiModel):
     source: str
 
 
+class CompetitionRiskComponentOut(ApiModel):
+    value: float | None
+    unit: str
+    risk_score: float | None
+    weight: float
+    source_status: Literal["DERIVED_FROM_STORED_FACTS", "UNAVAILABLE"]
+    facts: dict[str, int | float | None]
+    rationale: str
+
+
+class CompetitionRiskCoverageFieldOut(ApiModel):
+    available: int
+    total: int
+    pct: float
+    minimum_available: int
+    minimum_pct: float
+    sufficient: bool
+
+
+class CompetitionRiskCoverageOut(ApiModel):
+    records_total: int
+    minimum_records: int
+    winner: CompetitionRiskCoverageFieldOut
+    participant_count: CompetitionRiskCoverageFieldOut
+    event_date: CompetitionRiskCoverageFieldOut
+    similarity_score: CompetitionRiskCoverageFieldOut
+    duplicate_record_keys: int
+    sufficient: bool
+
+
+class CompetitionRiskOut(ApiModel):
+    method_version: str
+    scope: Literal["STORED_3Y_SIMILARITY_CANDIDATES"]
+    confidence_basis: Literal["INPUT_COMPLETENESS_AND_CANDIDATE_RELEVANCE_ONLY"]
+    market_claim: Literal["NOT_DETERMINED"]
+    status: Literal["MODEL_ESTIMATE", "UNKNOWN"]
+    score: float | None
+    band: Literal["LOW", "MODERATE", "HIGH", "VERY_HIGH", "UNKNOWN"]
+    confidence: Literal["HIGH", "MEDIUM", "LOW", "INSUFFICIENT"]
+    sample_count: int
+    components: dict[str, CompetitionRiskComponentOut]
+    coverage: CompetitionRiskCoverageOut
+    method: str
+    rationale: str
+    warnings: list[str]
+    separation_notice: str
+
+
+class AwardCandidateWindowOut(ApiModel):
+    from_: date = Field(alias="from")
+    to: date
+    years: Literal[3]
+    undated_policy: Literal["KEPT_BUT_COVERAGE_GATED"]
+
+
 class AwardIntelligenceOut(ApiModel):
     analytics_version: str
     boundary: Literal["STORED_HISTORY_ONLY"]
     generated_as_of: datetime
+    candidate_window: AwardCandidateWindowOut
     notice_key: str
     period: dict[str, Any]
     record_count: int
     records: list[AwardIntelligenceRecordOut]
     field_coverage: dict[str, dict[str, int]]
     concentration: dict[str, Any]
+    competition_risk: CompetitionRiskOut
     award_rate_distribution: dict[str, Any]
     submitted_bid_rate_distribution: dict[str, Any]
     prediction: dict[str, Any]

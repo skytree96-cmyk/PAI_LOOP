@@ -121,12 +121,18 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         "readiness_score": latest.readiness_score if latest else None,
         "readiness_status": latest.readiness_status if latest else "GRAY",
         "evidence_coverage": latest.evidence_coverage if latest else None,
+        "risk_score": latest.risk_score if latest else None,
         "risk_band": latest.risk_band if latest else "UNKNOWN",
     }
     eligibility_weight = {"PASS": 30, "REVIEW": 20, "PENDING": 10, "FAIL": 0}[fit["eligibility"]]
     department_score = float(departments[0]["score"]) if departments else 0.0
     readiness_score = float(fit["readiness_score"] or 0.0)
     priority_score = round(min(100.0, eligibility_weight + 0.4 * department_score + 0.3 * readiness_score), 1)
+    pricing_intelligence = build_award_intelligence(
+        notice.award_history,
+        as_of=as_of,
+        target_estimated_price=notice.estimated_amount,
+    )
     return {
         "notice_key": notice.notice_key,
         "bid_notice_no": notice.bid_notice_no,
@@ -141,12 +147,9 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         "fit": fit,
         "top_departments": departments,
         "award_snapshot": _award_snapshot(notice.award_history),
+        "competition_risk": pricing_intelligence["competition_risk"],
         "quantitative_estimate": estimate_for_notice(notice).model_dump(mode="json"),
-        "pricing_intelligence": build_award_intelligence(
-            notice.award_history,
-            as_of=as_of,
-            target_estimated_price=notice.estimated_amount,
-        ),
+        "pricing_intelligence": pricing_intelligence,
     }
 
 

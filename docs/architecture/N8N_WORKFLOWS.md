@@ -13,7 +13,7 @@
 | 02 | `PAI_LOOP 02 - Live PPS Ingestion` | 제한된 실수집 window를 보호된 backend에 전달 | backend live-ingestion 호출 |
 | 03 | `PAI_LOOP 03 - Teams Mock Notification` | Adaptive Card 생성과 mock delivery 기록 | backend mock-log만 호출; Teams 호출 없음 |
 | 04 | `PAI_LOOP 04 - Award History Refresh` | 공고별 최근 1~3년 낙찰 유사 후보 갱신 | backend award-history 호출; 응답은 집계만 보존 |
-| **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **09:00 KST 수집·우선순위·저장 평가·7일 피드·통합 카드의 단일 운영 진입점** | **inactive; 수동 실행은 HTTP/PPS/OpenAI/Teams 호출 0회** |
+| **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **09:00 KST 수집·7일 순위·bounded 3년 낙찰 refresh·정량/가격/리스크·backend Teams mock 기록의 단일 운영 진입점** | **inactive; 수동 실행은 backend/PPS/낙찰/OpenAI/Teams 호출 0회** |
 
 ## 통합 운영 결정
 
@@ -23,6 +23,11 @@ fixture, 계약 설명, 장애 시 롤백 자료로 남긴다. n8n에서 모든 
 PAI_LOOP backend의 버전된 계약을 호출하고 backend가 데이터·평가 로직을 소유한다.
 
 따라서 “한 번에 활용”한다는 제품 요구는 충족하면서도 다음을 지킨다.
+
+현재 10번에 연결된 분석은 저장된 evaluation/문서 근거를 읽는 단계까지다. 첨부
+자동 획득·변환, OpenAI extraction을 requirement 원자항목으로 materialize하고 즉시
+평가하는 단계와 입찰/개찰/낙찰/계약 결과 자동 환류는 아직 구현된 n8n 경로가
+아니다. 아키텍처의 주황 점선과 `TARGET` 배지는 이 목표 경계를 뜻한다.
 
 - 예약 트리거, 재시도, 비용/외부효과 Gate, 7일 피드, 카드 조립은 `10` 한 곳에서 본다.
 - 자격·정량·가격 계산은 API의 테스트 가능한 결정론적 모듈이 소유한다.
@@ -40,11 +45,19 @@ PAI_LOOP backend의 버전된 계약을 호출하고 backend가 데이터·평�
 | `PAI_LOOP_AWARD_HISTORY_KEYWORD` | 04 | 선택 낙찰 검색어. 없으면 backend가 공고명에서 생성한다. |
 | `PAI_LOOP_DAILY_LIVE_ENABLED` | 10 | 정확히 `true`이고 API URL이 유효할 때만 예약 실행의 backend 수집 분기를 연다. |
 | `PAI_LOOP_RETENTION_LIVE_ENABLED` | 10 | 위 daily gate도 열린 상태에서 정확히 `true`일 때만 단기 로그 삭제를 허용한다. |
+| `PAI_LOOP_AWARD_REFRESH_ENABLED` | 10 | daily gate와 함께 `true`일 때만 7일 상위 후보의 3년 낙찰 API 호출을 허용한다. |
+| `PAI_LOOP_AWARD_REFRESH_WRITE_ENABLED` | 10 | award gate와 함께 `true`일 때만 `dry_run=false`로 저장한다. |
+| `PAI_LOOP_AWARD_REFRESH_LIMIT` | 10 | 1~5, 기본 3. 한 실행의 낙찰 refresh 후보 상한이다. |
+| `PAI_LOOP_TEAMS_MOCK_LOG_ENABLED` | 10 | daily gate와 함께 `true`일 때만 통합 카드를 backend mock-log에 기록한다. 실제 Teams 전송과 무관하다. |
 | `PAI_LOOP_WEB_BASE_URL` | 10 | 카드의 `웹에서 근거 확인` 링크. 자격증명 없는 HTTP(S) origin/path만 허용한다. |
 
-n8n에서 node 환경변수 접근을 차단한 경우, 운영자가 Generic Header Auth
-credential을 HTTP Request 노드에 연결한다. Credential ID는 환경마다 다르므로
-Git export에는 넣지 않는다.
+10번의 API/Web URL은 `$env` 값을 우선하고 없으면 공개 origin
+`https://pai-loop-demo.onrender.com`을 사용한다. 모든 live gate는 `$env`가 없으면
+false다. 모든 backend HTTP Request 노드는 `genericCredentialType/httpHeaderAuth`를
+선언하고, 운영자가 n8n의 Generic Header Auth credential `PAI_LOOP Render Backend`를
+각 노드에 연결한다. Credential 값과 ID는 환경마다 다르므로 Git export에는 넣지
+않는다. 배포기는 동일 노드 이름·타입의 원격 credential 연결만 보존한다. 연결되지
+않은 노드는 인증 없이 우회하지 않고 n8n 실행 단계에서 fail-closed한다.
 
 ## 02 · Live PPS Ingestion
 
@@ -155,18 +168,18 @@ Safety gates:
 
 ```text
 합성 7일 공고 2건
-  → 부서·적합성·선택 정량/가격 필드 정규화
+  → 부서·적합성·정량/가격/리스크 필드 정규화
   → 통합 Adaptive Card 1.5 한 장
   → 로컬 push mock
-  → 09:00/7일/0-call/28KB 계약 검증
+  → 09:00/7일/bounded 낙찰 skip/0-call/28KB 계약 검증
 ```
 
 이 경로에서 HTTP Request 노드는 그래프상 도달 불가능하다. repository validator와
 `scripts/test-daily-workflow.mjs`가 실제 Code node를 순서대로 실행해 다음을 검증한다.
 
-- PPS/OpenAI/Teams/backend source call 0;
+- backend/PPS/낙찰/OpenAI/Teams source call 0;
 - `actualTeamsRequestSent=false`, `actualPushSent=false`;
-- 정량·가격 필드가 없으면 숫자를 만들지 않고 `분석 대기`;
+- 정량·가격·리스크 필드가 없으면 숫자를 만들지 않고 `분석 대기`/`UNKNOWN`;
 - 카드 최대 28KB, Adaptive Card 1.5;
 - 7일 창과 매일 09:00 KST schedule.
 
@@ -175,12 +188,21 @@ Safety gates:
 workflow가 나중에 활성화되더라도 `PAI_LOOP_DAILY_LIVE_ENABLED=true` 전에는
 합성 preview로만 끝난다. Gate가 열린 예약 실행만 다음 backend 경계를 사용한다.
 
-1. `POST /api/v1/ingestion/pps/notices` — 전일~당일 bounded 수집;
+1. `POST /api/v1/ingestion/pps/notices` — 전일~당일 bounded 수집과 strict 응답 검증;
 2. `POST /api/v1/operations/retention` — 기본 preview, 별도 retention gate 후 적용;
-3. `GET /api/v1/operations/daily-briefing?days=7&limit=20` — 저장 데이터만 조립.
+3. `GET /api/v1/operations/daily-briefing?days=7&limit=20` — refresh 후보를 위한 저장 데이터 조립;
+4. `POST /api/v1/notices/{notice_key}/award-history/refresh` — 비-FAIL 상위 최대 3건,
+   최근 3년·100행·구간당 1페이지. 별도 write gate 전에는 `dry_run=true`;
+5. 같은 daily-briefing GET 재조회 — 저장 refresh가 있으면 당일 카드에 반영;
+6. `POST /api/v1/notices/{anchor}/notifications/teams/mock` — 통합 카드 한 건의 backend
+   mock 기록. 별도 gate가 닫혀 있으면 로컬 mock만 생성한다.
 
-실제 Teams webhook 노드는 없다. 회사 승인 후 마지막 mock 경계만 승인된 Teams
-Workflows credential로 교체하고 별도의 send gate를 추가한다.
+마지막 mock endpoint의 `anchor`는 통합 카드 첫 공고와 기록을 연결하기 위한 기술적
+앵커이며 카드 전체가 그 공고 하나만을 뜻하지 않는다. 현재 backend 계약을 재사용한
+최소변경 방식이다. 추후 digest 전용 delivery-log가 생기면 이 앵커를 제거한다.
+
+실제 Teams webhook 노드는 없다. backend mock 기록은 Teams 네트워크 호출이 아니다.
+회사 승인 후 마지막 mock 경계와 분리된 send 노드·credential·별도 gate를 추가한다.
 
 ### 7일 보관 범위
 

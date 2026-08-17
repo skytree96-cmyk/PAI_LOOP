@@ -7,7 +7,7 @@ const workflow = JSON.parse(
 );
 const nodes = new Map(workflow.nodes.map((node) => [node.name, node]));
 
-function executeCodeNode(name, input = {}) {
+function executeCodeNodeItems(name, input = {}, globals = {}) {
   const node = nodes.get(name);
   assert(node, `Missing Code node: ${name}`);
   assert.equal(node.type, "n8n-nodes-base.code", `${name} must be a Code node`);
@@ -20,11 +20,130 @@ function executeCodeNode(name, input = {}) {
     },
   });
   // eslint-disable-next-line no-new-func
-  const run = new Function("$json", "$env", "$node", "$now", node.parameters.jsCode);
-  const result = run(input, blocked, blocked, blocked);
-  assert(Array.isArray(result) && result.length === 1, `${name} must return one item`);
-  return result[0].json;
+  const run = new Function("$json", "$env", "$node", "$now", "$input", node.parameters.jsCode);
+  const result = run(
+    input,
+    globals.env ?? blocked,
+    globals.node ?? blocked,
+    globals.now ?? blocked,
+    globals.input ?? blocked,
+  );
+  assert(Array.isArray(result), `${name} must return an item array`);
+  return result.map((item, index) => {
+    assert(item && typeof item.json === "object", `${name}[${index}] must contain json`);
+    return item.json;
+  });
 }
+
+function executeCodeNode(name, input = {}, globals = {}) {
+  const result = executeCodeNodeItems(name, input, globals);
+  assert.equal(result.length, 1, `${name} must return one item`);
+  return result[0];
+}
+
+const scheduledPreview = executeCodeNode("Scheduled Runtime Gates", {}, { env: {} });
+assert.equal(scheduledPreview.runtime.apiBaseUrl, "https://pai-loop-demo.onrender.com");
+assert.equal(scheduledPreview.runtime.webBaseUrl, "https://pai-loop-demo.onrender.com");
+assert.equal(scheduledPreview.runtime.dailyLiveEnabled, false);
+assert.equal(scheduledPreview.runtime.retentionLiveEnabled, false);
+assert.equal(scheduledPreview.runtime.awardRefreshEnabled, false);
+assert.equal(scheduledPreview.runtime.awardRefreshWriteEnabled, false);
+assert.equal(scheduledPreview.runtime.teamsMockLogEnabled, false);
+assert.equal(scheduledPreview.runtime.maxAwardRefreshNotices, 3);
+
+const httpNodes = workflow.nodes.filter((node) => node.type === "n8n-nodes-base.httpRequest");
+assert.equal(httpNodes.length, 6);
+for (const node of httpNodes) {
+  assert.equal(node.parameters.authentication, "genericCredentialType", `${node.name}: auth mode`);
+  assert.equal(node.parameters.genericAuthType, "httpHeaderAuth", `${node.name}: auth type`);
+  assert.equal(node.credentials, undefined, `${node.name}: source must not contain credential IDs`);
+  const headers = node.parameters.headerParameters?.parameters ?? [];
+  assert.equal(
+    headers.some((header) => String(header.name).toLowerCase() === "x-pai-loop-api-key"),
+    false,
+    `${node.name}: API key header must come from the credential store`,
+  );
+}
+
+// Exercise the bounded award branch without invoking an HTTP node.  An enabled
+// refresh with writes disabled must select no more than three candidates and
+// must materialize only three-year, single-page, dry-run requests.
+const awardRuntime = {
+  ...scheduledPreview.runtime,
+  awardRefreshEnabled: true,
+  awardRefreshWriteEnabled: false,
+  maxAwardRefreshNotices: 3,
+};
+const awardPlan = executeCodeNode(
+  "Build Bounded Award Refresh Plan",
+  {
+    body: {
+      timezone: "Asia/Seoul",
+      window: { days: 7 },
+      notices: [
+        { notice_key: "notice-a", title: "A", priority_score: 80, fit: { eligibility: "GO" }, award_snapshot: { observations: 0 } },
+        { notice_key: "notice-b", title: "B", priority_score: 99, fit: { eligibility: "FAIL" }, award_snapshot: { observations: 0 } },
+        { notice_key: "notice-c", title: "C", priority_score: 90, fit: { eligibility: "REVIEW" }, award_snapshot: { observations: 2 } },
+        { notice_key: "notice-d", title: "D", priority_score: 10, fit: { eligibility: "GO" }, award_snapshot: { observations: 9 } },
+      ],
+    },
+  },
+  {
+    node: {
+      "Scheduled Runtime Gates": { json: { runtime: awardRuntime } },
+      "Validate PPS Ingestion Contract": { json: { ingestion: { noticeKeys: ["notice-d"] } } },
+    },
+  },
+);
+assert.equal(awardPlan.awardRefresh.status, "PLANNED");
+assert.equal(awardPlan.awardRefresh.selected, 3);
+assert.equal(awardPlan.awardRefresh.dryRun, true);
+assert.deepEqual(
+  awardPlan.awardRefresh.candidates.map((candidate) => candidate.noticeKey),
+  ["notice-d", "notice-a", "notice-c"],
+);
+const awardRequests = executeCodeNodeItems("Expand Bounded Award Refresh Requests", awardPlan);
+assert.equal(awardRequests.length, 3);
+for (const request of awardRequests) {
+  assert.deepEqual(request.request, {
+    years: 3,
+    page_size: 100,
+    max_pages_per_window: 1,
+    dry_run: true,
+  });
+  assert.match(request.idempotencyKey, /^award:daily:/);
+}
+const awardResponses = awardRequests.map((request, index) => ({
+  json: {
+    job_id: `offline-${index}`,
+    status: "COMPLETED",
+    notice_key: request.candidate.noticeKey,
+    keyword: "교육 컨설팅",
+    window: { from: "2023-08-17", to: "2026-08-17" },
+    api_calls: 0,
+    fetched: 0,
+    created: 0,
+    updated: 0,
+    duplicates: 0,
+    records: 0,
+    dry_run: true,
+    warnings: [],
+  },
+}));
+const awardBatch = executeCodeNode(
+  "Validate Award Refresh Batch",
+  {},
+  {
+    node: { "Build Bounded Award Refresh Plan": { json: awardPlan } },
+    input: { all: () => awardResponses },
+  },
+);
+assert.equal(awardBatch.awardRefresh.status, "COMPLETED");
+assert.equal(awardBatch.awardRefresh.attempted, 3);
+assert.deepEqual(awardBatch.awardRefresh.privacyBoundary, {
+  candidateRowsEmitted: false,
+  piiFieldsEmitted: false,
+});
 
 let item = executeCodeNode("Force Zero-Call Manual Context");
 item = executeCodeNode("Build Seven-Day Offline Fixture", item);
@@ -55,6 +174,23 @@ item.notices[0].pricing_intelligence = {
 };
 item = executeCodeNode("Build Consolidated Teams Adaptive Card", item);
 item = executeCodeNode("Render Score Range and Sample Concentration", item);
+const backendMockRequest = executeCodeNode("Build Backend Teams Mock Request", item);
+const backendMockRecord = executeCodeNode(
+  "Validate Backend Teams Mock Record",
+  {
+    status: "MOCK_RECORDED",
+    channel: "teams",
+    delivery_mode: "mock",
+    notice_key: backendMockRequest.mockRequest.noticeKey,
+    correlation_id: backendMockRequest.mockRequest.correlationId,
+    card: backendMockRequest.adaptiveCard,
+    id: "offline-record",
+  },
+  { node: { "Build Backend Teams Mock Request": { json: backendMockRequest } } },
+);
+assert.equal(backendMockRecord.pushMock.persisted, true);
+assert.equal(backendMockRecord.pushMock.actualTeamsRequestSent, false);
+assert.equal(backendMockRecord.source_calls.teams_mock_log, 1);
 item = executeCodeNode("Record One Push Mock Locally", item);
 item = executeCodeNode("Validate Complete Dry-Run Contract", item);
 
@@ -68,6 +204,10 @@ assert.deepEqual(item.schedule, {
 assert.equal(item.retention.days, 7);
 assert.equal(item.actualTeamsRequestSent, false);
 assert.equal(item.actualPushSent, false);
+assert.equal(item.notificationMock.status, "MOCK_LOCAL_ONLY");
+assert.equal(item.notificationMock.persisted, false);
+assert.equal(item.awardRefresh.status, "SKIPPED");
+assert.equal(item.awardRefresh.attempted, 0);
 assert.equal(item.adaptiveCard.type, "AdaptiveCard");
 assert.equal(item.adaptiveCard.version, "1.5");
 assert.equal(item.briefing.noticeKeys.length, 2);
@@ -81,4 +221,18 @@ assert.equal(
 const concentration = facts.find((fact) => fact.title === "표본 집중도")?.value ?? "";
 assert.match(concentration, /3건 \/ 75\.0%/);
 assert.match(concentration, /독점 확정 아님/);
-console.log("Daily workflow offline E2E passed: 0 HTTP, 0 PPS, 0 OpenAI, 0 Teams calls");
+assert.equal(facts.find((fact) => fact.title === "리스크")?.value, "GO · 18.4점");
+assert.equal(
+  facts.find((fact) => fact.title === "경쟁·집중 리스크")?.value,
+  "HIGH · 71.2/100 · MEDIUM",
+);
+assert.match(JSON.stringify(item.adaptiveCard), /법적 독점 판정이 아닙니다/);
+assert.deepEqual(item.externalCalls, {
+  backend: 0,
+  pps: 0,
+  awards: 0,
+  openai: 0,
+  teams_mock_log: 0,
+  teams: 0,
+});
+console.log("Daily workflow offline E2E passed: 0 backend, 0 PPS, 0 award, 0 OpenAI, 0 Teams calls");
