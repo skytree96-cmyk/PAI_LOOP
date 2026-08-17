@@ -12,21 +12,36 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.1.0 foundation
+## 현재 구현 범위: v0.7.1 live procurement evidence slice
 
-- FastAPI + SQLAlchemy 기반 API와 SQLite/PostgreSQL 교체 가능한 저장 경계
-- 마감일 기준 증빙, 증빙 Gate, AND/OR 경로, 연결 REVIEW, `DF-000`을 다루는
-  결정론적 평가 엔진
-- 정량 준비도·증빙 커버리지·리스크와 적격성을 분리한 결과 계약
-- 합성 PASS/REVIEW/FAIL 공고를 중복 없이 재생하는 회귀 fixture
-- 데스크톱·모바일·Teams iframe을 고려한 반응형 한국어 대시보드
-- GitHub에서 이름 기반으로 안전하게 upsert하는 n8n 워크플로 배포
-- n8n 안에서 읽을 수 있는 아키텍처와 공고 replay vertical slice
-- 실제 조달청 핵심 API 및 OpenAI Responses API 연결 검증
+- FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
+- 전사 공통 `교육·컨설팅`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
+- 검색 주체 부서와 사용자 추가 키워드에 따라 달라지는 점수·근거·추천 부서
+- 참가요건을 `적격성 / 행동 필요 / 체크리스트 / 정보`로 분리하는 정책 엔진
+- 마감일 기준 증빙 Gate, AND/OR 경로, REVIEW와 `FAIL(reason=DF-000)`을 다루는 평가 엔진
+- 실제 공개 인천 공고의 정제 seed: 요구조건 23건, 근거 앵커 26건
+- 공개 가능한 실제 실적 1,182건의 검색·연도·사업부 필터와 페이지 조회
+- 검수·매핑된 실제 제안요청서의 20점 정량표를 원문 SHA-256·페이지와 연결한 조건부 점수 범위·의견
+- 공개 안전 낙찰 이력 59건을 이용한 3년 수주 집중도·낙찰률 범위·가격 참고 예측
+- 원문 대신 해시·유효 메타데이터만 공개하는 회사 자격 프로필
+- 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
+- GitHub Actions 검증, n8n 이름 기반 멱등 배포, Teams 승인 전 Adaptive Card mock
+- 매일 09:00 KST에 신규 공고의 bounded 분석·평가·snapshot, 최근 7일 부서 우선순위·정량·가격·리스크와 3년 낙찰 refresh를 한 카드로 묶는 통합 n8n 진입점
+- 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
+- Git 기준자료 6종을 PostgreSQL `reference_data_versions`에 불변 버전으로 동기화하고 회사 공개 facts/evidence를 평가 DB에 멱등 반영
+- 저장된 다중 첨부 추출본을 원자조건으로 병합한 뒤 평가·조건결과·정량·가격·경쟁리스크·부서추천·시스템 입찰의견을 한 트랜잭션의 불변 snapshot으로 저장
+- 실제 `NO_BID / SUBMITTED / WON / LOST`와 투찰금액·점수·실주사유를 누적·갱신할 결과 환류 DB/API
 
-이 버전은 제품 기반과 재현 가능한 세로 슬라이스입니다. 실제 입찰 자격이나
-법률 판단을 대신하지 않으며, 실데이터 수집/첨부 추출/Teams 알림은 이후
-단계의 운영 승인과 보안 Gate를 통과해야 합니다.
+GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마친 불변 seed만 둡니다.
+온라인 실행 데이터와 검토 이력의 기준 시스템은 관리형 PostgreSQL입니다.
+사내 원천 어댑터와 원천 파일은 이 공개 저장소·배포 패키지의 구성요소가 아닙니다.
+실제 입찰 자격이나 법률 판단을 대신하지 않으며, 전사 쓰기 기능은 Entra
+SSO/RBAC 및 회사 승인 전까지 차단합니다.
+
+낙찰 이력도 동일 사업을 확정하는 데이터가 아닙니다. 공고명에서 생성하거나
+담당자가 입력한 키워드로 후보를 조회한 뒤, 토큰 겹침과 한글 3-gram 유사도를
+혼합한 점수를 함께 보여주는 **검토용 후보 목록**입니다. 사업 범위·발주기관·
+기간·과업 내용은 담당자가 다시 확인해야 합니다.
 
 ## 빠른 로컬 실행
 
@@ -53,11 +68,22 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/ingestion/repla
 합성 fixture에는 `SYN-` 접두사를 사용하며 실제 회사정보나 개인정보를
 포함하지 않습니다.
 
+실제 공개 인천 공고 seed를 현재 DB에 멱등 적재하려면:
+
+```powershell
+pai-loop-seed-public-notice --create-schema
+```
+
+공개 실적과 회사 자격 프로필은 버전·해시가 검증된 패키지 자산으로
+제공됩니다. 공개 앱에는 이 자산을 읽고 검증하는 코드만 포함되며, 사내 원천
+형식·반입 코드·원천 파일은 저장소나 컨테이너 build context에 포함하지 않습니다.
+
 ## 테스트
 
 ```powershell
 pytest --cov=pai_loop --cov-report=term-missing
 node scripts/deploy-workflows.mjs --validate-only
+node scripts/test-daily-workflow.mjs
 ```
 
 CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소용 비밀값
@@ -68,51 +94,113 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | 서비스/DB 상태 |
+| `GET` | `/api/v1/runtime-profile` | 공개 읽기/쓰기 경계 |
 | `GET` | `/api/v1/dashboard` | 요약 및 마감 현황 |
-| `GET` | `/api/v1/notices` | 검색/필터 목록 |
+| `GET` | `/api/v1/notices` | 검색·부서 우선순위·사용자 키워드 목록 |
 | `GET` | `/api/v1/notices/{notice_key}` | 근거·평가·결정 상세 |
+| `GET` | `/api/v1/departments/keyword-profiles` | 부서별 검색 키워드 registry |
+| `GET` | `/api/v1/company-profile` | 공개 가능한 회사 자격 프로필 |
+| `GET` | `/api/v1/notices/{notice_key}/analysis/requirement-policy` | 적격성/행동/체크/정보 분류 |
+| `GET` | `/api/v1/performance/summary` | 공개 실적 집계 |
+| `GET` | `/api/v1/performance` | 공개 실적 검색·필터·페이지 조회 |
 | `POST` | `/api/v1/notices/{notice_key}/evaluate` | 버전 규칙 재평가 |
 | `POST` | `/api/v1/notices/{notice_key}/decisions` | 담당자 결정 기록 |
 | `POST` | `/api/v1/ingestion/replay` | 합성 회귀 fixture 재생 |
+| `POST` | `/api/v1/ingestion/pps/notices` | 조달청 실공고 bounded upsert |
+| `GET` | `/api/v1/ingestion/jobs` | 비밀값 없는 수집 감사로그 |
+| `POST` | `/api/v1/notices/{notice_key}/analysis/extractions` | 공개 공고문 근거 구조화 |
+| `POST` | `/api/v1/notices/{notice_key}/award-history/refresh` | 최대 3년 낙찰 후보 제한 수집·멱등 갱신 |
+| `GET` | `/api/v1/notices/{notice_key}/award-history` | 저장된 낙찰 후보와 제목 유사도 조회 |
+| `GET` | `/api/v1/notices/{notice_key}/award-intelligence` | 저장 이력 기반 3년 집중도·낙찰률·금액 범위 분석 |
+| `GET` | `/api/v1/notices/{notice_key}/quantitative-estimate` | 검수된 공고 프로필의 배점표·공개 근거 기반 정량 하한~상한; 신규 미매핑 공고는 `UNSCORABLE` |
+| `POST` | `/api/v1/notices/{notice_key}/notifications/teams/mock` | Teams 카드 모의 기록 |
+| `POST` | `/api/v1/notices/analysis/batch` | PPS 신규 key의 저장된 ACCEPTED extraction materialize·평가·snapshot 집계 |
+| `GET` | `/api/v1/notices/{notice_key}/analysis-runs` | 기준 버전과 조건·점수·추천 snapshot 이력 |
+| `GET` | `/api/v1/reference-data/versions` | 활성 판단 기준 버전·해시 메타데이터 |
+| `POST` | `/api/v1/reference-data/sync` | 검토된 Git 기준자료와 회사 공개 facts의 멱등 DB 동기화 |
+| `GET/POST` | `/api/v1/notices/{notice_key}/outcomes` | 실제 입찰·낙찰·실주 결과 조회/멱등 upsert |
+| `GET` | `/api/v1/notifications/mock` | Teams 모의 로그 조회 |
+| `GET` | `/api/v1/operations/daily-briefing` | 외부 호출 없이 저장된 최근 7일 공고 브리핑 조립 |
+| `POST` | `/api/v1/operations/retention` | 완료 수집로그·mock 알림 7일 보관 preview/apply |
 
 ## n8n 배포
+
+운영자가 실행할 통합 진입점은 `PAI_LOOP 10 - Daily Opportunity Briefing`이다.
+매일 09:00 Asia/Seoul, PPS 신규 key의 상위 최대 3건 bounded 첨부 보강·분석·평가·snapshot,
+최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/리스크 신호, 상위 최대
+3건의 bounded 3년 낙찰 refresh와 backend Teams 통합 카드
+mock 기록을 한 번에 검증한다. 기존 00~04는
+비활성 계약 시험/rollback 자산이며 실제 운영 시 따로 누르지 않는다.
+
+현재 09:00 자동 경로는 전일~당일 PPS 공고를 backend 조직 profile keyword로
+수집하고, ranking된 `notice_keys`의 3년 낙찰을 먼저 refresh한다(기본 1건,
+hard max 3). 그 다음 상위 3건의 누락 공개 첨부를 공고당 최대 1개 보강하고
+평가·snapshot을 만들므로 당일 가격·경쟁집중 신호가 하루 늦지 않는다.
+입찰/개찰/낙찰/계약 결과의 완전 자동 환류는 계속 확장 경계다.
 
 `main`에 `workflows/**`, `manifest.json` 또는 배포 스크립트 변경이 push되면
 GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
 manifest에서 `publish: false`인 워크플로는 배포 후에도 비활성 상태를
 강제합니다.
+검증된 운영 진입점 Workflow 10만 현재 `publish: true`이며, 나머지 00~04와
+deployment smoke는 계속 비활성입니다.
+
+`PAI_LOOP 04 - Award History Refresh`도 기본 비활성입니다. 수동 실행은 항상
+dry-run이고, schedule/sub-workflow의 저장 실행은
+`PAI_LOOP_LIVE_INGESTION_ENABLED=true`일 때만 허용됩니다. 대상 공고키는
+입력값을 우선 사용하며, 승인된 n8n 환경변수 fallback만 허용합니다.
 
 필수 GitHub Actions secrets:
 
 - `N8N_BASE_URL`
 - `N8N_API_KEY`
 
-OpenAI·조달청 키는 배포 스크립트가 workflow JSON에 넣지 않습니다. n8n
-credential store 또는 서버 환경변수에서만 주입합니다. n8n 화면에서 직접
-수정했다면 JSON을 먼저 GitHub에 동기화해야 하며, GitHub를 소스 오브
-트루스로 유지합니다.
+OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON에 넣지 않습니다.
+10번의 모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구하며,
+소스에는 credential ID도 없습니다. n8n UI에서 같은 노드 이름에 연결한 credential은
+후속 GitHub 배포 시 보존됩니다. API/Web origin은 `$env`를 우선하고 없으면 공개
+Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 workflow를
+활성화하면 명시적 기본 설정으로 live 실행하고,
+`PAI_LOOP_EMERGENCY_DISABLE=true`일 때만 모든 예약 gate를 fail-closed합니다.
+자세한 운영 절차는
+[`docs/DAILY_BRIEFING_RUNBOOK_v0.7.0.md`](docs/DAILY_BRIEFING_RUNBOOK_v0.7.0.md)에 있습니다.
 
 ## 배포 방향
 
-공모전과 첫 사내 파일럿은 **독립 웹 대시보드 + n8n + Teams Workflows
-알림 카드**를 권장합니다. 상세 표와 3년 낙찰 이력은 웹에서, Teams는
-업무 맥락 안의 알림/진입점으로 사용합니다. 동일 웹앱을 이후 Teams 탭으로
-패키징할 수 있습니다. 자세한 내용은
-[`docs/DEPLOYMENT_STRATEGY_v0.1.0.md`](docs/DEPLOYMENT_STRATEGY_v0.1.0.md)에
+공모전 데모는 **FastAPI + 현재 SPA 단일 컨테이너 + 관리형 PostgreSQL**로
+배포합니다. [`render.yaml`](render.yaml)은 CI 통과 후 자동 배포와 production
+보안 기본값을 선언하고, 컨테이너는 시작 전에 실제 공개 공고 seed를 멱등
+적재합니다. Streamlit 계정은
+있지만 현재 앱을 다시 작성하고 인증 경계를 이중화해야 하므로 이번 호스트로
+사용하지 않습니다.
+
+사내 파일럿은 독립 웹을 기준 제품으로 두고 Teams는 알림/진입점과 탭으로
+연결합니다. 회사 승인이 나기 전에는 실제 Teams 전송 없이 mock만 기록합니다.
+자세한 비교와 운영 Gate는
+[`docs/DEPLOYMENT_STRATEGY_v0.2.0.md`](docs/DEPLOYMENT_STRATEGY_v0.2.0.md)에
 있습니다.
 
 ## 보안 경계
 
 - `.env`, `secrets.txt`, API 키, Teams webhook URL, 실제 첨부, 내부 데이터행,
   전체 추출문은 Git에 올리지 않습니다.
-- OpenAI 입력은 최소 문단만 전송하고 문서 속 지시문을 신뢰하지 않으며,
-  strict schema와 근거-anchor 검증을 거칩니다.
-- 외부 URL로 공개하기 전에 인증/권한, HTTPS, rate limit, 감사로그와 저장소
-  보존정책을 반드시 켭니다.
-- 현재 공개 데모에는 합성 데이터만 사용합니다. 내부 회사 증빙은 private
-  배포와 RBAC 전에는 로드하지 않습니다.
+- 낙찰 후보에는 공고번호·공고명·발주기관·낙찰 법인명·참가 수·금액·낙찰률·
+  개찰/낙찰일과 유사도만 저장합니다. 사업자번호·대표자·주소·전화·담당자는
+  API 정규화 경계에서 폐기합니다.
+- OpenAI에는 호출자가 명시적으로 선택한 공개 공고 텍스트만 최대 120,000자로
+  전송합니다. 문서 속 지시문을 신뢰하지 않으며 strict schema와 근거-anchor
+  검증을 거칩니다.
+- 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록만
+  익명 제공하며 결정·재수집·LLM 호출·Teams mock을 포함한 쓰기는 서버 인증을
+  요구합니다.
+- 공개 GitHub와 외부 심사용 배포에는 공개 조달공고, 비식별화한 공개 실적,
+  파생 회사 자격 facts와 합성 회귀 fixture만 사용합니다. 원본 사내 파일,
+  담당자 결정, 직접식별자와 비공개 메모는 포함하지 않습니다.
+- 전사 배포 전에는 Entra SSO/RBAC, HTTPS, rate limit, 감사로그, 암호화 저장소와
+  보존정책을 반드시 적용합니다.
 
-보안 기준은 [`docs/SECURITY_AND_PRIVACY_v0.1.0.md`](docs/SECURITY_AND_PRIVACY_v0.1.0.md),
+보안 기준은 [`docs/SECURITY_AND_PRIVACY_v0.1.0.md`](docs/SECURITY_AND_PRIVACY_v0.1.0.md)와
+[`docs/SECURITY_AND_PRIVACY_v0.2.0.md`](docs/SECURITY_AND_PRIVACY_v0.2.0.md),
 OpenAI 계약은
 [`docs/OPENAI_EXTRACTION_CONTRACT_v0.1.0.md`](docs/OPENAI_EXTRACTION_CONTRACT_v0.1.0.md)를
 참조하세요.
@@ -120,9 +208,26 @@ OpenAI 계약은
 ## 설계 문서
 
 - [Product blueprint](docs/PRODUCT_BLUEPRINT_v0.1.0.md)
+- [Department keyword ranking v0.3.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.3.0.md)
+- [Quantitative scoring v0.3.0](docs/QUANTITATIVE_SCORING_v0.3.0.md)
+- [Award and pricing intelligence v0.3.0](docs/PPS_AWARD_INTELLIGENCE_v0.3.0.md)
+- [Daily 09:00 briefing runbook v0.7.0](docs/DAILY_BRIEFING_RUNBOOK_v0.7.0.md)
+- [PPS live ingestion and evidence enrichment v0.6.1](docs/PPS_LIVE_INGESTION_AND_ENRICHMENT_v0.6.1.md)
+- [Analysis persistence and migrations v0.6.0](docs/DATA_PERSISTENCE_AND_MIGRATIONS_v0.6.0.md)
+- [Competition and concentration risk v0.4.0](docs/PPS_AWARD_COMPETITION_RISK_v0.4.0.md)
+- [Morning decision backlog v0.4.0](docs/MORNING_REVIEW_BACKLOG_v0.4.0.md)
+- [Company public profile and requirement policy v0.3.0](docs/COMPANY_PUBLIC_PROFILE_AND_REQUIREMENT_POLICY_v0.3.0.md)
+- [Public performance data v0.3.0](docs/PUBLIC_PERFORMANCE_DATA_v0.3.0.md)
+- [Public notice seed v0.3.0](docs/PUBLIC_NOTICE_SEED_v0.3.0.md)
+- [Online deployment strategy v0.2.0](docs/DEPLOYMENT_STRATEGY_v0.2.0.md)
 - [PPS API catalog](docs/PPS_API_CATALOG_v0.1.0.md)
+- [PPS award-history contract](docs/PPS_AWARD_HISTORY_v0.2.0.md)
+- [Release checklist v0.3.0](docs/RELEASE_CHECKLIST_v0.3.0.md)
+- [Release checklist v0.4.0](docs/RELEASE_CHECKLIST_v0.4.0.md)
+- [Release checklist v0.6.0](docs/RELEASE_CHECKLIST_v0.6.0.md)
 - [Architecture source and n8n embedding](docs/architecture/README.md)
-- [Source-handling register](docs/SOURCE_REGISTER_v0.1.0.md)
+- [Public data source register v0.3.0](docs/SOURCE_REGISTER_v0.3.0.md)
+- [Historical source-handling register v0.1.0](docs/SOURCE_REGISTER_v0.1.0.md)
 
 원본 기획안·업무인수인계·준비목록은 분석 입력으로만 사용했고 수정하거나
 저장소에 복사하지 않았습니다. 새 산출물은 버전이 붙은 별도 파일로 관리합니다.

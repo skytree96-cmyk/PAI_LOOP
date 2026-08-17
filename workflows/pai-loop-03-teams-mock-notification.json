@@ -1,0 +1,236 @@
+{
+  "name": "PAI_LOOP 03 - Teams Mock Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2500,
+        "height": 300,
+        "color": 7,
+        "content": "# 03 · Teams Mock Notification\n\nREVIEW 공고를 Microsoft Teams용 Adaptive Card 1.5 payload로 만들고 **실제 Teams 전송 없이** mock delivery log만 반환합니다.\n\n- n8n이 카드 JSON을 생성합니다.\n- backend가 있으면 `POST /api/v1/notices/{notice_key}/notifications/teams/mock`에 mock 기록만 저장합니다.\n- backend가 없으면 로컬 mock log를 반환합니다.\n- 실제 Teams 경계는 `Record Teams Mock` 노드 하나이며, 운영 승인 후에만 Teams Workflows webhook/credential 노드로 교체합니다.\n- export에는 webhook URL, credential ID, 회사 데이터가 없습니다."
+      },
+      "id": "teams-note-overview",
+      "name": "Teams mock overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1120, -520]
+    },
+    {
+      "parameters": {
+        "width": 920,
+        "height": 400,
+        "color": 5,
+        "content": "## 입력 경계\n\n`PAI_LOOP 01`의 최종 결과 또는 아래 최소 계약을 받습니다.\n\n```json\n{\n  \"notice\": {\"noticeKey\": \"...\", \"title\": \"...\"},\n  \"assessment\": {\n    \"eligibility\": \"REVIEW\",\n    \"reasonCode\": \"R01\",\n    \"readinessStatus\": \"GREEN\",\n    \"riskBand\": \"CONDITIONAL_GO\"\n  }\n}\n```\n\n수동 실행은 개인정보·실제 회사정보가 없는 합성 payload를 사용합니다."
+      },
+      "id": "teams-note-input",
+      "name": "Notification input contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1120, -100]
+    },
+    {
+      "parameters": {
+        "width": 1560,
+        "height": 400,
+        "color": 6,
+        "content": "## 전송 경계와 교체 규칙\n\n현재: `Build Adaptive Card` → `Record Teams Mock` 또는 `Log Mock Locally`\n\n향후: `Build Adaptive Card`의 `teamsWebhookPayload`를 Teams Workflows webhook 노드에 연결합니다.\n\n운영 교체 Gate:\n1. Teams URL을 n8n credential store에 저장\n2. Adaptive Card 스키마·링크 allowlist 검증\n3. rate limit, retry, dead-letter, correlation ID 설정\n4. 실제 개인정보·증빙 원문을 카드에 넣지 않음\n5. 성공 응답과 Teams message ID만 저장\n\nGit export에 webhook URL 또는 만료 토큰을 넣지 않습니다."
+      },
+      "id": "teams-note-boundary",
+      "name": "Teams delivery boundary",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-180, -100]
+    },
+    {
+      "parameters": {},
+      "id": "teams-manual-trigger",
+      "name": "Build Synthetic Teams Card",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1040, 560]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "teams-workflow-trigger",
+      "name": "When Called by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1040, 780]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    executionMode: 'synthetic-manual',\n    notice: {\n      noticeKey: 'SYN-REVIEW-001',\n      title: '[합성] 비영리 직접생산 예외 검토 용역',\n      agency: '가상 발주기관',\n      deadline: '2026-08-31T18:00:00+09:00',\n      estimatedAmount: 200000000\n    },\n    assessment: {\n      documentStatus: 'COMPLETE',\n      eligibility: 'REVIEW',\n      reasonCode: 'R01',\n      defaultFail: false,\n      readinessScore: 92,\n      readinessStatus: 'GREEN',\n      evidenceCoverage: 100,\n      riskScore: 40.8,\n      riskBand: 'CONDITIONAL_GO',\n      atomicResults: [{\n        label: '직접생산확인증명서 예외 검토',\n        result: 'REVIEW',\n        reason_code: 'R01',\n        message: '발주처의 서면 확인이 필요합니다.'\n      }]\n    }\n  }\n}];"
+      },
+      "id": "teams-synthetic-input",
+      "name": "Load Synthetic REVIEW Notice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-800, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nconst noticeSource = input.notice && typeof input.notice === 'object' ? input.notice : input;\nconst assessmentSource = input.assessment && typeof input.assessment === 'object'\n  ? input.assessment\n  : (input.latest_evaluation ?? {});\nconst noticeKey = String(noticeSource.noticeKey ?? noticeSource.notice_key ?? '').trim().slice(0, 160);\nconst title = String(noticeSource.title ?? '').trim().slice(0, 500);\nif (!noticeKey || !title) throw new Error('noticeKey and title are required');\nconst eligibility = String(assessmentSource.eligibility ?? '').toUpperCase();\nif (!['PASS', 'REVIEW', 'FAIL'].includes(eligibility)) {\n  throw new Error('assessment.eligibility must be PASS, REVIEW, or FAIL');\n}\nlet apiBaseUrlRaw = '';\nlet dashboardUrlRaw = '';\ntry {\n  apiBaseUrlRaw = String($env.PAI_LOOP_API_BASE_URL ?? '').trim();\n  dashboardUrlRaw = String($env.PAI_LOOP_DASHBOARD_URL ?? '').trim();\n} catch {\n  apiBaseUrlRaw = '';\n  dashboardUrlRaw = '';\n}\nconst safeUrl = (raw, label, allowEmpty) => {\n  if (!raw && allowEmpty) return '';\n  let parsed;\n  try { parsed = new URL(raw); } catch { throw new Error(`${label} must be an absolute HTTP(S) URL`); }\n  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {\n    throw new Error(`${label} must use HTTP(S) without embedded credentials`);\n  }\n  return parsed.toString().replace(/\\/+$/, '');\n};\nconst apiBaseUrl = safeUrl(apiBaseUrlRaw, 'PAI_LOOP_API_BASE_URL', true);\nconst dashboardBaseUrl = safeUrl(\n  dashboardUrlRaw || 'https://example.invalid/pai-loop',\n  'PAI_LOOP_DASHBOARD_URL',\n  false\n);\nconst noticeUrl = `${dashboardBaseUrl}/notices/${encodeURIComponent(noticeKey)}`;\nconst atomicResults = Array.isArray(assessmentSource.atomicResults)\n  ? assessmentSource.atomicResults\n  : (Array.isArray(assessmentSource.atomic_results) ? assessmentSource.atomic_results : []);\nconst reasonCode = String(assessmentSource.reasonCode ?? assessmentSource.reason_code ?? 'UNSPECIFIED').slice(0, 32);\nconst correlationId = `teams-mock:${noticeKey.slice(0, 70)}:${new Date().toISOString()}`;\nreturn [{\n  json: {\n    runtime: { apiBaseUrl, backendMockConfigured: apiBaseUrl.length > 0 },\n    correlationId,\n    notice: {\n      noticeKey,\n      title,\n      agency: String(noticeSource.agency ?? '미상').slice(0, 255),\n      deadline: noticeSource.deadline ?? null,\n      estimatedAmount: noticeSource.estimatedAmount ?? noticeSource.estimated_amount ?? null,\n      noticeUrl\n    },\n    assessment: {\n      eligibility,\n      reasonCode,\n      defaultFail: eligibility === 'FAIL' && reasonCode === 'DF-000',\n      readinessScore: Number(assessmentSource.readinessScore ?? assessmentSource.readiness_score ?? 0),\n      readinessStatus: String(assessmentSource.readinessStatus ?? assessmentSource.readiness_status ?? 'GRAY'),\n      evidenceCoverage: Number(assessmentSource.evidenceCoverage ?? assessmentSource.evidence_coverage ?? 0),\n      riskScore: assessmentSource.riskScore ?? assessmentSource.risk_score ?? null,\n      riskBand: String(assessmentSource.riskBand ?? assessmentSource.risk_band ?? 'UNKNOWN'),\n      atomicResults\n    }\n  }\n}];"
+      },
+      "id": "teams-normalize-input",
+      "name": "Normalize Notification Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-540, 670]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst notice = input.notice;\nconst assessment = input.assessment;\nconst won = new Intl.NumberFormat('ko-KR').format(Number(notice.estimatedAmount ?? 0));\nconst eligibilityColor = assessment.eligibility === 'PASS' ? 'good' : (assessment.eligibility === 'FAIL' ? 'attention' : 'warning');\nconst topEvidence = assessment.atomicResults.slice(0, 3).map((item) => ({\n  type: 'TextBlock',\n  text: `• ${String(item.label ?? item.requirement_key ?? '판정 근거')}: ${String(item.message ?? item.result ?? '')}`,\n  wrap: true,\n  spacing: 'Small',\n  size: 'Small'\n}));\nconst adaptiveCard = {\n  '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',\n  type: 'AdaptiveCard',\n  version: '1.5',\n  msteams: { width: 'Full' },\n  body: [\n    { type: 'TextBlock', text: 'PAI_LOOP · 신규 검토 공고', weight: 'Bolder', size: 'Large', color: 'Accent', wrap: true },\n    { type: 'TextBlock', text: notice.title, weight: 'Bolder', size: 'Medium', wrap: true, spacing: 'Medium' },\n    {\n      type: 'FactSet',\n      facts: [\n        { title: '발주기관', value: notice.agency },\n        { title: '마감일', value: String(notice.deadline ?? '미정') },\n        { title: '추정금액', value: `${won}원` },\n        { title: '참가자격', value: assessment.eligibility },\n        { title: '사유코드', value: assessment.reasonCode },\n        { title: '준비도', value: `${assessment.readinessStatus} (${assessment.readinessScore})` },\n        { title: '리스크', value: `${assessment.riskBand}${assessment.riskScore == null ? '' : ` (${assessment.riskScore})`}` }\n      ]\n    },\n    {\n      type: 'Container',\n      style: eligibilityColor,\n      bleed: true,\n      items: [\n        { type: 'TextBlock', text: assessment.eligibility === 'REVIEW' ? '사람의 확인이 필요합니다' : '자동 알림 요약', weight: 'Bolder', wrap: true },\n        ...topEvidence\n      ]\n    },\n    {\n      type: 'TextBlock',\n      text: '이 카드는 의사결정 보조 정보입니다. 최종 입찰 판단은 원문과 증빙을 확인한 담당자가 기록합니다.',\n      wrap: true,\n      isSubtle: true,\n      size: 'Small',\n      spacing: 'Medium'\n    }\n  ],\n  actions: [\n    { type: 'Action.OpenUrl', title: '근거와 상세 보기', url: notice.noticeUrl }\n  ]\n};\nconst teamsWebhookPayload = {\n  type: 'message',\n  attachments: [{\n    contentType: 'application/vnd.microsoft.card.adaptive',\n    contentUrl: null,\n    content: adaptiveCard\n  }]\n};\nreturn [{\n  json: {\n    ...input,\n    delivery: { channel: 'teams', mode: 'mock', boundaryVersion: '1.0' },\n    adaptiveCard,\n    teamsWebhookPayload\n  }\n}];"
+      },
+      "id": "teams-build-card",
+      "name": "Build Adaptive Card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-260, 670]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "teams-backend-mock-condition",
+              "leftValue": "={{ $json.runtime.backendMockConfigured }}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "teams-backend-configured",
+      "name": "Backend mock configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [20, 670]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/notices/' + encodeURIComponent($json.notice.noticeKey) + '/notifications/teams/mock' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Accept", "value": "application/json"},
+            {"name": "X-PAI-LOOP-API-KEY", "value": "={{ $env.PAI_LOOP_API_KEY }}"},
+            {"name": "X-PAI-Request-Source", "value": "n8n-teams-mock-v1"}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ card: $json.adaptiveCard, channel: 'teams', delivery_mode: 'mock', correlation_id: $json.correlationId }) }}",
+        "options": {
+          "response": {
+            "response": {"fullResponse": true, "neverError": false, "responseFormat": "json"}
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "teams-record-backend",
+      "name": "Record Teams Mock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 520],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {},
+      "id": "teams-carry-card",
+      "name": "Carry Adaptive Card",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [300, 660]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "teams-merge-log-context",
+      "name": "Merge Mock Log + Card",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [560, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nreturn [{\n  json: {\n    ...input,\n    mockLog: {\n      id: `mock-local-${input.correlationId.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 100)}`,\n      notice_key: input.notice.noticeKey,\n      channel: 'teams',\n      delivery_mode: 'mock',\n      status: 'MOCK_RECORDED',\n      card: input.adaptiveCard,\n      correlation_id: input.correlationId,\n      created_at: new Date().toISOString()\n    }\n  }\n}];"
+      },
+      "id": "teams-local-log",
+      "name": "Log Mock Locally",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 820]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nconst record = input.body && typeof input.body === 'object'\n  ? input.body\n  : (input.mockLog ?? input);\nconst card = record.card ?? input.adaptiveCard;\nif (!card || card.type !== 'AdaptiveCard' || card.version !== '1.5' || !Array.isArray(card.body)) {\n  throw new Error('Mock result must contain a valid Adaptive Card 1.5 body');\n}\nconst cardBytes = new TextEncoder().encode(JSON.stringify(card)).length;\nif (cardBytes > 28 * 1024) throw new Error('Adaptive Card exceeds the Teams 28KB limit');\nif (!Array.isArray(card.actions) || !card.actions.every((action) => action.type === 'Action.OpenUrl')) {\n  throw new Error('Adaptive Card actions must be Action.OpenUrl only');\n}\nfor (const action of card.actions) {\n  const url = new URL(action.url);\n  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {\n    throw new Error('Adaptive Card action URL is unsafe');\n  }\n}\nconst channel = String(record.channel ?? 'teams').toLowerCase();\nconst deliveryMode = String(record.delivery_mode ?? 'mock').toLowerCase();\nconst status = String(record.status ?? 'MOCK_RECORDED');\nif (channel !== 'teams' || deliveryMode !== 'mock') {\n  throw new Error('Mock log channel/mode must be teams/mock');\n}\nif (status !== 'MOCK_RECORDED') throw new Error('Mock log status must be MOCK_RECORDED');\nreturn [{\n  json: {\n    schemaVersion: '1.0',\n    notification: {\n      id: String(record.id ?? ''),\n      noticeKey: String(record.notice_key ?? input.notice?.noticeKey ?? ''),\n      channel,\n      deliveryMode,\n      status,\n      correlationId: String(record.correlation_id ?? input.correlationId ?? ''),\n      createdAt: record.created_at ?? new Date().toISOString()\n    },\n    adaptiveCard: card,\n    teamsWebhookPayload: input.teamsWebhookPayload ?? {\n      type: 'message',\n      attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: card }]\n    },\n    actualTeamsRequestSent: false\n  }\n}];"
+      },
+      "id": "teams-validate-result",
+      "name": "Validate Mock Notification Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 670]
+    }
+  ],
+  "connections": {
+    "Build Synthetic Teams Card": {
+      "main": [[{"node": "Load Synthetic REVIEW Notice", "type": "main", "index": 0}]]
+    },
+    "Load Synthetic REVIEW Notice": {
+      "main": [[{"node": "Normalize Notification Input", "type": "main", "index": 0}]]
+    },
+    "When Called by Another Workflow": {
+      "main": [[{"node": "Normalize Notification Input", "type": "main", "index": 0}]]
+    },
+    "Normalize Notification Input": {
+      "main": [[{"node": "Build Adaptive Card", "type": "main", "index": 0}]]
+    },
+    "Build Adaptive Card": {
+      "main": [[{"node": "Backend mock configured?", "type": "main", "index": 0}]]
+    },
+    "Backend mock configured?": {
+      "main": [
+        [
+          {"node": "Record Teams Mock", "type": "main", "index": 0},
+          {"node": "Carry Adaptive Card", "type": "main", "index": 0}
+        ],
+        [{"node": "Log Mock Locally", "type": "main", "index": 0}]
+      ]
+    },
+    "Record Teams Mock": {
+      "main": [[{"node": "Merge Mock Log + Card", "type": "main", "index": 0}]]
+    },
+    "Carry Adaptive Card": {
+      "main": [[{"node": "Merge Mock Log + Card", "type": "main", "index": 1}]]
+    },
+    "Merge Mock Log + Card": {
+      "main": [[{"node": "Validate Mock Notification Contract", "type": "main", "index": 0}]]
+    },
+    "Log Mock Locally": {
+      "main": [[{"node": "Validate Mock Notification Contract", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const validateOnly = process.argv.includes("--validate-only");
+const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
+const onlyKey = onlyArgument?.slice("--only=".length) || undefined;
 const rootDirectory = process.cwd();
 
 function assert(condition, message) {
@@ -43,6 +45,217 @@ async function loadWorkflowDefinitions() {
   assert(untracked.length === 0, `Workflow JSON missing from manifest.json: ${untracked.join(", ")}`);
 
   return definitions;
+}
+
+function reachableNodeNames(workflow, startName, branchChoices = {}) {
+  const visited = new Set();
+  const pending = [startName];
+  while (pending.length) {
+    const name = pending.pop();
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const groups = workflow.connections?.[name] ?? {};
+    for (const outputs of Object.values(groups)) {
+      const selectedLane = branchChoices[name];
+      const lanes = selectedLane == null ? outputs : [outputs[selectedLane] ?? []];
+      for (const lane of lanes) {
+        for (const connection of lane) pending.push(connection.node);
+      }
+    }
+  }
+  return visited;
+}
+
+function validateRepositorySafetyContracts(definitions) {
+  for (const { key, workflow } of definitions) {
+    for (const node of workflow.nodes) {
+      assert(!node.credentials, `${key}/${node.name}: credential IDs must not be committed`);
+    }
+  }
+
+  const daily = definitions.find(({ key }) => key === "pai-loop-10-daily-opportunity-briefing");
+  assert(daily, "daily operator workflow is required");
+  assert(daily.config.operatorEntryPoint === true, "daily workflow must be the explicit operator entry point");
+  for (const definition of definitions) {
+    if (definition.key === daily.key) continue;
+    assert(
+      definition.config.publish === false,
+      `${definition.key}: only the daily operator entry point may be published`,
+    );
+  }
+  assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
+  const schedules = daily.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.scheduleTrigger",
+  );
+  assert(schedules.length === 1, "daily workflow must have exactly one schedule trigger");
+  assert(
+    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 9 * * *",
+    "daily workflow schedule must be 09:00 every day",
+  );
+
+  const manualName = "Run Complete Offline Dry-Run";
+  const manualReachable = reachableNodeNames(daily.workflow, manualName, {
+    // Manual fixture sets teamsMockLogEnabled=false.  Pin the known false lane
+    // so this graph audit proves that path has no HTTP boundary.
+    "Backend Teams Mock Log Gate Open?": 1,
+  });
+  const nodeByName = new Map(daily.workflow.nodes.map((node) => [node.name, node]));
+  const manualHttpNodes = [...manualReachable]
+    .map((name) => nodeByName.get(name))
+    .filter((node) => node?.type === "n8n-nodes-base.httpRequest");
+  assert(
+    manualHttpNodes.length === 0,
+    `daily manual dry-run must not reach HTTP nodes: ${manualHttpNodes.map((node) => node.name).join(", ")}`,
+  );
+
+  const httpNodes = daily.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.httpRequest",
+  );
+  assert(httpNodes.length === 7, "daily live branch must expose exactly seven protected backend HTTP boundaries");
+  for (const node of httpNodes) {
+    const url = String(node.parameters?.url ?? "");
+    assert(
+      url.includes("runtime.apiBaseUrl") || url.includes("Scheduled Runtime Gates"),
+      `daily/${node.name}: HTTP URL must resolve from the approved backend runtime`,
+    );
+    assert(
+      !/https?:\/\/(?:[^'\"}\s]*\.)?(?:microsoft|office|powerautomate|openai|data\.go\.kr)/i.test(url),
+      `daily/${node.name}: direct provider or Teams URL is forbidden`,
+    );
+    assert(
+      node.parameters?.authentication === "genericCredentialType"
+        && node.parameters?.genericAuthType === "httpHeaderAuth",
+      `daily/${node.name}: protected backend calls must require Generic Header Auth`,
+    );
+    const headers = node.parameters?.headerParameters?.parameters ?? [];
+    assert(
+      !headers.some((header) => String(header.name).toLowerCase() === "x-pai-loop-api-key"),
+      `daily/${node.name}: API key must come from the n8n credential, not workflow JSON`,
+    );
+  }
+
+  const serialised = JSON.stringify(daily.workflow);
+  assert(
+    serialised.includes("PAI_LOOP_EMERGENCY_DISABLE"),
+    "daily workflow must expose the one fail-closed emergency disable",
+  );
+  assert(
+    serialised.includes("executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-emergency-disabled'"),
+    "daily workflow must default scheduled execution to live when emergency disable is absent",
+  );
+  assert(
+    serialised.includes("https://pai-loop-demo.onrender.com"),
+    "daily workflow must contain the public Render origin fallback",
+  );
+  assert(serialised.includes("retentionDays: 7"), "daily workflow must declare seven-day retention");
+  assert(
+    serialised.includes("/api/v1/notices/analysis/batch"),
+    "daily workflow must route PPS notice keys through the backend batch analysis endpoint",
+  );
+  assert(
+    serialised.includes("maxAnalysisBatchNotices: 3")
+      && serialised.includes("maxAttachmentsPerNotice: 1"),
+    "daily batch analysis must remain bounded to three notices and one attachment each",
+  );
+  assert(
+    serialised.includes("useProfileKeywords: true")
+      && serialised.includes("profileDepartmentIds: []")
+      && serialised.includes("ppsMaxPages: 1"),
+    "daily ingestion must use the organization profile with a one-page provider bound",
+  );
+  assert(
+    serialised.includes("use_profile_keywords:")
+      && serialised.includes("profile_department_ids:")
+      && serialised.includes("department_coverage_count")
+      && serialised.includes("enrich_missing:")
+      && serialised.includes("max_attachments_per_notice:"),
+    "daily HTTP payloads must carry the v1.3 ingestion and enrichment contract",
+  );
+  const analysisNode = daily.workflow.nodes.find(
+    (node) => node.name === "Analyze Evaluate and Snapshot PPS Notices",
+  );
+  const ppsNode = daily.workflow.nodes.find(
+    (node) => node.name === "Refresh PPS Notices Behind Gate",
+  );
+  const awardNode = daily.workflow.nodes.find(
+    (node) => node.name === "Refresh Bounded Three-Year Award History",
+  );
+  assert(
+    ppsNode?.parameters?.options?.timeout === 600000,
+    "daily organization-profile PPS ingestion must have a bounded ten-minute n8n timeout",
+  );
+  assert(
+    analysisNode?.parameters?.options?.timeout === 600000,
+    "daily top-three enrichment must have a bounded ten-minute n8n timeout",
+  );
+  assert(
+    awardNode?.parameters?.options?.timeout === 600000
+      && serialised.includes("maxAwardRefreshNotices: 1")
+      && serialised.includes("Math.min(3, Math.max(1"),
+    "daily award refresh must default to one, hard-cap at three, and use a ten-minute request window",
+  );
+  const targets = (source, lane = 0) =>
+    (daily.workflow.connections?.[source]?.main?.[lane] ?? []).map((connection) => connection.node);
+  assert(
+    JSON.stringify(targets("Validate PPS Ingestion Contract"))
+      === JSON.stringify(["Preview or Apply Seven-Day Log Retention"]),
+    "validated PPS notices must enter retention and award preparation before analysis",
+  );
+  assert(
+    JSON.stringify(targets("Validate Batch Analysis Contract"))
+      === JSON.stringify(["Verify Batch Analysis Aggregate Invariants"])
+      && JSON.stringify(targets("Verify Batch Analysis Aggregate Invariants"))
+        === JSON.stringify(["Fetch Ranked Seven-Day Briefing"])
+      && JSON.stringify(targets("Record Batch Analysis Skipped"))
+        === JSON.stringify(["Fetch Ranked Seven-Day Briefing"]),
+    "analysis completion or explicit skip must immediately precede the final briefing",
+  );
+  assert(
+    JSON.stringify(targets("Validate Seven-Day Retention Contract"))
+      === JSON.stringify(["Fetch Award Candidates from Seven-Day Briefing"])
+      && JSON.stringify(targets("Validate Award Refresh Batch"))
+        === JSON.stringify(["Build Bounded Batch Analysis Plan"])
+      && JSON.stringify(targets("Record Award Refresh Skipped"))
+        === JSON.stringify(["Build Bounded Batch Analysis Plan"]),
+    "award refresh or explicit skip must precede analysis snapshot generation",
+  );
+  assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
+  assert(
+    daily.config.contractVersion === "daily-briefing-1.3",
+    "daily workflow manifest contractVersion must be daily-briefing-1.3",
+  );
+
+  const preservationProbe = preserveRemoteNodeCredentials(
+    {
+      nodes: [
+        { name: "same", type: "n8n-nodes-base.httpRequest" },
+        { name: "type-changed", type: "n8n-nodes-base.code" },
+        { name: "new", type: "n8n-nodes-base.httpRequest" },
+      ],
+    },
+    {
+      nodes: [
+        {
+          name: "same",
+          type: "n8n-nodes-base.httpRequest",
+          credentials: { httpHeaderAuth: { id: "opaque-probe", name: "probe" } },
+        },
+        {
+          name: "type-changed",
+          type: "n8n-nodes-base.httpRequest",
+          credentials: { httpHeaderAuth: { id: "must-not-copy", name: "probe" } },
+        },
+      ],
+    },
+  );
+  assert(
+    preservationProbe.nodes[0].credentials?.httpHeaderAuth?.id === "opaque-probe",
+    "exact node-name/type credential preservation failed",
+  );
+  assert(
+    !preservationProbe.nodes[1].credentials && !preservationProbe.nodes[2].credentials,
+    "credential preservation must reject type changes and new nodes",
+  );
 }
 
 function validateWorkflow(key, workflow) {
@@ -87,8 +300,16 @@ function validateWorkflow(key, workflow) {
 }
 
 const definitions = await loadWorkflowDefinitions();
+validateRepositorySafetyContracts(definitions);
 console.log(`Validated ${definitions.length} workflow definition(s)`);
 if (validateOnly) process.exit(0);
+
+if (onlyKey) {
+  assert(
+    definitions.some(({ key }) => key === onlyKey),
+    `--only references an unknown manifest workflow: ${onlyKey}`,
+  );
+}
 
 const baseUrl = process.env.N8N_BASE_URL?.replace(/\/$/, "");
 const apiKey = process.env.N8N_API_KEY;
@@ -144,6 +365,20 @@ function deploymentPayload(workflow) {
   };
 }
 
+function preserveRemoteNodeCredentials(payload, remote) {
+  const remoteByName = new Map((remote?.nodes ?? []).map((node) => [node.name, node]));
+  return {
+    ...payload,
+    nodes: payload.nodes.map((node) => {
+      const prior = remoteByName.get(node.name);
+      if (!prior || prior.type !== node.type || !prior.credentials) return node;
+      // Credentials are environment-owned.  Preserve only an exact node-name
+      // and node-type match; never print or write the IDs back to the repo.
+      return { ...node, credentials: prior.credentials };
+    }),
+  };
+}
+
 const remoteWorkflows = await listAllWorkflows();
 const remoteByName = new Map();
 for (const workflow of remoteWorkflows) {
@@ -152,8 +387,10 @@ for (const workflow of remoteWorkflows) {
   remoteByName.set(workflow.name, matches);
 }
 
-for (const { key, config, workflow } of definitions) {
-  const payload = deploymentPayload(workflow);
+for (const { key, config, workflow } of definitions.filter(
+  (definition) => !onlyKey || definition.key === onlyKey,
+)) {
+  let payload = deploymentPayload(workflow);
   let workflowId = config.n8nWorkflowId;
   let remote;
 
@@ -182,6 +419,21 @@ for (const { key, config, workflow } of definitions) {
   }
 
   if (workflowId) {
+    // Exact-name lookup may come from a compact list response. Fetch the full
+    // workflow before PUT so credentials selected in the n8n UI survive.
+    if (!remote?.nodes) {
+      remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
+    }
+    // Archived workflows cannot be updated through the public API.  Treat an
+    // archived, inactive legacy definition as intentionally retired instead
+    // of failing an otherwise idempotent deployment after newer workflows
+    // have already been updated.  A publish=true entry must never be skipped.
+    if (remote.isArchived === true) {
+      assert(config.publish === false, `${key}: archived workflow cannot be published`);
+      console.log(`Skipped archived ${key} (${workflowId})`);
+      continue;
+    }
+    payload = preserveRemoteNodeCredentials(payload, remote);
     const updated = await request(`/workflows/${encodeURIComponent(workflowId)}`, {
       method: "PUT",
       body: JSON.stringify(payload),

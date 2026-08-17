@@ -1,0 +1,199 @@
+{
+  "name": "PAI_LOOP 04 - Award History Refresh",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2520,
+        "height": 300,
+        "color": 7,
+        "content": "# 04 · Award History Refresh\n\n공고 1건을 기준으로 조달청의 최근 1~3년 낙찰정보를 조회하고 **동일 사업 확정이 아닌 제목 유사 후보**로 저장합니다. n8n은 대상 공고·실행 Gate·요청 한도만 전달하고, 공공 메타데이터 정규화와 PII 폐기는 backend가 담당합니다.\n\n- Endpoint: `POST /api/v1/notices/{notice_key}/award-history/refresh`\n- 수동 실행: 항상 `dry_run=true`\n- 스케줄/서브워크플로: `PAI_LOOP_LIVE_INGESTION_ENABLED=true`일 때만 live 허용\n- 최종 n8n 출력: job ID, 기간, 키워드, 건수, 경고만 포함\n- export에는 PPS 키, backend 키, 낙찰자 연락처·식별자, credential ID가 없습니다."
+      },
+      "id": "award-note-overview",
+      "name": "Award history overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1120, -520]
+    },
+    {
+      "parameters": {
+        "width": 920,
+        "height": 410,
+        "color": 5,
+        "content": "## 입력·환경 계약\n\n우선순위: 서브워크플로 입력 → 환경변수.\n\n- 입력: `{ notice_key, keyword?, years?, page_size?, max_pages_per_window?, dry_run? }`\n- `PAI_LOOP_AWARD_HISTORY_NOTICE_KEY` — 수동/스케줄 기본 공고 키\n- `PAI_LOOP_AWARD_HISTORY_KEYWORD` — 선택 검색어\n- `PAI_LOOP_API_BASE_URL` — backend API origin\n- `PAI_LOOP_API_KEY` — `X-PAI-LOOP-API-KEY` 값\n- `PAI_LOOP_LIVE_INGESTION_ENABLED` — 정확히 `true`일 때만 live\n\n환경변수 접근을 차단한 n8n에서는 HTTP Request에 Generic Header Auth credential을 UI에서 연결합니다. credential ID는 export에 넣지 않습니다."
+      },
+      "id": "award-note-input",
+      "name": "Award history input boundary",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1120, -100]
+    },
+    {
+      "parameters": {
+        "width": 1580,
+        "height": 410,
+        "color": 6,
+        "content": "## Backend 요청·응답 계약\n\n**Request**\n`{ keyword?, years: 1..3, page_size: 1..100, max_pages_per_window: 1..3, dry_run }`\n\n**Response**\n`{ job_id, status, notice_key, keyword, window: {from,to}, api_calls, fetched, created, updated, duplicates, records, dry_run, warnings }`\n\nValidator는 알려진 13개 top-level field와 `window.from/to`만 허용합니다. `status`는 `COMPLETED` 또는 `PARTIAL`이며 PARTIAL에는 경고가 반드시 있어야 합니다. count는 0 이상의 정수, warnings는 제한된 문자열 배열이어야 합니다. 응답에 낙찰자명·사업자번호·대표자·주소·전화·담당자 또는 그 밖의 미정의 field가 나타나면 실행을 실패시킵니다. 최종 출력에는 집계만 남습니다."
+      },
+      "id": "award-note-contract",
+      "name": "Award history response boundary",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-180, -100]
+    },
+    {
+      "parameters": {},
+      "id": "award-manual-trigger",
+      "name": "Run Award History Dry-run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1040, 560]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "40 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "award-schedule-trigger",
+      "name": "Daily 08:40 KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1040, 760]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "award-workflow-trigger",
+      "name": "When Called with Notice Key",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-1040, 960]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    triggerSource: 'manual',\n    options: {\n      dryRun: true,\n      years: 3,\n      pageSize: 100,\n      maxPagesPerWindow: 1\n    }\n  }\n}];"
+      },
+      "id": "award-manual-config",
+      "name": "Load Award Dry-run Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-780, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    triggerSource: 'schedule',\n    options: {\n      dryRun: false,\n      years: 3,\n      pageSize: 100,\n      maxPagesPerWindow: 1\n    }\n  }\n}];"
+      },
+      "id": "award-schedule-config",
+      "name": "Load Scheduled Award Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-780, 760]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nreturn [{\n  json: {\n    triggerSource: 'workflow',\n    noticeKey: input.notice_key ?? input.noticeKey ?? null,\n    keyword: input.keyword ?? null,\n    options: {\n      dryRun: input.dry_run !== false,\n      years: input.years ?? 3,\n      pageSize: input.page_size ?? 100,\n      maxPagesPerWindow: input.max_pages_per_window ?? 1\n    }\n  }\n}];"
+      },
+      "id": "award-called-config",
+      "name": "Normalize Called Award Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-780, 960]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json ?? {};\nlet apiBaseUrlRaw = '';\nlet envNoticeKey = '';\nlet envKeyword = '';\nlet liveEnabled = false;\ntry {\n  apiBaseUrlRaw = String($env.PAI_LOOP_API_BASE_URL ?? '').trim();\n  envNoticeKey = String($env.PAI_LOOP_AWARD_HISTORY_NOTICE_KEY ?? '').trim();\n  envKeyword = String($env.PAI_LOOP_AWARD_HISTORY_KEYWORD ?? '').trim();\n  liveEnabled = String($env.PAI_LOOP_LIVE_INGESTION_ENABLED ?? '').trim().toLowerCase() === 'true';\n} catch {\n  apiBaseUrlRaw = '';\n  envNoticeKey = '';\n  envKeyword = '';\n  liveEnabled = false;\n}\nif (!apiBaseUrlRaw) throw new Error('PAI_LOOP_API_BASE_URL is required for protected award history refresh');\nlet parsedBaseUrl;\ntry { parsedBaseUrl = new URL(apiBaseUrlRaw); } catch {\n  throw new Error('PAI_LOOP_API_BASE_URL must be an absolute HTTP(S) URL');\n}\nif (!['http:', 'https:'].includes(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password) {\n  throw new Error('PAI_LOOP_API_BASE_URL must use HTTP(S) without embedded credentials');\n}\nconst apiBaseUrl = parsedBaseUrl.toString().replace(/\\/+$/, '');\nconst noticeKey = String(input.noticeKey ?? input.notice_key ?? envNoticeKey).trim();\nif (!noticeKey || noticeKey.length > 160 || /[\\/\\u0000-\\u001f\\u007f]/.test(noticeKey)) {\n  throw new Error('notice_key must be 1..160 characters without slash or control characters');\n}\nconst options = input.options ?? {};\nconst years = Math.min(3, Math.max(1, Math.trunc(Number(options.years ?? 3))));\nconst pageSize = Math.min(100, Math.max(1, Math.trunc(Number(options.pageSize ?? 100))));\nconst maxPagesPerWindow = Math.min(3, Math.max(1, Math.trunc(Number(options.maxPagesPerWindow ?? 1))));\nconst keywordRaw = String(input.keyword ?? envKeyword ?? '').trim().replace(/\\s+/g, ' ');\nif (keywordRaw && (keywordRaw.length < 2 || keywordRaw.length > 100)) {\n  throw new Error('keyword must be 2..100 characters when provided');\n}\nconst requestedDryRun = options.dryRun !== false;\nconst dryRun = requestedDryRun || !liveEnabled;\nconst request = {\n  years,\n  page_size: pageSize,\n  max_pages_per_window: maxPagesPerWindow,\n  dry_run: dryRun,\n  ...(keywordRaw ? { keyword: keywordRaw } : {})\n};\nconst keyPart = noticeKey.replace(/[^a-zA-Z0-9가-힣._:-]/g, '_').slice(0, 60);\nconst keywordPart = keywordRaw\n  ? keywordRaw.replace(/[^a-zA-Z0-9가-힣_-]/g, '_').slice(0, 24)\n  : 'auto';\nconst today = new Date().toISOString().slice(0, 10);\nreturn [{\n  json: {\n    runtime: {\n      apiBaseUrl,\n      triggerSource: input.triggerSource ?? 'unknown',\n      liveEnabled,\n      forcedDryRun: !requestedDryRun && !liveEnabled\n    },\n    noticeKey,\n    endpointPath: `/api/v1/notices/${encodeURIComponent(noticeKey)}/award-history/refresh`,\n    idempotencyKey: `award:${keyPart}:${today}:${years}y:${keywordPart}:${dryRun ? 'dry' : 'live'}`,\n    request\n  }\n}];"
+      },
+      "id": "award-build-request",
+      "name": "Build Bounded Award Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-440, 760]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + $json.endpointPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Accept", "value": "application/json"},
+            {"name": "X-PAI-LOOP-API-KEY", "value": "={{ $env.PAI_LOOP_API_KEY }}"},
+            {"name": "Idempotency-Key", "value": "={{ $json.idempotencyKey }}"},
+            {"name": "X-PAI-Request-Source", "value": "n8n-award-history-v1"}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 180000
+        }
+      },
+      "id": "award-call-backend",
+      "name": "POST Protected Award Refresh",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-100, 760],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) {\n  throw new Error('Award history response must be an object');\n}\nconst allowedFields = new Set([\n  'job_id', 'status', 'notice_key', 'keyword', 'window', 'api_calls', 'fetched',\n  'created', 'updated', 'duplicates', 'records', 'dry_run', 'warnings'\n]);\nconst unexpected = Object.keys(response).filter((field) => !allowedFields.has(field));\nif (unexpected.length) {\n  throw new Error(`Award history response contained unexpected field(s): ${unexpected.join(', ')}`);\n}\nfor (const field of allowedFields) {\n  if (!Object.prototype.hasOwnProperty.call(response, field)) {\n    throw new Error(`Award history response is missing ${field}`);\n  }\n}\nconst requireString = (field, maxLength) => {\n  const value = response[field];\n  if (typeof value !== 'string' || !value || value.length > maxLength) {\n    throw new Error(`${field} must be a non-empty string up to ${maxLength} characters`);\n  }\n  return value;\n};\nconst requireCount = (field) => {\n  const value = response[field];\n  if (!Number.isSafeInteger(value) || value < 0) {\n    throw new Error(`${field} must be a non-negative safe integer`);\n  }\n  return value;\n};\nconst windowValue = response.window;\nif (!windowValue || typeof windowValue !== 'object' || Array.isArray(windowValue)) {\n  throw new Error('window must be an object');\n}\nconst windowKeys = Object.keys(windowValue);\nif (windowKeys.length !== 2 || !windowKeys.includes('from') || !windowKeys.includes('to')) {\n  throw new Error('window must contain only from/to');\n}\nconst isoDate = /^\\d{4}-\\d{2}-\\d{2}$/;\nif (!isoDate.test(windowValue.from) || !isoDate.test(windowValue.to)) {\n  throw new Error('window from/to must be YYYY-MM-DD');\n}\nif (windowValue.from > windowValue.to) throw new Error('window.from must not be after window.to');\nconst keyword = requireString('keyword', 100);\nif (keyword.length < 2) throw new Error('keyword must be at least 2 characters');\nif (typeof response.dry_run !== 'boolean') throw new Error('dry_run must be boolean');\nif (!Array.isArray(response.warnings) || response.warnings.length > 20 ||\n    !response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) {\n  throw new Error('warnings must be an array of at most 20 strings up to 500 characters');\n}\nconst status = requireString('status', 16);\nif (!['COMPLETED', 'PARTIAL'].includes(status)) {\n  throw new Error('status must be COMPLETED or PARTIAL');\n}\nif (status === 'PARTIAL' && response.warnings.length === 0) {\n  throw new Error('PARTIAL status requires at least one warning');\n}\nconst counts = {\n  apiCalls: requireCount('api_calls'),\n  fetched: requireCount('fetched'),\n  created: requireCount('created'),\n  updated: requireCount('updated'),\n  duplicates: requireCount('duplicates'),\n  records: requireCount('records')\n};\nif (counts.records > counts.fetched) throw new Error('records must not exceed fetched');\nreturn [{\n  json: {\n    schemaVersion: '1.0',\n    jobId: requireString('job_id', 160),\n    status,\n    noticeKey: requireString('notice_key', 160),\n    keyword,\n    window: { from: windowValue.from, to: windowValue.to },\n    counts,\n    dryRun: response.dry_run,\n    warnings: [...response.warnings],\n    privacyBoundary: { candidateRowsEmitted: false, piiFieldsEmitted: false },\n    completedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "award-validate-response",
+      "name": "Validate Award Aggregate Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 760]
+    }
+  ],
+  "connections": {
+    "Run Award History Dry-run": {
+      "main": [[{"node": "Load Award Dry-run Limits", "type": "main", "index": 0}]]
+    },
+    "Daily 08:40 KST": {
+      "main": [[{"node": "Load Scheduled Award Limits", "type": "main", "index": 0}]]
+    },
+    "When Called with Notice Key": {
+      "main": [[{"node": "Normalize Called Award Input", "type": "main", "index": 0}]]
+    },
+    "Load Award Dry-run Limits": {
+      "main": [[{"node": "Build Bounded Award Request", "type": "main", "index": 0}]]
+    },
+    "Load Scheduled Award Limits": {
+      "main": [[{"node": "Build Bounded Award Request", "type": "main", "index": 0}]]
+    },
+    "Normalize Called Award Input": {
+      "main": [[{"node": "Build Bounded Award Request", "type": "main", "index": 0}]]
+    },
+    "Build Bounded Award Request": {
+      "main": [[{"node": "POST Protected Award Refresh", "type": "main", "index": 0}]]
+    },
+    "POST Protected Award Refresh": {
+      "main": [[{"node": "Validate Award Aggregate Contract", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

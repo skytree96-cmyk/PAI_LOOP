@@ -143,6 +143,49 @@ def test_current_pps_direct_items_array_shape_is_supported() -> None:
     assert items[0]["bid_notice_no"] == "LIVE-SHAPE-1"
 
 
+def test_page_limit_bounds_live_collection() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params["pageNo"]
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "00"},
+                    "body": {
+                        "totalCount": 99,
+                        "items": [
+                            {
+                                "bidNtceNo": f"LIMIT-{page}",
+                                "bidNtceOrd": "00",
+                                "bidNtceNm": "bounded notice",
+                                "bidClseDt": "202608201700",
+                            }
+                        ],
+                    },
+                }
+            },
+        )
+
+    client = PpsClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+    )
+    items = list(
+        client.iter_notices(
+            operation_path="example",
+            start=date(2026, 8, 1),
+            end=date(2026, 8, 1),
+            rows=1,
+            max_pages=2,
+        )
+    )
+    client.close()
+    assert len(items) == 2
+    assert client.request_count == 2
+    assert client.hit_page_limit is True
+
+
 @pytest.mark.parametrize(
     "payload",
     [

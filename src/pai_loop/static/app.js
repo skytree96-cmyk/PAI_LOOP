@@ -18,6 +18,27 @@
     loading: false,
     detailLoading: false,
     requestSequence: 0,
+    noticeSearchTimer: null,
+    noticeStatusScope: "ALL",
+    teamsLogs: [],
+    teamsLogMeta: {},
+    privateMatchPreviews: {},
+    awardHistoryMeta: {},
+    quantitativeEstimates: {},
+    departmentCatalog: null,
+    accessMode: "UNKNOWN",
+    writeControlsEnabled: true,
+    performance: {
+      summary: null,
+      records: [],
+      total: 0,
+      offset: 0,
+      limit: 24,
+      loaded: false,
+      loading: false,
+      error: null,
+      requestSequence: 0,
+    },
   };
 
   const els = {};
@@ -44,6 +65,21 @@
     NO_GO: "NO-GO",
   };
 
+  const ANALYSIS_REASON_LABELS = {
+    NOT_SELECTED: "자동 분석 우선순위에 아직 선정되지 않아 분석 대기 중입니다. 폐기된 공고가 아닙니다.",
+    ATTACHMENT_MANIFEST_MISSING: "조달청 응답에 분석할 첨부파일 목록이 없어 문서 분석을 시작하지 못했습니다.",
+    ATTACHMENT_MANIFEST_EMPTY: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않았습니다.",
+    ATTACHMENT_NONE: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않아 자동 문서 분석을 시작하지 못했습니다.",
+    HWP_ONLY_UNSUPPORTED: "첨부가 구형 HWP 형식뿐이라 현재 온라인 추출기가 읽지 못했습니다. HWP를 HWPX 또는 PDF로 변환하는 보완 경로가 필요합니다.",
+    HWPX_EXTRACT_FAILED: "HWPX 첨부는 확인했지만 본문 추출에 실패해 재처리 또는 문서 변환이 필요합니다.",
+    PDF_EXTRACT_FAILED: "PDF 첨부는 확인했지만 본문 추출에 실패해 OCR 또는 재처리가 필요합니다.",
+    OPENAI_REVIEW: "첨부 본문은 읽었지만 AI 구조화 결과가 검토 기준을 통과하지 못해 담당자 확인을 기다리고 있습니다.",
+    UNVERIFIED_QUOTE: "AI가 제시한 인용문을 추출 본문에서 검증하지 못해 확정 판정을 보류했습니다.",
+    QUOTE_UNVERIFIED: "AI가 제시한 인용문을 추출 본문에서 검증하지 못해 확정 판정을 보류했습니다.",
+    READY: "첨부 분석 준비가 완료되어 다음 자동 분석 배치를 기다리고 있습니다.",
+    PARTIAL: "일부 첨부만 처리되어 나머지 문서 분석 또는 담당자 확인이 필요합니다.",
+  };
+
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
@@ -56,17 +92,26 @@
 
   function cacheElements() {
     const ids = [
-      "demoBanner", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
+      "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
-      "noticeHeading", "noticeSummary", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
+      "noticeHeading", "noticeSummary", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
       "detailDrawer", "drawerLoading", "closeDetailButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "analysisPipeline", "evidenceCount",
-      "detailSummary", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
-      "quantTableBody", "riskTotalLabel", "riskBars", "historyList", "decisionForm", "decisionExisting", "toggleCommentButton",
+      "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
+      "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyConcentration", "historyPrediction", "historyCoverage", "historyWarnings", "decisionForm", "decisionExisting", "toggleCommentButton",
       "commentField", "decisionComment", "commentCount", "saveDecisionButton", "toastRegion", "skeletonRowTemplate",
+      "teamsMockSource", "teamsMockTitle", "teamsMockAgency", "teamsMockStatus", "teamsMockDeadline", "teamsMockReason",
+      "teamsMockReadiness", "teamsMockRisk", "teamsMockRecommendation", "teamsPreviewOpenButton", "teamsPreviewDecisionButton",
+      "teamsMockSendButton", "clearTeamsLogsButton", "teamsMockLogList", "teamsMockJson", "teamsLogStorageLabel",
+      "opportunityHero", "opportunityKpis", "noticeSection", "performanceSection", "footerDisclaimer",
+      "performanceTotal", "performancePeriod", "performanceYears", "performancePrivacy", "performanceResultSummary",
+      "performanceFilterForm", "performanceSearchInput", "performanceYearFilter", "performanceDivisionFilter",
+      "performancePanel", "performanceList", "performanceLoadingState", "performanceErrorState", "performanceErrorMessage",
+      "performanceRetryButton", "performanceEmptyState", "performanceEmptyResetButton", "performancePagination",
+      "performancePageRange", "performancePageLabel", "performancePreviousButton", "performanceNextButton",
     ];
 
     ids.forEach((id) => {
@@ -94,15 +139,42 @@
   }
 
   function bindEvents() {
-    els.refreshButton.addEventListener("click", () => loadApplicationData({ forceApi: true }));
+    els.refreshButton.addEventListener("click", refreshCurrentView);
     els.retryApiButton.addEventListener("click", () => loadApplicationData({ forceApi: true }));
     els.errorRetryButton.addEventListener("click", () => loadApplicationData({ forceApi: true }));
     els.replayButton.addEventListener("click", runReplay);
 
+    els.departmentSelect.addEventListener("change", applyDepartmentRanking);
+    els.priorityApplyButton.addEventListener("click", applyDepartmentRanking);
+    els.priorityKeywordInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyDepartmentRanking();
+      }
+    });
+
     els.filterForm.addEventListener("input", applyFilters);
     els.filterForm.addEventListener("change", applyFilters);
-    els.filterForm.addEventListener("reset", () => window.setTimeout(applyFilters, 0));
+    els.filterForm.addEventListener("submit", submitNoticeSearch);
+    els.filterForm.addEventListener("reset", () => window.setTimeout(resetPrioritySearch, 0));
+    els.searchInput.addEventListener("input", scheduleNoticeSearch);
     els.emptyResetButton.addEventListener("click", resetFilters);
+
+    els.performanceFilterForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      state.performance.offset = 0;
+      void loadPerformance({ force: true });
+    });
+    els.performanceFilterForm.addEventListener("reset", () => {
+      window.setTimeout(() => {
+        state.performance.offset = 0;
+        void loadPerformance({ force: true });
+      }, 0);
+    });
+    els.performanceRetryButton.addEventListener("click", () => loadPerformance({ force: true }));
+    els.performanceEmptyResetButton.addEventListener("click", resetPerformanceFilters);
+    els.performancePreviousButton.addEventListener("click", () => changePerformancePage(-1));
+    els.performanceNextButton.addEventListener("click", () => changePerformancePage(1));
 
     els.navItems.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
     els.layoutButtons.forEach((button) => button.addEventListener("click", () => setLayout(button.dataset.layout)));
@@ -134,6 +206,15 @@
     });
     els.decisionForm.addEventListener("submit", saveDecision);
 
+    els.teamsMockSendButton.addEventListener("click", recordTeamsMockSend);
+    els.clearTeamsLogsButton.addEventListener("click", refreshTeamsMockLogs);
+    els.teamsPreviewOpenButton.addEventListener("click", () => selectTab("overview"));
+    els.teamsPreviewDecisionButton.addEventListener("click", focusDecisionDockFromPreview);
+    els.privateMatchRetryButton.addEventListener("click", () => {
+      const noticeKey = state.selectedNotice?.noticeKey;
+      if (noticeKey) void loadPrivateMatchPreview(noticeKey, { force: true });
+    });
+
     document.addEventListener("keydown", handleGlobalKeydown);
     window.addEventListener("popstate", handleRouteChange);
     window.matchMedia("(max-width: 680px)").addEventListener("change", (event) => {
@@ -141,8 +222,18 @@
     });
   }
 
+  function refreshCurrentView() {
+    if (state.currentView === "performance") {
+      void loadPerformance({ force: true });
+      return;
+    }
+    void loadApplicationData({ forceApi: true });
+  }
+
   async function loadApplicationData({ forceApi = false } = {}) {
     const sequence = ++state.requestSequence;
+    const requestedStatusScope = state.currentView === "new" ? "OPEN" : "ALL";
+    state.noticeStatusScope = requestedStatusScope;
     setLoading(true);
     setSystemStatus("loading");
 
@@ -157,14 +248,21 @@
       return;
     }
 
-    const [dashboardResult, noticesResult] = await Promise.allSettled([
+    const [dashboardResult, noticesResult, profilesResult, runtimeResult] = await Promise.allSettled([
       apiRequest("/dashboard"),
-      apiRequest("/notices"),
+      apiRequest(buildNoticeRequestPath({ statusScope: requestedStatusScope })),
+      apiRequest("/departments/keyword-profiles"),
+      apiRequest("/runtime-profile"),
     ]);
 
     if (sequence !== state.requestSequence) return;
 
     if (noticesResult.status === "fulfilled") {
+      if (runtimeResult.status === "fulfilled") applyRuntimeProfile(runtimeResult.value);
+      if (profilesResult.status === "fulfilled") {
+        state.departmentCatalog = unwrapObject(profilesResult.value);
+        populateDepartmentProfiles(state.departmentCatalog);
+      }
       const list = extractList(noticesResult.value);
       state.notices = list.map(normalizeNotice).filter((notice) => notice.noticeKey);
       state.dashboard = dashboardResult.status === "fulfilled"
@@ -173,7 +271,7 @@
       state.source = "api";
       state.sourceReason = dashboardResult.status === "rejected" ? "일부 운영 지표는 공고 데이터에서 계산했습니다." : "";
       setSystemStatus("online");
-      if (state.dashboard.syntheticWarning) showDemoBanner(state.dashboard.syntheticWarning);
+      if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) showDemoBanner(state.dashboard.syntheticWarning);
       else hideDemoBanner();
       renderAll();
       finishLoading();
@@ -185,6 +283,26 @@
     activateDemo(`서버 API 연결 실패: ${reason}`);
     finishLoading();
     openNoticeFromRoute();
+  }
+
+  function applyRuntimeProfile(raw) {
+    const profile = unwrapObject(raw);
+    state.accessMode = stringValue(firstValue(profile.access_mode, profile.accessMode), "UNKNOWN");
+    state.writeControlsEnabled = booleanValue(
+      firstValue(profile.write_controls_enabled, profile.writeControlsEnabled),
+    ) ?? state.accessMode !== "PUBLIC_READ_ONLY";
+    const readOnly = !state.writeControlsEnabled;
+    els.replayButton.disabled = readOnly;
+    els.replayButton.title = readOnly ? "공개 읽기 전용 화면에서는 서버 작업을 실행하지 않습니다." : "";
+    els.teamsMockSendButton.disabled = readOnly;
+    els.clearTeamsLogsButton.disabled = readOnly;
+    els.decisionInputs.forEach((input) => { input.disabled = readOnly; });
+    els.toggleCommentButton.disabled = readOnly;
+    els.decisionComment.disabled = readOnly;
+    if (readOnly) {
+      els.saveDecisionButton.disabled = true;
+      els.saveDecisionButton.textContent = "사내 로그인 후 저장 가능";
+    }
   }
 
   function finishLoading() {
@@ -227,7 +345,10 @@
 
       if (!response.ok) {
         const message = payload?.detail || payload?.message || (typeof payload === "string" ? payload : "") || `HTTP ${response.status}`;
-        throw new Error(message);
+        const requestError = new Error(message);
+        requestError.status = response.status;
+        requestError.payload = payload;
+        throw requestError;
       }
       return payload;
     } catch (error) {
@@ -236,6 +357,421 @@
     } finally {
       window.clearTimeout(timeout);
     }
+  }
+
+  function buildNoticeRequestPath({ statusScope = state.currentView === "new" ? "OPEN" : "ALL" } = {}) {
+    const params = new URLSearchParams();
+    const departmentId = els.departmentSelect?.value || "organization";
+    const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
+    const query = els.searchInput?.value.trim() || "";
+    params.set("department_id", departmentId);
+    if (searchKeywords) params.set("search_keywords", searchKeywords);
+    if (query) params.set("q", query);
+    if (statusScope === "OPEN") params.set("status", "OPEN");
+    params.set("limit", "200");
+    return `/notices?${params.toString()}`;
+  }
+
+  function scheduleNoticeSearch(event) {
+    if (event?.isComposing || state.source === "demo") return;
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = window.setTimeout(() => {
+      state.noticeSearchTimer = null;
+      void loadApplicationData({ forceApi: true });
+    }, 350);
+  }
+
+  function submitNoticeSearch(event) {
+    event.preventDefault();
+    if (state.source === "demo") {
+      applyFilters();
+      return;
+    }
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = null;
+    void loadApplicationData({ forceApi: true });
+  }
+
+  function populateDepartmentProfiles(catalog) {
+    const departments = arrayValue(catalog?.departments);
+    if (!departments.length) return;
+    const selected = els.departmentSelect.value || "organization";
+    const groups = new Map();
+    departments.forEach((profile) => {
+      const group = stringValue(profile.group, "기타");
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push(profile);
+    });
+    const fragment = document.createDocumentFragment();
+    const common = document.createElement("option");
+    common.value = "organization";
+    common.textContent = "전사 공통 (교육·컨설팅)";
+    fragment.append(common);
+    groups.forEach((profiles, groupName) => {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = groupName;
+      profiles.forEach((profile) => {
+        const option = document.createElement("option");
+        option.value = stringValue(profile.id);
+        option.textContent = stringValue(profile.name, profile.id);
+        optgroup.append(option);
+      });
+      fragment.append(optgroup);
+    });
+    els.departmentSelect.replaceChildren(fragment);
+    els.departmentSelect.value = [...els.departmentSelect.options].some((option) => option.value === selected)
+      ? selected
+      : "organization";
+    els.rankingProfileVersion.textContent = catalog.version ? `키워드 기준 ${catalog.version}` : "키워드 기준 확인됨";
+    populatePerformanceDivisionOptions(state.performance.records);
+  }
+
+  function applyDepartmentRanking() {
+    els.sortSelect.value = "department";
+    void loadApplicationData({ forceApi: true });
+  }
+
+  function resetPrioritySearch() {
+    els.departmentSelect.value = "organization";
+    els.priorityKeywordInput.value = "";
+    void loadApplicationData({ forceApi: true });
+  }
+
+  async function loadPerformance({ force = false, refreshSummary = force } = {}) {
+    if (state.performance.loading && !force) return;
+    const sequence = ++state.performance.requestSequence;
+    state.performance.loading = true;
+    state.performance.error = null;
+    setPerformanceLoading(true);
+
+    try {
+      const useCachedSummary = Boolean(state.performance.summary && !refreshSummary);
+      const summaryRequest = useCachedSummary
+        ? Promise.resolve(null)
+        : apiRequest("/performance/summary");
+      const [summaryPayload, listPayload] = await Promise.all([
+        summaryRequest,
+        apiRequest(buildPerformanceRequestPath()),
+      ]);
+      if (sequence !== state.performance.requestSequence) return;
+
+      const summary = useCachedSummary
+        ? state.performance.summary
+        : normalizePerformanceSummary(summaryPayload);
+      const result = unwrapObject(listPayload);
+      const records = arrayValue(firstValue(result.records, result.items, result.data))
+        .map(normalizePerformanceRecord)
+        .filter((record) => record.recordKey);
+
+      state.performance.summary = summary;
+      state.performance.records = records;
+      state.performance.total = Math.max(numberOrNull(result.total) ?? records.length, 0);
+      state.performance.loaded = true;
+      state.performance.loading = false;
+      state.performance.error = null;
+      populatePerformanceYearOptions(summary);
+      populatePerformanceDivisionOptions(records, summary);
+      renderPerformanceView();
+    } catch (error) {
+      if (sequence !== state.performance.requestSequence) return;
+      state.performance.loading = false;
+      state.performance.error = error;
+      renderPerformanceError(error);
+    }
+  }
+
+  function buildPerformanceRequestPath() {
+    const params = new URLSearchParams();
+    const query = els.performanceSearchInput.value.trim();
+    const year = els.performanceYearFilter.value;
+    const division = els.performanceDivisionFilter.value;
+    if (query) params.set("q", query);
+    if (year) params.set("year", year);
+    if (division) params.set("division", division);
+    params.set("limit", String(state.performance.limit));
+    params.set("offset", String(state.performance.offset));
+    return `/performance?${params.toString()}`;
+  }
+
+  function normalizePerformanceSummary(payload) {
+    const source = unwrapObject(payload);
+    const aggregate = firstObject(source.aggregate);
+    const classification = stringValue(source.classification);
+    const directIdentifierFindings = numberOrNull(aggregate.direct_identifier_findings);
+    if (classification !== "PUBLIC_DERIVED") {
+      const error = new Error("공개 데이터 등급을 확인할 수 없습니다");
+      error.code = "UNSAFE_PERFORMANCE_DATA";
+      throw error;
+    }
+    if (directIdentifierFindings !== 0) {
+      const error = new Error("직접식별자 검사 결과가 안전 기준을 충족하지 않습니다");
+      error.code = "UNSAFE_PERFORMANCE_DATA";
+      throw error;
+    }
+    return {
+      schemaVersion: stringValue(source.schema_version),
+      datasetVersion: stringValue(source.dataset_version),
+      classification,
+      policyVersion: stringValue(source.policy_version),
+      recordCount: Math.max(numberOrNull(aggregate.record_count) ?? 0, 0),
+      yearCounts: firstObject(aggregate.year_counts),
+      divisionCounts: firstObject(aggregate.division_counts),
+      dateMin: stringValue(aggregate.contract_date_min),
+      dateMax: stringValue(aggregate.contract_date_max),
+      directIdentifierFindings,
+      redactions: firstObject(aggregate.redactions),
+      recordsSha256: stringValue(firstObject(source.provenance).records_sha256),
+    };
+  }
+
+  function normalizePerformanceRecord(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    return {
+      recordKey: stringValue(source.record_key),
+      projectName: stringValue(source.project_name, "사업명 미확인"),
+      overview: sanitizePerformanceOverview(source.overview),
+      agency: stringValue(source.agency, "발주기관 미확인"),
+      contractDate: stringValue(source.contract_date),
+      contractYear: numberOrNull(source.contract_year),
+      contractAmountKrw: stringValue(source.contract_amount_krw),
+      keywords: arrayValue(source.keywords).map((keyword) => stringValue(keyword)).filter(Boolean),
+      division: stringValue(source.division, "수행부서 미확인"),
+    };
+  }
+
+  function populatePerformanceYearOptions(summary) {
+    const selected = els.performanceYearFilter.value;
+    const years = Object.keys(summary.yearCounts)
+      .filter((year) => /^\d{4}$/.test(year))
+      .sort((a, b) => Number(b) - Number(a));
+    const fragment = document.createDocumentFragment();
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "전체 연도";
+    fragment.append(all);
+    years.forEach((year) => {
+      const option = document.createElement("option");
+      option.value = year;
+      option.textContent = `${year}년 (${formatNumber(summary.yearCounts[year])}건)`;
+      fragment.append(option);
+    });
+    els.performanceYearFilter.replaceChildren(fragment);
+    if ([...els.performanceYearFilter.options].some((option) => option.value === selected)) {
+      els.performanceYearFilter.value = selected;
+    }
+  }
+
+  function populatePerformanceDivisionOptions(records = [], summary = state.performance.summary) {
+    if (!els.performanceDivisionFilter) return;
+    const selected = els.performanceDivisionFilter.value;
+    const divisions = new Set(
+      [...els.performanceDivisionFilter.options]
+        .map((option) => option.value)
+        .filter(Boolean),
+    );
+    arrayValue(state.departmentCatalog?.departments).forEach((profile) => {
+      const name = stringValue(profile.name);
+      if (name) divisions.add(name);
+    });
+    Object.keys(firstObject(summary?.divisionCounts)).forEach((divisionValue) => {
+      stringValue(divisionValue)
+        .split(/[,/]/)
+        .map((division) => division.trim())
+        .filter(Boolean)
+        .forEach((division) => divisions.add(division));
+    });
+    records.forEach((record) => {
+      stringValue(record.division)
+        .split(/[,/]/)
+        .map((division) => division.trim())
+        .filter((division) => division && division !== "수행부서 미확인")
+        .forEach((division) => divisions.add(division));
+    });
+    const fragment = document.createDocumentFragment();
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "전체 수행부서";
+    fragment.append(all);
+    [...divisions]
+      .sort((a, b) => a.localeCompare(b, "ko-KR"))
+      .forEach((division) => {
+        const option = document.createElement("option");
+        option.value = division;
+        option.textContent = division;
+        fragment.append(option);
+      });
+    els.performanceDivisionFilter.replaceChildren(fragment);
+    if ([...els.performanceDivisionFilter.options].some((option) => option.value === selected)) {
+      els.performanceDivisionFilter.value = selected;
+    }
+  }
+
+  function setPerformanceLoading(isLoading) {
+    state.performance.loading = isLoading;
+    els.performanceLoadingState.hidden = !isLoading;
+    els.performanceErrorState.hidden = true;
+    els.performanceEmptyState.hidden = true;
+    els.performanceList.hidden = isLoading;
+    els.performancePagination.hidden = true;
+    els.performanceResultSummary.textContent = isLoading
+      ? "실적 데이터를 불러오는 중입니다."
+      : els.performanceResultSummary.textContent;
+    [
+      els.performanceSearchInput,
+      els.performanceYearFilter,
+      els.performanceDivisionFilter,
+      els.performancePreviousButton,
+      els.performanceNextButton,
+    ].forEach((control) => { control.disabled = isLoading; });
+    if (state.currentView === "performance") els.refreshButton.disabled = isLoading;
+  }
+
+  function renderPerformanceView() {
+    const data = state.performance;
+    const summary = data.summary;
+    if (!summary) return;
+    setPerformanceLoading(false);
+    renderPerformanceSummary(summary);
+
+    const count = data.records.length;
+    const start = data.total ? data.offset + 1 : 0;
+    const end = data.offset + count;
+    const filtered = Boolean(
+      els.performanceSearchInput.value.trim()
+      || els.performanceYearFilter.value
+      || els.performanceDivisionFilter.value,
+    );
+    els.performanceResultSummary.textContent = data.total
+      ? `${filtered ? "검색 결과" : "전체"} ${formatNumber(data.total)}건 중 ${formatNumber(start)}–${formatNumber(end)}건을 표시합니다.`
+      : filtered ? "검색 조건에 맞는 실적이 없습니다." : "표시할 공개 실적이 없습니다.";
+
+    els.performanceErrorState.hidden = true;
+    els.performanceLoadingState.hidden = true;
+    els.performanceEmptyState.hidden = count !== 0;
+    els.performanceList.hidden = count === 0;
+    els.performanceList.innerHTML = count ? data.records.map(renderPerformanceCard).join("") : "";
+    renderPerformancePagination();
+    renderDataSource();
+  }
+
+  function renderPerformanceSummary(summary) {
+    const minYear = validDate(summary.dateMin)?.getFullYear();
+    const maxYear = validDate(summary.dateMax)?.getFullYear();
+    const years = Object.keys(summary.yearCounts).filter((year) => /^\d{4}$/.test(year));
+    els.performanceTotal.textContent = formatNumber(summary.recordCount);
+    els.performancePeriod.textContent = minYear && maxYear ? `${minYear}–${maxYear}` : "—";
+    els.performanceYears.textContent = years.length ? `${formatNumber(years.length)}개년` : "—";
+    els.performancePrivacy.textContent = summary.directIdentifierFindings === 0 ? "0건" : "확인 필요";
+  }
+
+  function renderPerformanceCard(record) {
+    const keywords = record.keywords.slice(0, 7);
+    const remaining = Math.max(record.keywords.length - keywords.length, 0);
+    const keywordMarkup = keywords.length
+      ? `${keywords.map((keyword) => `<span>${escapeHtml(keyword)}</span>`).join("")}${remaining ? `<span class="performance-keyword--more">+${remaining}</span>` : ""}`
+      : '<span class="performance-keyword--empty">키워드 미분류</span>';
+    return `
+      <article class="performance-card" role="listitem" data-record-key="${escapeAttribute(record.recordKey)}">
+        <div class="performance-card__head">
+          <span class="performance-division">${escapeHtml(record.division)}</span>
+          <time datetime="${escapeAttribute(record.contractDate)}">${escapeHtml(formatPerformanceDate(record.contractDate))}</time>
+        </div>
+        <h4>${escapeHtml(record.projectName)}</h4>
+        <p class="performance-overview ${record.overview ? "" : "is-empty"}">${escapeHtml(record.overview || "공개 요약이 제공되지 않은 실적입니다.")}</p>
+        <dl class="performance-facts">
+          <div><dt>발주기관</dt><dd>${escapeHtml(record.agency)}</dd></div>
+          <div><dt>계약금액</dt><dd>${escapeHtml(formatPerformanceAmount(record.contractAmountKrw))}</dd></div>
+        </dl>
+        <div class="performance-keywords" aria-label="실적 키워드">${keywordMarkup}</div>
+        <footer><span>PUBLIC_DERIVED</span><small>후보 조회용 · 인정실적/점수 미확정</small></footer>
+      </article>`;
+  }
+
+  function renderPerformancePagination() {
+    const data = state.performance;
+    if (!data.records.length) {
+      els.performancePagination.hidden = true;
+      return;
+    }
+    const page = Math.floor(data.offset / data.limit) + 1;
+    const totalPages = Math.max(Math.ceil(data.total / data.limit), 1);
+    const start = data.offset + 1;
+    const end = data.offset + data.records.length;
+    els.performancePageRange.textContent = `${formatNumber(start)}–${formatNumber(end)} / ${formatNumber(data.total)}건`;
+    els.performancePageLabel.textContent = `${formatNumber(page)} / ${formatNumber(totalPages)}`;
+    els.performancePreviousButton.disabled = data.loading || data.offset <= 0;
+    els.performanceNextButton.disabled = data.loading || data.offset + data.limit >= data.total;
+    els.performancePagination.hidden = false;
+  }
+
+  function renderPerformanceError(error) {
+    setPerformanceLoading(false);
+    els.performanceList.replaceChildren();
+    els.performanceList.hidden = true;
+    els.performanceEmptyState.hidden = true;
+    els.performancePagination.hidden = true;
+    els.performanceErrorState.hidden = false;
+    els.performanceErrorMessage.textContent = performanceErrorMessage(error);
+    els.performanceResultSummary.textContent = "실적 데이터 연결 상태를 확인해 주세요.";
+    if (state.currentView === "performance") els.refreshButton.disabled = false;
+  }
+
+  function performanceErrorMessage(error) {
+    if (error?.status === 401 || error?.status === 403) {
+      return "이 데이터는 인증된 사용자에게만 제공됩니다. 사내 인증 후 다시 시도해 주세요.";
+    }
+    if (error?.status === 404) {
+      return "현재 서버에서 회사 실적 API를 제공하지 않습니다. 배포 버전을 확인해 주세요.";
+    }
+    if (error?.code === "UNSAFE_PERFORMANCE_DATA") {
+      return "공개·비식별 데이터 안전 검증을 통과하지 못해 목록을 표시하지 않았습니다.";
+    }
+    return "공개 실적 API에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+  }
+
+  function changePerformancePage(direction) {
+    if (state.performance.loading) return;
+    const nextOffset = state.performance.offset + direction * state.performance.limit;
+    if (nextOffset < 0 || nextOffset >= state.performance.total) return;
+    state.performance.offset = nextOffset;
+    void loadPerformance();
+    els.performanceSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function resetPerformanceFilters() {
+    els.performanceSearchInput.value = "";
+    els.performanceYearFilter.value = "";
+    els.performanceDivisionFilter.value = "";
+    state.performance.offset = 0;
+    void loadPerformance();
+  }
+
+  function formatPerformanceDate(value) {
+    const date = validDate(value);
+    if (!date) return "계약일 미확인";
+    return new Intl.DateTimeFormat("ko-KR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+  }
+
+  function formatPerformanceAmount(value) {
+    if (!/^\d+$/.test(String(value || ""))) return "금액 미확인";
+    try {
+      return `${BigInt(value).toLocaleString("ko-KR")}원`;
+    } catch (_error) {
+      return formatBudget(value);
+    }
+  }
+
+  function sanitizePerformanceOverview(value) {
+    return stringValue(value)
+      .replace(/\[[^\]]*(?:PM|담당자|책임자|총괄|강사명?|명사\s*특강|강연자|연사|발표자|교수|작가|박사|감독|선수)[^\]]*\]/gi, "[비식별]")
+      .replace(/(?:사업\s*총괄\s*P\.?\s*M\.?)\s*(?:[:：=]|\s|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?/gi, "[비식별]")
+      .replace(/(?:P\.?\s*M\.?)\s*(?:[:：=]|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?/gi, "[비식별]")
+      .replace(/(?:명사\s*특강|총괄책임자|연구책임자|프로젝트책임자|강연자|발표자|담당자|대표자|성명|책임자|강사명?|연사|교수|감독|선수)\s*(?:[:：=]|\s|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?(?:\s*[\(\[\{<「『][^\)\]\}>」』\r\n]{1,40}[\)\]\}>」』])?/gi, "[비식별]")
+      .replace(/[가-힣]{2,5}(?:\s+|[\(\[\{<「『])\s*(?:작가|교수|박사|강사|연사|감독|선수)\s*[\)\]\}>」』]?/g, "[비식별]");
   }
 
   function extractList(payload) {
@@ -256,6 +792,24 @@
     return payload;
   }
 
+  function normalizeDepartmentRanking(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return {
+      departmentId: stringValue(firstValue(value.department_id, value.departmentId), "organization"),
+      departmentName: stringValue(firstValue(value.department_name, value.departmentName), "전사 공통"),
+      group: stringValue(value.group, "전사"),
+      rankingScope: stringValue(firstValue(value.ranking_scope, value.rankingScope), "BUSINESS"),
+      score: numberOrNull(value.score) ?? 0,
+      departmentScore: numberOrNull(firstValue(value.department_score, value.departmentScore)) ?? 0,
+      priority: stringValue(value.priority, "LOW"),
+      priorityLabel: stringValue(firstValue(value.priority_label, value.priorityLabel), "낮음"),
+      matchedUserKeywords: arrayValue(firstValue(value.matched_user_keywords, value.matchedUserKeywords)).map(String),
+      matchedDepartmentKeywords: arrayValue(firstValue(value.matched_department_keywords, value.matchedDepartmentKeywords)).map(String),
+      matchedRegions: arrayValue(firstValue(value.matched_regions, value.matchedRegions)).map(String),
+      reasons: arrayValue(value.reasons).map(String),
+    };
+  }
+
   function normalizeNotice(raw = {}, index = 0) {
     const source = unwrapObject(raw);
     const evaluation = firstObject(source.latest_evaluation, source.latestEvaluation, source.evaluation);
@@ -271,16 +825,41 @@
     );
     const deadline = firstValue(source.deadline, source.close_at, source.closeAt, source.bid_close_date, source.bidClseDt, null);
     const collectedAt = firstValue(source.collected_at, source.collectedAt, source.created_at, source.createdAt, null);
+    const category = stringValue(firstValue(source.category, source.business_category, source.notice_type), "용역");
+    const sourceKind = normalizeSourceKind(firstValue(source.source_kind, source.sourceKind, source.data_source), noticeKey, category);
+    const hasEvaluation = Boolean(firstValue(
+      evaluation.id,
+      evaluation.evaluated_at,
+      evaluation.evaluatedAt,
+      evaluation.eligibility,
+      source.eligibility_status,
+      source.readiness_score,
+      source.recommendation,
+    ));
+    const analysisState = normalizeAnalysisState(firstValue(source.analysis_state, source.ingestion_state, source.analysisState), hasEvaluation, source.status);
     const rawRequirements = arrayValue(firstValue(source.requirements, source.eligibility_requirements, source.conditions, []));
     const requirements = mergeRequirementsAndAtomics(rawRequirements, atomicResults);
     const rawEvidence = arrayValue(firstValue(source.evidence, source.evidences, source.source_evidence, []));
-    const evidence = (rawEvidence.length ? rawEvidence : atomicResults.filter((item) => item?.source_excerpt || item?.source_location))
-      .map((item, itemIndex) => normalizeEvidence(item, itemIndex));
+    const rawDocumentAnalyses = arrayValue(firstValue(
+      source.document_analyses,
+      source.documentAnalyses,
+      evaluation.document_analyses,
+      evaluation.documentAnalyses,
+      [],
+    ));
+    const documentAnalyses = rawDocumentAnalyses.map(normalizeDocumentAnalysis);
+    const evidence = collectNoticeEvidence({ rawEvidence, atomicResults, rawRequirements, rawDocumentAnalyses });
     const history = arrayValue(firstValue(source.award_history, source.awardHistory, source.history, []))
       .map(normalizeHistory);
+    const safeRaw = sanitizeNoticeAwardHistory(source, history);
+    const departmentRanking = normalizeDepartmentRanking(firstValue(source.department_ranking, source.departmentRanking));
+    const topDepartmentRankings = arrayValue(firstValue(source.top_department_rankings, source.topDepartmentRankings))
+      .map(normalizeDepartmentRanking)
+      .filter(Boolean);
+    const analysisReason = normalizeAnalysisReason(source, analysisState, latestVersion);
 
     return {
-      raw: source,
+      raw: safeRaw,
       noticeKey,
       noticeNumber: stringValue(firstValue(source.notice_number, source.notice_no, source.bid_notice_no, source.bidNtceNo, noticeKey)),
       title: stringValue(firstValue(source.title, source.notice_title, source.bidNtceNm, source.name), "공고명 미확인"),
@@ -305,7 +884,7 @@
       noticeStatus: stringValue(firstValue(source.status, source.notice_status), ""),
       isNew: booleanValue(source.is_new) ?? (isRecent(collectedAt, 48) || String(source.status || "").toUpperCase() === "OPEN"),
       summary: stringValue(firstValue(source.summary, source.ai_summary, source.brief), buildEvaluationSummary(evaluation, explanation)),
-      category: stringValue(firstValue(source.category, source.business_category, source.notice_type), "용역"),
+      category,
       method: stringValue(firstValue(source.method, source.contract_method, source.cntrctCnclsMthdNm), "확인 필요"),
       region: stringValue(firstValue(source.region, source.location_restriction), "전국"),
       requirements,
@@ -319,11 +898,19 @@
       evaluationId: stringValue(firstValue(evaluation.id, source.evaluation_id), ""),
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
+      analysisState,
+      analysisReasonCode: analysisReason.code,
+      analysisReason: analysisReason.message,
+      sourceKind,
+      isSynthetic: sourceKind === "SYNTHETIC",
       explanation,
       atomicResults,
       versions,
       latestVersion,
       decisions,
+      documentAnalyses,
+      departmentRanking,
+      topDepartmentRankings,
       sourceUrl: safeHttpUrl(firstValue(source.source_url, source.notice_url, source.url, "")),
     };
   }
@@ -347,6 +934,35 @@
       extractionStatus: stringValue(firstValue(source.extraction_status, source.extractionStatus), "UNKNOWN"),
       extractionConfidence: normalizeConfidence(firstValue(source.extraction_confidence, source.extractionConfidence)),
       createdAt: firstValue(source.created_at, source.createdAt, null),
+    };
+  }
+
+  function normalizeDocumentAnalysis(item, index) {
+    const source = item && typeof item === "object" ? item : {};
+    const result = firstObject(source.result, source.data, source.analysis_result, source.analysisResult);
+    const extractedRequirements = arrayValue(firstValue(
+      source.requirements,
+      source.extracted_requirements,
+      source.requirement_items,
+      result.requirements,
+      [],
+    ));
+    const status = stringValue(firstValue(source.analysis_status, source.status), "COMPLETE").toUpperCase();
+    const explicitReview = booleanValue(firstValue(source.needs_review, source.needsReview, source.review_required, source.reviewRequired, result.needs_review));
+    return {
+      id: stringValue(firstValue(source.id, source.analysis_id), `document-analysis-${index + 1}`),
+      documentName: stringValue(firstValue(source.document_name, source.documentName, source.filename, source.file_name, source.source_label, source.name), `첨부문서 ${index + 1}`),
+      summary: stringValue(firstValue(source.summary, source.analysis_summary, source.brief, result.summary), "구조화 분석 요약이 아직 제공되지 않았습니다."),
+      requirementCount: numberOrNull(firstValue(
+        source.requirement_count,
+        source.requirements_count,
+        source.extracted_requirement_count,
+        extractedRequirements.length || null,
+      )),
+      needsReview: explicitReview ?? (Boolean(source.review_code) || ["REVIEW", "NEEDS_REVIEW", "PARTIAL", "FAILED"].includes(status)),
+      status,
+      confidence: normalizeConfidence(firstValue(source.confidence, source.extraction_confidence, source.analysis_confidence)),
+      analyzedAt: firstValue(source.analyzed_at, source.analysis_updated_at, source.updated_at, source.created_at, null),
     };
   }
 
@@ -415,15 +1031,138 @@
     };
   }
 
+  function collectNoticeEvidence({ rawEvidence, atomicResults, rawRequirements, rawDocumentAnalyses }) {
+    const documentEvidence = flattenDocumentEvidence(rawDocumentAnalyses);
+    const requirementEvidence = flattenRequirementEvidence(rawRequirements);
+    const publicSourceEvidence = documentEvidence.length ? documentEvidence : requirementEvidence;
+    const candidates = [
+      ...rawEvidence.map((item, index) => normalizeEvidence(item, index)),
+      ...atomicResults
+        .filter((item) => item?.source_excerpt || item?.source_location)
+        .map((item, index) => normalizeEvidence(item, rawEvidence.length + index)),
+      ...publicSourceEvidence,
+    ];
+    const seen = new Set();
+    return candidates.filter((item) => {
+      const quoteKey = stringValue(item.quote).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR");
+      const fallbackKey = [item.file, item.page, item.id].map((value) => stringValue(value)).join("|");
+      const key = quoteKey || fallbackKey;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function flattenDocumentEvidence(analyses) {
+    return analyses.flatMap((item, analysisIndex) => {
+      const source = item && typeof item === "object" ? item : {};
+      const status = stringValue(firstValue(source.status, source.analysis_status), "").toUpperCase();
+      if (!["ACCEPTED", "COMPLETE"].includes(status)) return [];
+      const result = firstObject(source.result, source.data, source.analysis_result, source.analysisResult);
+      const requirements = arrayValue(firstValue(
+        source.requirements,
+        source.extracted_requirements,
+        source.requirement_items,
+        result.requirements,
+        [],
+      ));
+      const documentName = stringValue(
+        firstValue(source.document_name, source.documentName, source.filename, source.file_name),
+        `첨부문서 ${analysisIndex + 1}`,
+      );
+      return requirements.flatMap((requirement, requirementIndex) => {
+        const requirementSource = requirement && typeof requirement === "object" ? requirement : {};
+        return arrayValue(requirementSource.evidence).flatMap((anchor, anchorIndex) => {
+          const sourceAnchor = anchor && typeof anchor === "object" ? anchor : {};
+          const quote = stringValue(sourceAnchor.quote).trim();
+          if (!quote) return [];
+          const page = numberOrNull(sourceAnchor.page);
+          const section = stringValue(sourceAnchor.section).trim();
+          const location = [page === null ? "" : `${formatNumber(page)}쪽`, section].filter(Boolean).join(" · ") || "위치 미확인";
+          return [normalizeEvidence({
+            id: `document-${analysisIndex + 1}-requirement-${requirementIndex + 1}-evidence-${anchorIndex + 1}`,
+            file: documentName,
+            location,
+            quote,
+            status: "PROVISIONAL",
+            confidence: normalizeConfidence(sourceAnchor.confidence),
+          }, anchorIndex)];
+        });
+      });
+    });
+  }
+
+  function flattenRequirementEvidence(requirements) {
+    return requirements.flatMap((item, index) => {
+      const source = item && typeof item === "object" ? item : {};
+      const quote = stringValue(source.source_excerpt).trim();
+      if (!quote) return [];
+      return [normalizeEvidence({
+        id: `requirement-evidence-${index + 1}`,
+        file: "공고 판정 원문",
+        location: stringValue(source.source_location, "위치 미확인"),
+        quote,
+        status: "PROVISIONAL",
+        confidence: normalizeConfidence(source.parse_confidence),
+      }, index)];
+    });
+  }
+
   function normalizeHistory(item) {
     const source = item && typeof item === "object" ? item : {};
+    const awardedAt = firstValue(source.awarded_at, source.awardedAt, source.award_date, null);
+    const openedAt = firstValue(source.opened_at, source.openedAt, source.open_date, null);
+    const eventDate = awardedAt || openedAt;
+    const similarity = numberOrNull(firstValue(source.similarity_score, source.similarityScore, source.title_similarity));
     return {
-      year: stringValue(firstValue(source.year, source.award_year, source.date ? String(source.date).slice(0, 4) : null), "연도 미확인"),
+      id: stringValue(source.id),
+      bidNoticeNo: stringValue(firstValue(source.bid_notice_no, source.bidNoticeNo), ""),
+      revisionNo: stringValue(firstValue(source.revision_no, source.revisionNo), ""),
+      year: stringValue(firstValue(source.year, source.award_year, eventDate ? String(eventDate).slice(0, 4) : null), "연도 미확인"),
       title: stringValue(firstValue(source.title, source.project_name, source.notice_title), "유사 사업"),
-      winner: stringValue(firstValue(source.winner, source.awardee, source.company), "낙찰자 미확인"),
+      winner: stringValue(firstValue(source.winner_name, source.winner, source.awardee), "낙찰자 미확인"),
       amount: firstValue(source.amount, source.award_amount, source.contract_amount, null),
       rate: numberOrNull(firstValue(source.rate, source.award_rate, source.bid_rate)),
       agency: stringValue(firstValue(source.agency, source.ordering_agency), ""),
+      participantCount: numberOrNull(firstValue(source.participant_count, source.participantCount)),
+      openedAt,
+      awardedAt,
+      similarityScore: similarity === null ? null : clamp(similarity, 0, 100),
+      source: stringValue(source.source, ""),
+      estimatedPrice: firstValue(source.estimated_price, source.estimatedPrice, null),
+      submittedBidPrice: firstValue(source.submitted_bid_price, source.submittedBidPrice, null),
+      submittedBidRate: numberOrNull(firstValue(source.submitted_bid_rate, source.submittedBidRate)),
+      awardRateBasis: stringValue(firstValue(source.award_rate_basis, source.awardRateBasis), ""),
+      technicalScore: numberOrNull(firstValue(source.technical_score, source.technicalScore)),
+      priceScore: numberOrNull(firstValue(source.price_score, source.priceScore)),
+    };
+  }
+
+  function sanitizeNoticeAwardHistory(source, history) {
+    const safeSource = { ...source };
+    delete safeSource.award_history;
+    delete safeSource.awardHistory;
+    delete safeSource.history;
+    safeSource.award_history = history.map(toSafeAwardHistoryRaw);
+    return safeSource;
+  }
+
+  function toSafeAwardHistoryRaw(item) {
+    return {
+      id: item.id,
+      bid_notice_no: item.bidNoticeNo,
+      revision_no: item.revisionNo,
+      year: item.year,
+      title: item.title,
+      agency: item.agency,
+      winner_name: item.winner,
+      participant_count: item.participantCount,
+      award_amount: item.amount,
+      award_rate: item.rate,
+      opened_at: item.openedAt,
+      awarded_at: item.awardedAt,
+      similarity_score: item.similarityScore,
+      source: item.source,
     };
   }
 
@@ -469,7 +1208,7 @@
     const readinessCounts = firstObject(source.readiness_counts, source.readinessCounts);
     const derived = deriveDashboard(notices);
     return {
-      newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.notices)) ?? derived.newCount,
+      newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.active, totals.notices)) ?? derived.newCount,
       reviewCount: numberOrNull(firstValue(source.pending_review, kpis.review_count, kpis.reviewCount, kpis.needs_review, kpis.review, eligibilityCounts.REVIEW)) ?? derived.reviewCount,
       goCount: numberOrNull(firstValue(kpis.go_count, kpis.goCount, kpis.go_candidates, kpis.go)) ?? derived.goCount,
       urgentCount: numberOrNull(firstValue(source.deadline_soon, kpis.urgent_count, kpis.urgentCount, kpis.urgent)) ?? derived.urgentCount,
@@ -487,7 +1226,7 @@
 
   function deriveDashboard(notices) {
     return {
-      newCount: notices.filter((notice) => notice.isNew).length,
+      newCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN").length,
       reviewCount: notices.filter((notice) => notice.eligibilityStatus === "REVIEW").length,
       goCount: notices.filter((notice) => notice.recommendation === "GO").length,
       urgentCount: notices.filter((notice) => {
@@ -509,7 +1248,8 @@
 
   function renderKpis() {
     const data = state.dashboard;
-    els.kpiNew.textContent = displayNumber(data.newCount);
+    // "수집 공고" is the database total; the sidebar's "진행 공고" keeps using active/newCount.
+    els.kpiNew.textContent = displayNumber(data.totalNotices);
     els.kpiReview.textContent = displayNumber(data.reviewCount);
     els.kpiGo.textContent = displayNumber(data.goCount);
     els.kpiUrgent.textContent = displayNumber(data.urgentCount);
@@ -525,8 +1265,20 @@
   }
 
   function renderDataSource() {
+    if (state.currentView === "performance") {
+      const summary = state.performance.summary;
+      els.dataSourceLabel.textContent = summary
+        ? `PUBLIC_DERIVED · ${stringValue(summary.datasetVersion, "버전 미확인")} · 비식별 공개 snapshot ${formatNumber(summary.recordCount)}건`
+        : "PUBLIC_DERIVED · 공개 실적 데이터 확인 중";
+      return;
+    }
     if (state.source === "api") {
-      els.dataSourceLabel.textContent = state.sourceReason ? `실시간 API · ${state.sourceReason}` : "실시간 API 데이터";
+      const syntheticCount = state.notices.filter((notice) => notice.isSynthetic).length;
+      const ppsCount = state.notices.filter((notice) => notice.sourceKind === "PPS").length;
+      const manualCount = state.notices.filter((notice) => notice.sourceKind === "MANUAL").length;
+      const composition = `조달청 ${formatNumber(ppsCount)}건 · 수동 ${formatNumber(manualCount)}건 · 합성 ${formatNumber(syntheticCount)}건`;
+      const accessLabel = state.accessMode === "PUBLIC_READ_ONLY" ? " · 공개 읽기 전용" : "";
+      els.dataSourceLabel.textContent = state.sourceReason ? `실시간 API${accessLabel} · ${composition} · ${state.sourceReason}` : `실시간 API${accessLabel} · ${composition}`;
     } else if (state.source === "demo") {
       els.dataSourceLabel.textContent = "데모 예시 데이터 · 실제 판정 결과가 아닙니다";
     } else {
@@ -542,7 +1294,7 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (state.currentView === "new" && !notice.isNew) return false;
+      if (state.currentView === "new" && notice.noticeStatus.toUpperCase() !== "OPEN") return false;
       if (state.currentView === "review" && notice.eligibilityStatus !== "REVIEW") return false;
       if (state.currentView === "undecided" && notice.decision) return false;
       if (state.currentView === "closed" && !notice.resultStatus) return false;
@@ -558,10 +1310,29 @@
   }
 
   function compareNotices(a, b, sort) {
-    if (sort === "readiness") return nullableNumberSort(b.readinessScore, a.readinessScore);
-    if (sort === "risk") return nullableNumberSort(a.riskScore, b.riskScore);
-    if (sort === "newest") return nullableDateSort(b.collectedAt, a.collectedAt);
-    return nullableDateSort(a.deadline, b.deadline);
+    const priority = analysisPriorityRank(a) - analysisPriorityRank(b);
+    if (priority !== 0) return priority;
+
+    let selectedOrder = 0;
+    if (sort === "department") selectedOrder = nullableNumberSort(b.departmentRanking?.score ?? null, a.departmentRanking?.score ?? null);
+    else if (sort === "readiness") selectedOrder = nullableNumberSort(b.readinessScore, a.readinessScore);
+    else if (sort === "risk") selectedOrder = nullableNumberSort(a.riskScore, b.riskScore);
+    else if (sort === "newest") selectedOrder = nullableDateSort(b.collectedAt, a.collectedAt);
+    else selectedOrder = nullableDateSort(a.deadline, b.deadline);
+    if (selectedOrder !== 0) return selectedOrder;
+
+    const deadlineOrder = nullableDateSort(a.deadline, b.deadline);
+    if (deadlineOrder !== 0) return deadlineOrder;
+    const departmentOrder = nullableNumberSort(b.departmentRanking?.score ?? null, a.departmentRanking?.score ?? null);
+    if (departmentOrder !== 0) return departmentOrder;
+    return nullableDateSort(b.collectedAt, a.collectedAt);
+  }
+
+  function analysisPriorityRank(notice) {
+    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "PASS") return 0;
+    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "REVIEW") return 1;
+    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "FAIL") return 3;
+    return 2;
   }
 
   function nullableNumberSort(a, b) {
@@ -583,8 +1354,11 @@
   function renderNoticeList() {
     const count = state.filteredNotices.length;
     const total = state.notices.length;
+    const ownerLabel = els.departmentSelect.selectedOptions[0]?.textContent || "전사 공통";
+    const keywordLabel = els.priorityKeywordInput.value.trim();
+    const context = keywordLabel ? `${ownerLabel} · 검색어 ${keywordLabel}` : ownerLabel;
     els.noticeSummary.textContent = count === total
-      ? `총 ${formatNumber(total)}건의 공고를 우선순위에 따라 확인하세요.`
+      ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
       : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
 
     els.loadingState.hidden = true;
@@ -605,41 +1379,60 @@
 
   function renderNoticeRow(notice) {
     const deadline = deadlineInfo(notice.deadline);
-    const readiness = formatScore(notice.readinessScore);
-    const readinessClass = scoreClass(notice.readinessScore);
+    const analyzed = notice.analysisState === "EVALUATED";
+    const readiness = analyzed ? formatScore(notice.readinessScore) : "미산정";
+    const readinessClass = analyzed ? scoreClass(notice.readinessScore) : "is-unknown";
     return `
       <tr class="notice-row" data-notice-key="${escapeAttribute(notice.noticeKey)}">
         <td>
           <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
-            <span class="notice-meta"><span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
+            <span class="notice-meta">${sourceKindBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
+            ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
+            ${departmentPriorityBadge(notice)}
           </button>
         </td>
         <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.date)}<small>${escapeHtml(deadline.relative)}</small></span></td>
-        <td>${statusPill(notice.eligibilityStatus)}</td>
-        <td><div class="score-cell ${readinessClass}"><strong>${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${clamp(notice.readinessScore ?? 0, 0, 100)}%"></span></span></div></td>
-        <td><span class="risk-score ${riskClass(notice.riskScore)}">${formatScore(notice.riskScore)}</span></td>
-        <td>${recommendationPill(notice.recommendation)}</td>
+        <td>${analysisStatusPill(notice)}</td>
+        <td><div class="score-cell ${readinessClass}"><strong class="${analyzed ? "" : "metric-pending"}">${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${analyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
+        <td><span class="risk-score ${analyzed ? riskClass(notice.riskScore) : "is-unknown"}">${analyzed ? formatScore(notice.riskScore) : "미산정"}</span></td>
+        <td>${analysisRecommendationPill(notice)}</td>
         <td><span class="row-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></span></td>
       </tr>`;
   }
 
   function renderNoticeCard(notice) {
     const deadline = deadlineInfo(notice.deadline);
+    const analyzed = notice.analysisState === "EVALUATED";
     return `
       <button class="notice-card" type="button" data-notice-key="${escapeAttribute(notice.noticeKey)}" data-open-notice>
         <span class="notice-card__head">
-          ${statusPill(notice.eligibilityStatus)}
+          <span>${sourceKindBadge(notice)} ${analysisStatusPill(notice)}</span>
           <span class="notice-card__deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}</span>
         </span>
         <h3>${escapeHtml(notice.title)}</h3>
         <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
+        ${analyzed ? "" : `<span class="notice-card__analysis-reason">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
+        ${departmentPriorityBadge(notice)}
         <span class="notice-card__metrics">
-          <span class="notice-card__metric"><small>준비도</small><strong>${formatScore(notice.readinessScore)}</strong></span>
-          <span class="notice-card__metric"><small>리스크</small><strong>${formatScore(notice.riskScore)}</strong></span>
+          <span class="notice-card__metric"><small>준비도</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
+          <span class="notice-card__metric"><small>리스크</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.riskScore) : "미산정"}</strong></span>
         </span>
-        <span class="notice-card__foot">${recommendationPill(notice.recommendation)}<span>근거 확인 →</span></span>
+        <span class="notice-card__foot">${analysisRecommendationPill(notice)}<span>${analyzed ? "근거 확인" : "분석 상태 확인"} →</span></span>
       </button>`;
+  }
+
+  function departmentPriorityBadge(notice) {
+    const ranking = notice.departmentRanking;
+    if (!ranking) return "";
+    const businessOwner = notice.topDepartmentRankings.find((item) => item.rankingScope === "BUSINESS");
+    const regionOwner = notice.topDepartmentRankings.find((item) => item.rankingScope === "REGION");
+    const owner = ranking.departmentId === "organization" && businessOwner
+      ? `추천 ${businessOwner.departmentName}`
+      : ranking.departmentName;
+    const region = regionOwner ? ` · 지역 ${regionOwner.departmentName}` : "";
+    const reasons = ranking.reasons.join(" · ");
+    return `<span class="department-priority department-priority--${escapeAttribute(ranking.priority.toLowerCase())}" title="${escapeAttribute(reasons)}"><strong>${escapeHtml(ranking.priorityLabel)} ${formatScore(ranking.score)}</strong><span>${escapeHtml(owner + region)}</span></span>`;
   }
 
   function setLoading(isLoading) {
@@ -659,7 +1452,7 @@
     els.systemStatusDot.className = "status-dot";
     if (mode === "online") {
       els.systemStatusDot.classList.add("is-online");
-      els.systemStatusText.textContent = "운영 API 연결됨";
+      els.systemStatusText.textContent = state.accessMode === "PUBLIC_READ_ONLY" ? "온라인 · 읽기 전용" : "운영 API 연결됨";
     } else if (mode === "demo") {
       els.systemStatusDot.classList.add("is-demo");
       els.systemStatusText.textContent = "데모 모드";
@@ -674,7 +1467,8 @@
   }
 
   function showDemoBanner(reason) {
-    els.demoBanner.hidden = false;
+    els.demoBanner.hidden = state.currentView === "performance";
+    els.demoBannerTitle.textContent = state.source === "api" ? "합성 데이터가 포함되어 있습니다." : "데모 데이터로 보고 있습니다.";
     els.demoBannerReason.textContent = reason;
     els.retryApiButton.textContent = state.source === "api" ? "데이터 새로고침" : "실데이터 다시 연결";
   }
@@ -691,6 +1485,7 @@
       review: ["검토 대기", "담당자 확인이 필요한 공고"],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
       closed: ["결과 학습", "결과가 확인된 공고"],
+      performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[view]?.[0] || titles.all[0];
     els.noticeHeading.textContent = titles[view]?.[1] || titles.all[1];
@@ -700,8 +1495,36 @@
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     });
+    const performanceView = view === "performance";
+    els.opportunityHero.hidden = performanceView;
+    els.opportunityKpis.hidden = performanceView;
+    els.noticeSection.hidden = performanceView;
+    els.performanceSection.hidden = !performanceView;
+    els.replayButton.hidden = performanceView;
+    els.footerDisclaimer.textContent = performanceView
+      ? "공개 실적은 유사 후보 탐색용이며, 공고별 인정실적·인정금액·정량점수를 확정하지 않습니다."
+      : "PAI LOOP는 담당자의 판단을 돕는 도구이며 자동 입찰을 수행하지 않습니다.";
+    if (performanceView) {
+      els.demoBanner.hidden = true;
+      if (!state.performance.loaded && !state.performance.loading) void loadPerformance();
+      else if (state.performance.loaded) renderPerformanceView();
+    } else if (state.source === "demo") {
+      showDemoBanner(state.sourceReason);
+    } else if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) {
+      showDemoBanner(state.dashboard.syntheticWarning);
+    } else {
+      hideDemoBanner();
+    }
     closeMobileMenu();
-    applyFilters();
+    if (!performanceView) {
+      const desiredStatusScope = view === "new" ? "OPEN" : "ALL";
+      if (state.source === "api" && state.noticeStatusScope !== desiredStatusScope) {
+        void loadApplicationData({ forceApi: true });
+      } else {
+        applyFilters();
+      }
+    }
+    renderDataSource();
     els.mainContent.focus({ preventScroll: true });
   }
 
@@ -717,7 +1540,6 @@
 
   function resetFilters() {
     els.filterForm.reset();
-    applyFilters();
   }
 
   function handleNoticeActivation(event) {
@@ -748,8 +1570,10 @@
     document.body.classList.add("is-locked");
     selectTab("overview");
     requestAnimationFrame(() => els.closeDetailButton.focus());
+    void loadTeamsMockLogs(noticeKey);
 
     if (updateRoute) updateNoticeRoute(noticeKey);
+    if (baseNotice.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
     if (state.source !== "api") return;
 
     state.detailLoading = true;
@@ -757,11 +1581,19 @@
     try {
       const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}`);
       const detail = normalizeNotice(unwrapObject(payload));
-      const merged = normalizeNotice({ ...baseNotice.raw, ...detail.raw, notice_key: noticeKey });
+      const mergedSource = { ...baseNotice.raw, ...detail.raw, notice_key: noticeKey };
+      if (!detail.departmentRanking && baseNotice.raw.department_ranking) {
+        mergedSource.department_ranking = baseNotice.raw.department_ranking;
+      }
+      if (!detail.topDepartmentRankings.length && baseNotice.raw.top_department_rankings) {
+        mergedSource.top_department_rankings = baseNotice.raw.top_department_rankings;
+      }
+      const merged = normalizeNotice(mergedSource);
       const index = state.notices.findIndex((notice) => notice.noticeKey === noticeKey);
       if (index >= 0) state.notices[index] = merged;
       state.selectedNotice = merged;
       renderDetail(merged);
+      if (merged.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
       applyFilters();
     } catch (error) {
       showToast("상세 API 연결 오류", `${humanizeError(error)} · 목록에 포함된 정보로 표시합니다.`, "warning");
@@ -775,9 +1607,9 @@
     const deadline = deadlineInfo(notice.deadline);
     const requirements = notice.requirements;
     const evidence = notice.evidence;
-    const synthetic = state.source === "demo" || notice.noticeKey.startsWith("SYN-") || notice.category.toUpperCase() === "SYNTHETIC";
-    els.detailSourceBadge.textContent = synthetic ? "합성·데모 분석" : "실시간 분석";
-    els.detailSourceBadge.classList.toggle("is-demo", synthetic);
+    const analyzed = notice.analysisState === "EVALUATED";
+    els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
+    els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
     els.detailTitle.textContent = notice.title;
     els.detailAgency.textContent = [notice.agency, notice.demandAgency].filter(Boolean).join(" · ");
@@ -792,13 +1624,18 @@
       detailFact("계약방식", notice.method),
     ].join("");
     els.decisionSummary.innerHTML = [
-      summaryMetric("참가 자격", STATUS_LABELS[notice.eligibilityStatus], ""),
-      summaryMetric("준비도 / 증빙", `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}`, ""),
-      summaryMetric("AI 추천", RECOMMENDATION_LABELS[notice.recommendation], "summary-metric--recommendation"),
+      summaryMetric("참가 자격", analyzed ? STATUS_LABELS[notice.eligibilityStatus] : "미분석", analyzed ? "" : "summary-metric--pending"),
+      summaryMetric("준비도 / 증빙", analyzed ? `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}` : "미산정", analyzed ? "" : "summary-metric--pending"),
+      summaryMetric("AI 추천", analyzed ? RECOMMENDATION_LABELS[notice.recommendation] : "분석 전", analyzed ? "summary-metric--recommendation" : "summary-metric--pending"),
     ].join("");
     els.analysisPipeline.innerHTML = renderPipeline(notice);
-    els.detailSummary.textContent = notice.summary;
-    els.eligibilityOverall.innerHTML = statusPill(notice.eligibilityStatus);
+    els.detailSummary.textContent = analyzed ? notice.summary : notice.analysisReason;
+    els.briefEvidenceLabel.innerHTML = analyzed && evidence.length
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>근거 연결'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>분석 대기';
+    els.briefEvidenceLabel.classList.toggle("is-pending", !analyzed || !evidence.length);
+    renderDocumentAnalyses(notice);
+    els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
     els.evidenceCount.textContent = String(evidence.length);
     els.requirementList.innerHTML = requirements.length
       ? requirements.map(renderRequirement).join("")
@@ -808,9 +1645,8 @@
       ? evidence.map(renderEvidence).join("")
       : emptyPanel("연결된 원문 근거가 없습니다", "근거가 없는 결과는 확정 판정으로 사용하지 마세요.");
     renderQuantAndRisk(notice);
-    els.historyList.innerHTML = notice.awardHistory.length
-      ? notice.awardHistory.map(renderHistory).join("")
-      : emptyPanel("연결된 낙찰 이력이 없습니다", "조달청 낙찰·계약 API 연계 후 최근 3년 이력을 제공합니다.");
+    renderAwardHistoryPanel(notice);
+    renderTeamsPreview(notice);
     renderExistingDecision(notice);
     els.drawerScroll.scrollTop = 0;
   }
@@ -823,9 +1659,280 @@
     return `<div class="summary-metric ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`;
   }
 
+  function renderDocumentAnalyses(notice) {
+    const analyses = notice.documentAnalyses;
+    const reviewCount = analyses.filter((item) => item.needsReview).length;
+    els.documentAnalysisState.className = "document-analysis-state";
+    renderPrivateMatchPreview(notice);
+
+    if (analyses.length) {
+      els.documentAnalysisState.textContent = reviewCount ? `${reviewCount}건 검토 필요` : "구조화 완료";
+      els.documentAnalysisState.classList.add(reviewCount ? "is-review" : "is-ready");
+      els.documentAnalysisList.innerHTML = analyses.map((item) => {
+        const statusLabel = item.needsReview
+          ? "검토 필요"
+          : ["FAILED", "ERROR"].includes(item.status) ? "분석 오류" : "분석 완료";
+        const requirementLabel = item.requirementCount === null ? "미확인" : `${formatNumber(item.requirementCount)}건`;
+        return `
+          <article class="document-analysis-item">
+            <div class="document-analysis-item__head">
+              <strong title="${escapeAttribute(item.documentName)}">${escapeHtml(item.documentName)}</strong>
+              <span class="${item.needsReview ? "is-review" : ""}">${escapeHtml(statusLabel)}</span>
+            </div>
+            <p>${escapeHtml(truncateText(item.summary, 260))}</p>
+            <dl>
+              <div><dt>추출 요구조건</dt><dd>${escapeHtml(requirementLabel)}</dd></div>
+              <div><dt>분석 신뢰도</dt><dd>${item.confidence === null ? "미제공" : `${Math.round(item.confidence)}%`}</dd></div>
+              ${item.analyzedAt ? `<div><dt>분석 시각</dt><dd>${escapeHtml(formatShortDateTime(item.analyzedAt))}</dd></div>` : ""}
+            </dl>
+          </article>`;
+      }).join("");
+      return;
+    }
+
+    const versionCount = notice.versions.length;
+    let stateLabel = "수집 완료";
+    let title = "공고 원문 수집 완료";
+    let description = notice.analysisReason;
+
+    if (notice.analysisState === "VERSIONED") {
+      stateLabel = "문서 버전 수집됨";
+      title = `첨부문서 버전 ${versionCount || 1}건 수집 완료`;
+      description = notice.analysisReason;
+    } else if (notice.analysisState === "FAILED") {
+      stateLabel = "분석 확인 필요";
+      title = "첨부문서 분석이 완료되지 않았습니다";
+      description = notice.analysisReason;
+      els.documentAnalysisState.classList.add("is-review");
+    } else if (notice.analysisState === "EVALUATED") {
+      stateLabel = "평가 완료";
+      title = "문서별 구조화 요약이 제공되지 않았습니다";
+      description = "종합 평가는 완료됐지만 현재 API 응답에는 안전하게 표시할 문서별 요약이 없습니다.";
+      els.documentAnalysisState.classList.add("is-ready");
+    }
+
+    els.documentAnalysisState.textContent = stateLabel;
+    els.documentAnalysisList.innerHTML = `<div class="document-analysis-waiting"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span></div>`;
+  }
+
+  async function loadPrivateMatchPreview(noticeKey, { force = false } = {}) {
+    const notice = state.notices.find((item) => item.noticeKey === noticeKey) || state.selectedNotice;
+    if (!notice || !notice.documentAnalyses.length) return;
+    const current = state.privateMatchPreviews[noticeKey];
+    if (!force && current?.status === "loading") return;
+
+    if (state.source !== "api") {
+      state.privateMatchPreviews[noticeKey] = {
+        status: "waiting",
+        message: "데모 데이터에서는 온라인 공개 프로필 판정을 실행하지 않습니다.",
+        data: null,
+      };
+      if (state.selectedNotice?.noticeKey === noticeKey) renderPrivateMatchPreview(notice);
+      return;
+    }
+
+    state.privateMatchPreviews[noticeKey] = { status: "loading", message: "", data: null };
+    if (state.selectedNotice?.noticeKey === noticeKey) renderPrivateMatchPreview(notice);
+
+    try {
+      const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/analysis/requirement-policy`);
+      state.privateMatchPreviews[noticeKey] = {
+        status: "ready",
+        message: "",
+        data: normalizePrivateMatchPreview(payload),
+      };
+    } catch (error) {
+      const waiting = error?.status === 422;
+      state.privateMatchPreviews[noticeKey] = {
+        status: waiting ? "waiting" : "error",
+        message: humanizeError(error),
+        data: null,
+      };
+      if (!waiting && force) showToast("회사 데이터 매칭 조회 오류", humanizeError(error), "warning");
+    } finally {
+      if (state.selectedNotice?.noticeKey === noticeKey) renderPrivateMatchPreview(notice);
+    }
+  }
+
+  function normalizePrivateMatchPreview(raw) {
+    const source = unwrapObject(raw);
+    const counts = firstObject(source.counts);
+    return {
+      eligibilityCount: numberOrNull(firstValue(counts.ELIGIBILITY, counts.eligibility)) ?? 0,
+      actionCount: numberOrNull(firstValue(counts.ACTION_REQUIRED, counts.action_required)) ?? 0,
+      checklistCount: numberOrNull(firstValue(counts.CHECKLIST, counts.checklist)) ?? 0,
+      informationCount: numberOrNull(firstValue(counts.INFORMATION, counts.information)) ?? 0,
+      blockingActions: numberOrNull(firstValue(source.blocking_items, source.blockingItems, source.blocking_actions, source.blockingActions)) ?? 0,
+      profileVersion: stringValue(firstValue(source.profile_version, source.profileVersion), "미확인"),
+      policyVersion: stringValue(firstValue(source.policy_version, source.policyVersion), "미확인"),
+      note: stringValue(firstValue(source.decision_boundary, source.decisionBoundary), "적격성, 행동필요, 체크리스트, 정보를 서로 분리합니다."),
+      matches: arrayValue(source.items).map(normalizePrivateMatchItem),
+    };
+  }
+
+  function normalizePrivateMatchItem(item, index) {
+    const source = item && typeof item === "object" ? item : {};
+    const evidence = firstObject(source.evidence);
+    const condition = stringValue(firstValue(
+      source.condition,
+      source.normalized_condition,
+      source.normalizedCondition,
+      source.description,
+      source.source_excerpt,
+      source.sourceExcerpt,
+    ), `구조화 요구조건 ${index + 1}`);
+    return {
+      requirementId: stringValue(firstValue(source.requirement_id, source.requirementId), `requirement-${index + 1}`),
+      category: stringValue(firstValue(source.policy_class, source.policyClass), "INFORMATION").toUpperCase(),
+      sourceCategory: stringValue(firstValue(source.source_category, source.sourceCategory), "OTHER").toUpperCase(),
+      condition,
+      mandatory: booleanValue(source.mandatory) ?? true,
+      outcome: stringValue(source.outcome, "INFORMATION").toUpperCase(),
+      blocking: booleanValue(source.blocking) ?? false,
+      companyFactKey: normalizeCompanyFactKey(firstValue(source.company_fact_key, source.companyFactKey)),
+      evidenceState: stringValue(firstValue(source.evidence_state, source.evidenceState), "NOT_REQUIRED"),
+      deadlineCheckRequired: booleanValue(firstValue(source.deadline_check_required, source.deadlineCheckRequired)) ?? false,
+      message: stringValue(source.message),
+      detailLines: collectPrivateMatchDetails(source, condition),
+      evidence: Object.keys(evidence).length ? {
+        name: stringValue(firstValue(evidence.display_name, evidence.displayName), "공개 증빙"),
+        fileName: stringValue(firstValue(evidence.source_file_name, evidence.sourceFileName)),
+        sha256: stringValue(evidence.sha256),
+        validFrom: firstValue(evidence.valid_from, evidence.validFrom, null),
+        lastObservedAt: firstValue(evidence.last_observed_at, evidence.lastObservedAt, null),
+        validUntil: firstValue(evidence.valid_until, evidence.validUntil, null),
+      } : null,
+    };
+  }
+
+  function normalizeCompanyFactKey(value) {
+    const key = stringValue(value);
+    if (key.toUpperCase().endsWith(":__NONE__")) return "";
+    const sentinel = key.replace(/[\s_\/-]+/g, "").toUpperCase();
+    if (["", "NONE", "NULL", "NA", "NOTREQUIRED", "별도회사증빙불필요", "회사증빙불필요"].includes(sentinel)) return "";
+    return key;
+  }
+
+  function collectPrivateMatchDetails(source, condition) {
+    const fields = [
+      ["정규화 조건", firstValue(source.normalized_condition, source.normalizedCondition)],
+      ["공고 원문", firstValue(source.source_excerpt, source.sourceExcerpt)],
+      ["설명", source.description],
+      ["확인할 일", source.action],
+      ["판단 이유", source.why],
+      ["판정 안내", source.message],
+    ];
+    const seen = new Set([stringValue(condition).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR")]);
+    const details = [];
+    fields.forEach(([label, rawValue]) => {
+      const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+      values.forEach((value) => {
+        if (typeof value !== "string" && typeof value !== "number") return;
+        const text = stringValue(value).replace(/\s+/g, " ").trim();
+        const key = text.toLocaleLowerCase("ko-KR");
+        if (!text || seen.has(key)) return;
+        seen.add(key);
+        details.push({ label, text: truncateText(text, 600) });
+      });
+    });
+    return details.length ? details : [{
+      label: "판단 안내",
+      text: "공개 가능한 상세 판단 근거가 아직 연결되지 않았습니다. 공고 원문과 담당자 확인이 필요합니다.",
+    }];
+  }
+
+  function renderPrivateMatchPreview(notice) {
+    const hasAnalyses = notice.documentAnalyses.length > 0;
+    els.privateMatchSection.hidden = !hasAnalyses;
+    if (!hasAnalyses) return;
+
+    const preview = state.privateMatchPreviews[notice.noticeKey];
+    const status = preview?.status || (state.source === "api" ? "idle" : "waiting");
+    els.privateMatchBadge.className = "private-match-badge";
+    els.privateMatchRetryButton.disabled = status === "loading";
+
+    if (status !== "ready") {
+      const content = {
+        idle: ["확인 대기", "온라인 공개 프로필 판정 준비", "상세 데이터가 준비되면 4분류 판단 기준을 확인합니다."],
+        loading: ["조회 중", "온라인 공개 프로필로 판단 기준을 적용하고 있습니다", "적격성·행동필요·체크리스트·정보를 분리합니다."],
+        waiting: ["준비 대기", "판단 기준 적용 준비가 필요합니다", preview?.message || "공고문 구조화 분석을 먼저 완료하세요."],
+        error: ["연결 오류", "온라인 공개 프로필 판정을 불러오지 못했습니다", preview?.message || "잠시 후 다시 확인해 주세요."],
+      }[status] || ["확인 대기", "온라인 공개 프로필 판정 준비", "잠시 후 다시 확인해 주세요."];
+      els.privateMatchBadge.textContent = content[0];
+      els.privateMatchBadge.classList.add(status === "loading" ? "is-loading" : status === "error" ? "is-error" : "is-review");
+      els.privateMatchBody.innerHTML = `<div class="private-match-waiting"><strong>${escapeHtml(content[1])}</strong><span>${escapeHtml(content[2])}</span></div>`;
+      els.privateMatchNote.textContent = "GitHub에 저장된 공개 안전 프로필만 사용하며 원문 증명서·등록번호·주소·사람 이름은 포함하지 않습니다.";
+      return;
+    }
+
+    const data = preview.data;
+    els.privateMatchBadge.textContent = data.blockingActions ? `확인 전 BLOCK ${data.blockingActions}건` : "온라인 프로필 적용";
+    els.privateMatchBadge.classList.add(data.blockingActions ? "is-review" : "is-ready");
+    els.privateMatchBody.innerHTML = `
+      <div class="private-match-summary" aria-label="판단 기준 4분류 요약">
+        ${privateMatchMetric("적격성", data.eligibilityCount, "건")}
+        ${privateMatchMetric("행동 필요", data.actionCount, "건")}
+        ${privateMatchMetric("체크리스트", data.checklistCount, "건")}
+        ${privateMatchMetric("정보", data.informationCount, "건")}
+      </div>
+      <p class="private-match-score-boundary">${escapeHtml(data.note)} 프로필 ${escapeHtml(data.profileVersion)}</p>
+      <div class="private-match-list">
+        ${data.matches.length ? data.matches.map(renderPrivateMatchItem).join("") : '<div class="private-match-waiting"><strong>표시할 요구조건이 없습니다</strong><span>구조화 요구조건이 추가되면 4분류 판단 기준을 표시합니다.</span></div>'}
+      </div>`;
+    els.privateMatchNote.textContent = "PASS 근거도 공고 마감일 기준으로 다시 확인합니다. 체크리스트와 정보는 그 자체로 참가자격 REVIEW를 만들지 않습니다.";
+  }
+
+  function privateMatchMetric(label, value, unit) {
+    return `<div class="private-match-metric"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)} <span>${escapeHtml(unit)}</span></strong></div>`;
+  }
+
+  function renderPrivateMatchItem(item) {
+    const outcomeLabels = {
+      PASS_CURRENT: "현재 PASS · 마감일 재확인",
+      PASS_EXCEPTION: "예외 PASS · 마감일 재확인",
+      BLOCK_UNTIL_CONFIRMED: "참석 확인 전 BLOCK",
+      READY: "체크 준비",
+      CHECK_REQUIRED: "체크 필요",
+      ACKNOWLEDGED: "정보 확인",
+      INFORMATION: "정보",
+      REVIEW: "REVIEW",
+    };
+    const stateClass = item.blocking
+      ? "is-blocking"
+      : item.outcome.startsWith("PASS")
+        ? "is-pass"
+        : item.category === "CHECKLIST"
+          ? "is-action"
+          : "is-unmapped";
+    const evidenceMarkup = item.evidence
+      ? `<div class="private-match-candidates"><span>공개 근거</span><span>${escapeHtml(item.evidence.name)}</span><code class="private-fact-key" title="${escapeAttribute(item.evidence.sha256)}">SHA-256 ${escapeHtml(item.evidence.sha256.slice(0, 12))}…</code><span>${escapeHtml(item.evidence.fileName)}</span></div>`
+      : item.companyFactKey
+        ? `<div class="private-match-candidates"><span>판단 기준</span><code class="private-fact-key">${escapeHtml(item.companyFactKey)}</code></div>`
+        : "";
+    const detailLines = item.detailLines.slice();
+    if (!item.evidence && !item.companyFactKey && item.evidenceState === "NOT_REQUIRED") {
+      detailLines.push({ label: "증빙 적용", text: "회사 증빙 대조 대상이 아닌 공고 정보·체크 항목입니다." });
+    }
+    return `
+      <article class="private-match-item">
+        <div class="private-match-item__head">
+          <span class="private-match-category">${escapeHtml(privateMatchCategoryLabel(item.category))}${item.mandatory ? " · 공고상 필수" : ""}</span>
+          <span class="private-match-state ${stateClass}">${escapeHtml(outcomeLabels[item.outcome] || item.outcome)}</span>
+        </div>
+        <p class="private-match-condition">${escapeHtml(item.condition)}</p>
+        <ul class="private-match-details">${detailLines.map((detail) => `<li><strong>${escapeHtml(detail.label)}</strong><span>${escapeHtml(detail.text)}</span></li>`).join("")}</ul>
+        ${evidenceMarkup}
+      </article>`;
+  }
+
+  function privateMatchCategoryLabel(category) {
+    return ({ ELIGIBILITY: "적격성", ACTION_REQUIRED: "행동 필요", CHECKLIST: "체크리스트", INFORMATION: "정보" })[category] || category;
+  }
+
   function renderPipeline(notice) {
     const hasDocuments = notice.evidence.length > 0;
     const hasRules = notice.requirements.length > 0;
+    const analyzed = notice.analysisState === "EVALUATED";
     const version = notice.latestVersion;
     const extractionComplete = version
       ? version.documentComplete !== false && version.extractionStatus === "COMPLETE"
@@ -836,7 +1943,7 @@
     const steps = [
       { name: "공고 수집", detail: "원문 보존", status: "done" },
       { name: "첨부 추출", detail: extractionDetail, status: extractionComplete ? "done" : "review" },
-      { name: "규칙 판정", detail: STATUS_LABELS[notice.eligibilityStatus], status: hasRules ? (notice.eligibilityStatus === "REVIEW" ? "review" : "done") : "pending" },
+      { name: "규칙 판정", detail: analyzed ? STATUS_LABELS[notice.eligibilityStatus] : hasRules ? "분석 대기" : "조건 대기", status: analyzed ? (notice.eligibilityStatus === "REVIEW" ? "review" : "done") : "pending" },
       { name: "담당자 결정", detail: notice.decision ? DECISION_LABELS[notice.decision] : "미결정", status: notice.decision ? "done" : "pending" },
     ];
     return steps.map((step) => `
@@ -892,20 +1999,41 @@
       </article>`;
   }
 
+  async function loadQuantitativeEstimate(noticeKey, { force = false } = {}) {
+    if (state.source !== "api") return;
+    const current = state.quantitativeEstimates[noticeKey];
+    if (!force && ["loading", "ready"].includes(current?.status)) return;
+    state.quantitativeEstimates[noticeKey] = { status: "loading", data: null, message: "" };
+    if (state.selectedNotice?.noticeKey === noticeKey) renderQuantAndRisk(state.selectedNotice);
+    try {
+      const data = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/quantitative-estimate`);
+      state.quantitativeEstimates[noticeKey] = { status: "ready", data, message: "" };
+    } catch (error) {
+      state.quantitativeEstimates[noticeKey] = { status: "error", data: null, message: humanizeError(error) };
+    } finally {
+      if (state.selectedNotice?.noticeKey === noticeKey) renderQuantAndRisk(state.selectedNotice);
+    }
+  }
+
   function renderQuantAndRisk(notice) {
-    const readiness = notice.readinessScore;
-    const coverage = notice.evidenceCoverage;
+    renderRiskPanel(notice);
+    if (state.source !== "api") {
+      renderLegacyQuantitative(notice);
+      return;
+    }
+    const meta = state.quantitativeEstimates[notice.noticeKey];
+    if (meta?.status === "ready" && meta.data) {
+      renderQuantitativeEstimate(meta.data);
+      return;
+    }
+    renderQuantitativePending(meta?.status || "idle", meta?.message || "");
+  }
+
+  function renderRiskPanel(notice) {
+    const analyzed = notice.analysisState === "EVALUATED";
     const risk = notice.riskScore;
-    els.scoreOverview.innerHTML = [
-      scoreCard("준비도", readiness, "score-card--readiness"),
-      scoreCard("증빙 커버리지", coverage, "score-card--coverage"),
-      scoreCard("종합 리스크", risk, "score-card--risk"),
-    ].join("");
-    els.quantTableBody.innerHTML = notice.quantitative.length
-      ? notice.quantitative.map(renderQuantRow).join("")
-      : `<tr><td colspan="4"><div class="empty-panel"><strong>정량 산식이 연결되지 않았습니다</strong><p>평가표 구조화 후 확정점수 또는 예상 범위를 제공합니다.</p></div></td></tr>`;
-    els.riskTotalLabel.textContent = risk === null ? "총점 —" : `총점 ${Math.round(risk)}`;
-    const axes = notice.riskAxes;
+    els.riskTotalLabel.textContent = !analyzed ? "분석 전" : risk === null ? "총점 미산정" : `총점 ${Math.round(risk)}`;
+    const axes = analyzed ? notice.riskAxes : [];
     els.riskBars.innerHTML = axes.length
       ? axes.map((axis) => `
         <div class="risk-row ${riskClass(axis.score)}">
@@ -913,11 +2041,125 @@
           <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${Math.round(axis.score)}점"><span style="width:${clamp(axis.score, 0, 100)}%"></span></span>
           <span>${Math.round(axis.score)}</span>
         </div>`).join("")
-      : emptyPanel("세부 리스크가 산정되지 않았습니다", "위험 축별 근거가 연결되면 자격·증빙·경쟁·일정·운영·데이터 리스크를 표시합니다.");
+      : emptyPanel(analyzed ? "세부 리스크가 산정되지 않았습니다" : "아직 리스크 분석 전입니다", analyzed ? "위험 축별 근거가 연결되면 자격·증빙·경쟁·일정·운영·데이터 리스크를 표시합니다." : "수집된 공고의 첨부·조건 분석이 완료된 뒤 실제 산정값을 표시합니다.");
   }
 
-  function scoreCard(label, value, className) {
-    return `<div class="score-card ${className}"><small>${escapeHtml(label)}</small><strong>${value === null ? "—" : Math.round(value)}<span>${value === null ? "" : " / 100"}</span></strong><span class="progress-bar" aria-hidden="true"><span style="width:${value ?? 0}%"></span></span></div>`;
+  function renderQuantitativePending(status, message) {
+    const loading = status === "loading";
+    els.scoreOverview.innerHTML = [
+      quantSummaryCard("예상 점수 범위", "미산정", loading ? "배점표 확인 중" : "공고별 산식 필요", "score-card--readiness"),
+      quantSummaryCard("검증 커버리지", "0%", "확정 증빙 기준", "score-card--coverage"),
+      quantSummaryCard("정량 준비도", "GRAY", "참가자격과 별도", "score-card--risk"),
+    ].join("");
+    els.quantSourceStatus.className = `quant-source-status ${status === "error" ? "is-error" : "is-loading"}`;
+    els.quantSourceStatus.textContent = loading ? "배점표 확인 중" : status === "error" ? "조회 오류" : "조회 대기";
+    els.quantOpinion.textContent = status === "error"
+      ? `정량 추정치를 불러오지 못했습니다. ${message}`
+      : "공고별 배점표와 공개 증빙 연결 상태를 확인합니다.";
+    els.quantSourceAnchor.textContent = "";
+    els.quantAssumptionList.innerHTML = "";
+    els.quantTableBody.innerHTML = `<tr><td colspan="4">${emptyPanel(loading ? "정량 배점표를 확인하고 있습니다" : "정량 조회를 시작하지 않았습니다", loading ? "누락값은 임의 점수로 채우지 않습니다." : "정량·리스크 탭을 열면 저장된 공개 데이터를 조회합니다.")}</td></tr>`;
+    els.quantObservationList.innerHTML = emptyPanel("적용 전 공개 근거 확인 중", "공개 실적 후보와 회사 프로필의 적용 경계를 함께 표시합니다.");
+    els.quantSeparationNote.textContent = "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.";
+  }
+
+  function renderLegacyQuantitative(notice) {
+    const analyzed = notice.analysisState === "EVALUATED";
+    els.scoreOverview.innerHTML = [
+      scoreCard("준비도", notice.readinessScore, "score-card--readiness", analyzed),
+      scoreCard("증빙 커버리지", notice.evidenceCoverage, "score-card--coverage", analyzed),
+      quantSummaryCard("정량 데이터", "DEMO", "명시적 예시", "score-card--risk"),
+    ].join("");
+    els.quantSourceStatus.className = "quant-source-status is-demo";
+    els.quantSourceStatus.textContent = "명시적 데모";
+    els.quantOpinion.textContent = "현재 화면은 합성 예시입니다. 실제 공고의 정량점수로 사용하지 마세요.";
+    els.quantSourceAnchor.textContent = "실제 제안요청서 원문 앵커 없음";
+    els.quantAssumptionList.innerHTML = "<li>데모 데이터는 화면 동작 확인 전용입니다.</li>";
+    els.quantTableBody.innerHTML = notice.quantitative.length
+      ? notice.quantitative.map(renderQuantRow).join("")
+      : `<tr><td colspan="4">${emptyPanel("정량 산식이 연결되지 않았습니다", "실제 평가표 구조화 후 확정점수 또는 예상 범위를 제공합니다.")}</td></tr>`;
+    els.quantObservationList.innerHTML = emptyPanel("실제 공개 근거 없음", "명시적 데모에서는 공개 실적을 점수로 적용하지 않습니다.");
+    els.quantSeparationNote.textContent = "DEMO · 정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.";
+  }
+
+  function renderQuantitativeEstimate(data) {
+    const total = numberOrNull(data.total_max_points);
+    const lower = numberOrNull(data.lower_points);
+    const upper = numberOrNull(data.upper_points);
+    const coverage = numberOrNull(data.evidence_coverage_pct) ?? 0;
+    const readiness = numberOrNull(data.readiness_pct);
+    const range = lower === null || upper === null || total === null
+      ? "미산정"
+      : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
+    els.scoreOverview.innerHTML = [
+      quantSummaryCard("예상 점수 범위", range, total === null ? "배점표 미확보" : "원문상 조건부 하한~상한", "score-card--readiness"),
+      quantSummaryCard("검증 커버리지", `${formatNumber(coverage, 1)}%`, "CONFIRMED 항목 배점 기준", "score-card--coverage"),
+      quantSummaryCard("정량 준비도", data.readiness_band || "GRAY", readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
+    ].join("");
+
+    const sourceLabels = { AVAILABLE: "배점표 연결", INCOMPLETE: "배점표 일부", MISSING: "배점표 미확보" };
+    els.quantSourceStatus.className = `quant-source-status is-${String(data.rule_source_status || "missing").toLowerCase()}`;
+    els.quantSourceStatus.textContent = `${sourceLabels[data.rule_source_status] || "배점표 검토"} · ${quantStatusLabel(data.overall_status)}`;
+    els.quantOpinion.textContent = data.opinion || "정량 의견이 없습니다.";
+    const anchor = data.source_anchor;
+    els.quantSourceAnchor.textContent = anchor
+      ? `${anchor.document_label} · ${anchor.page ? `PDF ${anchor.page}쪽 · ` : ""}${anchor.section} · SHA-256 ${anchor.document_sha256 ? `${anchor.document_sha256.slice(0, 12)}…` : "미확인"}`
+      : "연결된 정량평가표 원문 앵커 없음";
+    els.quantAssumptionList.innerHTML = Array.isArray(data.assumptions) && data.assumptions.length
+      ? data.assumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+      : "<li>추가 가정 없음</li>";
+    els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
+      ? data.criteria.map(renderQuantitativeEstimateRow).join("")
+      : `<tr><td colspan="4">${emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 REVIEW로 유지합니다.")}</td></tr>`;
+    els.quantObservationList.innerHTML = Array.isArray(data.evidence_observations) && data.evidence_observations.length
+      ? data.evidence_observations.map(renderQuantObservation).join("")
+      : emptyPanel("적용 전 공개 근거 없음", "공고별 배점 산식과 연결된 공개 근거가 없습니다.");
+    els.quantSeparationNote.textContent = data.separation_notice || "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않습니다.";
+  }
+
+  function quantSummaryCard(label, value, detail, className) {
+    return `<div class="score-card quant-summary-card ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><span class="quant-card-detail">${escapeHtml(detail)}</span></div>`;
+  }
+
+  function quantStatusLabel(status) {
+    return ({ CONFIRMED: "확정", ESTIMATED: "잠정 범위", UNSCORABLE: "산정 불가", REVIEW: "검토 필요" })[status] || "검토 필요";
+  }
+
+  function renderQuantitativeEstimateRow(item) {
+    const lower = numberOrNull(item.lower_points);
+    const upper = numberOrNull(item.upper_points);
+    const range = lower === null || upper === null
+      ? "—"
+      : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`}점`;
+    const anchor = item.source_anchor;
+    const source = anchor
+      ? `${anchor.page ? `PDF ${anchor.page}쪽 · ` : ""}SHA-256 ${anchor.document_sha256 ? `${anchor.document_sha256.slice(0, 10)}…` : "미확인"}`
+      : "원문 앵커 없음";
+    const floor = numberOrNull(item.rule_floor_points);
+    const base = numberOrNull(item.rule_base_points);
+    return `<tr>
+      <td><strong>${escapeHtml(item.label)}</strong><small class="quant-row-formula">${escapeHtml(item.formula)}</small><small class="quant-row-source">${escapeHtml(source)}</small></td>
+      <td>${formatNumber(item.max_points, 1)}</td>
+      <td><strong class="quant-score-range">${escapeHtml(range)}</strong><small class="quant-row-rationale">${escapeHtml(item.rationale || "근거 확인 필요")}</small>${floor ? `<small class="quant-row-floor">원문상 조건부 하한 ${formatNumber(floor, 1)}점</small>` : ""}${base !== null ? `<small class="quant-row-base">원문상 가감 전 기본 ${formatNumber(base, 1)}점</small>` : ""}</td>
+      <td><span class="quant-status is-${escapeAttribute(String(item.status || "review").toLowerCase())}">${escapeHtml(quantStatusLabel(item.status))}</span></td>
+    </tr>`;
+  }
+
+  function renderQuantObservation(item) {
+    const value = item.unit === "원"
+      ? `${formatNumber(item.value)}원`
+      : `${formatNumber(item.value)}${item.unit ? ` ${item.unit}` : ""}`;
+    return `<article class="quant-observation">
+      <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.status === "CANDIDATE_ONLY" ? "후보 전용 · 점수 확정값 아님" : "정량점수 미적용")}</small></span>
+      <strong class="quant-observation-value">${escapeHtml(value)}</strong>
+      <p>${escapeHtml(item.rationale)}</p>
+      <code title="${escapeAttribute(item.evidence_key)}">${escapeHtml(String(item.evidence_key).slice(0, 48))}${String(item.evidence_key).length > 48 ? "…" : ""}</code>
+    </article>`;
+  }
+
+  function scoreCard(label, value, className, analyzed = true) {
+    const display = analyzed ? (value === null ? "미산정" : Math.round(value)) : "미산정";
+    return `<div class="score-card ${className}"><small>${escapeHtml(label)}</small><strong class="${analyzed && value !== null ? "" : "metric-pending"}">${display}<span>${analyzed && value !== null ? " / 100" : ""}</span></strong><span class="progress-bar" aria-hidden="true"><span style="width:${analyzed ? value ?? 0 : 0}%"></span></span></div>`;
   }
 
   function renderQuantRow(item) {
@@ -927,29 +2169,458 @@
     return `<tr><td>${escapeHtml(item.label)}</td><td>${item.maxScore === null ? "—" : formatNumber(item.maxScore)}</td><td>${escapeHtml(expected)}</td><td><span class="quant-status ${statusClass}">${statusLabel}</span></td></tr>`;
   }
 
+  async function loadStoredAwardHistory(noticeKey, { force = false } = {}) {
+    if (state.source !== "api") return;
+    const current = state.awardHistoryMeta[noticeKey];
+    if (!force && ["loading", "ready", "empty"].includes(current?.status)) return;
+    const notice = state.notices.find((item) => item.noticeKey === noticeKey) || state.selectedNotice;
+    if (!notice) return;
+
+    state.awardHistoryMeta[noticeKey] = { status: "loading", message: "" };
+    if (state.selectedNotice?.noticeKey === noticeKey) renderAwardHistoryPanel(notice);
+
+    try {
+      const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/award-intelligence`);
+      const rows = Array.isArray(payload?.records) ? payload.records.map(normalizeHistory) : [];
+      const updated = {
+        ...notice,
+        awardHistory: rows,
+        raw: sanitizeNoticeAwardHistory(notice.raw, rows),
+      };
+      const index = state.notices.findIndex((item) => item.noticeKey === noticeKey);
+      if (index >= 0) state.notices[index] = updated;
+      if (state.selectedNotice?.noticeKey === noticeKey) state.selectedNotice = updated;
+      state.awardHistoryMeta[noticeKey] = { status: rows.length ? "ready" : "empty", message: "", intelligence: payload };
+    } catch (error) {
+      state.awardHistoryMeta[noticeKey] = { status: "error", message: humanizeError(error) };
+    } finally {
+      if (state.selectedNotice?.noticeKey === noticeKey) renderAwardHistoryPanel(state.selectedNotice);
+    }
+  }
+
+  function renderAwardHistoryPanel(notice) {
+    const items = notice.awardHistory;
+    const meta = state.awardHistoryMeta[notice.noticeKey] || {};
+    const status = state.source === "demo" ? "demo" : meta.status || (items.length ? "stored" : "empty");
+    els.historyStatusLabel.className = "history-status-badge";
+
+    if (status === "loading") {
+      els.historyStatusLabel.textContent = "저장본 확인 중";
+      els.historyStatusLabel.classList.add("is-loading");
+      els.historyStatusText.textContent = "PAI_LOOP 서버에 저장된 낙찰 후보를 읽고 있습니다.";
+    } else if (status === "ready" || status === "stored") {
+      els.historyStatusLabel.textContent = `저장본 ${items.length}건`;
+      els.historyStatusLabel.classList.add("is-ready");
+      els.historyStatusText.textContent = "저장된 제목 유사 후보이며 동일 사업 확정 이력이 아닙니다.";
+    } else if (status === "error") {
+      els.historyStatusLabel.textContent = items.length ? `저장본 ${items.length}건` : "미수집";
+      els.historyStatusLabel.classList.add("is-error");
+      els.historyStatusText.textContent = items.length
+        ? `저장 이력 재조회 실패 · 상세 응답의 저장본을 표시합니다. ${meta.message}`
+        : `저장 이력을 확인하지 못했습니다. 외부 API는 호출하지 않았습니다. ${meta.message}`;
+    } else if (status === "demo") {
+      els.historyStatusLabel.textContent = items.length ? `예시 ${items.length}건` : "예시 미수집";
+      els.historyStatusLabel.classList.add("is-demo");
+      els.historyStatusText.textContent = "명시적 데모 데이터이며 실제 조달청 낙찰 기록이 아닙니다.";
+    } else {
+      els.historyStatusLabel.textContent = "미수집";
+      els.historyStatusLabel.classList.add("is-empty");
+      els.historyStatusText.textContent = "현재 서버에 저장된 낙찰 후보가 없습니다.";
+    }
+
+    renderAwardIntelligence(meta.intelligence, status);
+
+    els.historyList.innerHTML = items.length
+      ? items.map(renderHistory).join("")
+      : emptyPanel("저장된 낙찰 이력이 없습니다", "아직 수집되지 않은 상태입니다. 이 화면에서는 외부 조달청 API를 자동 호출하지 않습니다.");
+  }
+
+  function renderAwardIntelligence(intelligence, status) {
+    const loading = status === "loading";
+    const concentration = intelligence?.concentration;
+    const prediction = intelligence?.prediction;
+    const coverage = intelligence?.field_coverage;
+    if (loading) {
+      els.historyConcentration.innerHTML = `<p class="section-kicker">WINNER CONCENTRATION</p><h4>집중도 계산 중</h4><p>저장 이력을 읽고 있습니다.</p>`;
+      els.historyPrediction.innerHTML = `<p class="section-kicker">MODEL ESTIMATE</p><h4>가격 전략 계산 중</h4><p>외부 API 호출 없이 저장값만 사용합니다.</p>`;
+      els.historyCoverage.innerHTML = `<p class="section-kicker">FIELD COVERAGE</p><h4>필드 확인 중</h4><p>누락값은 사실로 보간하지 않습니다.</p>`;
+      els.historyWarnings.innerHTML = "";
+      return;
+    }
+    if (!intelligence) {
+      const note = status === "demo" ? "데모 이력에는 서버 계산 인텔리전스를 적용하지 않습니다." : "저장된 분석 결과가 없습니다.";
+      els.historyConcentration.innerHTML = `<p class="section-kicker">WINNER CONCENTRATION</p><h4>산정 불가</h4><p>${escapeHtml(note)}</p>`;
+      els.historyPrediction.innerHTML = `<p class="section-kicker">MODEL ESTIMATE</p><h4>예측 미제공</h4><p>유효 낙찰률 3건 이상과 명시적 기준금액이 필요합니다.</p>`;
+      els.historyCoverage.innerHTML = `<p class="section-kicker">FACT BOUNDARY</p><h4>확인 가능한 값만 표시</h4><p>낙찰금액과 투찰금액, 기술점수와 가격점수는 서로 대체하지 않습니다.</p>`;
+      els.historyWarnings.innerHTML = "";
+      return;
+    }
+
+    const top = concentration?.top_winner;
+    const hhi = numberOrNull(concentration?.hhi);
+    const competition = intelligence?.competition_risk;
+    const competitionAvailable = competition?.status === "MODEL_ESTIMATE" && numberOrNull(competition?.score) !== null;
+    const competitionBand = ({ LOW: "낮음", MODERATE: "보통", HIGH: "높음", VERY_HIGH: "매우 높음", UNKNOWN: "미산정" })[competition?.band] || "미산정";
+    const participantMedian = numberOrNull(competition?.components?.participant_count?.value);
+    els.historyConcentration.innerHTML = `
+      <p class="section-kicker">COMPETITION RISK · ELIGIBILITY와 별도</p><h4>경쟁·집중 리스크 ${escapeHtml(competitionBand)}</h4>
+      <strong class="history-intel-value">${competitionAvailable ? formatNumber(competition.score, 1) : "—"} <small>${competitionAvailable ? "/ 100" : "UNKNOWN"}</small></strong>
+      <p>HHI ${hhi === null ? "미산정" : formatNumber(hhi, 0)} · 상위 수주 비중 ${top ? `${formatNumber(top.share * 100, 1)}%` : "미확인"} · 참여 중앙값 ${participantMedian === null ? "미확인" : `${formatNumber(participantMedian, 1)}곳`}</p>
+      <small>${escapeHtml(competition?.rationale || "필수 사실 커버리지가 부족해 점수를 보류했습니다.")}</small>
+      <small>신뢰도 ${escapeHtml(competition?.confidence || "INSUFFICIENT")} · ${top ? `표본 상위 ${escapeHtml(top.winner_name)} ${formatNumber(top.count)}건` : "낙찰자 표본 없음"} · 법적 독점 판정 아님</small>`;
+
+    const award = prediction?.award_rate;
+    const submitted = prediction?.submitted_bid_rate;
+    const amount = prediction?.award_amount_range;
+    const pricingMethod = intelligence?.pricing_method;
+    const awardAvailable = award?.status === "MODEL_ESTIMATE";
+    els.historyPrediction.innerHTML = `
+      <p class="section-kicker">MODEL ESTIMATE · 의사결정 참고</p><h4>예측 낙찰률 ${awardAvailable ? `${formatNumber(award.center, 2)}%` : "미제공"}</h4>
+      <strong class="history-intel-value">${awardAvailable ? `${formatNumber(award.range_low, 2)}–${formatNumber(award.range_high, 2)}%` : "표본 부족"}</strong>
+      <p>${amount ? `예상 낙찰금액 ${escapeHtml(formatBudget(amount.low))}–${escapeHtml(formatBudget(amount.high))}` : "기준/추정금액이 없거나 표본이 부족해 금액 범위를 산정하지 않았습니다."}</p>
+      <p class="history-pricing-method">${pricingMethod ? `문서 근거 가격평가: ${escapeHtml(pricingMethod.method?.at_or_above_80_percent || "산식 확인")}` : "현재 공고 문서와 정확히 일치하는 가격평가 산식 근거 없음"}</p>
+      <small>신뢰도 ${escapeHtml(award?.confidence || "INSUFFICIENT")} · ${formatNumber(award?.sample_count || 0)}건 · 투찰률 ${submitted?.status === "MODEL_ESTIMATE" ? `${formatNumber(submitted.center, 2)}%` : "별도 표본 부족"}</small>
+      <small>${escapeHtml(award?.rationale || "유효 표본이 부족해 예측 근거를 제시하지 않습니다.")} · ${escapeHtml(award?.method || "산정 안 함")}</small>`;
+
+    const coverageCell = (label, key) => {
+      const field = coverage?.[key];
+      return `<span><strong>${escapeHtml(label)}</strong><small>${formatNumber(field?.available || 0)} / ${formatNumber(field?.total || intelligence.record_count || 0)}건</small></span>`;
+    };
+    els.historyCoverage.innerHTML = `
+      <p class="section-kicker">FIELD COVERAGE</p><h4>사실 필드 충족도</h4>
+      <div class="history-coverage-grid">${coverageCell("낙찰자", "winner")}${coverageCell("참여기관 수", "participant_count")}${coverageCell("낙찰금액", "award_amount")}${coverageCell("예정가격", "estimated_price")}${coverageCell("투찰금액", "submitted_bid_price")}${coverageCell("기술점수", "technical_score")}${coverageCell("가격점수", "price_score")}</div>`;
+    const warnings = [...new Set([
+      ...(Array.isArray(intelligence.warnings) ? intelligence.warnings : []),
+      ...(Array.isArray(competition?.warnings) ? competition.warnings : []),
+    ])];
+    els.historyWarnings.innerHTML = warnings.length ? `<strong>해석 주의</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : "";
+  }
+
   function renderHistory(item) {
+    const eventDate = item.awardedAt || item.openedAt;
+    const eventLabel = item.awardedAt ? "낙찰일" : item.openedAt ? "개찰일" : "일자";
+    const dateText = formatCalendarDate(eventDate);
+    const participants = item.participantCount === null ? "참여자 수 미확인" : `참여 ${formatNumber(item.participantCount)}곳`;
+    const similarity = item.similarityScore === null ? "제목 유사도 미제공" : `제목 유사도 ${formatNumber(item.similarityScore, 1)}%`;
     return `
       <article class="history-card">
-        <span class="history-year">${escapeHtml(item.year)}</span>
-        <span class="history-copy"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.winner)}${item.agency ? ` · ${escapeHtml(item.agency)}` : ""}</span></span>
-        <span class="history-price"><strong>${escapeHtml(formatBudget(item.amount))}</strong><span>${item.rate === null ? "낙찰률 미확인" : `낙찰률 ${formatNumber(item.rate, 1)}%`}</span></span>
+        <span class="history-year"><strong>${escapeHtml(item.year)}</strong><small>${item.awardedAt ? "낙찰" : item.openedAt ? "개찰" : "저장본"}</small></span>
+        <span class="history-copy">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(item.winner)}${item.agency ? ` · ${escapeHtml(item.agency)}` : ""}</span>
+          <small>${escapeHtml(`${eventLabel} ${dateText} · ${participants}`)}</small>
+          <span class="history-fact-line">예정가격 ${item.estimatedPrice === null ? "미확인" : escapeHtml(formatBudget(item.estimatedPrice))} · 투찰금액 ${item.submittedBidPrice === null ? "미확인" : escapeHtml(formatBudget(item.submittedBidPrice))} · 기술점수 ${item.technicalScore === null ? "미확인" : formatNumber(item.technicalScore, 2)} · 가격점수 ${item.priceScore === null ? "미확인" : formatNumber(item.priceScore, 2)}</span>
+        </span>
+        <span class="history-price">
+          <strong>${escapeHtml(formatBudget(item.amount))}</strong>
+          <span>${item.rate === null ? "낙찰률 미확인" : `낙찰률 ${formatNumber(item.rate, 2)}%`}</span>
+          <span>${item.submittedBidRate === null ? "투찰률 미확인" : `투찰률 ${formatNumber(item.submittedBidRate, 2)}%`}</span>
+          <em>${escapeHtml(similarity)} · 후보</em>
+        </span>
       </article>`;
   }
 
+  function renderTeamsPreview(notice) {
+    const analyzed = notice.analysisState === "EVALUATED";
+    const deadline = deadlineInfo(notice.deadline);
+    els.teamsMockSource.textContent = sourceKindLabel(notice, true);
+    els.teamsMockTitle.textContent = notice.title;
+    els.teamsMockAgency.textContent = notice.agency;
+    els.teamsMockStatus.textContent = analyzed
+      ? `자격 ${STATUS_LABELS[notice.eligibilityStatus]}`
+      : notice.analysisState === "FAILED" ? "분석 오류 · 재처리 필요" : "수집 완료 · 분석 대기";
+    els.teamsMockDeadline.textContent = `${deadline.relative} · ${deadline.date}`;
+    els.teamsMockReason.textContent = analyzed
+      ? truncateText(notice.summary, 180)
+      : "아직 결정론적 평가가 실행되지 않았습니다. 준비도·리스크·추천값을 임의로 생성하지 않고 분석 대기 상태만 알립니다.";
+    els.teamsMockReadiness.textContent = analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정";
+    els.teamsMockRisk.textContent = analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정";
+    els.teamsMockRecommendation.textContent = analyzed ? RECOMMENDATION_LABELS[notice.recommendation] : "분석 전";
+    els.teamsMockJson.textContent = JSON.stringify(buildAdaptiveCardPayload(notice), null, 2);
+    els.teamsMockSendButton.disabled = !state.writeControlsEnabled || Boolean(state.teamsLogMeta[notice.noticeKey]?.sending);
+    renderTeamsMockLogs(notice.noticeKey);
+  }
+
+  function buildAdaptiveCardPayload(notice) {
+    const analyzed = notice.analysisState === "EVALUATED";
+    const deadline = deadlineInfo(notice.deadline);
+    return {
+      type: "AdaptiveCard",
+      $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+      version: "1.5",
+      msteams: { width: "Full" },
+      body: [
+        {
+          type: "TextBlock",
+          text: "PAI LOOP · 새 입찰 검토 알림",
+          weight: "Bolder",
+          color: "Accent",
+          size: "Medium",
+        },
+        {
+          type: "TextBlock",
+          text: notice.title,
+          weight: "Bolder",
+          wrap: true,
+        },
+        {
+          type: "TextBlock",
+          text: `${notice.agency} · ${sourceKindLabel(notice, true)}`,
+          isSubtle: true,
+          spacing: "Small",
+          wrap: true,
+        },
+        {
+          type: "FactSet",
+          facts: [
+            { title: "분석 상태", value: analyzed ? `자격 ${STATUS_LABELS[notice.eligibilityStatus]}` : "수집 완료 · 분석 대기" },
+            { title: "마감", value: `${deadline.relative} · ${deadline.date}` },
+            { title: "준비도", value: analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정" },
+            { title: "리스크", value: analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정" },
+            { title: "추천", value: analyzed ? RECOMMENDATION_LABELS[notice.recommendation] : "분석 전" },
+          ],
+        },
+        {
+          type: "TextBlock",
+          text: analyzed ? truncateText(notice.summary, 240) : "평가 완료 전에는 점수와 추천을 제공하지 않습니다.",
+          wrap: true,
+          spacing: "Medium",
+        },
+      ],
+      actions: [
+        { type: "Action.Submit", title: "근거 상세보기", data: { action: "OPEN_NOTICE", notice_key: notice.noticeKey } },
+        { type: "Action.Submit", title: "담당자 판단", data: { action: "OPEN_DECISION", notice_key: notice.noticeKey } },
+      ],
+    };
+  }
+
+  async function recordTeamsMockSend() {
+    const notice = state.selectedNotice;
+    if (!notice) return;
+    if (!state.writeControlsEnabled) {
+      showToast("읽기 전용 화면입니다", "Teams mock 기록은 사내 로그인 환경에서만 사용할 수 있습니다.", "warning");
+      return;
+    }
+    const noticeKey = notice.noticeKey;
+    const card = buildAdaptiveCardPayload(notice);
+    const correlationId = createTeamsCorrelationId(noticeKey);
+    const previousButtonHtml = els.teamsMockSendButton.innerHTML;
+    state.teamsLogMeta[noticeKey] = {
+      ...(state.teamsLogMeta[noticeKey] || {}),
+      sending: true,
+    };
+    els.teamsMockSendButton.disabled = true;
+    els.teamsMockSendButton.textContent = "서버 mock 로그에 기록 중…";
+
+    try {
+      if (state.source !== "api") throw new Error("데모 모드에서는 서버 mock API에 기록하지 않습니다");
+      const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/notifications/teams/mock`, {
+        method: "POST",
+        body: JSON.stringify({
+          card,
+          channel: "teams",
+          delivery_mode: "mock",
+          correlation_id: correlationId,
+        }),
+      });
+      const log = normalizeTeamsMockLog(payload, notice);
+      upsertTeamsLog(log);
+      state.teamsLogMeta[noticeKey] = { status: "server", error: "", sending: true };
+      showToast("서버 mock 기록 완료", "PAI_LOOP 서버 로그에 저장했습니다. Teams 외부 전송은 발생하지 않았습니다.", "success");
+    } catch (error) {
+      const reason = humanizeError(error);
+      upsertTeamsLog({
+        id: `LOCAL-${Date.now()}`,
+        noticeKey,
+        title: notice.title,
+        timestamp: new Date().toISOString(),
+        status: "LOCAL_FALLBACK",
+        correlationId,
+        origin: "LOCAL_FALLBACK",
+        errorReason: reason,
+      });
+      state.teamsLogMeta[noticeKey] = { status: "fallback", error: reason, sending: true };
+      showToast("브라우저 fallback으로 기록", `${reason} · 서버에는 저장되지 않았고 Teams 외부 전송도 없습니다.`, "warning");
+    } finally {
+      state.teamsLogMeta[noticeKey] = {
+        ...(state.teamsLogMeta[noticeKey] || {}),
+        sending: false,
+      };
+      if (state.selectedNotice?.noticeKey === noticeKey) {
+        els.teamsMockSendButton.innerHTML = previousButtonHtml;
+        els.teamsMockSendButton.disabled = !state.writeControlsEnabled;
+        renderTeamsMockLogs(noticeKey);
+      }
+    }
+  }
+
+  async function refreshTeamsMockLogs() {
+    const noticeKey = state.selectedNotice?.noticeKey;
+    if (!noticeKey) return;
+    await loadTeamsMockLogs(noticeKey, { announce: true });
+  }
+
+  async function loadTeamsMockLogs(noticeKey, { announce = false } = {}) {
+    if (!noticeKey) return;
+    if (!state.writeControlsEnabled) {
+      state.teamsLogMeta[noticeKey] = {
+        status: "readonly",
+        error: "공개 읽기 전용 화면에서는 내부 mock 로그를 조회하지 않습니다",
+        sending: false,
+      };
+      if (state.selectedNotice?.noticeKey === noticeKey) renderTeamsMockLogs(noticeKey);
+      return;
+    }
+    if (state.source !== "api") {
+      state.teamsLogMeta[noticeKey] = {
+        status: "fallback",
+        error: "데모 모드에서는 서버 로그를 불러오지 않습니다",
+        sending: false,
+      };
+      if (state.selectedNotice?.noticeKey === noticeKey) renderTeamsMockLogs(noticeKey);
+      if (announce) showToast("데모 모드", "브라우저 fallback 기록만 표시합니다.", "warning");
+      return;
+    }
+
+    state.teamsLogMeta[noticeKey] = {
+      ...(state.teamsLogMeta[noticeKey] || {}),
+      status: "loading",
+      error: "",
+    };
+    if (state.selectedNotice?.noticeKey === noticeKey) renderTeamsMockLogs(noticeKey);
+
+    try {
+      const payload = await apiRequest(`/notifications/mock?notice_key=${encodeURIComponent(noticeKey)}&limit=20`);
+      const notice = state.notices.find((item) => item.noticeKey === noticeKey) || state.selectedNotice;
+      const serverLogs = extractList(payload).map((item) => normalizeTeamsMockLog(item, notice));
+      const retainedLogs = state.teamsLogs.filter((item) => item.noticeKey !== noticeKey || item.origin === "LOCAL_FALLBACK");
+      state.teamsLogs = [...serverLogs, ...retainedLogs].slice(0, 100);
+      state.teamsLogMeta[noticeKey] = {
+        status: "server",
+        error: "",
+        sending: Boolean(state.teamsLogMeta[noticeKey]?.sending),
+      };
+      if (announce) showToast("서버 mock 로그를 갱신했습니다", `${serverLogs.length}건을 불러왔습니다.`, "success");
+    } catch (error) {
+      const reason = humanizeError(error);
+      state.teamsLogMeta[noticeKey] = {
+        status: "fallback",
+        error: reason,
+        sending: Boolean(state.teamsLogMeta[noticeKey]?.sending),
+      };
+      if (announce) showToast("서버 로그를 불러오지 못했습니다", `${reason} · 브라우저 fallback만 표시합니다.`, "warning");
+    } finally {
+      if (state.selectedNotice?.noticeKey === noticeKey) renderTeamsMockLogs(noticeKey);
+    }
+  }
+
+  function normalizeTeamsMockLog(raw, notice) {
+    const source = unwrapObject(raw);
+    return {
+      id: stringValue(firstValue(source.id, source.correlation_id), `SERVER-${Date.now()}`),
+      noticeKey: stringValue(firstValue(source.notice_key, source.noticeKey), notice?.noticeKey || ""),
+      title: notice?.title || "입찰 공고",
+      timestamp: firstValue(source.created_at, source.createdAt, new Date().toISOString()),
+      status: stringValue(source.status, "MOCK_RECORDED"),
+      correlationId: stringValue(firstValue(source.correlation_id, source.correlationId), ""),
+      origin: "SERVER",
+      errorReason: "",
+    };
+  }
+
+  function upsertTeamsLog(log) {
+    const duplicateIndex = state.teamsLogs.findIndex((item) =>
+      item.id === log.id || (log.correlationId && item.correlationId === log.correlationId));
+    if (duplicateIndex >= 0) state.teamsLogs.splice(duplicateIndex, 1);
+    state.teamsLogs.unshift(log);
+    state.teamsLogs = state.teamsLogs.slice(0, 100);
+  }
+
+  function createTeamsCorrelationId(noticeKey) {
+    const safeKey = String(noticeKey || "notice").replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 44);
+    const random = typeof window.crypto?.randomUUID === "function"
+      ? window.crypto.randomUUID().replaceAll("-", "").slice(0, 10)
+      : Math.random().toString(36).slice(2, 12);
+    return `pai-ui-${safeKey}-${Date.now()}-${random}`.slice(0, 120);
+  }
+
+  function renderTeamsMockLogs(noticeKey) {
+    const logs = state.teamsLogs
+      .filter((item) => item.noticeKey === noticeKey)
+      .sort((a, b) => nullableDateSort(b.timestamp, a.timestamp));
+    const meta = state.teamsLogMeta[noticeKey] || { status: "idle", error: "" };
+    const serverLogCount = logs.filter((item) => item.origin === "SERVER").length;
+    const fallbackLogCount = logs.filter((item) => item.origin === "LOCAL_FALLBACK").length;
+    const storageLabels = {
+      idle: "서버 mock 기록 준비 중",
+      loading: "PAI_LOOP 서버 mock 기록 불러오는 중",
+      server: `서버 mock ${serverLogCount}건${fallbackLogCount ? ` · 브라우저 fallback ${fallbackLogCount}건` : ""} · Teams 외부 전송 없음`,
+      readonly: "공개 읽기 전용 · 내부 mock 로그 비공개",
+      fallback: serverLogCount
+        ? `서버 연결 실패 · 이전 서버 기록 ${serverLogCount}건 · 브라우저 fallback ${fallbackLogCount}건`
+        : `서버 미기록 · 브라우저 fallback ${fallbackLogCount}건만 표시`,
+    };
+    els.teamsLogStorageLabel.textContent = storageLabels[meta.status] || storageLabels.idle;
+    els.teamsLogStorageLabel.title = meta.error || "";
+
+    if (meta.status === "loading" && !logs.length) {
+      els.teamsMockLogList.innerHTML = '<li class="teams-log-empty"><strong><span class="teams-log-status is-loading">불러오는 중</span></strong><span>PAI_LOOP 서버의 mock 기록을 확인하고 있습니다.</span></li>';
+      return;
+    }
+
+    els.teamsMockLogList.innerHTML = logs.length
+      ? logs.map((item) => {
+        const fallback = item.origin === "LOCAL_FALLBACK";
+        const status = fallback ? "LOCAL_FALLBACK" : item.status || "MOCK_RECORDED";
+        const boundary = fallback
+          ? `브라우저 fallback · 서버 미기록${item.errorReason ? ` · ${item.errorReason}` : ""}`
+          : "PAI_LOOP 서버 mock 기록 · Teams 외부 전송 없음";
+        return `
+        <li class="teams-log-item">
+          <div class="teams-log-item__head"><span class="teams-log-status ${fallback ? "is-fallback" : ""}">${escapeHtml(status)}</span><time datetime="${escapeAttribute(item.timestamp)}">${escapeHtml(formatShortDateTime(item.timestamp))}</time></div>
+          <strong title="${escapeAttribute(item.title)}">${escapeHtml(item.title)}</strong>
+          <p>${escapeHtml(boundary)}${item.correlationId ? ` · ID ${escapeHtml(truncateText(item.correlationId, 34))}` : ""}</p>
+        </li>`;
+      }).join("")
+      : `<li class="teams-log-empty"><strong>${meta.status === "readonly" ? "공개 화면에서는 내부 mock 로그를 표시하지 않습니다" : "아직 mock 기록이 없습니다"}</strong><span>${meta.status === "fallback" ? "서버 연결 실패 시 기록한 브라우저 fallback도 없습니다." : meta.status === "readonly" ? "Teams 승인이 끝난 뒤 사내 로그인 환경에서 사용할 수 있습니다." : "버튼을 누르면 Teams 전송 없이 PAI_LOOP 서버 mock 로그에만 기록됩니다."}</span></li>`;
+  }
+
+  function focusDecisionDockFromPreview() {
+    const notice = state.selectedNotice;
+    if (!notice) return;
+    if (!state.writeControlsEnabled) {
+      showToast("읽기 전용 화면입니다", "담당자 판단은 사내 로그인 환경에서만 저장할 수 있습니다.", "warning");
+      return;
+    }
+    if (notice.analysisState !== "EVALUATED") {
+      showToast("담당자 판단은 분석 후 가능합니다", "현재 공고는 수집 완료·분석 대기 상태입니다.", "warning");
+      return;
+    }
+    selectTab("overview");
+    els.decisionForm.scrollIntoView({ behavior: "smooth", block: "end" });
+    els.decisionInputs[0]?.focus();
+  }
+
   function renderExistingDecision(notice) {
+    const analyzed = notice.analysisState === "EVALUATED";
     els.decisionInputs.forEach((input) => {
       input.checked = notice.decision === input.value || (notice.decision === "CONDITIONAL_GO" && input.value === "HOLD");
+      input.disabled = !analyzed || !state.writeControlsEnabled;
     });
     els.decisionComment.value = notice.decisionComment;
     els.commentCount.textContent = String(notice.decisionComment.length);
     els.commentField.hidden = !notice.decisionComment;
     els.toggleCommentButton.setAttribute("aria-expanded", String(Boolean(notice.decisionComment)));
-    if (notice.decision) {
+    if (!analyzed) {
+      els.decisionExisting.textContent = "분석 완료 후 담당자 판단을 기록할 수 있습니다.";
+    } else if (notice.decision) {
       const meta = [DECISION_LABELS[notice.decision] || notice.decision, notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean);
       els.decisionExisting.textContent = meta.join(" · ");
     } else {
       els.decisionExisting.textContent = "아직 결정되지 않았습니다.";
     }
+    els.toggleCommentButton.disabled = !analyzed || !state.writeControlsEnabled;
+    els.decisionComment.disabled = !state.writeControlsEnabled;
     updateDecisionButton();
   }
 
@@ -962,6 +2633,12 @@
     els.tabPanels.forEach((panel) => {
       panel.hidden = panel.dataset.panel !== tabName;
     });
+    if (tabName === "history" && state.selectedNotice?.noticeKey && state.source === "api") {
+      void loadStoredAwardHistory(state.selectedNotice.noticeKey);
+    }
+    if (tabName === "quant" && state.selectedNotice?.noticeKey && state.source === "api") {
+      void loadQuantitativeEstimate(state.selectedNotice.noticeKey);
+    }
   }
 
   function handleTabKeydown(event) {
@@ -1020,14 +2697,26 @@
 
   function updateDecisionButton() {
     const selected = els.decisionInputs.some((input) => input.checked);
-    els.saveDecisionButton.disabled = !selected || !state.selectedNotice;
+    const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
+    els.saveDecisionButton.disabled = !state.writeControlsEnabled || !selected || !state.selectedNotice || !analyzed;
+    els.saveDecisionButton.textContent = !state.writeControlsEnabled
+      ? "사내 로그인 후 저장 가능"
+      : analyzed ? "판단 저장" : "분석 완료 후 저장 가능";
   }
 
   async function saveDecision(event) {
     event.preventDefault();
+    if (!state.writeControlsEnabled) {
+      showToast("읽기 전용 화면입니다", "담당자 판단은 사내 로그인 환경에서만 저장할 수 있습니다.", "warning");
+      return;
+    }
     const notice = state.selectedNotice;
     const decision = els.decisionInputs.find((input) => input.checked)?.value;
     if (!notice || !decision) return;
+    if (notice.analysisState !== "EVALUATED") {
+      showToast("아직 분석 전입니다", "결정론적 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
+      return;
+    }
     const comment = els.decisionComment.value.trim();
     const rationale = comment || `${DECISION_LABELS[decision]} 판단을 기록했습니다.`;
     const payload = {
@@ -1081,6 +2770,10 @@
   }
 
   async function runReplay() {
+    if (!state.writeControlsEnabled) {
+      showToast("읽기 전용 화면입니다", "수집·분석 작업은 서버 인증이 있는 운영 환경에서 실행합니다.", "warning");
+      return;
+    }
     if (state.source !== "api") {
       showToast("실행할 수 없습니다", "데모 모드에서는 수집·분석 워크플로를 실행하지 않습니다. 실데이터 연결을 확인해 주세요.", "warning");
       return;
@@ -1096,7 +2789,7 @@
     } catch (error) {
       showToast("분석 시작 실패", humanizeError(error), "error");
     } finally {
-      els.replayButton.disabled = false;
+      els.replayButton.disabled = !state.writeControlsEnabled;
       els.replayButton.innerHTML = original;
     }
   }
@@ -1119,7 +2812,8 @@
   function handleGlobalKeydown(event) {
     if (event.key === "/" && !isEditableTarget(event.target)) {
       event.preventDefault();
-      els.searchInput.focus();
+      if (state.currentView === "performance") els.performanceSearchInput.focus();
+      else els.searchInput.focus();
     }
   }
 
@@ -1184,6 +2878,28 @@
   function statusPill(status) {
     const value = STATUS_LABELS[status] ? status : "UNKNOWN";
     return `<span class="status-pill status-pill--${value.toLowerCase()}">${STATUS_LABELS[value]}</span>`;
+  }
+
+  function analysisStatusPill(notice) {
+    if (notice.analysisState === "EVALUATED") return statusPill(notice.eligibilityStatus);
+    if (notice.analysisState === "FAILED") return '<span class="status-pill status-pill--fail">분석 오류</span>';
+    return '<span class="status-pill status-pill--pending">미분석</span>';
+  }
+
+  function analysisRecommendationPill(notice) {
+    if (notice.analysisState === "EVALUATED") return recommendationPill(notice.recommendation);
+    return '<span class="recommendation-pill recommendation-pill--pending">분석 전</span>';
+  }
+
+  function sourceKindBadge(notice) {
+    const className = notice.sourceKind === "SYNTHETIC" ? "source-kind-badge--synthetic" : notice.sourceKind === "MANUAL" ? "source-kind-badge--manual" : "source-kind-badge--real";
+    return `<span class="source-kind-badge ${className}">${escapeHtml(sourceKindLabel(notice))}</span>`;
+  }
+
+  function sourceKindLabel(notice, detailed = false) {
+    if (notice.sourceKind === "SYNTHETIC") return detailed ? "합성 회귀 데이터" : "합성";
+    if (notice.sourceKind === "MANUAL") return detailed ? "수동 등록 공고" : "수동";
+    return detailed ? "조달청 실공고 · API" : "실제";
   }
 
   function recommendationPill(recommendation) {
@@ -1269,6 +2985,18 @@
     return new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
   }
 
+  function formatCalendarDate(value) {
+    const date = validDate(value);
+    if (!date) return "미확인";
+    return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+  }
+
+  function truncateText(value, maxLength) {
+    const text = stringValue(value);
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+  }
+
   function scoreClass(value) {
     if (value === null) return "is-unknown";
     if (value < 60) return "is-low";
@@ -1294,6 +3022,70 @@
   function normalizeReadiness(value) {
     const normalized = String(value ?? "").trim().toUpperCase();
     return ["GREEN", "YELLOW", "RED", "GRAY"].includes(normalized) ? normalized : "UNKNOWN";
+  }
+
+  function normalizeSourceKind(value, noticeKey, category) {
+    const normalized = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+    if (["SYNTHETIC", "DEMO", "FIXTURE", "TEST"].includes(normalized)) return "SYNTHETIC";
+    if (["MANUAL", "UPLOAD", "USER"].includes(normalized)) return "MANUAL";
+    if (["PPS", "G2B", "API", "REAL", "PUBLIC_DATA"].includes(normalized)) return "PPS";
+    const identity = `${noticeKey} ${category}`.toUpperCase();
+    if (identity.includes("SYN-") || identity.includes("SYNTHETIC") || String(noticeKey).toLowerCase().startsWith("demo-")) return "SYNTHETIC";
+    return "PPS";
+  }
+
+  function normalizeAnalysisState(value, hasEvaluation, noticeStatus) {
+    if (hasEvaluation) return "EVALUATED";
+    const normalized = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+    if (["EVALUATED", "ANALYZED", "COMPLETE"].includes(normalized)) return "EVALUATED";
+    if (["FAILED", "ERROR", "ANALYSIS_FAILED"].includes(normalized) || ["FAILED", "ERROR"].includes(String(noticeStatus ?? "").toUpperCase())) return "FAILED";
+    if (normalized === "VERSIONED") return "VERSIONED";
+    return "COLLECTED";
+  }
+
+  function normalizeAnalysisReason(source, analysisState, latestVersion) {
+    if (analysisState === "EVALUATED") return { code: "EVALUATED", message: "분석과 판정이 완료되었습니다." };
+    const reasonObject = firstObject(source.analysis_reason, source.analysisReason);
+    let code = stringValue(firstValue(
+      source.analysis_reason_code,
+      source.analysisReasonCode,
+      reasonObject.code,
+      reasonObject.reason_code,
+      reasonObject.reasonCode,
+      source.pending_reason_code,
+      source.pendingReasonCode,
+    )).toUpperCase().replace(/[\s-]+/g, "_");
+    const explicitDetail = firstValue(
+      reasonObject.message,
+      reasonObject.description,
+      typeof source.analysis_reason === "string" ? source.analysis_reason : null,
+      typeof source.analysisReason === "string" ? source.analysisReason : null,
+      source.analysis_reason_description,
+      source.analysisReasonDescription,
+      source.analysis_reason_detail,
+      source.analysisReasonDetail,
+      source.pending_reason,
+      source.pendingReason,
+    );
+    const detail = typeof explicitDetail === "string" || typeof explicitDetail === "number" ? stringValue(explicitDetail) : "";
+    if (!code && detail && /^[A-Z][A-Z0-9_-]+$/.test(detail)) code = detail.replace(/[\s-]+/g, "_");
+
+    const mapped = ANALYSIS_REASON_LABELS[code];
+    if (mapped) return { code, message: mapped };
+    if (detail && detail.toUpperCase() !== code) return { code: code || "PUBLIC_DESCRIPTION", message: detail };
+
+    const noticeStatus = stringValue(firstValue(source.status, source.notice_status)).toUpperCase();
+    if (["CLOSED", "CANCELLED", "CANCELED", "EXPIRED"].includes(noticeStatus)) {
+      return { code: noticeStatus, message: "공고가 마감·취소 또는 종료 상태여서 자동 분석 대상에서 제외되었습니다." };
+    }
+    const extractionStatus = stringValue(latestVersion?.extractionStatus).toUpperCase();
+    if (["REVIEW", "FAILED", "ERROR", "INCOMPLETE"].includes(extractionStatus) || analysisState === "FAILED") {
+      return { code: extractionStatus || "ANALYSIS_FAILED", message: "첨부문서 추출 또는 구조화 분석이 완료되지 않아 재처리와 담당자 확인이 필요합니다." };
+    }
+    if (analysisState === "VERSIONED") {
+      return { code: "READY", message: ANALYSIS_REASON_LABELS.READY };
+    }
+    return { code: "NOT_SELECTED", message: ANALYSIS_REASON_LABELS.NOT_SELECTED };
   }
 
   function normalizeRecommendation(value) {
@@ -1466,6 +3258,18 @@
         contract_method: "제한경쟁 · 협상계약",
         region: "전국",
         summary: "지역관광 사업 분석과 글로벌 마케팅 전략을 결합한 컨설팅 용역입니다. KMA의 공공기관 전략 컨설팅 실적과 과업 유사성이 높습니다. 다만 직접생산확인증명서 요구 문구의 적용 대상과 공동수급 허용 범위를 발주처에 확인한 뒤 입찰 여부를 확정해야 합니다.",
+        document_analyses: [
+          {
+            id: "doc-analysis-rfp",
+            document_name: "제안요청서.hwpx",
+            summary: "과업 범위와 정량평가 기준을 구조화했습니다. 직접생산확인증명서 적용 범위는 담당자 확인이 필요합니다.",
+            requirement_count: 4,
+            needs_review: true,
+            status: "COMPLETE",
+            confidence: 0.93,
+            analyzed_at: now,
+          },
+        ],
         requirements: [
           { id: "r1", title: "학술·연구용역 업종 등록", description: "입찰 마감일 기준 유효한 업종 등록을 확인했습니다.", status: "PASS", evidence_id: "ev-eligibility" },
           { id: "r2", title: "최근 3년 유사 용역 실적", description: "회사 실적 DB에서 조건을 충족하는 후보 실적 7건을 확인했습니다.", status: "PASS", evidence_id: "ev-performance" },

@@ -11,7 +11,24 @@ class Base(DeclarativeBase):
     pass
 
 
+def normalize_database_url(database_url: str) -> str:
+    """Select the installed psycopg v3 dialect for conventional provider URLs.
+
+    Render, Railway, and several managed PostgreSQL providers expose connection
+    strings beginning with ``postgres://`` or ``postgresql://``. SQLAlchemy's
+    explicit psycopg v3 dialect keeps those provider-issued URLs compatible
+    with the ``psycopg[binary]`` production dependency.
+    """
+
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    return database_url
+
+
 def build_engine(database_url: str) -> Engine:
+    database_url = normalize_database_url(database_url)
     kwargs: dict[str, object] = {"pool_pre_ping": True}
     if database_url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
@@ -42,4 +59,3 @@ def session_dependency(factory: sessionmaker[Session]):
             session.close()
 
     return _get_session
-

@@ -1,0 +1,29 @@
+{
+  "schema_version": "grounded-pricing-method-1.0.0",
+  "classification": "PUBLIC_DOCUMENT_DERIVED",
+  "profiles": [
+    {
+      "profile_id": "RFP-2025-AI-CAPABILITY-PRICE-01",
+      "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+      "source_anchor": {
+        "file_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서",
+        "pdf_page": 16,
+        "printed_page": 30,
+        "section": "입찰가격 평점산식"
+      },
+      "price_score_max": 10,
+      "method": {
+        "at_or_above_80_percent": "10 × (최저 유효 입찰가격 ÷ 해당 입찰가격)",
+        "below_80_percent": "배점한도 × (최저 유효 입찰가격 ÷ 예정가격의 80%) + 2 × ((예정가격의 80% - 해당 입찰가격) ÷ (예정가격의 80% - 예정가격의 70%))",
+        "general_floor_percent": 70,
+        "software_or_specified_safety_equipment_floor_percent": 80,
+        "below_floor_score_percent_of_max": 30
+      },
+      "notes": [
+        "80% 이상과 미만에 서로 다른 산식을 적용한다.",
+        "SW 사업·지정 안전장비 예외의 하한은 80%다.",
+        "하한 미만 입찰가격의 가격점수는 배점한도의 30%다."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "schema_version": "pai-loop-quantitative-notice-profiles-1.0.0",
+  "profile_version": "2026.08.17-v2",
+  "classification": "PUBLIC_PROCUREMENT_DERIVED",
+  "profiles": [
+    {
+      "notice_key": "MANUAL-INCHON-2025-17",
+      "ruleset_version": "incheon-2025-17-quant-review-v1",
+      "rule_source_status": "MISSING",
+      "minimum_score": null,
+      "criteria": [],
+      "missing_reason": "공개 시드에는 입찰공고문 요구조건만 포함되어 있고 제안요청서의 정량평가표, 배점구간 및 인정 산식은 포함되어 있지 않습니다.",
+      "source_reference": {
+        "document_label": "입찰공고문.pdf",
+        "document_sha256": "cca0dd3c0262d02801806671dc77fabb24dcb42f6ff551941888d84d5f7faa9c",
+        "section": "공개 공고 시드 provenance",
+        "page": null,
+        "quote": null
+      },
+      "public_performance_observation": {
+        "match_mode": "ALL",
+        "keywords": ["승진후보자", "역량"],
+        "note": "공개·비식별 실적에서 제목·개요·키워드가 모두 일치하는 후보만 집계합니다. 후보 건수는 인정실적, 인정금액 또는 정량점수가 아닙니다."
+      }
+    },
+    {
+      "notice_key": "R25BK00764725-000",
+      "bid_notice_no": "R25BK00764725",
+      "notice_title": "2025 AI 활용 역량 강화 교육 운영 용역",
+      "ruleset_version": "r25bk00764725-quant-actual-derived-v1",
+      "rule_source_status": "AVAILABLE",
+      "minimum_score": null,
+      "assumptions": [
+        "원문상 항목별 최소점수는 유효한 평가대상 입찰로 접수된 경우에만 적용되는 조건부 하한입니다.",
+        "공개 실적 후보 검색기간은 공고 마감일을 기준으로 역산했으며 원문의 기준일·완료조건은 제출 전 재확인해야 합니다.",
+        "정량평가 20점만 모델링했으며 가격평가 산식과 기술·가격 합산 통과기준은 포함하지 않았습니다."
+      ],
+      "source_reference": {
+        "document_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서.pdf",
+        "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+        "section": "정량적 평가 배점표 및 가격평가 산식 (PDF 14~16쪽, 인쇄면 25~30쪽)",
+        "page": 14,
+        "quote": null
+      },
+      "criteria": [
+        {
+          "criterion_id": "R25-Q-CREDIT",
+          "category": "경영상태",
+          "label": "신용평가등급",
+          "max_points": 6,
+          "metric_key": "credit_rating_score_basis",
+          "unit": "신용등급",
+          "formula_type": "BRACKET",
+          "formula": "제안요청서 신용평가등급 배점표를 적용하며 유효 등급 확인서 미제출 또는 확인 불가 시 4.2점",
+          "brackets": [],
+          "rule_floor_points": 4.2,
+          "floor_condition": "유효한 평가대상 입찰로 접수되고 원문상 미제출·확인불가 규정이 적용되는 경우",
+          "source_anchor": {
+            "document_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서.pdf",
+            "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+            "section": "정량적 평가 - 신용평가등급표",
+            "page": 14,
+            "quote": null
+          },
+          "required_evidence_keys": ["COMPANY-CREDIT-RATING-CURRENT"]
+        },
+        {
+          "criterion_id": "R25-Q-STAFF",
+          "category": "전문인력",
+          "label": "전문인력 보유",
+          "max_points": 5,
+          "metric_key": "professional_staff_count",
+          "unit": "명",
+          "formula_type": "BRACKET",
+          "formula": "8명 이상 5점, 7명 4.5점, 5~6명 4점, 4명 3.5점, 3명 이하 3점",
+          "brackets": [
+            {"bracket_id": "staff-le-3", "label": "3명 이하", "min_value": null, "max_value": 4, "boolean_value": null, "points": 3},
+            {"bracket_id": "staff-4", "label": "4명", "min_value": 4, "max_value": 5, "boolean_value": null, "points": 3.5},
+            {"bracket_id": "staff-5-6", "label": "5~6명", "min_value": 5, "max_value": 7, "boolean_value": null, "points": 4},
+            {"bracket_id": "staff-7", "label": "7명", "min_value": 7, "max_value": 8, "boolean_value": null, "points": 4.5},
+            {"bracket_id": "staff-ge-8", "label": "8명 이상", "min_value": 8, "max_value": null, "boolean_value": null, "points": 5}
+          ],
+          "rule_floor_points": 3,
+          "floor_condition": "유효한 평가대상 입찰로 접수되고 원문상 전문인력 항목의 최저구간이 적용되는 경우",
+          "source_anchor": {
+            "document_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서.pdf",
+            "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+            "section": "정량적 평가 - 전문인력 보유",
+            "page": 15,
+            "quote": null
+          },
+          "required_evidence_keys": ["COMPANY-PROFESSIONAL-STAFF-CURRENT"]
+        },
+        {
+          "criterion_id": "R25-Q-PERFORMANCE",
+          "category": "수행실적",
+          "label": "최근 3년 유사사업 수행실적",
+          "max_points": 3,
+          "metric_key": "related_ai_data_education_performance_amount_krw",
+          "unit": "원",
+          "formula_type": "BRACKET",
+          "formula": "AI·데이터 교육 관련 단일계약 3천만원 이상(VAT 포함) 실적 합계: 8천만원 이상 3점, 6천만원 이상 2.5점, 4천만원 이상 2점, 4천만원 미만 1.5점",
+          "brackets": [
+            {"bracket_id": "perf-lt-40m", "label": "4천만원 미만", "min_value": null, "max_value": 40000000, "boolean_value": null, "points": 1.5},
+            {"bracket_id": "perf-40m-60m", "label": "4천만원 이상 6천만원 미만", "min_value": 40000000, "max_value": 60000000, "boolean_value": null, "points": 2},
+            {"bracket_id": "perf-60m-80m", "label": "6천만원 이상 8천만원 미만", "min_value": 60000000, "max_value": 80000000, "boolean_value": null, "points": 2.5},
+            {"bracket_id": "perf-ge-80m", "label": "8천만원 이상", "min_value": 80000000, "max_value": null, "boolean_value": null, "points": 3}
+          ],
+          "rule_floor_points": 1.5,
+          "floor_condition": "유효한 평가대상 입찰로 접수되고 원문상 수행실적 항목의 최저구간이 적용되는 경우",
+          "source_anchor": {
+            "document_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서.pdf",
+            "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+            "section": "정량적 평가 - 최근 3년 유사사업 수행실적",
+            "page": 15,
+            "quote": null
+          },
+          "required_evidence_keys": ["PUBLIC-PERFORMANCE:2026.08.17-v3:be3d1bed864aed0142515b1ae9ba1dcc1fb78ef85bc9df2f0a35527d548879f7"]
+        },
+        {
+          "criterion_id": "R25-Q-SOCIAL",
+          "category": "사회적책임",
+          "label": "사회적·약자기업",
+          "max_points": 3,
+          "metric_key": "social_weak_enterprise_addition_basis",
+          "unit": "증빙조합",
+          "formula_type": "BRACKET",
+          "formula": "모든 평가대상 입찰자 기본 1점에 원문상 사회적·약자기업 가점을 합산하되 최대 3점",
+          "brackets": [],
+          "rule_floor_points": 1,
+          "floor_condition": "유효한 평가대상 입찰로 접수되어 기본점수 규정이 적용되는 경우",
+          "rule_base_points": 1,
+          "base_condition": "모든 유효 평가대상 입찰자에게 가점 적용 전 기본 1점",
+          "source_anchor": {
+            "document_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서.pdf",
+            "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+            "section": "정량적 평가 - 사회적·약자기업",
+            "page": 15,
+            "quote": null
+          },
+          "required_evidence_keys": ["COMPANY-SOCIAL-WEAK-ENTERPRISE-CURRENT"]
+        },
+        {
+          "criterion_id": "R25-Q-SAFETY",
+          "category": "안전보건",
+          "label": "안전보건 관리",
+          "max_points": 3,
+          "metric_key": "safety_health_adjustment_basis",
+          "unit": "증빙조합",
+          "formula_type": "BRACKET",
+          "formula": "모든 평가대상 입찰자 기본 2점에 인증·사고 관련 원문상 가감점을 적용하며 0~3점 범위",
+          "brackets": [],
+          "rule_floor_points": 0,
+          "floor_condition": null,
+          "rule_base_points": 2,
+          "base_condition": "모든 유효 평가대상 입찰자에게 인증·사고 가감 적용 전 기본 2점",
+          "source_anchor": {
+            "document_label": "2025 AI 활용 역량 강화 교육 운영 용역 제안요청서.pdf",
+            "document_sha256": "53b24e9dae63328d4f692e4cbe21e7148e0f24614dedbec5c356e2adbfc84648",
+            "section": "정량적 평가 - 안전보건 관리",
+            "page": 15,
+            "quote": null
+          },
+          "required_evidence_keys": ["COMPANY-SAFETY-HEALTH-CURRENT"]
+        }
+      ],
+      "public_performance_fact": {
+        "metric_key": "related_ai_data_education_performance_amount_krw",
+        "date_from": "2022-04-25",
+        "date_to": "2025-04-24",
+        "minimum_single_contract_amount_krw": 30000000,
+        "all_keywords": ["교육"],
+        "any_keywords": ["AI", "인공지능", "데이터"],
+        "note": "공개·비식별 실적에 기간·단일계약금액·교육 및 AI/인공지능/데이터 키워드를 적용한 후보 집계입니다. 인정실적 확정값이 아닙니다."
+      }
+    }
+  ]
+}

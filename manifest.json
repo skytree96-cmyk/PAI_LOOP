@@ -9,9 +9,27 @@
       "file": "workflows/pai-loop-01-notice-replay-vertical-slice.json",
       "publish": false
     },
+    "pai-loop-02-live-pps-ingestion": {
+      "file": "workflows/pai-loop-02-live-pps-ingestion.json",
+      "publish": false
+    },
+    "pai-loop-03-teams-mock-notification": {
+      "file": "workflows/pai-loop-03-teams-mock-notification.json",
+      "publish": false
+    },
+    "pai-loop-04-award-history-refresh": {
+      "file": "workflows/pai-loop-04-award-history-refresh.json",
+      "publish": false
+    },
+    "pai-loop-10-daily-opportunity-briefing": {
+      "file": "workflows/pai-loop-10-daily-opportunity-briefing.json",
+      "publish": true,
+      "n8nWorkflowId": "WimY5yV3aWqMZRsx",
+      "contractVersion": "daily-briefing-1.3",
+      "operatorEntryPoint": true
+    },
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
-      "n8nWorkflowId": "JDy3nFbWEkV2Jrhl",
       "publish": false
     }
   }

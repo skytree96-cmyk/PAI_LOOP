@@ -1,0 +1,1216 @@
+{
+  "name": "PAI_LOOP 10 - Daily Opportunity Briefing",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 2920,
+        "height": 300,
+        "color": 7,
+        "content": "# 10 · Daily Opportunity Briefing · 운영 진입점 v0.7\n\n매일 **09:00 Asia/Seoul**에 전사 공통 `교육·컨설팅` 및 backend 전체 조직 프로필 키워드로 전일~당일 PPS 공고를 수집합니다. 조직 ranking 상위 공고의 3년 낙찰을 먼저 refresh(기본 1건·hard max 3)한 뒤 신규 key 최대 3건을 첨부 1개 enrichment·OpenAI 추출·평가·snapshot 대상으로 제한하여, 당일 가격·경쟁 리스크와 7일 로그·Teams Adaptive Card mock을 한 흐름으로 조립합니다.\n\n예약 경로의 명시적 workflow 기본값은 live입니다. `PAI_LOOP_EMERGENCY_DISABLE=true`일 때만 모든 외부 경계를 fail-closed합니다. 수동 dry-run은 PPS·분석·낙찰·OpenAI·Teams·backend를 한 번도 호출하지 않습니다. 실제 Teams 전송 노드는 없습니다."
+      },
+      "id": "daily-note-overview",
+      "name": "Daily briefing overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1380,
+        -640
+      ]
+    },
+    {
+      "parameters": {
+        "width": 1500,
+        "height": 360,
+        "color": 5,
+        "content": "## 명시적 예약 설정 · emergency fail-closed\n\n- backend/web 기본 origin: `https://pai-loop-demo.onrender.com` (`$env` URL이 있으면 우선)\n- workflow 기본값: PPS write·최대 3건 enrichment/analysis write·7일 retention·낙찰 refresh 기본 1건(hard max 3)·backend Teams mock log 허용\n- PPS 범위: 전일~당일, 기본 `교육`, `컨설팅` + backend 전체 조직 profile, 100행 × keyword당 최대 1페이지\n- 분석 범위: 신규 key 최대 3개, 공고당 첨부 최대 1개, `enrich_missing=true`\n- `PAI_LOOP_EMERGENCY_DISABLE=true`: 예약 PPS·분석·retention·낙찰·mock 기록을 모두 즉시 차단\n- n8n host `$env`를 읽지 못해도 workflow의 명시적 기본값으로 동작하며, 운영자는 workflow 비활성화로도 즉시 중지 가능\n\n모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구합니다. export에는 key 값과 credential ID가 없습니다. 실제 Teams 전송 노드는 없습니다."
+      },
+      "id": "daily-note-gates",
+      "name": "Safety gates",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1380,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "width": 1380,
+        "height": 360,
+        "color": 6,
+        "content": "## 7일 피드 · 3년 낙찰 · mock 기록 경계\n\n7일은 아침 피드와 완료 ingestion/mock 같은 단기 운영 로그 범위입니다. 공고·평가·결정·3년 낙찰 관측은 감사와 가격 분석을 위해 보존합니다.\n\n낙찰 refresh는 7일 브리핑의 비-FAIL 상위 후보 중 최대 3건, 각 3년·100행·구간당 1페이지로 제한합니다. 정량·가격·리스크 값이 없으면 `분석 대기`로 남기며 숫자를 만들지 않습니다. 통합 카드는 승인 전까지 backend mock 기록만 가능하고 Teams로는 전송하지 않습니다."
+      },
+      "id": "daily-note-retention",
+      "name": "Retention and optional intelligence",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        160,
+        -300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "daily-manual-trigger",
+      "name": "Run Complete Offline Dry-Run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1320,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "daily-schedule-trigger",
+      "name": "Every Day 09:00 KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1320,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { runtime: { executionMode: 'manual-fixture', triggerSource: 'manual', configSource: 'manual-zero-call-fixture', timezone: 'Asia/Seoul', retentionDays: 7, apiBaseUrl: 'https://pai-loop-demo.onrender.com', webBaseUrl: 'https://pai-loop-demo.onrender.com', backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', emergencyDisabled: false, collectionKeywords: ['교육','컨설팅'], useProfileKeywords: true, profileDepartmentIds: [], ppsPageSize: 100, ppsMaxPages: 1, dailyLiveEnabled: false, analysisBatchEnabled: false, analysisBatchWriteEnabled: false, enrichMissing: true, maxAnalysisBatchNotices: 3, maxAttachmentsPerNotice: 1, retentionLiveEnabled: false, awardRefreshEnabled: false, awardRefreshWriteEnabled: false, maxAwardRefreshNotices: 3, teamsMockLogEnabled: false, externalCallsAllowed: false } } }];"
+      },
+      "id": "daily-manual-context",
+      "name": "Force Zero-Call Manual Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst trueValue = (value) => String(value ?? '').trim().toLowerCase() === 'true';\nconst safeUrl = (raw, name, fallback) => {\n  const value = String(raw || fallback).trim().replace(/\\/+$/, '');\n  if (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(value) || value.includes('@') || value.includes('\\\\')) throw new Error(`${name} is unsafe`);\n  return value;\n};\nconst config = Object.freeze({ collectionKeywords: ['교육','컨설팅'], useProfileKeywords: true, profileDepartmentIds: [], ppsPageSize: 100, ppsMaxPages: 1, maxAnalysisBatchNotices: 3, maxAttachmentsPerNotice: 1, maxAwardRefreshNotices: 1, retentionDays: 7 });\nconst publicOrigin = 'https://pai-loop-demo.onrender.com';\nconst apiBaseUrl = safeUrl(read('PAI_LOOP_API_BASE_URL'), 'PAI_LOOP_API_BASE_URL', publicOrigin);\nconst webBaseUrl = safeUrl(read('PAI_LOOP_WEB_BASE_URL'), 'PAI_LOOP_WEB_BASE_URL', publicOrigin);\nconst emergencyDisabled = trueValue(read('PAI_LOOP_EMERGENCY_DISABLE'));\nconst dailyLiveEnabled = !emergencyDisabled;\nreturn [{ json: { runtime: { executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-emergency-disabled', triggerSource: 'schedule', configSource: 'workflow-defaults-v0.7-with-emergency-env', timezone: 'Asia/Seoul', retentionDays: config.retentionDays, apiBaseUrl, webBaseUrl, backendConfigured: true, credentialMode: 'n8n-generic-header-auth-required', emergencyDisabled, collectionKeywords: config.collectionKeywords, useProfileKeywords: config.useProfileKeywords, profileDepartmentIds: config.profileDepartmentIds, ppsPageSize: config.ppsPageSize, ppsMaxPages: config.ppsMaxPages, dailyLiveEnabled, analysisBatchEnabled: dailyLiveEnabled, analysisBatchWriteEnabled: dailyLiveEnabled, enrichMissing: true, maxAnalysisBatchNotices: config.maxAnalysisBatchNotices, maxAttachmentsPerNotice: config.maxAttachmentsPerNotice, retentionLiveEnabled: dailyLiveEnabled, awardRefreshEnabled: dailyLiveEnabled, awardRefreshWriteEnabled: dailyLiveEnabled, maxAwardRefreshNotices: config.maxAwardRefreshNotices, teamsMockLogEnabled: dailyLiveEnabled, externalCallsAllowed: dailyLiveEnabled } } }];"
+      },
+      "id": "daily-scheduled-context",
+      "name": "Scheduled Runtime Gates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-live-condition",
+              "leftValue": "={{ $json.runtime.dailyLiveEnabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-live-gate",
+      "name": "Scheduled Live Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -820,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const runtime = $json.runtime;\nconst now = new Date();\nconst generatedAt = now.toISOString();\nconst daysAgo = new Date(now.getTime() - 6 * 86400000).toISOString();\nconst notices = [\n  { notice_key: 'FIXTURE-EDU-001', bid_notice_no: 'FIXTURE-2026-001', title: '[합성] 공공기관 AI 역량강화 교육 및 컨설팅', agency: '가상 인재개발원', published_at: daysAgo, deadline: new Date(now.getTime() + 9 * 86400000).toISOString(), estimated_amount: 180000000, priority_score: 91, fit: { eligibility: 'PASS', reason_code: 'P-ENTITY', readiness_score: 88, readiness_status: 'GREEN', evidence_coverage: 92, risk_score: 18.4, risk_band: 'GO' }, top_departments: [{ department_id: 'ai_future_education', department_name: 'AI미래교육본부', score: 86, priority: 'HIGH' }], award_snapshot: { observations: 4, distinct_winners: 2, dominant_winner: '가상 수행기관 A', dominant_share_pct: 75, median_award_rate_pct: 87.42 }, quantitative_estimate: { overall_status: 'ESTIMATED', estimated_points: 82, total_max_points: 100, lower_points: 78, upper_points: 86, evidence_coverage_pct: 90, confidence: 0.72, opinion: '공개 실적 기준 예상치이며 증빙 원문 확인이 필요합니다.' }, pricing_intelligence: { observation_count: 4, predicted_award_rate_pct: 87.35, lower_rate_pct: 86.9, upper_rate_pct: 87.8, confidence: 'MEDIUM' }, competition_risk: { method_version: 'competition-risk-1.0.0', scope: 'STORED_3Y_SIMILARITY_CANDIDATES', status: 'MODEL_ESTIMATE', score: 71.2, band: 'HIGH', confidence: 'MEDIUM', market_claim: 'NOT_DETERMINED' } },\n  { notice_key: 'FIXTURE-CONSULT-002', bid_notice_no: 'FIXTURE-2026-002', title: '[합성] 지역 일자리 정책 연구 및 컨설팅', agency: '가상 지방자치단체', published_at: generatedAt, deadline: new Date(now.getTime() + 6 * 86400000).toISOString(), estimated_amount: 95000000, priority_score: 76, fit: { eligibility: 'REVIEW', reason_code: 'R01', readiness_score: 74, readiness_status: 'YELLOW', evidence_coverage: 70, risk_score: 42.1, risk_band: 'CONDITIONAL_GO' }, top_departments: [{ department_id: 'job_creation', department_name: '일자리창출본부', score: 68, priority: 'HIGH' }], award_snapshot: { observations: 0, distinct_winners: 0, dominant_winner: null, dominant_share_pct: null, median_award_rate_pct: null }, quantitative_estimate: null, pricing_intelligence: null, competition_risk: { method_version: 'competition-risk-1.0.0', scope: 'STORED_3Y_SIMILARITY_CANDIDATES', status: 'UNKNOWN', score: null, band: 'UNKNOWN', confidence: 'INSUFFICIENT', market_claim: 'NOT_DETERMINED' } }\n];\nreturn [{ json: { schema_version: '1.1', generated_at: generatedAt, timezone: 'Asia/Seoul', window: { days: 7, from: new Date(now.getTime() - 7 * 86400000).toISOString(), to: generatedAt }, totals: { observed: notices.length, included: notices.length, pending_or_review: 1, eligibility: { PASS: 1, REVIEW: 1 } }, notices, delivery: { channel: 'teams', mode: 'mock', actual_push_sent: false }, source_calls: { backend: 0, pps: 0, awards: 0, openai: 0, teams_mock_log: 0, teams: 0 }, runtime, award_refresh: { status: 'SKIPPED', enabled: false, dry_run: true, selected: 0, attempted: 0, completed: 0, candidates: [], skipped_reason: 'manual-fixture' }, retention: { days: 7, mode: 'preview', eligible: { ingestion_jobs: 2, mock_notifications: 1 }, deleted: { ingestion_jobs: 0, mock_notifications: 0 }, canonical_records_preserved: true } } }];"
+      },
+      "id": "daily-fixture",
+      "name": "Build Seven-Day Offline Fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/ingestion/pps/notices' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'daily:' + $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd') }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-v3"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ from_date: $now.setZone('Asia/Seoul').minus({ days: 1 }).toFormat('yyyy-MM-dd'), to_date: $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd'), keywords: $json.runtime.collectionKeywords, use_profile_keywords: $json.runtime.useProfileKeywords, profile_department_ids: $json.runtime.profileDepartmentIds, page_size: $json.runtime.ppsPageSize, max_pages: $json.runtime.ppsMaxPages, dry_run: false }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "daily-refresh-pps",
+      "name": "Refresh PPS Notices Behind Gate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -540,
+        980
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/retention' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ retention_days: 7, dry_run: $json.runtime.retentionLiveEnabled !== true }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-retention",
+      "name": "Preview or Apply Seven-Day Log Retention",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -60,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=20' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-fetch-briefing",
+      "name": "Fetch Ranked Seven-Day Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1860,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst retention = $node['Validate Seven-Day Retention Contract'].json.retention;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet analysisBatch = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 1, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'unavailable' };\ntry { analysisBatch = $node['Validate Batch Analysis Contract'].json.analysisBatch; } catch {}\nif (analysisBatch.status === 'SKIPPED' && analysisBatch.skippedReason === 'unavailable') { try { analysisBatch = $node['Record Batch Analysis Skipped'].json.analysisBatch; } catch {} }\nlet awardRefresh = { status: 'SKIPPED', enabled: false, dryRun: true, selected: 0, attempted: 0, completed: 0, candidates: [], skippedReason: 'unavailable' };\ntry { awardRefresh = $node['Validate Award Refresh Batch'].json.awardRefresh; } catch {}\nif (awardRefresh.status === 'SKIPPED' && awardRefresh.skippedReason === 'unavailable') { try { awardRefresh = $node['Record Award Refresh Skipped'].json.awardRefresh; } catch {} }\nconst analysisHttpCalls = ['COMPLETED','PARTIAL'].includes(analysisBatch.status) ? 1 : 0;\nreturn [{ json: { ...body, runtime, retention, ingestion, analysis_batch: analysisBatch, award_refresh: awardRefresh, source_calls: { backend: 4 + analysisHttpCalls + Number(awardRefresh.attempted ?? 0), pps: 1, awards: Number(awardRefresh.attempted ?? 0), openai: Number(analysisBatch.openaiCalls ?? 0), teams_mock_log: 0, teams: 0 } } }];"
+      },
+      "id": "daily-attach-live-context",
+      "name": "Attach Live Runtime Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (input.timezone !== 'Asia/Seoul' || Number(input.window?.days) !== 7) throw new Error('briefing must use Asia/Seoul and a seven-day window');\nconst notices = Array.isArray(input.notices) ? input.notices.slice(0, 20) : [];\nconst sorted = notices.sort((a, b) => Number(b.priority_score ?? 0) - Number(a.priority_score ?? 0));\nconst enriched = sorted.map((notice) => ({ ...notice, quantitative_estimate: notice.quantitative_estimate ?? notice.quantitative_score ?? null, pricing_intelligence: notice.pricing_intelligence ?? notice.pricing_prediction ?? null, competition_risk: notice.competition_risk ?? notice.pricing_intelligence?.competition_risk ?? null, fit: { eligibility: notice.fit?.eligibility ?? 'PENDING', reason_code: notice.fit?.reason_code ?? 'NOT_EVALUATED', readiness_score: notice.fit?.readiness_score ?? null, readiness_status: notice.fit?.readiness_status ?? 'GRAY', evidence_coverage: notice.fit?.evidence_coverage ?? null, risk_score: notice.fit?.risk_score ?? null, risk_band: notice.fit?.risk_band ?? 'UNKNOWN' } }));\nreturn [{ json: { ...input, notices: enriched, totals: { ...(input.totals ?? {}), included: enriched.length }, enrichment_contract: { quantitative: 'evidence-bound-or-pending', pricing: 'observation-bound-or-pending', risk: 'stored-evaluation-or-unknown', competition: 'stored-three-year-observations-or-unknown', departments: '24-profile-ranking', missing_value_policy: 'PENDING_NOT_INVENTED' } } }];"
+      },
+      "id": "daily-normalize",
+      "name": "Normalize Optional Quant and Pricing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst top = input.notices.slice(0, 6);\nconst won = (value) => value == null ? '미정' : `${new Intl.NumberFormat('ko-KR').format(Number(value))}원`;\nconst lines = top.map((item, index) => {\n  const fit = item.fit ?? {}; const dept = item.top_departments?.[0]; const quant = item.quantitative_estimate; const pricing = item.pricing_intelligence;\n  const qEstimate = quant?.estimated_points ?? quant?.estimated_score; const qMax = quant?.total_max_points ?? quant?.max_points ?? quant?.maximum_score;\n  const qRange = quant && quant.lower_points != null && quant.upper_points != null ? `${quant.lower_points}~${quant.upper_points} / ${qMax ?? '?'}점` : null;\n  const qText = qEstimate != null ? `${qEstimate} / ${qMax ?? '?'}점` : (qRange ?? '분석 대기');\n  const awardRate = pricing?.prediction?.award_rate; const rate = awardRate?.center ?? pricing?.predicted_award_rate_pct ?? pricing?.predicted_rate_pct ?? item.award_snapshot?.median_award_rate_pct;\n  const rateRange = awardRate && awardRate.range_low != null && awardRate.range_high != null ? ` (${Number(awardRate.range_low).toFixed(2)}~${Number(awardRate.range_high).toFixed(2)}%)` : '';\n  const priceText = rate == null ? '관측 부족' : `예상/중앙 낙찰률 ${Number(rate).toFixed(2)}%${rateRange}`;\n  const riskText = fit.risk_score == null ? `${fit.risk_band ?? 'UNKNOWN'} · 점수 미산정` : `${fit.risk_band ?? 'UNKNOWN'} · ${Number(fit.risk_score).toFixed(1)}점`;\n  const competition = item.competition_risk ?? pricing?.competition_risk; const competitionText = competition?.status === 'MODEL_ESTIMATE' && competition.score != null ? `${competition.band} · ${Number(competition.score).toFixed(1)}/100 · ${competition.confidence}` : 'UNKNOWN · 표본/커버리지 부족';\n  return { type: 'Container', separator: index > 0, spacing: 'Medium', items: [ { type: 'TextBlock', text: `${index + 1}. ${String(item.title ?? '').slice(0, 180)}`, weight: 'Bolder', wrap: true }, { type: 'FactSet', facts: [\n    { title: '발주기관', value: String(item.agency ?? '미상') }, { title: '부서 우선순위', value: dept ? `${dept.department_name ?? dept.name ?? '부서'} · ${dept.score ?? 0}점` : '미분류' }, { title: '적합성', value: `${fit.eligibility ?? 'PENDING'} · ${fit.readiness_status ?? 'GRAY'}` }, { title: '리스크', value: riskText }, { title: '경쟁·집중 리스크', value: competitionText }, { title: '정량 예상', value: qText }, { title: '가격 신호', value: priceText }, { title: '추정금액', value: won(item.estimated_amount) } ] } ] };\n});\nconst webBaseUrl = String(input.runtime?.webBaseUrl ?? 'https://pai-loop-demo.onrender.com');\nconst card = { '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.5', msteams: { width: 'Full' }, body: [ { type: 'TextBlock', text: 'PAI_LOOP · 오전 9시 공고 브리핑', size: 'Large', weight: 'Bolder', color: 'Accent', wrap: true }, { type: 'TextBlock', text: `최근 7일 ${input.totals?.observed ?? input.notices.length}건 · 오늘 표시 ${input.notices.length}건 · 3년 낙찰 refresh ${input.award_refresh?.status ?? 'SKIPPED'} · 실제 Teams 전송 없음`, wrap: true, isSubtle: true }, ...lines, { type: 'TextBlock', text: '정량·가격·리스크는 공개 근거와 저장 평가 기반 보조정보입니다. 경쟁·집중 리스크는 참가자격 risk_band와 별도이며 법적 독점 판정이 아닙니다. 원문과 증빙을 확인한 담당자가 최종 판단합니다.', wrap: true, size: 'Small', isSubtle: true, spacing: 'Large' } ], actions: [{ type: 'Action.OpenUrl', title: '웹에서 근거 확인', url: webBaseUrl }] };\nreturn [{ json: { ...input, adaptiveCard: card, teamsWebhookPayload: { type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: card }] } } }];"
+      },
+      "id": "daily-build-card",
+      "name": "Build Consolidated Teams Adaptive Card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst batch = input.analysis_batch ?? { status: 'SKIPPED', completed: 0, requested: 0 };\nconst ingestion = input.ingestion ?? { status: 'OFFLINE', keywordsUsed: [], counts: { providerQueries: 0 } };\nconst summary = input.adaptiveCard?.body?.[1];\nif (!summary || summary.type !== 'TextBlock' || typeof summary.text !== 'string') throw new Error('Adaptive Card summary block is missing');\nsummary.text = `수집 ${ingestion.status} ${Number(ingestion.counts?.providerQueries ?? 0)}/${Number(ingestion.keywordsUsed?.length ?? 0)} query · 신규 분석 ${batch.status} ${Number(batch.completed ?? 0)}/${Number(batch.requested ?? 0)}건 · ${summary.text}`;\ninput.teamsWebhookPayload.attachments[0].content = input.adaptiveCard;\nreturn [{ json: input }];"
+      },
+      "id": "daily-card-analysis-summary",
+      "name": "Annotate Batch Analysis on Card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2740,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst containers = input.adaptiveCard.body.filter((item) => item.type === 'Container');\ninput.notices.slice(0, containers.length).forEach((notice, index) => {\n  const factSet = containers[index].items?.find((item) => item.type === 'FactSet');\n  if (!factSet || !Array.isArray(factSet.facts)) return;\n  const quant = notice.quantitative_estimate;\n  const quantFact = factSet.facts.find((fact) => fact.title === '정량 예상');\n  if (quantFact && quant?.total_max_points != null && quant?.estimated_points == null && quant?.lower_points != null && quant?.upper_points != null) {\n    quantFact.value = String(quant.lower_points) + '~' + String(quant.upper_points) + ' / ' + String(quant.total_max_points) + '점';\n  }\n  const concentration = notice.pricing_intelligence?.concentration;\n  const top = concentration?.top_winner;\n  let signal = null;\n  if (top?.winner_name && top?.count != null && top?.share != null) {\n    signal = '표본 상위 ' + top.winner_name + ' · ' + top.count + '건 / ' + (Number(top.share) * 100).toFixed(1) + '%';\n  } else if (notice.award_snapshot?.dominant_winner && notice.award_snapshot?.dominant_share_pct != null) {\n    signal = '표본 상위 ' + notice.award_snapshot.dominant_winner + ' · ' + Number(notice.award_snapshot.dominant_share_pct).toFixed(1) + '%';\n  } else if (concentration?.hhi_interpretation) {\n    signal = '표본 HHI ' + concentration.hhi_interpretation;\n  }\n  if (signal) factSet.facts.push({ title: '표본 집중도', value: signal + ' · 독점 확정 아님' });\n});\ninput.teamsWebhookPayload.attachments[0].content = input.adaptiveCard;\nreturn [{ json: input }];"
+      },
+      "id": "daily-card-signals",
+      "name": "Render Score Range and Sample Concentration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nreturn [{ json: { ...input, pushMock: { status: 'MOCK_LOCAL_ONLY', channel: 'teams', delivery_mode: 'mock', persisted: false, correlation_id: `daily-mock:${new Date().toISOString().slice(0, 10)}`, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "daily-mock-push",
+      "name": "Record One Push Mock Locally",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [] };\nconst fallback = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 1, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'manual-fixture', privacyBoundary: { documentBodiesEmitted: false, piiFieldsEmitted: false } };\nconst analysis = input.analysis_batch ?? fallback;\nif (!['SKIPPED','COMPLETED','PARTIAL'].includes(analysis.status)) throw new Error('analysis batch final status invalid');\nfor (const field of ['requested','processed','completed','skipped','failed','documentMaterialized','evaluationsCreated','snapshotsRefreshed','openaiCalls']) { const value = Number(analysis[field] ?? 0); if (!Number.isSafeInteger(value) || value < 0) throw new Error(`analysis batch ${field} invalid`); }\nif (Number(analysis.requested) > 3 || Number(analysis.processed) > Number(analysis.requested) || Number(analysis.processed) !== Number(analysis.completed) + Number(analysis.skipped) + Number(analysis.failed)) throw new Error('analysis batch must remain top-three bounded and count-consistent');\nif (!Array.isArray(analysis.noticeKeys) || analysis.noticeKeys.length !== Number(analysis.requested) || !Array.isArray(analysis.results) || analysis.results.length !== Number(analysis.processed)) throw new Error('analysis batch key/result counts invalid');\nif (analysis.dryRun === true && (Number(analysis.documentMaterialized) || Number(analysis.evaluationsCreated) || Number(analysis.snapshotsRefreshed) || Number(analysis.openaiCalls))) throw new Error('analysis dry-run cannot persist artifacts or call OpenAI');\nif (Number(analysis.openaiCalls) > Number(analysis.requested) * Number(analysis.maxAttachmentsPerNotice ?? 1)) throw new Error('OpenAI calls exceed the attachment budget');\nif (input.runtime?.executionMode === 'manual-fixture') { if (analysis.status !== 'SKIPPED' || analysis.requested !== 0 || input.runtime.analysisBatchEnabled !== false || input.runtime.analysisBatchWriteEnabled !== false) throw new Error('manual analysis batch gate must remain closed'); if (Number(input.source_calls?.openai ?? 0) !== 0) throw new Error('manual analysis path cannot call OpenAI'); }\nreturn [{ json: { ...input, analysis_batch: analysis, enrichment_contract: { ...(input.enrichment_contract ?? {}), analysis_batch: 'top-three-single-attachment-backend-enrichment-or-skipped', analysis_batch_summary: { status: analysis.status, dry_run: analysis.dryRun, requested: analysis.requested, processed: analysis.processed, completed: analysis.completed, skipped: analysis.skipped, failed: analysis.failed, document_materialized: analysis.documentMaterialized, evaluations_created: analysis.evaluationsCreated, snapshots_refreshed: analysis.snapshotsRefreshed, openai_calls: analysis.openaiCalls, enrichment: analysis.enrichment ?? emptyEnrichment } } } }];"
+      },
+      "id": "daily-analysis-final-validate",
+      "name": "Validate End-to-End Analysis Boundary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4060,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (input.adaptiveCard?.type !== 'AdaptiveCard' || input.adaptiveCard?.version !== '1.5') throw new Error('Adaptive Card 1.5 required');\nconst bytes = new TextEncoder().encode(JSON.stringify(input.adaptiveCard)).length; if (bytes > 28 * 1024) throw new Error('Adaptive Card exceeds 28KB');\nif (!Array.isArray(input.adaptiveCard.actions) || !input.adaptiveCard.actions.every((action) => action.type === 'Action.OpenUrl')) throw new Error('card actions must be safe OpenUrl only');\nfor (const action of input.adaptiveCard.actions) { const rawUrl = String(action.url ?? ''); const authority = rawUrl.match(/^https?:\\/\\/([^\\/?#]+)/i)?.[1] ?? ''; if (!authority || authority.includes('@') || /[\\s\\\\]/.test(rawUrl) || rawUrl.length > 2048) throw new Error('card action URL is unsafe'); }\nif (input.pushMock?.actualTeamsRequestSent !== false || input.pushMock?.actualPushSent !== false) throw new Error('actual Teams/push must remain false');\nif (!['MOCK_LOCAL_ONLY','MOCK_RECORDED'].includes(input.pushMock?.status)) throw new Error('mock status contract failed');\nif (Number(input.window?.days) !== 7 || Number(input.retention?.days) !== 7) throw new Error('seven-day policy required');\nif (!Array.isArray(input.notices)) throw new Error('notices must be an array');\nfor (const notice of input.notices) { const fit = notice.fit ?? {}; if (!['PASS','REVIEW','FAIL','PENDING'].includes(fit.eligibility)) throw new Error('eligibility contract failed'); if (!['GO','CONDITIONAL_GO','NO_GO','UNKNOWN'].includes(fit.risk_band)) throw new Error('risk band contract failed'); if (fit.risk_score != null && (!Number.isFinite(Number(fit.risk_score)) || Number(fit.risk_score) < 0 || Number(fit.risk_score) > 100)) throw new Error('risk score contract failed'); const competition = notice.competition_risk ?? notice.pricing_intelligence?.competition_risk; if (competition) { if (!['MODEL_ESTIMATE','UNKNOWN'].includes(competition.status) || !['LOW','MODERATE','HIGH','VERY_HIGH','UNKNOWN'].includes(competition.band) || competition.market_claim !== 'NOT_DETERMINED') throw new Error('competition risk contract failed'); if (competition.status === 'UNKNOWN' && competition.score != null) throw new Error('unknown competition risk must not invent a score'); if (competition.status === 'MODEL_ESTIMATE' && (!Number.isFinite(Number(competition.score)) || Number(competition.score) < 0 || Number(competition.score) > 100)) throw new Error('competition risk score contract failed'); } const quant = notice.quantitative_estimate; if (quant?.lower_points != null && quant?.upper_points != null && Number(quant.lower_points) > Number(quant.upper_points)) throw new Error('quantitative range contract failed'); }\nconst award = input.award_refresh ?? { status: 'SKIPPED', attempted: 0, selected: 0 }; if (!['SKIPPED','COMPLETED','PARTIAL'].includes(award.status) || Number(award.attempted ?? 0) > 3 || Number(award.selected ?? 0) > 3) throw new Error('bounded award refresh contract failed');\nif (input.runtime?.executionMode === 'manual-fixture') { const calls = input.source_calls ?? {}; const total = ['backend','pps','awards','openai','teams_mock_log','teams'].reduce((sum, key) => sum + Number(calls[key] ?? 0), 0); if (total !== 0) throw new Error('manual fixture made an external call'); if (input.runtime.externalCallsAllowed !== false || input.runtime.awardRefreshEnabled !== false || input.runtime.teamsMockLogEnabled !== false) throw new Error('manual fixture gates must be closed'); if (award.status !== 'SKIPPED' || input.pushMock.persisted !== false) throw new Error('manual fixture must skip remote refresh and mock persistence'); }\nconst status = input.runtime?.executionMode === 'manual-fixture' ? 'DRY_RUN_PASSED' : (input.runtime?.executionMode === 'scheduled-live' ? 'BRIEFING_READY' : 'BRIEFING_PREVIEW_READY');\nreturn [{ json: { schemaVersion: '1.3', status, executionMode: input.runtime?.executionMode, schedule: { cron: '0 9 * * *', timezone: 'Asia/Seoul', workflowActive: input.runtime?.triggerSource === 'schedule' }, retention: input.retention, ingestion: input.ingestion ?? null, awardRefresh: award, briefing: { generatedAt: input.generated_at, window: input.window, totals: input.totals, noticeKeys: input.notices.map((item) => item.notice_key) }, enrichmentContract: input.enrichment_contract, notificationMock: input.pushMock, adaptiveCard: input.adaptiveCard, teamsWebhookPayload: input.teamsWebhookPayload, externalCalls: input.source_calls ?? { backend: 0, pps: 0, awards: 0, openai: 0, teams_mock_log: 0, teams: 0 }, actualTeamsRequestSent: false, actualPushSent: false } }];"
+      },
+      "id": "daily-validate",
+      "name": "Validate Complete Dry-Run Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4300,
+        700
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "daily-complete",
+      "name": "Ready for Operator Review",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4540,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('PPS ingestion response must be an object');\nconst requireString = (field) => { const value = response[field]; if (typeof value !== 'string' || !value) throw new Error(`${field} must be a non-empty string`); return value; };\nconst requireCount = (field) => { const value = response[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`); return value; };\nconst ingestionStatus = requireString('status');\nif (requireString('source') !== 'PPS' || requireString('mode') !== 'live' || !['COMPLETED','PARTIAL'].includes(ingestionStatus)) throw new Error('PPS source/mode/status contract failed');\nif (!response.window || typeof response.window.from !== 'string' || typeof response.window.to !== 'string') throw new Error('PPS window must contain from/to');\nif (!Array.isArray(response.notice_keys) || !response.notice_keys.every((value) => typeof value === 'string' && value.length <= 160)) throw new Error('notice_keys must be bounded strings');\nif (!Array.isArray(response.keywords_used) || response.keywords_used.length > 30 || !response.keywords_used.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 100)) throw new Error('keywords_used must be a bounded string array');\nif (!Array.isArray(response.warnings) || !response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('warnings must be bounded strings');\nif (typeof response.dry_run !== 'boolean' || response.dry_run !== false) throw new Error('scheduled PPS ingestion must be a live metadata write');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst providerQueryCount = requireCount('provider_queries');\nif (ingestionStatus === 'COMPLETED' && providerQueryCount !== response.keywords_used.length) throw new Error('completed PPS ingestion must execute every planned keyword query');\nif (ingestionStatus === 'PARTIAL' && (response.warnings.length === 0 || providerQueryCount > response.keywords_used.length)) throw new Error('partial PPS ingestion requires bounded executed queries and warning evidence');\nconst departmentCoverageCount = requireCount('department_coverage_count');\nif (runtime.useProfileKeywords === true) { const baseline = runtime.collectionKeywords ?? []; if (departmentCoverageCount !== 24 || response.keywords_used.length < baseline.length + 24 || baseline.some((value, index) => response.keywords_used[index] !== value)) throw new Error('organization keyword coverage contract failed'); }\nreturn [{ json: { runtime, ingestion: { status: ingestionStatus, jobId: requireString('job_id'), window: response.window, dryRun: response.dry_run, keywordsUsed: response.keywords_used.slice(0, 30), profileDepartmentIds: runtime.profileDepartmentIds, counts: { apiCalls: requireCount('api_calls'), providerQueries: providerQueryCount, departmentCoverageCount, fetched: requireCount('fetched'), matched: requireCount('matched'), created: requireCount('created'), updated: requireCount('updated'), duplicates: requireCount('duplicates'), quarantined: requireCount('quarantined'), manifestsCreated: requireCount('manifests_created'), manifestsReused: requireCount('manifests_reused'), attachmentsDiscovered: requireCount('attachments_discovered') }, noticeKeys: [...new Set(response.notice_keys)].slice(0, 300), warnings: response.warnings.slice(0, 20) } } }];"
+      },
+      "id": "daily-validate-pps",
+      "name": "Validate PPS Ingestion Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const current = $json;\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst briefing = $node['Fetch Award Candidates from Seven-Day Briefing'].json;\nconst validated = { ...current, runtime, ingestion };\nif (!runtime || !Array.isArray(ingestion?.noticeKeys)) throw new Error('validated PPS ingestion context is required');\nconst maxItems = Math.min(3, Math.max(1, Number(runtime.maxAnalysisBatchNotices ?? 3)));\nconst maxAttachmentsPerNotice = Math.min(1, Math.max(1, Number(runtime.maxAttachmentsPerNotice ?? 1)));\nconst queue = briefing?.analysis_queue;\nconst hasQueueContract = queue && Array.isArray(queue.notice_keys) && queue.policy === 'NOT_ANALYZED_FIRST';\nconst candidates = hasQueueContract ? queue.notice_keys : validated.ingestion.noticeKeys;\nconst noticeKeys = [...new Set(candidates.map((value) => String(value).trim()).filter((value) => value && value.length <= 160 && !/[\\u0000-\\u001f\\u007f]/.test(value)))].slice(0, maxItems);\nconst enabled = runtime.analysisBatchEnabled === true && noticeKeys.length > 0;\nreturn [{ json: { ...validated, analysisBatch: { status: enabled ? 'PLANNED' : 'SKIPPED', enabled, writeEnabled: runtime.analysisBatchWriteEnabled === true, dryRun: runtime.analysisBatchWriteEnabled !== true, force: false, enrichMissing: runtime.enrichMissing === true, maxAttachmentsPerNotice, limit: maxItems, noticeKeys, requested: noticeKeys.length, queuePolicy: hasQueueContract ? queue.policy : 'INGESTION_FALLBACK', pendingTotal: hasQueueContract ? Number(queue.pending_total ?? noticeKeys.length) : noticeKeys.length, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [] }, results: [], warnings: [], skippedReason: enabled ? null : (runtime.analysisBatchEnabled === true ? 'analysis-backlog-empty' : 'gate-closed'), privacyBoundary: { documentBodiesEmitted: false, piiFieldsEmitted: false } } } }];"
+      },
+      "id": "daily-analysis-plan",
+      "name": "Build Bounded Batch Analysis Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        1260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-analysis-batch-gate-condition",
+              "leftValue": "={{ $json.analysisBatch.enabled === true && $json.analysisBatch.noticeKeys.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-analysis-gate",
+      "name": "Batch Analysis Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -60,
+        1260
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/notices/analysis/batch' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'analysis:daily:' + $now.setZone('Asia/Seoul').toFormat('yyyy-MM-dd') + ':' + $json.analysisBatch.dryRun }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-analysis-v2"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ notice_keys: $json.analysisBatch.noticeKeys, dry_run: $json.analysisBatch.dryRun, force: false, enrich_missing: $json.analysisBatch.enrichMissing, max_notices: $json.analysisBatch.limit, max_attachments_per_notice: $json.analysisBatch.maxAttachmentsPerNotice }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "daily-analysis-batch",
+      "name": "Analyze Evaluate and Snapshot PPS Notices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        180,
+        1180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst plan = $node['Build Bounded Batch Analysis Plan'].json;\nif (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('batch analysis response must be an object');\nconst required = new Set(['job_id','status','dry_run','requested','processed','completed','skipped','failed','document_materialized','evaluations_created','snapshots_refreshed','openai_calls','results','warnings']);\nconst allowed = new Set([...required, 'enrichment']);\nconst unexpected = Object.keys(response).filter((key) => !allowed.has(key));\nif (unexpected.length) throw new Error(`batch analysis unexpected fields: ${unexpected.join(',')}`);\nfor (const key of required) if (!Object.prototype.hasOwnProperty.call(response, key)) throw new Error(`batch analysis missing ${key}`);\nif (typeof response.job_id !== 'string' || !response.job_id || !['COMPLETED','PARTIAL'].includes(response.status) || typeof response.dry_run !== 'boolean') throw new Error('batch analysis identity/status contract failed');\nif (response.dry_run !== plan.analysisBatch.dryRun) throw new Error('batch analysis dry-run contract failed');\nconst count = (object, field) => { const value = object[field]; if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`); return value; };\nconst requested = count(response, 'requested'); const processed = count(response, 'processed'); const completed = count(response, 'completed'); const skipped = count(response, 'skipped'); const failed = count(response, 'failed');\nconst documentMaterialized = count(response, 'document_materialized'); const evaluationsCreated = count(response, 'evaluations_created'); const snapshotsRefreshed = count(response, 'snapshots_refreshed'); const openaiCalls = count(response, 'openai_calls');\nif (requested !== plan.analysisBatch.noticeKeys.length || processed !== completed + skipped + failed || processed > requested) throw new Error('batch analysis aggregate counts are inconsistent');\nif (!Array.isArray(response.results) || response.results.length !== processed || !Array.isArray(response.warnings)) throw new Error('batch analysis results/warnings contract failed');\nif (!response.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('batch analysis warnings must be bounded strings');\nif (response.status === 'PARTIAL' && failed === 0 && response.warnings.length === 0) throw new Error('PARTIAL batch analysis requires failure or warning evidence');\nif (response.dry_run === true && (documentMaterialized || evaluationsCreated || snapshotsRefreshed || openaiCalls)) throw new Error('dry-run batch analysis cannot persist artifacts or call OpenAI');\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet enrichment = emptyEnrichment;\nif (response.enrichment != null) {\n  const value = response.enrichment;\n  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('enrichment must be an object');\n  const enrichmentFields = new Set(['requested','attempted','completed','skipped','failed','attachments_discovered','attachments_processed','openai_calls','warnings']);\n  const extra = Object.keys(value).filter((key) => !enrichmentFields.has(key)); if (extra.length) throw new Error(`enrichment unexpected fields: ${extra.join(',')}`);\n  for (const key of enrichmentFields) if (!Object.prototype.hasOwnProperty.call(value, key)) throw new Error(`enrichment missing ${key}`);\n  const enrichmentRequested = count(value, 'requested'); const attempted = count(value, 'attempted'); const enrichmentCompleted = count(value, 'completed'); const enrichmentSkipped = count(value, 'skipped'); const enrichmentFailed = count(value, 'failed'); const attachmentsDiscovered = count(value, 'attachments_discovered'); const attachmentsProcessed = count(value, 'attachments_processed'); const enrichmentOpenaiCalls = count(value, 'openai_calls');\n  if (enrichmentRequested > requested || attempted !== enrichmentCompleted + enrichmentSkipped + enrichmentFailed || attempted > enrichmentRequested) throw new Error('enrichment aggregate counts are inconsistent');\n  if (attachmentsProcessed > attempted * Number(plan.analysisBatch.maxAttachmentsPerNotice ?? 1) || enrichmentOpenaiCalls > attachmentsProcessed || enrichmentOpenaiCalls !== openaiCalls) throw new Error('enrichment attachment/OpenAI budget is inconsistent');\n  if (!Array.isArray(value.warnings) || !value.warnings.every((item) => typeof item === 'string' && item.length <= 500)) throw new Error('enrichment warnings must be bounded strings');\n  enrichment = { requested: enrichmentRequested, attempted, completed: enrichmentCompleted, skipped: enrichmentSkipped, failed: enrichmentFailed, attachmentsDiscovered, attachmentsProcessed, openaiCalls: enrichmentOpenaiCalls, warnings: value.warnings.slice(0, 20), available: true };\n}\nconst allowedResult = new Set(['notice_key','status','document_status','evaluation_status','snapshot_status','analysis_state','analysis_reason_code','analysis_reason','analysis_run_id','evaluation_id','notice_version_id','input_sha256','reused','materialized_requirements','requirement_snapshots','score_snapshots','recommendation_snapshots','warnings']);\nconst planned = new Set(plan.analysisBatch.noticeKeys); const seen = new Set();\nconst results = response.results.map((item) => { if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('batch result must be an object'); const extra = Object.keys(item).filter((key) => !allowedResult.has(key)); if (extra.length) throw new Error(`batch result unexpected fields: ${extra.join(',')}`); for (const key of allowedResult) if (!Object.prototype.hasOwnProperty.call(item, key)) throw new Error(`batch result missing ${key}`); const noticeKey = String(item.notice_key ?? ''); if (!planned.has(noticeKey) || seen.has(noticeKey)) throw new Error('batch result notice key is unplanned or duplicated'); seen.add(noticeKey); if (!['COMPLETED','SKIPPED','FAILED'].includes(item.status)) throw new Error('batch result status invalid'); if (!['ANALYZED','REVIEW','PENDING'].includes(item.analysis_state)) throw new Error('batch result analysis_state invalid'); if (!['ANALYZED','ATTACHMENT_NONE','HWP_ONLY_UNSUPPORTED','HWPX_EXTRACT_FAILED','PDF_EXTRACT_FAILED','OPENAI_REVIEW','QUOTE_UNVERIFIED','NOT_SELECTED'].includes(item.analysis_reason_code)) throw new Error('batch result analysis_reason_code invalid'); if (typeof item.analysis_reason !== 'string' || !item.analysis_reason.trim() || item.analysis_reason.length > 500) throw new Error('batch result analysis_reason invalid'); for (const field of ['document_status','evaluation_status','snapshot_status']) if (typeof item[field] !== 'string' || !item[field] || item[field].length > 80) throw new Error(`batch result ${field} invalid`); for (const field of ['analysis_run_id','evaluation_id','notice_version_id']) if (item[field] != null && (typeof item[field] !== 'string' || !item[field] || item[field].length > 160)) throw new Error(`batch result ${field} invalid`); if (item.input_sha256 != null && (typeof item.input_sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(item.input_sha256))) throw new Error('batch result input_sha256 invalid'); if (typeof item.reused !== 'boolean') throw new Error('batch result reused must be boolean'); for (const field of ['materialized_requirements','requirement_snapshots','score_snapshots','recommendation_snapshots']) if (!Number.isSafeInteger(item[field]) || item[field] < 0) throw new Error(`batch result ${field} invalid`); if (!Array.isArray(item.warnings) || !item.warnings.every((value) => typeof value === 'string' && value.length <= 500)) throw new Error('batch result warnings invalid'); return { noticeKey, status: item.status, documentStatus: item.document_status, evaluationStatus: item.evaluation_status, snapshotStatus: item.snapshot_status, analysisState: item.analysis_state, analysisReasonCode: item.analysis_reason_code, analysisReason: item.analysis_reason, analysisRunId: item.analysis_run_id ?? null, evaluationId: item.evaluation_id ?? null, noticeVersionId: item.notice_version_id ?? null, inputSha256: item.input_sha256 ?? null, reused: item.reused, materializedRequirements: item.materialized_requirements, requirementSnapshots: item.requirement_snapshots, scoreSnapshots: item.score_snapshots, recommendationSnapshots: item.recommendation_snapshots, warnings: item.warnings.slice(0, 20) }; });\nreturn [{ json: { ...plan, analysisBatch: { ...plan.analysisBatch, status: response.status, jobId: response.job_id, requested, processed, completed, skipped, failed, documentMaterialized, evaluationsCreated, snapshotsRefreshed, openaiCalls, enrichment, results, warnings: response.warnings.slice(0, 20), skippedReason: null } } }];"
+      },
+      "id": "daily-analysis-validate",
+      "name": "Validate Batch Analysis Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        1180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst batch = input.analysisBatch;\nif (!batch || !Array.isArray(batch.results)) throw new Error('validated analysis batch summary is required');\nconst byStatus = { COMPLETED: 0, SKIPPED: 0, FAILED: 0 };\nfor (const result of batch.results) { if (!Object.prototype.hasOwnProperty.call(byStatus, result.status)) throw new Error('analysis batch normalized result status invalid'); byStatus[result.status] += 1; }\nif (byStatus.COMPLETED !== Number(batch.completed) || byStatus.SKIPPED !== Number(batch.skipped) || byStatus.FAILED !== Number(batch.failed)) throw new Error('analysis batch aggregate counts do not match result rows');\nif (Number(batch.documentMaterialized) > Number(batch.completed) || Number(batch.evaluationsCreated) > Number(batch.completed) || Number(batch.snapshotsRefreshed) > Number(batch.completed)) throw new Error('analysis batch persisted counts exceed completed notices');\nif (Number(batch.requested) > 3 || Number(batch.openaiCalls) > Number(batch.requested) * Number(batch.maxAttachmentsPerNotice ?? 1)) throw new Error('analysis batch exceeds the top-three single-attachment OpenAI budget');\nif (batch.enrichment?.available === true && Number(batch.enrichment.openaiCalls) !== Number(batch.openaiCalls)) throw new Error('analysis and enrichment OpenAI counts must agree');\nreturn [{ json: input }];"
+      },
+      "id": "daily-analysis-invariants",
+      "name": "Verify Batch Analysis Aggregate Invariants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        1180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $json;\nreturn [{ json: { ...plan, analysisBatch: { ...plan.analysisBatch, status: 'SKIPPED', processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, results: [], warnings: [], privacyBoundary: { documentBodiesEmitted: false, piiFieldsEmitted: false } } } }];"
+      },
+      "id": "daily-analysis-skipped",
+      "name": "Record Batch Analysis Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!response || Number(response.retention_days) !== 7 || typeof response.dry_run !== 'boolean') throw new Error('seven-day retention response contract failed');\nconst safeCounts = (value, label) => { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`); const result = {}; for (const [key, count] of Object.entries(value)) { if (!Number.isSafeInteger(count) || count < 0) throw new Error(`${label}.${key} must be a non-negative integer`); result[key] = count; } return result; };\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nif (runtime.retentionLiveEnabled !== true && response.dry_run !== true) throw new Error('retention must remain dry-run while its gate is closed');\nreturn [{ json: { runtime, retention: { days: 7, mode: response.dry_run ? 'preview' : 'applied', cutoff_at: response.cutoff_at ?? null, eligible: safeCounts(response.eligible, 'eligible'), deleted: safeCounts(response.deleted, 'deleted'), canonical_records_preserved: Array.isArray(response.preserved) && response.preserved.includes('notices') && response.preserved.includes('award_history_items') } } }];"
+      },
+      "id": "daily-validate-retention",
+      "name": "Validate Seven-Day Retention Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=20' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-fetch-award-candidates",
+      "name": "Fetch Award Candidates from Seven-Day Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!body || body.timezone !== 'Asia/Seoul' || Number(body.window?.days) !== 7 || !Array.isArray(body.notices)) throw new Error('pre-refresh briefing must be a seven-day Asia/Seoul notice list');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst ingested = new Set($node['Validate PPS Ingestion Contract'].json.ingestion.noticeKeys ?? []);\nconst maxItems = Math.min(3, Math.max(1, Number(runtime.maxAwardRefreshNotices ?? 3)));\nconst byKey = new Map(body.notices.filter((item) => item && typeof item.notice_key === 'string' && item.notice_key).map((item) => [item.notice_key, item]));\nconst ingestedCandidates = [...ingested].map((noticeKey) => { const item = byKey.get(noticeKey) ?? {}; return { noticeKey, title: String(item.title ?? '').slice(0, 500), priorityScore: Number(item.priority_score ?? 0), observations: Number(item.award_snapshot?.observations ?? 0), source: 'INGESTED_TODAY' }; });\nconst fallbackCandidates = body.notices.filter((item) => item && typeof item.notice_key === 'string' && item.notice_key && !ingested.has(item.notice_key) && item.fit?.eligibility !== 'FAIL').map((item) => ({ noticeKey: item.notice_key, title: String(item.title ?? '').slice(0, 500), priorityScore: Number(item.priority_score ?? 0), observations: Number(item.award_snapshot?.observations ?? 0), source: 'SEVEN_DAY_BRIEFING' })).sort((a, b) => a.observations - b.observations || b.priorityScore - a.priorityScore);\nconst candidates = [...ingestedCandidates, ...fallbackCandidates].slice(0, maxItems);\nconst enabled = runtime.awardRefreshEnabled === true && candidates.length > 0;\nreturn [{ json: { runtime, awardRefresh: { status: enabled ? 'PLANNED' : 'SKIPPED', enabled, writeEnabled: runtime.awardRefreshWriteEnabled === true, dryRun: runtime.awardRefreshWriteEnabled !== true, years: 3, pageSize: 100, maxPagesPerWindow: 1, limit: maxItems, candidates, selected: candidates.length, attempted: 0, completed: 0, skippedReason: enabled ? null : (runtime.awardRefreshEnabled === true ? 'no-eligible-candidates' : 'gate-closed') } } }];"
+      },
+      "id": "daily-award-plan",
+      "name": "Build Bounded Award Refresh Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-award-gate-condition",
+              "leftValue": "={{ $json.awardRefresh.enabled === true && $json.awardRefresh.candidates.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-award-gate",
+      "name": "Award Refresh Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $json;\nif (plan.runtime?.awardRefreshEnabled !== true || !Array.isArray(plan.awardRefresh?.candidates)) throw new Error('award refresh gate or candidate contract missing');\nreturn plan.awardRefresh.candidates.slice(0, plan.awardRefresh.limit).map((candidate) => { const noticeKey = String(candidate.noticeKey ?? ''); if (!noticeKey || noticeKey.length > 160 || /[\\/\\u0000-\\u001f\\u007f]/.test(noticeKey)) throw new Error('unsafe award notice key'); const day = new Date().toISOString().slice(0, 10); return { json: { runtime: plan.runtime, candidate, endpointPath: `/api/v1/notices/${encodeURIComponent(noticeKey)}/award-history/refresh`, idempotencyKey: `award:daily:${noticeKey.replace(/[^a-zA-Z0-9가-힣._:-]/g, '_').slice(0, 60)}:${day}:3y:${plan.awardRefresh.dryRun ? 'dry' : 'live'}`, request: { years: 3, page_size: 100, max_pages_per_window: 1, dry_run: plan.awardRefresh.dryRun } } }; });"
+      },
+      "id": "daily-award-expand",
+      "name": "Expand Bounded Award Refresh Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + $json.endpointPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.idempotencyKey }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-award-v2"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "daily-award-refresh",
+      "name": "Refresh Bounded Three-Year Award History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst plan = $node['Build Bounded Award Refresh Plan'].json;\nif (!items.length || items.length > plan.awardRefresh.limit) throw new Error('award refresh batch size is invalid');\nconst allowed = new Set(['job_id','status','notice_key','keyword','window','api_calls','fetched','created','updated','duplicates','records','dry_run','warnings']);\nconst summaries = items.map((item) => { const response = item.json?.body && typeof item.json.body === 'object' ? item.json.body : item.json; if (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('award response must be an object'); const unexpected = Object.keys(response).filter((key) => !allowed.has(key)); if (unexpected.length) throw new Error(`award response unexpected fields: ${unexpected.join(',')}`); for (const key of allowed) if (!Object.prototype.hasOwnProperty.call(response, key)) throw new Error(`award response missing ${key}`); if (!['COMPLETED','PARTIAL'].includes(response.status)) throw new Error('award status invalid'); if (typeof response.notice_key !== 'string' || !response.notice_key || typeof response.keyword !== 'string' || response.keyword.length < 2) throw new Error('award identity fields invalid'); if (!response.window || !/^\\d{4}-\\d{2}-\\d{2}$/.test(response.window.from) || !/^\\d{4}-\\d{2}-\\d{2}$/.test(response.window.to)) throw new Error('award window invalid'); if (typeof response.dry_run !== 'boolean' || response.dry_run !== plan.awardRefresh.dryRun) throw new Error('award dry-run contract failed'); if (!Array.isArray(response.warnings) || (response.status === 'PARTIAL' && response.warnings.length === 0)) throw new Error('award warnings contract failed'); for (const field of ['api_calls','fetched','created','updated','duplicates','records']) if (!Number.isSafeInteger(response[field]) || response[field] < 0) throw new Error(`award ${field} invalid`); return { noticeKey: response.notice_key, status: response.status, records: response.records, dryRun: response.dry_run, warnings: response.warnings.slice(0, 20) }; });\nreturn [{ json: { runtime: plan.runtime, awardRefresh: { ...plan.awardRefresh, status: summaries.some((item) => item.status === 'PARTIAL') ? 'PARTIAL' : 'COMPLETED', attempted: summaries.length, completed: summaries.filter((item) => item.status === 'COMPLETED').length, summaries, privacyBoundary: { candidateRowsEmitted: false, piiFieldsEmitted: false } } } }];",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "daily-award-validate-batch",
+      "name": "Validate Award Refresh Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $json;\nreturn [{ json: { runtime: plan.runtime, awardRefresh: { ...plan.awardRefresh, status: 'SKIPPED', attempted: 0, completed: 0, summaries: [], privacyBoundary: { candidateRowsEmitted: false, piiFieldsEmitted: false } } } }];"
+      },
+      "id": "daily-award-skipped",
+      "name": "Record Award Refresh Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        1080
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "daily-mock-log-gate-condition",
+              "leftValue": "={{ $json.runtime?.teamsMockLogEnabled === true && Array.isArray($json.notices) && $json.notices.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "daily-mock-log-gate",
+      "name": "Backend Teams Mock Log Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3100,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst noticeKey = String(input.notices?.[0]?.notice_key ?? '');\nif (!noticeKey || noticeKey.length > 160 || /[\\/\\u0000-\\u001f\\u007f]/.test(noticeKey)) throw new Error('a safe anchor notice key is required for mock logging');\nconst correlationId = `daily-mock:${new Date().toISOString().slice(0, 10)}`;\nreturn [{ json: { ...input, mockRequest: { noticeKey, endpointPath: `/api/v1/notices/${encodeURIComponent(noticeKey)}/notifications/teams/mock`, correlationId, body: { card: input.adaptiveCard, channel: 'teams', delivery_mode: 'mock', correlation_id: correlationId } } } }];"
+      },
+      "id": "daily-build-mock-request",
+      "name": "Build Backend Teams Mock Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + $json.mockRequest.endpointPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ $json.mockRequest.correlationId }}"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-teams-mock-v2"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.mockRequest.body) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "daily-record-backend-mock",
+      "name": "Record Consolidated Teams Mock in Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3580,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst input = $node['Build Backend Teams Mock Request'].json;\nif (!response || response.channel !== 'teams' || response.delivery_mode !== 'mock' || response.status !== 'MOCK_RECORDED') throw new Error('backend Teams mock record contract failed');\nif (response.notice_key !== input.mockRequest.noticeKey || response.correlation_id !== input.mockRequest.correlationId) throw new Error('backend Teams mock identity contract failed');\nif (!response.card || response.card.type !== 'AdaptiveCard' || response.card.version !== '1.5') throw new Error('backend Teams mock card contract failed');\nreturn [{ json: { ...input, source_calls: { ...(input.source_calls ?? {}), backend: Number(input.source_calls?.backend ?? 0) + 1, teams_mock_log: 1, teams: 0 }, pushMock: { status: 'MOCK_RECORDED', channel: 'teams', delivery_mode: 'mock', persisted: true, record_id: String(response.id ?? ''), correlation_id: response.correlation_id, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "daily-attach-backend-mock",
+      "name": "Validate Backend Teams Mock Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3820,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "Run Complete Offline Dry-Run": {
+      "main": [
+        [
+          {
+            "node": "Force Zero-Call Manual Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force Zero-Call Manual Context": {
+      "main": [
+        [
+          {
+            "node": "Build Seven-Day Offline Fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Day 09:00 KST": {
+      "main": [
+        [
+          {
+            "node": "Scheduled Runtime Gates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduled Runtime Gates": {
+      "main": [
+        [
+          {
+            "node": "Scheduled Live Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduled Live Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Refresh PPS Notices Behind Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Seven-Day Offline Fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh PPS Notices Behind Gate": {
+      "main": [
+        [
+          {
+            "node": "Validate PPS Ingestion Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate PPS Ingestion Contract": {
+      "main": [
+        [
+          {
+            "node": "Preview or Apply Seven-Day Log Retention",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Bounded Batch Analysis Plan": {
+      "main": [
+        [
+          {
+            "node": "Batch Analysis Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch Analysis Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Analyze Evaluate and Snapshot PPS Notices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Batch Analysis Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Evaluate and Snapshot PPS Notices": {
+      "main": [
+        [
+          {
+            "node": "Validate Batch Analysis Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Batch Analysis Contract": {
+      "main": [
+        [
+          {
+            "node": "Verify Batch Analysis Aggregate Invariants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Batch Analysis Aggregate Invariants": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ranked Seven-Day Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Batch Analysis Skipped": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ranked Seven-Day Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preview or Apply Seven-Day Log Retention": {
+      "main": [
+        [
+          {
+            "node": "Validate Seven-Day Retention Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Seven-Day Retention Contract": {
+      "main": [
+        [
+          {
+            "node": "Fetch Award Candidates from Seven-Day Briefing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Award Candidates from Seven-Day Briefing": {
+      "main": [
+        [
+          {
+            "node": "Build Bounded Award Refresh Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Bounded Award Refresh Plan": {
+      "main": [
+        [
+          {
+            "node": "Award Refresh Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Award Refresh Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Expand Bounded Award Refresh Requests",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Award Refresh Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Bounded Award Refresh Requests": {
+      "main": [
+        [
+          {
+            "node": "Refresh Bounded Three-Year Award History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Bounded Three-Year Award History": {
+      "main": [
+        [
+          {
+            "node": "Validate Award Refresh Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Award Refresh Batch": {
+      "main": [
+        [
+          {
+            "node": "Build Bounded Batch Analysis Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Award Refresh Skipped": {
+      "main": [
+        [
+          {
+            "node": "Build Bounded Batch Analysis Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Ranked Seven-Day Briefing": {
+      "main": [
+        [
+          {
+            "node": "Attach Live Runtime Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Live Runtime Contract": {
+      "main": [
+        [
+          {
+            "node": "Normalize Optional Quant and Pricing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Seven-Day Offline Fixture": {
+      "main": [
+        [
+          {
+            "node": "Normalize Optional Quant and Pricing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Optional Quant and Pricing": {
+      "main": [
+        [
+          {
+            "node": "Build Consolidated Teams Adaptive Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Consolidated Teams Adaptive Card": {
+      "main": [
+        [
+          {
+            "node": "Annotate Batch Analysis on Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Annotate Batch Analysis on Card": {
+      "main": [
+        [
+          {
+            "node": "Render Score Range and Sample Concentration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Score Range and Sample Concentration": {
+      "main": [
+        [
+          {
+            "node": "Backend Teams Mock Log Gate Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backend Teams Mock Log Gate Open?": {
+      "main": [
+        [
+          {
+            "node": "Build Backend Teams Mock Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record One Push Mock Locally",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Backend Teams Mock Request": {
+      "main": [
+        [
+          {
+            "node": "Record Consolidated Teams Mock in Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Consolidated Teams Mock in Backend": {
+      "main": [
+        [
+          {
+            "node": "Validate Backend Teams Mock Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Backend Teams Mock Record": {
+      "main": [
+        [
+          {
+            "node": "Validate End-to-End Analysis Boundary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record One Push Mock Locally": {
+      "main": [
+        [
+          {
+            "node": "Validate End-to-End Analysis Boundary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate End-to-End Analysis Boundary": {
+      "main": [
+        [
+          {
+            "node": "Validate Complete Dry-Run Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Complete Dry-Run Contract": {
+      "main": [
+        [
+          {
+            "node": "Ready for Operator Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

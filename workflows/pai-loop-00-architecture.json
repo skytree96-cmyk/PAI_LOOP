@@ -19,7 +19,7 @@
         "width": 480,
         "height": 420,
         "color": 5,
-        "content": "## DISCOVER · 수집\n\n- 조달청 공고 API\n- 첨부파일 원본·해시\n- 회사 자격·실적 증빙\n- n8n은 일정, 재시도, 중복방지 담당\n\n**실패 원칙**\n원문 또는 첨부 수집 실패는 자동 PASS가 아니라 REVIEW로 보냅니다."
+        "content": "## DISCOVER · 수집\n\n- 조달청 공고 API\n- 공고별 최근 3년 낙찰 유사 후보\n- 첨부파일 원본·해시\n- 회사 자격·실적 증빙\n- n8n은 일정, 재시도, 중복방지 담당\n\n**실패 원칙**\n원문·첨부 또는 낙찰 구간 수집 실패는 자동 확정이 아니라 REVIEW/PARTIAL로 보냅니다."
       },
       "id": "arch-note-discover",
       "name": "DISCOVER layer",
@@ -45,7 +45,7 @@
         "width": 1000,
         "height": 420,
         "color": 6,
-        "content": "## LEARN · 전달과 환류\n\n- PostgreSQL: 공고, 마감일 스냅샷, 판정, 예외, 결과 이력\n- Object Storage: 원본 첨부, 변환본, SHA-256\n- Web Dashboard: 근거 검토와 담당자 GO/보류/포기\n- Teams: 새 공고 알림과 대시보드 진입점\n- 개찰·낙찰·계약 결과를 다음 판단에 환류\n\n결과 환류는 모델 자동학습이 아니라 검토 가능한 기록부터 시작합니다."
+        "content": "## LEARN · 전달과 환류\n\n- PostgreSQL: 공고, 마감일 스냅샷, 판정, 예외, 3년 낙찰 후보\n- Object Storage: 원본 첨부, 변환본, SHA-256\n- Web Dashboard: 근거·낙찰 유사도 검토와 담당자 GO/보류/포기\n- Teams: 승인 전까지 Adaptive Card mock과 대시보드 진입점\n- 개찰·낙찰·계약 결과를 다음 판단에 환류\n\n낙찰 후보는 동일 사업 확정이 아니며, 결과 환류는 검토 가능한 기록부터 시작합니다."
       },
       "id": "arch-note-learn",
       "name": "LEARN layer",
@@ -119,6 +119,14 @@
     },
     {
       "parameters": {},
+      "id": "arch-award-history",
+      "name": "3-Year Award Candidates",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [-120, 380]
+    },
+    {
+      "parameters": {},
       "id": "arch-openai-extractor",
       "name": "OpenAI Structured Extractor",
       "type": "n8n-nodes-base.noOp",
@@ -179,7 +187,10 @@
       "main": [[{"node": "n8n Orchestrator", "type": "main", "index": 0}]]
     },
     "n8n Orchestrator": {
-      "main": [[{"node": "Document Worker", "type": "main", "index": 0}]]
+      "main": [[
+        {"node": "Document Worker", "type": "main", "index": 0},
+        {"node": "3-Year Award Candidates", "type": "main", "index": 0}
+      ]]
     },
     "Document Worker": {
       "main": [[{"node": "OpenAI Structured Extractor", "type": "main", "index": 0}]]
@@ -188,6 +199,9 @@
       "main": [[{"node": "Deterministic Rule Gate", "type": "main", "index": 0}]]
     },
     "Deterministic Rule Gate": {
+      "main": [[{"node": "PostgreSQL + Object Store", "type": "main", "index": 0}]]
+    },
+    "3-Year Award Candidates": {
       "main": [[{"node": "PostgreSQL + Object Store", "type": "main", "index": 0}]]
     },
     "PostgreSQL + Object Store": {

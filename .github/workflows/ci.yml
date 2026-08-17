@@ -29,6 +29,34 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Verify public-release boundary
+        shell: python
+        run: |
+          import subprocess
+          from pathlib import Path
+
+          forbidden = {
+              Path("src/pai_loop/private_import.py"),
+              Path("src/pai_loop/private_fact_matching.py"),
+              Path("tools/import_private_company_data.py"),
+              Path("tools/extract_workspace_catalog.py"),
+              Path("tools/build_public_performance_seed.py"),
+              Path("tests/test_private_import.py"),
+              Path("tests/test_private_fact_matching.py"),
+              Path("docs/PRIVATE_DATA_IMPORT.md"),
+              Path("docs/REAL_DATA_RUNBOOK_v0.2.0.md"),
+              Path("docs/RELEASE_CHECKLIST_v0.2.0.md"),
+          }
+          output = subprocess.check_output(["git", "ls-files", "-z"])
+          tracked = {Path(raw.decode("utf-8")) for raw in output.split(b"\0") if raw}
+          found = sorted(forbidden.intersection(tracked))
+          if found:
+              raise SystemExit(
+                  "Public release contains local-only source adapters: "
+                  + ", ".join(str(path) for path in found)
+              )
+          print("Public-release boundary excludes all local-only source adapters")
+
       - name: Install application and test dependencies
         run: python -m pip install --disable-pip-version-check -e ".[test]"
 
@@ -65,11 +93,46 @@ jobs:
               "pai_loop/static/app.js",
               "pai_loop/static/favicon.svg",
               "pai_loop/data/rules_v2_1.json",
+              "pai_loop/data/company_public_profile.json",
+              "pai_loop/data/department_keyword_profiles.json",
+              "pai_loop/data/public_performance_seed_v1.json",
+              "pai_loop/data/public_notice_seed_v1.json",
+              "pai_loop/data/public_award_history_seed_v1.json",
+              "pai_loop/data/pricing_method_profiles_v1.json",
+              "pai_loop/data/quantitative_notice_profiles.json",
+              "pai_loop/award_intelligence.py",
+              "pai_loop/pricing_profiles.py",
+              "pai_loop/public_award_seed.py",
+              "pai_loop/quantitative_scoring.py",
+              "pai_loop/daily_operations.py",
+              "pai_loop/department_ranking.py",
+              "pai_loop/eligibility_policy.py",
+              "pai_loop/public_performance.py",
+              "pai_loop/public_notice_seed.py",
+              "pai_loop/public_notice_cli.py",
+              "pai_loop/integrations/awards.py",
+              "pai_loop/analysis_pipeline.py",
+              "pai_loop/analysis_api.py",
+              "pai_loop/reference_registry.py",
+              "pai_loop/reference_api.py",
+              "pai_loop/outcomes_api.py",
+              "pai_loop/migrations.py",
+          }
+          forbidden = {
+              "pai_loop/private_import.py",
+              "pai_loop/private_fact_matching.py",
           }
           with zipfile.ZipFile(wheels[0]) as package:
-              missing = required.difference(package.namelist())
+              packaged = set(package.namelist())
+              missing = required.difference(packaged)
+              excluded_present = forbidden.intersection(packaged)
           if missing:
               raise SystemExit("Release wheel is missing: " + ", ".join(sorted(missing)))
+          if excluded_present:
+              raise SystemExit(
+                  "Release wheel contains local-only module(s): "
+                  + ", ".join(sorted(excluded_present))
+              )
           print(f"Release wheel contains all {len(required)} required runtime asset(s)")
 
       - name: Set up Node.js
@@ -81,6 +144,7 @@ jobs:
         run: |
           node --check scripts/deploy-workflows.mjs
           node scripts/deploy-workflows.mjs --validate-only
+          node scripts/test-daily-workflow.mjs
 
       - name: Verify local frontend assets
         shell: python
@@ -127,7 +191,7 @@ jobs:
 
           forbidden_artifacts = {
               ".doc", ".docx", ".hwp", ".hwpx", ".pdf", ".ppt", ".pptx",
-              ".xls", ".xlsx", ".zip", ".7z", ".db", ".sqlite", ".sqlite3",
+              ".xls", ".xlsx", ".zip", ".7z", ".whl", ".db", ".sqlite", ".sqlite3",
           }
           binary_allowlist = {Path("docs/architecture/PAI_LOOP_architecture.png")}
           patterns = {
