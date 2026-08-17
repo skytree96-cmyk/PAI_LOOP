@@ -223,7 +223,11 @@ const finalContinuation = one(continuationNodes, "Backfill Complete for Operator
 });
 assert.equal(finalContinuation.openaiCalls, 4);
 assert.equal(finalContinuation.notificationEvent, "ANALYSIS_OPERATION_PROGRESS");
-assert.equal(manifest.workflows["pai-loop-11-analysis-backfill"].publish, false);
-assert.equal(manifest.workflows["pai-loop-11-analysis-backfill"].promotionState, "awaiting-live-e2e");
+const continuationPublication = manifest.workflows["pai-loop-11-analysis-backfill"];
+assert.ok(
+  (continuationPublication.publish === false && continuationPublication.promotionState === "awaiting-live-e2e")
+  || (continuationPublication.publish === true && continuationPublication.promotionState === "verified-live-e2e"),
+  "Workflow 11 publication must stay fail-closed to its verified promotion state.",
+);
 
 console.log("Daily created+updated priority, serial chunking, continuation, and no-active contracts passed.");

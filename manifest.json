@@ -30,9 +30,9 @@
     },
     "pai-loop-11-analysis-backfill": {
       "file": "workflows/pai-loop-11-analysis-backfill.json",
-      "publish": false,
+      "publish": true,
       "contractVersion": "analysis-backfill-1.2",
-      "promotionState": "awaiting-live-e2e"
+      "promotionState": "verified-live-e2e"
     },
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
