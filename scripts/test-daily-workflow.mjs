@@ -7,6 +7,12 @@ const workflow = JSON.parse(
 );
 const nodes = new Map(workflow.nodes.map((node) => [node.name, node]));
 
+assert.doesNotMatch(
+  nodes.get("Validate Complete Dry-Run Contract")?.parameters?.jsCode ?? "",
+  /\bnew URL\b/,
+  "n8n Code sandbox does not expose the URL constructor",
+);
+
 function executeCodeNodeItems(name, input = {}, globals = {}) {
   const node = nodes.get(name);
   assert(node, `Missing Code node: ${name}`);
