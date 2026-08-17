@@ -142,6 +142,8 @@ hard max 3). 그 다음 상위 3건의 누락 공개 첨부를 공고당 최대 
 GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
 manifest에서 `publish: false`인 워크플로는 배포 후에도 비활성 상태를
 강제합니다.
+검증된 운영 진입점 Workflow 10만 현재 `publish: true`이며, 나머지 00~04와
+deployment smoke는 계속 비활성입니다.
 
 `PAI_LOOP 04 - Award History Refresh`도 기본 비활성입니다. 수동 실행은 항상
 dry-run이고, schedule/sub-workflow의 저장 실행은

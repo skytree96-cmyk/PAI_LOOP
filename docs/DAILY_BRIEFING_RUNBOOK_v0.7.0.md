@@ -4,7 +4,10 @@
 
 기준 workflow: `PAI_LOOP 10 - Daily Opportunity Briefing`
 
-저장소 배포 기본값: `inactive` (`manifest.json`의 `publish: false`)
+현재 운영 상태: `active` (`manifest.json`의 Workflow 10 `publish: true`)
+
+2026-08-17 온라인 E2E에서 7일 PPS 백필, 3년 낙찰 조회, PDF 첨부 분석,
+평가·스냅샷 저장, 공개 근거 렌더링과 Teams mock 기록을 확인한 뒤 승격했다.
 
 이 문서는 v0.6.0을 보존한 다음 버전이다. 운영 진입점은 10번 하나뿐이며,
 00~04는 비활성 계약시험·rollback 자산이다. Workflow 10을 활성화하면 별도 live
@@ -133,7 +136,7 @@ Generic Header Auth credential `PAI_LOOP Render Backend`를 다음 HTTP 노드 �
 배포기는 원격 workflow의 동일 node name/type에 연결된 credential만 보존한다.
 저장소 JSON에는 credential ID나 API key를 기록하지 않는다.
 
-## 활성화 전 검수 순서
+## 활성화 및 재배포 검수 순서
 
 1. backend 배포에서 새 ingestion·analysis contract 테스트가 통과했는지 확인한다.
 2. 로컬에서 다음을 실행한다.
@@ -143,12 +146,14 @@ Generic Header Auth credential `PAI_LOOP Render Backend`를 다음 HTTP 노드 �
    node scripts/test-daily-workflow.mjs
    ```
 
-3. Workflow 10만 `publish: false`로 같은 원격 ID에 갱신한다.
+3. 신규 대규모 변경의 online E2E 전에는 Workflow 10만 임시로 `publish: false`로
+   같은 원격 ID에 갱신한다. 현재 검증된 운영 릴리스는 `publish: true`다.
 
    ```powershell
    node scripts/deploy-workflows.mjs --only=pai-loop-10-daily-opportunity-briefing
    ```
-4. 원격 workflow가 inactive이고 7개 HTTP 노드 credential이 7/7인지 확인한다.
+4. E2E 전에는 원격 workflow가 inactive이고 7개 HTTP 노드 credential이 7/7인지
+   확인한다.
 5. `Run Complete Offline Dry-Run`을 실행해 모든 외부 호출이 0인지 확인한다.
 6. 운영자가 전일~당일, page 1, 최대 3건 경계의 online E2E 한 번을 승인·실행한다.
 7. DB에서 ingestion job, PPS notice, 첨부 manifest, evaluation/snapshot이 연결되었는지
