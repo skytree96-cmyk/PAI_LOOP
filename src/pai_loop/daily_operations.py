@@ -22,6 +22,7 @@ from .models import (
     Notice,
 )
 from .quantitative_scoring import estimate_for_notice
+from .pps_enrichment import public_analysis_reason
 
 
 router = APIRouter(
@@ -147,6 +148,16 @@ def _award_snapshot(items: list[AwardHistoryItem]) -> dict[str, Any]:
 
 def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
     latest = _latest_evaluation(notice)
+    source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
+    analysis_reason = public_analysis_reason(
+        notice.versions,
+        evaluated=latest is not None,
+        source_kind=source_kind,
+    )
+    analysis_updated_at = max(
+        (_as_utc(item.created_at) for item in notice.versions),
+        default=None,
+    )
     departments = rank_notice_across_departments(
         title=notice.title,
         agency=notice.agency,
@@ -189,6 +200,13 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         "quantitative_estimate": estimate_for_notice(notice).model_dump(mode="json"),
         "pricing_intelligence": pricing_intelligence,
         "analysis_snapshot": _latest_analysis_snapshot(notice),
+        "analysis_coverage": {
+            "state": analysis_reason.state,
+            "reason_code": analysis_reason.reason_code,
+            "reason": analysis_reason.reason,
+            "attempted": analysis_reason.attempted,
+            "updated_at": analysis_updated_at,
+        },
     }
 
 
@@ -215,6 +233,7 @@ def daily_briefing(
             )
             .options(
                 selectinload(Notice.evaluations),
+                selectinload(Notice.versions),
                 selectinload(Notice.award_history),
                 selectinload(Notice.analysis_runs).selectinload(AnalysisRun.scores),
                 selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
@@ -233,7 +252,30 @@ def daily_briefing(
     # Keep the operator-facing ranking separate from the bounded analysis queue.
     # The latter must advance through the backlog instead of repeatedly sending
     # the same top three newly-ingested notices to the enrichment pipeline.
-    pending_analysis = [item for item in items if item["analysis_snapshot"] is None]
+    without_snapshot = [item for item in items if item["analysis_snapshot"] is None]
+    never_attempted = [
+        item
+        for item in without_snapshot
+        if item["analysis_coverage"]["reason_code"] == "NOT_SELECTED"
+    ]
+    retryable = [
+        item
+        for item in without_snapshot
+        if item["analysis_coverage"]["reason_code"]
+        in {
+            "ANALYZED",
+            "HWPX_EXTRACT_FAILED",
+            "PDF_EXTRACT_FAILED",
+            "OPENAI_REVIEW",
+            "QUOTE_UNVERIFIED",
+        }
+    ]
+    retryable.sort(
+        key=lambda item: item["analysis_coverage"]["updated_at"]
+        or datetime.min.replace(tzinfo=timezone.utc)
+    )
+    pending_analysis = never_attempted + retryable
+    deferred_terminal_total = len(without_snapshot) - len(pending_analysis)
     eligibility_counts = dict(Counter(item["fit"]["eligibility"] for item in selected))
     return {
         "schema_version": "1.0",
@@ -254,11 +296,14 @@ def daily_briefing(
         },
         "notices": selected,
         "analysis_queue": {
-            "policy": "NOT_ANALYZED_FIRST",
+            "policy": "NEVER_ATTEMPTED_THEN_OLDEST_RETRY",
             "pending_total": len(pending_analysis),
+            "never_attempted_total": len(never_attempted),
+            "retryable_total": len(retryable),
+            "deferred_terminal_total": deferred_terminal_total,
             "notice_keys": [item["notice_key"] for item in pending_analysis[:50]],
             "limit": 50,
-            "note": "최근 7일의 진행 공고 중 분석 스냅샷이 없는 건을 우선순위·마감일 순으로 제공합니다.",
+            "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·구형 HWP 전용은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
         },
         "delivery": {
             "channel": "teams",

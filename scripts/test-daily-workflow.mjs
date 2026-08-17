@@ -256,7 +256,7 @@ const analysisPlan = executeCodeNode(
       "Fetch Award Candidates from Seven-Day Briefing": {
         json: {
           analysis_queue: {
-            policy: "NOT_ANALYZED_FIRST",
+            policy: "NEVER_ATTEMPTED_THEN_OLDEST_RETRY",
             pending_total: 5,
             notice_keys: ["pending-review", "pending-hwpx", "pending-pdf", "pending-four", "pending-five"],
           },
@@ -276,7 +276,7 @@ assert.deepEqual(analysisPlan.analysisBatch.noticeKeys, [
   "pending-hwpx",
   "pending-pdf",
 ]);
-assert.equal(analysisPlan.analysisBatch.queuePolicy, "NOT_ANALYZED_FIRST");
+assert.equal(analysisPlan.analysisBatch.queuePolicy, "NEVER_ATTEMPTED_THEN_OLDEST_RETRY");
 assert.equal(analysisPlan.analysisBatch.pendingTotal, 5);
 const analysisResponse = {
   job_id: "offline-analysis",
