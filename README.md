@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.6.0 persistent analysis slice
+## 현재 구현 범위: v0.7.0 live procurement evidence slice
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 전사 공통 `교육·컨설팅`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
@@ -21,7 +21,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 마감일 기준 증빙 Gate, AND/OR 경로, REVIEW와 `FAIL(reason=DF-000)`을 다루는 평가 엔진
 - 실제 공개 인천 공고의 정제 seed: 요구조건 23건, 근거 앵커 26건
 - 공개 가능한 실제 실적 1,182건의 검색·연도·사업부 필터와 페이지 조회
-- 실제 제안요청서의 20점 정량표를 원문 SHA-256·페이지와 연결한 조건부 점수 범위·의견
+- 검수·매핑된 실제 제안요청서의 20점 정량표를 원문 SHA-256·페이지와 연결한 조건부 점수 범위·의견
 - 공개 안전 낙찰 이력 59건을 이용한 3년 수주 집중도·낙찰률 범위·가격 참고 예측
 - 원문 대신 해시·유효 메타데이터만 공개하는 회사 자격 프로필
 - 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
@@ -112,7 +112,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `POST` | `/api/v1/notices/{notice_key}/award-history/refresh` | 최대 3년 낙찰 후보 제한 수집·멱등 갱신 |
 | `GET` | `/api/v1/notices/{notice_key}/award-history` | 저장된 낙찰 후보와 제목 유사도 조회 |
 | `GET` | `/api/v1/notices/{notice_key}/award-intelligence` | 저장 이력 기반 3년 집중도·낙찰률·금액 범위 분석 |
-| `GET` | `/api/v1/notices/{notice_key}/quantitative-estimate` | 원문 배점표·공개 근거 기반 정량 하한~상한과 의견 |
+| `GET` | `/api/v1/notices/{notice_key}/quantitative-estimate` | 검수된 공고 프로필의 배점표·공개 근거 기반 정량 하한~상한; 신규 미매핑 공고는 `UNSCORABLE` |
 | `POST` | `/api/v1/notices/{notice_key}/notifications/teams/mock` | Teams 카드 모의 기록 |
 | `POST` | `/api/v1/notices/analysis/batch` | PPS 신규 key의 저장된 ACCEPTED extraction materialize·평가·snapshot 집계 |
 | `GET` | `/api/v1/notices/{notice_key}/analysis-runs` | 기준 버전과 조건·점수·추천 snapshot 이력 |
@@ -126,18 +126,17 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 ## n8n 배포
 
 운영자가 실행할 통합 진입점은 `PAI_LOOP 10 - Daily Opportunity Briefing`이다.
-매일 09:00 Asia/Seoul, PPS 신규 key의 최대 5건 bounded 분석·평가·snapshot,
+매일 09:00 Asia/Seoul, PPS 신규 key의 상위 최대 3건 bounded 첨부 보강·분석·평가·snapshot,
 최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/리스크 신호, 상위 최대
 3건의 bounded 3년 낙찰 refresh와 backend Teams 통합 카드
 mock 기록을 한 번에 검증한다. 기존 00~04는
 비활성 계약 시험/rollback 자산이며 실제 운영 시 따로 누르지 않는다.
 
-현재 09:00 자동 경로는 PPS `notice_keys`를 backend batch-analysis로 전달하고,
-저장된 ACCEPTED extraction의 materialize·평가·snapshot 집계 검증 뒤에만 낙찰
-refresh와 briefing을 진행한다. 이 batch endpoint 자체는 OpenAI를 호출하지 않는다.
-원격 첨부 획득·PDF/HWP 변환 자체와 입찰/개찰/낙찰/계약 결과 자동 환류는 목표
-아키텍처이며 아직 10번에 연결되지 않았다. 아키텍처 이미지는 구현 경계와 남은
-`TARGET · 현재 미연결` 구간을 구분한다.
+현재 09:00 자동 경로는 전일~당일 PPS 공고를 backend 조직 profile keyword로
+수집하고, ranking된 `notice_keys`의 3년 낙찰을 먼저 refresh한다(기본 1건,
+hard max 3). 그 다음 상위 3건의 누락 공개 첨부를 공고당 최대 1개 보강하고
+평가·snapshot을 만들므로 당일 가격·경쟁집중 신호가 하루 늦지 않는다.
+입찰/개찰/낙찰/계약 결과의 완전 자동 환류는 계속 확장 경계다.
 
 `main`에 `workflows/**`, `manifest.json` 또는 배포 스크립트 변경이 push되면
 GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
@@ -158,9 +157,11 @@ OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON�
 10번의 모든 backend HTTP 노드는 n8n Generic Header Auth credential을 요구하며,
 소스에는 credential ID도 없습니다. n8n UI에서 같은 노드 이름에 연결한 credential은
 후속 GitHub 배포 시 보존됩니다. API/Web origin은 `$env`를 우선하고 없으면 공개
-Render origin `https://pai-loop-demo.onrender.com`을 사용하지만, 모든 live gate는
-`$env` 미설정 시 false입니다. 자세한 운영 절차는
-[`docs/DAILY_BRIEFING_RUNBOOK_v0.6.0.md`](docs/DAILY_BRIEFING_RUNBOOK_v0.6.0.md)에 있습니다.
+Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 workflow를
+활성화하면 명시적 기본 설정으로 live 실행하고,
+`PAI_LOOP_EMERGENCY_DISABLE=true`일 때만 모든 예약 gate를 fail-closed합니다.
+자세한 운영 절차는
+[`docs/DAILY_BRIEFING_RUNBOOK_v0.7.0.md`](docs/DAILY_BRIEFING_RUNBOOK_v0.7.0.md)에 있습니다.
 
 ## 배포 방향
 
@@ -208,7 +209,8 @@ OpenAI 계약은
 - [Department keyword ranking v0.3.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.3.0.md)
 - [Quantitative scoring v0.3.0](docs/QUANTITATIVE_SCORING_v0.3.0.md)
 - [Award and pricing intelligence v0.3.0](docs/PPS_AWARD_INTELLIGENCE_v0.3.0.md)
-- [Daily 09:00 briefing runbook v0.6.0](docs/DAILY_BRIEFING_RUNBOOK_v0.6.0.md)
+- [Daily 09:00 briefing runbook v0.7.0](docs/DAILY_BRIEFING_RUNBOOK_v0.7.0.md)
+- [PPS live ingestion and evidence enrichment v0.6.1](docs/PPS_LIVE_INGESTION_AND_ENRICHMENT_v0.6.1.md)
 - [Analysis persistence and migrations v0.6.0](docs/DATA_PERSISTENCE_AND_MIGRATIONS_v0.6.0.md)
 - [Competition and concentration risk v0.4.0](docs/PPS_AWARD_COMPETITION_RISK_v0.4.0.md)
 - [Morning decision backlog v0.4.0](docs/MORNING_REVIEW_BACKLOG_v0.4.0.md)

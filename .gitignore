@@ -16,6 +16,7 @@ coverage.xml
 htmlcov/
 /data/
 .local/
+/tmp/
 *.py[cod]
 *.db
 *.sqlite*

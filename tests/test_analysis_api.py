@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from pai_loop.models import Notice
 from pai_loop.public_notice_seed import import_public_notice_seed
 
 
@@ -54,6 +56,14 @@ def test_analysis_batch_persists_and_reuses_snapshot(client: TestClient) -> None
     assert len(run["scores"]) == 8
     assert any(item["recommendation_key"] == "bid:system" for item in run["recommendations"])
 
+    # This assertion targets snapshot projection, so make the historical
+    # fixture an explicitly open notice for the requested as-of instant.
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        assert notice is not None
+        notice.status = "OPEN"
+        session.commit()
+
     briefing = client.get(
         "/api/v1/operations/daily-briefing",
         params={"days": 7, "as_of": "2026-01-03T09:00:00+09:00"},
@@ -97,3 +107,41 @@ def test_analysis_batch_rejects_duplicates_and_force(client: TestClient) -> None
         json={"notice_keys": ["ONE"], "force": True},
     )
     assert force.status_code == 422
+
+
+def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    _seed_public_notice(client)
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._has_accepted_pps_extraction",
+        lambda _request, _notice_id: True,
+    )
+
+    for _day in range(2):
+        response = client.post(
+            "/api/v1/notices/analysis/batch",
+            json={
+                "notice_keys": [NOTICE_KEY],
+                "enrich_missing": True,
+                "max_notices": 1,
+                "max_attachments_per_notice": 1,
+            },
+        )
+        assert response.status_code == 200, response.text
+        enrichment = response.json()["enrichment"]
+        assert enrichment == {
+            "requested": 1,
+            "attempted": 1,
+            "completed": 1,
+            "skipped": 0,
+            "failed": 0,
+            "attachments_discovered": 0,
+            "attachments_processed": 0,
+            "openai_calls": 0,
+            "warnings": [],
+        }
+        assert enrichment["attempted"] == (
+            enrichment["completed"] + enrichment["skipped"] + enrichment["failed"]
+        )

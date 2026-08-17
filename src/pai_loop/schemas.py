@@ -325,9 +325,44 @@ class PpsIngestionRequest(ApiModel):
     from_date: date
     to_date: date
     keyword: str | None = Field(default=None, min_length=1, max_length=100)
+    keywords: list[str] = Field(default_factory=list, max_length=30)
+    use_profile_keywords: bool = False
+    profile_department_ids: list[str] = Field(default_factory=list, max_length=30)
     page_size: int = Field(default=100, ge=1, le=999)
     max_pages: int = Field(default=5, ge=1, le=20)
     dry_run: bool = False
+
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            keyword = " ".join(str(item).split())
+            if not keyword or len(keyword) > 60:
+                raise ValueError("keywords must contain 1..60 character values")
+            normalised = keyword.casefold()
+            if normalised in seen:
+                continue
+            seen.add(normalised)
+            cleaned.append(keyword)
+        return cleaned
+
+    @field_validator("profile_department_ids")
+    @classmethod
+    def validate_profile_department_ids(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            profile_id = " ".join(str(item).split())
+            if not profile_id or len(profile_id) > 80:
+                raise ValueError("profile_department_ids must contain 1..80 character values")
+            normalised = profile_id.casefold()
+            if normalised in seen:
+                continue
+            seen.add(normalised)
+            cleaned.append(profile_id)
+        return cleaned
 
     @model_validator(mode="after")
     def validate_window(self) -> "PpsIngestionRequest":
@@ -344,7 +379,7 @@ class PpsIngestionResponse(ApiModel):
     job_id: str
     source: Literal["PPS"] = "PPS"
     mode: Literal["live"] = "live"
-    status: Literal["COMPLETED"] = "COMPLETED"
+    status: Literal["COMPLETED", "PARTIAL"] = "COMPLETED"
     window: dict[str, str]
     api_calls: int
     fetched: int
@@ -357,6 +392,12 @@ class PpsIngestionResponse(ApiModel):
     next_watermark: str
     warnings: list[str]
     dry_run: bool
+    keywords_used: list[str] = Field(default_factory=list)
+    provider_queries: int = 1
+    manifests_created: int = 0
+    manifests_reused: int = 0
+    attachments_discovered: int = 0
+    department_coverage_count: int = 0
 
 
 class IngestionJobOut(ApiModel):

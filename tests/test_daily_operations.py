@@ -13,6 +13,8 @@ def _create_notice(
     notice_key: str,
     published_at: str,
     title: str = "공공기관 AI 교육 및 컨설팅 용역",
+    deadline: str = "2026-08-31T09:00:00+09:00",
+    status: str = "OPEN",
 ) -> None:
     response = client.post(
         "/api/v1/notices",
@@ -22,7 +24,8 @@ def _create_notice(
             "title": title,
             "agency": "가상 공공기관",
             "published_at": published_at,
-            "deadline": "2026-08-31T09:00:00+09:00",
+            "deadline": deadline,
+            "status": status,
             "estimated_amount": 120_000_000,
         },
     )
@@ -72,6 +75,40 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         "mode": "mock",
         "actual_push_sent": False,
     }
+
+
+def test_daily_briefing_includes_only_currently_open_notices(client: TestClient) -> None:
+    published_at = "2026-08-16T08:30:00+09:00"
+    _create_notice(
+        client,
+        notice_key="DAILY-ACTIVE-OPEN",
+        published_at=published_at,
+        deadline="2026-08-17T00:00:00+00:00",
+    )
+    _create_notice(
+        client,
+        notice_key="DAILY-CLOSED",
+        published_at=published_at,
+        deadline="2026-08-31T09:00:00+09:00",
+        status="CLOSED",
+    )
+    _create_notice(
+        client,
+        notice_key="DAILY-EXPIRED-OPEN",
+        published_at=published_at,
+        deadline="2026-08-16T23:59:59+00:00",
+    )
+
+    response = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={"days": 7, "as_of": "2026-08-17T09:00:00+09:00"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["totals"]["observed"] == 1
+    assert body["totals"]["included"] == 1
+    assert [item["notice_key"] for item in body["notices"]] == ["DAILY-ACTIVE-OPEN"]
 
 
 def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(

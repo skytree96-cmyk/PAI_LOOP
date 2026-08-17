@@ -18,6 +18,8 @@
     loading: false,
     detailLoading: false,
     requestSequence: 0,
+    noticeSearchTimer: null,
+    noticeStatusScope: "ALL",
     teamsLogs: [],
     teamsLogMeta: {},
     privateMatchPreviews: {},
@@ -138,7 +140,9 @@
 
     els.filterForm.addEventListener("input", applyFilters);
     els.filterForm.addEventListener("change", applyFilters);
+    els.filterForm.addEventListener("submit", submitNoticeSearch);
     els.filterForm.addEventListener("reset", () => window.setTimeout(resetPrioritySearch, 0));
+    els.searchInput.addEventListener("input", scheduleNoticeSearch);
     els.emptyResetButton.addEventListener("click", resetFilters);
 
     els.performanceFilterForm.addEventListener("submit", (event) => {
@@ -213,6 +217,8 @@
 
   async function loadApplicationData({ forceApi = false } = {}) {
     const sequence = ++state.requestSequence;
+    const requestedStatusScope = state.currentView === "new" ? "OPEN" : "ALL";
+    state.noticeStatusScope = requestedStatusScope;
     setLoading(true);
     setSystemStatus("loading");
 
@@ -229,7 +235,7 @@
 
     const [dashboardResult, noticesResult, profilesResult, runtimeResult] = await Promise.allSettled([
       apiRequest("/dashboard"),
-      apiRequest(buildNoticeRequestPath()),
+      apiRequest(buildNoticeRequestPath({ statusScope: requestedStatusScope })),
       apiRequest("/departments/keyword-profiles"),
       apiRequest("/runtime-profile"),
     ]);
@@ -338,14 +344,37 @@
     }
   }
 
-  function buildNoticeRequestPath() {
+  function buildNoticeRequestPath({ statusScope = state.currentView === "new" ? "OPEN" : "ALL" } = {}) {
     const params = new URLSearchParams();
     const departmentId = els.departmentSelect?.value || "organization";
     const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
+    const query = els.searchInput?.value.trim() || "";
     params.set("department_id", departmentId);
     if (searchKeywords) params.set("search_keywords", searchKeywords);
+    if (query) params.set("q", query);
+    if (statusScope === "OPEN") params.set("status", "OPEN");
     params.set("limit", "200");
     return `/notices?${params.toString()}`;
+  }
+
+  function scheduleNoticeSearch(event) {
+    if (event?.isComposing || state.source === "demo") return;
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = window.setTimeout(() => {
+      state.noticeSearchTimer = null;
+      void loadApplicationData({ forceApi: true });
+    }, 350);
+  }
+
+  function submitNoticeSearch(event) {
+    event.preventDefault();
+    if (state.source === "demo") {
+      applyFilters();
+      return;
+    }
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = null;
+    void loadApplicationData({ forceApi: true });
   }
 
   function populateDepartmentProfiles(catalog) {
@@ -796,18 +825,18 @@
     const rawRequirements = arrayValue(firstValue(source.requirements, source.eligibility_requirements, source.conditions, []));
     const requirements = mergeRequirementsAndAtomics(rawRequirements, atomicResults);
     const rawEvidence = arrayValue(firstValue(source.evidence, source.evidences, source.source_evidence, []));
-    const evidence = (rawEvidence.length ? rawEvidence : atomicResults.filter((item) => item?.source_excerpt || item?.source_location))
-      .map((item, itemIndex) => normalizeEvidence(item, itemIndex));
-    const history = arrayValue(firstValue(source.award_history, source.awardHistory, source.history, []))
-      .map(normalizeHistory);
-    const safeRaw = sanitizeNoticeAwardHistory(source, history);
-    const documentAnalyses = arrayValue(firstValue(
+    const rawDocumentAnalyses = arrayValue(firstValue(
       source.document_analyses,
       source.documentAnalyses,
       evaluation.document_analyses,
       evaluation.documentAnalyses,
       [],
-    )).map(normalizeDocumentAnalysis);
+    ));
+    const documentAnalyses = rawDocumentAnalyses.map(normalizeDocumentAnalysis);
+    const evidence = collectNoticeEvidence({ rawEvidence, atomicResults, rawRequirements, rawDocumentAnalyses });
+    const history = arrayValue(firstValue(source.award_history, source.awardHistory, source.history, []))
+      .map(normalizeHistory);
+    const safeRaw = sanitizeNoticeAwardHistory(source, history);
     const departmentRanking = normalizeDepartmentRanking(firstValue(source.department_ranking, source.departmentRanking));
     const topDepartmentRankings = arrayValue(firstValue(source.top_department_rankings, source.topDepartmentRankings))
       .map(normalizeDepartmentRanking)
@@ -984,6 +1013,83 @@
     };
   }
 
+  function collectNoticeEvidence({ rawEvidence, atomicResults, rawRequirements, rawDocumentAnalyses }) {
+    const documentEvidence = flattenDocumentEvidence(rawDocumentAnalyses);
+    const requirementEvidence = flattenRequirementEvidence(rawRequirements);
+    const publicSourceEvidence = documentEvidence.length ? documentEvidence : requirementEvidence;
+    const candidates = [
+      ...rawEvidence.map((item, index) => normalizeEvidence(item, index)),
+      ...atomicResults
+        .filter((item) => item?.source_excerpt || item?.source_location)
+        .map((item, index) => normalizeEvidence(item, rawEvidence.length + index)),
+      ...publicSourceEvidence,
+    ];
+    const seen = new Set();
+    return candidates.filter((item) => {
+      const quoteKey = stringValue(item.quote).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR");
+      const fallbackKey = [item.file, item.page, item.id].map((value) => stringValue(value)).join("|");
+      const key = quoteKey || fallbackKey;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function flattenDocumentEvidence(analyses) {
+    return analyses.flatMap((item, analysisIndex) => {
+      const source = item && typeof item === "object" ? item : {};
+      const status = stringValue(firstValue(source.status, source.analysis_status), "").toUpperCase();
+      if (!["ACCEPTED", "COMPLETE"].includes(status)) return [];
+      const result = firstObject(source.result, source.data, source.analysis_result, source.analysisResult);
+      const requirements = arrayValue(firstValue(
+        source.requirements,
+        source.extracted_requirements,
+        source.requirement_items,
+        result.requirements,
+        [],
+      ));
+      const documentName = stringValue(
+        firstValue(source.document_name, source.documentName, source.filename, source.file_name),
+        `첨부문서 ${analysisIndex + 1}`,
+      );
+      return requirements.flatMap((requirement, requirementIndex) => {
+        const requirementSource = requirement && typeof requirement === "object" ? requirement : {};
+        return arrayValue(requirementSource.evidence).flatMap((anchor, anchorIndex) => {
+          const sourceAnchor = anchor && typeof anchor === "object" ? anchor : {};
+          const quote = stringValue(sourceAnchor.quote).trim();
+          if (!quote) return [];
+          const page = numberOrNull(sourceAnchor.page);
+          const section = stringValue(sourceAnchor.section).trim();
+          const location = [page === null ? "" : `${formatNumber(page)}쪽`, section].filter(Boolean).join(" · ") || "위치 미확인";
+          return [normalizeEvidence({
+            id: `document-${analysisIndex + 1}-requirement-${requirementIndex + 1}-evidence-${anchorIndex + 1}`,
+            file: documentName,
+            location,
+            quote,
+            status: "PROVISIONAL",
+            confidence: normalizeConfidence(sourceAnchor.confidence),
+          }, anchorIndex)];
+        });
+      });
+    });
+  }
+
+  function flattenRequirementEvidence(requirements) {
+    return requirements.flatMap((item, index) => {
+      const source = item && typeof item === "object" ? item : {};
+      const quote = stringValue(source.source_excerpt).trim();
+      if (!quote) return [];
+      return [normalizeEvidence({
+        id: `requirement-evidence-${index + 1}`,
+        file: "공고 판정 원문",
+        location: stringValue(source.source_location, "위치 미확인"),
+        quote,
+        status: "PROVISIONAL",
+        confidence: normalizeConfidence(source.parse_confidence),
+      }, index)];
+    });
+  }
+
   function normalizeHistory(item) {
     const source = item && typeof item === "object" ? item : {};
     const awardedAt = firstValue(source.awarded_at, source.awardedAt, source.award_date, null);
@@ -1102,7 +1208,7 @@
 
   function deriveDashboard(notices) {
     return {
-      newCount: notices.filter((notice) => notice.isNew).length,
+      newCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN").length,
       reviewCount: notices.filter((notice) => notice.eligibilityStatus === "REVIEW").length,
       goCount: notices.filter((notice) => notice.recommendation === "GO").length,
       urgentCount: notices.filter((notice) => {
@@ -1170,7 +1276,7 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (state.currentView === "new" && !notice.isNew) return false;
+      if (state.currentView === "new" && notice.noticeStatus.toUpperCase() !== "OPEN") return false;
       if (state.currentView === "review" && notice.eligibilityStatus !== "REVIEW") return false;
       if (state.currentView === "undecided" && notice.decision) return false;
       if (state.currentView === "closed" && !notice.resultStatus) return false;
@@ -1372,7 +1478,14 @@
       hideDemoBanner();
     }
     closeMobileMenu();
-    if (!performanceView) applyFilters();
+    if (!performanceView) {
+      const desiredStatusScope = view === "new" ? "OPEN" : "ALL";
+      if (state.source === "api" && state.noticeStatusScope !== desiredStatusScope) {
+        void loadApplicationData({ forceApi: true });
+      } else {
+        applyFilters();
+      }
+    }
     renderDataSource();
     els.mainContent.focus({ preventScroll: true });
   }

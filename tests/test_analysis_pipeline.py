@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from pai_loop.analysis_pipeline import (
     AnalysisPipelineSourceError,
     AnalysisPipelineTransactionError,
+    _digest,
     run_analysis_pipeline,
 )
 from pai_loop.database import Base, build_engine, build_session_factory
@@ -531,6 +532,98 @@ def test_source_selection_and_transaction_contract_fail_before_writes(db_session
         )
     assert db_session.scalar(select(func.count(AnalysisRun.id))) == 0
     db_session.rollback()
+
+
+def test_latest_pps_manifest_excludes_superseded_attachment_from_pipeline(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="PPS-MANIFEST-SOURCE")
+    attachment_a = {
+        "attachment_id": "PPS-ATT-aaaaaaaaaaaaaaaaaaaaaaaa",
+        "file_name": "구공고.pdf",
+        "media_type": "application/pdf",
+        "url": "https://www.g2b.go.kr/old",
+        "slot": 1,
+    }
+    attachment_b = {
+        "attachment_id": "PPS-ATT-bbbbbbbbbbbbbbbbbbbbbbbb",
+        "file_name": "정정공고.pdf",
+        "media_type": "application/pdf",
+        "url": "https://www.g2b.go.kr/current",
+        "slot": 1,
+    }
+    notice.versions.append(
+        NoticeVersion(
+            version_no=1,
+            file_sha256="1" * 64,
+            extraction_status="METADATA",
+            source_payload={
+                "kind": "PPS_NOTICE_METADATA",
+                "attachment_manifest": [attachment_a],
+            },
+        )
+    )
+    source_a = _source_version(
+        notice,
+        version_no=2,
+        attachment_id=attachment_a["attachment_id"],
+        digest_char="a",
+        requirements=[
+            _requirement(
+                "REQ-OLD",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id=attachment_a["attachment_id"],
+            )
+        ],
+    )
+    source_a.source_payload = {
+        **source_a.source_payload,
+            "source_kind": "PPS_PUBLIC_ATTACHMENT",
+            "manifest_sha256": _digest(attachment_a),
+    }
+    notice.versions.append(
+        NoticeVersion(
+            version_no=3,
+            file_sha256="3" * 64,
+            extraction_status="METADATA",
+            source_payload={
+                "kind": "PPS_NOTICE_METADATA",
+                "attachment_manifest": [attachment_b],
+            },
+        )
+    )
+    source_b = _source_version(
+        notice,
+        version_no=4,
+        attachment_id=attachment_b["attachment_id"],
+        digest_char="b",
+        requirements=[
+            _requirement(
+                "REQ-CURRENT",
+                "입찰참가자격 등록을 완료한 업체만 참여 가능",
+                attachment_id=attachment_b["attachment_id"],
+            )
+        ],
+    )
+    source_b.source_payload = {
+        **source_b.source_payload,
+            "source_kind": "PPS_PUBLIC_ATTACHMENT",
+            "manifest_sha256": _digest(attachment_b),
+    }
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+    assert result.materialized_requirement_count == 1
+    with db_session.begin():
+        labels = list(
+            db_session.scalars(
+                select(AtomicRequirement.label).where(
+                    AtomicRequirement.notice_version_id == result.notice_version_id
+                )
+            ).all()
+        )
+    assert labels == ["입찰참가자격 등록을 완료한 업체만 참여 가능"]
 
     db_session.execute(select(Notice.id))
     with pytest.raises(AnalysisPipelineTransactionError, match="active transaction"):

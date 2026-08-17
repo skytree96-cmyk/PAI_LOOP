@@ -191,6 +191,27 @@ def test_award_client_records_unrecoverable_subwindows_when_partial_is_allowed()
     assert len(client.window_errors) == 5
 
 
+def test_award_client_returns_partial_without_call_after_wall_deadline() -> None:
+    client = PpsAwardClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(
+            lambda _request: pytest.fail("request must not start after deadline")
+        ),
+    )
+    items = list(
+        client.iter_awards(
+            start=date(2025, 1, 1),
+            end=date(2025, 1, 30),
+            keyword="승진후보자",
+            deadline_monotonic=0,
+        )
+    )
+    client.close()
+    assert items == []
+    assert client.hit_time_limit is True
+
+
 class _FakeAwardClient:
     def __init__(self, **_kwargs: object) -> None:
         self.request_count = 2
@@ -227,6 +248,12 @@ class _FakeAwardClient:
             "title": "7급 승진후보자 역량 교육",
             "winner_name": "",
         }
+
+
+class _BrokenAwardClient(_FakeAwardClient):
+    def iter_awards(self, **_kwargs: object):
+        raise RuntimeError("synthetic client failure")
+        yield  # pragma: no cover
 
 
 def _create_award_target(client: TestClient) -> None:
@@ -316,3 +343,23 @@ def test_award_history_requires_server_side_pps_key(
             json={"keyword": "승진후보자"},
         )
     assert response.status_code == 503
+
+
+def test_award_history_unexpected_client_error_finishes_failed_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setattr("pai_loop.api.PpsAwardClient", _BrokenAwardClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        _create_award_target(client)
+        response = client.post(
+            "/api/v1/notices/PUBLIC-AWARD-TARGET/award-history/refresh",
+            json={"years": 1},
+        )
+        assert response.status_code == 500
+        jobs = client.get("/api/v1/ingestion/jobs").json()
+    award_job = next(item for item in jobs if item["source"] == "PPS_AWARD")
+    assert award_job["status"] == "FAILED"
+    assert award_job["error_code"] == "PPS_AWARD_CLIENT_ERROR"
+    assert award_job["completed_at"] is not None

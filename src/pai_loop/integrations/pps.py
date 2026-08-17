@@ -92,6 +92,7 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
         "estimated_amount": _number(
             item.get("presmptPrce") or item.get("asignBdgtAmt") or item.get("estimated_amount")
         ),
+        "notice_kind": str(item.get("ntceKindNm") or item.get("notice_kind") or "").strip(),
         "source_url": (
             item.get("bidNtceDtlUrl")
             or item.get("bidNtceUrl")
@@ -175,6 +176,7 @@ class PpsClient:
         self._sleep = sleep
         self.request_count = 0
         self.hit_page_limit = False
+        self.hit_time_limit = False
         self._client = httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout_seconds,
@@ -227,15 +229,20 @@ class PpsClient:
         inquiry_division: str = "1",
         max_pages: int | None = None,
         extra_params: dict[str, Any] | None = None,
+        deadline_monotonic: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         if not 1 <= rows <= 999:
             raise ValueError("rows must be between 1 and 999")
         if max_pages is not None and max_pages < 1:
             raise ValueError("max_pages must be positive")
         self.hit_page_limit = False
+        self.hit_time_limit = False
         for window in split_date_range(start, end, max_days=max_window_days):
             page = 1
             while True:
+                if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    self.hit_time_limit = True
+                    return
                 payload = self._request(
                     operation_path,
                     {

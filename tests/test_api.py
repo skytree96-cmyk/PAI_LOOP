@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -39,6 +40,12 @@ class _FakePpsClient:
             "source_url": "https://example.go.kr/notice/1?serviceKey=redacted",
             "raw": {"contact": "discarded"},
         }
+
+
+class _BrokenPpsClient(_FakePpsClient):
+    def iter_notices(self, **_kwargs: object):
+        raise RuntimeError("synthetic PPS failure")
+        yield  # pragma: no cover
 
 
 class _FakeOpenAIExtractionClient:
@@ -336,11 +343,12 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
         notices = live_client.get("/api/v1/notices").json()
         assert len(notices) == 1
         assert notices[0]["source_kind"] == "PPS"
-        assert notices[0]["ingestion_state"] == "COLLECTED"
+        assert notices[0]["ingestion_state"] == "VERSIONED"
         detail = live_client.get(f"/api/v1/notices/{notices[0]['notice_key']}").json()
         assert "redacted" not in detail["source_url"]
         assert "%2A%2A%2A" in detail["source_url"]
-        assert detail["versions"] == []
+        assert len(detail["versions"]) == 1
+        assert detail["versions"][0]["extraction_status"] == "METADATA"
 
         jobs = live_client.get("/api/v1/ingestion/jobs").json()
         assert len(jobs) == 2
@@ -358,6 +366,161 @@ def test_live_pps_ingestion_requires_server_key(monkeypatch: pytest.MonkeyPatch)
             json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
         )
     assert response.status_code == 503
+
+
+def test_profile_ingestion_queries_every_department_with_bounded_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setattr("pai_loop.api.PpsClient", _FakePpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-16",
+                "use_profile_keywords": True,
+                "max_pages": 1,
+                "dry_run": True,
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["keywords_used"][:2] == ["교육", "컨설팅"]
+    assert len(body["keywords_used"]) == 26
+    assert len(set(body["keywords_used"])) == 26
+    assert body["provider_queries"] == 26
+    assert body["department_coverage_count"] == 24
+
+
+def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setattr("pai_loop.api.PpsClient", _FakePpsClient)
+    clock = iter([0.0, 0.0, 200.0])
+    monkeypatch.setattr(
+        "pai_loop.api.time",
+        SimpleNamespace(monotonic=lambda: next(clock, 200.0)),
+    )
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-16",
+                "use_profile_keywords": True,
+                "max_pages": 1,
+                "dry_run": True,
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["provider_queries"] == 1
+    assert len(body["keywords_used"]) == 26
+    assert body["department_coverage_count"] == 24
+    assert any("시간 제한" in warning for warning in body["warnings"])
+
+
+def test_pps_unexpected_client_error_finishes_failed_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setattr("pai_loop.api.PpsClient", _BrokenPpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app, raise_server_exceptions=False) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
+        )
+        assert response.status_code == 500
+        jobs = live_client.get("/api/v1/ingestion/jobs").json()
+    assert jobs[0]["status"] == "FAILED"
+    assert jobs[0]["error_code"] == "PPS_CLIENT_ERROR"
+    assert jobs[0]["completed_at"] is not None
+
+
+def test_new_pps_revision_closes_prior_row_and_open_filter_hides_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    run = {"revision": "00"}
+
+    class _RevisionClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            revision = run["revision"]
+            deadline = "2026-08-20T17:00:00+09:00" if revision == "00" else "2026-08-22T17:00:00+09:00"
+            yield {
+                "identity": f"20260816001|{revision}|{deadline}",
+                "bid_notice_no": "20260816001",
+                "revision_no": revision,
+                "title": "공공기관 교육 컨설팅 용역",
+                "agency": "공공기관",
+                "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
+                "deadline": datetime.fromisoformat(deadline),
+                "estimated_amount": 100_000_000,
+                "source_url": None,
+                "raw": {},
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _RevisionClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        assert live_client.post("/api/v1/ingestion/pps/notices", json=payload).status_code == 200
+        run["revision"] = "01"
+        assert live_client.post("/api/v1/ingestion/pps/notices", json=payload).status_code == 200
+        all_rows = live_client.get("/api/v1/notices").json()
+        open_rows = live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()
+    assert len(all_rows) == 2
+    assert {item["revision_no"]: item["status"] for item in all_rows} == {
+        "00": "CLOSED",
+        "01": "OPEN",
+    }
+    assert [item["revision_no"] for item in open_rows] == ["01"]
+
+
+def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    run = {"cancelled": False}
+
+    class _CancellationClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            yield {
+                "identity": "R26BK-CANCEL|00|2026-08-22T17:00:00+09:00",
+                "bid_notice_no": "R26BK-CANCEL",
+                "revision_no": "00",
+                "title": "공공기관 교육 용역",
+                "agency": "공공기관",
+                "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
+                "deadline": datetime.fromisoformat("2026-08-22T17:00:00+09:00"),
+                "estimated_amount": 100_000_000,
+                "notice_kind": "취소공고" if run["cancelled"] else "등록공고",
+                "source_url": None,
+                "raw": {"ntceKindNm": "취소공고" if run["cancelled"] else "등록공고"},
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _CancellationClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert first.status_code == 200
+        assert first.json()["created"] == 1
+        run["cancelled"] = True
+        cancelled = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert cancelled.status_code == 200
+        assert cancelled.json()["matched"] == 0
+        assert cancelled.json()["updated"] == 1
+        assert live_client.get("/api/v1/notices", params={"status": "OPEN"}).json() == []
+        all_rows = live_client.get("/api/v1/notices").json()
+    assert len(all_rows) == 1
+    assert all_rows[0]["status"] == "CLOSED"
 
 
 def test_teams_mock_records_real_adaptive_card_without_external_delivery(client: TestClient) -> None:

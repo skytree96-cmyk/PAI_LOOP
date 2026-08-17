@@ -211,6 +211,41 @@ def _select_source_versions(
                 "one or more source versions do not belong to the notice"
             )
         versions = [version for version in versions if version.id in requested]
+    else:
+        # Automatic PPS analysis is bound to the latest attachment manifest.
+        # Historical attachment IDs remain in the audit table but must not be
+        # merged after a correction replaces/removes a document. Explicit
+        # source_version_ids intentionally retain the audit override.
+        latest_metadata = next(
+            (
+                version
+                for version in reversed(versions)
+                if isinstance(version.source_payload, dict)
+                and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"
+                and isinstance(version.source_payload.get("attachment_manifest"), list)
+            ),
+            None,
+        )
+        if latest_metadata is not None:
+            allowed_pps_sources = {
+                str(item.get("attachment_id")): _digest(item)
+                for item in latest_metadata.source_payload.get("attachment_manifest", [])
+                if isinstance(item, dict) and isinstance(item.get("attachment_id"), str)
+            }
+            versions = [
+                version
+                for version in versions
+                if not (
+                    isinstance(version.source_payload, dict)
+                    and version.source_payload.get("kind") == SOURCE_KIND
+                    and version.source_payload.get("source_kind") == "PPS_PUBLIC_ATTACHMENT"
+                )
+                or (
+                    version.source_payload.get("attachment_id") in allowed_pps_sources
+                    and version.source_payload.get("manifest_sha256")
+                    == allowed_pps_sources.get(version.source_payload.get("attachment_id"))
+                )
+            ]
 
     latest_by_attachment: dict[str, NoticeVersion] = {}
     for version in versions:

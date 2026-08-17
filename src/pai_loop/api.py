@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -44,6 +45,13 @@ from .models import (
     Notice,
     NoticeVersion,
     UserDecision,
+)
+from .pps_enrichment import (
+    build_attachment_manifest,
+    department_keyword_coverage_count,
+    persist_pps_metadata_version,
+    resolve_ingestion_keywords,
+    safe_public_live_extraction,
 )
 from .pricing_profiles import pricing_profile_for_document
 from .public_notice_seed import load_public_notice_seed
@@ -229,6 +237,10 @@ def _public_document_analyses(versions: list[NoticeVersion]) -> list[dict[str, A
         curated = _curated_public_extraction(payload)
         if curated is not None:
             analyses.append(curated)
+            continue
+        live = safe_public_live_extraction(payload)
+        if live is not None:
+            analyses.append(live)
     return analyses
 
 
@@ -257,7 +269,17 @@ def _detail(notice: Notice, *, public_view: bool = False) -> NoticeDetail:
         ),
         risk_dimensions=notice.risk_dimensions,
         versions=notice.versions,
-        requirements=[_requirement_dict(item) for item in (latest_version.requirements if latest_version else [])],
+        # Materialised AtomicRequirement excerpts are an internal audit view and
+        # may contain provider contact text. Anonymous clients receive only the
+        # strict, redacted document_analyses projection below.
+        requirements=(
+            []
+            if public_view
+            else [
+                _requirement_dict(item)
+                for item in (latest_version.requirements if latest_version else [])
+            ]
+        ),
         decisions=[] if public_view else notice.decisions,
         document_analyses=(
             _public_document_analyses(notice.versions)
@@ -370,6 +392,10 @@ def list_notices(
     eligibility: Eligibility | None = None,
     department_id: Annotated[str | None, Query(max_length=80)] = None,
     search_keywords: Annotated[str | None, Query(max_length=500)] = None,
+    notice_status: Annotated[
+        str | None,
+        Query(alias="status", pattern=r"^(OPEN|CLOSED|EXPIRED)$"),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[NoticeSummary]:
@@ -391,6 +417,12 @@ def list_notices(
     if q:
         pattern = f"%{q}%"
         statement = statement.where(or_(Notice.title.ilike(pattern), Notice.agency.ilike(pattern)))
+    if notice_status == "OPEN":
+        statement = statement.where(Notice.status == "OPEN", Notice.deadline >= now)
+    elif notice_status == "EXPIRED":
+        statement = statement.where(Notice.status == "OPEN", Notice.deadline < now)
+    elif notice_status == "CLOSED":
+        statement = statement.where(Notice.status == "CLOSED")
     if ranking_requested:
         notices = list(session.scalars(statement).all())
     else:
@@ -627,6 +659,296 @@ def _same_datetime(left: datetime | None, right: datetime | None) -> bool:
     return _comparable_utc(left) == _comparable_utc(right)
 
 
+def _revision_preference(item: dict[str, Any], *, now: datetime) -> tuple[int, int, float, float]:
+    revision_text = str(item.get("revision_no") or "00")
+    digits = re.sub(r"[^0-9]", "", revision_text)
+    revision = int(digits or 0)
+    deadline = _comparable_utc(item["deadline"])
+    published = item.get("published_at")
+    published_timestamp = _comparable_utc(published).timestamp() if published else 0.0
+    return (
+        int(deadline >= now),
+        revision,
+        published_timestamp,
+        deadline.timestamp(),
+    )
+
+
+def _ranked_pps_candidates(
+    candidates: dict[str, dict[str, Any]],
+    *,
+    now: datetime,
+) -> tuple[list[tuple[str, dict[str, Any]]], int]:
+    """Keep the latest useful revision and order enrichment candidates by fit."""
+
+    latest_by_notice_no: dict[str, tuple[str, dict[str, Any]]] = {}
+    superseded = 0
+    for notice_key, item in candidates.items():
+        notice_no = str(item["bid_notice_no"])
+        previous = latest_by_notice_no.get(notice_no)
+        if previous is None:
+            latest_by_notice_no[notice_no] = (notice_key, item)
+            continue
+        superseded += 1
+        if _revision_preference(item, now=now) > _revision_preference(previous[1], now=now):
+            latest_by_notice_no[notice_no] = (notice_key, item)
+
+    def priority(pair: tuple[str, dict[str, Any]]) -> tuple[float, float, float]:
+        item = pair[1]
+        rankings = rank_notice_across_departments(
+            title=str(item["title"]),
+            agency=str(item.get("agency") or ""),
+            category="용역",
+            limit=1,
+        )
+        score = float(rankings[0]["score"]) if rankings else 0.0
+        published = item.get("published_at")
+        published_timestamp = _comparable_utc(published).timestamp() if published else 0.0
+        deadline_timestamp = _comparable_utc(item["deadline"]).timestamp()
+        return score, published_timestamp, deadline_timestamp
+
+    ordered = sorted(latest_by_notice_no.values(), key=priority, reverse=True)
+    return ordered, superseded
+
+
+def _mark_pps_job_failed(
+    session: Session,
+    *,
+    job_id: str,
+    error_code: str,
+    warning: str,
+) -> None:
+    session.rollback()
+    job = session.get(IngestionJob, job_id)
+    if job is None:  # pragma: no cover - database invariant
+        return
+    job.status = "FAILED"
+    job.error_code = error_code
+    job.warnings = [warning]
+    job.completed_at = datetime.now(timezone.utc)
+    session.commit()
+
+
+def _persist_pps_ingestion_result(
+    *,
+    payload: PpsIngestionRequest,
+    session: Session,
+    job: IngestionJob,
+    fetched_rows: list[dict[str, Any]],
+    api_calls: int,
+    hit_page_limit: bool,
+    hit_time_limit: bool,
+    profile_truncated: bool,
+    keywords_used: list[str],
+    provider_query_count: int,
+    department_coverage_count: int,
+) -> PpsIngestionResponse:
+    warnings: list[str] = []
+    if hit_page_limit:
+        warnings.append("max_pages 제한에서 수집을 중단했습니다. 다음 실행에서 기간을 더 좁히세요.")
+    if hit_time_limit:
+        warnings.append("총 수집 시간 제한에서 중단했으며 확보한 공고만 저장했습니다.")
+    expected_provider_queries = len(keywords_used) or 1
+    if provider_query_count < expected_provider_queries and not hit_time_limit:
+        warnings.append("계획한 검색어 일부만 실행되어 확보한 공고만 저장했습니다.")
+    if profile_truncated:
+        warnings.append("조직 프로필 검색어는 외부 호출 상한 30개로 잘랐습니다.")
+    if payload.dry_run:
+        warnings.append("dry_run이므로 공고·첨부 manifest를 저장하지 않았습니다.")
+
+    cancelled_notice_nos = {
+        str(item.get("bid_notice_no"))
+        for item in fetched_rows
+        if item.get("bid_notice_no")
+        and str(item.get("notice_kind") or "").strip() == "취소공고"
+    }
+    if cancelled_notice_nos:
+        warnings.append(
+            f"취소공고 {len(cancelled_notice_nos)}건은 OPEN 후보에서 제외하고 기존 행을 종료했습니다."
+        )
+
+    quarantined = 0
+    matched_rows: list[dict[str, Any]] = []
+    for item in fetched_rows:
+        if not item.get("bid_notice_no") or not item.get("title") or item.get("deadline") is None:
+            quarantined += 1
+            continue
+        if str(item["bid_notice_no"]) in cancelled_notice_nos:
+            continue
+        matched_rows.append(item)
+
+    candidates: dict[str, dict[str, Any]] = {}
+    provider_duplicates = 0
+    for item in matched_rows:
+        notice_key = _pps_notice_key(item)
+        previous = candidates.get(notice_key)
+        if previous is not None:
+            provider_duplicates += 1
+            previous_terms = set(previous.get("_search_keywords") or [])
+            previous_terms.update(item.get("_search_keywords") or [])
+            previous["_search_keywords"] = sorted(previous_terms, key=str.casefold)
+            continue
+        candidates[notice_key] = item
+
+    now = datetime.now(timezone.utc)
+    ordered_candidates, superseded_revisions = _ranked_pps_candidates(candidates, now=now)
+    created = updated = manifests_created = manifests_reused = attachments_discovered = 0
+    duplicates = provider_duplicates + superseded_revisions
+    notice_keys: list[str] = []
+
+    if cancelled_notice_nos and not payload.dry_run:
+        cancelled_rows = list(
+            session.scalars(
+                select(Notice).where(
+                    Notice.bid_notice_no.in_(cancelled_notice_nos),
+                    Notice.status != "CLOSED",
+                )
+            ).all()
+        )
+        for cancelled in cancelled_rows:
+            cancelled.status = "CLOSED"
+        updated += len(cancelled_rows)
+
+    for notice_key, item in ordered_candidates:
+        notice_keys.append(notice_key)
+        if not payload.dry_run:
+            # A corrected revision/deadline supersedes every previously stored
+            # row for the same PPS notice number. Without this transition old
+            # rows remain phantom OPEN candidates in public search.
+            superseded_rows = list(
+                session.scalars(
+                    select(Notice).where(
+                        Notice.bid_notice_no == item["bid_notice_no"],
+                        Notice.notice_key != notice_key,
+                        Notice.status != "CLOSED",
+                    )
+                ).all()
+            )
+            for superseded in superseded_rows:
+                superseded.status = "CLOSED"
+            updated += len(superseded_rows)
+
+        existing = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+        if existing is None:
+            created += 1
+            if not payload.dry_run:
+                source_url = item.get("source_url")
+                existing = Notice(
+                    notice_key=notice_key,
+                    bid_notice_no=item["bid_notice_no"],
+                    revision_no=item["revision_no"],
+                    title=item["title"],
+                    agency=item.get("agency") or "",
+                    published_at=(
+                        _comparable_utc(item["published_at"])
+                        if item.get("published_at")
+                        else None
+                    ),
+                    deadline=_comparable_utc(item["deadline"]),
+                    status="OPEN",
+                    category="용역",
+                    estimated_amount=item.get("estimated_amount"),
+                    source_url=(
+                        redact_url(str(source_url)) if source_url else None
+                    ),
+                )
+                session.add(existing)
+        else:
+            changes: dict[str, Any] = {}
+            for field, value in {
+                "title": item["title"],
+                "agency": item.get("agency") or existing.agency,
+                "revision_no": item["revision_no"],
+                "status": "OPEN",
+                "estimated_amount": (
+                    item.get("estimated_amount")
+                    if item.get("estimated_amount") is not None
+                    else existing.estimated_amount
+                ),
+            }.items():
+                if getattr(existing, field) != value:
+                    changes[field] = value
+            for field, value in {
+                "published_at": (
+                    _comparable_utc(item["published_at"])
+                    if item.get("published_at")
+                    else existing.published_at
+                ),
+                "deadline": _comparable_utc(item["deadline"]),
+            }.items():
+                if not _same_datetime(getattr(existing, field), value):
+                    changes[field] = value
+            source_url = item.get("source_url")
+            if source_url:
+                safe_source_url = redact_url(str(source_url))
+                if existing.source_url != safe_source_url:
+                    changes["source_url"] = safe_source_url
+            if changes:
+                updated += 1
+            else:
+                duplicates += 1
+            if not payload.dry_run:
+                for field, value in changes.items():
+                    setattr(existing, field, value)
+
+        raw_item = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+        query_terms = list(item.get("_search_keywords") or [])
+        if payload.dry_run:
+            attachments_discovered += len(build_attachment_manifest(raw_item))
+        else:
+            assert existing is not None
+            manifest_result = persist_pps_metadata_version(
+                session,
+                existing,
+                raw_item=raw_item,
+                search_keywords=query_terms,
+                dry_run=False,
+            )
+            manifests_created += int(manifest_result.created)
+            manifests_reused += int(manifest_result.reused)
+            attachments_discovered += manifest_result.attachment_count
+
+    job.status = (
+        "PARTIAL"
+        if provider_query_count < expected_provider_queries or hit_time_limit
+        else "COMPLETED"
+    )
+    job.api_calls = api_calls
+    job.fetched = len(fetched_rows)
+    job.matched = len(ordered_candidates)
+    job.created_count = created
+    job.updated_count = updated
+    job.duplicate_count = duplicates
+    job.quarantined_count = quarantined
+    job.notice_keys = notice_keys
+    job.warnings = warnings
+    job.completed_at = datetime.now(timezone.utc)
+    session.commit()
+
+    return PpsIngestionResponse(
+        job_id=job.id,
+        status=job.status,
+        window={"from": payload.from_date.isoformat(), "to": payload.to_date.isoformat()},
+        api_calls=api_calls,
+        fetched=len(fetched_rows),
+        matched=len(ordered_candidates),
+        created=created,
+        updated=updated,
+        duplicates=duplicates,
+        quarantined=quarantined,
+        notice_keys=notice_keys,
+        next_watermark=payload.to_date.isoformat(),
+        warnings=warnings,
+        dry_run=payload.dry_run,
+        keywords_used=keywords_used,
+        provider_queries=provider_query_count,
+        manifests_created=manifests_created,
+        manifests_reused=manifests_reused,
+        attachments_discovered=attachments_discovered,
+        department_coverage_count=department_coverage_count,
+    )
+
+
 @router.post("/ingestion/pps/notices", response_model=PpsIngestionResponse)
 def ingest_pps_notices(
     payload: PpsIngestionRequest,
@@ -643,14 +965,45 @@ def ingest_pps_notices(
     if not settings.pps_api_key:
         raise HTTPException(status_code=503, detail="PPS_API_KEY가 서버에 설정되지 않았습니다.")
 
+    try:
+        keywords_used, profile_truncated = resolve_ingestion_keywords(
+            keyword=payload.keyword,
+            keywords=payload.keywords,
+            use_profile_keywords=payload.use_profile_keywords,
+            profile_department_ids=payload.profile_department_ids,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"수집 검색 프로필을 확인하세요: {exc}") from exc
+
     window = {"from": payload.from_date.isoformat(), "to": payload.to_date.isoformat()}
+    department_coverage_count = (
+        department_keyword_coverage_count(
+            keywords_used,
+            profile_department_ids=payload.profile_department_ids,
+        )
+        if payload.use_profile_keywords
+        else 0
+    )
+    provider_queries = keywords_used or [None]
     job = IngestionJob(
         source="PPS",
         mode="DRY_RUN" if payload.dry_run else "LIVE",
         status="RUNNING",
         window_json=window,
-        keyword=payload.keyword,
-        request_json={"page_size": payload.page_size, "max_pages": payload.max_pages},
+        keyword=(
+            keywords_used[0]
+            if len(keywords_used) == 1
+            else f"MULTI:{len(keywords_used)}"
+            if keywords_used
+            else None
+        ),
+        request_json={
+            "page_size": payload.page_size,
+            "max_pages": payload.max_pages,
+            "keywords": keywords_used,
+            "use_profile_keywords": payload.use_profile_keywords,
+            "profile_department_ids": payload.profile_department_ids,
+        },
         notice_keys=[],
         warnings=[],
     )
@@ -659,152 +1012,83 @@ def ingest_pps_notices(
     session.refresh(job)
 
     try:
+        ingestion_deadline = time.monotonic() + 190
         with PpsClient(
             service_key=settings.pps_api_key,
             base_url=settings.pps_base_url,
+            timeout_seconds=12,
+            max_retries=1,
         ) as client:
-            fetched_rows = list(
-                client.iter_notices(
-                    operation_path=settings.pps_notice_operation,
-                    start=payload.from_date,
-                    end=payload.to_date,
-                    rows=payload.page_size,
-                    max_pages=payload.max_pages,
-                )
-            )
-            api_calls = client.request_count
-            hit_page_limit = client.hit_page_limit
-    except PpsApiError as exc:
-        job.status = "FAILED"
-        job.error_code = "PPS_API_ERROR"
-        job.warnings = ["조달청 API 호출이 실패했습니다. 키와 승인 상태를 확인하세요."]
-        job.completed_at = datetime.now(timezone.utc)
-        session.commit()
-        raise HTTPException(status_code=502, detail="조달청 API 호출에 실패했습니다.") from exc
-
-    warnings: list[str] = []
-    if hit_page_limit:
-        warnings.append("max_pages 제한에서 수집을 중단했습니다. 다음 실행에서 기간을 더 좁히세요.")
-    if payload.keyword:
-        warnings.append("keyword는 수집된 공고명에 대해 서버에서 후처리되었습니다.")
-    if payload.dry_run:
-        warnings.append("dry_run이므로 공고 테이블에는 변경을 저장하지 않았습니다.")
-
-    keyword = payload.keyword.casefold() if payload.keyword else None
-    quarantined = 0
-    matched_rows: list[dict[str, Any]] = []
-    for item in fetched_rows:
-        if not item.get("bid_notice_no") or not item.get("title") or item.get("deadline") is None:
-            quarantined += 1
-            continue
-        if keyword and keyword not in str(item["title"]).casefold():
-            continue
-        matched_rows.append(item)
-
-    candidates: dict[str, dict[str, Any]] = {}
-    provider_duplicates = 0
-    for item in matched_rows:
-        notice_key = _pps_notice_key(item)
-        if notice_key in candidates:
-            provider_duplicates += 1
-        candidates[notice_key] = item
-
-    created = 0
-    updated = 0
-    duplicates = provider_duplicates
-    notice_keys: list[str] = []
-    for notice_key, item in candidates.items():
-        notice_keys.append(notice_key)
-        existing = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
-        if existing is None:
-            created += 1
-            if not payload.dry_run:
-                source_url = item.get("source_url")
-                session.add(
-                    Notice(
-                        notice_key=notice_key,
-                        bid_notice_no=item["bid_notice_no"],
-                        revision_no=item["revision_no"],
-                        title=item["title"],
-                        agency=item.get("agency") or "",
-                        published_at=(
-                            _comparable_utc(item["published_at"])
-                            if item.get("published_at")
+            fetched_rows: list[dict[str, Any]] = []
+            hit_page_limit = False
+            hit_time_limit = False
+            provider_query_count = 0
+            for query_keyword in provider_queries:
+                if time.monotonic() >= ingestion_deadline:
+                    hit_time_limit = True
+                    break
+                provider_query_count += 1
+                rows = list(
+                    client.iter_notices(
+                        operation_path=settings.pps_notice_operation,
+                        start=payload.from_date,
+                        end=payload.to_date,
+                        rows=payload.page_size,
+                        max_pages=payload.max_pages,
+                        extra_params=(
+                            {"bidNtceNm": query_keyword}
+                            if query_keyword is not None
                             else None
                         ),
-                        deadline=_comparable_utc(item["deadline"]),
-                        status="OPEN",
-                        category="용역",
-                        estimated_amount=item.get("estimated_amount"),
-                        source_url=(redact_url(str(source_url)) if source_url else None),
+                        deadline_monotonic=ingestion_deadline,
                     )
                 )
-            continue
+                for item in rows:
+                    safe_item = dict(item)
+                    safe_item["_search_keywords"] = [query_keyword] if query_keyword else []
+                    fetched_rows.append(safe_item)
+                hit_page_limit = hit_page_limit or client.hit_page_limit
+                hit_time_limit = hit_time_limit or getattr(client, "hit_time_limit", False)
+            api_calls = client.request_count
+    except PpsApiError as exc:
+        _mark_pps_job_failed(
+            session,
+            job_id=job.id,
+            error_code="PPS_API_ERROR",
+            warning="조달청 API 호출이 실패했습니다. 키와 승인 상태를 확인하세요.",
+        )
+        raise HTTPException(status_code=502, detail="조달청 API 호출에 실패했습니다.") from exc
+    except Exception:
+        _mark_pps_job_failed(
+            session,
+            job_id=job.id,
+            error_code="PPS_CLIENT_ERROR",
+            warning="조달청 수집 클라이언트가 예기치 않게 종료되었습니다.",
+        )
+        raise
 
-        changes: dict[str, Any] = {}
-        for field, value in {
-            "title": item["title"],
-            "agency": item.get("agency") or existing.agency,
-            "revision_no": item["revision_no"],
-            "estimated_amount": (
-                item.get("estimated_amount")
-                if item.get("estimated_amount") is not None
-                else existing.estimated_amount
-            ),
-        }.items():
-            if getattr(existing, field) != value:
-                changes[field] = value
-        for field, value in {
-            "published_at": (
-                _comparable_utc(item["published_at"])
-                if item.get("published_at")
-                else existing.published_at
-            ),
-            "deadline": _comparable_utc(item["deadline"]),
-        }.items():
-            if not _same_datetime(getattr(existing, field), value):
-                changes[field] = value
-        source_url = item.get("source_url")
-        if source_url:
-            safe_source_url = redact_url(str(source_url))
-            if existing.source_url != safe_source_url:
-                changes["source_url"] = safe_source_url
-        if changes:
-            updated += 1
-            if not payload.dry_run:
-                for field, value in changes.items():
-                    setattr(existing, field, value)
-        else:
-            duplicates += 1
-
-    job.status = "COMPLETED"
-    job.api_calls = api_calls
-    job.fetched = len(fetched_rows)
-    job.matched = len(matched_rows)
-    job.created_count = created
-    job.updated_count = updated
-    job.duplicate_count = duplicates
-    job.quarantined_count = quarantined
-    job.notice_keys = notice_keys
-    job.warnings = warnings
-    job.completed_at = datetime.now(timezone.utc)
-    session.commit()
-
-    return PpsIngestionResponse(
-        job_id=job.id,
-        window=window,
-        api_calls=api_calls,
-        fetched=len(fetched_rows),
-        matched=len(matched_rows),
-        created=created,
-        updated=updated,
-        duplicates=duplicates,
-        quarantined=quarantined,
-        notice_keys=notice_keys,
-        next_watermark=payload.to_date.isoformat(),
-        warnings=warnings,
-        dry_run=payload.dry_run,
-    )
+    try:
+        return _persist_pps_ingestion_result(
+            payload=payload,
+            session=session,
+            job=job,
+            fetched_rows=fetched_rows,
+            api_calls=api_calls,
+            hit_page_limit=hit_page_limit,
+            hit_time_limit=hit_time_limit,
+            profile_truncated=profile_truncated,
+            keywords_used=keywords_used,
+            provider_query_count=provider_query_count,
+            department_coverage_count=department_coverage_count,
+        )
+    except Exception:
+        _mark_pps_job_failed(
+            session,
+            job_id=job.id,
+            error_code="PPS_PERSISTENCE_ERROR",
+            warning="수집 결과 저장 중 오류가 발생해 실행을 실패 처리했습니다.",
+        )
+        raise
 
 
 @router.get("/ingestion/jobs", response_model=list[IngestionJobOut])
@@ -1008,9 +1292,12 @@ def refresh_award_history(
     session.refresh(job)
 
     try:
+        award_deadline = time.monotonic() + 480
         with PpsAwardClient(
             service_key=settings.pps_api_key,
             base_url=settings.pps_base_url,
+            timeout_seconds=12,
+            max_retries=1,
         ) as client:
             fetched_rows = list(
                 client.iter_awards(
@@ -1021,19 +1308,30 @@ def refresh_award_history(
                     rows=payload.page_size,
                     max_pages_per_window=payload.max_pages_per_window,
                     continue_on_window_error=True,
+                    deadline_monotonic=award_deadline,
                 )
             )
             api_calls = client.request_count
             hit_page_limit = client.hit_page_limit
             fallback_window_count = client.fallback_window_count
             window_errors = list(client.window_errors)
+            hit_time_limit = getattr(client, "hit_time_limit", False)
     except PpsApiError as exc:
-        job.status = "FAILED"
-        job.error_code = "PPS_AWARD_API_ERROR"
-        job.warnings = ["조달청 낙찰정보 API 호출이 실패했습니다. 키와 승인 상태를 확인하세요."]
-        job.completed_at = datetime.now(timezone.utc)
-        session.commit()
+        _mark_pps_job_failed(
+            session,
+            job_id=job.id,
+            error_code="PPS_AWARD_API_ERROR",
+            warning="조달청 낙찰정보 API 호출이 실패했습니다. 키와 승인 상태를 확인하세요.",
+        )
         raise HTTPException(status_code=502, detail="조달청 낙찰정보 API 호출에 실패했습니다.") from exc
+    except Exception:
+        _mark_pps_job_failed(
+            session,
+            job_id=job.id,
+            error_code="PPS_AWARD_CLIENT_ERROR",
+            warning="조달청 낙찰정보 클라이언트가 예기치 않게 종료되었습니다.",
+        )
+        raise
 
     if hit_page_limit:
         warnings.append("일부 30일 구간이 페이지 제한에 도달했습니다. 구간 또는 키워드를 좁혀 재조회하세요.")
@@ -1045,6 +1343,8 @@ def refresh_award_history(
         warnings.append(
             f"재조회에도 실패한 {len(window_errors)}개 7일 구간은 누락 상태로 기록했습니다."
         )
+    if hit_time_limit:
+        warnings.append("총 480초 수집 제한에서 중단했으며 확보한 낙찰 후보만 저장했습니다.")
 
     quarantined = 0
     candidates: dict[str, dict[str, Any]] = {}
@@ -1117,7 +1417,7 @@ def refresh_award_history(
         else:
             duplicates += 1
 
-    job.status = "PARTIAL" if window_errors else "COMPLETED"
+    job.status = "PARTIAL" if window_errors or hit_time_limit else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
     job.matched = len(candidates)
@@ -1127,7 +1427,16 @@ def refresh_award_history(
     job.quarantined_count = quarantined
     job.warnings = warnings
     job.completed_at = datetime.now(timezone.utc)
-    session.commit()
+    try:
+        session.commit()
+    except Exception:
+        _mark_pps_job_failed(
+            session,
+            job_id=job.id,
+            error_code="PPS_AWARD_PERSISTENCE_ERROR",
+            warning="낙찰 후보 저장 중 오류가 발생해 실행을 실패 처리했습니다.",
+        )
+        raise
 
     return AwardHistoryRefreshOut(
         job_id=job.id,
@@ -1184,6 +1493,7 @@ def requirement_policy(
             and (
                 not public_view
                 or _curated_public_extraction(item.source_payload) is not None
+                or safe_public_live_extraction(item.source_payload) is not None
             )
         ),
         None,
@@ -1195,8 +1505,17 @@ def requirement_policy(
             else "먼저 공고문 근거 추출을 실행해야 합니다."
         )
         raise HTTPException(status_code=422, detail=detail)
-    result_payload = analysis_version.source_payload["result"]
-    requirements = list(result_payload.get("requirements") or [])
+    if public_view:
+        public_extraction = (
+            _curated_public_extraction(analysis_version.source_payload)
+            or safe_public_live_extraction(analysis_version.source_payload)
+        )
+        if public_extraction is None:  # pragma: no cover - selection invariant
+            raise HTTPException(status_code=422, detail="공개 검증이 완료된 공고 분석이 없습니다.")
+        requirements = list(public_extraction.get("requirements") or [])
+    else:
+        result_payload = analysis_version.source_payload["result"]
+        requirements = list(result_payload.get("requirements") or [])
     classified = classify_requirements(
         requirements,
         profile=load_public_company_profile(),

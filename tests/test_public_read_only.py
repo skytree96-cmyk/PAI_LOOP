@@ -76,6 +76,7 @@ def test_public_notice_response_removes_company_values_and_internal_decisions(mo
         assert public_detail.status_code == 200
         payload = public_detail.json()
         assert payload["decisions"] == []
+        assert payload["requirements"] == []
         assert payload["latest_evaluation"]["atomic_results"] == []
         assert payload["latest_evaluation"]["explanation"]["public_view"] is True
         serialized = public_detail.text
@@ -173,3 +174,93 @@ def test_public_document_analysis_is_digest_bound_and_metadata_allowlisted(monke
             "CHECKLIST": 13,
             "INFORMATION": 3,
         }
+
+
+def test_public_live_pps_extraction_is_redacted_and_usable_by_policy(monkeypatch) -> None:
+    monkeypatch.setenv("PAI_LOOP_ENV", "development")
+    monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
+    monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    email = "review" + "@" + "example.invalid"
+    phone = "010" + "-" + "1234" + "-" + "5678"
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/notices",
+            headers=SERVER_HEADERS,
+            json={
+                "notice_key": "PPS-LIVE-PUBLIC-001",
+                "bid_notice_no": "R26BK-LIVE-001",
+                "revision_no": "00",
+                "title": "공개 교육 컨설팅 용역",
+                "agency": "공공기관",
+                "deadline": "2027-01-01T09:00:00+09:00",
+                "status": "OPEN",
+            },
+        )
+        assert created.status_code == 201
+        attachment_id = "PPS-ATT-0123456789abcdef01234567"
+        version = client.post(
+            "/api/v1/notices/PPS-LIVE-PUBLIC-001/versions",
+            headers=SERVER_HEADERS,
+            json={
+                "version_no": 1,
+                "file_sha256": "c" * 64,
+                "document_complete": True,
+                "extraction_status": "ACCEPTED",
+                "extraction_confidence": 0.97,
+                "source_payload": {
+                    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                    "source_kind": "PPS_PUBLIC_ATTACHMENT",
+                    "attachment_id": attachment_id,
+                    "source_label": "입찰공고문.pdf",
+                    "document_sha256": "c" * 64,
+                    "status": "ACCEPTED",
+                    "prompt_version": "pai-loop-extraction-0.2.1",
+                    "schema_version": "pai-loop-requirements-0.1.0",
+                    "result": {
+                        "document_type": "NOTICE",
+                        "requirements": [
+                            {
+                                "requirement_id": "REQ-LIVE-1",
+                                "category": "SUBMISSION",
+                                "logic": "SINGLE",
+                                "normalized_condition": "담당 합성가 주무관 " + email,
+                                "mandatory": True,
+                                "deadline_basis": "입찰 마감일",
+                                "evidence": [
+                                    {
+                                        "attachment_id": attachment_id,
+                                        "page": 1,
+                                        "section": "문의 합성나",
+                                        "quote": "문의 연락처 " + phone,
+                                        "confidence": 0.97,
+                                    }
+                                ],
+                                "ambiguity_reason": None,
+                            }
+                        ],
+                        "missing_or_unreadable": [],
+                        "summary": "제출 절차 1건, 담당자 합성다",
+                    },
+                },
+            },
+        )
+        assert version.status_code == 201, version.text
+
+        detail = client.get("/api/v1/notices/PPS-LIVE-PUBLIC-001")
+        assert detail.status_code == 200
+        assert detail.json()["requirements"] == []
+        assert len(detail.json()["document_analyses"]) == 1
+        assert email not in detail.text
+        assert phone not in detail.text
+        assert all(name not in detail.text for name in ("합성가", "합성나", "합성다"))
+
+        policy = client.get(
+            "/api/v1/notices/PPS-LIVE-PUBLIC-001/analysis/requirement-policy"
+        )
+        assert policy.status_code == 200, policy.text
+        assert policy.json()["counts"]["CHECKLIST"] == 1
+        assert email not in policy.text
+        assert phone not in policy.text
+        assert all(name not in policy.text for name in ("합성가", "합성나", "합성다"))

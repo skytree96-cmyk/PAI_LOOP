@@ -202,7 +202,8 @@
               <label class="search-field">
                 <span class="sr-only">공고명 또는 발주기관 검색</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
-                <input id="searchInput" type="search" placeholder="공고명 또는 발주기관 검색" autocomplete="off" />
+                <input id="searchInput" type="search" maxlength="200" placeholder="공고명 또는 발주기관 검색" autocomplete="off" aria-describedby="noticeSearchHelp" />
+                <span class="sr-only" id="noticeSearchHelp">온라인 데이터베이스 전체에서 공고명과 발주기관을 검색합니다.</span>
                 <kbd aria-hidden="true">/</kbd>
               </label>
               <label class="select-field">

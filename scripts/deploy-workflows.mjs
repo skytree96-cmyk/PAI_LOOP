@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const validateOnly = process.argv.includes("--validate-only");
+const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
+const onlyKey = onlyArgument?.slice("--only=".length) || undefined;
 const rootDirectory = process.cwd();
 
 function assert(condition, message) {
@@ -73,7 +75,14 @@ function validateRepositorySafetyContracts(definitions) {
 
   const daily = definitions.find(({ key }) => key === "pai-loop-10-daily-opportunity-briefing");
   assert(daily, "daily operator workflow is required");
-  assert(daily.config.publish === false, "daily operator workflow must deploy inactive");
+  assert(daily.config.operatorEntryPoint === true, "daily workflow must be the explicit operator entry point");
+  for (const definition of definitions) {
+    if (definition.key === daily.key) continue;
+    assert(
+      definition.config.publish === false,
+      `${definition.key}: only the daily operator entry point may be published`,
+    );
+  }
   assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
   const schedules = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.scheduleTrigger",
@@ -126,17 +135,14 @@ function validateRepositorySafetyContracts(definitions) {
   }
 
   const serialised = JSON.stringify(daily.workflow);
-  for (const gate of [
-    "PAI_LOOP_DAILY_LIVE_ENABLED",
-    "PAI_LOOP_ANALYSIS_BATCH_ENABLED",
-    "PAI_LOOP_ANALYSIS_BATCH_WRITE_ENABLED",
-    "PAI_LOOP_RETENTION_LIVE_ENABLED",
-    "PAI_LOOP_AWARD_REFRESH_ENABLED",
-    "PAI_LOOP_AWARD_REFRESH_WRITE_ENABLED",
-    "PAI_LOOP_TEAMS_MOCK_LOG_ENABLED",
-  ]) {
-    assert(serialised.includes(gate), `daily workflow is missing safety gate ${gate}`);
-  }
+  assert(
+    serialised.includes("PAI_LOOP_EMERGENCY_DISABLE"),
+    "daily workflow must expose the one fail-closed emergency disable",
+  );
+  assert(
+    serialised.includes("executionMode: dailyLiveEnabled ? 'scheduled-live' : 'scheduled-emergency-disabled'"),
+    "daily workflow must default scheduled execution to live when emergency disable is absent",
+  );
   assert(
     serialised.includes("https://pai-loop-demo.onrender.com"),
     "daily workflow must contain the public Render origin fallback",
@@ -147,29 +153,76 @@ function validateRepositorySafetyContracts(definitions) {
     "daily workflow must route PPS notice keys through the backend batch analysis endpoint",
   );
   assert(
-    serialised.includes("maxAnalysisBatchNotices: boundedInt('PAI_LOOP_ANALYSIS_BATCH_LIMIT', 5, 1, 10)"),
-    "daily batch analysis must remain bounded to at most ten notices",
+    serialised.includes("maxAnalysisBatchNotices: 3")
+      && serialised.includes("maxAttachmentsPerNotice: 1"),
+    "daily batch analysis must remain bounded to three notices and one attachment each",
+  );
+  assert(
+    serialised.includes("useProfileKeywords: true")
+      && serialised.includes("profileDepartmentIds: []")
+      && serialised.includes("ppsMaxPages: 1"),
+    "daily ingestion must use the organization profile with a one-page provider bound",
+  );
+  assert(
+    serialised.includes("use_profile_keywords:")
+      && serialised.includes("profile_department_ids:")
+      && serialised.includes("department_coverage_count")
+      && serialised.includes("enrich_missing:")
+      && serialised.includes("max_attachments_per_notice:"),
+    "daily HTTP payloads must carry the v1.3 ingestion and enrichment contract",
+  );
+  const analysisNode = daily.workflow.nodes.find(
+    (node) => node.name === "Analyze Evaluate and Snapshot PPS Notices",
+  );
+  const ppsNode = daily.workflow.nodes.find(
+    (node) => node.name === "Refresh PPS Notices Behind Gate",
+  );
+  const awardNode = daily.workflow.nodes.find(
+    (node) => node.name === "Refresh Bounded Three-Year Award History",
+  );
+  assert(
+    ppsNode?.parameters?.options?.timeout === 600000,
+    "daily organization-profile PPS ingestion must have a bounded ten-minute n8n timeout",
+  );
+  assert(
+    analysisNode?.parameters?.options?.timeout === 600000,
+    "daily top-three enrichment must have a bounded ten-minute n8n timeout",
+  );
+  assert(
+    awardNode?.parameters?.options?.timeout === 600000
+      && serialised.includes("maxAwardRefreshNotices: 1")
+      && serialised.includes("Math.min(3, Math.max(1"),
+    "daily award refresh must default to one, hard-cap at three, and use a ten-minute request window",
   );
   const targets = (source, lane = 0) =>
     (daily.workflow.connections?.[source]?.main?.[lane] ?? []).map((connection) => connection.node);
   assert(
     JSON.stringify(targets("Validate PPS Ingestion Contract"))
-      === JSON.stringify(["Build Bounded Batch Analysis Plan"]),
-    "validated PPS notice keys must enter the batch analysis plan",
+      === JSON.stringify(["Preview or Apply Seven-Day Log Retention"]),
+    "validated PPS notices must enter retention and award preparation before analysis",
   );
   assert(
     JSON.stringify(targets("Validate Batch Analysis Contract"))
       === JSON.stringify(["Verify Batch Analysis Aggregate Invariants"])
       && JSON.stringify(targets("Verify Batch Analysis Aggregate Invariants"))
-        === JSON.stringify(["Preview or Apply Seven-Day Log Retention"])
+        === JSON.stringify(["Fetch Ranked Seven-Day Briefing"])
       && JSON.stringify(targets("Record Batch Analysis Skipped"))
-        === JSON.stringify(["Preview or Apply Seven-Day Log Retention"]),
-    "analysis completion or explicit skip must precede retention and award refresh",
+        === JSON.stringify(["Fetch Ranked Seven-Day Briefing"]),
+    "analysis completion or explicit skip must immediately precede the final briefing",
+  );
+  assert(
+    JSON.stringify(targets("Validate Seven-Day Retention Contract"))
+      === JSON.stringify(["Fetch Award Candidates from Seven-Day Briefing"])
+      && JSON.stringify(targets("Validate Award Refresh Batch"))
+        === JSON.stringify(["Build Bounded Batch Analysis Plan"])
+      && JSON.stringify(targets("Record Award Refresh Skipped"))
+        === JSON.stringify(["Build Bounded Batch Analysis Plan"]),
+    "award refresh or explicit skip must precede analysis snapshot generation",
   );
   assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
   assert(
-    daily.config.contractVersion === "daily-briefing-1.2",
-    "daily workflow manifest contractVersion must be daily-briefing-1.2",
+    daily.config.contractVersion === "daily-briefing-1.3",
+    "daily workflow manifest contractVersion must be daily-briefing-1.3",
   );
 
   const preservationProbe = preserveRemoteNodeCredentials(
@@ -251,6 +304,13 @@ validateRepositorySafetyContracts(definitions);
 console.log(`Validated ${definitions.length} workflow definition(s)`);
 if (validateOnly) process.exit(0);
 
+if (onlyKey) {
+  assert(
+    definitions.some(({ key }) => key === onlyKey),
+    `--only references an unknown manifest workflow: ${onlyKey}`,
+  );
+}
+
 const baseUrl = process.env.N8N_BASE_URL?.replace(/\/$/, "");
 const apiKey = process.env.N8N_API_KEY;
 assert(baseUrl && apiKey, "N8N_BASE_URL and N8N_API_KEY are required unless --validate-only is used");
@@ -327,7 +387,9 @@ for (const workflow of remoteWorkflows) {
   remoteByName.set(workflow.name, matches);
 }
 
-for (const { key, config, workflow } of definitions) {
+for (const { key, config, workflow } of definitions.filter(
+  (definition) => !onlyKey || definition.key === onlyKey,
+)) {
   let payload = deploymentPayload(workflow);
   let workflowId = config.n8nWorkflowId;
   let remote;

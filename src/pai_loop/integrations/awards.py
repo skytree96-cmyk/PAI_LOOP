@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date
 from typing import Any, Iterator
 
@@ -67,11 +68,15 @@ class PpsAwardClient(PpsClient):
         operation_path: str,
         rows: int,
         max_pages: int,
+        deadline_monotonic: float | None = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         folded_keyword = keyword.casefold()
         page = 1
         while True:
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                self.hit_time_limit = True
+                return results
             payload = self._request(
                 operation_path,
                 {
@@ -108,6 +113,7 @@ class PpsAwardClient(PpsClient):
         max_pages_per_window: int = 1,
         fallback_window_days: int = 7,
         continue_on_window_error: bool = False,
+        deadline_monotonic: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         if not keyword.strip():
             raise ValueError("keyword is required")
@@ -118,9 +124,13 @@ class PpsAwardClient(PpsClient):
         if not 1 <= fallback_window_days < max_window_days:
             raise ValueError("fallback_window_days must be shorter than max_window_days")
         self.hit_page_limit = False
+        self.hit_time_limit = False
         self.fallback_window_count = 0
         self.window_errors = []
         for window in split_date_range(start, end, max_days=max_window_days):
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                self.hit_time_limit = True
+                return
             try:
                 results = self._fetch_window(
                     window=window,
@@ -128,6 +138,7 @@ class PpsAwardClient(PpsClient):
                     operation_path=operation_path,
                     rows=rows,
                     max_pages=max_pages_per_window,
+                    deadline_monotonic=deadline_monotonic,
                 )
             except PpsApiError:
                 # A small number of otherwise-valid 30-day PPS queries return a
@@ -140,6 +151,9 @@ class PpsAwardClient(PpsClient):
                     window.end,
                     max_days=fallback_window_days,
                 ):
+                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                        self.hit_time_limit = True
+                        return
                     try:
                         results.extend(
                             self._fetch_window(
@@ -148,6 +162,7 @@ class PpsAwardClient(PpsClient):
                                 operation_path=operation_path,
                                 rows=rows,
                                 max_pages=max_pages_per_window,
+                                deadline_monotonic=deadline_monotonic,
                             )
                         )
                     except PpsApiError:

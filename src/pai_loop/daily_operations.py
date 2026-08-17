@@ -207,7 +207,12 @@ def daily_briefing(
     notices = list(
         session.scalars(
             select(Notice)
-            .where(observed_at >= window_start, observed_at <= generated_at)
+            .where(
+                observed_at >= window_start,
+                observed_at <= generated_at,
+                Notice.status == "OPEN",
+                Notice.deadline >= generated_at,
+            )
             .options(
                 selectinload(Notice.evaluations),
                 selectinload(Notice.award_history),
