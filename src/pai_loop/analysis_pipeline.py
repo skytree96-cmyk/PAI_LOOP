@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -27,7 +28,15 @@ from .eligibility_policy import (
     classify_requirements,
     load_public_company_profile,
 )
-from .evaluator import RULESET_VERSION, evaluate_notice, fact_is_effective
+from .evaluator import (
+    MIN_EXTRACTION_CONFIDENCE,
+    RISK_METHOD_VERSION,
+    RISK_WEIGHTS,
+    RULESET_VERSION,
+    EvaluationResult,
+    evaluate_notice,
+    fact_is_effective,
+)
 from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
@@ -56,9 +65,9 @@ from .quantitative_scoring import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.1.0"
-MATERIALIZATION_VERSION = "atomic-materializer-0.1.0"
-SNAPSHOT_VERSION = "analysis-snapshot-0.1.0"
+PIPELINE_VERSION = "analysis-pipeline-0.3.0"
+MATERIALIZATION_VERSION = "atomic-materializer-0.2.0"
+SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
 MATERIALIZED_KIND = "ANALYSIS_PIPELINE_MATERIALIZATION"
 RUN_KIND = "FULL_REVIEW"
@@ -77,6 +86,63 @@ _PASS_RULE_BY_CATEGORY = {
     "SUBMISSION": "P-DOCUMENT",
     "OTHER": "P-DOCUMENT",
 }
+
+_ELIGIBILITY_GAP_TERMS = (
+    "자격",
+    "참가",
+    "면허",
+    "등록",
+    "인증",
+    "직접생산",
+    "지역",
+    "소재",
+    "실적",
+    "인력",
+    "시설",
+    "공동수급",
+    "컨소시엄",
+    "부정당",
+    "제재",
+    "업종",
+    "업체",
+    "사업자",
+    "법인",
+    "중소",
+    "소기업",
+    "결격",
+)
+_KNOWN_NON_ELIGIBILITY_GAP_TERMS = (
+    "가격",
+    "예산",
+    "원가",
+    "산출내역",
+    "평가배점",
+    "평점산식",
+    "과업",
+    "사업내용",
+    "성과물",
+    "계약",
+    "일정",
+    "서식",
+    "도면",
+    "이미지",
+    "목차",
+)
+_BLOCKING_ACTION_GAP_TERMS = (
+    "제안설명회",
+    "현장설명",
+    "설명회",
+    "참여",
+    "참석",
+    "발표",
+    "제출",
+    "방문",
+    "접수",
+    "마감",
+    "서명",
+    "날인",
+    "서약",
+)
 
 
 class AnalysisPipelineError(RuntimeError):
@@ -457,6 +523,243 @@ def _parse_confidence(item: _MergedRequirement) -> float:
     return min(values) if values else 0.0
 
 
+def _has_verified_anchor(item: _MergedRequirement) -> bool:
+    """Trust only exact anchors already accepted by the extraction boundary."""
+
+    if (
+        not item.anchors
+        or not item.attachment_ids
+        or not item.source_document_sha256s
+        or _parse_confidence(item) < MIN_EXTRACTION_CONFIDENCE
+    ):
+        return False
+    return all(
+        bool(anchor.quote.strip())
+        and anchor.attachment_id in item.attachment_ids
+        and anchor.confidence >= MIN_EXTRACTION_CONFIDENCE
+        for anchor in item.anchors
+    )
+
+
+def _known_non_eligibility_gaps_only(sources: Sequence[_SourceDocument]) -> bool:
+    """Allow a partial gate only for explicitly described non-eligibility gaps.
+
+    Unknown, empty, or eligibility-adjacent descriptions fail closed.  A
+    rejected/unmaterializable attachment also fails closed because its omitted
+    content cannot be classified safely.
+    """
+
+    if not sources or any(not source.materializable or source.data is None for source in sources):
+        return False
+    gaps = [
+        _normalise_text(gap)
+        for source in sources
+        if source.data is not None
+        for gap in source.data.missing_or_unreadable
+    ]
+    if not gaps or any(not gap for gap in gaps):
+        return False
+    return all(
+        not any(term in gap for term in _ELIGIBILITY_GAP_TERMS)
+        and not any(term in gap for term in _BLOCKING_ACTION_GAP_TERMS)
+        and any(term in gap for term in _KNOWN_NON_ELIGIBILITY_GAP_TERMS)
+        for gap in gaps
+    )
+
+
+def _partial_gate_candidate_keys(
+    *,
+    run_status: str,
+    sources: Sequence[_SourceDocument],
+    policy_items: Sequence[tuple[_MergedRequirement, dict[str, Any]]],
+) -> tuple[frozenset[str], frozenset[str]]:
+    if run_status != "PARTIAL" or not _known_non_eligibility_gaps_only(sources):
+        return frozenset(), frozenset()
+
+    eligibility_items = [
+        item
+        for item, policy in policy_items
+        if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
+    ]
+    if not eligibility_items or not all(_has_verified_anchor(item) for item in eligibility_items):
+        return frozenset(), frozenset()
+
+    verified_materialized_keys = frozenset(
+        item.requirement_key
+        for item, policy in policy_items
+        if _is_materialized_policy_item(item, policy) and _has_verified_anchor(item)
+    )
+    return verified_materialized_keys, frozenset(
+        item.requirement_key for item in eligibility_items
+    )
+
+
+def _company_eligibility_verdict_complete(
+    evaluation: EvaluationResult,
+    *,
+    requirements: Sequence[AtomicRequirement],
+    eligibility_keys: frozenset[str],
+) -> bool:
+    if not eligibility_keys:
+        return False
+    by_key = {str(item.get("requirement_key")): item for item in evaluation.atomic_results}
+    requirement_by_key = {item.requirement_key: item for item in requirements}
+    for key in eligibility_keys:
+        requirement = requirement_by_key.get(key)
+        result = by_key.get(key)
+        if requirement is None or result is None:
+            return False
+        if result.get("result") not in {"PASS", "FAIL"} or result.get("actual_value") is None:
+            return False
+        if requirement.evidence_required and not result.get("evidence_valid"):
+            return False
+    return True
+
+
+def _bounded_axis(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0 or number > 100:
+        return None
+    return round(number, 2)
+
+
+def _derive_risk_dimensions(
+    *,
+    notice: Notice,
+    evaluation: EvaluationResult,
+    policy_items: Sequence[tuple[_MergedRequirement, dict[str, Any]]],
+    sources: Sequence[_SourceDocument],
+    run_status: str,
+    eligibility_gate_applied: bool,
+    award_intelligence: dict[str, Any],
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Build auditable risk axes without model-generated direct scores."""
+
+    dimensions: dict[str, float] = {}
+    basis: dict[str, Any] = {}
+    eligibility_items = [
+        item
+        for item, policy in policy_items
+        if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
+    ]
+    if eligibility_items:
+        qualification = {"PASS": 10.0, "REVIEW": 60.0, "FAIL": 100.0}[
+            evaluation.eligibility.value
+        ]
+        dimensions["qualification"] = qualification
+        basis["qualification"] = {
+            "source": "DETERMINISTIC_ELIGIBILITY_EVALUATION",
+            "method": "PASS=10; REVIEW=60; FAIL=100",
+            "requirement_count": len(eligibility_items),
+            "outcome": evaluation.eligibility.value,
+        }
+
+        execution = round(max(0.0, min(100.0, 100.0 - evaluation.readiness_score)), 2)
+        dimensions["execution"] = execution
+        basis["execution"] = {
+            "source": "DETERMINISTIC_READINESS_EVALUATION",
+            "method": "max(0, 100 - readiness_score)",
+            "readiness_score": evaluation.readiness_score,
+        }
+
+    if sources:
+        minimum_confidence = min(source.version.extraction_confidence for source in sources)
+        document = (
+            round(max(0.0, 100.0 - minimum_confidence * 100.0), 2)
+            if run_status == "COMPLETED"
+            else 100.0
+        )
+        dimensions["document"] = document
+        basis["document"] = {
+            "source": "VALIDATED_EXTRACTION_STATUS",
+            "method": (
+                "max(0, 100 - minimum_extraction_confidence*100) when COMPLETED; "
+                "otherwise 100"
+            ),
+            "run_status": run_status,
+            "source_count": len(sources),
+            "minimum_extraction_confidence": round(minimum_confidence, 4),
+        }
+
+    atomic_by_key = {
+        str(item.get("requirement_key")): item for item in evaluation.atomic_results
+    }
+    action_items = [
+        item
+        for item, policy in policy_items
+        if item.requirement.mandatory and policy.get("policy_class") == "ACTION_REQUIRED"
+    ]
+    checklist_count = sum(
+        item.requirement.mandatory and policy.get("policy_class") == "CHECKLIST"
+        for item, policy in policy_items
+    )
+    incomplete_action_count = sum(
+        atomic_by_key.get(item.requirement_key, {}).get("result") != "PASS"
+        for item in action_items
+    )
+    if policy_items and (run_status == "COMPLETED" or eligibility_gate_applied):
+        operation = float(min(100, incomplete_action_count * 20 + checklist_count * 5))
+        dimensions["operation"] = operation
+        basis["operation"] = {
+            "source": "MATERIALIZED_POLICY_REQUIREMENTS",
+            "method": "min(100, incomplete_ACTION_REQUIRED*20 + mandatory_CHECKLIST*5)",
+            "action_required_count": len(action_items),
+            "incomplete_action_count": incomplete_action_count,
+            "mandatory_checklist_count": checklist_count,
+        }
+
+    competition = award_intelligence.get("competition_risk")
+    if isinstance(competition, dict):
+        competition_score = _bounded_axis(competition.get("score"))
+        if competition_score is not None and competition.get("status") == "MODEL_ESTIMATE":
+            dimensions["competition"] = competition_score
+            coverage = competition.get("coverage")
+            basis["competition"] = {
+                "source": "STORED_3Y_AWARD_HISTORY",
+                "method": str(competition.get("method") or ""),
+                "method_version": str(
+                    competition.get("method_version") or COMPETITION_RISK_VERSION
+                ),
+                "sample_count": int(competition.get("sample_count") or 0),
+                "coverage_sufficient": bool(
+                    isinstance(coverage, dict) and coverage.get("sufficient")
+                ),
+            }
+
+    prediction = award_intelligence.get("prediction")
+    award_rate = prediction.get("award_rate") if isinstance(prediction, dict) else None
+    if isinstance(award_rate, dict) and award_rate.get("status") == "MODEL_ESTIMATE":
+        center = award_rate.get("center")
+        if isinstance(center, (int, float)) and not isinstance(center, bool) and math.isfinite(float(center)):
+            profitability = round(max(0.0, min(100.0, 100.0 - float(center))), 2)
+            dimensions["profitability"] = profitability
+            basis["profitability"] = {
+                "source": "STORED_3Y_AWARD_RATE_PREDICTION",
+                "method": "max(0, min(100, 100 - predicted_award_rate_center))",
+                "prediction_method": str(award_rate.get("method") or ""),
+                "sample_count": int(award_rate.get("sample_count") or 0),
+                "award_rate_center": round(float(center), 4),
+            }
+
+    manual = notice.risk_dimensions if isinstance(notice.risk_dimensions, dict) else {}
+    for key in RISK_WEIGHTS:
+        value = _bounded_axis(manual.get(key))
+        if value is None:
+            continue
+        dimensions[key] = value
+        basis[key] = {
+            "source": "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE",
+            "method": "validated explicit 0..100 axis override",
+        }
+
+    return dimensions, basis
+
+
 def _is_materialized_policy_item(item: _MergedRequirement, policy: dict[str, Any]) -> bool:
     return bool(item.requirement.mandatory) and policy.get("policy_class") in {
         "ELIGIBILITY",
@@ -795,6 +1098,7 @@ def run_analysis_pipeline(
                     "materialization_version": MATERIALIZATION_VERSION,
                     "snapshot_version": SNAPSHOT_VERSION,
                     "ruleset_version": ruleset_version,
+                    "business_risk_version": RISK_METHOD_VERSION,
                     "policy_version": POLICY_VERSION,
                     "profile_version": profile_version,
                     "profile_sha256": profile_sha256,
@@ -837,6 +1141,11 @@ def run_analysis_pipeline(
             else:
                 run_status = "COMPLETED"
             warnings = sorted(set(warnings))
+            gate_candidate_keys, eligibility_gate_keys = _partial_gate_candidate_keys(
+                run_status=run_status,
+                sources=sources,
+                policy_items=policy_items,
+            )
 
             confidence_values = [
                 source.version.extraction_confidence
@@ -892,11 +1201,64 @@ def run_analysis_pipeline(
             if _stage_hook:
                 _stage_hook("after_materialization")
 
+            provisional_evaluation = evaluate_notice(
+                notice,
+                materialized_version,
+                prospective_atomics,
+                company_facts,
+                verified_document_requirement_keys=gate_candidate_keys,
+                risk_dimensions={},
+            )
+            eligibility_gate_applied = bool(
+                gate_candidate_keys
+                and _company_eligibility_verdict_complete(
+                    provisional_evaluation,
+                    requirements=prospective_atomics,
+                    eligibility_keys=eligibility_gate_keys,
+                )
+            )
+            verified_requirement_keys = (
+                gate_candidate_keys if eligibility_gate_applied else frozenset()
+            )
+            if gate_candidate_keys and not eligibility_gate_applied:
+                provisional_evaluation = evaluate_notice(
+                    notice,
+                    materialized_version,
+                    prospective_atomics,
+                    company_facts,
+                    risk_dimensions={},
+                )
+            if eligibility_gate_applied:
+                warnings = sorted(
+                    set(warnings) | {"NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"}
+                )
+                materialized_version.source_payload = {
+                    **(materialized_version.source_payload or {}),
+                    "review_code": None,
+                    "eligibility_gate_applied": True,
+                    "eligibility_gate_basis": (
+                        "ALL_MANDATORY_ELIGIBILITY_ANCHORS_VERIFIED_AND_COMPANY_VERDICT_COMPLETE"
+                    ),
+                    "warnings": warnings,
+                }
+
+            derived_risk_dimensions, risk_axis_basis = _derive_risk_dimensions(
+                notice=notice,
+                evaluation=provisional_evaluation,
+                policy_items=policy_items,
+                sources=sources,
+                run_status=run_status,
+                eligibility_gate_applied=eligibility_gate_applied,
+                award_intelligence=award_intelligence,
+            )
             evaluation_result = evaluate_notice(
                 notice,
                 materialized_version,
                 prospective_atomics,
                 company_facts,
+                verified_document_requirement_keys=verified_requirement_keys,
+                risk_dimensions=derived_risk_dimensions,
+                risk_axis_basis=risk_axis_basis,
             )
             safe_atomics, safe_explanation = _sanitized_evaluation_payload(
                 evaluation_result.atomic_results,
@@ -911,9 +1273,10 @@ def run_analysis_pipeline(
                 "status": run_status,
                 "source_count": len(sources),
                 "accepted_source_count": accepted_source_count,
+                "eligibility_gate_applied": eligibility_gate_applied,
                 "warnings": warnings,
             }
-            reason_code = "R07" if run_status != "COMPLETED" else evaluation_result.reason_code
+            reason_code = evaluation_result.reason_code
             evaluation = Evaluation(
                 notice_id=notice.id,
                 notice_version_id=materialized_version.id,
@@ -943,6 +1306,8 @@ def run_analysis_pipeline(
                 "recommendation_snapshot_count": len(department_rankings) + 1,
                 "eligibility": evaluation.eligibility,
                 "reason_code": reason_code,
+                "eligibility_gate_applied": eligibility_gate_applied,
+                "risk_status": safe_explanation.get("risk", {}).get("status"),
                 "warnings": warnings,
             }
             model_names = sorted(
@@ -1006,6 +1371,7 @@ def run_analysis_pipeline(
                     ),
                     "award_analytics": ANALYTICS_VERSION,
                     "competition_risk": COMPETITION_RISK_VERSION,
+                    "business_risk": RISK_METHOD_VERSION,
                     "active_reference_versions": reference_versions,
                 },
                 input_manifest={
@@ -1036,7 +1402,7 @@ def run_analysis_pipeline(
                     "pricing_profile_sha256": _digest(pricing_profile),
                 },
                 output_summary=output_summary,
-                error_code=None if run_status == "COMPLETED" else "R07",
+                error_code=None if reason_code != "R07" else "R07",
             )
             session.add(analysis_run)
             session.flush()
@@ -1095,11 +1461,11 @@ def run_analysis_pipeline(
                 "source_count": len(sources),
                 "materialized_requirement_count": len(prospective_atomics),
             }
-            quantitative_value = (
-                quantitative.estimated_points
-                if quantitative.estimated_points is not None
-                else quantitative.confirmed_points
-            )
+            # ``value`` represents an exact total only.  A confirmed subtotal
+            # is not the total when the result is a range or REVIEW; those
+            # results remain expressible through lower/upper bounds and the
+            # explicit confirmed_points basis field.
+            quantitative_value = quantitative.estimated_points
             competition = award_intelligence["competition_risk"]
             award_prediction = award_intelligence["prediction"]["award_rate"]
             submitted_prediction = award_intelligence["prediction"]["submitted_bid_rate"]
@@ -1133,14 +1499,17 @@ def run_analysis_pipeline(
                         value=evaluation.risk_score,
                         unit="POINTS_0_100",
                         status=(
-                            score_status
+                            "AVAILABLE"
                             if evaluation.risk_score is not None
                             else "UNSCORABLE"
                         ),
                         band=evaluation.risk_band,
                         confidence=score_confidence if evaluation.risk_score is not None else 0.0,
-                        method_version=ruleset_version,
-                        basis_json=common_basis,
+                        method_version=RISK_METHOD_VERSION,
+                        basis_json={
+                            **common_basis,
+                            **safe_explanation.get("risk", {}),
+                        },
                     ),
                     ScoreSnapshot(
                         score_key="quantitative.total",
@@ -1157,6 +1526,7 @@ def run_analysis_pipeline(
                             "input_sha256": input_sha256,
                             "ruleset_version": quantitative.ruleset_version,
                             "total_max_points": quantitative.total_max_points,
+                            "confirmed_points": quantitative.confirmed_points,
                             "evidence_coverage_pct": quantitative.evidence_coverage_pct,
                             "profile_output_sha256": _digest(
                                 quantitative.model_dump(mode="json")

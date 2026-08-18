@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
 from .award_intelligence import build_award_intelligence
-from .department_ranking import rank_notice_across_departments
+from .department_ranking import (
+    rank_notice_across_departments,
+    rank_notice_review_candidates,
+    route_notice_across_regions,
+)
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
@@ -164,6 +168,18 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         category=notice.category or "",
         limit=3,
     )
+    department_review_candidates = rank_notice_review_candidates(
+        title=notice.title,
+        agency=notice.agency,
+        category=notice.category or "",
+        limit=3,
+    )
+    region_routing = route_notice_across_regions(
+        title=notice.title,
+        agency=notice.agency,
+        category=notice.category or "",
+        limit=2,
+    )
     fit = {
         "eligibility": latest.eligibility if latest else "PENDING",
         "reason_code": latest.reason_code if latest else "NOT_EVALUATED",
@@ -195,6 +211,8 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         "priority_score": priority_score,
         "fit": fit,
         "top_departments": departments,
+        "department_review_candidates": department_review_candidates,
+        "region_routing": region_routing,
         "award_snapshot": _award_snapshot(notice.award_history),
         "competition_risk": pricing_intelligence["competition_risk"],
         "quantitative_estimate": estimate_for_notice(notice).model_dump(mode="json"),

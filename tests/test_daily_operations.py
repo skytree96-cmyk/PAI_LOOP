@@ -17,6 +17,7 @@ def _create_notice(
     notice_key: str,
     published_at: str,
     title: str = "공공기관 AI 교육 및 컨설팅 용역",
+    agency: str = "가상 공공기관",
     deadline: str = "2026-08-31T09:00:00+09:00",
     status: str = "OPEN",
 ) -> None:
@@ -26,7 +27,7 @@ def _create_notice(
             "notice_key": notice_key,
             "bid_notice_no": notice_key,
             "title": title,
-            "agency": "가상 공공기관",
+            "agency": agency,
             "published_at": published_at,
             "deadline": deadline,
             "status": status,
@@ -43,6 +44,8 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         client,
         notice_key="DAILY-RECENT",
         published_at="2026-08-16T08:30:00+09:00",
+        title="공공기관 팀빌딩 및 조직문화 교육 위탁운영",
+        agency="인천광역시",
     )
     _create_notice(
         client,
@@ -64,6 +67,12 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
     assert body["notices"][0]["fit"]["risk_score"] is None
     assert body["notices"][0]["fit"]["risk_band"] == "UNKNOWN"
     assert body["notices"][0]["top_departments"]
+    assert body["notices"][0]["department_review_candidates"]
+    assert body["notices"][0]["region_routing"][0]["department_id"] == "region-central"
+    assert all(
+        item["ranking_scope"] == "BUSINESS"
+        for item in body["notices"][0]["top_departments"]
+    )
     assert body["notices"][0]["quantitative_estimate"]["overall_status"] == "REVIEW"
     assert body["notices"][0]["pricing_intelligence"]["record_count"] == 0
     assert (

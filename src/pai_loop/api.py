@@ -25,6 +25,8 @@ from .department_ranking import (
     parse_search_keywords,
     rank_notice_across_departments,
     rank_notice_for_department,
+    rank_notice_review_candidates,
+    route_notice_across_regions,
 )
 from .integrations.awards import PpsAwardClient
 from .award_intelligence import build_award_intelligence
@@ -479,6 +481,20 @@ def list_notices(
             user_keywords=parsed_keywords,
             limit=5,
         )
+        review_candidates = rank_notice_review_candidates(
+            title=notice.title,
+            agency=notice.agency,
+            category=notice.category or "",
+            user_keywords=parsed_keywords,
+            limit=5,
+        )
+        region_routing = route_notice_across_regions(
+            title=notice.title,
+            agency=notice.agency,
+            category=notice.category or "",
+            user_keywords=parsed_keywords,
+            limit=2,
+        )
         ranked.append(
             NoticeSummary.model_validate(
                 {
@@ -488,12 +504,37 @@ def list_notices(
                     ).model_dump(),
                     "department_ranking": selected_ranking,
                     "top_department_rankings": top_rankings,
+                    "department_review_candidates": review_candidates,
+                    "region_routing": region_routing,
                 }
             )
         )
+
+    def selected_department_order(item: NoticeSummary) -> tuple[int, float, float]:
+        selected = item.department_ranking
+        if selected is None:
+            return 0, 0.0, 0.0
+        if selected.department_id == "organization":
+            if item.top_department_rankings:
+                best = item.top_department_rankings[0]
+                return 3, best.business_score, selected.score
+            if item.department_review_candidates:
+                candidate = item.department_review_candidates[0]
+                return 2, candidate.business_score, selected.score
+            return 0, 0.0, selected.score
+        tier_order = {"TOP": 3, "ROUTING": 3, "REVIEW": 2, "NONE": 0}
+        fit_score = (
+            selected.routing_score
+            if selected.ranking_scope == "REGION"
+            else selected.business_score
+        )
+        return tier_order[selected.recommendation_tier], fit_score, selected.score
+
     ranked.sort(
         key=lambda item: (
-            -(item.department_ranking.score if item.department_ranking else 0),
+            -selected_department_order(item)[0],
+            -selected_department_order(item)[1],
+            -selected_department_order(item)[2],
             _comparable_utc(item.deadline),
         )
     )
@@ -803,6 +844,14 @@ def _persist_pps_ingestion_result(
 
     now = datetime.now(timezone.utc)
     ordered_candidates, superseded_revisions = _ranked_pps_candidates(candidates, now=now)
+    direct_contract_count = sum(
+        bool(item.get("direct_contract_signal")) for _notice_key, item in ordered_candidates
+    )
+    if direct_contract_count:
+        warnings.append(
+            f"수의·직접계약 {direct_contract_count}건은 감사 메타데이터를 보존하고 "
+            "기본 OPEN 분석 큐에서 제외했습니다."
+        )
     created = updated = manifests_created = manifests_reused = attachments_discovered = 0
     duplicates = provider_duplicates + superseded_revisions
     notice_keys: list[str] = []
@@ -823,7 +872,10 @@ def _persist_pps_ingestion_result(
         updated += len(cancelled_rows)
 
     for notice_key, item in ordered_candidates:
-        notice_keys.append(notice_key)
+        direct_contract = bool(item.get("direct_contract_signal"))
+        target_status = "CLOSED" if direct_contract else "OPEN"
+        if not direct_contract:
+            notice_keys.append(notice_key)
         if not payload.dry_run:
             # A corrected revision/deadline supersedes every previously stored
             # row for the same PPS notice number. Without this transition old
@@ -846,7 +898,8 @@ def _persist_pps_ingestion_result(
         candidate_changed = False
         if existing is None:
             created += 1
-            created_notice_keys.append(notice_key)
+            if not direct_contract:
+                created_notice_keys.append(notice_key)
             if not payload.dry_run:
                 source_url = item.get("source_url")
                 existing = Notice(
@@ -861,7 +914,7 @@ def _persist_pps_ingestion_result(
                         else None
                     ),
                     deadline=_comparable_utc(item["deadline"]),
-                    status="OPEN",
+                    status=target_status,
                     category="용역",
                     estimated_amount=item.get("estimated_amount"),
                     source_url=(
@@ -875,7 +928,7 @@ def _persist_pps_ingestion_result(
                 "title": item["title"],
                 "agency": item.get("agency") or existing.agency,
                 "revision_no": item["revision_no"],
-                "status": "OPEN",
+                "status": target_status,
                 "estimated_amount": (
                     item.get("estimated_amount")
                     if item.get("estimated_amount") is not None
@@ -930,7 +983,7 @@ def _persist_pps_ingestion_result(
                 existed_before_run and manifest_result.created
             )
 
-        if existed_before_run and candidate_changed:
+        if existed_before_run and candidate_changed and not direct_contract:
             updated_notice_keys.append(notice_key)
 
     job.status = (

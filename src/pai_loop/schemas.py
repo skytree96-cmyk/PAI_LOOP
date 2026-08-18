@@ -89,7 +89,7 @@ class AtomicRequirementCreate(ApiModel):
 
 class EvaluateRequest(ApiModel):
     version_no: int | None = Field(default=None, ge=1)
-    ruleset_version: str = Field(default="2026.08-v1", max_length=32)
+    ruleset_version: str = Field(default="2026.08-v2", max_length=32)
 
 
 class DecisionCreate(ApiModel):
@@ -156,9 +156,14 @@ class DepartmentRankingOut(ApiModel):
     department_name: str
     group: str
     ranking_scope: Literal["BUSINESS", "REGION"]
+    recommendation_tier: Literal["TOP", "REVIEW", "ROUTING", "NONE"]
+    top_recommendation_eligible: bool
+    review_candidate: bool
     score: float
     raw_score: float
     department_score: float
+    business_score: float
+    routing_score: float
     priority: Literal["HIGH", "MEDIUM", "WATCH", "LOW"]
     priority_label: str
     matched_user_keywords: list[str] = Field(default_factory=list)
@@ -199,6 +204,8 @@ class NoticeSummary(ApiModel):
     latest_evaluation: EvaluationOut | None = None
     department_ranking: DepartmentRankingOut | None = None
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)
+    department_review_candidates: list[DepartmentRankingOut] = Field(default_factory=list)
+    region_routing: list[DepartmentRankingOut] = Field(default_factory=list)
 
 
 class AwardHistoryItemOut(ApiModel):

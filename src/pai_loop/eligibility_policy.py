@@ -66,6 +66,63 @@ def _contains(text: str, *tokens: str) -> bool:
     return any(token.casefold() in text for token in tokens)
 
 
+def _is_two_person_attendee_limit(text: str, *, category: str) -> bool:
+    """Match an attendee head-count clause, never a vehicle seat count.
+
+    A plain ``"2인" in text`` also matches ``22인승``.  Live PPS data
+    demonstrated that this silently mapped a 160-vehicle capacity condition to
+    the company's two-attendee presentation capability.  Category plus context
+    and digit/seat boundaries keep this deterministic rule narrow.
+    """
+
+    if category != "PERSONNEL" or not _contains(
+        text,
+        "참석자",
+        "발표자",
+        "참여자",
+        "배석자",
+    ):
+        return False
+    return bool(
+        re.search(
+            r"(?<!\d)2\s*(?:인|명)(?!\s*승)",
+            text,
+        )
+    )
+
+
+def _is_small_business_eligibility(text: str, *, category: str) -> bool:
+    """Distinguish an SME participation condition from an SME lookback rule."""
+
+    if not _contains(text, "소기업", "소상공인"):
+        return False
+    if category in {"ENTITY", "CERTIFICATION", "DIRECT_PRODUCTION"}:
+        return True
+    return _contains(
+        text,
+        "소기업확인서",
+        "소상공인확인서",
+        "소기업·소상공인 확인서",
+        "소기업 또는 소상공인 확인서",
+        "입찰참가자격",
+        "참가자격",
+    )
+
+
+def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
+    """Return true for subject/contractor descriptions, not bidder criteria."""
+
+    if category != "ENTITY":
+        return False
+    return (
+        "대상으로 하는 입찰" in text
+        or (
+            "계약업체" in text
+            and _contains(text, "기재되어", "로 기재", "이라고 기재")
+        )
+    )
+
+
 def _as_date(value: Any) -> date | None:
     if value is None:
         return None
@@ -223,7 +280,14 @@ def classify_requirements(
     for requirement, text in zip(requirements, normalized, strict=True):
         category = str(requirement.get("category") or "OTHER").upper()
 
-        if _contains(text, "제안설명회") and _contains(text, "참여", "불참"):
+        if _is_descriptive_entity_clause(text, category=category):
+            item = _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message="입찰 대상 또는 기재된 계약업체에 대한 설명이며 회사 참가자격 조건으로 사용하지 않습니다.",
+            )
+        elif _contains(text, "제안설명회") and _contains(text, "참여", "불참"):
             item = _base_item(requirement, "ACTION_REQUIRED")
             item.update(
                 {
@@ -261,7 +325,7 @@ def classify_requirements(
                 deadline=as_of,
                 message="현재 확인된 유죄판결 사례가 없어 PASS 상태이며 제출 전 재확인합니다.",
             )
-        elif _contains(text, "소기업", "소상공인"):
+        elif _is_small_business_eligibility(text, category=category):
             if nonprofit_exception_present:
                 item = _eligibility_item(
                     requirement,
@@ -341,7 +405,7 @@ def classify_requirements(
                 capability_key="pm_presentation",
                 message="PM 직접 발표가 가능하며 발표자 지정과 참석 가능 여부를 체크합니다.",
             )
-        elif _contains(text, "2인", "합계 2인"):
+        elif _is_two_person_attendee_limit(text, category=category):
             item = _checklist_item(
                 requirement,
                 profile=profile,

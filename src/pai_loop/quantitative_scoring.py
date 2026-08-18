@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import re
@@ -18,6 +19,11 @@ from sqlalchemy.orm import Session
 from .auth import require_api_key
 from .eligibility_policy import load_public_company_profile
 from .models import Notice
+from .pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
+    PPS_METADATA_KIND,
+    select_preferred_attachments,
+)
 from .public_performance import load_public_performance_seed
 
 
@@ -579,18 +585,129 @@ def _normalize_notice_title(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
-def _profile_for_notice(notice: Notice) -> dict[str, Any] | None:
-    catalog = _load_quantitative_profile_catalog()
+def _profile_identity_matches(notice: Notice, profile: dict[str, Any]) -> bool:
     normalized_title = _normalize_notice_title(notice.title)
+    if profile.get("notice_key") == notice.notice_key:
+        return True
+    if profile.get("bid_notice_no") and profile.get("bid_notice_no") == notice.bid_notice_no:
+        return True
+    profile_title = profile.get("notice_title")
+    return bool(
+        profile_title
+        and _normalize_notice_title(str(profile_title)) == normalized_title
+    )
+
+
+def _profile_source_digest(profile: dict[str, Any]) -> str | None:
+    source = profile.get("source_reference")
+    if not isinstance(source, dict):
+        return None
+    digest = source.get("document_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest.casefold()):
+        return None
+    return digest.casefold()
+
+
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_authoritative_document_digest(notice: Notice) -> str | None:
+    """Return only the document digest authoritative for the current notice.
+
+    A corrected PPS manifest supersedes every older attachment/extraction. For
+    curated notices without a PPS manifest, the newest reviewed public
+    document reference is authoritative. Analysis/materialisation versions do
+    not change this binding and therefore cannot resurrect a stale profile.
+    """
+
+    versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
+    metadata = next(
+        (
+            version
+            for version in versions
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == PPS_METADATA_KIND
+            and isinstance(version.source_payload.get("attachment_manifest"), list)
+        ),
+        None,
+    )
+    if metadata is not None:
+        manifest = [
+            dict(item)
+            for item in metadata.source_payload.get("attachment_manifest", [])
+            if isinstance(item, dict)
+        ]
+        selected, _warnings = select_preferred_attachments(manifest, limit=1)
+        if not selected:
+            return None
+        attachment = selected[0]
+        manifest_sha256 = _canonical_digest(attachment)
+        extraction = next(
+            (
+                version
+                for version in versions
+                if isinstance(version.source_payload, dict)
+                and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+                and version.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+                and version.source_payload.get("status") == "ACCEPTED"
+                and version.source_payload.get("attachment_id") == attachment["attachment_id"]
+                and version.source_payload.get("manifest_sha256") == manifest_sha256
+            ),
+            None,
+        )
+        digest = extraction.file_sha256 if extraction is not None else None
+        return str(digest).casefold() if isinstance(digest, str) else None
+
+    reference = next(
+        (
+            version
+            for version in versions
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == "PUBLIC_DOCUMENT_REFERENCE"
+        ),
+        None,
+    )
+    digest = reference.file_sha256 if reference is not None else None
+    return str(digest).casefold() if isinstance(digest, str) else None
+
+
+def _profile_for_notice(notice: Notice) -> tuple[dict[str, Any] | None, str | None]:
+    """Return an identity match only when its cited document is in the audit.
+
+    Notice number/title matching alone is not a sufficient scoring basis: a
+    corrected notice can retain both while replacing its RFP.  The packaged
+    profile therefore becomes applicable only after the exact cited document
+    digest is present in a persisted NoticeVersion.
+    """
+
+    catalog = _load_quantitative_profile_catalog()
     for item in catalog["profiles"]:
-        if item.get("notice_key") == notice.notice_key:
-            return copy.deepcopy(item)
-        if item.get("bid_notice_no") and item.get("bid_notice_no") == notice.bid_notice_no:
-            return copy.deepcopy(item)
-        profile_title = item.get("notice_title")
-        if profile_title and _normalize_notice_title(str(profile_title)) == normalized_title:
-            return copy.deepcopy(item)
-    return None
+        if not _profile_identity_matches(notice, item):
+            continue
+        # A MISSING registry entry carries no scoring rules; it only records
+        # that the reviewed public source did not contain a quantitative
+        # table. It must remain distinguishable from a stale AVAILABLE table.
+        if item.get("rule_source_status") != "AVAILABLE":
+            return copy.deepcopy(item), None
+        expected_digest = _profile_source_digest(item)
+        if expected_digest is None:
+            return None, "연결된 정량 프로필에 검증 가능한 원문 문서 해시가 없습니다."
+        current_digest = _current_authoritative_document_digest(notice)
+        if expected_digest != current_digest:
+            return None, (
+                "정량 프로필의 원문 문서 해시가 현재 권위 공고 문서와 일치하지 않습니다. "
+                "정정공고 또는 첨부 변경 여부를 확인해야 합니다."
+            )
+        return copy.deepcopy(item), None
+    return None, None
 
 
 def _keyword_in_text(keyword: str, haystack: str) -> bool:
@@ -754,14 +871,17 @@ def _public_evidence_observations(profile: dict[str, Any] | None) -> list[Eviden
 
 
 def estimate_for_notice(notice: Notice) -> QuantitativeEstimateResult:
-    profile = _profile_for_notice(notice)
+    profile, profile_binding_error = _profile_for_notice(notice)
     if profile is None:
         request = QuantitativeEstimateRequest(
             ruleset_version="unmapped-notice-review-v1",
-            rule_source_status="MISSING",
+            rule_source_status=("INCOMPLETE" if profile_binding_error else "MISSING"),
             criteria=[],
             facts=[],
-            missing_reason="이 공고에 연결된 정량평가표 프로필이 없습니다.",
+            missing_reason=(
+                profile_binding_error
+                or "이 공고에 연결된 정량평가표 프로필이 없습니다."
+            ),
         )
         return estimate_quantitative_score(request)
     source_status = str(profile.get("rule_source_status") or "INCOMPLETE").upper()

@@ -1,0 +1,373 @@
+{
+  "name": "PAI_LOOP 12 - Teams Daily Delivery",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 1640,
+        "height": 300,
+        "color": 7,
+        "content": "# 12 · Teams Daily Delivery · 독립 전송 경계 v1.2\n\nW10 수집·분석과 분리하여 매일 **10:00 Asia/Seoul**에 저장된 7일 브리핑만 읽고 n8n 기본 Microsoft Teams 노드로 안전한 HTML 요약을 보냅니다. Teams 장애는 `FAILED_NON_BLOCKING` 결과로 흡수하므로 PPS 수집이나 OpenAI 분석을 다시 실행하지 않습니다.\n\n실제 전송 설정은 이름이 고정된 Data Table `pai_loop_teams_delivery_config`의 key/value 6행에서만 읽습니다. 승인·enable·target이 모두 유효해야 열리고, 별도 `Run Live Teams Test`에는 `live_test_enabled=true`가 추가로 필요합니다. export에는 table/tenant ID, credential ID, OAuth token, tenant 내부 원문이 없습니다."
+      },
+      "id": "teams-delivery-overview",
+      "name": "Teams delivery overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1180, -500]
+    },
+    {
+      "parameters": {
+        "width": 1640,
+        "height": 300,
+        "color": 5,
+        "content": "## Fail-closed · sanitizer · dedupe\n\n- Offline Manual Trigger는 fixture preview만 만들며 Data Table/backend/Teams 호출이 모두 0건\n- schedule과 별도 `Run Live Teams Test`가 각각 고정 marker를 만들고, 6-key allowlist의 누락·중복·미등록 key를 fail-closed 처리\n- 실행 모드는 실행 엔진 metadata에 의존하지 않으며 manual live marker에만 `live_test_enabled=true`를 요구\n- backend에는 저장된 브리핑만 조회하며 PPS·OpenAI·분석 write를 호출하지 않음\n- allowlist builder가 공개 공고 필드만 HTML 요약과 preview card에 옮기고 링크를 승인된 web origin으로 고정\n- 날짜 + 대상 + sanitized payload fingerprint correlation ID로 동일 메시지 재전송 억제\n- Teams 응답은 message ID와 상태 코드만 남기며 raw 오류/토큰은 저장하지 않음"
+      },
+      "id": "teams-delivery-safety",
+      "name": "Teams delivery safety contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [500, -500]
+    },
+    {
+      "parameters": {},
+      "id": "teams-preview-trigger",
+      "name": "Run Offline Teams Preview",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1120, 160]
+    },
+    {
+      "parameters": {},
+      "id": "teams-live-test-trigger",
+      "name": "Run Live Teams Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1120, 360]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        }
+      },
+      "id": "teams-delivery-schedule",
+      "name": "Every Day 10:00 KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1120, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { requestedMode: 'manual-live-test', triggerSource: 'manual-live-test', configTableName: 'pai_loop_teams_delivery_config' } }];"
+      },
+      "id": "teams-manual-live-mode",
+      "name": "Mark Manual Live Test Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-900, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { requestedMode: 'scheduled-live', triggerSource: 'schedule', configTableName: 'pai_loop_teams_delivery_config' } }];"
+      },
+      "id": "teams-scheduled-live-mode",
+      "name": "Mark Scheduled Live Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-900, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nreturn [{ json: { runtime: { executionMode: 'manual-fixture', triggerSource: 'manual', timezone: 'Asia/Seoul', apiBaseUrl: 'https://pai-loop-demo.onrender.com', webBaseUrl: 'https://pai-loop-demo.onrender.com', configTableName: 'pai_loop_teams_delivery_config', configValid: true, configErrorCode: null, liveTestEnabled: false, emergencyDisabled: false, teamsPushEnabled: false, teamsApprovalState: 'PENDING', targetConfigured: false, deliveryGateOpen: false, externalCallsAllowed: false, target: { teamId: '', channelId: '' } }, briefing: { generated_at: now.toISOString(), window: { days: 7, from: new Date(now.getTime() - 7 * 86400000).toISOString(), to: now.toISOString() }, totals: { observed: 2, included: 2 }, notices: [{ notice_key: 'FIXTURE-TEAMS-001', title: '[합성] AI 역량강화 교육 용역', agency: '가상 인재개발원', deadline: new Date(now.getTime() + 5 * 86400000).toISOString(), estimated_amount: 180000000, fit: { eligibility: 'PASS', readiness_status: 'GREEN', risk_score: 24.5, risk_band: 'GO' }, top_departments: [{ department_name: 'AI미래교육본부', business_score: 82 }] }, { notice_key: 'FIXTURE-TEAMS-002', title: '[합성] 지역 일자리 컨설팅', agency: '가상 지방자치단체', deadline: new Date(now.getTime() + 3 * 86400000).toISOString(), estimated_amount: 95000000, fit: { eligibility: 'REVIEW', readiness_status: 'YELLOW', risk_score: null, risk_band: 'UNKNOWN' }, department_review_candidates: [{ department_name: '일자리창출본부' }] }] }, source_calls: { configTable: 0, backend: 0, teams: 0 } } }];"
+      },
+      "id": "teams-offline-fixture",
+      "name": "Build Offline Delivery Fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-400, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "const requestedMode = String($json.requestedMode ?? '').trim();\nconst triggerSource = String($json.triggerSource ?? '').trim();\nconst expectedSource = { 'manual-live-test': 'manual-live-test', 'scheduled-live': 'schedule' }[requestedMode];\nconst markerValid = Boolean(expectedSource && triggerSource === expectedSource);\nreturn [{ json: { requestedMode: markerValid ? requestedMode : 'invalid', triggerSource: markerValid ? triggerSource : 'invalid', markerValid, configTableName: 'pai_loop_teams_delivery_config' } }];"
+      },
+      "id": "teams-config-read-mode",
+      "name": "Mark Config-Gated Delivery Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-860, 500]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": { "__rl": true, "mode": "name", "value": "pai_loop_teams_delivery_config" },
+        "returnAll": true
+      },
+      "id": "teams-read-delivery-config",
+      "name": "Read Teams Delivery Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [-640, 500],
+      "alwaysOutputData": true,
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const tableName = 'pai_loop_teams_delivery_config';\nconst allowedKeys = new Set(['push_enabled','approval_state','team_id','channel_id','live_test_enabled','emergency_disabled']);\nconst rows = $input.all().map((item) => item?.json ?? {});\nconst context = $node['Mark Config-Gated Delivery Mode'].json ?? {};\nconst values = Object.create(null);\nconst issues = [];\nconst validModeMarker = context.markerValid === true && ((context.requestedMode === 'manual-live-test' && context.triggerSource === 'manual-live-test') || (context.requestedMode === 'scheduled-live' && context.triggerSource === 'schedule'));\nif (!validModeMarker) issues.push('CONFIG_INVALID_MODE_MARKER');\nif (rows.length > 24) issues.push('CONFIG_ROW_LIMIT');\nfor (const row of rows.slice(0, 24)) {\n  const key = String(row.key ?? '').trim();\n  if (!allowedKeys.has(key)) { issues.push('CONFIG_UNKNOWN_KEY'); continue; }\n  if (Object.prototype.hasOwnProperty.call(values, key)) { issues.push('CONFIG_DUPLICATE_KEY'); continue; }\n  const value = String(row.value ?? '').trim();\n  if (value.length > 512 || /[\\u0000-\\u001f\\u007f]/.test(value)) { issues.push('CONFIG_INVALID_VALUE'); continue; }\n  values[key] = value;\n}\nfor (const key of allowedKeys) if (!Object.prototype.hasOwnProperty.call(values, key)) issues.push('CONFIG_MISSING_KEY');\nconst readBoolean = (key) => { const value = String(values[key] ?? ''); if (value === 'true') return true; if (value === 'false') return false; issues.push('CONFIG_INVALID_BOOLEAN'); return false; };\nconst teamsPushEnabled = readBoolean('push_enabled');\nconst liveTestEnabled = readBoolean('live_test_enabled');\nconst emergencyDisabled = readBoolean('emergency_disabled');\nconst teamsApprovalState = String(values.approval_state ?? '');\nif (!['PENDING','APPROVED','REVOKED'].includes(teamsApprovalState)) issues.push('CONFIG_INVALID_APPROVAL');\nconst unset = (value) => String(value ?? '') === 'UNSET' ? '' : String(value ?? '');\nconst rawTeamId = unset(values.team_id);\nconst rawChannelId = unset(values.channel_id);\nconst teamId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawTeamId) ? rawTeamId : '';\nconst channelId = rawChannelId.length <= 512 && /^[A-Za-z0-9:._@-]+$/.test(rawChannelId) ? rawChannelId : '';\nif (rawTeamId && !teamId) issues.push('CONFIG_INVALID_TEAM_ID');\nif (rawChannelId && !channelId) issues.push('CONFIG_INVALID_CHANNEL_ID');\nconst configValid = issues.length === 0;\nconst manualLiveTest = context.requestedMode === 'manual-live-test';\nconst targetConfigured = Boolean(teamId && channelId);\nconst deliveryGateOpen = configValid && !emergencyDisabled && teamsPushEnabled && teamsApprovalState === 'APPROVED' && targetConfigured && (!manualLiveTest || liveTestEnabled);\nconst executionMode = deliveryGateOpen ? (manualLiveTest ? 'manual-live-test' : 'scheduled-live') : (manualLiveTest ? 'manual-live-test-fail-closed' : 'scheduled-fail-closed');\nconst publicOrigin = 'https://pai-loop-demo.onrender.com';\nreturn [{ json: { runtime: { executionMode, triggerSource: validModeMarker ? context.triggerSource : 'invalid', timezone: 'Asia/Seoul', apiBaseUrl: publicOrigin, webBaseUrl: publicOrigin, configTableName: tableName, configValid, configErrorCode: configValid ? null : issues[0], liveTestEnabled, emergencyDisabled, teamsPushEnabled, teamsApprovalState: teamsApprovalState || 'INVALID', targetConfigured, deliveryGateOpen, externalCallsAllowed: deliveryGateOpen, target: { teamId, channelId } }, source_calls: { configTable: 1, backend: 0, teams: 0 } } }];"
+      },
+      "id": "teams-validate-delivery-config",
+      "name": "Validate Teams Delivery Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-420, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "teams-delivery-gate-condition",
+              "leftValue": "={{ $json.runtime.deliveryGateOpen }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "teams-delivery-gate",
+      "name": "Approved Teams Push Gate Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-180, 500]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=6' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/json" },
+            { "name": "X-PAI-Request-Source", "value": "n8n-teams-delivery-v1" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "id": "teams-fetch-briefing",
+      "name": "Fetch Stored Briefing for Teams",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-340, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst configInput = $node['Validate Teams Delivery Config'].json;\nconst runtime = configInput.runtime;\nif (!response || !Array.isArray(response.notices) || response.notices.length > 20) throw new Error('stored daily briefing must contain a bounded notices array');\nif (Number(response.window?.days) !== 7) throw new Error('stored daily briefing must use the seven-day window');\nconst notices = response.notices.slice(0, 6);\nfor (const notice of notices) { if (typeof notice.notice_key !== 'string' || !notice.notice_key || notice.notice_key.length > 160 || typeof notice.title !== 'string' || !notice.title) throw new Error('briefing notice identity is invalid'); }\nreturn [{ json: { runtime, briefing: { generated_at: response.generated_at ?? new Date().toISOString(), window: response.window, totals: response.totals ?? { observed: notices.length, included: notices.length }, notices }, source_calls: { configTable: Number(configInput.source_calls?.configTable ?? 1), backend: 1, teams: 0 } } }];"
+      },
+      "id": "teams-validate-briefing",
+      "name": "Validate Stored Briefing Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-80, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst runtime = input.runtime;\nconst clean = (value, max) => String(value ?? '').replace(/[\\u0000-\\u001f\\u007f]/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\nconst html = (value, max) => clean(value, max).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\\"/g, '&quot;').replace(/'/g, '&#39;');\nconst won = (value) => { const amount = Number(value); return value == null || value === '' || !Number.isFinite(amount) ? '미정' : `${new Intl.NumberFormat('ko-KR').format(amount)}원`; };\nconst bounded = (value, limit = 3) => Array.isArray(value) ? value.slice(0, limit) : [];\nconst score = (item, keys) => { for (const key of keys) { const raw = item?.[key]; if (raw == null || raw === '') continue; const numeric = Number(raw); if (Number.isFinite(numeric)) return `${numeric.toFixed(1).replace(/\\.0$/, '')}점`; } return '점수 미산정'; };\nconst departmentName = (item) => clean(item?.department_name ?? item?.name ?? '부서 미상', 56);\nconst departmentDisplay = (notice) => {\n  const recommended = bounded(notice?.top_departments, 3).map((item) => `${departmentName(item)} · ${score(item, ['business_score','department_score','score'])}`);\n  const reviews = bounded(notice?.department_review_candidates, 3).map((item) => `${departmentName(item)} · 추가검토 · ${score(item, ['business_score','department_score','score'])}`);\n  const regions = bounded(notice?.region_routing, 2).map((item) => `${departmentName(item)} · 지역 라우팅 · ${score(item, ['routing_score','department_score','score'])}`);\n  return { recommended: clean(recommended.length ? recommended.join(' / ') : '기준 충족 없음', 220), reviews: clean(reviews.join(' / '), 220), regions: clean(regions.join(' / '), 160) };\n};\nconst riskDisplay = (fit) => { const numeric = Number(fit?.risk_score); return fit?.risk_score == null || !Number.isFinite(numeric) ? `${clean(fit?.risk_band || 'UNKNOWN', 24)} · 점수 미산정` : `${clean(fit?.risk_band || 'UNKNOWN', 24)} · ${numeric.toFixed(1)}점`; };\nconst notices = Array.isArray(input.briefing?.notices) ? input.briefing.notices.slice(0, 6) : [];\nconst containers = notices.map((notice, index) => {\n  const fit = notice.fit ?? {};\n  const departments = departmentDisplay(notice);\n  const facts = [\n    { title: '공고명', value: clean(notice.title || '제목 미상', 180) },\n    { title: '발주처', value: clean(notice.agency || '미상', 120) },\n    { title: '마감일', value: clean(notice.deadline || '미정', 64) },\n    { title: '추정금액', value: won(notice.estimated_amount) },\n    { title: '참가자격', value: clean(fit.eligibility || 'PENDING', 24) },\n    { title: '리스크', value: riskDisplay(fit) },\n    { title: '추천 부서', value: departments.recommended },\n  ];\n  if (departments.reviews) facts.push({ title: '추가 검토', value: departments.reviews });\n  if (departments.regions) facts.push({ title: '지역 라우팅', value: departments.regions });\n  return { type: 'Container', separator: index > 0, spacing: 'Medium', items: [{ type: 'TextBlock', text: `${index + 1}. 공고`, weight: 'Bolder', size: 'Medium', color: 'Accent', wrap: true }, { type: 'FactSet', facts }] };\n});\nconst card = { '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.5', msteams: { width: 'Full' }, body: [{ type: 'TextBlock', text: 'PAI_LOOP · 일일 공고 브리핑', size: 'Large', weight: 'Bolder', color: 'Accent', wrap: true }, { type: 'TextBlock', text: `최근 7일 관측 ${Number(input.briefing?.totals?.observed ?? notices.length)}건 · 표시 ${notices.length}건`, wrap: true, isSubtle: true }, ...containers, { type: 'TextBlock', text: '판단 보조 정보입니다. 원문과 증빙을 확인한 담당자가 최종 입찰 결정을 기록합니다.', wrap: true, isSubtle: true, size: 'Small', spacing: 'Large' }], actions: [{ type: 'Action.OpenUrl', title: '웹에서 근거 확인', url: runtime.webBaseUrl }] };\nif (card.actions.some((action) => action.type !== 'Action.OpenUrl' || action.url !== runtime.webBaseUrl || !action.url.startsWith('https://'))) throw new Error('card action must use the approved HTTPS web origin');\nconst htmlRows = notices.map((notice, index) => {\n  const fit = notice.fit ?? {};\n  const departments = departmentDisplay(notice);\n  const optionalReview = departments.reviews ? `<br><strong>추가 검토:</strong> ${html(departments.reviews, 220)}` : '';\n  const optionalRegion = departments.regions ? `<br><strong>지역 라우팅:</strong> ${html(departments.regions, 160)}` : '';\n  const separator = index > 0 ? '<hr>' : '';\n  return `${separator}<div><p><strong>${index + 1}. 공고</strong></p><p><strong>공고명:</strong> ${html(notice.title || '제목 미상', 180)}<br><strong>발주처:</strong> ${html(notice.agency || '미상', 120)}<br><strong>마감일:</strong> ${html(notice.deadline || '미정', 64)}<br><strong>추정금액:</strong> ${html(won(notice.estimated_amount), 40)}<br><strong>참가자격:</strong> ${html(fit.eligibility || 'PENDING', 24)}<br><strong>리스크:</strong> ${html(riskDisplay(fit), 80)}<br><strong>추천 부서:</strong> ${html(departments.recommended, 220)}${optionalReview}${optionalRegion}</p></div>`;\n}).join('');\nconst htmlMessage = `<h2>PAI_LOOP · 일일 공고 브리핑</h2><p>최근 7일 관측 ${Number(input.briefing?.totals?.observed ?? notices.length)}건 · 표시 ${notices.length}건</p>${htmlRows}<p><a href='${html(runtime.webBaseUrl, 200)}'>웹에서 근거 확인</a></p><p><small>판단 보조 정보입니다. 원문과 증빙을 확인한 담당자가 최종 입찰 결정을 기록합니다.</small></p>`;\nconst cardJson = JSON.stringify(card);\nconst payloadBytes = new TextEncoder().encode(`${cardJson}${htmlMessage}`).length;\nif (payloadBytes > 24 * 1024) throw new Error('sanitized Teams payload exceeds the 24KB delivery budget');\nlet h1 = 0x811c9dc5; let h2 = 0x9e3779b9;\nconst baseFingerprintSource = `${runtime.target.teamId}|${runtime.target.channelId}|${htmlMessage}`;\nconst correlationGeneration = runtime.executionMode === 'manual-live-test' ? 'oauth-scope-retest-v1' : null;\nconst fingerprintSource = correlationGeneration ? `${baseFingerprintSource}|manual-live-test-generation:${correlationGeneration}` : baseFingerprintSource;\nfor (let index = 0; index < fingerprintSource.length; index += 1) { const code = fingerprintSource.charCodeAt(index); h1 = Math.imul(h1 ^ code, 0x01000193); h2 = Math.imul(h2 ^ code, 0x85ebca6b); }\nconst fingerprint = `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;\nconst kstDate = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);\nconst baseCorrelationId = `teams-daily:${kstDate}:${fingerprint}`;\nconst correlationId = correlationGeneration ? `${baseCorrelationId}:${correlationGeneration}` : baseCorrelationId;\nlet executionId = '';\ntry { executionId = String($execution.id ?? '').trim(); } catch { executionId = ''; }\nconst liveMode = ['scheduled-live','manual-live-test'].includes(runtime.executionMode);\nif (liveMode && !/^[A-Za-z0-9_-]{1,120}$/.test(executionId)) throw new Error('bounded n8n execution ID is required for persistent delivery reservation');\nconst ownerToken = liveMode ? `w12:${executionId}` : 'preview';\nconst anchorNoticeKey = clean(notices[0]?.notice_key ?? '', 160);\nconst shouldReserve = liveMode && runtime.deliveryGateOpen === true && Boolean(anchorNoticeKey);\nconst reservationCard = { type: 'AdaptiveCard', version: '1.5', body: [{ type: 'TextBlock', text: 'PAI_LOOP Teams delivery reservation', wrap: true }], paiLoopDeliveryReservation: { ownerToken, correlationId, fingerprint, schemaVersion: '1.0' } };\nreturn [{ json: { ...input, adaptiveCard: card, delivery: { channel: 'teams', deliveryMode: runtime.executionMode === 'manual-fixture' ? 'preview' : 'actual', contentFormat: 'teams-channel-html-v1', status: runtime.executionMode === 'manual-fixture' ? 'PREVIEW_ONLY' : (shouldReserve ? 'READY_TO_RESERVE' : 'SKIPPED_EMPTY_BRIEFING'), ...(correlationGeneration ? { correlationGeneration } : {}), correlationId, fingerprint, shouldReserve, reservation: shouldReserve ? { ownerToken, anchorNoticeKey, endpointPath: `/api/v1/notices/${encodeURIComponent(anchorNoticeKey)}/notifications/teams/mock`, body: { card: reservationCard, channel: 'teams', delivery_mode: 'mock', correlation_id: correlationId } } : null, htmlMessage, actualTeamsRequestAttempted: false, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "teams-build-envelope",
+      "name": "Build Sanitized Dedupe Envelope",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "teams-dedupe-send-condition",
+              "leftValue": "={{ $json.delivery.shouldReserve === true && $json.runtime.deliveryGateOpen === true }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "teams-dedupe-gate",
+      "name": "New Sanitized Delivery Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + $json.delivery.reservation.endpointPath }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/json" },
+            { "name": "Idempotency-Key", "value": "={{ $json.delivery.correlationId }}" },
+            { "name": "X-PAI-Request-Source", "value": "n8n-teams-delivery-reservation-v1" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.delivery.reservation.body) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "teams-persistent-reservation-http",
+      "name": "Reserve Persistent Teams Correlation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 180],
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst input = $node['Build Sanitized Dedupe Envelope'].json;\nconst expected = input.delivery?.reservation;\nconst recordValid = response && response.channel === 'teams' && response.delivery_mode === 'mock' && response.status === 'MOCK_RECORDED' && response.correlation_id === input.delivery.correlationId && response.notice_key === expected?.anchorNoticeKey && response.card?.type === 'AdaptiveCard' && response.card?.version === '1.5';\nconst stored = recordValid ? response.card?.paiLoopDeliveryReservation : null;\nconst ownerMatches = stored?.ownerToken === expected?.ownerToken && stored?.correlationId === input.delivery.correlationId && stored?.fingerprint === input.delivery.fingerprint;\nconst reservationAcquired = recordValid && ownerMatches;\nconst reservationStatus = !recordValid ? 'RESERVATION_FAILED_NON_BLOCKING' : (reservationAcquired ? 'RESERVATION_ACQUIRED' : 'DUPLICATE_PERSISTENT_SUPPRESSED');\nconst errorCode = recordValid ? null : 'PERSISTENT_RESERVATION_ERROR';\nreturn [{ json: { ...input, source_calls: { ...(input.source_calls ?? {}), backend: Number(input.source_calls?.backend ?? 0) + 1 }, delivery: { ...input.delivery, status: reservationStatus, reservation: { acquired: reservationAcquired, recordId: recordValid ? String(response.id ?? '').slice(0, 64) : null }, reservationAcquired, errorCode } } }];"
+      },
+      "id": "teams-validate-persistent-reservation",
+      "name": "Validate Persistent Teams Reservation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "teams-persistent-reservation-acquired-condition",
+              "leftValue": "={{ $json.delivery.reservationAcquired }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "teams-persistent-reservation-gate",
+      "name": "Persistent Teams Reservation Acquired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1200, 180]
+    },
+    {
+      "parameters": {
+        "resource": "channelMessage",
+        "operation": "create",
+        "teamId": { "__rl": true, "value": "={{ $json.runtime.target.teamId }}", "mode": "id" },
+        "channelId": { "__rl": true, "value": "={{ $json.runtime.target.channelId }}", "mode": "id" },
+        "contentType": "html",
+        "message": "={{ $json.delivery.htmlMessage }}",
+        "options": { "includeLinkToWorkflow": false }
+      },
+      "id": "teams-graph-send",
+      "name": "Send Sanitized Teams Briefing",
+      "type": "n8n-nodes-base.microsoftTeams",
+      "typeVersion": 2,
+      "position": [1440, 120],
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json ?? {};\nconst input = $node['Validate Persistent Teams Reservation'].json;\nif (input.delivery?.reservationAcquired !== true) throw new Error('Teams sink requires an acquired persistent reservation');\nconst messageId = typeof response.id === 'string' && response.id.length <= 512 ? response.id : '';\nconst sent = Boolean(messageId);\nconst errorCode = sent ? null : 'TEAMS_NODE_ERROR';\nreturn [{ json: { ...input, source_calls: { ...(input.source_calls ?? {}), teams: 1 }, delivery: { ...input.delivery, htmlMessage: undefined, status: sent ? 'SENT' : 'FAILED_NON_BLOCKING', messageId: sent ? messageId : null, errorCode, actualTeamsRequestAttempted: true, actualTeamsRequestSent: sent, actualPushSent: sent } } }];"
+      },
+      "id": "teams-normalize-result",
+      "name": "Normalize Non-Blocking Teams Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst preview = input.runtime?.executionMode === 'manual-fixture';\nlet status = preview ? 'PREVIEW_ONLY' : 'SKIPPED_EMPTY_BRIEFING';\nif (input.delivery?.status === 'DUPLICATE_PERSISTENT_SUPPRESSED') status = 'DUPLICATE_PERSISTENT_SUPPRESSED';\nif (input.delivery?.status === 'RESERVATION_FAILED_NON_BLOCKING') status = 'RESERVATION_FAILED_NON_BLOCKING';\nreturn [{ json: { ...input, delivery: { ...input.delivery, htmlMessage: undefined, status, messageId: null, errorCode: status === 'RESERVATION_FAILED_NON_BLOCKING' ? 'PERSISTENT_RESERVATION_ERROR' : null, actualTeamsRequestAttempted: false, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "teams-record-suppressed",
+      "name": "Record Preview or Duplicate Suppressed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst runtime = input.runtime;\nlet status = 'SKIPPED_NOT_APPROVED';\nlet errorCode = null;\nif (!runtime.configValid) { status = 'SKIPPED_CONFIG_INVALID'; errorCode = runtime.configErrorCode || 'CONFIG_INVALID'; } else if (runtime.emergencyDisabled) status = 'SKIPPED_EMERGENCY_DISABLED'; else if (!runtime.teamsPushEnabled) status = 'SKIPPED_PUSH_DISABLED'; else if (runtime.teamsApprovalState !== 'APPROVED') status = 'SKIPPED_NOT_APPROVED'; else if (!runtime.targetConfigured) status = 'SKIPPED_TARGET_UNCONFIGURED'; else if (runtime.executionMode === 'manual-live-test-fail-closed' && !runtime.liveTestEnabled) status = 'SKIPPED_LIVE_TEST_DISABLED';\nreturn [{ json: { ...input, delivery: { channel: 'teams', deliveryMode: 'actual', status, correlationId: null, fingerprint: null, shouldSend: false, messageId: null, errorCode, actualTeamsRequestAttempted: false, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "teams-record-gate-closed",
+      "name": "Record Fail-Closed Teams Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-340, 620]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst delivery = input.delivery ?? {};\nconst allowed = new Set(['PREVIEW_ONLY','SENT','FAILED_NON_BLOCKING','DUPLICATE_PERSISTENT_SUPPRESSED','RESERVATION_FAILED_NON_BLOCKING','SKIPPED_EMPTY_BRIEFING','SKIPPED_CONFIG_INVALID','SKIPPED_LIVE_TEST_DISABLED','SKIPPED_EMERGENCY_DISABLED','SKIPPED_PUSH_DISABLED','SKIPPED_NOT_APPROVED','SKIPPED_TARGET_UNCONFIGURED']);\nif (!allowed.has(delivery.status)) throw new Error('Teams delivery terminal status is invalid');\nif (delivery.channel !== 'teams' || delivery.actualPushSent !== delivery.actualTeamsRequestSent) throw new Error('Teams delivery channel/result flags are inconsistent');\nif (delivery.status === 'SENT' && (!delivery.messageId || delivery.errorCode || delivery.reservationAcquired !== true || delivery.actualTeamsRequestAttempted !== true || delivery.actualTeamsRequestSent !== true)) throw new Error('successful Teams delivery requires a persistent reservation and message ID');\nif (delivery.status === 'FAILED_NON_BLOCKING' && (!delivery.errorCode || delivery.messageId || delivery.reservationAcquired !== true || delivery.actualTeamsRequestAttempted !== true || delivery.actualTeamsRequestSent !== false)) throw new Error('failed Teams delivery must retain its reservation and remain non-blocking');\nif (delivery.status === 'DUPLICATE_PERSISTENT_SUPPRESSED' && (delivery.reservationAcquired !== false || delivery.actualTeamsRequestAttempted !== false)) throw new Error('persistent duplicate must be suppressed before the Teams sink');\nif (delivery.status === 'RESERVATION_FAILED_NON_BLOCKING' && (delivery.errorCode !== 'PERSISTENT_RESERVATION_ERROR' || delivery.actualTeamsRequestAttempted !== false)) throw new Error('reservation failure must fail closed before the Teams sink');\nif (delivery.status === 'SKIPPED_CONFIG_INVALID' && (!delivery.errorCode || input.runtime?.configValid !== false || delivery.actualTeamsRequestAttempted !== false)) throw new Error('invalid config must fail closed before external delivery calls');\nif (['PREVIEW_ONLY','DUPLICATE_PERSISTENT_SUPPRESSED'].includes(delivery.status)) { if (input.adaptiveCard?.type !== 'AdaptiveCard' || input.adaptiveCard?.version !== '1.5' || !delivery.fingerprint) throw new Error('preview/dedupe result requires a sanitized card and fingerprint'); }\nif (input.adaptiveCard) { const bytes = new TextEncoder().encode(JSON.stringify(input.adaptiveCard)).length; if (bytes > 24 * 1024) throw new Error('terminal Adaptive Card exceeds the 24KB budget'); if (!Array.isArray(input.adaptiveCard.actions) || !input.adaptiveCard.actions.every((action) => action.type === 'Action.OpenUrl' && action.url === input.runtime.webBaseUrl)) throw new Error('terminal card action escaped the approved web origin'); }\nconst calls = input.source_calls ?? { configTable: 0, backend: 0, teams: 0 };\nif (input.runtime?.executionMode === 'manual-fixture' && (Number(calls.configTable) !== 0 || Number(calls.backend) !== 0 || Number(calls.teams) !== 0 || input.runtime.externalCallsAllowed !== false || delivery.status !== 'PREVIEW_ONLY')) throw new Error('manual Teams preview must make zero config/backend/Teams calls');\nif (input.runtime?.executionMode !== 'manual-fixture' && Number(calls.configTable) !== 1) throw new Error('live/schedule path must read exactly one named config table');\nconst overallStatus = delivery.status === 'SENT' ? 'DELIVERY_SENT' : (delivery.status === 'FAILED_NON_BLOCKING' ? 'DELIVERY_FAILED_NON_BLOCKING' : (delivery.status === 'RESERVATION_FAILED_NON_BLOCKING' ? 'DELIVERY_RESERVATION_FAILED_NON_BLOCKING' : (delivery.status === 'PREVIEW_ONLY' ? 'PREVIEW_READY' : 'DELIVERY_SKIPPED')));\nreturn [{ json: { schemaVersion: '1.2', status: overallStatus, executionMode: input.runtime?.executionMode, schedule: { cron: '0 10 * * *', timezone: 'Asia/Seoul', workflowActive: input.runtime?.triggerSource === 'schedule' }, config: { source: input.runtime?.configTableName, valid: input.runtime?.configValid, errorCode: input.runtime?.configErrorCode }, delivery: { channel: 'teams', deliveryMode: delivery.deliveryMode, status: delivery.status, correlationId: delivery.correlationId, fingerprint: delivery.fingerprint, reservationAcquired: delivery.reservationAcquired ?? null, reservationRecordId: delivery.reservation?.recordId ?? null, messageId: delivery.messageId, errorCode: delivery.errorCode, actualTeamsRequestAttempted: delivery.actualTeamsRequestAttempted, actualTeamsRequestSent: delivery.actualTeamsRequestSent, actualPushSent: delivery.actualPushSent }, sourceCalls: { configTable: Number(calls.configTable ?? 0), backend: Number(calls.backend ?? 0), teams: Number(calls.teams ?? 0) }, briefing: input.briefing ? { generatedAt: input.briefing.generated_at, window: input.briefing.window, totals: input.briefing.totals, noticeKeys: input.briefing.notices.map((item) => item.notice_key) } : null, adaptiveCard: input.adaptiveCard ?? null } }];"
+      },
+      "id": "teams-validate-terminal",
+      "name": "Validate Teams Delivery Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 320]
+    },
+    {
+      "parameters": {},
+      "id": "teams-delivery-done",
+      "name": "Teams Delivery Finished",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1560, 320]
+    }
+  ],
+  "connections": {
+    "Run Offline Teams Preview": { "main": [[{ "node": "Build Offline Delivery Fixture", "type": "main", "index": 0 }]] },
+    "Build Offline Delivery Fixture": { "main": [[{ "node": "Build Sanitized Dedupe Envelope", "type": "main", "index": 0 }]] },
+    "Run Live Teams Test": { "main": [[{ "node": "Mark Manual Live Test Mode", "type": "main", "index": 0 }]] },
+    "Every Day 10:00 KST": { "main": [[{ "node": "Mark Scheduled Live Mode", "type": "main", "index": 0 }]] },
+    "Mark Manual Live Test Mode": { "main": [[{ "node": "Mark Config-Gated Delivery Mode", "type": "main", "index": 0 }]] },
+    "Mark Scheduled Live Mode": { "main": [[{ "node": "Mark Config-Gated Delivery Mode", "type": "main", "index": 0 }]] },
+    "Mark Config-Gated Delivery Mode": { "main": [[{ "node": "Read Teams Delivery Config", "type": "main", "index": 0 }]] },
+    "Read Teams Delivery Config": { "main": [[{ "node": "Validate Teams Delivery Config", "type": "main", "index": 0 }]] },
+    "Validate Teams Delivery Config": { "main": [[{ "node": "Approved Teams Push Gate Open?", "type": "main", "index": 0 }]] },
+    "Approved Teams Push Gate Open?": { "main": [[{ "node": "Fetch Stored Briefing for Teams", "type": "main", "index": 0 }], [{ "node": "Record Fail-Closed Teams Skip", "type": "main", "index": 0 }]] },
+    "Fetch Stored Briefing for Teams": { "main": [[{ "node": "Validate Stored Briefing Contract", "type": "main", "index": 0 }]] },
+    "Validate Stored Briefing Contract": { "main": [[{ "node": "Build Sanitized Dedupe Envelope", "type": "main", "index": 0 }]] },
+    "Build Sanitized Dedupe Envelope": { "main": [[{ "node": "New Sanitized Delivery Needed?", "type": "main", "index": 0 }]] },
+    "New Sanitized Delivery Needed?": { "main": [[{ "node": "Reserve Persistent Teams Correlation", "type": "main", "index": 0 }], [{ "node": "Record Preview or Duplicate Suppressed", "type": "main", "index": 0 }]] },
+    "Reserve Persistent Teams Correlation": { "main": [[{ "node": "Validate Persistent Teams Reservation", "type": "main", "index": 0 }]] },
+    "Validate Persistent Teams Reservation": { "main": [[{ "node": "Persistent Teams Reservation Acquired?", "type": "main", "index": 0 }]] },
+    "Persistent Teams Reservation Acquired?": { "main": [[{ "node": "Send Sanitized Teams Briefing", "type": "main", "index": 0 }], [{ "node": "Record Preview or Duplicate Suppressed", "type": "main", "index": 0 }]] },
+    "Send Sanitized Teams Briefing": { "main": [[{ "node": "Normalize Non-Blocking Teams Result", "type": "main", "index": 0 }]] },
+    "Normalize Non-Blocking Teams Result": { "main": [[{ "node": "Validate Teams Delivery Outcome", "type": "main", "index": 0 }]] },
+    "Record Preview or Duplicate Suppressed": { "main": [[{ "node": "Validate Teams Delivery Outcome", "type": "main", "index": 0 }]] },
+    "Record Fail-Closed Teams Skip": { "main": [[{ "node": "Validate Teams Delivery Outcome", "type": "main", "index": 0 }]] },
+    "Validate Teams Delivery Outcome": { "main": [[{ "node": "Teams Delivery Finished", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": []
+}

@@ -34,6 +34,12 @@
       "contractVersion": "analysis-backfill-1.2",
       "promotionState": "verified-live-e2e"
     },
+    "pai-loop-12-teams-daily-delivery": {
+      "file": "workflows/pai-loop-12-teams-daily-delivery.json",
+      "publish": true,
+      "contractVersion": "teams-delivery-1.2",
+      "promotionState": "verified-live-e2e"
+    },
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
       "publish": false

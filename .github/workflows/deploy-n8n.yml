@@ -7,6 +7,7 @@ on:
       - "workflows/**"
       - "manifest.json"
       - "scripts/deploy-workflows.mjs"
+      - "scripts/test-teams-delivery-workflow.mjs"
       - ".github/workflows/deploy-n8n.yml"
   workflow_dispatch:
 
@@ -29,6 +30,8 @@ jobs:
         shell: bash
         run: |
           node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('manifest.json')); for(const f of fs.readdirSync('workflows').filter(x=>x.endsWith('.json'))) JSON.parse(fs.readFileSync('workflows/'+f));"
+          node scripts/deploy-workflows.mjs --validate-only
+          node scripts/test-teams-delivery-workflow.mjs
 
       - name: Deploy workflows
         env:

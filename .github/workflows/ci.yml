@@ -145,6 +145,7 @@ jobs:
           node --check scripts/deploy-workflows.mjs
           node scripts/deploy-workflows.mjs --validate-only
           node scripts/test-daily-workflow.mjs
+          node scripts/test-teams-delivery-workflow.mjs
 
       - name: Verify local frontend assets
         shell: python

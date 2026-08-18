@@ -10,6 +10,9 @@ from sqlalchemy.orm import Session
 from pai_loop.analysis_pipeline import (
     AnalysisPipelineSourceError,
     AnalysisPipelineTransactionError,
+    MATERIALIZATION_VERSION,
+    PIPELINE_VERSION,
+    SNAPSHOT_VERSION,
     _digest,
     run_analysis_pipeline,
 )
@@ -53,7 +56,7 @@ def _notice(
     session: Session,
     *,
     notice_key: str = "R25BK00764725-000",
-    title: str = "2025 AI 활용 역량 강화 교육 운영 용역",
+    title: str = "2025 AI 리터러시 역량 강화 교육 운영 용역",
 ) -> Notice:
     notice = Notice(
         notice_key=notice_key,
@@ -299,11 +302,21 @@ def test_pipeline_merges_sources_and_persists_full_immutable_snapshot(db_session
     }
     assert len(run.scores) == 8
     scores = {item.score_key: item for item in run.scores}
-    assert scores["quantitative.total"].lower_value is not None
+    assert scores["quantitative.total"].value is None
+    assert scores["quantitative.total"].lower_value == 9.7
+    assert scores["quantitative.total"].upper_value == 20
+    assert scores["quantitative.total"].basis_json["confirmed_points"] == 0
     assert scores["competition.risk"].status == "MODEL_ESTIMATE"
     assert scores["pricing.award_rate_prediction"].status == "MODEL_ESTIMATE"
     assert scores["pricing.submitted_bid_rate_prediction"].status == "INSUFFICIENT_DATA"
     assert scores["pricing.method"].status == "AVAILABLE"
+    assert scores["business.risk"].value == 23.5
+    assert scores["business.risk"].status == "AVAILABLE"
+    assert scores["business.risk"].method_version == "business-risk-2.0.0"
+    assert scores["business.risk"].basis_json["evidenced_axis_count"] == 6
+    assert scores["business.risk"].basis_json["axis_basis"]["qualification"]["source"] == (
+        "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE"
+    )
     assert len(run.recommendations) == result.recommendation_snapshot_count
     system_opinion = next(
         item for item in run.recommendations if item.recommendation_key == "bid:system"
@@ -374,6 +387,87 @@ def test_company_declaration_does_not_invent_an_evidence_requirement(db_session:
     assert requirement is not None
     assert requirement.fact_key == "conviction_clear"
     assert requirement.evidence_required is False
+
+
+def test_pipeline_derives_competition_and_profitability_only_from_stored_award_basis(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="DERIVED-RISK", title="AI 교육 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-RISK",
+        digest_char="6",
+        requirements=[
+            _requirement(
+                "REQ-RISK",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-RISK",
+            )
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    _seed_awards(db_session, notice)
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+    run = db_session.get(AnalysisRun, result.analysis_run_id)
+    assert run is not None
+    business_risk = next(item for item in run.scores if item.score_key == "business.risk")
+
+    assert business_risk.status == "AVAILABLE"
+    assert business_risk.value is not None
+    assert business_risk.basis_json["evidenced_axis_count"] == 6
+    assert business_risk.basis_json["axis_basis"]["competition"]["source"] == (
+        "STORED_3Y_AWARD_HISTORY"
+    )
+    assert business_risk.basis_json["axis_basis"]["profitability"]["source"] == (
+        "STORED_3Y_AWARD_RATE_PREDICTION"
+    )
+
+
+def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
+    db_session: Session,
+) -> None:
+    assert PIPELINE_VERSION == "analysis-pipeline-0.3.0"
+    assert MATERIALIZATION_VERSION == "atomic-materializer-0.2.0"
+    assert SNAPSHOT_VERSION == "analysis-snapshot-0.2.0"
+    notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-VERSION",
+        digest_char="5",
+        requirements=[
+            _requirement(
+                "REQ-VERSION",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-VERSION",
+            )
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    previous = run_analysis_pipeline(
+        db_session,
+        notice_id=notice.id,
+        ruleset_version="2026.08-v1",
+    )
+    current = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert current.reused is False
+    assert current.analysis_run_id != previous.analysis_run_id
+    assert current.input_sha256 != previous.input_sha256
+    assert db_session.scalar(
+        select(func.count(AnalysisRun.id)).where(AnalysisRun.notice_id == notice.id)
+    ) == 2
+    run = db_session.get(AnalysisRun, current.analysis_run_id)
+    assert run is not None
+    assert run.ruleset_version == "2026.08-v2"
+    assert run.basis_versions["business_risk"] == "business-risk-2.0.0"
 
 
 def test_action_is_reviewed_but_checklist_is_snapshot_only(db_session: Session) -> None:
@@ -454,7 +548,164 @@ def test_partial_extraction_merges_accepted_content_but_forces_r07(db_session: S
     evaluation = db_session.get(Evaluation, result.evaluation_id)
     assert evaluation is not None
     assert evaluation.eligibility == "REVIEW"
+    assert evaluation.risk_score is None
+    assert evaluation.risk_band == "UNKNOWN"
+    assert evaluation.explanation["risk"]["status"] == "WITHHELD_R07"
     assert {item["reason_code"] for item in evaluation.atomic_results} == {"R07"}
+
+
+def test_known_non_eligibility_gap_can_release_r07_after_strict_eligibility_checks(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="PARTIAL-SAFE", title="가격표 일부 누락 교육 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-SAFE",
+        digest_char="7",
+        requirements=[
+            _requirement(
+                "REQ-SAFE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-SAFE",
+            )
+        ],
+        missing=["가격산정 세부표 일부"],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == "PASS"
+    assert result.reason_code == "PASS_MATCH"
+    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" in result.warnings
+    run = db_session.get(AnalysisRun, result.analysis_run_id)
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert run is not None and evaluation is not None
+    assert run.error_code is None
+    assert run.output_summary["eligibility_gate_applied"] is True
+    assert evaluation.explanation["document_gate"]["strict_document_quality_ok"] is False
+    assert evaluation.explanation["analysis_pipeline"]["eligibility_gate_applied"] is True
+    assert {item["reason_code"] for item in evaluation.atomic_results} == {"P-ENTITY"}
+    assert evaluation.risk_score == 35.3
+    assert evaluation.risk_band == "CONDITIONAL_GO"
+    business_risk = next(item for item in run.scores if item.score_key == "business.risk")
+    assert business_risk.status == "AVAILABLE"
+    assert business_risk.basis_json["evidenced_axes"] == [
+        "qualification",
+        "execution",
+        "operation",
+        "document",
+    ]
+    assert business_risk.basis_json["axis_basis"]["document"]["run_status"] == "PARTIAL"
+
+
+def test_partial_gate_stays_fail_closed_when_an_eligibility_anchor_is_unverified(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="PARTIAL-ANCHOR", title="자격 근거 미검증 용역")
+    notice.risk_dimensions = None
+    unanchored = _requirement(
+        "REQ-NO-ANCHOR",
+        "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+        attachment_id="ATT-NO-ANCHOR",
+    )
+    unanchored["evidence"] = []
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-NO-ANCHOR",
+        digest_char="8",
+        requirements=[unanchored],
+        missing=["가격산정 세부표 일부"],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == "REVIEW"
+    assert result.reason_code == "R07"
+    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" not in result.warnings
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert evaluation is not None
+    assert evaluation.risk_score is None
+    assert evaluation.risk_band == "UNKNOWN"
+    assert evaluation.explanation["risk"]["status"] == "WITHHELD_R07"
+
+
+def test_partial_gate_stays_fail_closed_for_a_missing_blocking_action(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="PARTIAL-ACTION-GAP", title="설명회 교육 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-ACTION-GAP",
+        digest_char="4",
+        requirements=[
+            _requirement(
+                "REQ-ACTION-GAP",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-ACTION-GAP",
+            )
+        ],
+        missing=["제안설명회 일정 및 참여 안내 일부"],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == "REVIEW"
+    assert result.reason_code == "R07"
+    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" not in result.warnings
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert evaluation is not None
+    assert evaluation.risk_score is None
+    assert evaluation.risk_band == "UNKNOWN"
+    assert evaluation.explanation["risk"]["status"] == "WITHHELD_R07"
+    assert "operation" not in evaluation.explanation["risk"]["axis_basis"]
+    assert "operation" in evaluation.explanation["risk"]["missing_axes"]
+
+
+def test_partial_gate_stays_fail_closed_until_company_evidence_is_complete(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="PARTIAL-EVIDENCE", title="회사 증빙 미완료 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-EVIDENCE",
+        digest_char="9",
+        requirements=[
+            _requirement(
+                "REQ-EVIDENCE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-EVIDENCE",
+            )
+        ],
+        missing=["가격산정 세부표 일부"],
+    )
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == "REVIEW"
+    assert result.reason_code == "R07"
+    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" not in result.warnings
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert evaluation is not None
+    assert evaluation.risk_score is None
+    assert evaluation.risk_band == "UNKNOWN"
 
 
 def test_no_extraction_source_is_a_persisted_fail_closed_r07(db_session: Session) -> None:

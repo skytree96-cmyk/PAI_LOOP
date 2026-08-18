@@ -141,6 +141,75 @@ def test_future_conviction_check_does_not_overextend_current_declaration() -> No
     assert result["blocking_items"] == 1
 
 
+def test_vehicle_seat_count_is_not_misread_as_two_person_attendee_limit() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "FACILITY-1",
+                "FACILITY",
+                (
+                    "40인승 이상 차량 154대와 22인승 이상 중형버스 6대를 운행할 수 "
+                    "있어야 하며 세부 좌석 기준은 45석 및 25석 이상임."
+                ),
+            ),
+            requirement(
+                "PERSONNEL-1",
+                "PERSONNEL",
+                "발표자와 참석자는 합계 2인 이내로 제한됨.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["FACILITY-1"]["company_fact_key"] is None
+    assert by_id["FACILITY-1"]["policy_class"] != "CHECKLIST"
+    assert by_id["PERSONNEL-1"]["company_fact_key"] == "attendee_limit_two"
+    assert by_id["PERSONNEL-1"]["policy_class"] == "CHECKLIST"
+
+
+def test_descriptive_entity_and_sme_performance_lookback_do_not_block_eligibility() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "ENTITY-SUBJECT",
+                "ENTITY",
+                "경기도 신청사 인터넷전화서비스 용역을 대상으로 하는 입찰이다.",
+            ),
+            requirement(
+                "ENTITY-CONTRACTOR",
+                "ENTITY",
+                "계약업체는 공개회사로 기재되어 있다.",
+            ),
+            requirement(
+                "PERFORMANCE-LOOKBACK",
+                "PERFORMANCE",
+                (
+                    "최근 5년간 실적을 평가하며 창업기업·소기업·소상공인은 "
+                    "최근 7년간 실적을 적용한다."
+                ),
+            ),
+            requirement(
+                "SME-CERTIFICATE",
+                "CERTIFICATION",
+                "소기업·소상공인 확인서는 유효기간 내에 있어야 한다.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["ENTITY-SUBJECT"]["policy_class"] == "INFORMATION"
+    assert by_id["ENTITY-SUBJECT"]["blocking"] is False
+    assert by_id["ENTITY-CONTRACTOR"]["policy_class"] == "INFORMATION"
+    assert by_id["PERFORMANCE-LOOKBACK"]["policy_class"] == "INFORMATION"
+    assert by_id["PERFORMANCE-LOOKBACK"]["company_fact_key"] is None
+    assert by_id["SME-CERTIFICATE"]["policy_class"] == "ELIGIBILITY"
+    assert by_id["SME-CERTIFICATE"]["blocking"] is True
+
+
 def test_profile_and_policy_api_use_repository_data(client: TestClient) -> None:
     profile_response = client.get("/api/v1/company-profile")
     assert profile_response.status_code == 200

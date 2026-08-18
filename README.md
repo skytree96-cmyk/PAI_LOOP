@@ -12,11 +12,13 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.8.0 resumable procurement evidence slice
+## 현재 구현 범위: v0.8.1 opportunity-quality release
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 전사 공통 `교육·컨설팅`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
 - 검색 주체 부서와 사용자 추가 키워드에 따라 달라지는 점수·근거·추천 부서
+- 수의·직접계약 감사 보존 + 기본 진행목록/분석 큐 제외, 기관명 기반 키워드 오탐 억제
+- 공고 원문 확인 팝업과 자격 REVIEW·원문 근거 보완 상태의 분리 표시
 - 참가요건을 `적격성 / 행동 필요 / 체크리스트 / 정보`로 분리하는 정책 엔진
 - 마감일 기준 증빙 Gate, AND/OR 경로, REVIEW와 `FAIL(reason=DF-000)`을 다루는 평가 엔진
 - 실제 공개 인천 공고의 정제 seed: 요구조건 23건, 근거 앵커 26건
@@ -25,7 +27,8 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 공개 안전 낙찰 이력 59건을 이용한 3년 수주 집중도·낙찰률 범위·가격 참고 예측
 - 원문 대신 해시·유효 메타데이터만 공개하는 회사 자격 프로필
 - 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
-- GitHub Actions 검증, n8n 이름 기반 멱등 배포, Teams 승인 전 Adaptive Card mock
+- GitHub Actions 검증, n8n 이름 기반 멱등 배포, 웹 Adaptive Card mock과 분리된
+  W12 Teams 채널 전송의 fail-closed 운영
 - 매일 09:00 KST에 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 3건을 신규 우선 순서로 영속 큐에 예약
 - 분석 큐를 실행당 최대 30건, 호출당 최대 3건으로 직렬 처리하고 15분 continuation으로 재개하는 Workflow 10/11 계약; segment lease·exact chunk claim·멱등 응답·stale recovery·dead-letter 감사 포함
 - 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
@@ -36,8 +39,9 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마친 불변 seed만 둡니다.
 온라인 실행 데이터와 검토 이력의 기준 시스템은 관리형 PostgreSQL입니다.
 사내 원천 어댑터와 원천 파일은 이 공개 저장소·배포 패키지의 구성요소가 아닙니다.
-실제 입찰 자격이나 법률 판단을 대신하지 않으며, 전사 쓰기 기능은 Entra
-SSO/RBAC 및 회사 승인 전까지 차단합니다.
+실제 입찰 자격이나 법률 판단을 대신하지 않으며, 브라우저의 전사 업무 쓰기
+기능은 Entra SSO/RBAC 적용 전까지 차단합니다. 별도 승인을 마친 W12 서비스
+계정은 공개 allowlist 브리핑만 Teams 채널로 전송합니다.
 
 낙찰 이력도 동일 사업을 확정하는 데이터가 아닙니다. 공고명에서 생성하거나
 담당자가 입력한 키워드로 후보를 조회한 뒤, 토큰 겹침과 한글 3-gram 유사도를
@@ -85,6 +89,7 @@ pai-loop-seed-public-notice --create-schema
 pytest --cov=pai_loop --cov-report=term-missing
 node scripts/deploy-workflows.mjs --validate-only
 node scripts/test-daily-workflow.mjs
+node scripts/test-teams-delivery-workflow.mjs
 ```
 
 CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소용 비밀값
@@ -149,10 +154,19 @@ hard max 3). 그 다음 생성·정정된 공고를 누락 없이 durable queue�
 GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
 manifest에서 `publish: false`인 워크플로는 배포 후에도 비활성 상태를
 강제합니다.
-검증된 운영 진입점 Workflow 10만 현재 `publish: true`이다. Workflow 11은 live E2E와
-3개 HTTP 노드 credential 확인 전 `publish: false`이며, 확인 뒤에만
-`promotionState=verified-live-e2e`와 함께 활성화한다. 나머지 00~04와 deployment
-smoke는 계속 비활성이다.
+검증된 운영 진입점 Workflow 10과, live E2E·3개 HTTP 노드 credential 확인을 마친
+Workflow 11이 현재 `publish: true`이다. Workflow 11은
+`promotionState=verified-live-e2e`로 승격되어 15분 continuation을 수행한다.
+독립 `PAI_LOOP 12 - Teams Daily Delivery`는 분석 재실행 없이 저장 브리핑만 전송하도록
+분리되어 있으며, 실제 1건 전송과 동일 payload 중복 억제 검증을 거쳐 현재
+`publish: true`와 `promotionState=verified-live-e2e`로 승격됐다. 잠긴 n8n Variables
+대신 이름이 고정된 Data Table
+`pai_loop_teams_delivery_config`의 6개 key/value 행만 읽으며, table/tenant ID는
+workflow export에 저장하지 않는다. n8n UI에서 Teams credential을 연결하고 이름 기반
+Data Table에 승인된 Team/Channel ID를 저장한다. Schedule Trigger 기반 live 1건 및
+영속 중복 억제까지 검증한 v1.2 계약만 활성 상태를 유지한다. 자세한 절차는
+[Teams 실제 전송 운영 가이드](docs/TEAMS_DELIVERY_RUNBOOK_v0.9.0.md)를 따른다.
+나머지 00~04와 deployment smoke는 계속 비활성이다.
 
 `PAI_LOOP 04 - Award History Refresh`도 기본 비활성입니다. 수동 실행은 항상
 dry-run이고, schedule/sub-workflow의 저장 실행은
@@ -183,8 +197,11 @@ Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 wo
 있지만 현재 앱을 다시 작성하고 인증 경계를 이중화해야 하므로 이번 호스트로
 사용하지 않습니다.
 
-사내 파일럿은 독립 웹을 기준 제품으로 두고 Teams는 알림/진입점과 탭으로
-연결합니다. 회사 승인이 나기 전에는 실제 Teams 전송 없이 mock만 기록합니다.
+사내 파일럿은 독립 웹을 기준 제품으로 두고, W12가 매일 10:00 KST에 공개
+allowlist로 정리한 브리핑을 `PAI 봇` Teams 채널에 전송합니다. 전송은 승인 상태,
+Team/Channel 형식, emergency disable, 영속 correlation 예약을 모두 통과해야 하며
+실패해도 W10 수집이나 W11 분석을 재실행하지 않습니다. 웹 상세의 Teams 패널은
+계속 외부 전송 없는 mock이고, Teams 탭·Entra SSO/RBAC은 별도 확장 경계입니다.
 자세한 비교와 운영 Gate는
 [`docs/DEPLOYMENT_STRATEGY_v0.2.0.md`](docs/DEPLOYMENT_STRATEGY_v0.2.0.md)에
 있습니다.
@@ -217,7 +234,7 @@ OpenAI 계약은
 ## 설계 문서
 
 - [Product blueprint](docs/PRODUCT_BLUEPRINT_v0.1.0.md)
-- [Department keyword ranking v0.3.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.3.0.md)
+- [Department recommendation and region routing v0.4.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.4.0.md)
 - [Quantitative scoring v0.3.0](docs/QUANTITATIVE_SCORING_v0.3.0.md)
 - [Award and pricing intelligence v0.3.0](docs/PPS_AWARD_INTELLIGENCE_v0.3.0.md)
 - [Analysis backfill and 09:00 continuation runbook v0.8.0](docs/ANALYSIS_BACKFILL_AND_CONTINUATION_v0.8.0.md)
