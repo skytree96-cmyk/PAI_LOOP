@@ -129,7 +129,7 @@ def test_keyword_and_metadata_boundaries_remain_bounded_and_public() -> None:
             "opengDt": "2026-08-24 18:00:00",
             "bidMethdNm": "직찰",
             "ofclNm": "저장 금지 담당자",
-            "ofclTelNo": "010-0000-0000",
+            "ofclTelNo": "TEST-PRIVATE-TEL-0000",
         }
     )
     assert direct_bid_metadata == {

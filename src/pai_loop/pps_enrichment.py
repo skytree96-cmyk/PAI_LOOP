@@ -319,9 +319,9 @@ def resolve_ingestion_keywords(
     """Resolve profile queries with one representative for every selected department.
 
     Baseline supporting terms remain ranking vocabulary only. Query expansion
-    uses the two organization baselines plus the first unique strong term from
-    each department (24 for the full profile), leaving four slots for explicit
-    user terms under the 30-query provider cap.
+    uses five fixed discovery terms plus the first unique strong term from each
+    department (24 for the full profile), leaving one slot for an explicit user
+    term under the 30-query provider cap.
     """
 
     explicit: list[str] = []

@@ -27,7 +27,7 @@ def _provider_item() -> dict:
         "asignBdgtAmt": "118,628,232",
         "rcptDt": "2026-08-12 08:18:23",
         "opninRgstClseDt": "2026-08-18 23:59:00",
-        "ofclTelNo": "010-0000-0000",
+        "ofclTelNo": "TEST-PRIVATE-TEL-0000",
         "ofclNm": "저장 금지 담당자",
         "swBizObjYn": "N",
         "dlvrTmlmtDt": "2026-12-12 00:00:00",
@@ -56,7 +56,7 @@ def test_prespec_normalisation_is_separate_public_allowlist() -> None:
     assert "ofclNm" not in record
     assert "ofclTelNo" not in record
     assert "저장 금지 담당자" not in repr(record)
-    assert "010-0000-0000" not in repr(record)
+    assert "TEST-PRIVATE-TEL-0000" not in repr(record)
 
 
 def test_prespec_keyword_matching_is_explainable_and_local() -> None:

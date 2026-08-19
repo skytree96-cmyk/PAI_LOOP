@@ -214,6 +214,24 @@ const aggregated = one(nodes, "Verify Batch Analysis Aggregate Invariants", {}, 
 assert.equal(aggregated.analysisBatch.processed, 4);
 assert.equal(aggregated.analysisBatch.chunksExecuted, 2);
 
+const correctiveFinalBatch = structuredClone(aggregated.analysisBatch);
+correctiveFinalBatch.openaiCalls = correctiveFinalBatch.requested * 2;
+correctiveFinalBatch.enrichment.openaiCalls = correctiveFinalBatch.requested * 2;
+assert.equal(
+  one(nodes, "Validate End-to-End Analysis Boundary", {
+    runtime,
+    analysis_batch: correctiveFinalBatch,
+  }).analysis_batch.openaiCalls,
+  correctiveFinalBatch.requested * 2,
+);
+assert.throws(() => one(nodes, "Validate End-to-End Analysis Boundary", {
+  runtime,
+  analysis_batch: {
+    ...correctiveFinalBatch,
+    openaiCalls: correctiveFinalBatch.requested * 2 + 1,
+  },
+}), /OpenAI calls exceed/);
+
 const continuationState = one(nodes, "Validate Daily Continuation State", {
   ...operationResponse, segment_id: null, status: "PARTIAL", attempted: 4, remaining: 31, offered: 0, in_flight: 0,
   notice_keys: [], chunks: [], chunk_indices: [],
