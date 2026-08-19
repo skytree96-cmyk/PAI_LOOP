@@ -92,6 +92,7 @@ jobs:
               "pai_loop/static/styles.css",
               "pai_loop/static/app.js",
               "pai_loop/static/favicon.svg",
+              "pai_loop/static/teams-config.html",
               "pai_loop/data/rules_v2_1.json",
               "pai_loop/data/company_public_profile.json",
               "pai_loop/data/department_keyword_profiles.json",
@@ -113,6 +114,7 @@ jobs:
               "pai_loop/integrations/awards.py",
               "pai_loop/analysis_pipeline.py",
               "pai_loop/analysis_api.py",
+              "pai_loop/manual_analysis.py",
               "pai_loop/reference_registry.py",
               "pai_loop/reference_api.py",
               "pai_loop/outcomes_api.py",
@@ -194,7 +196,12 @@ jobs:
               ".doc", ".docx", ".hwp", ".hwpx", ".pdf", ".ppt", ".pptx",
               ".xls", ".xlsx", ".zip", ".7z", ".whl", ".db", ".sqlite", ".sqlite3",
           }
-          binary_allowlist = {Path("docs/architecture/PAI_LOOP_architecture.png")}
+          binary_allowlist = {
+              Path("docs/architecture/PAI_LOOP_architecture.png"),
+              # Upload-ready Teams custom app. Tests assert its exact three
+              # root entries and compare the packaged manifest byte-for-byte.
+              Path("teams-app/PAI-LOOP-Teams-App.zip"),
+          }
           patterns = {
               "OpenAI API key": re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
               "GitHub token": re.compile(

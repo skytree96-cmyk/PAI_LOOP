@@ -9,7 +9,7 @@ from sqlalchemy import select
 import pytest
 
 from pai_loop.main import create_app
-from pai_loop.models import Notice
+from pai_loop.models import AnalysisRun, Notice, RecommendationSnapshot
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
     ExtractedRequirement,
@@ -154,6 +154,97 @@ def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClie
     dashboard = client.get("/api/v1/dashboard").json()
     assert dashboard["eligibility_counts"] == {"PASS": 1, "REVIEW": 1, "FAIL": 1}
     assert dashboard["totals"]["evaluations"] == 3
+
+
+def test_public_board_projects_only_latest_persisted_system_recommendation(
+    client: TestClient,
+) -> None:
+    client.post("/api/v1/ingestion/replay")
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == "SYN-PASS-001"))
+        assert notice is not None
+        evaluation = max(notice.evaluations, key=lambda item: item.evaluated_at)
+        version = max(notice.versions, key=lambda item: item.version_no)
+        run = AnalysisRun(
+            notice_id=notice.id,
+            notice_version_id=version.id,
+            evaluation_id=evaluation.id,
+            status="COMPLETED",
+            idempotency_key="public-board-system-recommendation-v1",
+            input_sha256="a" * 64,
+            output_summary={"eligibility": "PASS"},
+        )
+        run.recommendations.append(
+            RecommendationSnapshot(
+                recommendation_key="bid:system",
+                rank=0,
+                recommendation="GO",
+            )
+        )
+        session.add(run)
+        session.commit()
+
+    summary = next(
+        item
+        for item in client.get("/api/v1/notices").json()
+        if item["notice_key"] == "SYN-PASS-001"
+    )
+    assert summary["recommendation"] == "GO"
+    assert summary["recommendation_updated_at"] is not None
+    detail = client.get("/api/v1/notices/SYN-PASS-001").json()
+    assert detail["recommendation"] == "GO"
+    dashboard = client.get("/api/v1/dashboard").json()
+    assert dashboard["recommendation_counts"] == {"GO": 1, "HOLD": 0, "NO_GO": 0}
+    assert dashboard["go_count"] == 1
+
+
+def test_public_board_does_not_fall_back_to_stale_system_recommendation(
+    client: TestClient,
+) -> None:
+    client.post("/api/v1/ingestion/replay")
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == "SYN-PASS-001"))
+        assert notice is not None
+        evaluation = max(notice.evaluations, key=lambda item: item.evaluated_at)
+        version = max(notice.versions, key=lambda item: item.version_no)
+        completed = AnalysisRun(
+            notice_id=notice.id,
+            notice_version_id=version.id,
+            evaluation_id=evaluation.id,
+            status="COMPLETED",
+            idempotency_key="stale-system-recommendation-v1",
+            input_sha256="b" * 64,
+            generated_at=datetime.fromisoformat("2026-08-18T00:00:00+00:00"),
+            output_summary={},
+        )
+        completed.recommendations.append(
+            RecommendationSnapshot(
+                recommendation_key="bid:system",
+                rank=0,
+                recommendation="GO",
+            )
+        )
+        superseding_failed = AnalysisRun(
+            notice_id=notice.id,
+            notice_version_id=version.id,
+            evaluation_id=evaluation.id,
+            status="FAILED",
+            idempotency_key="superseding-failed-analysis-v1",
+            input_sha256="c" * 64,
+            generated_at=datetime.fromisoformat("2026-08-19T00:00:00+00:00"),
+            output_summary={},
+        )
+        session.add_all([completed, superseding_failed])
+        session.commit()
+
+    summary = next(
+        item
+        for item in client.get("/api/v1/notices").json()
+        if item["notice_key"] == "SYN-PASS-001"
+    )
+    assert summary["recommendation"] is None
+    assert summary["recommendation_updated_at"] is None
+    assert client.get("/api/v1/dashboard").json()["go_count"] == 0
 
 
 def test_past_open_notice_is_exposed_as_expired_and_not_counted_active(
@@ -520,10 +611,10 @@ def test_profile_ingestion_queries_every_department_with_bounded_terms(
         )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["keywords_used"][:2] == ["교육", "컨설팅"]
-    assert len(body["keywords_used"]) == 26
-    assert len(set(body["keywords_used"])) == 26
-    assert body["provider_queries"] == 26
+    assert body["keywords_used"][:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
+    assert len(body["keywords_used"]) == 29
+    assert len(set(body["keywords_used"])) == 29
+    assert body["provider_queries"] == 29
     assert body["department_coverage_count"] == 24
 
 
@@ -553,7 +644,7 @@ def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
     body = response.json()
     assert body["status"] == "PARTIAL"
     assert body["provider_queries"] == 1
-    assert len(body["keywords_used"]) == 26
+    assert len(body["keywords_used"]) == 29
     assert body["department_coverage_count"] == 24
     assert any("시간 제한" in warning for warning in body["warnings"])
 

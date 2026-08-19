@@ -1,6 +1,6 @@
 # PAI_LOOP 오전 9시 통합 브리핑 운영서 v0.7.0
 
-기준일: 2026-08-17
+기준일: 2026-08-19
 
 기준 workflow: `PAI_LOOP 10 - Daily Opportunity Briefing`
 
@@ -17,29 +17,31 @@
 
 ```text
 09:00 Asia/Seoul
-  → 전일~당일 PPS 공고 수집·DB upsert
+  → 당일 포함 최근 8개 calendar day PPS 공고 수집·DB upsert
   → backend 조직 keyword profile로 검색어 확장·부서 ranking
   → latest valid 공고 revision별 중복 제거
   → ranking score DESC, published_at DESC notice_keys
   → 완료 수집로그와 Teams mock 로그 7일 retention
   → 조직 ranking 상위 공고의 3년 낙찰 이력 갱신(기본 1건, hard max 3)
-  → 최근 7일 미분석 backlog에서 최대 3건 첨부 보강(공고당 최대 1개)·평가·snapshot
+  → 신규·정정 전량 우선 + cooled backlog 최대 12건을 durable parent에 예약
+  → 실행당 최대 30건, HTTP chunk당 최대 3건 첨부 보강(공고당 최대 1개)·평가·snapshot
   → 최근 7일 브리핑과 Adaptive Card 1.5 조립
   → backend Teams mock 기록(실제 Teams 전송 없음)
 ```
 
-Daily ingestion은 `교육`, `컨설팅`을 기본 검색어로 보내며
+Daily ingestion은 `교육`, `컨설팅`, `연수`, `포럼`, `위탁 운영`을 기본 검색어로 보내며
 `use_profile_keywords: true`, `profile_department_ids: []`를 함께 보낸다. 빈 부서 ID
 목록은 backend가 관리하는 전체 조직 profile을 의미한다. 조직도의 keyword catalog를
 n8n JSON에 복사하지 않으므로 Git 기준자료가 바뀌면 backend 동기화만으로 반영된다.
-Backend contract는 기본 `교육`, `컨설팅`과 24개 부서의 첫 unique strong keyword를
-중복 제거해 총 26개(상한 30) provider query로 보장한다. Supporting keyword는
+Backend contract는 기본 5개와 24개 부서의 첫 unique strong keyword를
+중복 제거해 현재 총 29개(상한 30) provider query로 보장한다. Supporting keyword는
 외부 query가 아니라 ranking에만 쓴다. n8n 응답 validator는 `keywords_used` 상한
-30, 첫 두 baseline, `department_coverage_count: 24`를 함께 검증한다.
+30, baseline 5개, `department_coverage_count: 24`를 함께 검증한다.
 
-일일 provider 범위는 전일~당일, keyword별 `page_size: 100`, `max_pages: 1`이다.
-최초 7일 backfill은 일일 schedule에 넣지 않고 운영자가 별도 bounded one-shot으로
-수행한다.
+일일 provider 범위는 당일 포함 최근 8개 calendar day의 단일 query window이고,
+keyword별 `page_size: 999`, `max_pages: 3`이다. 날짜별로 query를 8번 반복하지
+않으므로 profile 24개를 포함해 최대 29 provider query만 사용한다. 개별 keyword가
+2,997행 상한에 닿으면 조용히 성공하지 않고 `PARTIAL`로 중단한다.
 전체 조직 profile의 bounded multi-keyword 수집을 위해 n8n PPS HTTP 경계도 최대
 10분으로 제한한다.
 
@@ -47,13 +49,13 @@ Backend contract는 기본 `교육`, `컨설팅`과 24개 부서의 첫 unique s
 
 ```json
 {
-  "from_date": "YYYY-MM-DD (전일)",
+  "from_date": "YYYY-MM-DD (당일 포함 8일 전 시작일)",
   "to_date": "YYYY-MM-DD (당일)",
-  "keywords": ["교육", "컨설팅"],
+  "keywords": ["교육", "컨설팅", "연수", "포럼", "위탁 운영"],
   "use_profile_keywords": true,
   "profile_department_ids": [],
-  "page_size": 100,
-  "max_pages": 1,
+  "page_size": 999,
+  "max_pages": 3,
   "dry_run": false
 }
 ```
@@ -66,9 +68,10 @@ daily briefing이 제공하는 `analysis_queue`에서 고른다. 큐는 최근 7
 `NOT_SELECTED` 미시도 건을 먼저, 재처리 가능한 실패 건은 가장 오래된 시도부터 최대
 50건 제공한다. `never_attempted_notice_keys`와 `retryable_notice_keys`는 순서가
 보존된 disjoint partition이고 둘의 연결은 `notice_keys`와 정확히 일치한다. n8n은
-전체 큐 앞의 3건을 처리하되 retry partition의 key에만 retry epoch를 붙인다. 첨부
+신규·정정 key는 최대 3,000건까지 전량 먼저 예약하고, 그 뒤 큐 앞의 backlog 최대
+12건을 붙이되 retry partition의 key에만 retry epoch를 붙인다. 첨부
 없음·구형 HWP 전용은 manifest가
-바뀔 때까지 자동 재시도하지 않아 실패 3건이 큐를 독점하지 않는다. 큐 계약이 없는
+바뀔 때까지 자동 재시도하지 않아 실패 건이 큐를 독점하지 않는다. 큐 계약이 없는
 이전 backend에서만 ingestion `notice_keys`를 호환 fallback으로 사용한다.
 `COMPLETED`이면 `provider_queries == keywords_used.length`를 요구한다. 190초 backend
 wall budget 등으로 일부 query만 끝나면 `PARTIAL`과 warning을 허용하고, 성공한
@@ -79,7 +82,7 @@ wall budget 등으로 일부 query만 끝나면 `PARTIAL`과 warning을 허용�
 created+updated union은 "이번 실행에서 완전히 수집된 범위"인지 운영자가 구분할 수
 있으며 페이지 상한 누락이 조용한 성공으로 처리되지 않는다.
 
-## 미분석 큐 3건 분석·첨부 보강
+## 미분석 큐 12건 예약·3건 단위 분석
 
 공개 목록은 미분석을 한 상태로 뭉개지 않고 다음 사유를 구분한다.
 
@@ -96,9 +99,14 @@ HWPX는 XML paragraph/run을 복원해 문단 경계를 유지하고, NFC·zero-
 고도화 시 별도 격리 변환 worker에서 HWP→HWPX/PDF 변환 후 동일 SHA·근거 검증 경계를
 다시 통과시키며, 변환 실패는 REVIEW로 유지한다.
 
+`QUOTE_UNVERIFIED`에 한해서만 원문 그대로의 연속 인용을 다시 요구하는 corrective
+extraction을 한 번 허용한다. 첫 호출과 corrective 호출을 합친 hard cap은 공고당
+2회이며, 두 번째 응답도 동일한 exact anchor 검증을 통과해야 한다. 퍼지·의미
+매칭으로 PASS시키지 않으며 두 번째도 실패하면 계속 `QUOTE_UNVERIFIED / REVIEW`다.
+
 ```json
 {
-  "notice_keys": ["analysis_queue의 미분석 notice key, 최대 3건"],
+  "notice_keys": ["durable lease가 부여한 exact chunk, 최대 3건"],
   "dry_run": false,
   "force": false,
   "enrich_missing": true,
@@ -122,9 +130,9 @@ attachments_discovered, attachments_processed, openai_calls, warnings
 ```
 
 Workflow는 처리 합계, 공고당 첨부 1개 상한, OpenAI 실제 호출 수와 전체
-`openai_calls` 일치를 검증한다. 문서 본문·개인정보·provider 원문은 n8n item이나
+`openai_calls` 일치 및 공고당 최대 2회 상한을 검증한다. 문서 본문·개인정보·provider 원문은 n8n item이나
 Teams card에 싣지 않고 DB의 공개 근거 anchor와 상태 요약만 사용한다.
-큐에서 고른 3건의 동기 첨부 처리를 위해 n8n HTTP 경계는 최대 10분으로 제한한다. Backend는
+3건 단위 chunk의 동기 첨부 처리를 위해 n8n HTTP 경계는 최대 10분으로 제한한다. Backend는
 개별 공고 실패를 `FAILED` result와 전체 `PARTIAL`로 반환하므로 성공한 다른 공고의
 결과를 버리지 않는다.
 
@@ -135,7 +143,8 @@ Teams card에 싣지 않고 DB의 공개 근거 anchor와 상태 요약만 사�
 
 ## 명시적 운영 설정과 비상 중지
 
-예약 경로의 기본값은 PPS write, 상위 3건 분석 write, 7일 단기 로그 retention,
+예약 경로의 기본값은 PPS write, 신규·정정 전량과 backlog 12건 durable 분석 예약,
+7일 단기 로그 retention,
 상위 3건 낙찰 refresh, backend Teams mock 기록이 모두 활성이다. 이는 n8n host가
 `$env` 읽기를 제한해도 동일하게 동작한다.
 
@@ -153,18 +162,20 @@ PAI_LOOP_EMERGENCY_DISABLE=true
 사용한다. 없거나 n8n이 `$env` 접근을 금지하면
 `https://pai-loop-demo.onrender.com`을 사용한다.
 
-## Credential 7/7 확인
+## Credential 9/9 확인
 
 Generic Header Auth credential `PAI_LOOP Render Backend`를 다음 HTTP 노드 모두에
 연결한다.
 
 1. `Refresh PPS Notices Behind Gate`
-2. `Analyze Evaluate and Snapshot PPS Notices`
-3. `Preview or Apply Seven-Day Log Retention`
-4. `Fetch Award Candidates from Seven-Day Briefing`
-5. `Refresh Bounded Three-Year Award History`
-6. `Fetch Ranked Seven-Day Briefing`
-7. `Record Consolidated Teams Mock in Backend`
+2. `Reserve or Resume Daily Analysis Operation`
+3. `Analyze Evaluate and Snapshot PPS Notices`
+4. `Finalize Daily Analysis Segment`
+5. `Preview or Apply Seven-Day Log Retention`
+6. `Fetch Award Candidates from Seven-Day Briefing`
+7. `Refresh Bounded Three-Year Award History`
+8. `Fetch Ranked Seven-Day Briefing`
+9. `Record Consolidated Teams Mock in Backend`
 
 배포기는 원격 workflow의 동일 node name/type에 연결된 credential만 보존한다.
 저장소 JSON에는 credential ID나 API key를 기록하지 않는다.
@@ -185,10 +196,11 @@ Generic Header Auth credential `PAI_LOOP Render Backend`를 다음 HTTP 노드 �
    ```powershell
    node scripts/deploy-workflows.mjs --only=pai-loop-10-daily-opportunity-briefing
    ```
-4. E2E 전에는 원격 workflow가 inactive이고 7개 HTTP 노드 credential이 7/7인지
+4. E2E 전에는 원격 workflow가 inactive이고 9개 HTTP 노드 credential이 9/9인지
    확인한다.
 5. `Run Complete Offline Dry-Run`을 실행해 모든 외부 호출이 0인지 확인한다.
-6. 운영자가 전일~당일, page 1, 최대 3건 경계의 online E2E 한 번을 승인·실행한다.
+6. 운영자가 당일 포함 8일, keyword별 최대 3페이지, 실행당 최대 30건·chunk당 최대
+   3건 경계의 online E2E 한 번을 승인·실행한다.
 7. DB에서 ingestion job, PPS notice, 첨부 manifest, evaluation/snapshot이 연결되었는지
    확인하고 웹의 진행 공고와 근거 표시를 점검한다.
 8. 성공한 뒤 Workflow 10만 활성화한다. 00~04는 계속 inactive로 둔다.

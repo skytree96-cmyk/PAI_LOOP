@@ -5,7 +5,10 @@ import json
 import httpx
 import pytest
 
-from pai_loop.integrations.openai_extraction import OpenAIExtractionClient
+from pai_loop.integrations.openai_extraction import (
+    CORRECTIVE_PROMPT_VERSION,
+    OpenAIExtractionClient,
+)
 
 
 def valid_output(*, attachment_id: str = "ATT-1", quote: str = "부산광역시에 소재한 업체") -> dict:
@@ -125,11 +128,16 @@ def test_incomplete_or_refusal_routes_to_r07_review(payload: dict, expected_erro
     ],
 )
 def test_untrusted_anchor_never_reaches_decision_engine(output: dict, expected_error: str) -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=response_payload(output))
+
     client = OpenAIExtractionClient(
         api_key="key",
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, json=response_payload(output))
-        ),
+        transport=httpx.MockTransport(handler),
         base_url="https://api.openai.test/v1",
     )
     outcome = client.extract(
@@ -140,6 +148,75 @@ def test_untrusted_anchor_never_reaches_decision_engine(output: dict, expected_e
     assert outcome.status == "REVIEW"
     assert outcome.error_code == expected_error
     assert outcome.data is None
+    expected_calls = 2 if expected_error == "UNVERIFIED_QUOTE" else 1
+    assert calls == outcome.api_calls == expected_calls
+    assert outcome.corrective_retry_used is (expected_calls == 2)
+
+
+def test_unverified_quote_gets_one_bounded_corrective_retry() -> None:
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        output = (
+            valid_output(quote="원문에 없는 재구성 문장")
+            if len(calls) == 1
+            else valid_output(quote="부산광역시에 소재한 업체")
+        )
+        return httpx.Response(200, json=response_payload(output))
+
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+        max_retries=0,
+    )
+    outcome = client.extract(
+        document_text="참가자격: 부산광역시에 소재한 업체",
+        allowed_attachment_ids={"ATT-1"},
+    )
+    client.close()
+
+    assert outcome.status == "ACCEPTED"
+    assert outcome.api_calls == len(calls) == 2
+    assert outcome.corrective_retry_used is True
+    assert outcome.correction_prompt_version == CORRECTIVE_PROMPT_VERSION
+    corrective_text = calls[1]["input"][1]["content"][0]["text"]
+    assert "FINAL CORRECTIVE RETRY" in corrective_text
+    assert "No fuzzy or semantic matching" in corrective_text
+
+
+def test_total_api_call_budget_includes_transport_retry_and_blocks_third_call() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, json={"error": "retry"})
+        return httpx.Response(
+            200,
+            json=response_payload(valid_output(quote="원문에 존재하지 않는 문장")),
+        )
+
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+        max_retries=2,
+        sleep=lambda _seconds: None,
+    )
+    outcome = client.extract(
+        document_text="부산광역시에 소재한 업체",
+        allowed_attachment_ids={"ATT-1"},
+    )
+    client.close()
+
+    assert outcome.status == "REVIEW"
+    assert outcome.error_code == "UNVERIFIED_QUOTE"
+    assert outcome.api_calls == calls == 2
+    assert outcome.corrective_retry_used is False
 
 
 @pytest.mark.parametrize(

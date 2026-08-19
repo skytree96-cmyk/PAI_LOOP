@@ -4,8 +4,13 @@
 
 Workflow 10은 매일 09:00 KST 수집 응답의 `created_notice_keys`와
 `updated_notice_keys`를 exact union으로 만들고, 저장된 분석 큐의 우선순위 상위
-3건을 뒤에 붙인다. 신규·정정 3,000건과 backlog 3건까지 명시적으로 허용하며,
+12건을 뒤에 붙인다. 신규·정정 3,000건과 backlog 12건까지 명시적으로 허용하며,
 초과 범위는 잘라내지 않고 실패한다.
+
+수집은 `교육`, `컨설팅`, `연수`, `포럼`, `위탁 운영`과 조직 profile 24개를
+중복 제거한 현재 29개 keyword를 당일 포함 최근 8개 calendar day 단일 window로
+조회한다. 날짜별로 query를 반복하지 않으며 keyword별 999행·최대 3페이지 상한은
+그대로 유지한다.
 
 Workflow 10은 수집 범위를 `page_size=999`, `max_pages=3`으로 설정해 검색어별
 최대 2,997행을 실제 pagination한다. 조달청 provider가 이 상한보다 많은 행을 보고하면 수집
@@ -21,7 +26,7 @@ stable notice key가 이미 terminal이어도 최신 notice metadata/manifest wo
 
 daily briefing은 합계 순서를 보존한 `notice_keys`와 함께
 `never_attempted_notice_keys`, `retryable_notice_keys`를 서로 겹치지 않는 exact
-partition으로 제공한다. Workflow 10은 전체 우선순위에서 backlog 최대 3건을 고르되
+partition으로 제공한다. Workflow 10은 전체 우선순위에서 backlog 최대 12건을 고르되
 실제 retry partition에 속한 key만 `retry_notice_keys`와 수집일 기반 `retry_epoch`로
 별도 전달한다. `NOT_SELECTED`는 generation 0의 일반 첫 시도로 남는다. 서버가 현재
 reason code와 24시간 cooldown을 다시 검증한 retry key만 generation을 한 번 올린다.
@@ -37,10 +42,19 @@ child를 durable ledger로 사용한다. 따라서 분석이 끝난 뒤 downstre
 provider/OpenAI child를 다시 만들지 않는다. 실제 child가 전혀 실행되지 않은 parent는
 token을 소비한 것으로 보지 않아 복구 작업을 막지 않는다.
 
-Workflow 11은 수동 일회성 `OPEN / NOT_SELECTED` backfill과 DAILY continuation을
+Workflow 11은 수동 일회성 `OPEN / NOT_SELECTED + 24시간 cooldown 경과 retryable`
+backfill과 DAILY continuation을
 같은 계약으로 재개한다. 한 n8n 실행이 전량을 붙잡지 않는다. 실행당 최대 30건,
-HTTP 호출당 최대 3건을 직렬 처리한다. 초기 89건 기준 `30 + 30 + 29`의 세
-segment가 필요하다.
+HTTP 호출당 최대 3건을 직렬 처리한다. 2026-08-19 기준 OPEN
+`QUOTE_UNVERIFIED` 58건의 일회성 회수는 cooldown 충족 뒤 첫 segment 30건,
+15분 continuation의 다음 segment 28건으로 끝낸다. 이후 일일 자동 retry는 최대
+12건으로 제한한다.
+
+`QUOTE_UNVERIFIED`만 strict corrective extraction을 한 번 허용한다. 원문 그대로의
+연속 인용을 요구하고 두 번째 결과도 exact anchor 검증을 다시 통과시킨다. 퍼지 또는
+의미 매칭은 금지하며, 첫 호출을 포함한 hard cap은 공고당 2회다. 따라서 일일 backlog
+12건의 추가 OpenAI 요청 상한은 24회이고, 58건 일회성 회수의 이론상 상한은 116회다.
+실패한 두 번째 응답은 계속 `QUOTE_UNVERIFIED / REVIEW`로 남긴다.
 
 ## 저장 계약
 
@@ -69,7 +83,7 @@ segment가 필요하다.
   "max_total": 3000,
   "execution_limit": 30,
   "max_continuations": 128,
-  "include_retryable": false,
+  "include_retryable": true,
   "retry_cooldown_hours": 24,
   "reservation_ttl_hours": 6,
   "request_token": "w11:<n8n execution id>:manual",
@@ -152,8 +166,8 @@ segment 또는 이미 다음 lease가 열린 뒤의 오래된 segment는 계속 
   남긴다. 최신 generation 재처리는 유지하되 RUNNING audit orphan은 남기지 않는다.
 - child provider 오류: FAILED/PARTIAL 자식 감사에 오류와 호출 수를 남긴다.
 - retryable 추출/OpenAI 상태: daily briefing 큐가 24시간 cooldown 뒤 후보로
-  다시 내고, DAILY exact union 뒤 최대 3건을 자동 포함한다.
-- continuation 128회 초과: `DEAD_LETTER / MAX_CONTINUATIONS_EXCEEDED`; 3,003건은
+  다시 내고, DAILY exact union 뒤 최대 12건을 자동 포함한다.
+- continuation 128회 초과: `DEAD_LETTER / MAX_CONTINUATIONS_EXCEEDED`; 3,012건은
   실행당 30건 기준 101회에 끝나므로 정상 범위 안이며, silent truncate
   또는 무한 반복 대신 운영자 검토로 전환한다.
 - 09:00에 이전 DAILY가 남아 있으면 새 created+updated key를 기존 미처리 key보다

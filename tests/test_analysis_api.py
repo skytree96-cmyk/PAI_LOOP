@@ -1814,7 +1814,7 @@ def test_stale_terminal_segment_auto_finalizes_parent_and_releases_any_poll(
 def test_maximum_daily_plan_reaches_zero_within_128_continuations(
     client: TestClient,
 ) -> None:
-    planned_count = 3003
+    planned_count = 3012
     execution_limit = 30
     required_rounds = (planned_count + execution_limit - 1) // execution_limit
     assert required_rounds == 101

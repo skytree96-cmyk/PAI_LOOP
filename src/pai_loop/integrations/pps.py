@@ -84,14 +84,25 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
     """Map BidPublicInfoService02-style fields to the canonical notice input."""
     notice_no = str(item.get("bidNtceNo") or item.get("bid_notice_no") or "").strip()
     revision = str(item.get("bidNtceOrd") or item.get("revision_no") or "00").zfill(2)
+    bid_method = _label(item.get("bidMethdNm") or item.get("bid_method"))
     deadline = _parse_datetime(item.get("bidClseDt") or item.get("deadline"))
+    deadline_basis = "BID_CLOSE" if deadline is not None else None
+    # PPS leaves ``bidClseDt`` empty for some valid direct-bid (직찰)
+    # service notices.  Those rows still publish an opening datetime and used
+    # to be quarantined before users could review the attached proposal
+    # instructions.  Opening time is a conservative *latest review boundary*,
+    # not a claim that an electronic close time exists; the basis is carried
+    # forward explicitly so downstream audit/UI work can label it correctly.
+    if deadline is None and "직찰" in bid_method:
+        deadline = _parse_datetime(item.get("opengDt") or item.get("rbidOpengDt"))
+        if deadline is not None:
+            deadline_basis = "OPENING_FALLBACK"
     published = _parse_datetime(item.get("bidNtceDt") or item.get("published_at"))
     raw_notice_kind = _label(item.get("ntceKindNm") or item.get("notice_kind"))
     # The provider has used more than one cancellation label over time.  The
     # persistence boundary intentionally consumes one canonical value so a
     # cancellation variant cannot survive as a phantom OPEN notice.
     notice_kind = "취소공고" if "취소" in raw_notice_kind else raw_notice_kind
-    bid_method = _label(item.get("bidMethdNm") or item.get("bid_method"))
     contract_method = _label(
         item.get("cntrctCnclsMthdNm") or item.get("contract_method")
     )
@@ -113,6 +124,7 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
         ).strip(),
         "published_at": published,
         "deadline": deadline,
+        "deadline_basis": deadline_basis,
         "estimated_amount": _number(
             item.get("presmptPrce") or item.get("asignBdgtAmt") or item.get("estimated_amount")
         ),

@@ -31,6 +31,9 @@
     departmentCatalog: null,
     accessMode: "UNKNOWN",
     writeControlsEnabled: true,
+    manualAnalysisEnabled: false,
+    manualAnalysisPolicy: null,
+    manualAnalysisRequests: new Map(),
     performance: {
       summary: null,
       records: [],
@@ -102,7 +105,7 @@
       "noticeHeading", "noticeSummary", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
-      "detailDrawer", "drawerLoading", "closeDetailButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
+      "detailDrawer", "drawerLoading", "closeDetailButton", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
@@ -177,6 +180,21 @@
     const query = new URLSearchParams(window.location.search);
     if (inFrame || query.get("host") === "teams" || query.get("teams") === "1") {
       document.body.classList.add("teams-context");
+      void initializeTeamsHost();
+    }
+  }
+
+  async function initializeTeamsHost() {
+    const teamsApp = window.microsoftTeams?.app;
+    if (!teamsApp?.initialize) return;
+    try {
+      await teamsApp.initialize();
+      const context = await teamsApp.getContext();
+      const theme = stringValue(context?.app?.theme).toLowerCase();
+      if (["dark", "contrast"].includes(theme)) document.body.dataset.teamsTheme = theme;
+    } catch (_error) {
+      // The same page remains a normal browser app when Teams context is not
+      // available; no redirect or credential fallback is attempted.
     }
   }
 
@@ -223,13 +241,19 @@
     els.layoutButtons.forEach((button) => button.addEventListener("click", () => setLayout(button.dataset.layout)));
 
     els.noticeTableBody.addEventListener("click", handleNoticeActivation);
+    els.noticeTableBody.addEventListener("click", handleManualAnalysisActivation);
     els.noticeTableBody.addEventListener("keydown", handleNoticeKeydown);
     els.noticeCardGrid.addEventListener("click", handleNoticeActivation);
+    els.noticeCardGrid.addEventListener("click", handleManualAnalysisActivation);
 
     els.mobileMenuButton.addEventListener("click", toggleMobileMenu);
     els.sidebarScrim.addEventListener("click", closeMobileMenu);
 
     els.closeDetailButton.addEventListener("click", closeDetail);
+    els.manualAnalyzeButton.addEventListener("click", () => {
+      const noticeKey = state.selectedNotice?.noticeKey;
+      if (noticeKey) void requestManualAnalysis(noticeKey);
+    });
     els.drawerScrim.addEventListener("click", closeDetail);
     els.openSourceDialogButton.addEventListener("click", openCurrentNoticeSourceDialog);
     els.copyLinkButton.addEventListener("click", copyCurrentNoticeLink);
@@ -344,6 +368,13 @@
     state.writeControlsEnabled = booleanValue(
       firstValue(profile.write_controls_enabled, profile.writeControlsEnabled),
     ) ?? state.accessMode !== "PUBLIC_READ_ONLY";
+    state.manualAnalysisEnabled = booleanValue(
+      firstValue(profile.manual_analysis_enabled, profile.manualAnalysisEnabled),
+    ) ?? false;
+    state.manualAnalysisPolicy = firstObject(
+      profile.manual_analysis_policy,
+      profile.manualAnalysisPolicy,
+    );
     const readOnly = !state.writeControlsEnabled;
     els.replayButton.disabled = readOnly;
     els.replayButton.title = readOnly ? "공개 읽기 전용 화면에서는 서버 작업을 실행하지 않습니다." : "";
@@ -375,16 +406,17 @@
   }
 
   async function apiRequest(path, options = {}) {
+    const { timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    const headers = new Headers(options.headers || {});
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    const headers = new Headers(fetchOptions.headers || {});
     headers.set("Accept", "application/json");
-    if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (fetchOptions.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
     try {
       const response = await fetch(`${API_BASE}${path}`, {
         credentials: "same-origin",
-        ...options,
+        ...fetchOptions,
         headers,
         signal: controller.signal,
       });
@@ -978,6 +1010,8 @@
       analysisState,
       analysisReasonCode: analysisReason.code,
       analysisReason: analysisReason.message,
+      analysisAttempted: booleanValue(firstValue(source.analysis_attempted, source.analysisAttempted)) ?? false,
+      analysisUpdatedAt: firstValue(source.analysis_updated_at, source.analysisUpdatedAt, null),
       sourceKind,
       isSynthetic: sourceKind === "SYNTHETIC",
       explanation,
@@ -1521,6 +1555,7 @@
             ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
+          ${manualAnalysisAction(notice, "table")}
         </td>
         <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.date)}<small>${escapeHtml(deadline.relative)}</small></span></td>
         <td>${analysisStatusPill(notice)}</td>
@@ -1535,21 +1570,48 @@
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
     return `
-      <button class="notice-card" type="button" data-notice-key="${escapeAttribute(notice.noticeKey)}" data-open-notice>
-        <span class="notice-card__head">
-          <span>${sourceKindBadge(notice)} ${analysisStatusPill(notice)}</span>
-          <span class="notice-card__deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}</span>
-        </span>
-        <h3>${escapeHtml(notice.title)}</h3>
-        <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
-        ${analyzed ? "" : `<span class="notice-card__analysis-reason">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
-        ${departmentPriorityBadge(notice)}
-        <span class="notice-card__metrics">
-          <span class="notice-card__metric"><small>준비도</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
-          <span class="notice-card__metric"><small>리스크</small><strong class="${analyzed && notice.riskScore !== null ? "" : "metric-pending"}">${analyzed ? riskDisplayValue(notice) : "미산정"}</strong></span>
-        </span>
-        <span class="notice-card__foot">${analysisRecommendationPill(notice)}<span>${analyzed ? "근거 확인" : "분석 상태 확인"} →</span></span>
-      </button>`;
+      <article class="notice-card" data-notice-key="${escapeAttribute(notice.noticeKey)}">
+        <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
+          <span class="notice-card__head">
+            <span>${sourceKindBadge(notice)} ${analysisStatusPill(notice)}</span>
+            <span class="notice-card__deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}</span>
+          </span>
+          <h3>${escapeHtml(notice.title)}</h3>
+          <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
+          ${analyzed ? "" : `<span class="notice-card__analysis-reason">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
+          ${departmentPriorityBadge(notice)}
+          <span class="notice-card__metrics">
+            <span class="notice-card__metric"><small>준비도</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
+            <span class="notice-card__metric"><small>리스크</small><strong class="${analyzed && notice.riskScore !== null ? "" : "metric-pending"}">${analyzed ? riskDisplayValue(notice) : "미산정"}</strong></span>
+          </span>
+        </button>
+        <footer class="notice-card__foot">
+          ${analysisRecommendationPill(notice)}
+          <span class="notice-card__actions">
+            ${manualAnalysisAction(notice, "card")}
+            <button class="recommendation-arrow" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+            </button>
+          </span>
+        </footer>
+      </article>`;
+  }
+
+  function canRequestManualAnalysis(notice) {
+    return Boolean(
+      state.manualAnalysisEnabled
+      && state.source === "api"
+      && notice?.sourceKind === "PPS"
+      && String(notice.noticeStatus || "").toUpperCase() === "OPEN"
+      && notice.analysisState !== "EVALUATED",
+    );
+  }
+
+  function manualAnalysisAction(notice, context) {
+    if (!canRequestManualAnalysis(notice)) return "";
+    const running = state.manualAnalysisRequests.get(notice.noticeKey) === "running";
+    const retryLabel = notice.analysisAttempted ? "재분석 요청" : "지금 분석";
+    return `<button class="manual-analysis-action manual-analysis-action--${escapeAttribute(context)}" type="button" data-manual-analysis data-notice-key="${escapeAttribute(notice.noticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(notice.title)} ${retryLabel}">${running ? '<span class="button-spinner" aria-hidden="true"></span>분석 중…' : retryLabel}</button>`;
   }
 
   function departmentPriorityBadge(notice) {
@@ -1696,6 +1758,50 @@
     openDetail(row.dataset.noticeKey, target);
   }
 
+  function handleManualAnalysisActivation(event) {
+    const button = event.target.closest("[data-manual-analysis]");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const noticeKey = button.dataset.noticeKey;
+    if (noticeKey) void requestManualAnalysis(noticeKey);
+  }
+
+  async function requestManualAnalysis(noticeKey) {
+    if (state.manualAnalysisRequests.get(noticeKey) === "running") return;
+    const notice = state.notices.find((item) => item.noticeKey === noticeKey);
+    if (!canRequestManualAnalysis(notice)) {
+      showToast("분석 요청 불가", "현재 열려 있는 미분석 조달청 공고만 요청할 수 있습니다.", "warning");
+      return;
+    }
+
+    state.manualAnalysisRequests.set(noticeKey, "running");
+    if (!state.loading) renderNoticeList();
+    if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
+    try {
+      const payload = unwrapObject(await apiRequest(
+        `/notices/${encodeURIComponent(noticeKey)}/analysis/request`,
+        { method: "POST", timeoutMs: 90000 },
+      ));
+      const outcome = stringValue(payload.outcome).toUpperCase();
+      const message = stringValue(payload.message, "분석 상태를 갱신했습니다.");
+      await loadApplicationData({ forceApi: true });
+      if (outcome === "COOLDOWN") {
+        showToast("최근 분석 결과 사용", message, "warning");
+      } else if (outcome === "REVIEW") {
+        showToast("분석 요청 처리 완료", message, "warning");
+      } else {
+        showToast(outcome === "ALREADY_ANALYZED" ? "기존 분석 결과 사용" : "공고 분석 완료", message, "success");
+      }
+    } catch (error) {
+      showToast("공고 분석 요청 실패", humanizeError(error), "error");
+    } finally {
+      state.manualAnalysisRequests.delete(noticeKey);
+      if (!state.loading) renderNoticeList();
+      if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
+    }
+  }
+
   function handleNoticeKeydown(event) {
     if ((event.key === "Enter" || event.key === " ") && event.target.closest(".notice-row") && !event.target.closest("button")) {
       event.preventDefault();
@@ -1765,6 +1871,7 @@
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
     els.openSourceDialogButton.title = notice.sourceUrl ? "조달청 원문 링크 확인" : "공개 가능한 원문 링크 상태 확인";
+    renderManualAnalysisDetailAction(notice);
     els.detailTitle.textContent = notice.title;
     els.detailAgency.textContent = [notice.agency, notice.demandAgency].filter(Boolean).join(" · ");
     els.detailTags.innerHTML = [
@@ -1807,6 +1914,18 @@
     renderTeamsPreview(notice);
     renderExistingDecision(notice);
     els.drawerScroll.scrollTop = 0;
+  }
+
+  function renderManualAnalysisDetailAction(notice) {
+    const visible = canRequestManualAnalysis(notice);
+    els.manualAnalyzeButton.hidden = !visible;
+    if (!visible) return;
+    const running = state.manualAnalysisRequests.get(notice.noticeKey) === "running";
+    const label = running ? "분석 중…" : notice.analysisAttempted ? "재분석 요청" : "이 공고 분석";
+    els.manualAnalyzeButton.disabled = running;
+    els.manualAnalyzeButton.dataset.noticeKey = notice.noticeKey;
+    els.manualAnalyzeButton.querySelector("span").textContent = label;
+    els.manualAnalyzeButton.setAttribute("aria-label", `${notice.title} ${label}`);
   }
 
   function detailFact(label, value) {

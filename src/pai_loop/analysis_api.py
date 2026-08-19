@@ -129,14 +129,14 @@ class AnalysisBatchResponse(ApiModel):
 class AnalysisBackfillPlanRequest(ApiModel):
     queue_name: Literal["BACKFILL", "DAILY", "ANY"] = "BACKFILL"
     # 3,000 is the upstream daily ingestion hard bound. A daily operation may
-    # append up to three cooled backlog keys behind that exact created+updated
-    # union, so the durable parent bound is intentionally 3,003.
-    notice_keys: list[str] = Field(default_factory=list, max_length=3003)
+    # append up to twelve cooled backlog keys behind that exact created+updated
+    # union, so the durable parent bound is intentionally 3,012.
+    notice_keys: list[str] = Field(default_factory=list, max_length=3012)
     # DAILY callers identify the exact updated/attachment-changed partition.
     # A stable notice_key can then be reopened only when its persisted work
     # token changed, while a retried 09:00 request remains idempotent.
     refresh_notice_keys: list[str] = Field(default_factory=list, max_length=3000)
-    retry_notice_keys: list[str] = Field(default_factory=list, max_length=3)
+    retry_notice_keys: list[str] = Field(default_factory=list, max_length=12)
     retry_epoch: str | None = Field(
         default=None,
         min_length=10,
@@ -154,9 +154,9 @@ class AnalysisBackfillPlanRequest(ApiModel):
     )
     dry_run: bool = False
     chunk_size: int = Field(default=3, ge=1, le=3)
-    max_total: int = Field(default=300, ge=1, le=3003)
+    max_total: int = Field(default=300, ge=1, le=3012)
     execution_limit: int = Field(default=30, ge=1, le=30)
-    # 3,003 keys / 30 per execution requires 101 segments. 128 leaves bounded
+    # 3,012 keys / 30 per execution requires 101 segments. 128 leaves bounded
     # recovery headroom without permitting an unbounded continuation loop.
     max_continuations: int = Field(default=128, ge=1, le=128)
     include_retryable: bool = False

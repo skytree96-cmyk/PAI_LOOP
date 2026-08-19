@@ -12,10 +12,10 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.8.2 enrichment-recovery release
+## 현재 구현 범위: v0.9.0 Teams tab · discovery · analysis recovery release
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
-- 전사 공통 `교육·컨설팅`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
+- 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
 - 검색 주체 부서와 사용자 추가 키워드에 따라 달라지는 점수·근거·추천 부서
 - 수의·직접계약 감사 보존 + 기본 진행목록/분석 큐 제외, 기관명 기반 키워드 오탐 억제
 - 공고 원문 확인 팝업과 자격 REVIEW·원문 근거 보완 상태의 분리 표시
@@ -29,7 +29,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
 - GitHub Actions 검증, n8n 이름 기반 멱등 배포, 웹 Adaptive Card mock과 분리된
   W12 Teams 채널 전송의 fail-closed 운영
-- 매일 09:00 KST에 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 3건을 신규 우선 순서로 영속 큐에 예약
+- 매일 09:00 KST에 최근 8개 calendar day를 재조회하고 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 12건을 신규 우선 순서로 영속 큐에 예약
 - 분석 큐를 실행당 최대 30건, 호출당 최대 3건으로 직렬 처리하고 15분 continuation으로 재개하는 Workflow 10/11 계약; segment lease·exact chunk claim·멱등 응답·stale recovery·dead-letter 감사 포함
 - 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
 - Git 기준자료 6종을 PostgreSQL `reference_data_versions`에 불변 버전으로 동기화하고 회사 공개 facts/evidence를 평가 DB에 멱등 반영
@@ -121,6 +121,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET` | `/api/v1/notices/{notice_key}/quantitative-estimate` | 검수된 공고 프로필의 배점표·공개 근거 기반 정량 하한~상한; 신규 미매핑 공고는 `UNSCORABLE` |
 | `POST` | `/api/v1/notices/{notice_key}/notifications/teams/mock` | Teams 카드 모의 기록 |
 | `POST` | `/api/v1/notices/analysis/batch` | PPS 신규 key의 저장된 ACCEPTED extraction materialize·평가·snapshot 집계 |
+| `POST` | `/api/v1/notices/{notice_key}/analysis/request` | 공개 웹의 same-origin 단일 OPEN PPS 공고 수동 분석; 서버 credential 비노출·직렬·quota/cooldown 적용 |
 | `POST` | `/api/v1/operations/analysis-backfills/plan` | DAILY/BACKFILL 부모 operation 생성·재개 및 최대 30건 durable segment lease |
 | `GET` | `/api/v1/operations/analysis-backfills/{job_id}` | 부모/자식 감사, 처리·진행 중·잔여량 조회 |
 | `POST` | `/api/v1/operations/analysis-backfills/{job_id}/complete` | exact `segment_id`의 모든 chunk가 terminal일 때만 lease 해제·집계 |
@@ -135,7 +136,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 ## n8n 배포
 
 운영자가 실행할 통합 진입점은 `PAI_LOOP 10 - Daily Opportunity Briefing`이다.
-매일 09:00 Asia/Seoul, PPS 신규·정정 key 정확 합집합 전량과 cooled backlog 최대 3건을
+매일 09:00 Asia/Seoul, PPS 신규·정정 key 정확 합집합 전량과 cooled backlog 최대 12건을
 영속 operation으로 예약하고, 한 실행에서는 최대 30건만 3건 단위로 직렬 첨부 보강·분석·평가·snapshot한다.
 잔여분은 `PAI_LOOP 11 - Analysis Backfill and Continuation`이 15분마다 DAILY 우선으로 재개한다.
 최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/리스크 신호, 상위 최대
@@ -143,7 +144,8 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 mock 기록을 한 번에 검증한다. 기존 00~04는
 비활성 계약 시험/rollback 자산이며 실제 운영 시 따로 누르지 않는다.
 
-현재 09:00 자동 경로는 전일~당일 PPS 공고를 backend 조직 profile keyword로
+현재 09:00 자동 경로는 당일 포함 최근 8개 calendar day의 PPS 공고를
+`교육·컨설팅·연수·포럼·위탁 운영`과 backend 조직 profile keyword로
 수집하고, ranking된 `notice_keys`의 3년 낙찰을 먼저 refresh한다(기본 1건,
 hard max 3). 그 다음 생성·정정된 공고를 누락 없이 durable queue에 넣고, 공고당
 최대 1개 첨부를 보강해 평가·snapshot을 만든다. Workflow 11은 수동 89건 backfill도
@@ -167,6 +169,12 @@ Data Table에 승인된 Team/Channel ID를 저장한다. Schedule Trigger 기반
 영속 중복 억제까지 검증한 v1.2 계약만 활성 상태를 유지한다. 자세한 절차는
 [Teams 실제 전송 운영 가이드](docs/TEAMS_DELIVERY_RUNBOOK_v0.9.0.md)를 따른다.
 나머지 00~04와 deployment smoke는 계속 비활성이다.
+
+웹 전체 화면은 `teams-app/PAI-LOOP-Teams-App.zip`을 업로드하면 기존 Render URL을
+Teams 채널·그룹 채팅의 configurable tab iframe으로 실행할 수 있다. CSP는 Teams와
+`*.cloud.microsoft`만 frame ancestor로 허용하고, 앱 내부 공고 상세는 우측 화살표와
+History API drawer로 열어 탭을 벗어나지 않는다. 설치·검증 절차는
+[Teams Custom Tab 가이드](docs/TEAMS_CUSTOM_TAB.md)를 따른다.
 
 `PAI_LOOP 04 - Award History Refresh`도 기본 비활성입니다. 수동 실행은 항상
 dry-run이고, schedule/sub-workflow의 저장 실행은
@@ -216,9 +224,11 @@ Team/Channel 형식, emergency disable, 영속 correlation 예약을 모두 통�
 - OpenAI에는 호출자가 명시적으로 선택한 공개 공고 텍스트만 최대 120,000자로
   전송합니다. 문서 속 지시문을 신뢰하지 않으며 strict schema와 근거-anchor
   검증을 거칩니다.
-- 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록만
-  익명 제공하며 결정·재수집·LLM 호출·Teams mock을 포함한 쓰기는 서버 인증을
-  요구합니다.
+- 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록을
+  익명 제공합니다. 선택적으로 활성화한 수동 분석 BFF만 same-origin의 OPEN PPS
+  공고 1건을 `force=false`·첨부 1개·전역 직렬·시간당 quota·공고별 cooldown으로
+  처리하며 credential은 서버에만 둡니다. 결정·재수집·Teams mock과 다른 쓰기는
+  계속 서버 인증을 요구합니다.
 - 공개 GitHub와 외부 심사용 배포에는 공개 조달공고, 비식별화한 공개 실적,
   파생 회사 자격 facts와 합성 회귀 fixture만 사용합니다. 원본 사내 파일,
   담당자 결정, 직접식별자와 비공개 메모는 포함하지 않습니다.
@@ -252,6 +262,7 @@ OpenAI 계약은
 - [Release checklist v0.4.0](docs/RELEASE_CHECKLIST_v0.4.0.md)
 - [Release checklist v0.6.0](docs/RELEASE_CHECKLIST_v0.6.0.md)
 - [Architecture source and n8n embedding](docs/architecture/README.md)
+- [Teams Custom Tab packaging and installation](docs/TEAMS_CUSTOM_TAB.md)
 - [Public data source register v0.3.0](docs/SOURCE_REGISTER_v0.3.0.md)
 - [Historical source-handling register v0.1.0](docs/SOURCE_REGISTER_v0.1.0.md)
 

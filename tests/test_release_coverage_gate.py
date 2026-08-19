@@ -123,6 +123,21 @@ def test_keyword_and_metadata_boundaries_remain_bounded_and_public() -> None:
         "bid_method": "전자 입찰",
     }
 
+    direct_bid_metadata = build_notice_metadata(
+        {
+            "bidClseDt": "",
+            "opengDt": "2026-08-24 18:00:00",
+            "bidMethdNm": "직찰",
+            "ofclNm": "저장 금지 담당자",
+            "ofclTelNo": "TEST-PRIVATE-TEL-0000",
+        }
+    )
+    assert direct_bid_metadata == {
+        "bid_method": "직찰",
+        "deadline_basis": "OPENING_FALLBACK",
+        "opening_at": "2026-08-24T18:00:00+09:00",
+    }
+
     with pytest.raises(ValueError, match="60자"):
         resolve_ingestion_keywords(
             keyword="가" * 61,
@@ -146,7 +161,7 @@ def test_keyword_and_metadata_boundaries_remain_bounded_and_public() -> None:
         profile_department_ids=["organization"],
         limit=3,
     )
-    assert profiled[:2] == ["교육", "컨설팅"]
+    assert profiled == ["교육", "컨설팅", "연수"]
     assert len(profiled) == 3
     assert truncated is True
     assert department_keyword_coverage_count(

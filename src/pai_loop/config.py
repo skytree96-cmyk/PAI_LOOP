@@ -17,6 +17,22 @@ def _csv(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _bounded_int(
+    value: str | None,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value.strip())
+    except (AttributeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     environment: str = "development"
@@ -26,6 +42,9 @@ class Settings:
     log_level: str = "INFO"
     api_key: str | None = None
     public_read_only: bool = False
+    public_manual_analysis_enabled: bool = False
+    public_manual_analysis_hourly_limit: int = 12
+    public_manual_analysis_cooldown_hours: int = 24
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-luna"
     pps_api_key: str | None = None
@@ -45,6 +64,21 @@ class Settings:
             log_level=os.getenv("PAI_LOOP_LOG_LEVEL", "INFO"),
             api_key=os.getenv("PAI_LOOP_API_KEY") or None,
             public_read_only=_as_bool(os.getenv("PAI_LOOP_PUBLIC_READ_ONLY")),
+            public_manual_analysis_enabled=_as_bool(
+                os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED")
+            ),
+            public_manual_analysis_hourly_limit=_bounded_int(
+                os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"),
+                default=12,
+                minimum=1,
+                maximum=30,
+            ),
+            public_manual_analysis_cooldown_hours=_bounded_int(
+                os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_COOLDOWN_HOURS"),
+                default=24,
+                minimum=1,
+                maximum=168,
+            ),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("PAI_LOOP_OPENAI_MODEL", "gpt-5.6-luna"),
             pps_api_key=os.getenv("PPS_API_KEY") or None,
@@ -72,6 +106,10 @@ class Settings:
             )
         if self.seed_synthetic:
             raise RuntimeError("PAI_LOOP_SEED_SYNTHETIC must be false in production")
+        if self.public_manual_analysis_enabled and not self.public_read_only:
+            raise RuntimeError(
+                "PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED requires PAI_LOOP_PUBLIC_READ_ONLY=true"
+            )
 
     def ensure_local_directories(self) -> None:
         prefix = "sqlite:///"

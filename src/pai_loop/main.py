@@ -19,6 +19,7 @@ from .database import Base, build_engine, build_session_factory
 from .daily_operations import router as daily_operations_router
 from .demo import seed_synthetic_replay
 from .migrations import apply_additive_migrations
+from .manual_analysis import router as manual_analysis_router
 from .outcomes_api import router as bid_outcomes_router
 from .public_performance import public_performance_router
 from .quantitative_scoring import quantitative_scoring_router
@@ -38,6 +39,9 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             log_level=settings.log_level,
             api_key=settings.api_key,
             public_read_only=settings.public_read_only,
+            public_manual_analysis_enabled=settings.public_manual_analysis_enabled,
+            public_manual_analysis_hourly_limit=settings.public_manual_analysis_hourly_limit,
+            public_manual_analysis_cooldown_hours=settings.public_manual_analysis_cooldown_hours,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
             pps_api_key=settings.pps_api_key,
@@ -85,12 +89,30 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    @application.middleware("http")
+    async def teams_tab_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        # Teams tabs are first-party HTTPS pages rendered by Microsoft inside
+        # an iframe. CSP is the standards-based allowlist; X-Frame-Options is
+        # intentionally omitted because DENY/SAMEORIGIN would block Teams.
+        response.headers["Content-Security-Policy"] = (
+            "frame-ancestors 'self' https://teams.microsoft.com "
+            "https://*.teams.microsoft.com https://*.cloud.microsoft"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if "x-frame-options" in response.headers:
+            del response.headers["x-frame-options"]
+        return response
+
     application.include_router(router)
     application.include_router(public_performance_router)
     application.include_router(daily_operations_router)
     application.include_router(quantitative_scoring_router)
     application.include_router(reference_data_router)
     application.include_router(bid_outcomes_router)
+    application.include_router(manual_analysis_router)
     application.include_router(analysis_persistence_router)
 
     @application.get("/healthz", response_model=HealthResponse, tags=["operations"])
