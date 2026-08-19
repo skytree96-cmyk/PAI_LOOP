@@ -772,6 +772,18 @@ def extract_document_text(file_name: str, content: bytes) -> str:
         text = _extract_hwpx_text(content)
     else:
         raise PpsEnrichmentError("HWP_BINARY_UNSUPPORTED")
+    # Some public PDFs contain malformed embedded character maps. pypdf can
+    # faithfully surface those glyphs as lone UTF-16 surrogate code points,
+    # but they are not Unicode scalar values and cannot be encoded as UTF-8.
+    # httpx serialises the Responses API JSON body as UTF-8, so letting one
+    # through turns a document-level extraction problem into an unexpected
+    # exception before an auditable model outcome can be persisted. Replace
+    # only those invalid scalar values; all valid source characters and the
+    # exact-quote verification boundary remain unchanged.
+    text = "".join(
+        "\ufffd" if 0xD800 <= ord(character) <= 0xDFFF else character
+        for character in text
+    )
     if len(text.strip()) < 20:
         raise PpsEnrichmentError("DOCUMENT_TEXT_EMPTY_OR_SHORT")
     return text[:MAX_DOCUMENT_CHARS]
@@ -1086,6 +1098,262 @@ def _persist_extraction_version(
     raise PpsEnrichmentError("NOTICE_VERSION_RACE")
 
 
+def record_internal_pps_enrichment_failure(
+    session: Session,
+    *,
+    notice_id: str,
+    attachment: dict[str, Any],
+    manifest_sha256: str,
+    attachments_discovered: int,
+) -> PpsEnrichmentResult:
+    """Persist a public-safe attempt marker after an unexpected enrichment error.
+
+    The caller supplies the exact validated attachment and manifest digest it
+    actually attempted. Re-reading and binding whatever manifest happens to
+    be latest here would let a concurrent PPS correction inherit a failure it
+    never experienced. A changed current manifest therefore fails closed with
+    no marker; its truthful state remains NOT_SELECTED until the refreshed
+    work generation runs.
+    """
+
+    if session.in_transaction():
+        raise RuntimeError("record_internal_pps_enrichment_failure requires a clean Session")
+    warning = "INTERNAL_ENRICHMENT_ERROR"
+    attempted_attachment = _manifest_item(attachment)
+    if _digest(attempted_attachment) != manifest_sha256:
+        raise PpsEnrichmentError("INVALID_ENRICHMENT_ATTEMPT_CONTEXT")
+    with session.begin():
+        notice = session.get(Notice, notice_id)
+        if notice is None:
+            return PpsEnrichmentResult(
+                status="SKIPPED",
+                warnings=["NOTICE_NOT_FOUND", warning],
+            )
+        versions = list(
+            session.scalars(
+                select(NoticeVersion)
+                .where(NoticeVersion.notice_id == notice_id)
+                .order_by(NoticeVersion.version_no.desc())
+            ).all()
+        )
+        metadata = next(
+            (
+                item
+                for item in versions
+                if isinstance(item.source_payload, dict)
+                and item.source_payload.get("kind") == PPS_METADATA_KIND
+                and isinstance(item.source_payload.get("attachment_manifest"), list)
+            ),
+            None,
+        )
+        if metadata is None:
+            return PpsEnrichmentResult(
+                status="REVIEW",
+                attachments_discovered=attachments_discovered,
+                warnings=[warning, "PPS_MANIFEST_CHANGED_DURING_ENRICHMENT"],
+            )
+        current_manifest = [
+            dict(item)
+            for item in metadata.source_payload.get("attachment_manifest", [])
+            if isinstance(item, dict)
+        ]
+        current_selected, _selection_warnings = select_preferred_attachments(
+            current_manifest,
+            limit=1,
+        )
+        if (
+            not current_selected
+            or current_selected[0]["attachment_id"]
+            != attempted_attachment["attachment_id"]
+            or _digest(current_selected[0]) != manifest_sha256
+        ):
+            return PpsEnrichmentResult(
+                status="REVIEW",
+                attachments_discovered=len(current_manifest),
+                warnings=[warning, "PPS_MANIFEST_CHANGED_DURING_ENRICHMENT"],
+            )
+
+        accepted = next(
+            (
+                item
+                for item in versions
+                if isinstance(item.source_payload, dict)
+                and item.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+                and item.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+                and item.source_payload.get("status") == "ACCEPTED"
+                and item.source_payload.get("prompt_version") == PROMPT_VERSION
+                and item.source_payload.get("attachment_id")
+                == attempted_attachment["attachment_id"]
+                and item.source_payload.get("manifest_sha256") == manifest_sha256
+            ),
+            None,
+        )
+        if accepted is not None:
+            return PpsEnrichmentResult(
+                status="REUSED",
+                attachments_discovered=len(current_manifest),
+                version_id=accepted.id,
+                warnings=[warning, "CURRENT_EXTRACTION_ALREADY_ACCEPTED"],
+            )
+
+        document_sha256 = _digest(
+            {"manifest": manifest_sha256, "error": warning}
+        )
+        version = _persist_extraction_version(
+            session,
+            notice_id=notice_id,
+            attachment=attempted_attachment,
+            manifest_sha256=manifest_sha256,
+            document_sha256=document_sha256,
+            outcome=None,
+            error_code=warning,
+        )
+    return PpsEnrichmentResult(
+        status="REVIEW",
+        attachments_discovered=attachments_discovered,
+        version_id=version.id,
+        warnings=[warning],
+    )
+
+
+def _enrich_selected_pps_attachment(
+    session: Session,
+    *,
+    notice_id: str,
+    versions: list[NoticeVersion],
+    attachment: dict[str, Any],
+    manifest_sha256: str,
+    attachments_discovered: int,
+    openai_api_key: str | None,
+    openai_model: str,
+    transport: httpx.BaseTransport | None,
+    openai_client_factory: Callable[..., OpenAIExtractionClient],
+    download_timeout_seconds: float,
+    openai_timeout_seconds: float,
+    openai_max_retries: int,
+) -> PpsEnrichmentResult:
+    """Run one exact selected attachment; expected document failures are persisted."""
+
+    try:
+        content = download_public_attachment(
+            attachment,
+            transport=transport,
+            timeout_seconds=download_timeout_seconds,
+        )
+        document_sha256 = hashlib.sha256(content).hexdigest()
+        document_text = extract_document_text(attachment["file_name"], content)
+    except PpsEnrichmentError as exc:
+        error_code = str(exc)
+        document_sha256 = _digest(
+            {"manifest": manifest_sha256, "error": error_code}
+        )
+        prior = _matching_extraction_version(
+            versions,
+            attachment_id=attachment["attachment_id"],
+            manifest_sha256=manifest_sha256,
+            document_sha256=document_sha256,
+        )
+        if prior is not None:
+            return PpsEnrichmentResult(
+                status="REUSED",
+                attachments_discovered=attachments_discovered,
+                version_id=prior.id,
+                warnings=[error_code],
+            )
+        with session.begin():
+            version = _persist_extraction_version(
+                session,
+                notice_id=notice_id,
+                attachment=attachment,
+                manifest_sha256=manifest_sha256,
+                document_sha256=document_sha256,
+                outcome=None,
+                error_code=error_code,
+            )
+        return PpsEnrichmentResult(
+            status="REVIEW",
+            attachments_discovered=attachments_discovered,
+            version_id=version.id,
+            warnings=[error_code],
+        )
+
+    prior = _matching_extraction_version(
+        versions,
+        attachment_id=attachment["attachment_id"],
+        manifest_sha256=manifest_sha256,
+        document_sha256=document_sha256,
+    )
+    if prior is not None:
+        prior_status = (
+            prior.source_payload.get("status")
+            if isinstance(prior.source_payload, dict)
+            else None
+        )
+        return PpsEnrichmentResult(
+            status="REUSED" if prior_status == "ACCEPTED" else "REVIEW",
+            attachments_discovered=attachments_discovered,
+            attachments_processed=1,
+            version_id=prior.id,
+            warnings=(
+                []
+                if prior_status == "ACCEPTED"
+                else ["REVIEW_COOLDOWN_REUSED"]
+            ),
+        )
+
+    if not openai_api_key:
+        with session.begin():
+            version = _persist_extraction_version(
+                session,
+                notice_id=notice_id,
+                attachment=attachment,
+                manifest_sha256=manifest_sha256,
+                document_sha256=document_sha256,
+                outcome=None,
+                error_code="OPENAI_KEY_MISSING",
+            )
+        return PpsEnrichmentResult(
+            status="REVIEW",
+            attachments_discovered=attachments_discovered,
+            attachments_processed=1,
+            version_id=version.id,
+            warnings=["OPENAI_KEY_MISSING"],
+        )
+
+    with openai_client_factory(
+        api_key=openai_api_key,
+        model=openai_model,
+        timeout_seconds=openai_timeout_seconds,
+        max_retries=openai_max_retries,
+    ) as client:
+        outcome = client.extract(
+            document_text=document_text,
+            allowed_attachment_ids={attachment["attachment_id"]},
+        )
+    with session.begin():
+        version = _persist_extraction_version(
+            session,
+            notice_id=notice_id,
+            attachment=attachment,
+            manifest_sha256=manifest_sha256,
+            document_sha256=document_sha256,
+            outcome=outcome,
+            error_code=outcome.error_code,
+        )
+    return PpsEnrichmentResult(
+        status="COMPLETED" if outcome.status == "ACCEPTED" else "REVIEW",
+        attachments_discovered=attachments_discovered,
+        attachments_processed=1,
+        openai_calls=1,
+        version_id=version.id,
+        warnings=(
+            []
+            if outcome.status == "ACCEPTED"
+            else [outcome.error_code or "OPENAI_REVIEW_R07"]
+        ),
+    )
+
+
 def enrich_notice_from_pps(
     session: Session,
     *,
@@ -1198,114 +1466,30 @@ def enrich_notice_from_pps(
         )
 
     try:
-        content = download_public_attachment(
-            attachment,
-            transport=transport,
-            timeout_seconds=download_timeout_seconds,
-        )
-        document_sha256 = hashlib.sha256(content).hexdigest()
-        document_text = extract_document_text(attachment["file_name"], content)
-    except PpsEnrichmentError as exc:
-        error_code = str(exc)
-        document_sha256 = _digest({"manifest": manifest_sha256, "error": error_code})
-        prior = _matching_extraction_version(
-            versions,
-            attachment_id=attachment["attachment_id"],
+        return _enrich_selected_pps_attachment(
+            session,
+            notice_id=notice_id,
+            versions=versions,
+            attachment=attachment,
             manifest_sha256=manifest_sha256,
-            document_sha256=document_sha256,
-        )
-        if prior is not None:
-            return PpsEnrichmentResult(
-                status="REUSED",
-                attachments_discovered=discovered,
-                version_id=prior.id,
-                warnings=[error_code],
-            )
-        with session.begin():
-            version = _persist_extraction_version(
-                session,
-                notice_id=notice_id,
-                attachment=attachment,
-                manifest_sha256=manifest_sha256,
-                document_sha256=document_sha256,
-                outcome=None,
-                error_code=error_code,
-            )
-        return PpsEnrichmentResult(
-            status="REVIEW",
             attachments_discovered=discovered,
-            version_id=version.id,
-            warnings=[error_code],
+            openai_api_key=openai_api_key,
+            openai_model=openai_model,
+            transport=transport,
+            openai_client_factory=openai_client_factory,
+            download_timeout_seconds=download_timeout_seconds,
+            openai_timeout_seconds=openai_timeout_seconds,
+            openai_max_retries=openai_max_retries,
         )
-
-    prior = _matching_extraction_version(
-        versions,
-        attachment_id=attachment["attachment_id"],
-        manifest_sha256=manifest_sha256,
-        document_sha256=document_sha256,
-    )
-    if prior is not None:
-        prior_status = (
-            prior.source_payload.get("status")
-            if isinstance(prior.source_payload, dict)
-            else None
-        )
-        return PpsEnrichmentResult(
-            status="REUSED" if prior_status == "ACCEPTED" else "REVIEW",
-            attachments_discovered=discovered,
-            attachments_processed=1,
-            version_id=prior.id,
-            warnings=(
-                []
-                if prior_status == "ACCEPTED"
-                else ["REVIEW_COOLDOWN_REUSED"]
-            ),
-        )
-
-    if not openai_api_key:
-        with session.begin():
-            version = _persist_extraction_version(
-                session,
-                notice_id=notice_id,
-                attachment=attachment,
-                manifest_sha256=manifest_sha256,
-                document_sha256=document_sha256,
-                outcome=None,
-                error_code="OPENAI_KEY_MISSING",
-            )
-        return PpsEnrichmentResult(
-            status="REVIEW",
-            attachments_discovered=discovered,
-            attachments_processed=1,
-            version_id=version.id,
-            warnings=["OPENAI_KEY_MISSING"],
-        )
-
-    with openai_client_factory(
-        api_key=openai_api_key,
-        model=openai_model,
-        timeout_seconds=openai_timeout_seconds,
-        max_retries=openai_max_retries,
-    ) as client:
-        outcome = client.extract(
-            document_text=document_text,
-            allowed_attachment_ids={attachment["attachment_id"]},
-        )
-    with session.begin():
-        version = _persist_extraction_version(
+    except Exception:
+        # The exact selection context is still in scope here. Persisting from
+        # an outer API catch would have to re-read the latest manifest and can
+        # misattribute this failure to a concurrent PPS correction.
+        session.rollback()
+        return record_internal_pps_enrichment_failure(
             session,
             notice_id=notice_id,
             attachment=attachment,
             manifest_sha256=manifest_sha256,
-            document_sha256=document_sha256,
-            outcome=outcome,
-            error_code=outcome.error_code,
+            attachments_discovered=discovered,
         )
-    return PpsEnrichmentResult(
-        status="COMPLETED" if outcome.status == "ACCEPTED" else "REVIEW",
-        attachments_discovered=discovered,
-        attachments_processed=1,
-        openai_calls=1,
-        version_id=version.id,
-        warnings=[] if outcome.status == "ACCEPTED" else [outcome.error_code or "OPENAI_REVIEW_R07"],
-    )
