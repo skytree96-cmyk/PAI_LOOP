@@ -78,8 +78,14 @@ function validateRepositorySafetyContracts(definitions) {
   assert(daily.config.operatorEntryPoint === true, "daily workflow must be the explicit operator entry point");
   const continuation = definitions.find(({ key }) => key === "pai-loop-11-analysis-backfill");
   assert(continuation, "analysis continuation workflow is required");
+  const teamsDelivery = definitions.find(({ key }) => key === "pai-loop-12-teams-daily-delivery");
+  assert(teamsDelivery, "independent Teams delivery workflow is required");
   for (const definition of definitions) {
-    if (definition.key === daily.key || definition.key === continuation.key) continue;
+    if (
+      definition.key === daily.key
+      || definition.key === continuation.key
+      || definition.key === teamsDelivery.key
+    ) continue;
     assert(
       definition.config.publish === false,
       `${definition.key}: only workflows 10 and 11 may be published`,
@@ -96,6 +102,17 @@ function validateRepositorySafetyContracts(definitions) {
       "inactive workflow 11 must remain awaiting-live-e2e",
     );
   }
+  const validTeamsPromotion = (
+    teamsDelivery.config.publish === false
+    && teamsDelivery.config.promotionState === "awaiting-live-e2e"
+  ) || (
+    teamsDelivery.config.publish === true
+    && teamsDelivery.config.promotionState === "verified-live-e2e"
+  );
+  assert(
+    validTeamsPromotion,
+    "workflow 12 may publish only after credential binding, target selection, and verified-live-e2e",
+  );
   assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
   const schedules = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.scheduleTrigger",
@@ -265,6 +282,187 @@ function validateRepositorySafetyContracts(definitions) {
     "daily workflow manifest contractVersion must be daily-briefing-1.5",
   );
 
+  const teamsSerialised = JSON.stringify(teamsDelivery.workflow);
+  assert(
+    teamsDelivery.config.contractVersion === "teams-delivery-1.2",
+    "workflow 12 must use the teams-delivery-1.2 contract",
+  );
+  assert(
+    teamsDelivery.workflow.settings?.timezone === "Asia/Seoul",
+    "Teams delivery workflow timezone must be Asia/Seoul",
+  );
+  const teamsSchedules = teamsDelivery.workflow.nodes.filter(
+    (node) => node.type === "n8n-nodes-base.scheduleTrigger",
+  );
+  assert(
+    teamsSchedules.length === 1
+      && teamsSchedules[0].parameters?.rule?.interval?.[0]?.expression === "0 10 * * *",
+    "Teams delivery must run independently at 10:00 Asia/Seoul",
+  );
+  const teamsByName = new Map(
+    teamsDelivery.workflow.nodes.map((node) => [node.name, node]),
+  );
+  const teamsConfig = teamsByName.get("Read Teams Delivery Config");
+  assert(
+    teamsConfig?.type === "n8n-nodes-base.dataTable"
+      && teamsConfig.typeVersion === 1.1
+      && teamsConfig.parameters?.resource === "row"
+      && teamsConfig.parameters?.operation === "get"
+      && teamsConfig.parameters?.returnAll === true
+      && teamsConfig.parameters?.dataTableId?.mode === "name"
+      && teamsConfig.parameters?.dataTableId?.value === "pai_loop_teams_delivery_config"
+      && teamsConfig.alwaysOutputData === true
+      && teamsConfig.retryOnFail === false
+      && teamsConfig.onError === "continueRegularOutput"
+      && !teamsConfig.credentials,
+    "workflow 12 config must use the literal named Data Table without tenant IDs or credentials",
+  );
+  const teamsBackend = teamsByName.get("Fetch Stored Briefing for Teams");
+  assert(
+    teamsBackend?.type === "n8n-nodes-base.httpRequest"
+      && teamsBackend.parameters?.authentication === "genericCredentialType"
+      && teamsBackend.parameters?.genericAuthType === "httpHeaderAuth"
+      && String(teamsBackend.parameters?.url ?? "").includes("/api/v1/operations/daily-briefing"),
+    "workflow 12 may read only the protected stored daily briefing backend boundary",
+  );
+  const teamsReservation = teamsByName.get("Reserve Persistent Teams Correlation");
+  assert(
+    teamsReservation?.type === "n8n-nodes-base.httpRequest"
+      && teamsReservation.parameters?.authentication === "genericCredentialType"
+      && teamsReservation.parameters?.genericAuthType === "httpHeaderAuth"
+      && String(teamsReservation.parameters?.url ?? "").includes("delivery.reservation.endpointPath")
+      && String(teamsReservation.parameters?.body ?? "").includes("delivery.reservation.body")
+      && teamsReservation.retryOnFail === false
+      && teamsReservation.onError === "continueRegularOutput",
+    "workflow 12 must reserve the persistent backend correlation and fail closed on reservation errors",
+  );
+  const teamsSend = teamsByName.get("Send Sanitized Teams Briefing");
+  assert(
+    teamsSend?.type === "n8n-nodes-base.microsoftTeams"
+      && teamsSend.typeVersion === 2
+      && teamsSend.parameters?.resource === "channelMessage"
+      && teamsSend.parameters?.operation === "create"
+      && teamsSend.parameters?.contentType === "html"
+      && teamsSend.parameters?.options?.includeLinkToWorkflow === false,
+    "workflow 12 actual boundary must use the native Microsoft Teams v2 channel-message node",
+  );
+  assert(
+    teamsSend.parameters?.teamId?.mode === "id"
+      && teamsSend.parameters?.teamId?.value === "={{ $json.runtime.target.teamId }}"
+      && teamsSend.parameters?.channelId?.mode === "id"
+      && teamsSend.parameters?.channelId?.value === "={{ $json.runtime.target.channelId }}",
+    "workflow 12 sink target must come from the validated runtime dataflow",
+  );
+  assert(
+    teamsSend.retryOnFail === false && teamsSend.onError === "continueRegularOutput",
+    "Teams delivery failure must not retry or restart collection and analysis",
+  );
+  const teamsTargets = (source, lane = 0) => (
+    teamsDelivery.workflow.connections?.[source]?.main?.[lane] ?? []
+  ).map((connection) => connection.node);
+  const teamsLiveTestTrigger = teamsByName.get("Run Live Teams Test");
+  const teamsManualMode = teamsByName.get("Mark Manual Live Test Mode");
+  const teamsScheduledMode = teamsByName.get("Mark Scheduled Live Mode");
+  assert(
+    teamsLiveTestTrigger?.type === "n8n-nodes-base.manualTrigger"
+      && teamsManualMode?.type === "n8n-nodes-base.code"
+      && teamsScheduledMode?.type === "n8n-nodes-base.code"
+      && String(teamsManualMode.parameters?.jsCode ?? "").includes("requestedMode: 'manual-live-test'")
+      && String(teamsManualMode.parameters?.jsCode ?? "").includes("triggerSource: 'manual-live-test'")
+      && String(teamsScheduledMode.parameters?.jsCode ?? "").includes("requestedMode: 'scheduled-live'")
+      && String(teamsScheduledMode.parameters?.jsCode ?? "").includes("triggerSource: 'schedule'")
+      && !teamsSerialised.includes("$execution.mode")
+      && !teamsSerialised.includes("schedule-manual-test")
+      && JSON.stringify(teamsTargets("Run Live Teams Test")) === JSON.stringify(["Mark Manual Live Test Mode"])
+      && JSON.stringify(teamsTargets("Every Day 10:00 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
+      && JSON.stringify(teamsTargets("Mark Manual Live Test Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"])
+      && JSON.stringify(teamsTargets("Mark Scheduled Live Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"]),
+    "workflow 12 must derive manual-test and scheduled modes from separate constant trigger branches",
+  );
+  assert(
+    JSON.stringify(teamsTargets("New Sanitized Delivery Needed?", 0))
+      === JSON.stringify(["Reserve Persistent Teams Correlation"])
+      && JSON.stringify(teamsTargets("Persistent Teams Reservation Acquired?", 0))
+        === JSON.stringify(["Send Sanitized Teams Briefing"])
+      && JSON.stringify(teamsTargets("Persistent Teams Reservation Acquired?", 1))
+        === JSON.stringify(["Record Preview or Duplicate Suppressed"]),
+    "the Teams sink must be reachable only after a successful persistent reservation",
+  );
+  assert(
+    teamsDelivery.workflow.nodes.filter((node) => (
+      node.type === "n8n-nodes-base.dataTable"
+      || node.type === "n8n-nodes-base.httpRequest"
+      || node.type === "n8n-nodes-base.microsoftTeams"
+    )).length === 4,
+    "workflow 12 must expose one named config table read, one backend read, one persistent reservation, and one Teams boundary",
+  );
+  assert(
+    teamsDelivery.workflow.nodes.filter((node) => (
+      node.type === "n8n-nodes-base.httpRequest"
+      || node.type === "n8n-nodes-base.microsoftTeams"
+    )).length === 3,
+    "workflow 12 must expose one backend read, one persistent reservation, and one Teams boundary",
+  );
+  assert(
+    teamsSerialised.includes("pai_loop_teams_delivery_config")
+      && teamsSerialised.includes("push_enabled")
+      && teamsSerialised.includes("approval_state")
+      && teamsSerialised.includes("live_test_enabled")
+      && teamsSerialised.includes("emergency_disabled")
+      && teamsSerialised.includes("CONFIG_DUPLICATE_KEY")
+      && teamsSerialised.includes("CONFIG_UNKNOWN_KEY")
+      && teamsSerialised.includes("/notifications/teams/mock")
+      && teamsSerialised.includes("paiLoopDeliveryReservation")
+      && teamsSerialised.includes("DUPLICATE_PERSISTENT_SUPPRESSED")
+      && teamsSerialised.includes("FAILED_NON_BLOCKING")
+      && teamsSerialised.includes("replace(/&/g, '&amp;')")
+      && teamsSerialised.includes("bounded(notice?.top_departments, 3)")
+      && teamsSerialised.includes("bounded(notice?.department_review_candidates, 3)")
+      && teamsSerialised.includes("bounded(notice?.region_routing, 2)")
+      && teamsSerialised.includes("business_score','department_score','score")
+      && teamsSerialised.includes("routing_score','department_score','score")
+      && teamsSerialised.includes("<strong>공고명:</strong>")
+      && teamsSerialised.includes("<strong>발주처:</strong>")
+      && teamsSerialised.includes("<strong>마감일:</strong>")
+      && teamsSerialised.includes("<strong>추정금액:</strong>")
+      && teamsSerialised.includes("<strong>참가자격:</strong>")
+      && teamsSerialised.includes("<strong>리스크:</strong>")
+      && teamsSerialised.includes("<strong>추천 부서:</strong>")
+      && teamsSerialised.includes("<hr>")
+      && teamsSerialised.includes("추가검토")
+      && teamsSerialised.includes("지역 라우팅")
+      && teamsSerialised.includes("기준 충족 없음")
+      && teamsSerialised.includes("24 * 1024"),
+    "workflow 12 must retain strict approval gates, labeled notice sections, bounded recommendation routing, sanitizer, persistent reservation, and non-blocking failure contracts",
+  );
+  assert(
+    !teamsSerialised.includes("graph.microsoft.com")
+      && !teamsSerialised.includes("access_token")
+      && !teamsSerialised.includes("client_secret")
+      && !teamsSerialised.includes("$vars")
+      && !teamsSerialised.includes("cachedResultUrl")
+      && !teamsSerialised.includes("/datatables/"),
+    "workflow 12 export must not embed Graph URLs, Variables, table IDs, tenant URLs, or credential material",
+  );
+  const teamsManualReachable = reachableNodeNames(
+    teamsDelivery.workflow,
+    "Run Offline Teams Preview",
+    {
+      "New Sanitized Delivery Needed?": 1,
+    },
+  );
+  const teamsManualExternal = [...teamsManualReachable]
+    .map((name) => teamsByName.get(name))
+    .filter((node) => (
+      node?.type === "n8n-nodes-base.dataTable"
+      || node?.type === "n8n-nodes-base.httpRequest"
+      || node?.type === "n8n-nodes-base.microsoftTeams"
+    ));
+  assert(
+    teamsManualExternal.length === 0,
+    `workflow 12 manual preview must make zero config/backend/Teams calls: ${teamsManualExternal.map((node) => node.name).join(", ")}`,
+  );
+
   const continuationSerialised = JSON.stringify(continuation.workflow);
   const continuationHttp = continuation.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.httpRequest",
@@ -311,6 +509,7 @@ function validateRepositorySafetyContracts(definitions) {
     {
       nodes: [
         { name: "same", type: "n8n-nodes-base.httpRequest" },
+        { name: "same-teams", type: "n8n-nodes-base.microsoftTeams" },
         { name: "type-changed", type: "n8n-nodes-base.code" },
         { name: "new", type: "n8n-nodes-base.httpRequest" },
       ],
@@ -327,6 +526,13 @@ function validateRepositorySafetyContracts(definitions) {
           type: "n8n-nodes-base.httpRequest",
           credentials: { httpHeaderAuth: { id: "must-not-copy", name: "probe" } },
         },
+        {
+          name: "same-teams",
+          type: "n8n-nodes-base.microsoftTeams",
+          credentials: {
+            microsoftTeamsOAuth2Api: { id: "opaque-teams-probe", name: "Microsoft Teams account" },
+          },
+        },
       ],
     },
   );
@@ -335,7 +541,11 @@ function validateRepositorySafetyContracts(definitions) {
     "exact node-name/type credential preservation failed",
   );
   assert(
-    !preservationProbe.nodes[1].credentials && !preservationProbe.nodes[2].credentials,
+    preservationProbe.nodes[1].credentials?.microsoftTeamsOAuth2Api?.id === "opaque-teams-probe",
+    "exact native Teams node credential preservation failed",
+  );
+  assert(
+    !preservationProbe.nodes[2].credentials && !preservationProbe.nodes[3].credentials,
     "credential preservation must reject type changes and new nodes",
   );
 }
@@ -495,6 +705,10 @@ const approvedCredentialInheritance = new Map([
     "Analyze One Bounded Chunk",
     "Finalize Backfill Audit",
   ])],
+  ["pai-loop-12-teams-daily-delivery", new Set([
+    "Fetch Stored Briefing for Teams",
+    "Reserve Persistent Teams Correlation",
+  ])],
 ]);
 
 const remoteWorkflows = await listAllWorkflows();
@@ -506,6 +720,38 @@ for (const workflow of remoteWorkflows) {
 }
 
 let sharedBackendCredential;
+if (
+  onlyKey
+  && onlyKey !== "pai-loop-10-daily-opportunity-briefing"
+  && (approvedCredentialInheritance.get(onlyKey)?.size ?? 0) > 0
+) {
+  const dailyDefinition = definitions.find(
+    ({ key }) => key === "pai-loop-10-daily-opportunity-briefing",
+  );
+  assert(dailyDefinition, "daily workflow is required as the backend credential source");
+  let dailyRemote;
+  if (dailyDefinition.config.n8nWorkflowId) {
+    const result = await request(
+      `/workflows/${encodeURIComponent(dailyDefinition.config.n8nWorkflowId)}`,
+      {},
+      [404],
+    );
+    if (result.status !== 404) dailyRemote = result.body;
+  }
+  if (!dailyRemote) {
+    const matches = remoteByName.get(dailyDefinition.workflow.name) ?? [];
+    assert(
+      matches.length === 1,
+      "--only deployment requires exactly one remote daily workflow credential source",
+    );
+    dailyRemote = (await request(`/workflows/${encodeURIComponent(matches[0].id)}`)).body;
+  }
+  sharedBackendCredential = extractSingleBackendCredential(dailyRemote);
+  assert(
+    sharedBackendCredential,
+    "--only deployment requires the approved backend credential on remote workflow 10",
+  );
+}
 
 for (const { key, config, workflow } of definitions.filter(
   (definition) => !onlyKey || definition.key === onlyKey,

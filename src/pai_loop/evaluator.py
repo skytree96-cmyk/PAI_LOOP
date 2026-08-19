@@ -4,14 +4,25 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import math
 from typing import Any, Iterable
 
 from .enums import Eligibility, EvidenceStatus, ReadinessStatus, RiskBand
 from .models import AtomicRequirement, CompanyFact, Notice, NoticeVersion
 
-RULESET_VERSION = "2026.08-v1"
+RULESET_VERSION = "2026.08-v2"
 MIN_EXTRACTION_CONFIDENCE = 0.90
 DOCUMENT_QUALITY_ACCEPTED_STATUSES = frozenset({"COMPLETE", "ACCEPTED"})
+RISK_METHOD_VERSION = "business-risk-2.0.0"
+RISK_MIN_EVIDENCED_AXES = 4
+RISK_WEIGHTS = {
+    "qualification": 0.25,
+    "execution": 0.20,
+    "competition": 0.15,
+    "profitability": 0.10,
+    "operation": 0.10,
+    "document": 0.20,
+}
 
 
 @dataclass(slots=True)
@@ -248,27 +259,71 @@ def _group_result(paths: list[Eligibility]) -> Eligibility:
     return Eligibility.FAIL
 
 
-def _risk(dimensions: dict[str, float] | None) -> tuple[float | None, RiskBand]:
-    if not dimensions:
-        return None, RiskBand.UNKNOWN
-    weights = {
-        "qualification": 0.25,
-        "execution": 0.20,
-        "competition": 0.20,
-        "profitability": 0.15,
-        "operation": 0.10,
-        "document": 0.10,
+def _risk(
+    dimensions: dict[str, float] | None,
+    *,
+    scoring_allowed: bool,
+    axis_basis: dict[str, Any] | None = None,
+) -> tuple[float | None, RiskBand, dict[str, Any]]:
+    """Score only the six approved, numeric evidence axes.
+
+    Missing axes are never treated as zero.  A weighted numeric opinion is
+    available only when at least four approved axes have valid 0..100 values;
+    otherwise the public result remains ``None``/``UNKNOWN``.
+    """
+
+    valid: dict[str, float] = {}
+    invalid_axes: list[str] = []
+    if isinstance(dimensions, dict):
+        for key in RISK_WEIGHTS:
+            raw = dimensions.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                invalid_axes.append(key)
+                continue
+            value = float(raw)
+            if not math.isfinite(value) or value < 0 or value > 100:
+                invalid_axes.append(key)
+                continue
+            valid[key] = value
+
+    supplied_axes = [key for key in RISK_WEIGHTS if key in valid]
+    missing_axes = [key for key in RISK_WEIGHTS if key not in valid]
+    enough_axes = len(supplied_axes) >= RISK_MIN_EVIDENCED_AXES
+    basis: dict[str, Any] = {
+        "method_version": RISK_METHOD_VERSION,
+        "status": (
+            "WITHHELD_R07"
+            if not scoring_allowed
+            else "AVAILABLE"
+            if enough_axes
+            else "INSUFFICIENT_EVIDENCE"
+        ),
+        "minimum_evidenced_axes": RISK_MIN_EVIDENCED_AXES,
+        "evidenced_axis_count": len(supplied_axes),
+        "evidenced_axes": supplied_axes,
+        "missing_axes": missing_axes,
+        "invalid_axes": sorted(invalid_axes),
+        "weights": RISK_WEIGHTS,
+        "axis_values": valid,
+        "axis_basis": axis_basis or {},
+        "input_boundary": "APPROVED_DETERMINISTIC_AXIS_VALUES_ONLY",
     }
-    weighted_sum = sum(float(dimensions.get(key, 0)) * weight for key, weight in weights.items())
-    supplied_weight = sum(weight for key, weight in weights.items() if key in dimensions)
-    if supplied_weight == 0:
-        return None, RiskBand.UNKNOWN
+    if not scoring_allowed:
+        basis["withheld_reason"] = "R07_DOCUMENT_EVIDENCE_NOT_VERIFIED"
+        return None, RiskBand.UNKNOWN, basis
+    if not enough_axes:
+        return None, RiskBand.UNKNOWN, basis
+
+    weighted_sum = sum(valid[key] * RISK_WEIGHTS[key] for key in supplied_axes)
+    supplied_weight = sum(RISK_WEIGHTS[key] for key in supplied_axes)
     score = round(weighted_sum / supplied_weight, 1)
     if score < 30:
-        return score, RiskBand.GO
+        return score, RiskBand.GO, basis
     if score < 60:
-        return score, RiskBand.CONDITIONAL_GO
-    return score, RiskBand.NO_GO
+        return score, RiskBand.CONDITIONAL_GO, basis
+    return score, RiskBand.NO_GO, basis
 
 
 def evaluate_notice(
@@ -276,6 +331,10 @@ def evaluate_notice(
     version: NoticeVersion,
     requirements: Iterable[AtomicRequirement],
     company_facts: Iterable[CompanyFact],
+    *,
+    verified_document_requirement_keys: frozenset[str] | None = None,
+    risk_dimensions: dict[str, float] | None = None,
+    risk_axis_basis: dict[str, Any] | None = None,
 ) -> EvaluationResult:
     active_requirements = [requirement for requirement in requirements if requirement.active]
     facts = _select_facts(company_facts, notice.deadline)
@@ -288,12 +347,15 @@ def evaluate_notice(
         and version.extraction_status in DOCUMENT_QUALITY_ACCEPTED_STATUSES
         and version.extraction_confidence >= MIN_EXTRACTION_CONFIDENCE
     )
+    verified_keys = verified_document_requirement_keys or frozenset()
     atomics = [
         _evaluate_atomic(
             requirement,
             facts,
             notice.deadline,
-            document_quality_ok=document_quality_ok,
+            document_quality_ok=(
+                document_quality_ok or requirement.requirement_key in verified_keys
+            ),
         )
         for requirement in active_requirements
     ]
@@ -324,6 +386,8 @@ def evaluate_notice(
         eligibility, reason_code = Eligibility.REVIEW, "R07"
     elif Eligibility.FAIL in overall_groups:
         eligibility, reason_code = Eligibility.FAIL, "DF-000"
+    elif any(item["reason_code"] == "R07" for item in atomics):
+        eligibility, reason_code = Eligibility.REVIEW, "R07"
     elif Eligibility.REVIEW in overall_groups:
         eligibility, reason_code = Eligibility.REVIEW, "REVIEW_MATCH"
     else:
@@ -358,7 +422,35 @@ def evaluate_notice(
     else:
         readiness_status = ReadinessStatus.YELLOW
 
-    risk_score, risk_band = _risk(notice.risk_dimensions)
+    has_r07 = reason_code == "R07" or any(
+        item["reason_code"] == "R07" for item in atomics
+    )
+    resolved_risk_dimensions = (
+        notice.risk_dimensions if risk_dimensions is None else risk_dimensions
+    )
+    resolved_risk_axis_basis = risk_axis_basis
+    if (
+        risk_dimensions is None
+        and risk_axis_basis is None
+        and isinstance(notice.risk_dimensions, dict)
+    ):
+        resolved_risk_axis_basis = {
+            key: {
+                "source": "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE",
+                "method": "validated explicit 0..100 axis override",
+            }
+            for key, value in notice.risk_dimensions.items()
+            if key in RISK_WEIGHTS
+            and not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(float(value))
+            and 0 <= float(value) <= 100
+        }
+    risk_score, risk_band, risk_basis = _risk(
+        resolved_risk_dimensions,
+        scoring_allowed=not has_r07,
+        axis_basis=resolved_risk_axis_basis,
+    )
     failed = [item for item in atomics if item["result"] == Eligibility.FAIL.value]
     default_fail_details = [
         {
@@ -394,6 +486,11 @@ def evaluate_notice(
             "document_quality": document_quality_score,
             "weights": {"evidence": 0.5, "fact": 0.3, "document": 0.2},
         },
+        "document_gate": {
+            "strict_document_quality_ok": document_quality_ok,
+            "verified_requirement_keys_applied": sorted(verified_keys),
+        },
+        "risk": risk_basis,
         "separation_notice": "참가자격, 정량 준비도, 증빙 커버리지, 사업 리스크는 서로 독립된 지표입니다.",
     }
     return EvaluationResult(

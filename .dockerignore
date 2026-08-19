@@ -23,3 +23,5 @@ build
 coverage.xml
 htmlcov
 node_modules
+src/pai_loop/private_import.py
+src/pai_loop/private_fact_matching.py

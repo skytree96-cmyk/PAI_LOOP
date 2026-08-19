@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -10,7 +11,7 @@ STYLES_CSS = APP_JS.with_name("styles.css")
 
 
 def _function_body(source: str, name: str, next_name: str) -> str:
-    pattern = rf"  function {re.escape(name)}\b(?P<body>.*?)\n  function {re.escape(next_name)}\b"
+    pattern = rf"  (?:async )?function {re.escape(name)}\b(?P<body>.*?)\n  (?:async )?function {re.escape(next_name)}\b"
     match = re.search(pattern, source, flags=re.DOTALL)
     assert match, f"{name} frontend contract was not found"
     return match.group("body")
@@ -51,11 +52,17 @@ def test_raw_requirement_evidence_uses_only_public_source_anchors() -> None:
 
 def test_notice_search_contract_uses_server_query_and_open_status() -> None:
     source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(source, "loadApplicationData", "applyRuntimeProfile")
     request_body = _function_body(source, "buildNoticeRequestPath", "scheduleNoticeSearch")
     filter_body = _function_body(source, "applyFilters", "compareNotices")
+    view_body = _function_body(source, "setView", "setLayout")
 
     assert 'params.set("q", query)' in request_body
     assert 'params.set("status", "OPEN")' in request_body
+    assert 'state.currentView === "closed" ? "ALL" : "OPEN"' in load_body
+    assert 'state.currentView === "closed" ? "ALL" : "OPEN"' in request_body
+    assert '["all", "new", "review", "undecided"].includes(state.currentView)' in filter_body
+    assert 'view === "closed" ? "ALL" : "OPEN"' in view_body
     assert 'notice.noticeStatus.toUpperCase() !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
     assert 'id="noticeSearchHelp"' in INDEX_HTML.read_text(encoding="utf-8")
@@ -73,11 +80,37 @@ def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order(
     assert 'sort === "risk"' in compare_body
     assert "nullableDateSort(a.deadline, b.deadline)" in compare_body
     assert 'eligibilityStatus === "PASS") return 0' in rank_body
-    assert 'eligibilityStatus === "REVIEW") return 1' in rank_body
+    assert "isActionableEligibilityReview(notice)) return 1" in rank_body
     assert 'eligibilityStatus === "FAIL") return 3' in rank_body
     assert "return 2" in rank_body
     assert '<option value="judgement">판정 우선 · 마감 임박순</option>' in html
     assert "판정 우선 · 부서 적합도순" in html
+
+
+def test_department_recommendation_and_region_routing_are_rendered_separately() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    normalize_body = _function_body(source, "normalizeDepartmentRanking", "normalizeNotice")
+    notice_body = _function_body(source, "normalizeNotice", "mergeRequirementsAndAtomics")
+    compare_body = _function_body(source, "compareNotices", "analysisPriorityRank")
+    badge_body = _function_body(source, "departmentPriorityBadge", "setLoading")
+
+    for field in (
+        "recommendation_tier",
+        "top_recommendation_eligible",
+        "review_candidate",
+        "business_score",
+        "routing_score",
+    ):
+        assert field in normalize_body
+    assert "department_review_candidates" in notice_body
+    assert "region_routing" in notice_body
+    assert "departmentSortSignal" in compare_body
+    assert "topDepartmentRankings[0]" in badge_body
+    assert "departmentReviewCandidates[0]" in badge_body
+    assert "regionRouting[0]" in badge_body
+    assert '"부서 추천"' in badge_body
+    assert '"추가 검토"' in badge_body
+    assert '"지역 라우팅"' in badge_body
 
 
 def test_private_match_uses_public_text_lines_instead_of_a_dangling_label() -> None:
@@ -121,3 +154,102 @@ def test_unanalysed_reason_adapter_maps_document_failure_codes_to_korean() -> No
     assert "analysisReasonCode" in normalize_body
     assert "폐기된 공고가 아닙니다" in source
     assert "notice.analysisReason" in source
+
+
+def test_official_notice_link_opens_an_accessible_confirmation_dialog() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    open_body = _function_body(source, "openCurrentNoticeSourceDialog", "closeSourceLinkDialog")
+
+    for element_id in (
+        "openSourceDialogButton",
+        "sourceLinkDialog",
+        "sourceLinkDialogTitle",
+        "sourceLinkDialogMessage",
+        "sourceLinkOpenAnchor",
+        "closeSourceLinkDialogButton",
+    ):
+        assert f'id="{element_id}"' in html
+        assert f'"{element_id}"' in source
+    assert 'aria-labelledby="sourceLinkDialogTitle"' in html
+    assert 'aria-describedby="sourceLinkDialogMessage"' in html
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    assert "safeHttpUrl(notice.sourceUrl)" in open_body
+    assert "showModal" in open_body
+    assert 'removeAttribute("href")' in open_body
+    assert "window.location" not in open_body
+    assert ".source-link-dialog::backdrop" in styles
+    assert '<span>공고 원문</span>' in html
+
+
+def test_document_quality_review_is_not_presented_as_eligibility_review() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    dashboard_body = _function_body(source, "deriveDashboard", "renderAll")
+    filter_body = _function_body(source, "applyFilters", "compareNotices")
+    status_body = _function_body(source, "analysisStatusPill", "analysisRecommendationPill")
+    reason_body = _function_body(source, "normalizeAnalysisReason", "normalizeRecommendation")
+    pipeline_body = _function_body(source, "renderPipeline", "renderRequirement")
+    detail_body = _function_body(source, "renderDetail", "detailFact")
+    teams_body = _function_body(source, "renderTeamsPreview", "buildAdaptiveCardPayload")
+    teams_body += _function_body(source, "buildAdaptiveCardPayload", "recordTeamsMockSend")
+    recommendation_body = _function_body(source, "analysisRecommendationLabel", "formatRelativeDateTime")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "isActionableEligibilityReview" in dashboard_body
+    assert "isDocumentQualityReview" in dashboard_body
+    assert "isActionableEligibilityReview(notice)" in filter_body
+    assert "근거 보완" in status_body
+    assert "자격 REVIEW가 아니라 원문 근거 검증 보완 상태" in status_body
+    assert 'analysisState === "EVALUATED"' in reason_body
+    assert reason_body.index("ANALYSIS_REASON_LABELS[code]") < reason_body.index('analysisState === "EVALUATED"')
+    assert "analysisStatusLabel(notice)" in pipeline_body
+    assert 'qualityReview ? "근거 보완 후 산정"' in detail_body
+    assert 'notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다."' in detail_body
+    assert "근거 보완'" in detail_body
+    assert "근거 보완 · 판단 보류" in teams_body
+    assert "근거 보완 후 산정" in teams_body
+    assert 'if (isDocumentQualityReview(notice)) return "판단 보류"' in recommendation_body
+    assert "자격 검토" in html
+
+
+def test_missing_risk_is_labeled_as_insufficient_evidence_not_zero() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    render_body = _function_body(source, "renderRiskPanel", "renderQuantitativePending")
+    display_body = _function_body(source, "riskDisplayValue", "analysisStatusLabel")
+
+    assert 'risk === null ? "근거 부족"' in render_body
+    assert "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다" in render_body
+    assert 'notice.riskScore === null ? "근거 부족"' in display_body
+
+
+def test_pai_bot_teams_access_is_member_only_and_fails_closed_until_configured() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    configure_body = _function_body(source, "configurePaiBotTeamsAccess", "openPaiBotTeams")
+    open_body = _function_body(source, "openPaiBotTeams", "safePaiBotTeamsUrl")
+
+    assert 'id="paiBotTeamsButton"' in html
+    assert "PAI 봇 Teams 열기" in html
+    assert "등록된 개발자 전용" in html
+    assert 'aria-disabled="true"' in html
+    assert "disabled" in html
+    config_match = re.search(
+        r'<script id="paiLoopRuntimeConfig" type="application/json">(?P<config>.*?)</script>',
+        html,
+        flags=re.DOTALL,
+    )
+    assert config_match
+    runtime_config = json.loads(config_match.group("config"))
+    assert runtime_config["paiBotTeamsUrl"].startswith("https://teams.microsoft.com/")
+    assert 'document.getElementById("paiLoopRuntimeConfig")' in source
+    assert "safePaiBotTeamsUrl(PAI_BOT_TEAMS_URL)" in configure_body
+    assert "disabled = !isReady" in configure_body
+    assert 'dataset.state = isReady ? "ready" : "pending"' in configure_body
+    assert 'window.open(teamsUrl, "_blank", "noopener,noreferrer")' in open_body
+    assert 'url.protocol === "https:"' in source
+    assert 'url.hostname.toLowerCase() === "teams.microsoft.com"' in source
+    assert ".pai-bot-access__note" in styles
+    assert ".button--teams:disabled" in styles

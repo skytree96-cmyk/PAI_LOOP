@@ -4,10 +4,12 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 import pytest
 
 from pai_loop.main import create_app
+from pai_loop.models import Notice
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
     ExtractedRequirement,
@@ -270,6 +272,14 @@ def test_create_vertical_slice_through_public_api(client: TestClient) -> None:
     assert evaluation.status_code == 201
     assert evaluation.json()["eligibility"] == "PASS"
     assert evaluation.json()["evidence_coverage"] == 100
+    assert evaluation.json()["risk_score"] is None
+    assert evaluation.json()["risk_band"] == "UNKNOWN"
+    risk_basis = evaluation.json()["explanation"]["risk"]
+    assert risk_basis["status"] == "INSUFFICIENT_EVIDENCE"
+    assert risk_basis["evidenced_axis_count"] == 2
+    assert risk_basis["axis_basis"]["qualification"]["source"] == (
+        "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE"
+    )
 
 
 def test_decision_rejects_evaluation_from_another_notice(client: TestClient) -> None:
@@ -372,6 +382,112 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
         serialised = str(jobs)
         assert "server-side-key" not in serialised
         assert "contact" not in serialised
+
+
+def test_direct_contract_is_audited_but_excluded_from_open_analysis_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+
+    class _DirectContractClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            yield {
+                "identity": "DIRECT-1|00|2026-08-20T17:00:00+09:00",
+                "bid_notice_no": "DIRECT-1",
+                "revision_no": "00",
+                "title": "공공기관 교육 프로그램 소액수의 안내",
+                "agency": "공공기관",
+                "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
+                "deadline": datetime.fromisoformat("2026-08-20T17:00:00+09:00"),
+                "estimated_amount": 20_000_000,
+                "notice_kind": "등록공고",
+                "bid_method": "전자견적",
+                "contract_method": "수의계약",
+                "award_method": "최저가",
+                "direct_contract_signal": True,
+                "source_url": None,
+                "raw": {
+                    "ntceKindNm": "등록공고",
+                    "bidMethdNm": "전자견적",
+                    "cntrctCnclsMthdNm": "수의계약",
+                    "sucsfbidMthdNm": "최저가",
+                },
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _DirectContractClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] == 1
+        assert body["matched"] == 1
+        assert body["notice_keys"] == []
+        assert body["created_notice_keys"] == []
+        assert body["updated_notice_keys"] == []
+        assert any("수의·직접계약 1건" in warning for warning in body["warnings"])
+        assert live_client.get("/api/v1/notices", params={"status": "OPEN"}).json() == []
+        all_rows = live_client.get("/api/v1/notices").json()
+        assert len(all_rows) == 1
+        assert all_rows[0]["status"] == "CLOSED"
+
+        with app.state.session_factory() as session:
+            notice = session.scalar(select(Notice).where(Notice.bid_notice_no == "DIRECT-1"))
+            assert notice is not None
+            metadata = notice.versions[-1].source_payload
+            assert metadata["notice_metadata"] == {
+                "notice_kind": "등록공고",
+                "bid_method": "전자견적",
+                "contract_method": "수의계약",
+                "award_method": "최저가",
+            }
+
+
+def test_existing_open_notice_is_closed_when_provider_marks_it_direct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    run = {"direct": False}
+
+    class _ReclassifiedContractClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            direct = run["direct"]
+            contract_method = "수의계약" if direct else "일반경쟁"
+            yield {
+                "identity": "RECLASSIFY-1|00|2026-08-20T17:00:00+09:00",
+                "bid_notice_no": "RECLASSIFY-1",
+                "revision_no": "00",
+                "title": "공공기관 교육 프로그램 운영",
+                "agency": "공공기관",
+                "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
+                "deadline": datetime.fromisoformat("2026-08-20T17:00:00+09:00"),
+                "estimated_amount": 20_000_000,
+                "notice_kind": "등록공고",
+                "contract_method": contract_method,
+                "direct_contract_signal": direct,
+                "source_url": None,
+                "raw": {"cntrctCnclsMthdNm": contract_method},
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _ReclassifiedContractClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert first.status_code == 200
+        assert len(first.json()["created_notice_keys"]) == 1
+        assert len(live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()) == 1
+
+        run["direct"] = True
+        second = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert second.status_code == 200
+        assert second.json()["updated"] == 1
+        assert second.json()["notice_keys"] == []
+        assert second.json()["updated_notice_keys"] == []
+        assert live_client.get("/api/v1/notices", params={"status": "OPEN"}).json() == []
 
 
 def test_live_pps_ingestion_requires_server_key(monkeypatch: pytest.MonkeyPatch) -> None:

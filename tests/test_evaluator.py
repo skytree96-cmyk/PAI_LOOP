@@ -136,6 +136,10 @@ def test_pass_requires_matching_fact_and_valid_deadline_evidence() -> None:
     assert result.evidence_coverage == 100
     assert result.risk_score == 20
     assert result.risk_band == RiskBand.GO
+    assert result.explanation["risk"]["axis_basis"]["qualification"] == {
+        "source": "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE",
+        "method": "validated explicit 0..100 axis override",
+    }
 
 
 def test_current_fact_is_not_applied_retroactively_to_old_deadline() -> None:
@@ -199,8 +203,87 @@ def test_document_incomplete_or_low_confidence_is_r07_and_gray() -> None:
     )
 
     assert result.eligibility == Eligibility.REVIEW
+    assert result.reason_code == "R07"
     assert result.atomic_results[0]["reason_code"] == "R07"
     assert result.readiness_status == ReadinessStatus.GRAY
+    assert result.risk_score is None
+    assert result.risk_band == RiskBand.UNKNOWN
+    assert result.explanation["risk"]["status"] == "WITHHELD_R07"
+
+
+def test_risk_requires_four_approved_evidence_axes() -> None:
+    notice, version = notice_and_version()
+    notice.risk_dimensions = {
+        "qualification": 20,
+        "execution": 40,
+        "document": 80,
+        "unsupported": 0,
+    }
+    req = requirement("Q-RISK", "entity", "active")
+    result = evaluate_notice(
+        notice,
+        version,
+        [req],
+        [fact("entity", "active", linked_evidence=evidence())],
+    )
+
+    assert result.risk_score is None
+    assert result.risk_band == RiskBand.UNKNOWN
+    assert result.explanation["risk"] == {
+        "method_version": "business-risk-2.0.0",
+        "status": "INSUFFICIENT_EVIDENCE",
+        "minimum_evidenced_axes": 4,
+        "evidenced_axis_count": 3,
+        "evidenced_axes": ["qualification", "execution", "document"],
+        "missing_axes": ["competition", "profitability", "operation"],
+        "invalid_axes": [],
+        "weights": {
+            "qualification": 0.25,
+            "execution": 0.2,
+            "competition": 0.15,
+            "profitability": 0.1,
+            "operation": 0.1,
+            "document": 0.2,
+        },
+        "axis_values": {"qualification": 20.0, "execution": 40.0, "document": 80.0},
+        "axis_basis": {
+            "qualification": {
+                "source": "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE",
+                "method": "validated explicit 0..100 axis override",
+            },
+            "execution": {
+                "source": "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE",
+                "method": "validated explicit 0..100 axis override",
+            },
+            "document": {
+                "source": "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE",
+                "method": "validated explicit 0..100 axis override",
+            },
+        },
+        "input_boundary": "APPROVED_DETERMINISTIC_AXIS_VALUES_ONLY",
+    }
+
+
+def test_risk_uses_approved_weights_and_renormalises_four_axes() -> None:
+    notice, version = notice_and_version()
+    notice.risk_dimensions = {
+        "qualification": 20,
+        "execution": 40,
+        "competition": 60,
+        "document": 80,
+    }
+    req = requirement("Q-RISK", "entity", "active")
+    result = evaluate_notice(
+        notice,
+        version,
+        [req],
+        [fact("entity", "active", linked_evidence=evidence())],
+    )
+
+    assert result.risk_score == 47.5
+    assert result.risk_band == RiskBand.CONDITIONAL_GO
+    assert result.explanation["risk"]["status"] == "AVAILABLE"
+    assert result.explanation["risk"]["evidenced_axis_count"] == 4
 
 
 def test_atomic_order_uses_only_linked_review_then_default_fail() -> None:

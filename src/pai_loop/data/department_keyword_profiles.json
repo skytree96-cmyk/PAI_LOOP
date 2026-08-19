@@ -1,7 +1,20 @@
 {
-  "version": "2026.08.17-1",
+  "version": "2026.08.18-1",
   "source": "2026 조직도와 조직별 사업영역(개인 이름 제외)",
-  "description": "공고 검색과 부서별 검토 우선순위를 위한 설명 가능한 키워드 프로필입니다. 교육·컨설팅을 전사 공통 기본값으로 사용합니다.",
+  "description": "공고 검색과 부서별 검토 우선순위를 위한 설명 가능한 키워드 프로필입니다. 사업부 추천과 지역 라우팅을 분리하며 교육·컨설팅을 전사 공통 기본값으로 사용합니다.",
+  "ranking_policy": {
+    "business_top": {
+      "min_strong_keywords": 1,
+      "min_supporting_keywords": 2
+    },
+    "business_review": {
+      "strong_keywords": 0,
+      "supporting_keywords": 1
+    },
+    "region_routing": {
+      "separate_from_business_rank": true
+    }
+  },
   "baseline": {
     "id": "organization",
     "name": "전사 공통",
@@ -55,7 +68,7 @@
       "name": "AI미래교육본부",
       "aliases": ["AI 미래교육", "미래교육", "K-12 교육"],
       "strong_keywords": ["K-12", "K12", "초중고 AI", "디지털교육", "디지털 교육", "교직원 AI", "교원 AI", "대학 해외연수"],
-      "supporting_keywords": ["초중고", "교직원", "교원연수", "대학생", "대학교직원", "대학 교직원", "AI교육", "AI 교육", "디지털 연수", "해외연수"],
+      "supporting_keywords": ["초중고", "교직원", "교원연수", "대학생", "대학교직원", "대학 교직원", "AI교육", "AI 교육", "디지털 연수"],
       "excluded_keywords": [],
       "regions": []
     },
@@ -216,6 +229,7 @@
       "aliases": ["대외협력", "HR Society", "CTF"],
       "strong_keywords": ["HR Society", "CTF", "대외협력", "산학협력", "민관협력"],
       "supporting_keywords": ["협력 네트워크", "교류회", "파트너십", "HR 네트워크", "포럼 운영"],
+      "title_required_keywords": ["산학협력"],
       "excluded_keywords": [],
       "regions": []
     },

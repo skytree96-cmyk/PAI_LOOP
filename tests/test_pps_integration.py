@@ -34,6 +34,50 @@ def test_notice_normalisation_handles_pps_fields() -> None:
     assert item["estimated_amount"] == 120_000_000
 
 
+def test_notice_normalisation_keeps_contract_signals_without_filtering_direct_work() -> None:
+    direct = normalise_notice(
+        {
+            "bidNtceNo": "DIRECT-1",
+            "bidNtceOrd": "0",
+            "bidNtceNm": "교육 프로그램 소액수의 안내",
+            "bidClseDt": "202608201700",
+            "bidMethdNm": "전자견적",
+            "cntrctCnclsMthdNm": "수의계약",
+            "sucsfbidMthdNm": "최저가",
+        }
+    )
+
+    assert direct["bid_method"] == "전자견적"
+    assert direct["contract_method"] == "수의계약"
+    assert direct["award_method"] == "최저가"
+    assert direct["direct_contract_signal"] is True
+
+    authoritative_competitive = normalise_notice(
+        {
+            "bidNtceNo": "COMPETITIVE-1",
+            "bidNtceOrd": "0",
+            "bidNtceNm": "수의계약 사례 교육",
+            "bidClseDt": "202608201700",
+            "cntrctCnclsMthdNm": "일반경쟁",
+        }
+    )
+    assert authoritative_competitive["direct_contract_signal"] is False
+
+
+def test_notice_normalisation_canonicalises_cancellation_variants() -> None:
+    cancelled = normalise_notice(
+        {
+            "bidNtceNo": "CANCEL-1",
+            "bidNtceOrd": "1",
+            "bidNtceNm": "취소 대상 공고",
+            "bidClseDt": "202608201700",
+            "ntceKindNm": "등록공고(취소)",
+        }
+    )
+
+    assert cancelled["notice_kind"] == "취소공고"
+
+
 def test_paging_and_secret_redaction() -> None:
     seen_pages: list[str] = []
 

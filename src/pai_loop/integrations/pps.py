@@ -72,18 +72,42 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _has_direct_contract_marker(value: str) -> bool:
+    return any(marker in value for marker in ("수의", "직접계약", "직접 계약"))
+
+
 def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
     """Map BidPublicInfoService02-style fields to the canonical notice input."""
     notice_no = str(item.get("bidNtceNo") or item.get("bid_notice_no") or "").strip()
     revision = str(item.get("bidNtceOrd") or item.get("revision_no") or "00").zfill(2)
     deadline = _parse_datetime(item.get("bidClseDt") or item.get("deadline"))
     published = _parse_datetime(item.get("bidNtceDt") or item.get("published_at"))
+    raw_notice_kind = _label(item.get("ntceKindNm") or item.get("notice_kind"))
+    # The provider has used more than one cancellation label over time.  The
+    # persistence boundary intentionally consumes one canonical value so a
+    # cancellation variant cannot survive as a phantom OPEN notice.
+    notice_kind = "취소공고" if "취소" in raw_notice_kind else raw_notice_kind
+    bid_method = _label(item.get("bidMethdNm") or item.get("bid_method"))
+    contract_method = _label(
+        item.get("cntrctCnclsMthdNm") or item.get("contract_method")
+    )
+    award_method = _label(item.get("sucsfbidMthdNm") or item.get("award_method"))
+    title = _label(item.get("bidNtceNm") or item.get("title"))
+    direct_contract_signal = (
+        _has_direct_contract_marker(contract_method)
+        if contract_method
+        else _has_direct_contract_marker(bid_method) or _has_direct_contract_marker(title)
+    )
     identity = f"{notice_no}|{revision}|{deadline.isoformat() if deadline else ''}"
     return {
         "identity": identity,
         "bid_notice_no": notice_no,
         "revision_no": revision,
-        "title": str(item.get("bidNtceNm") or item.get("title") or "").strip(),
+        "title": title,
         "agency": str(
             item.get("ntceInsttNm") or item.get("dminsttNm") or item.get("agency") or ""
         ).strip(),
@@ -92,7 +116,14 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
         "estimated_amount": _number(
             item.get("presmptPrce") or item.get("asignBdgtAmt") or item.get("estimated_amount")
         ),
-        "notice_kind": str(item.get("ntceKindNm") or item.get("notice_kind") or "").strip(),
+        "notice_kind": notice_kind,
+        "bid_method": bid_method,
+        "contract_method": contract_method,
+        "award_method": award_method,
+        # This is a discovery signal, not an exclusion policy.  Small-value
+        # education/consulting opportunities can legitimately be direct
+        # contracts and must remain in the ingestion stream.
+        "direct_contract_signal": direct_contract_signal,
         "source_url": (
             item.get("bidNtceDtlUrl")
             or item.get("bidNtceUrl")

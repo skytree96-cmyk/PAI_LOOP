@@ -177,7 +177,7 @@ class Evaluation(Base):
     evidence_coverage: Mapped[float] = mapped_column(Float)
     risk_score: Mapped[float | None] = mapped_column(Float)
     risk_band: Mapped[str] = mapped_column(String(32))
-    ruleset_version: Mapped[str] = mapped_column(String(32), default="2026.08-v1")
+    ruleset_version: Mapped[str] = mapped_column(String(32), default="2026.08-v2")
     atomic_results: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
     explanation: Mapped[dict[str, Any]] = mapped_column(JSON)
 

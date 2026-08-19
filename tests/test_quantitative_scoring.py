@@ -247,6 +247,18 @@ def test_actual_ai_training_profile_uses_rfp_anchors_and_candidate_range(
         },
     )
     assert created.status_code == 201
+    version = client.post(
+        "/api/v1/notices/PUBLIC-AI-TRAINING-2025/versions",
+        json={
+            "version_no": 1,
+            "file_sha256": ACTUAL_RFP_SHA256,
+            "document_complete": True,
+            "extraction_status": "REFERENCE",
+            "extraction_confidence": 1,
+            "source_payload": {"kind": "PUBLIC_DOCUMENT_REFERENCE"},
+        },
+    )
+    assert version.status_code == 201
 
     response = client.get(
         "/api/v1/notices/PUBLIC-AI-TRAINING-2025/quantitative-estimate"
@@ -285,6 +297,80 @@ def test_actual_ai_training_profile_uses_rfp_anchors_and_candidate_range(
     assert observations["PUBLIC-PERFORMANCE-CANDIDATES"]["value"] == 37
     assert observations["PUBLIC-PERFORMANCE-CANDIDATE-AMOUNT"]["value"] == 17_809_102_812
     assert observations["PUBLIC-PERFORMANCE-CANDIDATES"]["status"] == "CANDIDATE_ONLY"
+
+
+def test_profile_identity_without_exact_source_digest_stays_fail_closed(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": "CORRECTED-AI-TRAINING-2025",
+            "bid_notice_no": "R25BK00764725",
+            "title": "2025 AI 활용 역량 강화 교육 운영 용역",
+            "agency": "공개 발주기관",
+            "deadline": "2025-04-24T09:00:00+09:00",
+        },
+    )
+    assert created.status_code == 201
+    wrong_version = client.post(
+        "/api/v1/notices/CORRECTED-AI-TRAINING-2025/versions",
+        json={
+            "version_no": 1,
+            "file_sha256": "f" * 64,
+            "document_complete": True,
+            "extraction_status": "REFERENCE",
+            "extraction_confidence": 1,
+            "source_payload": {"kind": "PUBLIC_DOCUMENT_REFERENCE"},
+        },
+    )
+    assert wrong_version.status_code == 201
+
+    payload = client.get(
+        "/api/v1/notices/CORRECTED-AI-TRAINING-2025/quantitative-estimate"
+    ).json()
+
+    assert payload["rule_source_status"] == "INCOMPLETE"
+    assert payload["overall_status"] == "REVIEW"
+    assert payload["total_max_points"] is None
+    assert "문서 해시" in payload["assumptions"][0]
+
+
+def test_corrected_reference_cannot_reuse_stale_quantitative_profile(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": "CORRECTED-RFP-AI-TRAINING-2025",
+            "bid_notice_no": "R25BK00764725",
+            "title": "2025 AI 활용 역량 강화 교육 운영 용역",
+            "agency": "공개 발주기관",
+            "deadline": "2025-04-24T09:00:00+09:00",
+        },
+    )
+    assert created.status_code == 201
+    for version_no, digest in ((1, ACTUAL_RFP_SHA256), (2, "f" * 64)):
+        response = client.post(
+            "/api/v1/notices/CORRECTED-RFP-AI-TRAINING-2025/versions",
+            json={
+                "version_no": version_no,
+                "file_sha256": digest,
+                "document_complete": True,
+                "extraction_status": "REFERENCE",
+                "extraction_confidence": 1,
+                "source_payload": {"kind": "PUBLIC_DOCUMENT_REFERENCE"},
+            },
+        )
+        assert response.status_code == 201
+
+    payload = client.get(
+        "/api/v1/notices/CORRECTED-RFP-AI-TRAINING-2025/quantitative-estimate"
+    ).json()
+
+    assert payload["rule_source_status"] == "INCOMPLETE"
+    assert payload["total_max_points"] is None
+    assert "현재 권위 공고 문서" in payload["assumptions"][0]
 
 
 def test_incheon_actual_public_seed_stays_unscored_without_quant_table(
