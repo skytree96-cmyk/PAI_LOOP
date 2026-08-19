@@ -29,6 +29,7 @@ from pai_loop.pps_enrichment import (
 )
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import (
+    CORRECTIVE_PROMPT_VERSION,
     PROMPT_VERSION,
     EvidenceAnchor,
     ExtractedRequirement,
@@ -410,6 +411,9 @@ class _CountingExtractionClient:
         return ExtractionOutcome(
             status="ACCEPTED",
             message="validated",
+            api_calls=2,
+            corrective_retry_used=True,
+            correction_prompt_version=CORRECTIVE_PROMPT_VERSION,
             data=ExtractionPayload(
                 document_type="RFP",
                 requirements=[
@@ -460,7 +464,7 @@ class _RetryableReviewClient:
         )
 
 
-def test_identical_attachment_and_prompt_reuses_accepted_extraction_without_openai() -> None:
+def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_openai() -> None:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("mimetype", "application/hwp+zip")
@@ -526,12 +530,21 @@ def test_identical_attachment_and_prompt_reuses_accepted_extraction_without_open
         )
 
     assert first.status == "COMPLETED"
-    assert first.openai_calls == 1
+    assert first.openai_calls == 2
+    assert first.warnings == ["CORRECTIVE_EXTRACTION_RETRY_USED"]
     assert second.status == "REUSED"
     assert second.openai_calls == 0
     assert first.version_id == second.version_id
     assert _CountingExtractionClient.calls == 1
     with factory() as session:
+        extraction_version = session.get(NoticeVersion, first.version_id)
+        assert extraction_version is not None
+        assert extraction_version.source_payload["api_calls"] == 2
+        assert extraction_version.source_payload["corrective_retry_used"] is True
+        assert (
+            extraction_version.source_payload["correction_prompt_version"]
+            == CORRECTIVE_PROMPT_VERSION
+        )
         assert has_current_accepted_pps_extraction(session, notice_id) is True
         notice = session.get(Notice, notice_id)
         assert notice is not None

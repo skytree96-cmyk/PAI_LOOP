@@ -1025,6 +1025,9 @@ def _persist_extraction_version(
         "model": outcome.model if outcome else None,
         "prompt_version": outcome.prompt_version if outcome else PROMPT_VERSION,
         "schema_version": outcome.schema_version if outcome else SCHEMA_VERSION,
+        "api_calls": outcome.api_calls if outcome else 0,
+        "corrective_retry_used": outcome.corrective_retry_used if outcome else False,
+        "correction_prompt_version": outcome.correction_prompt_version if outcome else None,
         "result": data,
     }
     existing_versions = list(
@@ -1340,17 +1343,25 @@ def _enrich_selected_pps_attachment(
             outcome=outcome,
             error_code=outcome.error_code,
         )
+    retry_warnings = (
+        ["CORRECTIVE_EXTRACTION_RETRY_USED"]
+        if outcome.corrective_retry_used
+        else []
+    )
     return PpsEnrichmentResult(
         status="COMPLETED" if outcome.status == "ACCEPTED" else "REVIEW",
         attachments_discovered=attachments_discovered,
         attachments_processed=1,
-        openai_calls=1,
+        openai_calls=outcome.api_calls,
         version_id=version.id,
-        warnings=(
-            []
-            if outcome.status == "ACCEPTED"
-            else [outcome.error_code or "OPENAI_REVIEW_R07"]
-        ),
+        warnings=[
+            *retry_warnings,
+            *(
+                []
+                if outcome.status == "ACCEPTED"
+                else [outcome.error_code or "OPENAI_REVIEW_R07"]
+            ),
+        ],
     )
 
 

@@ -37,6 +37,7 @@ from .integrations.openai_extraction import (
     OpenAIExtractionClient,
 )
 from .models import (
+    AnalysisRun,
     AtomicRequirement,
     AwardHistoryItem,
     CompanyFact,
@@ -102,6 +103,30 @@ def _latest_evaluation(notice: Notice) -> Evaluation | None:
     return max(notice.evaluations, key=lambda item: item.evaluated_at) if notice.evaluations else None
 
 
+def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime | None]:
+    """Return only the immutable advisory stored by the latest analysis run.
+
+    The public board must not reverse-engineer GO from risk bands or other
+    partial fields. It also must not fall back to an older recommendation if
+    the latest run has no complete ``bid:system`` snapshot.
+    """
+
+    if not notice.analysis_runs:
+        return None, None
+    latest_run = max(notice.analysis_runs, key=lambda item: item.generated_at)
+    recommendation = next(
+        (
+            item.recommendation
+            for item in latest_run.recommendations
+            if item.recommendation_key == "bid:system"
+        ),
+        None,
+    )
+    if recommendation not in {"GO", "HOLD", "NO_GO"}:
+        return None, None
+    return recommendation, latest_run.generated_at
+
+
 def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
     latest = _latest_evaluation(notice)
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
@@ -113,6 +138,7 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
     )
     ingestion_state = "EVALUATED" if latest else "VERSIONED" if latest_version else "COLLECTED"
     evaluation = EvaluationOut.model_validate(latest) if latest else None
+    recommendation, recommendation_updated_at = _latest_system_recommendation(notice)
     if evaluation is not None and public_view:
         evaluation = evaluation.model_copy(
             update={
@@ -140,6 +166,8 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
         analysis_reason=analysis_reason.reason,
         analysis_attachment_count=analysis_reason.attachment_count,
         analysis_attempted=analysis_reason.attempted,
+        recommendation=recommendation,
+        recommendation_updated_at=recommendation_updated_at,
         latest_evaluation=evaluation,
     )
 
@@ -312,6 +340,7 @@ def _load_notice(session: Session, notice_key: str) -> Notice:
             selectinload(Notice.evaluations),
             selectinload(Notice.decisions),
             selectinload(Notice.award_history),
+            selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
         )
     )
     if notice is None:
@@ -338,7 +367,11 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     notices = list(
         session.scalars(
             select(Notice)
-            .options(selectinload(Notice.evaluations), selectinload(Notice.versions))
+            .options(
+                selectinload(Notice.evaluations),
+                selectinload(Notice.versions),
+                selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
+            )
             .order_by((Notice.deadline < now).asc(), Notice.deadline.asc())
         ).all()
     )
@@ -346,11 +379,16 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     evaluation_total = session.scalar(select(func.count(Evaluation.id))) or 0
     eligibility_counts = {item.value: 0 for item in Eligibility}
     readiness_counts = {item: 0 for item in ("GREEN", "YELLOW", "RED", "GRAY")}
+    active_recommendation_counts = {item: 0 for item in ("GO", "HOLD", "NO_GO")}
     for notice in notices:
         latest = _latest_evaluation(notice)
         if latest:
             eligibility_counts[latest.eligibility] = eligibility_counts.get(latest.eligibility, 0) + 1
             readiness_counts[latest.readiness_status] = readiness_counts.get(latest.readiness_status, 0) + 1
+        if _effective_notice_status(notice) == "OPEN":
+            recommendation, _updated_at = _latest_system_recommendation(notice)
+            if recommendation is not None:
+                active_recommendation_counts[recommendation] += 1
     soon = now + timedelta(days=7)
     return {
         "generated_at": now,
@@ -362,6 +400,8 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         },
         "eligibility_counts": eligibility_counts,
         "readiness_counts": readiness_counts,
+        "recommendation_counts": active_recommendation_counts,
+        "go_count": active_recommendation_counts["GO"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],
         "deadline_soon": sum(1 for item in notices if now <= _comparable_utc(item.deadline) <= soon),
         "recent_notices": [
@@ -424,7 +464,11 @@ def list_notices(
     now = datetime.now(timezone.utc)
     statement = (
         select(Notice)
-        .options(selectinload(Notice.evaluations), selectinload(Notice.versions))
+        .options(
+            selectinload(Notice.evaluations),
+            selectinload(Notice.versions),
+            selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
+        )
         .order_by((Notice.deadline < now).asc(), Notice.deadline.asc())
     )
     if q:
@@ -1630,6 +1674,9 @@ def _extraction_run_out(
         model=payload.get("model"),
         prompt_version=payload.get("prompt_version", PROMPT_VERSION),
         schema_version=payload.get("schema_version", SCHEMA_VERSION),
+        api_calls=int(payload.get("api_calls", 0)),
+        corrective_retry_used=bool(payload.get("corrective_retry_used", False)),
+        correction_prompt_version=payload.get("correction_prompt_version"),
         data=payload.get("result"),
         reused=reused,
     )
@@ -1719,6 +1766,9 @@ def run_openai_extraction(
         "model": outcome.model,
         "prompt_version": outcome.prompt_version,
         "schema_version": outcome.schema_version,
+        "api_calls": outcome.api_calls,
+        "corrective_retry_used": outcome.corrective_retry_used,
+        "correction_prompt_version": outcome.correction_prompt_version,
         "result": data,
     }
     version = NoticeVersion(

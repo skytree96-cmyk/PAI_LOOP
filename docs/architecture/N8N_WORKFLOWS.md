@@ -15,7 +15,7 @@ Teams webhook URL을 넣지 않는다.
 | 02 | `PAI_LOOP 02 - Live PPS Ingestion` | 제한된 실수집 window를 보호된 backend에 전달 | backend live-ingestion 호출 |
 | 03 | `PAI_LOOP 03 - Teams Mock Notification` | Adaptive Card 생성과 mock delivery 기록 | backend mock-log만 호출; Teams 호출 없음 |
 | 04 | `PAI_LOOP 04 - Award History Refresh` | 공고별 최근 1~3년 낙찰 유사 후보 갱신 | backend award-history 호출; 응답은 집계만 보존 |
-| **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **09:00 KST 수집·신규/변경 key durable plan·7일 순위·3년 낙찰 refresh·backend Teams mock 기록** | **active; `publish=true`, `daily-briefing-1.5`; 수동 offline preview는 외부 호출 0회** |
+| **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **09:00 KST 최근 8일 수집·신규/변경 key durable plan·7일 순위·3년 낙찰 refresh·backend Teams mock 기록** | **active; `publish=true`, `daily-briefing-1.5`; 수동 offline preview는 외부 호출 0회** |
 | **11** | **`PAI_LOOP 11 - Analysis Backfill and Continuation`** | **15분마다 W10의 남은 DAILY lease를 우선 재개하고 수동 BACKFILL을 같은 bounded 계약으로 처리** | **active; `publish=true`, `analysis-backfill-1.2`, `verified-live-e2e`** |
 | **12** | **`PAI_LOOP 12 - Teams Daily Delivery`** | **10:00 KST 저장 브리핑을 별도로 읽어 공개 allowlist HTML을 PAI 봇 채널에 전송** | **active; `publish=true`, `teams-delivery-1.2`, `verified-live-e2e`; fail-closed·at-most-once** |
 
@@ -31,7 +31,7 @@ W12를 각각 모니터링한다. W12 장애는 W10/W11을 재실행하거나 �
 따라서 “한 번에 활용”한다는 제품 요구는 충족하면서도 다음을 지킨다.
 
 10번은 PPS 응답의 `created_notice_keys + updated_notice_keys` 정확 합집합과 cooled
-backlog 최대 3건을 durable DAILY parent에 넣고, 한 실행에서 최대 30건을 3건 단위로
+backlog 최대 12건을 durable DAILY parent에 넣고, 한 실행에서 최대 30건을 3건 단위로
 처리한다. 11번은 같은 parent/segment/chunk 계약으로 남은 작업을 재개한다. 저장된
 ACCEPTED extraction의 materialize·평가·snapshot 집계가 끝난 뒤 낙찰 refresh와
 최종 briefing으로 진행하며, 필요한 원격 첨부 보강만 bounded OpenAI 경계를 사용할
@@ -198,11 +198,12 @@ Safety gates:
 검증된 예약 경로는 emergency disable이 닫혀 있지 않을 때만 다음 backend 경계를
 사용한다. 수동 offline preview는 이 경로와 연결되지 않는다.
 
-1. `POST /api/v1/ingestion/pps/notices` — 전일~당일 bounded 수집과 strict 응답 검증;
+1. `POST /api/v1/ingestion/pps/notices` — 기본 5개와 조직 profile keyword를 당일 포함
+   최근 8일 단일 window로 bounded 수집하고 strict 응답 검증;
 2. `GET /api/v1/operations/daily-briefing?days=7&limit=20` — refresh 후보와 최근 7일
    `analysis_queue` 조립;
 3. `POST /api/v1/operations/analysis-backfills/plan` — 생성·정정 key 정확 합집합 전량과
-   cooled backlog 최대 3건을 DAILY parent에 추가하고 최대 30건의 exact segment/chunk lease 반환;
+   cooled backlog 최대 12건을 DAILY parent에 추가하고 최대 30건의 exact segment/chunk lease 반환;
 4. `POST /api/v1/notices/analysis/batch` — lease에 포함된 key를 호출당 최대 3건씩
    직렬로 첨부 보강·분석·평가·snapshot 처리;
 5. `POST /api/v1/operations/analysis-backfills/{job_id}/complete` — exact segment의 모든
@@ -220,7 +221,9 @@ Leased batch-analysis 요청은 `notice_keys`, `dry_run`, `force:false`와 exact
 `completed`, `skipped`, `failed`, `document_materialized`, `evaluations_created`,
 `snapshots_refreshed`, `openai_calls`, `results`, `warnings`의 제한된 집계 계약이다.
 `processed=completed+skipped+failed`, 결과 key는 요청 key의 중복 없는 부분집합이어야
-한다. `dry_run=true`에서 세 write 집계는 반드시 0이며 문서본문·원자 근거·PII는
+한다. `QUOTE_UNVERIFIED` corrective extraction을 포함해 `openai_calls`는 공고당
+최대 2회이며 두 번째 응답도 exact anchor 검증을 통과해야 한다. `dry_run=true`에서
+세 write 집계는 반드시 0이며 문서본문·원자 근거·PII는
 n8n item으로 반환하지 않는다. 각 result는 상태와 nullable run/evaluation/version
 ID, input SHA-256, reused flag, materialized requirement·requirement snapshot·score
 snapshot·recommendation snapshot count만 반환한다. Backend idempotency key 자체는
@@ -243,6 +246,9 @@ W11은 `settings.timezone=Asia/Seoul`, 15분 schedule, `analysis-backfill-1.2` �
 `publish:true`, `promotionState=verified-live-e2e`다. Scheduled 실행은
 `queue_name=ANY`, `resume_only=true`로 기존 active parent만 찾고 DAILY를 우선한다.
 수동 실행은 BACKFILL parent를 만들거나 재개할 수 있다.
+수동 최초 계획은 `include_retryable=true`로 24시간 cooldown이 지난 retryable도
+일회성 회수하며, 이후 schedule은 `resume_only=true`로 이미 열린 exact parent만
+이어 간다.
 
 plan 응답의 `job_id`, `segment_id`, `chunks`, `chunk_indices`를 exact claim으로 사용해
 호출당 최대 3건, 실행당 최대 30건을 직렬 처리한다. 모든 leased child가 terminal일
@@ -288,7 +294,8 @@ node scripts/test-teams-delivery-workflow.mjs
 
 - manual/scheduled/live-enable 조합별 `dry_run` Gate;
 - PPS response count와 배열 필드;
-- W10/W11의 호출당 최대 3건·실행당 최대 30건, exact segment/chunk lease와 집계 합계;
+- W10/W11의 호출당 최대 3건·실행당 최대 30건, daily backlog 최대 12건,
+  공고당 OpenAI 최대 2회, exact segment/chunk lease와 집계 합계;
 - 낙찰 response의 exact field set, `COMPLETED|PARTIAL`, 기간·집계·경고 계약;
 - `PARTIAL` 응답의 경고 필수 및 후보 행/PII가 최종 출력에서 제거되는지;
 - Adaptive Card 1.5 및 Teams message attachment wrapper;

@@ -201,6 +201,8 @@ class NoticeSummary(ApiModel):
     analysis_reason: str
     analysis_attachment_count: int = Field(default=0, ge=0, le=10)
     analysis_attempted: bool = False
+    recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
+    recommendation_updated_at: datetime | None = None
     latest_evaluation: EvaluationOut | None = None
     department_ranking: DepartmentRankingOut | None = None
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)
@@ -495,6 +497,9 @@ class OpenAIExtractionRunOut(ApiModel):
     model: str | None = None
     prompt_version: str
     schema_version: str
+    api_calls: int = Field(default=0, ge=0, le=2)
+    corrective_retry_used: bool = False
+    correction_prompt_version: str | None = None
     data: dict[str, Any] | None = None
     reused: bool = False
 
