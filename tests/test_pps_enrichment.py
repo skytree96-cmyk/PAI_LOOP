@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from pai_loop.pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
@@ -137,6 +138,26 @@ def test_hwpx_preserves_paragraphs_and_does_not_insert_spaces_between_runs() -> 
     text = extract_document_text("과업지시서.hwpx", buffer.getvalue())
 
     assert text == "입찰참가자격등록을 완료해야 합니다.\n제안설명회 참석이 필수입니다."
+
+
+def test_pdf_extraction_replaces_lone_surrogates_before_json_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Malformed embedded PDF character maps can make pypdf return lone UTF-16
+    # surrogates. They are valid Python string contents but cannot be emitted
+    # in the UTF-8 JSON body used by the model client.
+    monkeypatch.setattr(
+        "pai_loop.pps_enrichment._extract_pdf_text",
+        lambda _content: "입찰 참가 자격과 제출 요건을 확인합니다.\udb80추가 조건입니다.",
+    )
+
+    text = extract_document_text("공고문.pdf", b"synthetic-pdf")
+
+    assert "\udb80" not in text
+    assert "\ufffd" in text
+    # Regression for the exact live failure boundary: this must not raise
+    # UnicodeEncodeError before the Responses API request can be made.
+    assert json.dumps({"input": text}, ensure_ascii=False).encode("utf-8")
 
 
 def _analysis_versions(
@@ -618,4 +639,121 @@ def test_retryable_review_creates_fresh_attempt_after_cooldown_then_reuses() -> 
     assert first.openai_calls == second.openai_calls == 1
     assert third.openai_calls == 0
     assert _RetryableReviewClient.calls == 2
+    engine.dispose()
+
+
+def test_internal_failure_does_not_bind_concurrently_replaced_manifest() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/hwp+zip")
+        archive.writestr(
+            "Contents/section0.xml",
+            "<s><p>교육 컨설팅 수행실적을 제출해야 합니다.</p>"
+            "<p>마감일까지 제출합니다.</p></s>",
+        )
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"Content-Type": "application/zip"},
+            content=buffer.getvalue(),
+        )
+    )
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    original_raw = {
+        "bidNtceNo": "R26BK00000003",
+        "bidNtceOrd": "000",
+        "ntceSpecFileNm1": "제안요청서.hwpx",
+        "ntceSpecDocUrl1": G2B_DOWNLOAD.replace(
+            "R26BK00000001",
+            "R26BK00000003",
+        ),
+    }
+    corrected_raw = {
+        **original_raw,
+        "ntceSpecDocUrl1": original_raw["ntceSpecDocUrl1"].replace(
+            "fileSeq=1",
+            "fileSeq=2",
+        ),
+    }
+    with factory() as session:
+        notice = Notice(
+            notice_key="PPS-MANIFEST-RACE",
+            bid_notice_no="R26BK00000003",
+            revision_no="000",
+            title="manifest 교체 동시성 검증",
+            agency="공공기관",
+            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=original_raw,
+            search_keywords=["교육"],
+            dry_run=False,
+        )
+        session.commit()
+        notice_id = notice.id
+
+    class CorrectManifestThenFailClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def extract(self, **_kwargs: object):
+            # This commit occurs after the worker selected the original
+            # attachment but before it handles the unexpected model error.
+            with factory() as concurrent_session:
+                concurrent_notice = concurrent_session.get(Notice, notice_id)
+                assert concurrent_notice is not None
+                persisted = persist_pps_metadata_version(
+                    concurrent_session,
+                    concurrent_notice,
+                    raw_item=corrected_raw,
+                    search_keywords=["교육"],
+                    dry_run=False,
+                )
+                assert persisted.created is True
+                concurrent_session.commit()
+            raise RuntimeError("synthetic failure after manifest correction")
+
+    with factory() as session:
+        result = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=CorrectManifestThenFailClient,
+        )
+
+    assert result.status == "REVIEW"
+    assert "INTERNAL_ENRICHMENT_ERROR" in result.warnings
+    assert "PPS_MANIFEST_CHANGED_DURING_ENRICHMENT" in result.warnings
+    assert result.version_id is None
+    with factory() as session:
+        versions = list(
+            session.scalars(
+                select(NoticeVersion)
+                .where(NoticeVersion.notice_id == notice_id)
+                .order_by(NoticeVersion.version_no)
+            ).all()
+        )
+        assert len(versions) == 2
+        assert all(
+            version.source_payload.get("kind") == PPS_METADATA_KIND
+            for version in versions
+        )
+        reason = public_analysis_reason(versions)
+        assert reason.reason_code == "NOT_SELECTED"
+        assert reason.attempted is False
     engine.dispose()

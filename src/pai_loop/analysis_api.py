@@ -1949,9 +1949,16 @@ def _execute_notice_analysis_batch(
                     payload=payload,
                 )
             except Exception:  # pragma: no cover - provider fail-closed boundary
+                # Exact attachment context is unavailable at this outer
+                # boundary, so it must never guess by binding the latest
+                # manifest. In particular, dry-run remains a zero-write
+                # contract even when an unexpected precheck error occurs.
                 enrichment_result = PpsEnrichmentResult(
                     status="REVIEW",
-                    warnings=["INTERNAL_ENRICHMENT_ERROR"],
+                    warnings=[
+                        "INTERNAL_ENRICHMENT_ERROR",
+                        *(["DRY_RUN_NO_WRITES"] if payload.dry_run else []),
+                    ],
                 )
 
         item_enrichment_warnings: list[str] = []

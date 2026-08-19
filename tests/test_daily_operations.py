@@ -7,8 +7,16 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from pai_loop.integrations.openai_extraction import PROMPT_VERSION
-from pai_loop.models import AwardHistoryItem, IngestionJob, MockNotification, Notice, NoticeVersion
+from pai_loop.models import (
+    AnalysisRun,
+    AwardHistoryItem,
+    IngestionJob,
+    MockNotification,
+    Notice,
+    NoticeVersion,
+)
 from pai_loop.pps_enrichment import PPS_ATTACHMENT_SOURCE, PPS_METADATA_KIND
+from pai_loop.public_notice_seed import import_public_notice_seed
 
 
 def _create_notice(
@@ -227,6 +235,196 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
     assert queue["never_attempted_total"] == 1
     assert queue["retryable_total"] == 1
     assert queue["deferred_terminal_total"] == 1
+
+
+def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
+    client: TestClient,
+) -> None:
+    notice_key = "PPS-FAILED-SNAPSHOT-RETRY"
+    _create_notice(
+        client,
+        notice_key=notice_key,
+        published_at="2026-08-18T08:00:00+09:00",
+    )
+    attachment = {
+        "attachment_id": "PPS-ATT-eeeeeeeeeeeeeeeeeeeeeeee",
+        "file_name": "제안요청서.pdf",
+        "media_type": "application/pdf",
+        "url": (
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+            "?bidPbancNo=R26BKFAILED&fileSeq=1"
+        ),
+        "slot": 1,
+    }
+    manifest_sha = hashlib.sha256(
+        json.dumps(
+            attachment,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        session.add_all(
+            [
+                NoticeVersion(
+                    notice_id=notice.id,
+                    version_no=1,
+                    file_sha256="a" * 64,
+                    document_complete=False,
+                    extraction_status="METADATA",
+                    extraction_confidence=1.0,
+                    source_payload={
+                        "kind": PPS_METADATA_KIND,
+                        "attachment_manifest": [attachment],
+                    },
+                ),
+                NoticeVersion(
+                    notice_id=notice.id,
+                    version_no=2,
+                    file_sha256="b" * 64,
+                    document_complete=False,
+                    extraction_status="REVIEW",
+                    extraction_confidence=0.0,
+                    source_payload={
+                        "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                        "source_kind": PPS_ATTACHMENT_SOURCE,
+                        "attachment_id": attachment["attachment_id"],
+                        "source_label": attachment["file_name"],
+                        "manifest_sha256": manifest_sha,
+                        "document_sha256": "b" * 64,
+                        "prompt_version": PROMPT_VERSION,
+                        "status": "REVIEW",
+                        "review_code": "R07",
+                        "error_code": "INTERNAL_ENRICHMENT_ERROR",
+                        "result": None,
+                    },
+                ),
+            ]
+        )
+        session.commit()
+
+    analysed = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "dry_run": False,
+            "enrich_missing": False,
+        },
+    )
+    assert analysed.status_code == 200, analysed.text
+    assert analysed.json()["results"][0]["document_status"] == "FAILED"
+    assert analysed.json()["results"][0]["analysis_reason_code"] == "OPENAI_REVIEW"
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        runs = session.query(AnalysisRun).filter_by(notice_id=notice.id).all()
+        assert len(runs) == 1
+        assert runs[0].status == "FAILED"
+
+    briefing = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={
+            "days": 7,
+            "limit": 50,
+            "as_of": "2026-08-19T12:00:00+09:00",
+        },
+    )
+    assert briefing.status_code == 200, briefing.text
+    briefing_body = briefing.json()
+    item = next(
+        (
+            row
+            for row in briefing_body["notices"]
+            if row["notice_key"] == notice_key
+        ),
+        None,
+    )
+    assert item is not None, briefing_body
+    assert item["analysis_snapshot"]["status"] == "FAILED"
+    assert item["analysis_coverage"]["reason_code"] == "OPENAI_REVIEW"
+    queue = briefing_body["analysis_queue"]
+    assert queue["retryable_notice_keys"] == [notice_key]
+    assert queue["retryable_total"] == 1
+
+    retry_payload = {
+        "queue_name": "DAILY",
+        "notice_keys": [notice_key],
+        "retry_notice_keys": [notice_key],
+        "retry_epoch": "2026-08-19",
+        "dry_run": True,
+        "include_retryable": True,
+        "chunk_size": 1,
+        "execution_limit": 1,
+        "retry_cooldown_hours": 24,
+    }
+    too_soon = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=retry_payload,
+    )
+    assert too_soon.status_code == 200, too_soon.text
+    assert too_soon.json()["planned"] == 0
+    assert too_soon.json()["offered"] == 0
+    assert "RETRY_KEYS_NOT_ELIGIBLE:1" in too_soon.json()["warnings"]
+
+    cooled_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        for version in notice.versions:
+            version.created_at = cooled_at
+        session.commit()
+
+    offered = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=retry_payload,
+    )
+    assert offered.status_code == 200, offered.text
+    offered_body = offered.json()
+    assert offered_body["planned"] == 1
+    assert offered_body["offered"] == 1
+    assert offered_body["notice_keys"] == [notice_key]
+
+
+def test_completed_analyzed_snapshot_stays_out_of_retry_queue(
+    client: TestClient,
+) -> None:
+    notice_key = "MANUAL-INCHON-2025-17"
+    with client.app.state.session_factory() as session:
+        imported = import_public_notice_seed(session)
+        assert imported.requirement_count == 23
+
+    analysed = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={"notice_keys": [notice_key], "dry_run": False},
+    )
+    assert analysed.status_code == 200, analysed.text
+    assert analysed.json()["results"][0]["analysis_reason_code"] == "ANALYZED"
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        run = session.query(AnalysisRun).filter_by(notice_id=notice.id).one()
+        # This assertion targets the daily queue's terminal snapshot boundary,
+        # independent of the historical fixture's partial-document warning.
+        run.status = "COMPLETED"
+        notice.published_at = datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
+        notice.deadline = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
+        notice.status = "OPEN"
+        session.commit()
+
+    briefing = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={
+            "days": 7,
+            "limit": 50,
+            "as_of": "2026-08-19T12:00:00+09:00",
+        },
+    )
+    assert briefing.status_code == 200, briefing.text
+    body = briefing.json()
+    item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
+    assert item["analysis_snapshot"]["status"] == "COMPLETED"
+    assert item["analysis_coverage"]["reason_code"] == "ANALYZED"
+    assert notice_key not in body["analysis_queue"]["notice_keys"]
+    assert notice_key not in body["analysis_queue"]["retryable_notice_keys"]
 
 
 def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(

@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from pai_loop.analysis_pipeline import AnalysisPipelineError
 from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
+from pai_loop.pps_enrichment import build_attachment_manifest, enrich_notice_from_pps
 from pai_loop.public_notice_seed import import_public_notice_seed
 
 
@@ -208,6 +209,215 @@ def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
         assert enrichment["attempted"] == (
             enrichment["completed"] + enrichment["skipped"] + enrichment["failed"]
         )
+
+
+def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-INTERNAL-ENRICHMENT-FAILURE"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": "R26BK-INTERNAL-FAILURE",
+            "title": "내부 보강 오류 재시도 계약 검증",
+            "agency": "가상 기관",
+            "published_at": "2026-08-19T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    manifest = build_attachment_manifest(
+        {
+            "bidNtceNo": "R26BK-INTERNAL-FAILURE",
+            "bidNtceOrd": "000",
+            "ntceSpecFileNm1": "제안요청서.pdf",
+            "ntceSpecDocUrl1": (
+                "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+                "?bidPbancNo=R26BK00000001&bidPbancOrd=000&fileSeq=1"
+                "&fileType=1&prcmBsneSeCd=01"
+            ),
+        }
+    )
+    assert len(manifest) == 1
+    assert client.post(
+        f"/api/v1/notices/{notice_key}/versions",
+        json={
+            "version_no": 1,
+            "file_sha256": "e" * 64,
+            "source_payload": {
+                "kind": "PPS_NOTICE_METADATA",
+                "attachment_manifest": manifest,
+            },
+        },
+    ).status_code == 201
+
+    class UnexpectedClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def extract(self, **_kwargs: object):
+            raise UnicodeEncodeError(
+                "utf-8",
+                "\udb80",
+                0,
+                1,
+                "surrogates not allowed",
+            )
+
+    monkeypatch.setattr(
+        "pai_loop.pps_enrichment.download_public_attachment",
+        lambda *_args, **_kwargs: b"synthetic-pdf",
+    )
+    monkeypatch.setattr(
+        "pai_loop.pps_enrichment.extract_document_text",
+        lambda *_args, **_kwargs: "입찰 참가 자격과 제출 요건을 확인합니다.",
+    )
+
+    def fail_inside_selected_enrichment(request, *, notice_id, payload):
+        with request.app.state.session_factory() as session:
+            return enrich_notice_from_pps(
+                session,
+                notice_id=notice_id,
+                openai_api_key="test-key",
+                openai_model="test-model",
+                max_attachments=payload.max_attachments_per_notice,
+                dry_run=payload.dry_run,
+                openai_client_factory=UnexpectedClient,
+            )
+
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._enrich_one_notice",
+        fail_inside_selected_enrichment,
+    )
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "max_attachments_per_notice": 1,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["enrichment"]["attempted"] == 1
+    assert body["enrichment"]["failed"] == 1
+    assert body["results"][0]["status"] == "COMPLETED"
+    assert body["results"][0]["analysis_state"] == "REVIEW"
+    assert body["results"][0]["analysis_reason_code"] == "OPENAI_REVIEW"
+    assert "INTERNAL_ENRICHMENT_ERROR" in body["results"][0]["warnings"]
+
+    detail = client.get(f"/api/v1/notices/{notice_key}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["analysis_state"] == "REVIEW"
+    assert detail.json()["analysis_reason_code"] == "OPENAI_REVIEW"
+    assert detail.json()["analysis_attempted"] is True
+
+    cooled_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+        assert notice is not None
+        attempts = [
+            version
+            for version in notice.versions
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+        ]
+        assert len(attempts) == 1
+        assert attempts[0].source_payload["error_code"] == "INTERNAL_ENRICHMENT_ERROR"
+        for version in notice.versions:
+            version.created_at = cooled_at
+        session.commit()
+
+    retry = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": [notice_key],
+            "retry_notice_keys": [notice_key],
+            "retry_epoch": "2026-08-20",
+            "dry_run": True,
+            "include_retryable": True,
+            "chunk_size": 1,
+            "execution_limit": 1,
+            "retry_cooldown_hours": 24,
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    plan = retry.json()
+    assert plan["planned"] == 1
+    assert plan["offered"] == 1
+    assert plan["notice_keys"] == [notice_key]
+    assert not any(
+        warning.startswith("RETRY_KEYS_NOT_ELIGIBLE")
+        for warning in plan["warnings"]
+    )
+
+
+def test_dry_run_unexpected_enrichment_error_never_persists_attempt_marker(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-DRY-RUN-INTERNAL-FAILURE"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": "R26BK-DRY-RUN-FAILURE",
+            "title": "dry-run 무기록 계약 검증",
+            "agency": "가상 기관",
+            "published_at": "2026-08-19T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    assert client.post(
+        f"/api/v1/notices/{notice_key}/versions",
+        json={
+            "version_no": 1,
+            "file_sha256": "d" * 64,
+            "source_payload": {
+                "kind": "PPS_NOTICE_METADATA",
+                "attachment_manifest": [],
+            },
+        },
+    ).status_code == 201
+
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._enrich_one_notice",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic")),
+    )
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "dry_run": True,
+            "enrich_missing": True,
+            "max_notices": 1,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["results"][0]
+    assert item["status"] == "SKIPPED"
+    assert "INTERNAL_ENRICHMENT_ERROR" in item["warnings"]
+    assert "DRY_RUN_NO_WRITES" in item["warnings"]
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+        assert notice is not None
+        assert len(notice.versions) == 1
+        assert session.query(AnalysisRun).count() == 0
+        assert not notice.evaluations
 
 
 def test_backfill_plan_chunks_resumes_and_tracks_child_audits(client: TestClient) -> None:

@@ -270,23 +270,25 @@ def daily_briefing(
     # Keep the operator-facing ranking separate from the bounded analysis queue.
     # The latter must advance through the backlog instead of repeatedly sending
     # the same top three newly-ingested notices to the enrichment pipeline.
-    without_snapshot = [item for item in items if item["analysis_snapshot"] is None]
     never_attempted = [
         item
-        for item in without_snapshot
+        for item in items
         if item["analysis_coverage"]["reason_code"] == "NOT_SELECTED"
     ]
     retryable = [
         item
-        for item in without_snapshot
+        for item in items
         if item["analysis_coverage"]["reason_code"]
         in {
-            "ANALYZED",
             "HWPX_EXTRACT_FAILED",
             "PDF_EXTRACT_FAILED",
             "OPENAI_REVIEW",
             "QUOTE_UNVERIFIED",
         }
+        or (
+            item["analysis_coverage"]["reason_code"] == "ANALYZED"
+            and item["analysis_snapshot"] is None
+        )
     ]
     retryable.sort(
         key=lambda item: item["analysis_coverage"]["updated_at"]
@@ -307,7 +309,11 @@ def daily_briefing(
         for item in bounded_pending_analysis
         if item["notice_key"] not in never_attempted_keys
     ]
-    deferred_terminal_total = len(without_snapshot) - len(pending_analysis)
+    deferred_terminal_total = sum(
+        item["analysis_coverage"]["reason_code"]
+        in {"ATTACHMENT_NONE", "HWP_ONLY_UNSUPPORTED"}
+        for item in items
+    )
     eligibility_counts = dict(Counter(item["fit"]["eligibility"] for item in selected))
     return {
         "schema_version": "1.0",
