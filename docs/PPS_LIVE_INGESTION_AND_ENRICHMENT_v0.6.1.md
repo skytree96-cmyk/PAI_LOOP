@@ -9,9 +9,11 @@
 `POST /api/v1/ingestion/pps/notices`
 
 - 기존 `keyword`와 `keywords`(최대 30개)를 함께 지원한다.
-- `use_profile_keywords=true`이며 부서를 생략하면 `교육`, `컨설팅`과 24개 부서별 대표 strong keyword 1개, 총 26개의 고유 검색어를 사용한다.
+- `use_profile_keywords=true`이며 부서를 생략하면 조직 공통 discovery `교육`, `컨설팅`, `연수`, `포럼`, `위탁 운영`과 24개 부서별 대표 strong keyword 1개, 총 29개의 고유 검색어를 사용한다. discovery 검색어는 부서 추천 점수를 올리는 vocabulary가 아니라 PPS 누락 방지용 provider query다.
+- 명시적 사용자 검색어는 공통 discovery 다음, 부서 확장보다 먼저 배치한다. 따라서 30개 상한에서 사용자가 입력한 검색어가 부서 profile에 밀려 조용히 누락되지 않는다.
 - 각 검색어는 조달청 `bidNtceNm` 서버측 필터로 별도 조회한다.
 - 같은 공고번호의 수정차수·마감은 최신 유효 건 하나로 축약하며, 이전 DB 행은 `CLOSED`로 전환한다.
+- 직찰 공고처럼 `bidClseDt`가 비어 있고 공식 `opengDt`만 있는 경우 개찰시각을 보수적인 최신 검토 경계로 사용하고 metadata에 `deadline_basis=OPENING_FALLBACK`을 남긴다. 전자입찰 마감시각으로 오인하지 않으며, 첨부 분석 후 실제 제출마감 근거를 우선한다.
 - 실제 응답에서 확인한 `ntceKindNm=취소공고`는 OPEN 후보에서 제외하고 기존 행을 `CLOSED`로 전환한다.
 - 결과 키는 조직 적합도 내림차순, 게시일 최신순이다.
 - 전체 수집은 190초 wall budget과 요청당 12초/1회 retry로 제한한다. 일부 검색어만 실행되면 HTTP 200 `PARTIAL`과 경고를 반환한다.

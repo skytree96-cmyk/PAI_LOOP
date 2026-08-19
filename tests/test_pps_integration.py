@@ -31,7 +31,58 @@ def test_notice_normalisation_handles_pps_fields() -> None:
     )
     assert item["revision_no"] == "01"
     assert item["deadline"].isoformat() == "2026-08-20T17:00:00+09:00"
+    assert item["deadline_basis"] == "BID_CLOSE"
     assert item["estimated_amount"] == 120_000_000
+
+
+@pytest.mark.parametrize(
+    ("title", "opening"),
+    [
+        (
+            "2026년 의령군 공무원 역량강화교육 용역(협상에 의한 계약)",
+            "2026-08-24 18:00:00",
+        ),
+        ("2026년 수성구청 직원 YES수성 연수 위탁 용역", "2026-08-27 18:00:00"),
+    ],
+)
+def test_direct_bid_without_electronic_close_uses_explicit_opening_fallback(
+    title: str,
+    opening: str,
+) -> None:
+    item = normalise_notice(
+        {
+            "bidNtceNo": "R26BK01678610",
+            "bidNtceOrd": "000",
+            "bidNtceNm": title,
+            "bidNtceDt": "2026-08-12 11:43:20",
+            "bidClseDt": "",
+            "opengDt": opening,
+            "bidMethdNm": "직찰",
+            "cntrctCnclsMthdNm": "일반경쟁",
+        }
+    )
+
+    assert item["deadline"] is not None
+    assert item["deadline"].isoformat() == opening.replace(" ", "T") + "+09:00"
+    assert item["deadline_basis"] == "OPENING_FALLBACK"
+    assert item["direct_contract_signal"] is False
+
+
+def test_missing_close_does_not_use_opening_for_non_direct_bid() -> None:
+    item = normalise_notice(
+        {
+            "bidNtceNo": "R26BK-NON-DIRECT",
+            "bidNtceOrd": "000",
+            "bidNtceNm": "전자입찰 마감 누락 합성 공고",
+            "bidClseDt": "",
+            "opengDt": "2026-08-27 18:00:00",
+            "bidMethdNm": "전자입찰",
+            "cntrctCnclsMthdNm": "제한경쟁",
+        }
+    )
+
+    assert item["deadline"] is None
+    assert item["deadline_basis"] is None
 
 
 def test_notice_normalisation_keeps_contract_signals_without_filtering_direct_work() -> None:

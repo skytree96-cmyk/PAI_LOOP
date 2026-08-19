@@ -57,6 +57,14 @@ DETERMINISTIC_REVIEW_CODES = {
     "UNSUPPORTED_ATTACHMENT_TYPE",
 }
 
+# These are high-recall provider discovery terms, separate from department
+# ranking vocabulary.  ``연수`` and ``포럼`` cover relevant service notices
+# whose titles do not contain the stronger ``교육``/``컨설팅`` labels, while
+# ``위탁 운영`` covers the common procurement phrasing without the much
+# noisier single token ``위탁``.  Department-specific strong terms still
+# provide explainable coverage after these organization-wide queries.
+PROFILE_DISCOVERY_KEYWORDS = ("교육", "컨설팅", "연수", "포럼", "위탁 운영")
+
 _ATTACHMENT_ID_PATTERN = re.compile(r"^PPS-ATT-[a-f0-9]{24}$")
 _SAFE_QUERY_VALUE = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
 _SAFE_FILENAME = re.compile(r"^[^/\\\x00-\x1f\x7f]{1,255}$")
@@ -269,7 +277,35 @@ def build_notice_metadata(raw_item: dict[str, Any]) -> dict[str, Any]:
             cleaned = _clean_text(value)
             if cleaned:
                 metadata[public_key] = cleaned
+    bid_close = _parse_provider_datetime(raw_item.get("bidClseDt"))
+    opening = _parse_provider_datetime(raw_item.get("opengDt") or raw_item.get("rbidOpengDt"))
+    bid_method = _clean_text(raw_item.get("bidMethdNm")) or ""
+    if bid_close is None and opening is not None and "직찰" in bid_method:
+        # Additive only for PPS direct-bid rows that otherwise had no usable
+        # deadline.  Contact fields and arbitrary provider data remain outside
+        # the stored allowlist.
+        metadata["deadline_basis"] = "OPENING_FALLBACK"
+        metadata["opening_at"] = opening
     return metadata
+
+
+def _parse_provider_datetime(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    digits = re.sub(r"[^0-9]", "", str(value))
+    if len(digits) == 14:
+        try:
+            parsed = datetime.strptime(digits, "%Y%m%d%H%M%S")
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=timezone(timedelta(hours=9))).isoformat()
+    if len(digits) == 12:
+        try:
+            parsed = datetime.strptime(digits, "%Y%m%d%H%M")
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=timezone(timedelta(hours=9))).isoformat()
+    return None
 
 
 def resolve_ingestion_keywords(
@@ -317,7 +353,11 @@ def resolve_ingestion_keywords(
     else:
         profiles = list(catalog["departments"])
 
-    candidates: list[str] = list(catalog["baseline"].get("strong_keywords", []))
+    # Explicit operator terms must never be silently displaced by profile
+    # expansion.  The fixed discovery set remains first for stable daily
+    # contracts, followed by explicit terms and then per-department terms.
+    candidates: list[str] = list(PROFILE_DISCOVERY_KEYWORDS)
+    candidates.extend(explicit)
     seen = {re.sub(r"\s+", " ", item).strip().casefold() for item in candidates}
     for profile in profiles:
         strong = list(profile.get("strong_keywords", []))
@@ -334,7 +374,6 @@ def resolve_ingestion_keywords(
             if cleaned.casefold() not in seen:
                 candidates.append(cleaned)
                 seen.add(cleaned.casefold())
-    candidates.extend(explicit)
     unique: list[str] = []
     seen.clear()
     for candidate in candidates:

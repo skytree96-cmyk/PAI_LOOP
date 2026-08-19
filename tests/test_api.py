@@ -611,10 +611,10 @@ def test_profile_ingestion_queries_every_department_with_bounded_terms(
         )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["keywords_used"][:2] == ["교육", "컨설팅"]
-    assert len(body["keywords_used"]) == 26
-    assert len(set(body["keywords_used"])) == 26
-    assert body["provider_queries"] == 26
+    assert body["keywords_used"][:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
+    assert len(body["keywords_used"]) == 29
+    assert len(set(body["keywords_used"])) == 29
+    assert body["provider_queries"] == 29
     assert body["department_coverage_count"] == 24
 
 
@@ -644,7 +644,7 @@ def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
     body = response.json()
     assert body["status"] == "PARTIAL"
     assert body["provider_queries"] == 1
-    assert len(body["keywords_used"]) == 26
+    assert len(body["keywords_used"]) == 29
     assert body["department_coverage_count"] == 24
     assert any("시간 제한" in warning for warning in body["warnings"])
 

@@ -285,14 +285,24 @@ def test_profile_keyword_resolution_is_diverse_bounded_and_legacy_compatible() -
         use_profile_keywords=True,
         profile_department_ids=[],
     )
-    assert profiled[:2] == ["교육", "컨설팅"]
-    assert len(profiled) == 26
-    assert len(set(profiled)) == 26
+    assert profiled[:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
+    assert len(profiled) == 29
+    assert len(set(profiled)) == 29
     assert truncated is False
     assert department_keyword_coverage_count(
         profiled,
         profile_department_ids=[],
     ) == 24
+
+    explicit_profiled, truncated = resolve_ingestion_keywords(
+        keyword="경제안보외교",
+        keywords=[],
+        use_profile_keywords=True,
+        profile_department_ids=[],
+        limit=6,
+    )
+    assert explicit_profiled == ["교육", "컨설팅", "연수", "포럼", "위탁 운영", "경제안보외교"]
+    assert truncated is True
 
 
 def test_live_public_extraction_exposes_only_validated_procurement_evidence() -> None:
