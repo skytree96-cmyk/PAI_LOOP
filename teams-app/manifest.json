@@ -1,0 +1,50 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.28/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.28",
+  "version": "0.9.0",
+  "id": "822e414a-2804-4f64-b6c9-4ac1fa6710f1",
+  "packageName": "kr.or.kma.pailoop.teams",
+  "developer": {
+    "name": "KMA PAI LOOP",
+    "websiteUrl": "https://pai-loop-demo.onrender.com/",
+    "privacyUrl": "https://pai-loop-demo.onrender.com/",
+    "termsOfUseUrl": "https://pai-loop-demo.onrender.com/"
+  },
+  "name": {
+    "short": "PAI LOOP",
+    "full": "PAI LOOP 공공입찰 의사결정 지원"
+  },
+  "description": {
+    "short": "채널 안에서 입찰 기회와 분석 근거를 확인합니다.",
+    "full": "PAI LOOP의 공공입찰 공고, 정량 리스크, 자격 판정, 추천 부서와 근거를 Microsoft Teams 채널 또는 그룹 채팅 안에서 확인합니다."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#0E2B2A",
+  "configurableTabs": [
+    {
+      "id": "pai-loop-channel-tab",
+      "configurationUrl": "https://pai-loop-demo.onrender.com/teams-config.html",
+      "canUpdateConfiguration": false,
+      "scopes": [
+        "team",
+        "groupChat"
+      ],
+      "context": [
+        "channelTab",
+        "privateChatTab"
+      ],
+      "supportedPlatform": [
+        "desktop",
+        "mobile"
+      ]
+    }
+  ],
+  "permissions": [],
+  "validDomains": [
+    "pai-loop-demo.onrender.com",
+    "res.cdn.office.net"
+  ]
+}

@@ -19,6 +19,12 @@ services:
         generateValue: true
       - key: PAI_LOOP_PUBLIC_READ_ONLY
         value: "true"
+      - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED
+        value: "true"
+      - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT
+        value: "12"
+      - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_COOLDOWN_HOURS
+        value: "24"
       - key: PAI_LOOP_SEED_SYNTHETIC
         value: "false"
       - key: PAI_LOOP_OPENAI_MODEL

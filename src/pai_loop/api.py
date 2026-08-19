@@ -414,12 +414,30 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
 
 @router.get("/runtime-profile")
 def runtime_profile(request: Request) -> dict[str, Any]:
-    public_mode = bool(request.app.state.settings.public_read_only)
+    settings = request.app.state.settings
+    public_mode = bool(settings.public_read_only)
+    manual_analysis_enabled = bool(
+        public_mode and settings.public_manual_analysis_enabled
+    )
     return {
         "access_mode": "PUBLIC_READ_ONLY" if public_mode else "SERVER_AUTHENTICATED",
         "write_controls_enabled": not public_mode,
+        "manual_analysis_enabled": manual_analysis_enabled,
+        "manual_analysis_policy": (
+            {
+                "scope": "ONE_OPEN_PPS_NOTICE",
+                "max_attachments": 1,
+                "force": False,
+                "cooldown_hours": settings.public_manual_analysis_cooldown_hours,
+                "hourly_limit": settings.public_manual_analysis_hourly_limit,
+            }
+            if manual_analysis_enabled
+            else None
+        ),
         "data_boundary": (
-            "공개 안전 GET만 익명 허용; 변경·수집·내부 로그는 서버 인증 필요"
+            "공개 안전 조회와 제한된 단일 공고 분석 요청만 익명 허용; 내부 쓰기·로그는 서버 인증 필요"
+            if manual_analysis_enabled
+            else "공개 안전 GET만 익명 허용; 변경·수집·내부 로그는 서버 인증 필요"
             if public_mode
             else "서버 인증 정책 적용"
         ),

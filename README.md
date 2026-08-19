@@ -121,6 +121,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET` | `/api/v1/notices/{notice_key}/quantitative-estimate` | 검수된 공고 프로필의 배점표·공개 근거 기반 정량 하한~상한; 신규 미매핑 공고는 `UNSCORABLE` |
 | `POST` | `/api/v1/notices/{notice_key}/notifications/teams/mock` | Teams 카드 모의 기록 |
 | `POST` | `/api/v1/notices/analysis/batch` | PPS 신규 key의 저장된 ACCEPTED extraction materialize·평가·snapshot 집계 |
+| `POST` | `/api/v1/notices/{notice_key}/analysis/request` | 공개 웹의 same-origin 단일 OPEN PPS 공고 수동 분석; 서버 credential 비노출·직렬·quota/cooldown 적용 |
 | `POST` | `/api/v1/operations/analysis-backfills/plan` | DAILY/BACKFILL 부모 operation 생성·재개 및 최대 30건 durable segment lease |
 | `GET` | `/api/v1/operations/analysis-backfills/{job_id}` | 부모/자식 감사, 처리·진행 중·잔여량 조회 |
 | `POST` | `/api/v1/operations/analysis-backfills/{job_id}/complete` | exact `segment_id`의 모든 chunk가 terminal일 때만 lease 해제·집계 |
@@ -167,6 +168,12 @@ Data Table에 승인된 Team/Channel ID를 저장한다. Schedule Trigger 기반
 영속 중복 억제까지 검증한 v1.2 계약만 활성 상태를 유지한다. 자세한 절차는
 [Teams 실제 전송 운영 가이드](docs/TEAMS_DELIVERY_RUNBOOK_v0.9.0.md)를 따른다.
 나머지 00~04와 deployment smoke는 계속 비활성이다.
+
+웹 전체 화면은 `teams-app/PAI-LOOP-Teams-App.zip`을 업로드하면 기존 Render URL을
+Teams 채널·그룹 채팅의 configurable tab iframe으로 실행할 수 있다. CSP는 Teams와
+`*.cloud.microsoft`만 frame ancestor로 허용하고, 앱 내부 공고 상세는 우측 화살표와
+History API drawer로 열어 탭을 벗어나지 않는다. 설치·검증 절차는
+[Teams Custom Tab 가이드](docs/TEAMS_CUSTOM_TAB.md)를 따른다.
 
 `PAI_LOOP 04 - Award History Refresh`도 기본 비활성입니다. 수동 실행은 항상
 dry-run이고, schedule/sub-workflow의 저장 실행은
@@ -216,9 +223,11 @@ Team/Channel 형식, emergency disable, 영속 correlation 예약을 모두 통�
 - OpenAI에는 호출자가 명시적으로 선택한 공개 공고 텍스트만 최대 120,000자로
   전송합니다. 문서 속 지시문을 신뢰하지 않으며 strict schema와 근거-anchor
   검증을 거칩니다.
-- 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록만
-  익명 제공하며 결정·재수집·LLM 호출·Teams mock을 포함한 쓰기는 서버 인증을
-  요구합니다.
+- 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록을
+  익명 제공합니다. 선택적으로 활성화한 수동 분석 BFF만 same-origin의 OPEN PPS
+  공고 1건을 `force=false`·첨부 1개·전역 직렬·시간당 quota·공고별 cooldown으로
+  처리하며 credential은 서버에만 둡니다. 결정·재수집·Teams mock과 다른 쓰기는
+  계속 서버 인증을 요구합니다.
 - 공개 GitHub와 외부 심사용 배포에는 공개 조달공고, 비식별화한 공개 실적,
   파생 회사 자격 facts와 합성 회귀 fixture만 사용합니다. 원본 사내 파일,
   담당자 결정, 직접식별자와 비공개 메모는 포함하지 않습니다.
@@ -252,6 +261,7 @@ OpenAI 계약은
 - [Release checklist v0.4.0](docs/RELEASE_CHECKLIST_v0.4.0.md)
 - [Release checklist v0.6.0](docs/RELEASE_CHECKLIST_v0.6.0.md)
 - [Architecture source and n8n embedding](docs/architecture/README.md)
+- [Teams Custom Tab packaging and installation](docs/TEAMS_CUSTOM_TAB.md)
 - [Public data source register v0.3.0](docs/SOURCE_REGISTER_v0.3.0.md)
 - [Historical source-handling register v0.1.0](docs/SOURCE_REGISTER_v0.1.0.md)
 

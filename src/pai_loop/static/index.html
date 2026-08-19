@@ -431,6 +431,10 @@
           <span id="detailNoticeId">공고번호 —</span>
         </div>
         <div class="drawer-header__actions">
+          <button class="button button--primary manual-analysis-detail" type="button" id="manualAnalyzeButton" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><path d="m5.6 5.6 2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1" /><circle cx="12" cy="12" r="3.5" /></svg>
+            <span>이 공고 분석</span>
+          </button>
           <button class="button button--secondary source-dialog-button" type="button" id="openSourceDialogButton" aria-label="공고 원문 링크 확인">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6" /><path d="m20 4-9 9" /><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" /></svg>
             <span>공고 원문</span>
@@ -697,6 +701,7 @@
     <script id="paiLoopRuntimeConfig" type="application/json">
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
+    <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
     <script src="./app.js" defer></script>
   </body>
 </html>
