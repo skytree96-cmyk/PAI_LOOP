@@ -24,9 +24,8 @@ from .department_ranking import (
     notice_matches_user_keywords,
     parse_search_keywords,
     rank_notice_across_departments,
+    rank_notice_department_views,
     rank_notice_for_department,
-    rank_notice_review_candidates,
-    route_notice_across_regions,
 )
 from .integrations.awards import PpsAwardClient
 from .award_intelligence import build_award_intelligence
@@ -474,7 +473,7 @@ def list_notices(
         parsed_keywords = parse_search_keywords(search_keywords)
         # Resolve early so an invalid selector is a clear client error even
         # when the notice table is empty.
-        get_department_profile(department_id)
+        selected_department = get_department_profile(department_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"부서 또는 검색 키워드를 확인하세요: {exc}") from exc
 
@@ -529,33 +528,25 @@ def list_notices(
 
     ranked: list[NoticeSummary] = []
     for notice in notices:
-        selected_ranking = rank_notice_for_department(
+        department_views = rank_notice_department_views(
             title=notice.title,
             agency=notice.agency,
             category=notice.category or "",
-            department_id=department_id,
             user_keywords=parsed_keywords,
+            top_limit=5,
+            review_limit=5,
+            region_limit=2,
         )
-        top_rankings = rank_notice_across_departments(
-            title=notice.title,
-            agency=notice.agency,
-            category=notice.category or "",
-            user_keywords=parsed_keywords,
-            limit=5,
-        )
-        review_candidates = rank_notice_review_candidates(
-            title=notice.title,
-            agency=notice.agency,
-            category=notice.category or "",
-            user_keywords=parsed_keywords,
-            limit=5,
-        )
-        region_routing = route_notice_across_regions(
-            title=notice.title,
-            agency=notice.agency,
-            category=notice.category or "",
-            user_keywords=parsed_keywords,
-            limit=2,
+        selected_ranking = (
+            department_views["by_department_id"][selected_department["id"]]
+            if selected_department is not None
+            else rank_notice_for_department(
+                title=notice.title,
+                agency=notice.agency,
+                category=notice.category or "",
+                department_id=department_id,
+                user_keywords=parsed_keywords,
+            )
         )
         ranked.append(
             NoticeSummary.model_validate(
@@ -565,9 +556,13 @@ def list_notices(
                         public_view=public_read_allowed(request),
                     ).model_dump(),
                     "department_ranking": selected_ranking,
-                    "top_department_rankings": top_rankings,
-                    "department_review_candidates": review_candidates,
-                    "region_routing": region_routing,
+                    "top_department_rankings": department_views[
+                        "top_department_rankings"
+                    ],
+                    "department_review_candidates": department_views[
+                        "department_review_candidates"
+                    ],
+                    "region_routing": department_views["region_routing"],
                 }
             )
         )

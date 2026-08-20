@@ -203,6 +203,42 @@ def _priority(score: float) -> tuple[str, str]:
     return "LOW", "낮음"
 
 
+def _prepare_notice_context(
+    *,
+    title: str,
+    agency: str,
+    category: str,
+    user_keywords: str | Iterable[str] | None,
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    parsed_user_keywords = parse_search_keywords(user_keywords)
+    # A visible separator prevents a multi-word phrase from being fabricated
+    # across field boundaries (for example agency ``공공기관`` + category
+    # ``교육용역`` must not become the strong keyword ``공공기관 교육``).
+    searchable_text = _normalize(_FIELD_SEPARATOR.join((title, agency, category)))
+    business_text = _normalize(_FIELD_SEPARATOR.join((title, category)))
+    matched_baseline_strong = _matched_keywords(
+        searchable_text,
+        baseline["strong_keywords"],
+    )
+    if "교육" in matched_baseline_strong:
+        baseline_business_text = _without_institutional_education_terms(
+            _FIELD_SEPARATOR.join((title, agency, category))
+        )
+        if not _contains(baseline_business_text, "교육"):
+            matched_baseline_strong.remove("교육")
+    return {
+        "searchable_text": searchable_text,
+        "business_text": business_text,
+        "matched_user": _matched_keywords(searchable_text, parsed_user_keywords),
+        "matched_baseline_strong": matched_baseline_strong,
+        "matched_baseline_supporting": _matched_keywords(
+            searchable_text,
+            baseline["supporting_keywords"],
+        ),
+    }
+
+
 def rank_notice_for_department(
     *,
     title: str,
@@ -210,6 +246,8 @@ def rank_notice_for_department(
     category: str = "",
     department_id: str | None = None,
     user_keywords: str | Iterable[str] | None = None,
+    _department_profile: dict[str, Any] | None = None,
+    _notice_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return an explainable fit score for one notice and one search owner.
 
@@ -219,24 +257,28 @@ def rank_notice_for_department(
 
     catalog = load_department_keyword_profiles()
     baseline = catalog["baseline"]
-    department = get_department_profile(department_id)
+    department = (
+        _department_profile
+        if _department_profile is not None
+        else get_department_profile(department_id)
+    )
     weights = {**baseline["weights"], **(department.get("weights", {}) if department else {})}
-    parsed_user_keywords = parse_search_keywords(user_keywords)
-    # A visible separator prevents a multi-word phrase from being fabricated
-    # across field boundaries (for example agency ``공공기관`` + category
-    # ``교육용역`` must not become the strong keyword ``공공기관 교육``).
-    searchable_text = _normalize(_FIELD_SEPARATOR.join((title, agency, category)))
-    business_text = _normalize(_FIELD_SEPARATOR.join((title, category)))
-
-    matched_user = _matched_keywords(searchable_text, parsed_user_keywords)
-    matched_baseline_strong = _matched_keywords(searchable_text, baseline["strong_keywords"])
-    if "교육" in matched_baseline_strong:
-        baseline_business_text = _without_institutional_education_terms(
-            _FIELD_SEPARATOR.join((title, agency, category))
-        )
-        if not _contains(baseline_business_text, "교육"):
-            matched_baseline_strong.remove("교육")
-    matched_baseline_supporting = _matched_keywords(searchable_text, baseline["supporting_keywords"])
+    notice_context = _notice_context or _prepare_notice_context(
+        title=title,
+        agency=agency,
+        category=category,
+        user_keywords=user_keywords,
+        baseline=baseline,
+    )
+    searchable_text = str(notice_context["searchable_text"])
+    business_text = str(notice_context["business_text"])
+    # Keep returned ranking objects independent even when the expensive common
+    # notice matches are shared by a request-local portfolio scoring pass.
+    matched_user = list(notice_context["matched_user"])
+    matched_baseline_strong = list(notice_context["matched_baseline_strong"])
+    matched_baseline_supporting = list(
+        notice_context["matched_baseline_supporting"]
+    )
     matched_department_strong = _matched_keywords(
         searchable_text, department["strong_keywords"] if department else []
     )
@@ -398,6 +440,14 @@ def rank_notice_across_departments(
         )
         for profile in catalog["departments"]
     ]
+    return _top_business_rankings(rankings, limit=limit)
+
+
+def _top_business_rankings(
+    rankings: Iterable[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
     differentiated = [
         item
         for item in rankings
@@ -435,7 +485,15 @@ def rank_notice_review_candidates(
         for profile in catalog["departments"]
         if profile.get("group") != "지역그룹"
     ]
-    candidates = [item for item in candidates if item["recommendation_tier"] == "REVIEW"]
+    return _review_business_rankings(candidates, limit=limit)
+
+
+def _review_business_rankings(
+    rankings: Iterable[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    candidates = [item for item in rankings if item["recommendation_tier"] == "REVIEW"]
     candidates.sort(
         key=lambda item: (
             -float(item["business_score"]),
@@ -468,7 +526,15 @@ def route_notice_across_regions(
         for profile in catalog["departments"]
         if profile.get("group") == "지역그룹"
     ]
-    routes = [item for item in routes if item["recommendation_tier"] == "ROUTING"]
+    return _region_rankings(routes, limit=limit)
+
+
+def _region_rankings(
+    rankings: Iterable[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    routes = [item for item in rankings if item["recommendation_tier"] == "ROUTING"]
     routes.sort(
         key=lambda item: (
             -float(item["routing_score"]),
@@ -476,6 +542,57 @@ def route_notice_across_regions(
         )
     )
     return routes[: max(0, limit)]
+
+
+def rank_notice_department_views(
+    *,
+    title: str,
+    agency: str = "",
+    category: str = "",
+    user_keywords: str | Iterable[str] | None = None,
+    top_limit: int = 3,
+    review_limit: int = 3,
+    region_limit: int = 2,
+) -> dict[str, Any]:
+    """Build every department view from one scoring pass.
+
+    The list API exposes the same per-notice department scores through three
+    independently filtered views: top business recommendations, weaker review
+    candidates, and regional routing.  Computing those views independently
+    scored business departments twice and regional departments twice.  Keep
+    the public helpers intact, while allowing the API hot path to score every
+    department exactly once and partition the immutable results.
+    """
+
+    catalog = load_department_keyword_profiles()
+    notice_context = _prepare_notice_context(
+        title=title,
+        agency=agency,
+        category=category,
+        user_keywords=user_keywords,
+        baseline=catalog["baseline"],
+    )
+    rankings = [
+        rank_notice_for_department(
+            title=title,
+            agency=agency,
+            category=category,
+            department_id=profile["id"],
+            user_keywords=user_keywords,
+            _department_profile=profile,
+            _notice_context=notice_context,
+        )
+        for profile in catalog["departments"]
+    ]
+    return {
+        "by_department_id": {item["department_id"]: item for item in rankings},
+        "top_department_rankings": _top_business_rankings(rankings, limit=top_limit),
+        "department_review_candidates": _review_business_rankings(
+            rankings,
+            limit=review_limit,
+        ),
+        "region_routing": _region_rankings(rankings, limit=region_limit),
+    }
 
 
 def notice_matches_user_keywords(
