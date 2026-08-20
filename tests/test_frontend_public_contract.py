@@ -53,19 +53,93 @@ def test_raw_requirement_evidence_uses_only_public_source_anchors() -> None:
 def test_notice_search_contract_uses_server_query_and_open_status() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     load_body = _function_body(source, "loadApplicationData", "applyRuntimeProfile")
-    request_body = _function_body(source, "buildNoticeRequestPath", "scheduleNoticeSearch")
+    fetch_body = _function_body(source, "fetchNoticePages", "buildNoticeRequestPath")
+    request_body = _function_body(source, "buildNoticeRequestPath", "noticeRequestTimeoutMs")
+    timeout_body = _function_body(source, "noticeRequestTimeoutMs", "noticeStatusScopeForView")
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'params.set("q", query)' in request_body
     assert 'params.set("status", "OPEN")' in request_body
-    assert 'state.currentView === "closed" ? "ALL" : "OPEN"' in load_body
-    assert 'state.currentView === "closed" ? "ALL" : "OPEN"' in request_body
-    assert '["all", "new", "review", "undecided"].includes(state.currentView)' in filter_body
-    assert 'view === "closed" ? "ALL" : "OPEN"' in view_body
+    assert "noticeStatusScopeForView(state.currentView)" in load_body
+    assert "requestedStatusScope !== noticeStatusScopeForView(state.currentView)" in load_body
+    assert "noticeStatusScopeForView(state.currentView)" in request_body
+    assert '["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView)' in filter_body
+    assert "noticeStatusScopeForView(view)" in view_body
     assert 'notice.noticeStatus.toUpperCase() !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
+    assert "NOTICE_PAGE_SIZE = 200" in source
+    assert "offset += NOTICE_PAGE_SIZE" in fetch_body
+    assert 'params.set("offset", String(offset))' in request_body
+    assert 'params.set("department_id", departmentId)' in request_body
+    assert "explicitRanking" not in request_body
+    assert "NOTICE_REQUEST_TIMEOUT_MS = 30000" in source
+    assert "RANKING_REQUEST_TIMEOUT_MS = 60000" in source
+    assert "RANKING_REQUEST_TIMEOUT_MS" in timeout_body
+    assert "NOTICE_REQUEST_TIMEOUT_MS" in timeout_body
     assert 'id="noticeSearchHelp"' in INDEX_HTML.read_text(encoding="utf-8")
+
+
+def test_api_failure_is_explicit_and_demo_data_requires_demo_query() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(source, "loadApplicationData", "applyRuntimeProfile")
+    error_body = _function_body(source, "renderApplicationError", "applyRuntimeProfile")
+    demo_body = source[source.index("  function createDemoData") : source.rindex("})();")]
+
+    assert 'query.get("demo") === "1"' in load_body
+    assert "activateDemo(`서버 API 연결 실패" not in load_body
+    assert "renderApplicationError(`서버 API 연결 실패" in load_body
+    assert 'state.source = "error"' in error_body
+    assert "els.errorState.hidden = false" in error_body
+    assert "다시 시도" in error_body
+    assert "운영 API 연결 오류 · 재시도 필요" in source
+    assert demo_body.count('status: "OPEN"') == 5
+
+
+def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    bind_body = _function_body(source, "bindEvents", "refreshCurrentView")
+    dashboard_body = _function_body(source, "normalizeDashboard", "deriveDashboard")
+    derived_body = _function_body(source, "deriveDashboard", "renderAll")
+    filter_body = _function_body(source, "applyFilters", "compareNotices")
+    view_body = _function_body(source, "setView", "setLayout")
+
+    for view in ("collected", "review", "go", "urgent"):
+        assert f'data-kpi-view="{view}"' in html
+    assert html.count('class="kpi-card__action"') == 4
+    assert html.count('aria-pressed="false"') >= 4
+    assert "els.kpiViewButtons" in bind_body
+    assert "setView(button.dataset.kpiView)" in bind_body
+    assert "scrollIntoView" in bind_body
+    assert 'state.currentView === "go"' in filter_body
+    assert 'notice.recommendation !== "GO"' in filter_body
+    assert 'state.currentView === "urgent"' in filter_body
+    assert "URGENT_DEADLINE_DAYS" in filter_body
+    assert "urgentCount: derived.urgentCount" in dashboard_body
+    assert "goCount: derived.goCount" in dashboard_body
+    assert 'notice.noticeStatus.toUpperCase() !== "OPEN"' in derived_body
+    assert 'notice.noticeStatus.toUpperCase() === "OPEN" && notice.recommendation === "GO"' in derived_body
+    assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
+    assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
+    assert "resetNoticeFiltersForView()" in view_body
+    assert "state.source === \"api\" || state.loading" in view_body
+    assert "requestNeedsReload" in view_body
+    assert 'els.priorityKeywordInput.value = ""' in view_body
+    assert 'els.departmentSelect.value = "organization"' in view_body
+    assert 'els.eligibilityFilter.value = "all"' in view_body
+    assert 'els.recommendationFilter.value = "all"' in view_body
+    assert ".kpi-card__action:focus-visible" in styles
+    assert "7일" in html
+    assert "72시간" not in html
+
+
+def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'href="./styles.css?v=20260820-ui1"' in html
+    assert 'src="./app.js?v=20260820-ui1"' in html
 
 
 def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order() -> None:

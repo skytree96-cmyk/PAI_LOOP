@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from pai_loop import api as api_module
+from pai_loop import department_ranking as ranking_module
 from pai_loop.department_ranking import (
     load_department_keyword_profiles,
     notice_matches_user_keywords,
     parse_search_keywords,
     rank_notice_across_departments,
+    rank_notice_department_views,
     rank_notice_for_department,
     rank_notice_review_candidates,
     route_notice_across_regions,
@@ -161,6 +164,52 @@ def test_region_is_single_boost_and_does_not_outrank_business_expertise() -> Non
     assert central["matched_department_keywords"] == []
     assert central["department_score"] == 14
     assert rankings[0]["department_score"] > central["department_score"]
+
+
+def test_combined_department_views_preserve_results_with_one_scoring_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice = {
+        "title": "7급 승진후보자 역량평가 교육 및 팀빌딩 위탁운영",
+        "agency": "인천광역시인재개발원",
+        "category": "교육용역",
+        "user_keywords": ["승진후보자", "ESG"],
+    }
+    expected_top = rank_notice_across_departments(**notice, limit=5)
+    expected_review = rank_notice_review_candidates(**notice, limit=5)
+    expected_regions = route_notice_across_regions(**notice, limit=2)
+    expected_selected = rank_notice_for_department(
+        **notice,
+        department_id="future-competency-solution",
+    )
+
+    calls = 0
+    original = ranking_module.rank_notice_for_department
+
+    def counted_rank(**kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(ranking_module, "rank_notice_for_department", counted_rank)
+
+    combined = rank_notice_department_views(
+        **notice,
+        top_limit=5,
+        review_limit=5,
+        region_limit=2,
+    )
+
+    department_count = len(load_department_keyword_profiles()["departments"])
+    assert calls == department_count
+    assert combined["top_department_rankings"] == expected_top
+    assert combined["department_review_candidates"] == expected_review
+    assert combined["region_routing"] == expected_regions
+    assert (
+        combined["by_department_id"]["future-competency-solution"]
+        == expected_selected
+    )
+    assert len(combined["by_department_id"]) == department_count
 
 
 def test_one_supporting_keyword_is_review_only_and_two_supporting_terms_are_top() -> None:
@@ -372,6 +421,56 @@ def test_keyword_profile_and_ranked_notice_api(client: TestClient) -> None:
     assert filtered.status_code == 200
     assert [item["notice_key"] for item in filtered.json()] == ["RANK-COMPETENCY"]
     assert filtered.json()[0]["department_ranking"]["matched_user_keywords"] == ["승진후보자"]
+
+
+def test_organization_notice_api_scores_each_department_once_per_notice(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notices = (
+        {
+            "notice_key": "RANK-ORG-NONE",
+            "bid_notice_no": "RANK-ORG-001",
+            "title": "청사 전산 장비 유지보수",
+            "agency": "가상기관",
+            "deadline": "2027-01-01T09:00:00Z",
+            "category": "물품",
+        },
+        {
+            "notice_key": "RANK-ORG-TOP",
+            "bid_notice_no": "RANK-ORG-002",
+            "title": "공공기관 팀빌딩 및 조직문화 프로그램 운영",
+            "agency": "가상 공공기관",
+            "deadline": "2027-12-01T09:00:00Z",
+            "category": "교육용역",
+        },
+    )
+    for payload in notices:
+        assert client.post("/api/v1/notices", json=payload).status_code == 201
+
+    calls = 0
+    original = ranking_module.rank_notice_for_department
+
+    def counted_rank(**kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(ranking_module, "rank_notice_for_department", counted_rank)
+    monkeypatch.setattr(api_module, "rank_notice_for_department", counted_rank)
+
+    response = client.get(
+        "/api/v1/notices",
+        params={"department_id": "organization", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["notice_key"] for item in body] == ["RANK-ORG-TOP", "RANK-ORG-NONE"]
+    assert body[0]["top_department_rankings"]
+    assert body[0]["department_ranking"]["department_id"] == "organization"
+    department_count = len(load_department_keyword_profiles()["departments"])
+    assert calls == len(notices) * (department_count + 1)
 
 
 def test_ranked_notice_api_rejects_unknown_department_and_oversized_keywords(
