@@ -119,8 +119,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(schedules.length === 1, "daily workflow must have exactly one schedule trigger");
   assert(
-    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 9 * * *",
-    "daily workflow schedule must be 09:00 every day",
+    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 8 * * *",
+    "daily workflow schedule must be 08:00 every day",
   );
 
   const manualName = "Run Complete Offline Dry-Run";
@@ -302,8 +302,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     teamsSchedules.length === 1
-      && teamsSchedules[0].parameters?.rule?.interval?.[0]?.expression === "0 10 * * *",
-    "Teams delivery must run independently at 10:00 Asia/Seoul",
+      && teamsSchedules[0].parameters?.rule?.interval?.[0]?.expression === "0 9 * * *",
+    "Teams delivery must run independently at 09:00 Asia/Seoul",
   );
   const teamsByName = new Map(
     teamsDelivery.workflow.nodes.map((node) => [node.name, node]),
@@ -380,7 +380,7 @@ function validateRepositorySafetyContracts(definitions) {
       && !teamsSerialised.includes("$execution.mode")
       && !teamsSerialised.includes("schedule-manual-test")
       && JSON.stringify(teamsTargets("Run Live Teams Test")) === JSON.stringify(["Mark Manual Live Test Mode"])
-      && JSON.stringify(teamsTargets("Every Day 10:00 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
+      && JSON.stringify(teamsTargets("Every Day 09:00 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
       && JSON.stringify(teamsTargets("Mark Manual Live Test Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"])
       && JSON.stringify(teamsTargets("Mark Scheduled Live Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"]),
     "workflow 12 must derive manual-test and scheduled modes from separate constant trigger branches",

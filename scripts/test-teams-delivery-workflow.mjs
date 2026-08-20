@@ -55,9 +55,9 @@ const targets = (name, lane = 0) => (
   workflow.connections?.[name]?.main?.[lane] ?? []
 ).map((item) => item.node);
 
-const scheduled = nodes.get("Every Day 10:00 KST");
+const scheduled = nodes.get("Every Day 09:00 KST");
 assert.equal(scheduled.type, "n8n-nodes-base.scheduleTrigger");
-assert.equal(scheduled.parameters.rule.interval[0].expression, "0 10 * * *");
+assert.equal(scheduled.parameters.rule.interval[0].expression, "0 9 * * *");
 assert.equal(workflow.settings.timezone, "Asia/Seoul");
 
 const configTable = nodes.get("Read Teams Delivery Config");
@@ -79,7 +79,7 @@ assert.deepEqual(targets("Run Offline Teams Preview"), ["Build Offline Delivery 
 const liveTestTrigger = nodes.get("Run Live Teams Test");
 assert.equal(liveTestTrigger.type, "n8n-nodes-base.manualTrigger");
 assert.deepEqual(targets("Run Live Teams Test"), ["Mark Manual Live Test Mode"]);
-assert.deepEqual(targets("Every Day 10:00 KST"), ["Mark Scheduled Live Mode"]);
+assert.deepEqual(targets("Every Day 09:00 KST"), ["Mark Scheduled Live Mode"]);
 assert.deepEqual(targets("Mark Manual Live Test Mode"), ["Mark Config-Gated Delivery Mode"]);
 assert.deepEqual(targets("Mark Scheduled Live Mode"), ["Mark Config-Gated Delivery Mode"]);
 assert.deepEqual(targets("Mark Config-Gated Delivery Mode"), ["Read Teams Delivery Config"]);

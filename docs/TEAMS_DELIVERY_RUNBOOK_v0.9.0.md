@@ -3,9 +3,16 @@
 ## 목적과 경계
 
 `PAI_LOOP 12 - Teams Daily Delivery`는 W10 수집·분석 및 W11 continuation과
-분리된 전송 전용 워크플로다. 매일 10:00 Asia/Seoul에 저장된 7일 브리핑을
+분리된 전송 전용 워크플로다. 매일 09:00 Asia/Seoul에 저장된 7일 브리핑을
 한 번 읽고 Teams 채널 메시지를 만든다. Teams 장애로 W12를 다시 실행해도
 PPS 수집, 첨부 추출, OpenAI 분석, 평가 snapshot은 다시 실행되지 않는다.
+
+W10의 08:00 시작과 W12의 09:00 전송 사이 간격은 정확히 60분이다. W12에는
+W10/W11 완료를 기다리는 readiness gate가 없으며, 09:00 시점에 DB에 저장된 최신
+7일 브리핑을 그대로 읽는다. 따라서 수집·분석이 60분을 넘기면 그 시점까지 반영된
+결과만 전송될 수 있다. W12는 자동으로 기다리거나 재전송하지 않으므로 운영자는
+09:00 전에 W10 실행과 DAILY parent 잔여량을 모니터링한다. 이 경계는 이번 시간 변경에서
+의도적으로 유지한다.
 
 실제 전송은 n8n 기본 `Microsoft Teams` v2 노드의 `channelMessage/create`를
 사용한다. 이 노드는 Adaptive Card 첨부를 직접 지원하지 않으므로 실제 채널에는
@@ -106,7 +113,7 @@ mock 알림 운영 로그는 기존 7일 retention 정책의 대상이다. corre
    `sourceCalls.configTable/backend/teams=0/0/0`을 확인한다.
 5. `Run Live Teams Test`를 실행하여 설정표 조회 1회 뒤 `DELIVERY_SKIPPED`로 닫히는지
    확인한다. 이 분기는 `manual-live-test` 상수를 사용하며 n8n 실행 엔진 mode를 판별하지
-   않는다. `Every Day 10:00 KST` Schedule Trigger는 수동 live test에 사용하지 않는다.
+   않는다. `Every Day 09:00 KST` Schedule Trigger는 수동 live test에 사용하지 않는다.
 6. credential과 대상을 검토한 운영자가 설정표를 `push_enabled=true`,
    `approval_state=APPROVED`, `live_test_enabled=true`로 바꾸고 `Run Live Teams Test`를
    시작점으로 수동 live test를 정확히 1회 실행한다.

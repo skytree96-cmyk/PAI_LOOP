@@ -29,7 +29,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
 - GitHub Actions 검증, n8n 이름 기반 멱등 배포, 웹 Adaptive Card mock과 분리된
   W12 Teams 채널 전송의 fail-closed 운영
-- 매일 09:00 KST에 최근 8개 calendar day를 재조회하고 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 12건을 신규 우선 순서로 영속 큐에 예약
+- 매일 08:00 KST에 최근 8개 calendar day를 재조회하고 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 12건을 신규 우선 순서로 영속 큐에 예약
 - 분석 큐를 실행당 최대 30건, 호출당 최대 3건으로 직렬 처리하고 15분 continuation으로 재개하는 Workflow 10/11 계약; segment lease·exact chunk claim·멱등 응답·stale recovery·dead-letter 감사 포함
 - 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
 - Git 기준자료 6종을 PostgreSQL `reference_data_versions`에 불변 버전으로 동기화하고 회사 공개 facts/evidence를 평가 DB에 멱등 반영
@@ -136,7 +136,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 ## n8n 배포
 
 운영자가 실행할 통합 진입점은 `PAI_LOOP 10 - Daily Opportunity Briefing`이다.
-매일 09:00 Asia/Seoul, PPS 신규·정정 key 정확 합집합 전량과 cooled backlog 최대 12건을
+매일 08:00 Asia/Seoul, PPS 신규·정정 key 정확 합집합 전량과 cooled backlog 최대 12건을
 영속 operation으로 예약하고, 한 실행에서는 최대 30건만 3건 단위로 직렬 첨부 보강·분석·평가·snapshot한다.
 잔여분은 `PAI_LOOP 11 - Analysis Backfill and Continuation`이 15분마다 DAILY 우선으로 재개한다.
 최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/리스크 신호, 상위 최대
@@ -144,7 +144,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 mock 기록을 한 번에 검증한다. 기존 00~04는
 비활성 계약 시험/rollback 자산이며 실제 운영 시 따로 누르지 않는다.
 
-현재 09:00 자동 경로는 당일 포함 최근 8개 calendar day의 PPS 공고를
+현재 08:00 자동 경로는 당일 포함 최근 8개 calendar day의 PPS 공고를
 `교육·컨설팅·연수·포럼·위탁 운영`과 backend 조직 profile keyword로
 수집하고, ranking된 `notice_keys`의 3년 낙찰을 먼저 refresh한다(기본 1건,
 hard max 3). 그 다음 생성·정정된 공고를 누락 없이 durable queue에 넣고, 공고당
@@ -159,8 +159,8 @@ manifest에서 `publish: false`인 워크플로는 배포 후에도 비활성 �
 검증된 운영 진입점 Workflow 10과, live E2E·3개 HTTP 노드 credential 확인을 마친
 Workflow 11이 현재 `publish: true`이다. Workflow 11은
 `promotionState=verified-live-e2e`로 승격되어 15분 continuation을 수행한다.
-독립 `PAI_LOOP 12 - Teams Daily Delivery`는 분석 재실행 없이 저장 브리핑만 전송하도록
-분리되어 있으며, 실제 1건 전송과 동일 payload 중복 억제 검증을 거쳐 현재
+독립 `PAI_LOOP 12 - Teams Daily Delivery`는 매일 09:00 KST에 분석 재실행 없이
+저장 브리핑만 전송하도록 분리되어 있으며, 실제 1건 전송과 동일 payload 중복 억제 검증을 거쳐 현재
 `publish: true`와 `promotionState=verified-live-e2e`로 승격됐다. 잠긴 n8n Variables
 대신 이름이 고정된 Data Table
 `pai_loop_teams_delivery_config`의 6개 key/value 행만 읽으며, table/tenant ID는
@@ -205,7 +205,7 @@ Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 wo
 있지만 현재 앱을 다시 작성하고 인증 경계를 이중화해야 하므로 이번 호스트로
 사용하지 않습니다.
 
-사내 파일럿은 독립 웹을 기준 제품으로 두고, W12가 매일 10:00 KST에 공개
+사내 파일럿은 독립 웹을 기준 제품으로 두고, W12가 매일 09:00 KST에 공개
 allowlist로 정리한 브리핑을 `PAI 봇` Teams 채널에 전송합니다. 전송은 승인 상태,
 Team/Channel 형식, emergency disable, 영속 correlation 예약을 모두 통과해야 하며
 실패해도 W10 수집이나 W11 분석을 재실행하지 않습니다. 웹 상세의 Teams 패널은
@@ -247,7 +247,7 @@ OpenAI 계약은
 - [Department recommendation and region routing v0.4.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.4.0.md)
 - [Quantitative scoring v0.3.0](docs/QUANTITATIVE_SCORING_v0.3.0.md)
 - [Award and pricing intelligence v0.3.0](docs/PPS_AWARD_INTELLIGENCE_v0.3.0.md)
-- [Analysis backfill and 09:00 continuation runbook v0.8.0](docs/ANALYSIS_BACKFILL_AND_CONTINUATION_v0.8.0.md)
+- [Analysis backfill and 08:00 continuation runbook v0.8.0](docs/ANALYSIS_BACKFILL_AND_CONTINUATION_v0.8.0.md)
 - [PPS live ingestion and evidence enrichment v0.6.1](docs/PPS_LIVE_INGESTION_AND_ENRICHMENT_v0.6.1.md)
 - [Analysis persistence and migrations v0.6.0](docs/DATA_PERSISTENCE_AND_MIGRATIONS_v0.6.0.md)
 - [Competition and concentration risk v0.4.0](docs/PPS_AWARD_COMPETITION_RISK_v0.4.0.md)

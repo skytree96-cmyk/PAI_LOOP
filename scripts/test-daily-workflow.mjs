@@ -7,6 +7,11 @@ const manifest = JSON.parse(await fs.readFile("manifest.json", "utf8"));
 const nodes = new Map(daily.nodes.map((item) => [item.name, item]));
 const continuationNodes = new Map(continuation.nodes.map((item) => [item.name, item]));
 
+const dailySchedule = nodes.get("Every Day 08:00 KST");
+assert.equal(daily.settings.timezone, "Asia/Seoul");
+assert.equal(dailySchedule.type, "n8n-nodes-base.scheduleTrigger");
+assert.equal(dailySchedule.parameters.rule.interval[0].expression, "0 8 * * *");
+
 function executeCode(map, name, input = {}, globals = {}) {
   const target = map.get(name);
   assert(target && target.type === "n8n-nodes-base.code", `missing Code node ${name}`);

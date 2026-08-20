@@ -134,7 +134,7 @@ class AnalysisBackfillPlanRequest(ApiModel):
     notice_keys: list[str] = Field(default_factory=list, max_length=3012)
     # DAILY callers identify the exact updated/attachment-changed partition.
     # A stable notice_key can then be reopened only when its persisted work
-    # token changed, while a retried 09:00 request remains idempotent.
+    # token changed, while a retried 08:00 request remains idempotent.
     refresh_notice_keys: list[str] = Field(default_factory=list, max_length=3000)
     retry_notice_keys: list[str] = Field(default_factory=list, max_length=12)
     retry_epoch: str | None = Field(
@@ -246,7 +246,7 @@ router = APIRouter(
 
 # A single fixed namespace lock serialises the match-or-create arbitration for
 # every DAILY/BACKFILL planner. Queue-specific locks are insufficient because a
-# 09:00 DAILY request and a manual BACKFILL request can contain the same key.
+# 08:00 DAILY request and a manual BACKFILL request can contain the same key.
 # PostgreSQL provides cross-process safety; SQLite and other test dialects use
 # an in-process fallback so concurrent TestClient requests exercise the same
 # contract. 0x5041494C is the stable ASCII namespace "PAIL".
@@ -274,7 +274,7 @@ def _serialize_analysis_completion(function):
     """Use the planner arbitration order for segment completion too.
 
     Both paths acquire the fixed advisory/process lock before the parent row.
-    This prevents a 09:00 append from racing a 15-minute completion between
+    This prevents a 08:00 append from racing a 15-minute completion between
     active-parent selection and durable lease persistence.
     """
 
@@ -600,7 +600,7 @@ def _notice_work_tokens(session: Session, keys: list[str]) -> dict[str, str]:
         # Only provider-authored notice metadata is an authoritative input
         # token. Analysis itself appends OPENAI_REQUIREMENT_EXTRACTION output
         # versions; including those would make a successful child falsely
-        # supersede itself on an idempotent 09:00 retry.
+        # supersede itself on an idempotent 08:00 retry.
         latest = max(
             (
                 version
@@ -706,7 +706,7 @@ def _completed_retry_epoch_keys(
 ) -> set[str]:
     """Find retry keys already executed by a terminal DAILY operation.
 
-    A downstream n8n failure can cause the whole 09:00 workflow to be run
+    A downstream n8n failure can cause the whole 08:00 workflow to be run
     again after its analysis parent has completed.  The active-parent token is
     therefore insufficient: terminal parent+child audits form the durable
     same-epoch dedupe ledger.  A token is consumed only when the key has an
@@ -1252,7 +1252,7 @@ def plan_analysis_backfill(
         session.flush()
         planner_mutated = True
     elif payload.notice_keys and parent.completed_at is None:
-        # A 09:00 daily run may discover new/updated keys while a prior day's
+        # A 08:00 daily run may discover new/updated keys while a prior day's
         # continuation is still active. Append them ahead of the old remaining
         # queue but never re-add child-audited keys.
         children = _backfill_children(session, parent.id)
@@ -1356,7 +1356,7 @@ def plan_analysis_backfill(
         planner_mutated = True
 
     # Acquire the durable segment lease while holding the parent row lock.
-    # PostgreSQL serialises competing 09:00/15-minute planners here; SQLite
+    # PostgreSQL serialises competing 08:00/15-minute planners here; SQLite
     # ignores FOR UPDATE but remains deterministic in single-process tests.
     parent = session.scalar(
         select(IngestionJob)

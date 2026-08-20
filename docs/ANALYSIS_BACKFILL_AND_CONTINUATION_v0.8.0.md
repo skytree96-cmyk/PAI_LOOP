@@ -1,8 +1,8 @@
-# PAI_LOOP 분석 backfill·09:00 continuation 운영서 v0.8.0
+# PAI_LOOP 분석 backfill·08:00 continuation 운영서 v0.8.0
 
 ## 운영 결과
 
-Workflow 10은 매일 09:00 KST 수집 응답의 `created_notice_keys`와
+Workflow 10은 매일 08:00 KST 수집 응답의 `created_notice_keys`와
 `updated_notice_keys`를 exact union으로 만들고, 저장된 분석 큐의 우선순위 상위
 12건을 뒤에 붙인다. 신규·정정 3,000건과 backlog 12건까지 명시적으로 허용하며,
 초과 범위는 잘라내지 않고 실패한다.
@@ -22,7 +22,7 @@ stable notice key가 이미 terminal이어도 최신 notice metadata/manifest wo
 바뀌었으면 generation을 올려 기존 child 결과는 감사용으로 보존하고 새 chunk에서
 다시 분석한다. token은 authoritative `PPS_NOTICE_METADATA`와 notice metadata 시각만
 사용하며 분석 출력인 `OPENAI_REQUIREMENT_EXTRACTION` version은 제외한다. 따라서
-동일 09:00 요청 재시도는 generation을 재증가시키지 않는다.
+동일 08:00 요청 재시도는 generation을 재증가시키지 않는다.
 
 daily briefing은 합계 순서를 보존한 `notice_keys`와 함께
 `never_attempted_notice_keys`, `retryable_notice_keys`를 서로 겹치지 않는 exact
@@ -110,7 +110,7 @@ lock으로 전역 직렬화한다. 따라서 Workflow 10, Workflow 11 schedule, 
 
 Planner와 `/complete`는 같은 arbitration lock → parent row lock 순서를 사용한다.
 active parent 조회·append·segment lease는 중간 commit 없이 한 transaction으로
-끝나므로 09:00 신규 append와 15분 finalize가 겹쳐도 terminal parent에 새 key가
+끝나므로 08:00 신규 append와 15분 finalize가 겹쳐도 terminal parent에 새 key가
 유실되지 않는다.
 
 15분 schedule은 `queue_name=ANY`, `resume_only=true`를 사용한다. 활성 부모가
@@ -170,7 +170,7 @@ segment 또는 이미 다음 lease가 열린 뒤의 오래된 segment는 계속 
 - continuation 128회 초과: `DEAD_LETTER / MAX_CONTINUATIONS_EXCEEDED`; 3,012건은
   실행당 30건 기준 101회에 끝나므로 정상 범위 안이며, silent truncate
   또는 무한 반복 대신 운영자 검토로 전환한다.
-- 09:00에 이전 DAILY가 남아 있으면 새 created+updated key를 기존 미처리 key보다
+- 08:00에 이전 DAILY가 남아 있으면 새 created+updated key를 기존 미처리 key보다
   앞에 합치며, 이미 자식 감사가 있는 key는 다시 추가하지 않는다.
 
 ## n8n 배포·승격 체크

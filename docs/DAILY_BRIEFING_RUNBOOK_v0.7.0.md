@@ -1,4 +1,4 @@
-# PAI_LOOP 오전 9시 통합 브리핑 운영서 v0.7.0
+# PAI_LOOP 오전 8시 통합 브리핑 운영서 v0.7.0
 
 기준일: 2026-08-19
 
@@ -11,12 +11,12 @@
 
 이 문서는 v0.6.0을 보존한 다음 버전이다. 운영 진입점은 10번 하나뿐이며,
 00~04는 비활성 계약시험·rollback 자산이다. Workflow 10을 활성화하면 별도 live
-환경변수가 없어도 명시적 workflow 설정으로 매일 09:00 KST 수집을 수행한다.
+환경변수가 없어도 명시적 workflow 설정으로 매일 08:00 KST 수집을 수행한다.
 
 ## 예약 실행 계약
 
 ```text
-09:00 Asia/Seoul
+08:00 Asia/Seoul
   → 당일 포함 최근 8개 calendar day PPS 공고 수집·DB upsert
   → backend 조직 keyword profile로 검색어 확장·부서 ranking
   → latest valid 공고 revision별 중복 제거
@@ -209,7 +209,7 @@ Generic Header Auth credential `PAI_LOOP Render Backend`를 다음 HTTP 노드 �
 `pai-loop-10-daily-opportunity-briefing.publish`만 `true`로 바꾸고 배포한다.
 배포 validator는 `operatorEntryPoint: true`인 10번만 publish를 허용하며, 00~04와
 deployment smoke workflow는 항상 `false`를 요구한다. 따라서 이후 GitHub 배포도
-10번을 다시 비활성화하지 않고 09:00 schedule을 유지한다. Online E2E 전에 이 값을
+10번을 다시 비활성화하지 않고 08:00 schedule을 유지한다. Online E2E 전에 이 값을
 미리 바꾸지 않는다.
 
 ## 보관 범위
