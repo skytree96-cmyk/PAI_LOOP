@@ -11,7 +11,7 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260820-ui1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -157,24 +157,28 @@
 
           <section class="kpi-grid" id="opportunityKpis" aria-label="핵심 현황">
             <article class="kpi-card kpi-card--accent">
+              <button class="kpi-card__action" type="button" data-kpi-view="collected" aria-label="수집된 전체 공고 보기" aria-pressed="false"><span class="sr-only">수집된 전체 공고 보기</span></button>
               <div class="kpi-card__head"><span>수집 공고</span><span class="kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></span></div>
               <strong class="kpi-value" id="kpiNew">—</strong>
               <p><span class="trend trend--up" id="kpiNewTrend">실시간</span> 데이터베이스 총계</p>
             </article>
             <article class="kpi-card">
+              <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="자격 검토 공고 보기" aria-pressed="false"><span class="sr-only">자격 검토 공고 보기</span></button>
               <div class="kpi-card__head"><span>자격 검토</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
               <strong class="kpi-value" id="kpiReview">—</strong>
               <p><span class="trend trend--amber" id="kpiReviewTrend">자격</span> 원문 보완과 별도 집계</p>
             </article>
             <article class="kpi-card">
+              <button class="kpi-card__action" type="button" data-kpi-view="go" aria-label="GO 추천 공고 보기" aria-pressed="false"><span class="sr-only">GO 추천 공고 보기</span></button>
               <div class="kpi-card__head"><span>GO 후보</span><span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></span></div>
               <strong class="kpi-value" id="kpiGo">—</strong>
               <p><span class="trend trend--up" id="kpiGoTrend">추천</span> 검토 우선순위</p>
             </article>
             <article class="kpi-card">
+              <button class="kpi-card__action" type="button" data-kpi-view="urgent" aria-label="7일 이내 마감 공고 보기" aria-pressed="false"><span class="sr-only">7일 이내 마감 공고 보기</span></button>
               <div class="kpi-card__head"><span>마감 임박</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
               <strong class="kpi-value" id="kpiUrgent">—</strong>
-              <p><span class="trend trend--red">72시간</span> 이내 마감</p>
+              <p><span class="trend trend--red">7일</span> 이내 마감</p>
             </article>
           </section>
 
@@ -702,6 +706,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=20260820-ui1" defer></script>
   </body>
 </html>

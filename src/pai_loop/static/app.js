@@ -3,6 +3,10 @@
 
   const API_BASE = (document.documentElement.dataset.apiBase || "/api/v1").replace(/\/$/, "");
   const REQUEST_TIMEOUT_MS = 12000;
+  const NOTICE_REQUEST_TIMEOUT_MS = 30000;
+  const RANKING_REQUEST_TIMEOUT_MS = 60000;
+  const NOTICE_PAGE_SIZE = 200;
+  const URGENT_DEADLINE_DAYS = 7;
   const DECIDER_NAME = "KMA 입찰팀";
   const RUNTIME_CONFIG = readRuntimeConfig();
   const PAI_BOT_TEAMS_URL = String(RUNTIME_CONFIG.paiBotTeamsUrl || "").trim();
@@ -127,6 +131,7 @@
     });
     els.sidebar = document.querySelector(".sidebar");
     els.navItems = [...document.querySelectorAll(".nav-item[data-view]")];
+    els.kpiViewButtons = [...document.querySelectorAll("[data-kpi-view]")];
     els.layoutButtons = [...document.querySelectorAll("[data-layout]")];
     els.tabButtons = [...document.querySelectorAll("[role='tab'][data-tab]")];
     els.tabPanels = [...document.querySelectorAll("[role='tabpanel'][data-panel]")];
@@ -238,6 +243,10 @@
     els.performanceNextButton.addEventListener("click", () => changePerformancePage(1));
 
     els.navItems.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+    els.kpiViewButtons.forEach((button) => button.addEventListener("click", () => {
+      setView(button.dataset.kpiView);
+      window.requestAnimationFrame(() => els.noticeSection.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }));
     els.layoutButtons.forEach((button) => button.addEventListener("click", () => setLayout(button.dataset.layout)));
 
     els.noticeTableBody.addEventListener("click", handleNoticeActivation);
@@ -309,7 +318,7 @@
 
   async function loadApplicationData({ forceApi = false } = {}) {
     const sequence = ++state.requestSequence;
-    const requestedStatusScope = state.currentView === "closed" ? "ALL" : "OPEN";
+    const requestedStatusScope = noticeStatusScopeForView(state.currentView);
     state.noticeStatusScope = requestedStatusScope;
     setLoading(true);
     setSystemStatus("loading");
@@ -327,12 +336,16 @@
 
     const [dashboardResult, noticesResult, profilesResult, runtimeResult] = await Promise.allSettled([
       apiRequest("/dashboard"),
-      apiRequest(buildNoticeRequestPath({ statusScope: requestedStatusScope })),
+      fetchNoticePages({ statusScope: requestedStatusScope }),
       apiRequest("/departments/keyword-profiles"),
       apiRequest("/runtime-profile"),
     ]);
 
     if (sequence !== state.requestSequence) return;
+    if (requestedStatusScope !== noticeStatusScopeForView(state.currentView)) {
+      void loadApplicationData({ forceApi: true });
+      return;
+    }
 
     if (noticesResult.status === "fulfilled") {
       if (runtimeResult.status === "fulfilled") applyRuntimeProfile(runtimeResult.value);
@@ -357,9 +370,29 @@
     }
 
     const reason = humanizeError(noticesResult.reason);
-    activateDemo(`서버 API 연결 실패: ${reason}`);
-    finishLoading();
-    openNoticeFromRoute();
+    renderApplicationError(`서버 API 연결 실패: ${reason}`);
+  }
+
+  function renderApplicationError(reason) {
+    state.loading = false;
+    state.source = "error";
+    state.sourceReason = reason;
+    state.dashboard = {};
+    state.notices = [];
+    state.filteredNotices = [];
+    els.refreshButton.disabled = false;
+    els.loadingState.hidden = true;
+    els.noticeTableWrap.hidden = true;
+    els.noticeCardGrid.hidden = true;
+    els.emptyState.hidden = true;
+    els.errorState.hidden = false;
+    els.errorStateMessage.textContent = `${reason} 잠시 후 다시 시도해 주세요.`;
+    els.noticeSummary.textContent = "실데이터를 불러오지 못했습니다.";
+    hideDemoBanner();
+    setSystemStatus("error");
+    renderKpis();
+    renderNavigationCounts();
+    renderDataSource();
   }
 
   function applyRuntimeProfile(raw) {
@@ -444,17 +477,53 @@
     }
   }
 
-  function buildNoticeRequestPath({ statusScope = state.currentView === "closed" ? "ALL" : "OPEN" } = {}) {
+  async function fetchNoticePages({ statusScope = noticeStatusScopeForView(state.currentView) } = {}) {
+    const timeoutMs = noticeRequestTimeoutMs();
+    const notices = [];
+    let offset = 0;
+    while (true) {
+      const payload = await apiRequest(
+        buildNoticeRequestPath({ statusScope, limit: NOTICE_PAGE_SIZE, offset }),
+        { timeoutMs },
+      );
+      const page = extractList(payload);
+      notices.push(...page);
+      if (page.length < NOTICE_PAGE_SIZE) return notices;
+      offset += NOTICE_PAGE_SIZE;
+    }
+  }
+
+  function buildNoticeRequestPath({
+    statusScope = noticeStatusScopeForView(state.currentView),
+    limit = NOTICE_PAGE_SIZE,
+    offset = 0,
+  } = {}) {
     const params = new URLSearchParams();
     const departmentId = els.departmentSelect?.value || "organization";
     const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
     const query = els.searchInput?.value.trim() || "";
+    // Keep the organization ranking projection on the default board. The
+    // backend now computes every department once per notice, so preserving
+    // recommendation badges no longer forces the prior duplicate work.
     params.set("department_id", departmentId);
     if (searchKeywords) params.set("search_keywords", searchKeywords);
     if (query) params.set("q", query);
     if (statusScope === "OPEN") params.set("status", "OPEN");
-    params.set("limit", "200");
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
     return `/notices?${params.toString()}`;
+  }
+
+  function noticeRequestTimeoutMs() {
+    const departmentId = els.departmentSelect?.value || "organization";
+    const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
+    return departmentId !== "organization" || Boolean(searchKeywords)
+      ? RANKING_REQUEST_TIMEOUT_MS
+      : NOTICE_REQUEST_TIMEOUT_MS;
+  }
+
+  function noticeStatusScopeForView(view) {
+    return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
   }
 
   function scheduleNoticeSearch(event) {
@@ -1327,8 +1396,11 @@
       // Document-quality/R07 work is shown separately as "근거 보완".
       reviewCount: derived.reviewCount,
       qualityReviewCount: derived.qualityReviewCount,
-      goCount: numberOrNull(firstValue(kpis.go_count, kpis.goCount, kpis.go_candidates, kpis.go)) ?? derived.goCount,
-      urgentCount: numberOrNull(firstValue(source.deadline_soon, kpis.urgent_count, kpis.urgentCount, kpis.urgent)) ?? derived.urgentCount,
+      // These clickable KPIs must match their OPEN-only board filters. The
+      // backend aggregate can include already-closed notices with a future
+      // deadline, so use the loaded notice projection for both counts.
+      goCount: derived.goCount,
+      urgentCount: derived.urgentCount,
       undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? Math.max((numberOrNull(totals.notices) ?? notices.length) - (numberOrNull(totals.decisions) ?? 0), 0),
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
@@ -1346,10 +1418,11 @@
       newCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN").length,
       reviewCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN" && isActionableEligibilityReview(notice)).length,
       qualityReviewCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN" && isDocumentQualityReview(notice)).length,
-      goCount: notices.filter((notice) => notice.recommendation === "GO").length,
+      goCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN" && notice.recommendation === "GO").length,
       urgentCount: notices.filter((notice) => {
+        if (notice.noticeStatus.toUpperCase() !== "OPEN") return false;
         const days = daysUntil(notice.deadline);
-        return days !== null && days >= 0 && days <= 3;
+        return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
       }).length,
       undecidedCount: notices.filter((notice) => !notice.decision).length,
       lastSync: new Date().toISOString(),
@@ -1399,6 +1472,8 @@
       els.dataSourceLabel.textContent = state.sourceReason ? `실시간 API${accessLabel} · ${composition} · ${state.sourceReason}` : `실시간 API${accessLabel} · ${composition}`;
     } else if (state.source === "demo") {
       els.dataSourceLabel.textContent = "데모 예시 데이터 · 실제 판정 결과가 아닙니다";
+    } else if (state.source === "error") {
+      els.dataSourceLabel.textContent = "운영 API 연결 오류 · 재시도 필요";
     } else {
       els.dataSourceLabel.textContent = "데이터 출처 확인 중";
     }
@@ -1412,8 +1487,13 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (["all", "new", "review", "undecided"].includes(state.currentView) && notice.noticeStatus.toUpperCase() !== "OPEN") return false;
+      if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && notice.noticeStatus.toUpperCase() !== "OPEN") return false;
       if (state.currentView === "review" && (notice.noticeStatus.toUpperCase() !== "OPEN" || !isActionableEligibilityReview(notice))) return false;
+      if (state.currentView === "go" && notice.recommendation !== "GO") return false;
+      if (state.currentView === "urgent") {
+        const days = daysUntil(notice.deadline);
+        if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
+      }
       if (state.currentView === "undecided" && notice.decision) return false;
       if (state.currentView === "closed" && !notice.resultStatus) return false;
       if (eligibility !== "all" && notice.eligibilityStatus !== eligibility) return false;
@@ -1686,22 +1766,32 @@
   }
 
   function setView(view) {
+    const clearedServerFilters = resetNoticeFiltersForView();
     state.currentView = view;
     const titles = {
       all: ["오늘의 입찰 기회", "검토할 공고"],
+      collected: ["수집 공고", "수집된 전체 공고"],
       new: ["진행 공고", "현재 진행 중인 공고"],
       review: ["자격 검토", "원문 품질 보완과 구분된 자격 검토 공고"],
+      go: ["GO 후보", "GO 추천 공고"],
+      urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
       closed: ["결과 학습", "결과가 확인된 공고"],
       performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[view]?.[0] || titles.all[0];
     els.noticeHeading.textContent = titles[view]?.[1] || titles.all[1];
+    const navigationView = ["collected", "go", "urgent"].includes(view) ? "all" : view;
     els.navItems.forEach((item) => {
-      const active = item.dataset.view === view;
+      const active = item.dataset.view === navigationView;
       item.classList.toggle("is-active", active);
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
+    });
+    els.kpiViewButtons.forEach((button) => {
+      const active = button.dataset.kpiView === view;
+      button.setAttribute("aria-pressed", String(active));
+      button.closest(".kpi-card")?.classList.toggle("is-active", active);
     });
     const performanceView = view === "performance";
     els.opportunityHero.hidden = performanceView;
@@ -1725,15 +1815,34 @@
     }
     closeMobileMenu();
     if (!performanceView) {
-      const desiredStatusScope = view === "closed" ? "ALL" : "OPEN";
-      if (state.source === "api" && state.noticeStatusScope !== desiredStatusScope) {
+      const desiredStatusScope = noticeStatusScopeForView(view);
+      const requestNeedsReload = state.noticeStatusScope !== desiredStatusScope || clearedServerFilters;
+      if ((state.source === "api" || state.loading) && requestNeedsReload) {
         void loadApplicationData({ forceApi: true });
+      } else if (state.source === "error") {
+        renderApplicationError(state.sourceReason);
       } else {
         applyFilters();
       }
     }
     renderDataSource();
     els.mainContent.focus({ preventScroll: true });
+  }
+
+  function resetNoticeFiltersForView() {
+    const clearedServerFilters = Boolean(
+      els.searchInput.value.trim()
+      || els.priorityKeywordInput.value.trim()
+      || els.departmentSelect.value !== "organization"
+    );
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = null;
+    els.searchInput.value = "";
+    els.priorityKeywordInput.value = "";
+    els.departmentSelect.value = "organization";
+    els.eligibilityFilter.value = "all";
+    els.recommendationFilter.value = "all";
+    return clearedServerFilters;
   }
 
   function setLayout(layout) {
@@ -3263,7 +3372,7 @@
       date: new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", weekday: "short" }).format(date),
       time: new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date),
       relative,
-      urgent: days !== null && days >= 0 && days <= 3,
+      urgent: days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS,
     };
   }
 
@@ -3594,6 +3703,7 @@
     const notices = [
       {
         notice_key: "demo-2026-001",
+        status: "OPEN",
         notice_number: "20260816-001",
         title: "2026년 지역관광 경쟁력 강화 및 글로벌 마케팅 전략 수립 용역",
         agency: "한국관광공사",
@@ -3652,6 +3762,7 @@
       },
       {
         notice_key: "demo-2026-002",
+        status: "OPEN",
         notice_number: "R26BK01093812",
         title: "공공기관 조직문화 진단 및 중장기 변화관리 체계 구축",
         agency: "한국산업인력공단",
@@ -3694,6 +3805,7 @@
       },
       {
         notice_key: "demo-2026-003",
+        status: "OPEN",
         notice_number: "20260816-099",
         title: "AI 기반 지역산업 디지털 전환 교육 콘텐츠 개발 및 운영",
         agency: "부산테크노파크",
@@ -3724,6 +3836,7 @@
       },
       {
         notice_key: "demo-2026-004",
+        status: "OPEN",
         notice_number: "R26BK01094275",
         title: "국가 연구개발사업 성과분석 및 정책환류 모델 고도화",
         agency: "한국연구재단",
@@ -3764,6 +3877,7 @@
       },
       {
         notice_key: "demo-2026-005",
+        status: "OPEN",
         notice_number: "R26BK01094701",
         title: "2026년 공공서비스 고객경험 조사 및 서비스디자인 컨설팅",
         agency: "국민연금공단",
@@ -3816,7 +3930,7 @@
         go_count: notices.filter((notice) => notice.recommendation === "GO").length,
         urgent_count: notices.filter((notice) => {
           const days = daysUntil(notice.deadline);
-          return days !== null && days >= 0 && days <= 3;
+          return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
         }).length,
         undecided_count: notices.filter((notice) => !notice.decision).length,
         last_sync: now,

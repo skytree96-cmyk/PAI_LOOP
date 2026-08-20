@@ -739,12 +739,42 @@ svg {
 }
 
 .kpi-card {
+  position: relative;
   min-width: 0;
   padding: 20px 20px 17px;
   border: 1px solid rgb(22 57 53 / 0.08);
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-md);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.kpi-card:hover,
+.kpi-card:focus-within {
+  border-color: rgb(34 122 112 / 0.35);
+  box-shadow: 0 16px 38px rgb(17 38 36 / 0.15), 0 3px 9px rgb(17 38 36 / 0.07);
+  transform: translateY(-2px);
+}
+
+.kpi-card.is-active {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 2px rgb(34 122 112 / 0.14), var(--shadow-md);
+}
+
+.kpi-card__action {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.kpi-card__action:focus-visible {
+  outline: 3px solid var(--teal);
+  outline-offset: 3px;
 }
 
 .kpi-card--accent {
