@@ -1642,7 +1642,11 @@
         <td><div class="score-cell ${readinessClass}"><strong class="${analyzed ? "" : "metric-pending"}">${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${analyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
         <td><span class="risk-score ${analyzed ? riskClass(notice.riskScore) : "is-unknown"}">${analyzed ? riskDisplayValue(notice) : "미산정"}</span></td>
         <td>${analysisRecommendationPill(notice)}</td>
-        <td><span class="row-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></span></td>
+        <td>
+          <button class="row-arrow" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+          </button>
+        </td>
       </tr>`;
   }
 

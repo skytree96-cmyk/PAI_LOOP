@@ -138,8 +138,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260820-ui1"' in html
-    assert 'src="./app.js?v=20260820-ui1"' in html
+    assert 'href="./styles.css?v=20260820-ui2"' in html
+    assert 'src="./app.js?v=20260820-ui2"' in html
 
 
 def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order() -> None:

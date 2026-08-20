@@ -1524,16 +1524,26 @@ svg {
   display: grid;
   width: 29px;
   height: 29px;
+  padding: 0;
   place-items: center;
+  border: 0;
   border-radius: 8px;
   color: #7e8c89;
   background: transparent;
+  cursor: pointer;
   transition: background 130ms ease, color 130ms ease;
 }
 
-.notice-row:hover .row-arrow {
+.notice-row:hover .row-arrow,
+.row-arrow:hover,
+.row-arrow:focus-visible {
   color: var(--teal-deep);
   background: var(--teal-pale);
+}
+
+.row-arrow:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
 }
 
 .row-arrow svg {
