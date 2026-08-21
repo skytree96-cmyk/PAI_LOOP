@@ -105,6 +105,7 @@ jobs:
               "pai_loop/pricing_profiles.py",
               "pai_loop/public_award_seed.py",
               "pai_loop/quantitative_scoring.py",
+              "pai_loop/quantitative_rule_extraction.py",
               "pai_loop/daily_operations.py",
               "pai_loop/department_ranking.py",
               "pai_loop/document_extraction.py",

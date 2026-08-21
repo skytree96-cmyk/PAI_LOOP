@@ -438,6 +438,44 @@ def _create_batch_job(
                     now=datetime.now(timezone.utc),
                 ):
                     continue
+                # Exact HTTP replay must win over continuation requeue. A
+                # caller retrying a lost response presents the same segment,
+                # chunk index and ordered notice keys; returning the stored
+                # result prevents a second attachment/LLM unit. Only a newly
+                # leased chunk identity may advance the durable cursor.
+                if same_index:
+                    if list(child.notice_keys or []) != payload.notice_keys:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="chunk_index is already bound to different notice keys",
+                        )
+                    if child.status == "RUNNING":
+                        raise HTTPException(
+                            status_code=409,
+                            detail="analysis chunk is already in flight",
+                        )
+                    stored = child_config.get("result_json")
+                    if isinstance(stored, dict):
+                        return child.id, AnalysisBatchResponse.model_validate(stored)
+                    requeue_keys = child_config.get("requeue_notice_keys")
+                    if isinstance(requeue_keys, list) and all(
+                        key in requeue_keys for key in payload.notice_keys
+                    ):
+                        # The previous request failed between durable
+                        # per-attachment persistence and atomic response
+                        # finalisation. Re-open this exact claim; replay reuses
+                        # every prior attachment outcome and safely continues.
+                        child_config.pop("requeue_notice_keys", None)
+                        child.request_json = child_config
+                        child.status = "RUNNING"
+                        child.error_code = None
+                        child.completed_at = None
+                        session.commit()
+                        return child.id, None
+                    raise HTTPException(
+                        status_code=409,
+                        detail="analysis chunk was already processed",
+                    )
                 requeue_keys = child_config.get("requeue_notice_keys")
                 if isinstance(requeue_keys, list) and any(
                     key in requeue_keys for key in child_keys
@@ -448,23 +486,10 @@ def _create_batch_job(
                     continue
                 if not same_index and not overlap:
                     continue
-                if same_index and list(child.notice_keys or []) != payload.notice_keys:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="chunk_index is already bound to different notice keys",
-                    )
                 if child.status == "RUNNING":
                     raise HTTPException(
                         status_code=409,
                         detail="analysis chunk is already in flight",
-                    )
-                if same_index:
-                    stored = child_config.get("result_json")
-                    if isinstance(stored, dict):
-                        return child.id, AnalysisBatchResponse.model_validate(stored)
-                    raise HTTPException(
-                        status_code=409,
-                        detail="analysis chunk was already processed",
                     )
                 if overlap:
                     raise HTTPException(
@@ -521,6 +546,16 @@ def _store_batch_response(
                 item.notice_key for item in response.results
             ]
         job.request_json = request_json
+        # Status, counters, resumability marker, and replay payload are one
+        # atomic child transition. A crash can no longer leave a terminal job
+        # without the cursor/result needed by its parent and exact retries.
+        job.status = response.status
+        job.fetched = response.processed
+        job.created_count = response.completed
+        job.duplicate_count = response.skipped
+        job.quarantined_count = response.failed
+        job.warnings = response.warnings
+        job.completed_at = datetime.now(timezone.utc)
         session.commit()
 
 
@@ -1420,7 +1455,10 @@ def plan_analysis_backfill(
     )
     assert parent is not None  # database invariant
     config = dict(parent.request_json or {})
-    chunk_size = int(config.get("chunk_size", payload.chunk_size))
+    # v0.9.1 processes one notice per HTTP lease. This also safely migrates a
+    # parent operation created by the older three-notice workflow contract.
+    chunk_size = 1
+    config["chunk_size"] = chunk_size
     stale_after_hours = int(
         config.get("reservation_ttl_hours", payload.reservation_ttl_hours)
     )
@@ -1607,7 +1645,7 @@ def get_analysis_backfill(
     return _backfill_status(
         session,
         parent,
-        chunk_size=max(1, min(3, int(config.get("chunk_size", 3)))),
+        chunk_size=1,
         stale_after_hours=max(
             1,
             min(24, int(config.get("reservation_ttl_hours", 6))),
@@ -1659,7 +1697,7 @@ def complete_analysis_backfill(
             return _backfill_status(
                 session,
                 parent,
-                chunk_size=max(1, min(3, int(config.get("chunk_size", 3)))),
+                chunk_size=1,
                 stale_after_hours=max(
                     1,
                     min(24, int(config.get("reservation_ttl_hours", 6))),
@@ -1733,7 +1771,7 @@ def complete_analysis_backfill(
     config.pop("leased_chunks", None)
     config.pop("lease_request_token", None)
     parent.request_json = config
-    chunk_size = max(1, min(3, int(config.get("chunk_size", 3))))
+    chunk_size = 1
     ttl_hours = max(1, min(24, int(config.get("reservation_ttl_hours", 6))))
     execution_limit = max(1, min(30, int(config.get("execution_limit", 30))))
     max_continuations = max(
@@ -1815,6 +1853,16 @@ def _finish_batch_job(
         job.quarantined_count = failed
         job.warnings = warnings
         job.completed_at = datetime.now(timezone.utc)
+        request_json = dict(job.request_json or {})
+        if request_json.get("parent_job_id") and not isinstance(
+            request_json.get("result_json"), dict
+        ):
+            # Keep a failed finalisation/non-item boundary recoverable. The
+            # parent must not consume this key as terminal, and the same exact
+            # chunk retry can reopen the claim without duplicating persisted
+            # attachment calls.
+            request_json["requeue_notice_keys"] = list(job.notice_keys or [])
+            job.request_json = request_json
         session.commit()
 
 
@@ -2170,15 +2218,6 @@ def _execute_notice_analysis_batch(
     status_value = "PARTIAL" if partial else "COMPLETED"
     if status_value == "PARTIAL" and not warnings:
         warnings = ["PARTIAL_ANALYSIS"]
-    _finish_batch_job(
-        request,
-        job_id=job_id,
-        status_value=status_value,
-        completed=completed,
-        skipped=skipped,
-        failed=failed,
-        warnings=warnings,
-    )
     response = AnalysisBatchResponse(
         job_id=job_id,
         status=status_value,

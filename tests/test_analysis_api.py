@@ -10,7 +10,11 @@ from sqlalchemy import select
 
 from pai_loop.analysis_pipeline import AnalysisPipelineError
 from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
-from pai_loop.pps_enrichment import build_attachment_manifest, enrich_notice_from_pps
+from pai_loop.pps_enrichment import (
+    PPS_METADATA_SCHEMA,
+    build_attachment_manifest,
+    enrich_notice_from_pps,
+)
 from pai_loop.public_notice_seed import import_public_notice_seed
 
 
@@ -36,7 +40,7 @@ def _run_segment(client: TestClient, plan: dict) -> None:
                 "dry_run": plan["dry_run"],
                 "enrich_missing": True,
                 "max_notices": len(chunk),
-                "max_attachments_per_notice": 1,
+                "max_attachments_per_notice": 10,
                 "operation_id": plan["job_id"],
                 "segment_id": plan["segment_id"],
                 "chunk_index": chunk_index,
@@ -190,7 +194,7 @@ def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
                 "notice_keys": [NOTICE_KEY],
                 "enrich_missing": True,
                 "max_notices": 1,
-                "max_attachments_per_notice": 1,
+                "max_attachments_per_notice": 10,
             },
         )
         assert response.status_code == 200, response.text
@@ -202,9 +206,18 @@ def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
             "skipped": 0,
             "failed": 0,
             "attachments_discovered": 0,
+            "attachments_attempted": 0,
             "attachments_processed": 0,
+            "downloaded_bytes": 0,
+            "source_characters": 0,
+            "analysis_input_characters": 0,
+            "source_read_complete": True,
+            "analysis_input_complete": True,
+            "members_discovered": 0,
+            "members_processed": 0,
             "openai_calls": 0,
             "warnings": [],
+            "attachment_results": [],
         }
         assert enrichment["attempted"] == (
             enrichment["completed"] + enrichment["skipped"] + enrichment["failed"]
@@ -248,6 +261,7 @@ def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
             "file_sha256": "e" * 64,
             "source_payload": {
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": manifest,
             },
         },
@@ -277,11 +291,25 @@ def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
         lambda *_args, **_kwargs: b"synthetic-pdf",
     )
     monkeypatch.setattr(
-        "pai_loop.pps_enrichment.extract_document_text",
-        lambda *_args, **_kwargs: "입찰 참가 자격과 제출 요건을 확인합니다.",
+        "pai_loop.pps_enrichment.extract_pps_document_content",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text="입찰 참가 자격과 제출 요건을 확인합니다.",
+            complete=True,
+            warnings=(),
+            members_discovered=1,
+            members_processed=1,
+            member_issues=(),
+        ),
     )
 
-    def fail_inside_selected_enrichment(request, *, notice_id, payload):
+    def fail_inside_selected_enrichment(
+        request,
+        *,
+        notice_id,
+        payload,
+        deadline_monotonic,
+    ):
+        del deadline_monotonic
         with request.app.state.session_factory() as session:
             return enrich_notice_from_pps(
                 session,
@@ -303,7 +331,7 @@ def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
             "notice_keys": [notice_key],
             "enrich_missing": True,
             "max_notices": 1,
-            "max_attachments_per_notice": 1,
+                "max_attachments_per_notice": 10,
         },
     )
 
@@ -388,6 +416,7 @@ def test_dry_run_unexpected_enrichment_error_never_persists_attempt_marker(
             "file_sha256": "d" * 64,
             "source_payload": {
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [],
             },
         },
@@ -440,7 +469,7 @@ def test_backfill_plan_chunks_resumes_and_tracks_child_audits(client: TestClient
         "/api/v1/operations/analysis-backfills/plan",
         json={
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "max_total": 20,
             "include_retryable": False,
         },
@@ -448,8 +477,8 @@ def test_backfill_plan_chunks_resumes_and_tracks_child_audits(client: TestClient
     assert plan.status_code == 200, plan.text
     planned = plan.json()
     assert planned["planned"] == 7
-    assert [len(chunk) for chunk in planned["chunks"]] == [3, 3, 1]
-    assert planned["chunk_indices"] == [0, 1, 2]
+    assert [len(chunk) for chunk in planned["chunks"]] == [1] * 7
+    assert planned["chunk_indices"] == list(range(7))
     assert planned["segment_id"]
     assert planned["notice_keys"][0] == "MANUAL-BACKFILL-6"
 
@@ -457,7 +486,7 @@ def test_backfill_plan_chunks_resumes_and_tracks_child_audits(client: TestClient
         "/api/v1/operations/analysis-backfills/plan",
         json={
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "max_total": 20,
             "include_retryable": False,
         },
@@ -484,7 +513,7 @@ def test_backfill_plan_chunks_resumes_and_tracks_child_audits(client: TestClient
     assert final.status_code == 200
     assert final.json()["remaining"] == 0
     assert final.json()["attempted"] == 7
-    assert final.json()["child_jobs"] == 3
+    assert final.json()["child_jobs"] == 7
     assert final.json()["status"] == "PARTIAL"  # dry-run rows are SKIPPED
 
 
@@ -547,7 +576,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
             "queue_name": "DAILY",
             "notice_keys": keys,
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "max_total": 3000,
             "execution_limit": 30,
             "max_continuations": 128,
@@ -561,7 +590,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
     assert plan["remaining"] == 35
     assert plan["offered"] == 30
     assert plan["continuation_required"] is True
-    assert len(plan["chunks"]) == 10
+    assert len(plan["chunks"]) == 30
 
     # A lost HTTP response causes the same n8n execution to retry the plan
     # node. The lease owner token must replay the exact response, not turn the
@@ -572,7 +601,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
             "queue_name": "DAILY",
             "notice_keys": keys,
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "max_total": 3000,
             "execution_limit": 30,
             "max_continuations": 128,
@@ -590,7 +619,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
         json={
             "queue_name": "DAILY",
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "max_total": 3000,
             "execution_limit": 30,
             "max_continuations": 128,
@@ -620,7 +649,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
         json={
             "queue_name": "DAILY",
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "max_total": 3000,
             "execution_limit": 30,
             "max_continuations": 128,
@@ -630,7 +659,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
     assert resumed.json()["job_id"] == plan["job_id"]
     assert resumed.json()["notice_keys"] == keys[30:]
     assert resumed.json()["segment_id"] != plan["segment_id"]
-    assert resumed.json()["chunk_indices"] == [10, 11]
+    assert resumed.json()["chunk_indices"] == list(range(30, 35))
     assert resumed.json()["continuation_round"] == 2
 
     _run_segment(client, resumed.json())
@@ -728,6 +757,7 @@ def test_daily_updated_key_reopens_only_that_key_with_version_aware_generation(
             "file_sha256": "1" * 64,
             "source_payload": {
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [],
             },
         },
@@ -739,7 +769,7 @@ def test_daily_updated_key_reopens_only_that_key_with_version_aware_generation(
             "queue_name": "DAILY",
             "notice_keys": keys,
             "dry_run": True,
-            "chunk_size": 3,
+            "chunk_size": 1,
             "execution_limit": 3,
         },
     ).json()
@@ -759,6 +789,7 @@ def test_daily_updated_key_reopens_only_that_key_with_version_aware_generation(
             "file_sha256": "2" * 64,
             "source_payload": {
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [{"attachment_id": "corrected-rfp"}],
             },
         },
@@ -768,7 +799,7 @@ def test_daily_updated_key_reopens_only_that_key_with_version_aware_generation(
         "notice_keys": [keys[0]],
         "refresh_notice_keys": [keys[0]],
         "dry_run": True,
-        "chunk_size": 3,
+            "chunk_size": 1,
         "execution_limit": 3,
     }
     refreshed = client.post(
@@ -864,6 +895,7 @@ def test_superseded_stale_running_generation_is_terminalized_before_requeue(
             "file_sha256": "a" * 64,
             "source_payload": {
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [],
             },
         },
@@ -912,6 +944,7 @@ def test_superseded_stale_running_generation_is_terminalized_before_requeue(
             "file_sha256": "b" * 64,
             "source_payload": {
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [{"attachment_id": "new-input"}],
             },
         },
@@ -956,7 +989,7 @@ def test_superseded_stale_running_generation_is_terminalized_before_requeue(
             "dry_run": True,
             "enrich_missing": True,
             "max_notices": 1,
-            "max_attachments_per_notice": 1,
+                "max_attachments_per_notice": 10,
             "operation_id": first["job_id"],
             "segment_id": second["segment_id"],
             "chunk_index": second["chunk_indices"][0],
@@ -1188,7 +1221,7 @@ def test_legacy_analyzed_without_snapshot_is_retried_once_with_zero_openai_calls
             "dry_run": False,
             "enrich_missing": True,
             "max_notices": 1,
-            "max_attachments_per_notice": 1,
+                "max_attachments_per_notice": 10,
             "operation_id": plan["job_id"],
             "segment_id": plan["segment_id"],
             "chunk_index": plan["chunk_indices"][0],
@@ -1280,7 +1313,7 @@ def test_completed_daily_parent_dedupes_same_epoch_retry_after_pipeline_failure(
             "dry_run": False,
             "enrich_missing": True,
             "max_notices": 1,
-            "max_attachments_per_notice": 1,
+                "max_attachments_per_notice": 10,
             "operation_id": first_plan["job_id"],
             "segment_id": first_plan["segment_id"],
             "chunk_index": first_plan["chunk_indices"][0],
@@ -1832,7 +1865,7 @@ def test_maximum_daily_plan_reaches_zero_within_128_continuations(
                 window_json={"scope": "SYNTHETIC_BOUNDARY"},
                 request_json={
                     "queue_name": "DAILY",
-                    "chunk_size": 3,
+            "chunk_size": 1,
                     "execution_limit": execution_limit,
                     "max_continuations": 128,
                     "continuation_round": required_rounds,

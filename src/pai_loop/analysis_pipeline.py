@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -66,6 +66,7 @@ from .quantitative_scoring import (
 )
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
+    PPS_METADATA_SCHEMA,
     PPS_PROCESSING_VERSION,
     _validated_manifest_attachments,
 )
@@ -77,6 +78,24 @@ SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
 MATERIALIZED_KIND = "ANALYSIS_PIPELINE_MATERIALIZATION"
 RUN_KIND = "FULL_REVIEW"
+_LEGACY_PUBLIC_PROMPT_VERSION = "pai-loop-extraction-0.2.1"
+_LEGACY_PUBLIC_SCHEMA_VERSION = "pai-loop-requirements-0.1.0"
+
+
+def _is_legacy_curated_public_source(
+    payload: Mapping[str, Any],
+    *,
+    prompt_version: str,
+) -> bool:
+    """Allow only the exact reviewed demo seed after the live schema bump."""
+
+    return (
+        payload.get("source_kind") == "PUBLIC_NOTICE"
+        and payload.get("classification") == "PUBLIC_PROCUREMENT_DERIVED"
+        and payload.get("prompt_version") == _LEGACY_PUBLIC_PROMPT_VERSION
+        and payload.get("schema_version") == _LEGACY_PUBLIC_SCHEMA_VERSION
+        and prompt_version == PROMPT_VERSION
+    )
 
 _PASS_RULE_BY_CATEGORY = {
     "ENTITY": "P-ENTITY",
@@ -299,10 +318,25 @@ def _select_source_versions(
             None,
         )
         if latest_metadata is not None:
+            metadata_schema_current = (
+                latest_metadata.source_payload.get("schema_version")
+                == PPS_METADATA_SCHEMA
+            )
+            raw_manifest_values = list(
+                latest_metadata.source_payload.get("attachment_manifest", [])
+            )
+            raw_manifest = [
+                dict(item)
+                for item in raw_manifest_values
+                if isinstance(item, dict)
+            ]
+            current_manifest_sha256 = _digest(raw_manifest_values)
             allowed_pps_sources = {
                 str(item.get("attachment_id")): _digest(item)
-                for item in latest_metadata.source_payload.get("attachment_manifest", [])
-                if isinstance(item, dict) and isinstance(item.get("attachment_id"), str)
+                for item in raw_manifest
+                if metadata_schema_current
+                and isinstance(item, dict)
+                and isinstance(item.get("attachment_id"), str)
             }
             versions = [
                 version
@@ -316,6 +350,8 @@ def _select_source_versions(
                     version.source_payload.get("attachment_id") in allowed_pps_sources
                     and version.source_payload.get("manifest_sha256")
                     == allowed_pps_sources.get(version.source_payload.get("attachment_id"))
+                    and version.source_payload.get("current_manifest_sha256")
+                    == current_manifest_sha256
                 )
             ]
 
@@ -328,7 +364,11 @@ def _select_source_versions(
                     "an explicitly selected version is not an OpenAI requirement extraction"
                 )
             continue
-        if payload.get("prompt_version") != prompt_version:
+        legacy_curated_public = _is_legacy_curated_public_source(
+            payload,
+            prompt_version=prompt_version,
+        )
+        if payload.get("prompt_version") != prompt_version and not legacy_curated_public:
             if source_version_ids is not None and version.id in requested:
                 raise AnalysisPipelineSourceError(
                     "an explicitly selected source has a different prompt version"
@@ -363,12 +403,16 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
     model_name = payload.get("model") if isinstance(payload.get("model"), str) else None
     error_code = payload.get("error_code") if isinstance(payload.get("error_code"), str) else None
     warnings: list[str] = []
+    legacy_curated_public = _is_legacy_curated_public_source(
+        payload,
+        prompt_version=prompt_version,
+    )
 
     if document_sha256 != version.file_sha256.casefold():
         warnings.append("DOCUMENT_SHA_MISMATCH")
-    if stored_prompt != prompt_version:
+    if stored_prompt != prompt_version and not legacy_curated_public:
         warnings.append("PROMPT_VERSION_MISMATCH")
-    if schema_version != SCHEMA_VERSION:
+    if schema_version != SCHEMA_VERSION and not legacy_curated_public:
         warnings.append("UNSUPPORTED_SCHEMA_VERSION")
     if (
         payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
@@ -388,6 +432,11 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         # any extracted requirement or evidence.
         normalized_result = copy.deepcopy(raw_result)
         normalized_result.setdefault("missing_or_unreadable", [])
+        if legacy_curated_public:
+            # This historical public fixture predates quantitative-table
+            # extraction. Empty fields mean "not captured", not verified N/A.
+            normalized_result.setdefault("quantitative_tables", [])
+            normalized_result.setdefault("quantitative_table_not_applicable", None)
         try:
             data = ExtractionPayload.model_validate(normalized_result)
         except ValidationError:
@@ -424,8 +473,8 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         and status == "ACCEPTED"
         and version.extraction_status in {"ACCEPTED", "COMPLETE"}
         and document_sha256 == version.file_sha256.casefold()
-        and stored_prompt == prompt_version
-        and schema_version == SCHEMA_VERSION
+        and (stored_prompt == prompt_version or legacy_curated_public)
+        and (schema_version == SCHEMA_VERSION or legacy_curated_public)
         and anchor_identity_ok
     )
     complete = (
@@ -955,12 +1004,17 @@ def _current_pps_manifest_basis(
     )
     if metadata is None or not isinstance(metadata.source_payload, dict):
         return None
+    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
     raw_manifest = [
         dict(item)
-        for item in metadata.source_payload.get("attachment_manifest", [])
+        for item in raw_manifest_values
         if isinstance(item, dict)
     ]
+    current_manifest_sha256 = _digest(raw_manifest_values)
     validated_manifest, invalid_count = _validated_manifest_attachments(raw_manifest)
+    invalid_count += len(raw_manifest_values) - len(raw_manifest)
+    if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
+        invalid_count = max(1, invalid_count)
     expected = [
         {
             "attachment_id": str(item.get("attachment_id") or ""),
@@ -978,6 +1032,7 @@ def _current_pps_manifest_basis(
             or payload.get("source_kind") != "PPS_PUBLIC_ATTACHMENT"
             or payload.get("prompt_version") != prompt_version
             or payload.get("processing_version") != PPS_PROCESSING_VERSION
+            or payload.get("current_manifest_sha256") != current_manifest_sha256
         ):
             continue
         attachment_id = str(payload.get("attachment_id") or "")
@@ -997,13 +1052,13 @@ def _current_pps_manifest_basis(
     coverage_complete = (
         bool(expected)
         and invalid_count == 0
-        and len(expected) == len(raw_manifest)
+        and len(expected) == len(raw_manifest_values)
         and len(expected_by_id) == len(expected)
         and audited_ids == expected_ids
     )
     return {
         "metadata_version_id": metadata.id,
-        "manifest_sha256": _digest(raw_manifest),
+        "manifest_sha256": current_manifest_sha256,
         "expected_attachments": sorted(
             expected,
             key=lambda item: (item["attachment_id"], item["manifest_sha256"]),
@@ -1249,6 +1304,16 @@ def run_analysis_pipeline(
             )
             quantitative = estimate_for_notice(notice)
             quantitative_catalog = load_quantitative_profile_catalog()
+            dynamic_quantitative_profile = quantitative.ruleset_version.startswith(
+                "dynamic-quantitative-rules-"
+            )
+            quantitative_profile_basis = (
+                quantitative.ruleset_version
+                if dynamic_quantitative_profile
+                else str(
+                    quantitative_catalog.get("profile_version") or "UNVERSIONED"
+                )
+            )
             department_catalog = load_department_keyword_profiles()
             department_rankings = rank_notice_across_departments(
                 title=notice.title,
@@ -1585,9 +1650,13 @@ def run_analysis_pipeline(
                 department_profile_version=reference_versions.get(
                     "department_keyword_profiles", str(department_catalog["version"])
                 ),
-                quantitative_profile_version=reference_versions.get(
-                    "quantitative_notice_profiles",
-                    str(quantitative_catalog.get("profile_version") or "UNVERSIONED"),
+                quantitative_profile_version=(
+                    quantitative_profile_basis
+                    if dynamic_quantitative_profile
+                    else reference_versions.get(
+                        "quantitative_notice_profiles",
+                        quantitative_profile_basis,
+                    )
                 ),
                 pricing_profile_version=reference_versions.get(
                     "pricing_method_profiles",
@@ -1615,9 +1684,7 @@ def run_analysis_pipeline(
                     "extraction_schema": SCHEMA_VERSION,
                     "company_profile": profile_version,
                     "department_profile": str(department_catalog["version"]),
-                    "quantitative_profile": str(
-                        quantitative_catalog.get("profile_version") or "UNVERSIONED"
-                    ),
+                    "quantitative_profile": quantitative_profile_basis,
                     "quantitative_engine": QUANTITATIVE_ENGINE_VERSION,
                     "pricing_profile": reference_versions.get(
                         "pricing_method_profiles",
@@ -1807,6 +1874,7 @@ def run_analysis_pipeline(
                         basis_json={
                             "input_sha256": input_sha256,
                             "ruleset_version": quantitative.ruleset_version,
+                            "rule_source_status": quantitative.rule_source_status,
                             "total_max_points": quantitative.total_max_points,
                             "confirmed_points": quantitative.confirmed_points,
                             "evidence_coverage_pct": quantitative.evidence_coverage_pct,
