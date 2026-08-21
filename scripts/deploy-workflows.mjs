@@ -197,6 +197,8 @@ function validateRepositorySafetyContracts(definitions) {
       && serialised.includes("retry_notice_keys")
       && serialised.includes("retry_epoch")
       && serialised.includes("request_token")
+      && serialised.includes("source_ingestion_job_id")
+      && serialised.includes("source_material_notice_keys")
       && serialised.includes("$execution.id")
       && serialised.includes("execution_limit: 30")
       && serialised.includes("max_continuations: 128")

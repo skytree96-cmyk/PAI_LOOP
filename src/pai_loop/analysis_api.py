@@ -14,6 +14,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from .analysis_pipeline import AnalysisPipelineError, run_analysis_pipeline
 from .auth import require_api_key
+from .daily_analysis_scope import (
+    MATERIAL_SCOPE_VERSION,
+    MAX_MATERIAL_NOTICE_KEYS,
+    canonical_material_notice_keys,
+    material_scope_sha256,
+    validated_material_scope,
+)
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .pps_enrichment import (
     MAX_ATTACHMENTS_IN_MANIFEST,
@@ -191,6 +198,19 @@ class AnalysisBackfillPlanRequest(ApiModel):
         max_length=120,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$",
     )
+    # W10 binds every DAILY plan to the exact material key partition emitted
+    # by one durable PPS ingestion audit. W11 resume polling intentionally
+    # omits these fields and preserves the binding already stored on parent.
+    source_ingestion_job_id: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-fA-F-]{36}$",
+    )
+    source_material_notice_keys: list[str] | None = Field(
+        default=None,
+        max_length=MAX_MATERIAL_NOTICE_KEYS,
+    )
     dry_run: bool = False
     # Multi-attachment notices can use the full provider manifest (up to ten
     # files), so a durable operation lease is intentionally one notice. This
@@ -219,6 +239,21 @@ class AnalysisBackfillPlanRequest(ApiModel):
             raise ValueError("notice_keys must be unique")
         return cleaned
 
+    @field_validator("source_material_notice_keys")
+    @classmethod
+    def validate_source_material_notice_keys(
+        cls,
+        value: list[str] | None,
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [item.strip() for item in value]
+        if any(not item or len(item) > 160 for item in cleaned):
+            raise ValueError("source_material_notice_keys must contain bounded keys")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("source_material_notice_keys must be unique")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_resume_mode(self) -> "AnalysisBackfillPlanRequest":
         if self.queue_name == "ANY" and (
@@ -243,6 +278,21 @@ class AnalysisBackfillPlanRequest(ApiModel):
                 raise ValueError("retry_epoch is required with retry_notice_keys")
         elif self.retry_epoch is not None:
             raise ValueError("retry_epoch requires retry_notice_keys")
+        binding_fields = (
+            self.source_ingestion_job_id,
+            self.source_material_notice_keys,
+        )
+        if any(value is not None for value in binding_fields) and any(
+            value is None for value in binding_fields
+        ):
+            raise ValueError(
+                "source_ingestion_job_id and source_material_notice_keys are required together"
+            )
+        if self.source_ingestion_job_id is not None:
+            if self.queue_name != "DAILY" or self.resume_only:
+                raise ValueError("source ingestion binding is allowed only for DAILY planning")
+            if not set(self.source_material_notice_keys or []).issubset(self.notice_keys):
+                raise ValueError("source material keys must be a subset of notice_keys")
         return self
 
 
@@ -941,6 +991,43 @@ def _reserved_backfill_keys(
     return reserved
 
 
+def _daily_source_binding(
+    session: Session,
+    payload: AnalysisBackfillPlanRequest,
+) -> dict[str, Any]:
+    if payload.source_ingestion_job_id is None:
+        return {}
+    source = session.get(IngestionJob, payload.source_ingestion_job_id)
+    if (
+        source is None
+        or source.source != "PPS"
+        or source.mode != "LIVE"
+        or source.status != "COMPLETED"
+        or source.completed_at is None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="DAILY source ingestion must be a completed live PPS audit",
+        )
+    source_config = source.request_json if isinstance(source.request_json, dict) else {}
+    stored_keys = validated_material_scope(source_config)
+    requested_keys = canonical_material_notice_keys(
+        payload.source_material_notice_keys or []
+    )
+    if stored_keys is None or requested_keys != stored_keys:
+        raise HTTPException(
+            status_code=409,
+            detail="DAILY source material scope does not match the PPS audit",
+        )
+    return {
+        "source_ingestion_job_id": source.id,
+        "source_material_scope_version": MATERIAL_SCOPE_VERSION,
+        "source_material_notice_keys": stored_keys,
+        "source_material_notice_key_count": len(stored_keys),
+        "source_material_notice_keys_sha256": material_scope_sha256(stored_keys),
+    }
+
+
 def _select_backfill_notice_keys(
     session: Session,
     payload: AnalysisBackfillPlanRequest,
@@ -1177,6 +1264,7 @@ def plan_analysis_backfill(
     """
 
     now = datetime.now(timezone.utc)
+    source_binding = _daily_source_binding(session, payload)
     parent: IngestionJob | None = None
     planner_mutated = False
     if payload.resume_job_id is not None:
@@ -1316,6 +1404,7 @@ def plan_analysis_backfill(
                     for key in initial_retry_eligible
                     if payload.retry_epoch is not None
                 },
+                **source_binding,
             },
             matched=len(notice_keys),
             notice_keys=notice_keys,
@@ -1429,6 +1518,7 @@ def plan_analysis_backfill(
         parent_config["work_tokens"] = work_tokens
         parent_config["work_generations"] = work_generations
         parent_config["retry_tokens"] = retry_tokens
+        parent_config.update(source_binding)
         parent.request_json = parent_config
         incoming_set = set(incoming)
         attempted_order = [
@@ -1453,6 +1543,13 @@ def plan_analysis_backfill(
     )
     assert parent is not None  # database invariant
     config = dict(parent.request_json or {})
+    if source_binding:
+        source_keys = set(source_binding["source_material_notice_keys"])
+        if not source_keys.issubset(set(parent.notice_keys or [])):
+            raise HTTPException(
+                status_code=409,
+                detail="DAILY parent does not cover the bound PPS material scope",
+            )
     # v0.9.1 processes one notice per HTTP lease. This also safely migrates a
     # parent operation created by the older three-notice workflow contract.
     chunk_size = 1

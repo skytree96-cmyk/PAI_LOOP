@@ -818,7 +818,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ queue_name: 'DAILY', notice_keys: $json.analysisBatch.noticeKeys, refresh_notice_keys: $json.analysisBatch.updatedNoticeKeys, retry_notice_keys: $json.analysisBatch.retryableBacklogKeys, retry_epoch: $json.analysisBatch.retryableBacklogKeys.length ? $json.analysisBatch.retryEpoch : undefined, request_token: 'w10:' + $execution.id + ':' + $json.ingestion.jobId, dry_run: $json.analysisBatch.dryRun, chunk_size: 1, max_total: 3012, execution_limit: 30, max_continuations: 128, include_retryable: false, retry_cooldown_hours: 24, reservation_ttl_hours: 6, resume_active: true }) }}",
+        "body": "={{ JSON.stringify({ queue_name: 'DAILY', notice_keys: $json.analysisBatch.noticeKeys, refresh_notice_keys: $json.analysisBatch.updatedNoticeKeys, retry_notice_keys: $json.analysisBatch.retryableBacklogKeys, retry_epoch: $json.analysisBatch.retryableBacklogKeys.length ? $json.analysisBatch.retryEpoch : undefined, request_token: 'w10:' + $execution.id + ':' + $json.ingestion.jobId, source_ingestion_job_id: $json.ingestion.jobId, source_material_notice_keys: $json.analysisBatch.newNoticeKeys, dry_run: $json.analysisBatch.dryRun, chunk_size: 1, max_total: 3012, execution_limit: 30, max_continuations: 128, include_retryable: false, retry_cooldown_hours: 24, reservation_ttl_hours: 6, resume_active: true }) }}",
         "options": {
           "timeout": 120000
         }

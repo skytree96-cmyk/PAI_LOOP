@@ -131,14 +131,16 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET/POST` | `/api/v1/notices/{notice_key}/outcomes` | 실제 입찰·낙찰·실주 결과 조회/멱등 upsert |
 | `GET` | `/api/v1/notifications/mock` | Teams 모의 로그 조회 |
 | `GET` | `/api/v1/operations/daily-briefing` | 외부 호출 없이 저장된 최근 7일 공고 브리핑 조립 |
-| `GET` | `/api/v1/operations/teams-daily-readiness` | 오늘 KST PPS·DAILY parent 완료 여부를 mutation 없이 fail-closed 조회 |
+| `GET` | `/api/v1/operations/teams-daily-readiness` | 오늘 KST PPS ingestion ID·exact material-key scope와 DAILY parent coverage/완료 여부를 mutation 없이 fail-closed 조회 |
 | `POST` | `/api/v1/operations/retention` | 완료 수집로그·mock 알림 7일 보관 preview/apply |
 
 ## n8n 배포
 
 운영자가 실행할 통합 진입점은 `PAI_LOOP 10 - Daily Opportunity Briefing`이다.
 매일 08:00 Asia/Seoul, PPS 신규·정정 key 정확 합집합 전량과 cooled backlog 최대 12건을
-영속 operation으로 예약하고, 한 실행에서는 최대 30건만 3건 단위로 직렬 첨부 보강·분석·평가·snapshot한다.
+영속 operation으로 예약한다. DAILY parent에는 source PPS ingestion ID와 exact 신규·정정
+key scope digest/count를 함께 기록해 09:00 readiness가 다른 parent를 오인하지 못하게 한다.
+한 실행에서는 최대 30건만 3건 단위로 직렬 첨부 보강·분석·평가·snapshot한다.
 잔여분은 `PAI_LOOP 11 - Analysis Backfill and Continuation`이 15분마다 DAILY 우선으로 재개한다.
 최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/리스크 신호, 상위 최대
 3건의 bounded 3년 낙찰 refresh와 backend Teams 통합 카드

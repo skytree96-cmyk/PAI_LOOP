@@ -7,6 +7,11 @@ from fastapi.testclient import TestClient
 import pytest
 
 from pai_loop.main import create_app
+from pai_loop.daily_analysis_scope import (
+    MATERIAL_SCOPE_VERSION,
+    material_scope_fields,
+    material_scope_sha256,
+)
 from pai_loop.models import IngestionJob, Notice
 
 
@@ -29,15 +34,17 @@ def _add_ingestion(
     updated: int = 0,
     matched: int = 0,
     created_at: datetime | None = None,
+    material_keys: list[str] | None = None,
 ) -> str:
     now = created_at or _now()
+    scope = material_scope_fields(material_keys or [])
     with client.app.state.session_factory() as session:
         job = IngestionJob(
             source="PPS",
             mode="LIVE",
             status=status,
             window_json={"from": _kst_date(), "to": _kst_date()},
-            request_json={"page_size": 100, "max_pages": 5},
+            request_json={"page_size": 100, "max_pages": 5, **scope},
             created_count=created,
             updated_count=updated,
             matched=matched,
@@ -60,6 +67,8 @@ def _add_daily_parent(
     completed: bool,
     created_at: datetime | None = None,
     lease_started_at: datetime | None = None,
+    source_ingestion_job_id: str | None = None,
+    source_material_keys: list[str] | None = None,
 ) -> str:
     now = _now()
     config: dict[str, object] = {
@@ -76,6 +85,17 @@ def _add_daily_parent(
     if lease_started_at is not None:
         config["lease_started_at"] = lease_started_at.isoformat()
         config["lease_id"] = "11111111-1111-4111-8111-111111111111"
+    if source_ingestion_job_id is not None:
+        source_keys = sorted(source_material_keys or [])
+        config.update(
+            {
+                "source_ingestion_job_id": source_ingestion_job_id,
+                "source_material_scope_version": MATERIAL_SCOPE_VERSION,
+                "source_material_notice_keys": source_keys,
+                "source_material_notice_key_count": len(source_keys),
+                "source_material_notice_keys_sha256": material_scope_sha256(source_keys),
+            }
+        )
     with client.app.state.session_factory() as session:
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
@@ -227,8 +247,31 @@ def test_readiness_allows_verified_zero_work_day_without_daily_parent(
 def test_empty_fallback_refuses_material_ingestion_or_pending_queue(
     client: TestClient,
 ) -> None:
-    _add_ingestion(client, status="COMPLETED", created=1, matched=1)
+    _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=["PPS-NOT-PLANNED-001"],
+    )
     body = _readiness(client)
+    assert (body["status"], body["reason_code"]) == (
+        "NOT_PLANNED",
+        "DAILY_ANALYSIS_NOT_PLANNED",
+    )
+
+
+def test_empty_fallback_refuses_nonempty_scope_even_with_zero_audit_counts(
+    client: TestClient,
+) -> None:
+    _add_ingestion(
+        client,
+        status="COMPLETED",
+        material_keys=["PPS-SCOPE-COUNT-MISMATCH"],
+    )
+
+    body = _readiness(client)
+
     assert (body["status"], body["reason_code"]) == (
         "NOT_PLANNED",
         "DAILY_ANALYSIS_NOT_PLANNED",
@@ -265,12 +308,21 @@ def test_empty_fallback_refuses_unplanned_stored_analysis_queue(
 def test_active_daily_parent_blocks_delivery_until_terminal(
     client: TestClient,
 ) -> None:
-    _add_ingestion(client, status="COMPLETED", created=1, matched=1)
+    key = "PPS-RUNNING-001"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[key],
+    )
     parent_id = _add_daily_parent(
         client,
         status="RUNNING",
-        notice_keys=["PPS-RUNNING-001"],
+        notice_keys=[key],
         completed=False,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[key],
     )
     body = _readiness(client)
     assert body["status"] == "RUNNING"
@@ -284,14 +336,22 @@ def test_active_daily_parent_blocks_delivery_until_terminal(
 def test_completed_daily_parent_is_ready_only_with_exact_terminal_coverage(
     client: TestClient,
 ) -> None:
-    _add_ingestion(client, status="COMPLETED", created=2, matched=2)
     keys = ["PPS-COMPLETE-001", "PPS-COMPLETE-002"]
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=2,
+        matched=2,
+        material_keys=keys,
+    )
     parent_id = _add_daily_parent(
         client,
         status="COMPLETED",
         notice_keys=keys,
         child_outcomes={key: "COMPLETED" for key in keys},
         completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=keys,
     )
     body = _readiness(client)
     assert body["status"] == "READY"
@@ -314,13 +374,22 @@ def test_completed_daily_parent_is_ready_only_with_exact_terminal_coverage(
 def test_terminal_partial_or_inconsistent_daily_parent_fails_closed(
     client: TestClient,
 ) -> None:
-    _add_ingestion(client, status="COMPLETED", created=1, matched=1)
+    key = "PPS-FAILED-001"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[key],
+    )
     _add_daily_parent(
         client,
         status="PARTIAL",
-        notice_keys=["PPS-FAILED-001"],
-        child_outcomes={"PPS-FAILED-001": "FAILED"},
+        notice_keys=[key],
+        child_outcomes={key: "FAILED"},
         completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[key],
     )
     body = _readiness(client)
     assert body["status"] == "FAILED"
@@ -359,7 +428,13 @@ def test_prior_run_completed_today_cannot_satisfy_new_today_ingestion(
         created_at=_now() - timedelta(days=1),
         lease_started_at=_now(),
     )
-    _add_ingestion(client, status="COMPLETED", created=1, matched=1)
+    _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=["PPS-CURRENT-MATERIAL-001"],
+    )
 
     body = _readiness(client)
 
@@ -369,3 +444,110 @@ def test_prior_run_completed_today_cannot_satisfy_new_today_ingestion(
     )
     assert body["analysis"]["parent_job_id"] is None
     assert body["ready"] is False
+
+
+def test_unrelated_empty_parent_cannot_satisfy_material_ingestion(
+    client: TestClient,
+) -> None:
+    material_keys = ["PPS-MATERIAL-A", "PPS-MATERIAL-B"]
+    _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=2,
+        matched=2,
+        material_keys=material_keys,
+    )
+    _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[],
+        completed=True,
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "NOT_PLANNED",
+        "DAILY_ANALYSIS_NOT_PLANNED",
+    )
+    assert body["analysis"]["parent_job_id"] is None
+
+
+def test_bound_empty_parent_fails_exact_material_scope_coverage(
+    client: TestClient,
+) -> None:
+    material_keys = ["PPS-BOUND-A", "PPS-BOUND-B"]
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=2,
+        matched=2,
+        material_keys=material_keys,
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[],
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=material_keys,
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "DAILY_ANALYSIS_SCOPE_INVALID",
+    )
+    assert body["analysis"]["parent_job_id"] == parent_id
+    assert body["ready"] is False
+
+
+def test_latest_ingestion_requires_its_own_bound_parent(
+    client: TestClient,
+) -> None:
+    first_key = "PPS-FIRST-INGESTION"
+    first_ingestion = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[first_key],
+        created_at=_now() - timedelta(seconds=1),
+    )
+    _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[first_key],
+        child_outcomes={first_key: "COMPLETED"},
+        completed=True,
+        source_ingestion_job_id=first_ingestion,
+        source_material_keys=[first_key],
+    )
+    second_key = "PPS-SECOND-INGESTION"
+    second_ingestion = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[second_key],
+    )
+
+    missing = _readiness(client)
+    assert (missing["status"], missing["reason_code"]) == (
+        "NOT_PLANNED",
+        "DAILY_ANALYSIS_NOT_PLANNED",
+    )
+
+    second_parent = _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[second_key],
+        child_outcomes={second_key: "COMPLETED"},
+        completed=True,
+        source_ingestion_job_id=second_ingestion,
+        source_material_keys=[second_key],
+    )
+    ready = _readiness(client)
+    assert ready["status"] == "READY"
+    assert ready["analysis"]["parent_job_id"] == second_parent

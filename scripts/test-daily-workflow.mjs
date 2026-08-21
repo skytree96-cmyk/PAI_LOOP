@@ -70,6 +70,8 @@ assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /retry_notice_keys: \$json\.analysisBatch\.retryableBacklogKeys/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /retry_epoch:/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /request_token: 'w10:' \+ \$execution\.id/);
+assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /source_ingestion_job_id: \$json\.ingestion\.jobId/);
+assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /source_material_notice_keys: \$json\.analysisBatch\.newNoticeKeys/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_total: 3012/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_continuations: 128/);
 assert.match(continuationNodes.get("Analyze One Bounded Chunk").parameters.body, /segment_id:/);

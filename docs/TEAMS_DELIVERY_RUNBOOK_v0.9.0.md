@@ -11,7 +11,10 @@ PPS 수집, 첨부 추출, OpenAI 분석, 평가 snapshot은 다시 실행되지
 W10의 08:00 시작과 W12 첫 시도 사이 간격은 60분이다. scheduled 분기는 protected
 read-only endpoint에서 오늘 LIVE PPS와 DAILY parent를 확인한다. parent가 비terminal,
 `remaining>0`, `in_flight>0`, 부분·실패 결과가 있으면 briefing·reservation·Teams를
-모두 건너뛴다. 오늘 수집 공고와 분석키가 모두 0인 경우도 PPS COMPLETED,
+모두 건너뛴다. terminal parent도 오늘 PPS ingestion job ID와 그 실행이 영속한
+`created_notice_keys + updated_notice_keys` scope digest/count가 정확히 일치하고,
+해당 key 전부가 parent plan에 포함된 경우에만 READY다. 오늘 수집 공고와 분석키가
+모두 0인 경우도 PPS COMPLETED,
 created/updated 0, stored queue 0, active DAILY parent 없음이 모두 맞아야
 `READY_EMPTY`다. 수동 live test는 이 scheduled 분기와 별개다.
 

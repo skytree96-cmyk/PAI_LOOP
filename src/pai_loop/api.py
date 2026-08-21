@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from .daily_analysis_scope import material_scope_fields
 from .demo import FIXTURE_VERSION, seed_synthetic_replay
 from .auth import public_read_allowed, require_api_key
 from .enums import Eligibility
@@ -1073,6 +1074,10 @@ def _persist_pps_ingestion_result(
     job.duplicate_count = duplicates
     job.quarantined_count = quarantined
     job.notice_keys = notice_keys
+    job.request_json = {
+        **(job.request_json if isinstance(job.request_json, dict) else {}),
+        **material_scope_fields([*created_notice_keys, *updated_notice_keys]),
+    }
     job.warnings = warnings
     job.completed_at = datetime.now(timezone.utc)
     session.commit()

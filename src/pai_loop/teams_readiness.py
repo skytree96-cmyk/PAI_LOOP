@@ -11,6 +11,10 @@ from sqlalchemy.orm import Session
 
 from .analysis_api import _backfill_status
 from .auth import require_api_key
+from .daily_analysis_scope import (
+    validated_material_scope,
+    validated_source_material_scope,
+)
 from .daily_operations import daily_briefing
 from .models import IngestionJob
 
@@ -87,15 +91,6 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return _utc(datetime.fromisoformat(value))
-    except ValueError:
-        return None
-
-
 def _kst_day_bounds(now: datetime) -> tuple[date, datetime, datetime]:
     current = _utc(now).astimezone(KST)
     local_start = datetime.combine(current.date(), datetime.min.time(), tzinfo=KST)
@@ -105,17 +100,6 @@ def _kst_day_bounds(now: datetime) -> tuple[date, datetime, datetime]:
 
 def _is_in_day(value: datetime | None, start: datetime, end: datetime) -> bool:
     return value is not None and start <= _utc(value) < end
-
-
-def _parent_touch_time(parent: IngestionJob, *, start: datetime, end: datetime) -> datetime | None:
-    candidates = [parent.created_at, parent.completed_at]
-    config = parent.request_json if isinstance(parent.request_json, dict) else {}
-    candidates.extend(
-        _parse_timestamp(config.get(key))
-        for key in ("lease_started_at", "last_finalized_at", "last_auto_finalized_at")
-    )
-    current_day = [_utc(value) for value in candidates if _is_in_day(value, start, end)]
-    return max(current_day) if current_day else None
 
 
 def _bounded(value: object, *, upper: int) -> tuple[int, bool]:
@@ -300,6 +284,20 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
             checked_at=now,
             ingestion=ingestion,
         )
+    ingestion_config = (
+        ingestion_job.request_json
+        if isinstance(ingestion_job.request_json, dict)
+        else {}
+    )
+    ingestion_material_keys = validated_material_scope(ingestion_config)
+    if ingestion_material_keys is None:
+        return _response(
+            status="FAILED",
+            reason_code="TODAY_PPS_SCOPE_INVALID",
+            kst_date=kst_date,
+            checked_at=now,
+            ingestion=ingestion,
+        )
 
     parent_candidates = list(
         session.scalars(
@@ -324,14 +322,11 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
         if isinstance(parent.request_json, dict)
         and parent.request_json.get("queue_name") == "DAILY"
     ]
-    # A parent that predates today's selected PPS ingestion belongs to an
-    # earlier run even if its lease/finalization timestamps happen to cross
-    # the KST midnight boundary. Active older parents still block below, but
-    # a completed older parent can never make today's delivery READY.
-    eligible_daily_parents = [
+    bound_daily_parents = [
         parent
         for parent in daily_parents
-        if _utc(parent.created_at) >= _utc(ingestion_job.created_at)
+        if isinstance(parent.request_json, dict)
+        and parent.request_json.get("source_ingestion_job_id") == ingestion_job.id
     ]
     active_parents = [
         parent
@@ -346,17 +341,18 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
             checked_at=now,
             ingestion=ingestion,
         )
+    if len(bound_daily_parents) > 1:
+        return _response(
+            status="FAILED",
+            reason_code="MULTIPLE_DAILY_PARENTS_FOR_INGESTION",
+            kst_date=kst_date,
+            checked_at=now,
+            ingestion=ingestion,
+        )
 
     parent: IngestionJob | None = active_parents[0] if active_parents else None
     if parent is None:
-        touched = [
-            (touch, candidate)
-            for candidate in eligible_daily_parents
-            if (touch := _parent_touch_time(candidate, start=day_start, end=day_end))
-            is not None
-        ]
-        if touched:
-            parent = max(touched, key=lambda item: (item[0], _utc(item[1].created_at)))[1]
+        parent = bound_daily_parents[0] if bound_daily_parents else None
 
     if parent is not None:
         analysis, analysis_valid = _analysis_counts(session, parent)
@@ -364,6 +360,31 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
             return _response(
                 status="FAILED",
                 reason_code="DAILY_ANALYSIS_COUNT_INVALID",
+                kst_date=kst_date,
+                checked_at=now,
+                ingestion=ingestion,
+                analysis=analysis,
+            )
+        parent_config = parent.request_json if isinstance(parent.request_json, dict) else {}
+        if parent_config.get("source_ingestion_job_id") != ingestion_job.id:
+            return _response(
+                status="RUNNING",
+                reason_code="OTHER_DAILY_ANALYSIS_RUNNING",
+                kst_date=kst_date,
+                checked_at=now,
+                ingestion=ingestion,
+                analysis=analysis,
+            )
+        parent_material_keys = validated_source_material_scope(parent_config)
+        scope_covered = (
+            parent_material_keys == ingestion_material_keys
+            and set(ingestion_material_keys).issubset(set(parent.notice_keys or []))
+            and analysis.planned >= len(ingestion_material_keys)
+        )
+        if not scope_covered:
+            return _response(
+                status="FAILED",
+                reason_code="DAILY_ANALYSIS_SCOPE_INVALID",
                 kst_date=kst_date,
                 checked_at=now,
                 ingestion=ingestion,
@@ -430,7 +451,12 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
             ingestion=ingestion,
             analysis=analysis,
         )
-    ready_empty = ingestion.created == 0 and ingestion.updated == 0 and queue_pending == 0
+    ready_empty = (
+        ingestion.created == 0
+        and ingestion.updated == 0
+        and not ingestion_material_keys
+        and queue_pending == 0
+    )
     return _response(
         status="READY" if ready_empty else "NOT_PLANNED",
         reason_code=("READY_EMPTY" if ready_empty else "DAILY_ANALYSIS_NOT_PLANNED"),

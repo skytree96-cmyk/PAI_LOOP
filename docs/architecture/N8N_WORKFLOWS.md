@@ -17,7 +17,7 @@ Teams webhook URL을 넣지 않는다.
 | 04 | `PAI_LOOP 04 - Award History Refresh` | 공고별 최근 1~3년 낙찰 유사 후보 갱신 | backend award-history 호출; 응답은 집계만 보존 |
 | **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **08:00 KST 최근 8일 수집·신규/변경 key durable plan·7일 순위·3년 낙찰 refresh·backend Teams mock 기록** | **active; `publish=true`, `daily-briefing-1.5`; 수동 offline preview는 외부 호출 0회** |
 | **11** | **`PAI_LOOP 11 - Analysis Backfill and Continuation`** | **15분마다 W10의 남은 DAILY lease를 우선 재개하고 수동 BACKFILL을 같은 bounded 계약으로 처리** | **active; `publish=true`, `analysis-backfill-1.2`, `verified-live-e2e`** |
-| **12** | **`PAI_LOOP 12 - Teams Daily Delivery`** | **09:00 KST 저장 브리핑을 별도로 읽어 공개 allowlist HTML을 PAI 봇 채널에 전송** | **active; `publish=true`, `teams-delivery-1.2`, `verified-live-e2e`; fail-closed·at-most-once** |
+| **12** | **`PAI_LOOP 12 - Teams Daily Delivery`** | **09:00 KST 저장 브리핑을 별도로 읽어 공개 allowlist HTML을 PAI 봇 채널에 전송** | **active; `publish=true`, `teams-delivery-1.3`, `verified-live-e2e`; fail-closed·at-most-once** |
 
 ## 통합 운영 결정
 
@@ -32,6 +32,10 @@ W12의 첫 시도는 W10보다 60분 늦은 09:00이다. W11의 `*/15` schedule�
 W12도 09:00부터 10:45까지 15분 간격으로 최대 8회 protected read-only readiness를
 확인한다. 오늘 KST LIVE PPS가 완료되고 DAILY parent가 terminal이며
 `remaining=0`, `in_flight=0`, 실패·부분 결과가 0인 경우에만 briefing으로 진행한다.
+DAILY parent에는 W10이 PPS ingestion job ID와 exact 신규·변경 key의 canonical
+SHA-256/count를 영속한다. readiness는 오늘 선택된 ingestion audit의 동일 scope와
+parent planned key coverage를 모두 대조하므로, 무관한 terminal/empty parent는 READY가
+될 수 없다.
 공고·분석키가 모두 0인 날은 오늘 PPS COMPLETED, created/updated 0, stored queue 0,
 active DAILY parent 없음이 함께 확인될 때만 `READY_EMPTY`를 허용한다.
 

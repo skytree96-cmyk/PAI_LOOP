@@ -9,7 +9,7 @@ from sqlalchemy import select
 import pytest
 
 from pai_loop.main import create_app
-from pai_loop.models import AnalysisRun, Notice, RecommendationSnapshot
+from pai_loop.models import AnalysisRun, IngestionJob, Notice, RecommendationSnapshot
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
     ExtractedRequirement,
@@ -443,6 +443,14 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
         assert first.json()["source"] == "PPS"
         assert first.json()["created_notice_keys"] == first.json()["notice_keys"]
         assert first.json()["updated_notice_keys"] == []
+        with live_client.app.state.session_factory() as session:
+            ingestion_job = session.get(IngestionJob, first.json()["job_id"])
+            assert ingestion_job is not None
+            scope = ingestion_job.request_json
+            assert scope["material_scope_version"] == "pps-material-notice-keys-v1"
+            assert scope["material_notice_keys"] == sorted(first.json()["notice_keys"])
+            assert scope["material_notice_key_count"] == 1
+            assert len(scope["material_notice_keys_sha256"]) == 64
 
         second = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert second.status_code == 200
