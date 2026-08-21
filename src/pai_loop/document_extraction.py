@@ -142,6 +142,7 @@ class _ParsedText:
     text: str
     warnings: tuple[str, ...] = ()
     complete: bool = True
+    member_issues: tuple[MemberIssue, ...] = field(default_factory=tuple)
 
 
 _BUILTIN_EXTENSIONS = {
@@ -298,8 +299,8 @@ def _extract_generic_zip(
                 issues.append(MemberIssue(member_name, reason))
                 warnings.append(reason)
                 continue
-            child_content = _read_member(archive, member, budget.limits)
             try:
+                child_content = _read_member(archive, member, budget.limits)
                 child = _extract(
                     member_name,
                     child_content,
@@ -716,6 +717,13 @@ def _extract_docx(content: bytes, budget: _Budget) -> _ParsedText:
         names = _archive_names(archive)
         if "[content_types].xml" not in names or "word/document.xml" not in names:
             raise DocumentExtractionError("DOCX_REQUIRED_PART_MISSING")
+        warnings, issues = _office_package_coverage(
+            archive,
+            names,
+            limits=budget.limits,
+            package_prefix="word/",
+            code_prefix="DOCX",
+        )
         parts = [
             item
             for item in archive.infolist()
@@ -728,13 +736,25 @@ def _extract_docx(content: bytes, budget: _Budget) -> _ParsedText:
                 _read_member(archive, item, budget.limits),
                 "DOCX_XML_INVALID",
             )
+            if any(_local_name(node.tag).casefold() == "altchunk" for node in root.iter()):
+                _add_member_issue(
+                    warnings,
+                    issues,
+                    item.filename,
+                    "DOCX_ALTCHUNK_NOT_EXTRACTED",
+                )
             part_lines = _paragraph_text(root)
             if part_lines:
                 lines.append(f"[DOCX {item.filename}]")
                 lines.extend(part_lines)
-        if not lines:
+        if not lines and not issues:
             raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
-        return _ParsedText("\n".join(lines))
+        return _ParsedText(
+            "\n".join(lines),
+            _unique(warnings),
+            not issues,
+            tuple(issues),
+        )
 
 
 def _extract_pptx(content: bytes, budget: _Budget) -> _ParsedText:
@@ -742,6 +762,13 @@ def _extract_pptx(content: bytes, budget: _Budget) -> _ParsedText:
         names = _archive_names(archive)
         if "[content_types].xml" not in names or "ppt/presentation.xml" not in names:
             raise DocumentExtractionError("PPTX_REQUIRED_PART_MISSING")
+        warnings, issues = _office_package_coverage(
+            archive,
+            names,
+            limits=budget.limits,
+            package_prefix="ppt/",
+            code_prefix="PPTX",
+        )
         parts = [
             item
             for item in archive.infolist()
@@ -758,9 +785,105 @@ def _extract_pptx(content: bytes, budget: _Budget) -> _ParsedText:
             if part_lines:
                 lines.append(f"[PPTX {item.filename}]")
                 lines.extend(part_lines)
-        if not lines:
+        if not lines and not issues:
             raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
-        return _ParsedText("\n".join(lines))
+        return _ParsedText(
+            "\n".join(lines),
+            _unique(warnings),
+            not issues,
+            tuple(issues),
+        )
+
+
+def _office_package_coverage(
+    archive: zipfile.ZipFile,
+    names: Mapping[str, str],
+    *,
+    limits: ExtractionLimits,
+    package_prefix: str,
+    code_prefix: str,
+) -> tuple[list[str], list[MemberIssue]]:
+    """Report package content the bounded text parser intentionally skips."""
+
+    warnings: list[str] = []
+    issues: list[MemberIssue] = []
+    embedding_reason = f"{code_prefix}_EMBEDDED_DOCUMENT_NOT_EXTRACTED"
+    macro_reason = f"{code_prefix}_MACRO_NOT_EXECUTED"
+    altchunk_reason = f"{code_prefix}_ALTCHUNK_NOT_EXTRACTED"
+    external_reason = f"{code_prefix}_EXTERNAL_RELATIONSHIP_NOT_FETCHED"
+    relationship_error = f"{code_prefix}_RELATIONSHIPS_INVALID"
+
+    for lowered, actual in sorted(names.items()):
+        if lowered.startswith(f"{package_prefix}embeddings/"):
+            _add_member_issue(warnings, issues, actual, embedding_reason)
+        if lowered.startswith(package_prefix) and lowered.endswith("vbaproject.bin"):
+            _add_member_issue(warnings, issues, actual, macro_reason)
+        if lowered.startswith(package_prefix) and (
+            "/afchunk" in lowered or "/altchunk" in lowered
+        ):
+            _add_member_issue(warnings, issues, actual, altchunk_reason)
+
+    content_types_name = names["[content_types].xml"]
+    content_types = _read_member(
+        archive,
+        archive.getinfo(content_types_name),
+        limits,
+    ).lower()
+    if b"macroenabled" in content_types or b"vbaproject" in content_types:
+        if not any(issue.reason == macro_reason for issue in issues):
+            _add_member_issue(
+                warnings,
+                issues,
+                content_types_name,
+                macro_reason,
+            )
+
+    relationship_parts = sorted(
+        (
+            actual
+            for lowered, actual in names.items()
+            if lowered.endswith(".rels")
+        ),
+        key=_natural_key,
+    )
+    for actual in relationship_parts:
+        try:
+            root = _parse_xml(
+                _read_member(archive, archive.getinfo(actual), limits),
+                relationship_error,
+            )
+        except DocumentExtractionError:
+            _add_member_issue(warnings, issues, actual, relationship_error)
+            continue
+        for relationship in root.iter():
+            if _local_name(relationship.tag).casefold() != "relationship":
+                continue
+            attributes = {
+                _local_name(key).casefold(): str(value)
+                for key, value in relationship.attrib.items()
+            }
+            relationship_type = attributes.get("type", "").casefold()
+            if relationship_type.endswith(("/package", "/oleobject")):
+                _add_member_issue(warnings, issues, actual, embedding_reason)
+            if relationship_type.endswith("/vbaproject"):
+                _add_member_issue(warnings, issues, actual, macro_reason)
+            if relationship_type.endswith("/afchunk"):
+                _add_member_issue(warnings, issues, actual, altchunk_reason)
+            if attributes.get("targetmode", "").casefold() == "external":
+                _add_member_issue(warnings, issues, actual, external_reason)
+    return warnings, issues
+
+
+def _add_member_issue(
+    warnings: list[str],
+    issues: list[MemberIssue],
+    member_path: str,
+    reason: str,
+) -> None:
+    warnings.append(reason)
+    issue = MemberIssue(member_path, reason)
+    if issue not in issues:
+        issues.append(issue)
 
 
 def _extract_xlsx(content: bytes, budget: _Budget) -> _ParsedText:
@@ -977,7 +1100,14 @@ def _read_member(
     try:
         with archive.open(item, "r") as stream:
             content = stream.read(limits.max_member_uncompressed_bytes + 1)
-    except (RuntimeError, zipfile.BadZipFile, OSError) as exc:
+    except (
+        EOFError,
+        NotImplementedError,
+        OSError,
+        RuntimeError,
+        zipfile.BadZipFile,
+        zlib.error,
+    ) as exc:
         raise DocumentExtractionError("ARCHIVE_MEMBER_READ_FAILED") from exc
     if len(content) > limits.max_member_uncompressed_bytes:
         raise DocumentExtractionError("ARCHIVE_MEMBER_SIZE_LIMIT")
@@ -1122,17 +1252,25 @@ def _issue_result(path: str, reason: str) -> DocumentExtractionResult:
 
 
 def _result_from_parsed(parsed: _ParsedText, path: str) -> DocumentExtractionResult:
-    issues = ()
+    issues = [
+        MemberIssue(f"{path}!/{issue.member_path}", issue.reason)
+        for issue in parsed.member_issues
+    ]
     processed = 1
     if not parsed.complete:
-        issues = tuple(MemberIssue(path, warning) for warning in parsed.warnings)
+        covered_reasons = {issue.reason for issue in issues}
+        issues.extend(
+            MemberIssue(path, warning)
+            for warning in parsed.warnings
+            if warning not in covered_reasons
+        )
     return DocumentExtractionResult(
         text=parsed.text.strip(),
         warnings=parsed.warnings,
         members_discovered=1,
         members_processed=processed,
         complete=parsed.complete,
-        member_issues=issues,
+        member_issues=tuple(issues),
     )
 
 

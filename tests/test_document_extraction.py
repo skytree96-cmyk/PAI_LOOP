@@ -29,6 +29,22 @@ def _archive(
     return buffer.getvalue()
 
 
+def _corrupt_stored_member(content: bytes, member_name: str) -> bytes:
+    corrupted = bytearray(content)
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        item = archive.getinfo(member_name)
+        assert item.compress_type == zipfile.ZIP_STORED
+        name_length, extra_length = struct.unpack_from(
+            "<HH",
+            corrupted,
+            item.header_offset + 26,
+        )
+        payload_offset = item.header_offset + 30 + name_length + extra_length
+        assert item.file_size > 0
+        corrupted[payload_offset] ^= 0xFF
+    return bytes(corrupted)
+
+
 def _content_types() -> str:
     return '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
 
@@ -88,6 +104,16 @@ def test_binary_reader_dependency_contract_is_bsd_only() -> None:
         "xlrd>=2.0.1,<3",
     )
     assert all("pyhwp" not in item for item in BINARY_READER_DEPENDENCIES)
+
+
+def test_binary_runtime_dependency_unavailable_remains_fail_closed() -> None:
+    with _with_fake_module("olefile", None):
+        with pytest.raises(DocumentExtractionError, match="HWP_EXTRACTOR_UNAVAILABLE"):
+            extract_document_content("공고문.hwp", b"synthetic compound file")
+
+    with _with_fake_module("xlrd", None):
+        with pytest.raises(DocumentExtractionError, match="XLS_EXTRACTOR_UNAVAILABLE"):
+            extract_document_content("평가표.xls", b"synthetic workbook")
 
 
 def _hwp_record(tag: int, payload: bytes, *, level: int = 0) -> bytes:
@@ -173,6 +199,67 @@ def test_docx_extracts_body_table_header_and_footer_text() -> None:
     assert "문의 마감일" in result.text
 
 
+def test_docx_embedded_supported_xlsx_is_explicitly_incomplete() -> None:
+    content = _archive(
+        {
+            "[Content_Types].xml": _content_types(),
+            "word/document.xml": (
+                '<w:document xmlns:w="urn:w"><w:body><w:p><w:r>'
+                "<w:t>외부 본문 정량평가 안내</w:t></w:r></w:p>"
+                "</w:body></w:document>"
+            ),
+            "word/embeddings/quant.xlsx": _minimal_xlsx(),
+        }
+    )
+
+    result = extract_document_content("제안요청서.docx", content)
+
+    assert "외부 본문 정량평가 안내" in result.text
+    assert "A1=수행실적" not in result.text
+    assert result.complete is False
+    assert result.warnings == ("DOCX_EMBEDDED_DOCUMENT_NOT_EXTRACTED",)
+    # The package path is explicit so no supported inner workbook can be
+    # mistaken for fully covered evidence.
+    assert len(result.member_issues) == 1
+    assert result.member_issues[0].member_path == (
+        "제안요청서.docx!/word/embeddings/quant.xlsx"
+    )
+    assert result.member_issues[0].reason == "DOCX_EMBEDDED_DOCUMENT_NOT_EXTRACTED"
+
+
+def test_docx_altchunk_external_relationship_and_macro_are_incomplete() -> None:
+    content = _archive(
+        {
+            "[Content_Types].xml": _content_types(),
+            "word/document.xml": (
+                '<w:document xmlns:w="urn:w" xmlns:r="urn:r"><w:body>'
+                "<w:p><w:r><w:t>제안서 본문</w:t></w:r></w:p>"
+                '<w:altChunk r:id="rIdChunk"/></w:body></w:document>'
+            ),
+            "word/_rels/document.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rIdChunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="afchunk1.html"/>'
+                '<Relationship Id="rIdExternal" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://invalid.example/image.png" TargetMode="External"/>'
+                "</Relationships>"
+            ),
+            "word/afchunk1.html": "<p>가져오지 않은 대체 본문</p>",
+            "word/vbaProject.bin": b"never execute",
+        }
+    )
+
+    result = extract_document_content("매크로제안서.docx", content)
+
+    assert "제안서 본문" in result.text
+    assert "가져오지 않은 대체 본문" not in result.text
+    assert result.complete is False
+    assert set(result.warnings) == {
+        "DOCX_ALTCHUNK_NOT_EXTRACTED",
+        "DOCX_EXTERNAL_RELATIONSHIP_NOT_FETCHED",
+        "DOCX_MACRO_NOT_EXECUTED",
+    }
+    assert {issue.reason for issue in result.member_issues} == set(result.warnings)
+
+
 def test_xlsx_preserves_all_cells_formula_and_cached_value() -> None:
     result = extract_document_content("산출내역서.xlsx", _minimal_xlsx())
 
@@ -231,6 +318,38 @@ def test_pptx_extracts_every_slide_and_notes_part() -> None:
     assert "사업 수행계획" in result.text
     assert "정량 배점" in result.text
     assert "발표자 참고사항" in result.text
+
+
+def test_pptx_embedded_document_external_relationship_and_macro_are_incomplete() -> None:
+    content = _archive(
+        {
+            "[Content_Types].xml": _content_types(),
+            "ppt/presentation.xml": '<p:presentation xmlns:p="urn:p"/>',
+            "ppt/slides/slide1.xml": (
+                '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><a:p><a:r>'
+                "<a:t>정량평가 발표자료</a:t></a:r></a:p></p:sld>"
+            ),
+            "ppt/slides/_rels/slide1.xml.rels": (
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rIdExternal" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://invalid.example/slide.png" TargetMode="External"/>'
+                "</Relationships>"
+            ),
+            "ppt/embeddings/quant.xlsx": _minimal_xlsx(),
+            "ppt/vbaProject.bin": b"never execute",
+        }
+    )
+
+    result = extract_document_content("발표자료.pptx", content)
+
+    assert "정량평가 발표자료" in result.text
+    assert "A1=수행실적" not in result.text
+    assert result.complete is False
+    assert set(result.warnings) == {
+        "PPTX_EMBEDDED_DOCUMENT_NOT_EXTRACTED",
+        "PPTX_EXTERNAL_RELATIONSHIP_NOT_FETCHED",
+        "PPTX_MACRO_NOT_EXECUTED",
+    }
+    assert {issue.reason for issue in result.member_issues} == set(result.warnings)
 
 
 def test_html_extracts_visible_korean_text_without_fetching_or_script_content() -> None:
@@ -455,6 +574,28 @@ def test_generic_zip_keeps_good_sibling_when_one_supported_member_fails() -> Non
     assert result.members_discovered == 2
     assert result.members_processed == 1
     assert result.member_issues[0].reason == "ARCHIVE_INVALID"
+
+
+def test_generic_zip_keeps_prior_sibling_when_supported_member_read_is_corrupt() -> None:
+    content = _archive(
+        {
+            "a-good.docx": _minimal_docx("앞선 정상 문서 정량평가 근거"),
+            "z-corrupt.docx": _minimal_docx("손상될 문서"),
+        },
+        compression=zipfile.ZIP_STORED,
+    )
+    content = _corrupt_stored_member(content, "z-corrupt.docx")
+
+    result = extract_document_content("mixed-corrupt.zip", content)
+
+    assert "앞선 정상 문서 정량평가 근거" in result.text
+    assert "손상될 문서" not in result.text
+    assert result.complete is False
+    assert result.members_discovered == 2
+    assert result.members_processed == 1
+    assert result.warnings == ("ARCHIVE_MEMBER_READ_FAILED",)
+    assert result.member_issues[0].member_path == "z-corrupt.docx"
+    assert result.member_issues[0].reason == "ARCHIVE_MEMBER_READ_FAILED"
 
 
 def test_text_limit_fails_closed_instead_of_truncating() -> None:
