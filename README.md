@@ -30,7 +30,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - GitHub Actions 검증, n8n 이름 기반 멱등 배포, 웹 Adaptive Card mock과 분리된
   W12 Teams 채널 전송의 fail-closed 운영
 - 매일 08:00 KST에 최근 8개 calendar day를 재조회하고 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 12건을 신규 우선 순서로 영속 큐에 예약
-- 분석 큐를 실행당 최대 30건, 호출당 최대 3건으로 직렬 처리하고 15분 continuation으로 재개하는 Workflow 10/11 계약; segment lease·exact chunk claim·멱등 응답·stale recovery·dead-letter 감사 포함
+- 분석 큐를 실행당 최대 30건, 호출당 1건으로 직렬 처리하고 15분 continuation으로 재개하는 Workflow 10/11 계약; segment lease·exact chunk claim·멱등 응답·stale recovery·dead-letter 감사 포함
 - 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
 - Git 기준자료 6종을 PostgreSQL `reference_data_versions`에 불변 버전으로 동기화하고 회사 공개 facts/evidence를 평가 DB에 멱등 반영
 - 저장된 다중 첨부 추출본을 원자조건으로 병합한 뒤 평가·조건결과·정량·가격·경쟁리스크·부서추천·시스템 입찰의견을 한 트랜잭션의 불변 snapshot으로 저장
@@ -140,7 +140,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 매일 08:00 Asia/Seoul, PPS 신규·정정 key 정확 합집합 전량과 cooled backlog 최대 12건을
 영속 operation으로 예약한다. DAILY parent에는 source PPS ingestion ID와 exact 신규·정정
 key scope digest/count를 함께 기록해 09:00 readiness가 다른 parent를 오인하지 못하게 한다.
-한 실행에서는 최대 30건만 3건 단위로 직렬 첨부 보강·분석·평가·snapshot한다.
+한 실행에서는 최대 30건만 1건 단위로 직렬 첨부 보강·분석·평가·snapshot한다.
 잔여분은 `PAI_LOOP 11 - Analysis Backfill and Continuation`이 15분마다 DAILY 우선으로 재개한다.
 최근 7일 피드, 부서 우선순위, 저장된 적합성·정량/가격/리스크 신호, 상위 최대
 3건의 bounded 3년 낙찰 refresh와 backend Teams 통합 카드

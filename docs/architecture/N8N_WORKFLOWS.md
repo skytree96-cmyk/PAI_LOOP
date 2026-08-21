@@ -42,7 +42,7 @@ active DAILY parent 없음이 함께 확인될 때만 `READY_EMPTY`를 허용한
 따라서 “한 번에 활용”한다는 제품 요구는 충족하면서도 다음을 지킨다.
 
 10번은 PPS 응답의 `created_notice_keys + updated_notice_keys` 정확 합집합과 cooled
-backlog 최대 12건을 durable DAILY parent에 넣고, 한 실행에서 최대 30건을 3건 단위로
+backlog 최대 12건을 durable DAILY parent에 넣고, 한 실행에서 최대 30건을 1건 단위로
 처리한다. 11번은 같은 parent/segment/chunk 계약으로 남은 작업을 재개한다. 저장된
 ACCEPTED extraction의 materialize·평가·snapshot 집계가 끝난 뒤 낙찰 refresh와
 최종 briefing으로 진행하며, 필요한 원격 첨부 보강만 bounded OpenAI 경계를 사용할
@@ -215,7 +215,7 @@ Safety gates:
    `analysis_queue` 조립;
 3. `POST /api/v1/operations/analysis-backfills/plan` — 생성·정정 key 정확 합집합 전량과
    cooled backlog 최대 12건을 DAILY parent에 추가하고 최대 30건의 exact segment/chunk lease 반환;
-4. `POST /api/v1/notices/analysis/batch` — lease에 포함된 key를 호출당 최대 3건씩
+4. `POST /api/v1/notices/analysis/batch` — lease에 포함된 key를 호출당 1건씩
    직렬로 첨부 보강·분석·평가·snapshot 처리;
 5. `POST /api/v1/operations/analysis-backfills/{job_id}/complete` — exact segment의 모든
    child가 terminal일 때만 lease 해제와 aggregate 반영;
@@ -262,7 +262,7 @@ W11은 `settings.timezone=Asia/Seoul`, 15분 schedule, `analysis-backfill-1.2` �
 이어 간다.
 
 plan 응답의 `job_id`, `segment_id`, `chunks`, `chunk_indices`를 exact claim으로 사용해
-호출당 최대 3건, 실행당 최대 30건을 직렬 처리한다. 모든 leased child가 terminal일
+호출당 1건, 실행당 최대 30건을 직렬 처리한다. 모든 leased child가 terminal일
 때만 `/complete`를 호출한다. 동일 request token 재시도는 같은 lease/chunks를
 돌려주고, stale lease·부분 실패·최대 128 continuation은 backend 감사 상태로 남긴다.
 W11은 공고 수집이나 Teams 전송을 수행하지 않는다.

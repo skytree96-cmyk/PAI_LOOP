@@ -1241,7 +1241,7 @@ def _backfill_status(
         chunk_indices=chunk_indices,
         warnings=sorted(set(warnings)),
         note=(
-            "신규·정정 OPEN 공고를 우선 예약하고, 선택된 경우에만 cooldown이 지난 재시도 대상을 뒤에 배치합니다. 각 chunk는 최대 3건, 실행당 제공량은 고정되며 child audit로 다음 continuation을 계산합니다."
+            "신규·정정 OPEN 공고를 우선 예약하고, 선택된 경우에만 cooldown이 지난 재시도 대상을 뒤에 배치합니다. 각 chunk는 1건, 실행당 제공량은 고정되며 child audit로 다음 continuation을 계산합니다."
         ),
     )
 
@@ -1258,7 +1258,7 @@ def plan_analysis_backfill(
     """Reserve a resumable snapshot of OPEN analysis work.
 
     This endpoint does not call PPS/OpenAI and does not analyse documents. n8n
-    expands the returned list into independent three-notice calls to the
+    expands the returned list into independent single-notice calls to the
     existing analysis batch endpoint. An active reservation is reused so a
     retried workflow cannot create a second concurrent sweep of the same keys.
     """
