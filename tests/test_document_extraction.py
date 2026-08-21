@@ -62,7 +62,12 @@ def _minimal_docx(text: str = "정량평가 수행실적 배점표") -> bytes:
     )
 
 
-def _minimal_xlsx(*, macro: bool = False, external_link: bool = False) -> bytes:
+def _minimal_xlsx(
+    *,
+    macro: bool = False,
+    external_link: bool = False,
+    embedded_document: bool = False,
+) -> bytes:
     entries: dict[str, bytes | str] = {
         "[Content_Types].xml": _content_types(),
         "xl/workbook.xml": (
@@ -87,6 +92,8 @@ def _minimal_xlsx(*, macro: bool = False, external_link: bool = False) -> bytes:
         entries["xl/vbaProject.bin"] = b"never execute"
     if external_link:
         entries["xl/externalLinks/externalLink1.xml"] = "<externalLink/>"
+    if embedded_document:
+        entries["xl/embeddings/hidden.docx"] = _minimal_docx("숨겨진 정량평가 문서")
     return _archive(entries)
 
 
@@ -131,11 +138,13 @@ def _fake_olefile_module(
     sections: list[bytes],
     *,
     flags: int = 1,
+    extra_streams: dict[str, bytes] | None = None,
 ) -> types.SimpleNamespace:
     streams = {"FileHeader": _hwp_header(flags=flags)}
     streams.update(
         {f"BodyText/Section{index}": value for index, value in enumerate(sections)}
     )
+    streams.update(extra_streams or {})
 
     class FakeOle:
         def __init__(self, _source: object, **_kwargs: object) -> None:
@@ -270,6 +279,23 @@ def test_xlsx_preserves_all_cells_formula_and_cached_value() -> None:
     assert "=SUM(C2:D2)" in result.text
     assert "30" in result.text
     assert "B2=배점" in result.text
+
+
+def test_xlsx_embedded_supported_docx_is_explicitly_incomplete() -> None:
+    result = extract_document_content(
+        "정량평가표.xlsx",
+        _minimal_xlsx(embedded_document=True),
+    )
+
+    assert "A1=수행실적" in result.text
+    assert "숨겨진 정량평가 문서" not in result.text
+    assert result.complete is False
+    assert result.warnings == ("XLSX_EMBEDDED_DOCUMENT_NOT_EXTRACTED",)
+    assert len(result.member_issues) == 1
+    assert result.member_issues[0].member_path == (
+        "정량평가표.xlsx!/xl/embeddings/hidden.docx"
+    )
+    assert result.member_issues[0].reason == "XLSX_EMBEDDED_DOCUMENT_NOT_EXTRACTED"
 
 
 def test_xlsm_extracts_cells_but_macro_is_never_executed_and_is_incomplete() -> None:
@@ -437,6 +463,81 @@ def test_hwp5_extracts_every_para_text_and_skips_inline_control_payload() -> Non
     assert "정량평가 배점표" in result.text
     assert "최근 3년 유사사업 실적 20점" in result.text
     assert "악성페이로드" not in result.text
+
+
+def test_hwp5_embedded_ole_is_explicitly_incomplete_but_image_bindata_is_safe() -> None:
+    section = _hwp_record(
+        67,
+        "유효한 본문 정량평가 근거와 수행실적 기준입니다".encode("utf-16le"),
+    )
+    embedded_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        extra_streams={
+            "BinData/BIN0001.OLE": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1embedded",
+        },
+    )
+
+    with _with_fake_module("olefile", embedded_module):
+        embedded = extract_document_content("임베딩공고.hwp", b"synthetic compound file")
+
+    assert "유효한 본문 정량평가 근거" in embedded.text
+    assert embedded.complete is False
+    assert embedded.warnings == ("HWP_EMBEDDED_DOCUMENT_NOT_EXTRACTED",)
+    assert embedded.member_issues[0].member_path == (
+        "임베딩공고.hwp!/BinData/BIN0001.OLE"
+    )
+    assert embedded.member_issues[0].reason == "HWP_EMBEDDED_DOCUMENT_NOT_EXTRACTED"
+
+    image_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        extra_streams={
+            "BinData/BIN0001.PNG": b"\x89PNG\r\n\x1a\nimage-only",
+        },
+    )
+    with _with_fake_module("olefile", image_module):
+        image = extract_document_content("이미지공고.hwp", b"synthetic compound file")
+
+    assert image.complete is True
+    assert image.member_issues == ()
+
+    unknown_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        extra_streams={"BinData/BIN0002.BIN": b"unknown non-image payload"},
+    )
+    with _with_fake_module("olefile", unknown_module):
+        unknown = extract_document_content("미확인공고.hwp", b"synthetic compound file")
+
+    assert unknown.complete is False
+    assert unknown.warnings == ("HWP_BINDATA_TYPE_UNVERIFIED",)
+    assert unknown.member_issues[0].member_path == (
+        "미확인공고.hwp!/BinData/BIN0002.BIN"
+    )
+
+
+def test_hwp5_script_flag_and_stream_are_never_silently_complete() -> None:
+    section = _hwp_record(
+        67,
+        "스크립트와 별개인 유효한 정량평가 본문입니다".encode("utf-16le"),
+    )
+    module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        flags=1 | (1 << 3),
+        extra_streams={"Scripts/DefaultJScript": b"never execute"},
+    )
+
+    with _with_fake_module("olefile", module):
+        result = extract_document_content("스크립트공고.hwp", b"synthetic compound file")
+
+    assert "유효한 정량평가 본문" in result.text
+    assert result.complete is False
+    assert result.warnings == ("HWP_ACTIVE_CONTENT_NOT_EXTRACTED",)
+    assert {issue.member_path for issue in result.member_issues} == {
+        "스크립트공고.hwp!/FileHeader",
+        "스크립트공고.hwp!/Scripts/DefaultJScript",
+    }
+    assert {issue.reason for issue in result.member_issues} == {
+        "HWP_ACTIVE_CONTENT_NOT_EXTRACTED"
+    }
 
 
 def test_hwp5_rejects_encrypted_distributable_and_unknown_control() -> None:

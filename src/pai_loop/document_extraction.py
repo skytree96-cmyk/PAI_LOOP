@@ -191,6 +191,7 @@ _HWP_CONTROL_EXTENDED_UNITS = {
     0x17,
 }
 _HWP_CONTROL_INLINE_UNITS = {0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x13, 0x14}
+_OLE_CFB_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 def extract_document_content(
@@ -403,6 +404,46 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
         if flags & (1 << 2):
             raise DocumentExtractionError("HWP_DISTRIBUTABLE")
         compressed = bool(flags & 1)
+        warnings: list[str] = []
+        issues: list[MemberIssue] = []
+        if flags & (1 << 3):
+            _add_member_issue(
+                warnings,
+                issues,
+                "/".join(header_path),
+                "HWP_ACTIVE_CONTENT_NOT_EXTRACTED",
+            )
+        for key, path in streams.items():
+            if key.startswith("scripts/"):
+                _add_member_issue(
+                    warnings,
+                    issues,
+                    "/".join(path),
+                    "HWP_ACTIVE_CONTENT_NOT_EXTRACTED",
+                )
+                continue
+            if not key.startswith("bindata/"):
+                continue
+            embedded = _read_ole_stream(
+                ole,
+                path,
+                maximum=budget.limits.max_member_uncompressed_bytes,
+            )
+            budget.add_uncompressed(len(embedded))
+            kind = _hwp_bindata_kind(embedded)
+            if kind == "IMAGE":
+                continue
+            reason = (
+                "HWP_EMBEDDED_DOCUMENT_NOT_EXTRACTED"
+                if kind == "DOCUMENT"
+                else "HWP_BINDATA_TYPE_UNVERIFIED"
+            )
+            _add_member_issue(
+                warnings,
+                issues,
+                "/".join(path),
+                reason,
+            )
         sections: list[tuple[int, list[str]]] = []
         for key, path in streams.items():
             matched = re.fullmatch(r"bodytext/section([0-9]+)", key)
@@ -442,7 +483,12 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
             "\n".join(semantic_texts),
             error_code="HWP_TEXT_NOT_SEMANTIC",
         )
-        return _ParsedText(text)
+        return _ParsedText(
+            text,
+            _unique(warnings),
+            not issues,
+            tuple(issues),
+        )
     except DocumentExtractionError:
         raise
     except Exception as exc:
@@ -477,6 +523,33 @@ def _read_ole_stream(
     if exact is not None and len(content) != exact:
         raise DocumentExtractionError("HWP_STREAM_SIZE_INVALID")
     return content
+
+
+def _hwp_bindata_kind(content: bytes) -> str:
+    """Classify BinData conservatively without executing or decoding it."""
+
+    if (
+        content.startswith((b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM"))
+        or content.startswith(b"\x89PNG\r\n\x1a\n")
+        or content.startswith(b"\xd7\xcd\xc6\x9a")
+        or (
+            len(content) >= 44
+            and content[:4] == b"\x01\x00\x00\x00"
+            and content[40:44] == b" EMF"
+        )
+    ):
+        return "IMAGE"
+    lowered = content[:512].lstrip().lower()
+    if (
+        content.startswith(_OLE_CFB_SIGNATURE)
+        or content.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+        or content.startswith(b"%PDF-")
+        or lowered.startswith(b"{\\rtf")
+        or b"<pkg:package" in lowered
+        or b"<?mso-application" in lowered
+    ):
+        return "DOCUMENT"
+    return "UNKNOWN"
 
 
 def _decompress_hwp_section(content: bytes, maximum: int) -> bytes:
@@ -802,13 +875,14 @@ def _office_package_coverage(
     limits: ExtractionLimits,
     package_prefix: str,
     code_prefix: str,
+    macro_issue_code: str | None = None,
 ) -> tuple[list[str], list[MemberIssue]]:
     """Report package content the bounded text parser intentionally skips."""
 
     warnings: list[str] = []
     issues: list[MemberIssue] = []
     embedding_reason = f"{code_prefix}_EMBEDDED_DOCUMENT_NOT_EXTRACTED"
-    macro_reason = f"{code_prefix}_MACRO_NOT_EXECUTED"
+    macro_reason = macro_issue_code or f"{code_prefix}_MACRO_NOT_EXECUTED"
     altchunk_reason = f"{code_prefix}_ALTCHUNK_NOT_EXTRACTED"
     external_reason = f"{code_prefix}_EXTERNAL_RELATIONSHIP_NOT_FETCHED"
     relationship_error = f"{code_prefix}_RELATIONSHIPS_INVALID"
@@ -891,6 +965,14 @@ def _extract_xlsx(content: bytes, budget: _Budget) -> _ParsedText:
         names = _archive_names(archive)
         if "[content_types].xml" not in names or "xl/workbook.xml" not in names:
             raise DocumentExtractionError("XLSX_REQUIRED_PART_MISSING")
+        warnings, issues = _office_package_coverage(
+            archive,
+            names,
+            limits=budget.limits,
+            package_prefix="xl/",
+            code_prefix="XLSX",
+            macro_issue_code="XLSM_MACRO_NOT_EXECUTED",
+        )
         shared_strings = _xlsx_shared_strings(archive, names, budget.limits)
         sheet_names = _xlsx_sheet_names(archive, names, budget.limits)
         sheet_parts = [
@@ -910,16 +992,20 @@ def _extract_xlsx(content: bytes, budget: _Budget) -> _ParsedText:
             lines.extend(_xlsx_rows(root, shared_strings))
         if not lines or not any(not line.startswith("[SHEET ") for line in lines):
             raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
-        warnings: list[str] = []
-        complete = True
-        lowered = set(names)
-        if any(name.startswith("xl/externallinks/") for name in lowered):
-            warnings.append("XLSX_EXTERNAL_LINK_NOT_FETCHED")
-            complete = False
-        if any(name.endswith("vbaproject.bin") for name in lowered):
-            warnings.append("XLSM_MACRO_NOT_EXECUTED")
-            complete = False
-        return _ParsedText("\n".join(lines), _unique(warnings), complete)
+        for lowered, actual in sorted(names.items()):
+            if lowered.startswith("xl/externallinks/"):
+                _add_member_issue(
+                    warnings,
+                    issues,
+                    actual,
+                    "XLSX_EXTERNAL_LINK_NOT_FETCHED",
+                )
+        return _ParsedText(
+            "\n".join(lines),
+            _unique(warnings),
+            not issues,
+            tuple(issues),
+        )
 
 
 def _xlsx_shared_strings(
