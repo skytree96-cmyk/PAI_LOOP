@@ -61,7 +61,7 @@ def _daily_plan_payload(ingestion_id: str, material_keys: list[str]) -> dict:
         "source_ingestion_job_id": ingestion_id,
         "source_material_notice_keys": list(reversed(material_keys)),
         "dry_run": False,
-        "chunk_size": 3,
+        "chunk_size": 1,
         "max_total": 3012,
         "execution_limit": 30,
         "max_continuations": 128,

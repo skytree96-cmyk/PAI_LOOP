@@ -74,7 +74,7 @@ def _add_daily_parent(
     config: dict[str, object] = {
         "queue_name": "DAILY",
         "dry_run": False,
-        "chunk_size": 3,
+        "chunk_size": 1,
         "execution_limit": 30,
         "max_continuations": 128,
         "reservation_ttl_hours": 6,
