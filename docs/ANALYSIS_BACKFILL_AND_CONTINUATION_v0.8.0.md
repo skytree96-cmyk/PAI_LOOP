@@ -45,15 +45,15 @@ token을 소비한 것으로 보지 않아 복구 작업을 막지 않는다.
 Workflow 11은 수동 일회성 `OPEN / NOT_SELECTED + 24시간 cooldown 경과 retryable`
 backfill과 DAILY continuation을
 같은 계약으로 재개한다. 한 n8n 실행이 전량을 붙잡지 않는다. 실행당 최대 30건,
-HTTP 호출당 최대 3건을 직렬 처리한다. 2026-08-19 기준 OPEN
+HTTP 호출당 공고 1건을 직렬 처리한다. 2026-08-19 기준 OPEN
 `QUOTE_UNVERIFIED` 58건의 일회성 회수는 cooldown 충족 뒤 첫 segment 30건,
 15분 continuation의 다음 segment 28건으로 끝낸다. 이후 일일 자동 retry는 최대
 12건으로 제한한다.
 
 `QUOTE_UNVERIFIED`만 strict corrective extraction을 한 번 허용한다. 원문 그대로의
 연속 인용을 요구하고 두 번째 결과도 exact anchor 검증을 다시 통과시킨다. 퍼지 또는
-의미 매칭은 금지하며, 첫 호출을 포함한 hard cap은 공고당 2회다. 따라서 일일 backlog
-12건의 추가 OpenAI 요청 상한은 24회이고, 58건 일회성 회수의 이론상 상한은 116회다.
+의미 매칭은 금지하며, 첫 호출을 포함한 hard cap은 첨부당 2회(공고당 최대 20회)다. 비용
+감사는 실제 발견 첨부 수 × 2와 공고당 20회 중 작은 상한으로 검증한다.
 실패한 두 번째 응답은 계속 `QUOTE_UNVERIFIED / REVIEW`로 남긴다.
 
 ## 저장 계약
@@ -79,7 +79,7 @@ HTTP 호출당 최대 3건을 직렬 처리한다. 2026-08-19 기준 OPEN
 {
   "queue_name": "BACKFILL",
   "dry_run": false,
-  "chunk_size": 3,
+  "chunk_size": 1,
   "max_total": 3000,
   "execution_limit": 30,
   "max_continuations": 128,

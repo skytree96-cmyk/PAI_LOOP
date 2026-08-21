@@ -548,13 +548,13 @@ def test_existing_open_notice_is_closed_when_provider_marks_it_direct(
             direct = run["direct"]
             contract_method = "수의계약" if direct else "일반경쟁"
             yield {
-                "identity": "RECLASSIFY-1|00|2026-08-20T17:00:00+09:00",
+                "identity": "RECLASSIFY-1|00|2026-08-31T17:00:00+09:00",
                 "bid_notice_no": "RECLASSIFY-1",
                 "revision_no": "00",
                 "title": "공공기관 교육 프로그램 운영",
                 "agency": "공공기관",
                 "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
-                "deadline": datetime.fromisoformat("2026-08-20T17:00:00+09:00"),
+                "deadline": datetime.fromisoformat("2026-08-31T17:00:00+09:00"),
                 "estimated_amount": 20_000_000,
                 "notice_kind": "등록공고",
                 "contract_method": contract_method,

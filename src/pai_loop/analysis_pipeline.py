@@ -1418,8 +1418,12 @@ def run_analysis_pipeline(
             accepted_source_count = sum(source.materializable for source in sources)
             if not materialized_policy_items:
                 warnings.append("NO_ELIGIBILITY_OR_ACTION_REQUIREMENTS")
-            if not sources or accepted_source_count == 0:
+            if not sources:
                 run_status = "FAILED"
+            elif accepted_source_count == 0:
+                # A manifest-bound REVIEW/unsupported attempt is a truthful
+                # audited partial outcome, not an infrastructure failure.
+                run_status = "PARTIAL"
             elif (
                 any(
                     not _source_effectively_complete(

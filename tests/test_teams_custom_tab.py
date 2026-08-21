@@ -109,6 +109,8 @@ def test_manual_analysis_actions_are_functional() -> None:
     assert "manualAnalysisRequests: new Map()" in source
     assert 'state.manualAnalysisRequests.get(noticeKey) === "running"' in source
     assert "/analysis/request`" in source
-    assert 'method: "POST", timeoutMs: 90000' in source
+    assert '{ method: "POST" }' in source
+    assert "/analysis/requests/${encodeURIComponent(requestId)}`" in source
+    assert "for (let poll = 0; poll < 240; poll += 1)" in source
     assert "data-manual-analysis" in source
     assert "공고 분석 요청 실패" in source

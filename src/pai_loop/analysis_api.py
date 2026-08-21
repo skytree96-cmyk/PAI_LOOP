@@ -417,9 +417,7 @@ def _create_batch_job(
                 )
             requested_keys = set(payload.notice_keys)
             for child in _backfill_children(session, parent.id):
-                child_config = (
-                    child.request_json if isinstance(child.request_json, dict) else {}
-                )
+                child_config = dict(child.request_json or {})
                 child_keys = set(child.notice_keys or [])
                 same_index = child_config.get("chunk_index") == payload.chunk_index
                 overlap = any(

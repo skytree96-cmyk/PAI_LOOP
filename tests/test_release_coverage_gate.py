@@ -99,10 +99,10 @@ def test_document_extraction_rejects_malformed_or_unusable_archives() -> None:
     short_text = io.BytesIO()
     with zipfile.ZipFile(short_text, "w") as archive:
         archive.writestr("Contents/section0.xml", "<section>짧음</section>")
-    with pytest.raises(PpsEnrichmentError, match="DOCUMENT_TEXT_EMPTY_OR_SHORT"):
+    with pytest.raises(PpsEnrichmentError, match="DOCUMENT_TEXT_EMPTY"):
         extract_document_text("제안요청서.hwpx", short_text.getvalue())
 
-    with pytest.raises(PpsEnrichmentError, match="UNSUPPORTED_ATTACHMENT_TYPE"):
+    with pytest.raises(PpsEnrichmentError, match="UNSUPPORTED_DOCUMENT_TYPE"):
         extract_document_text("제안요청서.txt", b"synthetic")
     with pytest.raises(PpsEnrichmentError, match="UNSAFE_ATTACHMENT_FILENAME"):
         extract_document_text("../제안요청서.pdf", b"synthetic")
@@ -171,15 +171,17 @@ def test_keyword_and_metadata_boundaries_remain_bounded_and_public() -> None:
 
 
 def test_attachment_selection_and_public_projection_reject_invalid_inputs() -> None:
-    with pytest.raises(ValueError, match="exactly 1"):
-        select_preferred_attachments([], limit=2)
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        select_preferred_attachments([], limit=0)
+    with pytest.raises(ValueError, match="between 1 and 10"):
+        select_preferred_attachments([], limit=11)
 
     selected, warnings = select_preferred_attachments(
         [{**_attachment(), "attachment_id": "invalid"}],
         limit=1,
     )
     assert selected == []
-    assert warnings == ["ATTACHMENT_MANIFEST_EMPTY"]
+    assert warnings == ["ATTACHMENT_MANIFEST_EMPTY", "INVALID_ATTACHMENT_MANIFEST"]
 
     generic = {**_attachment(), "file_name": "자료.pdf"}
     selected, warnings = select_preferred_attachments([generic], limit=1)

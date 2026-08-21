@@ -3,7 +3,9 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from pai_loop.api import _publication_safe_source_url
+from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop.main import create_app
+from pai_loop.pps_enrichment import PPS_PROCESSING_VERSION
 from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
 
 
@@ -216,8 +218,13 @@ def test_public_live_pps_extraction_is_redacted_and_usable_by_policy(monkeypatch
                     "source_label": "입찰공고문.pdf",
                     "document_sha256": "c" * 64,
                     "status": "ACCEPTED",
-                    "prompt_version": "pai-loop-extraction-0.2.1",
-                    "schema_version": "pai-loop-requirements-0.1.0",
+                    "prompt_version": PROMPT_VERSION,
+                    "processing_version": PPS_PROCESSING_VERSION,
+                    "schema_version": SCHEMA_VERSION,
+                    "document_processing": {
+                        "source_read_complete": True,
+                        "analysis_input_complete": True,
+                    },
                     "result": {
                         "document_type": "NOTICE",
                         "requirements": [
@@ -242,6 +249,8 @@ def test_public_live_pps_extraction_is_redacted_and_usable_by_policy(monkeypatch
                         ],
                         "missing_or_unreadable": [],
                         "summary": "제출 절차 1건, 담당자 합성다",
+                        "quantitative_tables": [],
+                        "quantitative_table_not_applicable": None,
                     },
                 },
             },

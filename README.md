@@ -226,8 +226,9 @@ Team/Channel 형식, emergency disable, 영속 correlation 예약을 모두 통�
   검증을 거칩니다.
 - 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록을
   익명 제공합니다. 선택적으로 활성화한 수동 분석 BFF만 same-origin의 OPEN PPS
-  공고 1건을 `force=false`·첨부 1개·전역 직렬·시간당 quota·공고별 cooldown으로
-  처리하며 credential은 서버에만 둡니다. 결정·재수집·Teams mock과 다른 쓰기는
+  공고 1건을 `force=false`·현재 manifest의 공개 첨부 최대 10개 전부·첨부당 최대
+  2회 OpenAI 호출·durable continuation·시간당 quota·공고별 cooldown으로 처리하며
+  credential은 서버에만 둡니다. 결정·재수집·Teams mock과 다른 쓰기는
   계속 서버 인증을 요구합니다.
 - 공개 GitHub와 외부 심사용 배포에는 공개 조달공고, 비식별화한 공개 실적,
   파생 회사 자격 facts와 합성 회귀 fixture만 사용합니다. 원본 사내 파일,

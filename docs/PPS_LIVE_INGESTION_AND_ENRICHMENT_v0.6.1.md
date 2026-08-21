@@ -34,13 +34,12 @@
 
 `POST /api/v1/notices/analysis/batch`
 
-- `enrich_missing=true`, `max_notices<=3`, `max_attachments_per_notice=1`이다.
+- `enrich_missing=true`, HTTP chunk는 공고 1건, `max_attachments_per_notice=10` 고정이다. 실제 manifest가 10개보다 적으면 그 전부를 처리한다.
 - 최신 PPS metadata manifest에 결합된 ACCEPTED extraction만 재사용한다. manifest가 바뀌면 과거 attachment evidence는 자동 분석에서 제외한다. 명시적 `source_version_ids`는 감사용 override로 유지한다.
-- PDF/HWPX는 메모리에서만 최대 8 MiB, redirect 2회, PDF 120쪽, 텍스트 120,000자로 처리한다. 파일로 쓰지 않는다.
-- HWP는 같은 manifest의 PDF/HWPX를 우선하고 없으면 결정적 R07 REVIEW로 남긴다.
+- PDF/HWPX/HWP/XLSX/XLSM/XLS/DOCX/PPTX/HTML/ZIP은 bounded parser로 메모리에서만 읽으며 파일로 쓰거나 매크로·스크립트를 실행하지 않는다. 숨은 embedded/active content는 조용히 누락하지 않고 REVIEW로 남긴다.
 - OpenAI는 strict schema와 원문 quote 검증을 통과한 구조화 결과만 저장한다.
 - 동일 문서 SHA + prompt의 ACCEPTED 및 결정적 HWP REVIEW는 영구 재사용한다. 일시적 REVIEW는 24시간 cooldown 뒤 한 번 재시도하고 새 attempt version을 남긴다.
-- 공고당 download 12초 + OpenAI 45초/no retry, batch wall guard 205초다. 공고별 실패는 응답 `PARTIAL`로 흡수한다.
+- 첨부당 download 12초 + OpenAI 45초/no retry를 적용하고, 한 요청은 새 첨부 최대 2개만 영속한 뒤 continuation으로 재큐잉한다. 첨부 하나의 실패는 형제 성공을 보존하며 최종 응답은 `PARTIAL`이다.
 - `enrichment.attempted == completed + skipped + failed` invariant를 보장한다.
 
 ## 공개 projection

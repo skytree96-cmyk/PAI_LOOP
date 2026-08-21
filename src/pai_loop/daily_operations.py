@@ -282,6 +282,7 @@ def daily_briefing(
         in {
             "HWPX_EXTRACT_FAILED",
             "PDF_EXTRACT_FAILED",
+            "DOCUMENT_EXTRACT_FAILED",
             "OPENAI_REVIEW",
             "QUOTE_UNVERIFIED",
         }
@@ -311,7 +312,7 @@ def daily_briefing(
     ]
     deferred_terminal_total = sum(
         item["analysis_coverage"]["reason_code"]
-        in {"ATTACHMENT_NONE", "HWP_ONLY_UNSUPPORTED"}
+        in {"ATTACHMENT_NONE", "HWP_ONLY_UNSUPPORTED", "UNSUPPORTED_ATTACHMENT"}
         for item in items
     )
     eligibility_counts = dict(Counter(item["fit"]["eligibility"] for item in selected))
@@ -346,7 +347,7 @@ def daily_briefing(
             "never_attempted_notice_keys": bounded_never_attempted_notice_keys,
             "retryable_notice_keys": bounded_retryable_notice_keys,
             "limit": 50,
-            "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·구형 HWP 전용은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
+            "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·미지원 형식은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
         },
         "delivery": {
             "channel": "teams",

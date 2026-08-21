@@ -24,6 +24,7 @@ from pai_loop.pps_enrichment import (
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     persist_pps_metadata_version,
+    pps_attachment_coverage,
     public_analysis_reason,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
@@ -370,6 +371,81 @@ def test_public_analysis_reason_is_current_manifest_bound_and_public_safe(
     )
     assert "http" not in reason.reason.casefold()
     assert "PPS-ATT" not in reason.reason
+
+
+def test_newest_stale_metadata_never_falls_back_to_prior_current_manifest() -> None:
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    current_manifest = list(versions[0].source_payload["attachment_manifest"])
+    versions.append(
+        NoticeVersion(
+            notice_id="notice",
+            version_no=3,
+            file_sha256="3" * 64,
+            document_complete=False,
+            extraction_status="METADATA",
+            extraction_confidence=1.0,
+            source_payload={
+                "kind": PPS_METADATA_KIND,
+                "schema_version": "pai-loop-pps-notice-metadata-0.1.0",
+                "attachment_manifest": current_manifest,
+            },
+        )
+    )
+
+    reason = public_analysis_reason(versions)
+    coverage = pps_attachment_coverage(versions)
+    assert reason.state == "REVIEW"
+    assert reason.reason_code == "ATTACHMENT_COVERAGE_INCOMPLETE"
+    assert coverage.discovered == 1
+    assert coverage.accepted == 0
+    assert coverage.complete is False
+
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        session.add(
+            Notice(
+                id="notice",
+                notice_key="PPS-STALE-METADATA",
+                bid_notice_no="R26BK-STALE-METADATA",
+                revision_no="000",
+                title="stale manifest regression",
+                agency="공공기관",
+                deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+                status="OPEN",
+            )
+        )
+        session.add_all(versions)
+        session.commit()
+    with factory() as session:
+        assert has_current_accepted_pps_extraction(session, "notice") is False
+        session.rollback()
+        enrichment = enrich_notice_from_pps(
+            session,
+            notice_id="notice",
+            openai_api_key=None,
+            openai_model="unused",
+        )
+    assert enrichment.status == "REVIEW"
+    assert "PPS_ATTACHMENT_MANIFEST_SCHEMA_STALE" in enrichment.warnings
+    engine.dispose()
+
+
+def test_non_object_manifest_entry_counts_as_invalid_current_coverage() -> None:
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    manifest = versions[0].source_payload["attachment_manifest"]
+    manifest.append("UNKNOWN_RAW_SLOT")
+
+    reason = public_analysis_reason(versions)
+    coverage = pps_attachment_coverage(versions)
+    assert reason.state == "REVIEW"
+    assert reason.reason_code == "ATTACHMENT_COVERAGE_INCOMPLETE"
+    assert reason.attachment_count == 2
+    assert coverage.discovered == 2
+    assert coverage.valid == 1
+    assert coverage.complete is False
+    assert "UNKNOWN_RAW_SLOT" not in reason.reason
 
 
 def test_download_rejects_unsafe_redirect_and_limits_bytes() -> None:

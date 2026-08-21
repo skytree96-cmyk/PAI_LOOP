@@ -300,8 +300,8 @@ node scripts/test-teams-delivery-workflow.mjs
 
 - manual/scheduled/live-enable 조합별 `dry_run` Gate;
 - PPS response count와 배열 필드;
-- W10/W11의 호출당 최대 3건·실행당 최대 30건, daily backlog 최대 12건,
-  공고당 OpenAI 최대 2회, exact segment/chunk lease와 집계 합계;
+- W10/W11의 호출당 공고 1건·실행당 최대 30건, daily backlog 최대 12건,
+  첨부당 OpenAI 최대 2회·공고당 최대 20회, exact segment/chunk lease와 집계 합계;
 - 낙찰 response의 exact field set, `COMPLETED|PARTIAL`, 기간·집계·경고 계약;
 - `PARTIAL` 응답의 경고 필수 및 후보 행/PII가 최종 출력에서 제거되는지;
 - Adaptive Card 1.5 및 Teams message attachment wrapper;

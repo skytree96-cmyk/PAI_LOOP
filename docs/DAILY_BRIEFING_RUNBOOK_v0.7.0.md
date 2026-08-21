@@ -100,18 +100,18 @@ HWPX는 XML paragraph/run을 복원해 문단 경계를 유지하고, NFC·zero-
 다시 통과시키며, 변환 실패는 REVIEW로 유지한다.
 
 `QUOTE_UNVERIFIED`에 한해서만 원문 그대로의 연속 인용을 다시 요구하는 corrective
-extraction을 한 번 허용한다. 첫 호출과 corrective 호출을 합친 hard cap은 공고당
-2회이며, 두 번째 응답도 동일한 exact anchor 검증을 통과해야 한다. 퍼지·의미
+extraction을 한 번 허용한다. 첫 호출과 corrective 호출을 합친 hard cap은 첨부당
+2회(공고당 최대 20회)이며, 두 번째 응답도 동일한 exact anchor 검증을 통과해야 한다. 퍼지·의미
 매칭으로 PASS시키지 않으며 두 번째도 실패하면 계속 `QUOTE_UNVERIFIED / REVIEW`다.
 
 ```json
 {
-  "notice_keys": ["durable lease가 부여한 exact chunk, 최대 3건"],
+  "notice_keys": ["durable lease가 부여한 exact chunk, 정확히 1건"],
   "dry_run": false,
   "force": false,
   "enrich_missing": true,
-  "max_notices": 3,
-  "max_attachments_per_notice": 1
+  "max_notices": 1,
+  "max_attachments_per_notice": 10
 }
 ```
 
@@ -129,10 +129,10 @@ requested, attempted, completed, skipped, failed,
 attachments_discovered, attachments_processed, openai_calls, warnings
 ```
 
-Workflow는 처리 합계, 공고당 첨부 1개 상한, OpenAI 실제 호출 수와 전체
-`openai_calls` 일치 및 공고당 최대 2회 상한을 검증한다. 문서 본문·개인정보·provider 원문은 n8n item이나
+Workflow는 처리 합계, 현재 manifest의 전체 공개 첨부 감사, OpenAI 실제 호출 수와 전체
+`openai_calls` 일치 및 첨부당 최대 2회·공고당 최대 20회 상한을 검증한다. 문서 본문·개인정보·provider 원문은 n8n item이나
 Teams card에 싣지 않고 DB의 공개 근거 anchor와 상태 요약만 사용한다.
-3건 단위 chunk의 동기 첨부 처리를 위해 n8n HTTP 경계는 최대 10분으로 제한한다. Backend는
+1건 단위 chunk와 첨부 continuation을 위해 n8n HTTP 경계는 최대 10분으로 제한한다. Backend는
 개별 공고 실패를 `FAILED` result와 전체 `PARTIAL`로 반환하므로 성공한 다른 공고의
 결과를 버리지 않는다.
 

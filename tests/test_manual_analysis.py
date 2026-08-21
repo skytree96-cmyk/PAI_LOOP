@@ -131,8 +131,9 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
             headers=SAME_ORIGIN_HEADERS,
         )
         assert first.status_code == 200, first.text
-        assert first.json()["outcome"] == "REVIEW"
-        assert first.json()["openai_calls"] == 0
+        assert first.json()["outcome"] == "QUEUED"
+        request_id = first.json()["request_id"]
+        assert request_id
         assert "api_key" not in first.text.casefold()
         assert len(calls) == 1
         payload = calls[0][0]
@@ -141,7 +142,15 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
         assert payload.force is False
         assert payload.enrich_missing is True
         assert payload.max_notices == 1
-        assert payload.max_attachments_per_notice == 1
+        assert payload.max_attachments_per_notice == 10
+
+        completed = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["outcome"] == "REVIEW"
+        assert completed.json()["openai_calls"] == 0
 
         repeated = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",

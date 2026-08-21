@@ -33,6 +33,10 @@ from pai_loop.models import (
     RequirementResultSnapshot,
     ScoreSnapshot,
 )
+from pai_loop.pps_enrichment import (
+    PPS_METADATA_SCHEMA,
+    PPS_PROCESSING_VERSION,
+)
 
 
 DEADLINE = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
@@ -430,7 +434,7 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.3.0"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.4.0"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.2.0"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.2.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -810,6 +814,7 @@ def test_latest_pps_manifest_excludes_superseded_attachment_from_pipeline(
             extraction_status="METADATA",
             source_payload={
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [attachment_a],
             },
         )
@@ -831,6 +836,8 @@ def test_latest_pps_manifest_excludes_superseded_attachment_from_pipeline(
         **source_a.source_payload,
             "source_kind": "PPS_PUBLIC_ATTACHMENT",
             "manifest_sha256": _digest(attachment_a),
+            "current_manifest_sha256": _digest([attachment_a]),
+            "processing_version": PPS_PROCESSING_VERSION,
     }
     notice.versions.append(
         NoticeVersion(
@@ -839,6 +846,7 @@ def test_latest_pps_manifest_excludes_superseded_attachment_from_pipeline(
             extraction_status="METADATA",
             source_payload={
                 "kind": "PPS_NOTICE_METADATA",
+                "schema_version": PPS_METADATA_SCHEMA,
                 "attachment_manifest": [attachment_b],
             },
         )
@@ -860,6 +868,8 @@ def test_latest_pps_manifest_excludes_superseded_attachment_from_pipeline(
         **source_b.source_payload,
             "source_kind": "PPS_PUBLIC_ATTACHMENT",
             "manifest_sha256": _digest(attachment_b),
+            "current_manifest_sha256": _digest([attachment_b]),
+            "processing_version": PPS_PROCESSING_VERSION,
     }
     _verified_boolean_fact(db_session, "bidder_registration")
     db_session.commit()

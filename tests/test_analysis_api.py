@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Barrier
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -12,6 +13,7 @@ from pai_loop.analysis_pipeline import AnalysisPipelineError
 from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
+    PpsEnrichmentResult,
     build_attachment_manifest,
     enrich_notice_from_pps,
 )
@@ -108,6 +110,171 @@ def test_analysis_batch_persists_and_reuses_snapshot(client: TestClient) -> None
     snapshot = briefing.json()["notices"][0]["analysis_snapshot"]
     assert snapshot["analysis_run_id"] == body["results"][0]["analysis_run_id"]
     assert len(snapshot["scores"]) == 8
+
+
+def test_attachment_continuation_exact_retry_replays_stored_child(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-CONTINUATION-REPLAY"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": "R26BK-CONTINUATION-REPLAY",
+            "title": "다중 첨부 응답 재전송 검증",
+            "agency": "공공기관",
+            "published_at": "2026-08-20T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    calls = 0
+
+    def continuation(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return PpsEnrichmentResult(
+            status="SKIPPED",
+            attachments_discovered=5,
+            attachments_attempted=2,
+            attachments_processed=2,
+            warnings=[
+                "ATTACHMENT_CONTINUATION_REQUIRED",
+                "ATTACHMENT_COVERAGE_INCOMPLETE",
+            ],
+        )
+
+    monkeypatch.setattr("pai_loop.analysis_api._has_accepted_pps_extraction", lambda *_: False)
+    monkeypatch.setattr("pai_loop.analysis_api._enrich_one_notice", continuation)
+    plan = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": [notice_key],
+            "chunk_size": 1,
+            "execution_limit": 1,
+        },
+    ).json()
+    payload = {
+        "notice_keys": [notice_key],
+        "enrich_missing": True,
+        "max_notices": 1,
+        "max_attachments_per_notice": 10,
+        "operation_id": plan["job_id"],
+        "segment_id": plan["segment_id"],
+        "chunk_index": plan["chunk_indices"][0],
+    }
+    first = client.post("/api/v1/notices/analysis/batch", json=payload)
+    replay = client.post("/api/v1/notices/analysis/batch", json=payload)
+    assert first.status_code == replay.status_code == 200
+    assert replay.json() == first.json()
+    assert calls == 1
+
+    released = client.post(
+        f"/api/v1/operations/analysis-backfills/{plan['job_id']}/complete",
+        json={"segment_id": plan["segment_id"]},
+    )
+    assert released.status_code == 200
+    assert released.json()["remaining"] == 1
+    resumed = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={"queue_name": "DAILY", "chunk_size": 1, "execution_limit": 1},
+    ).json()
+    assert resumed["segment_id"] != plan["segment_id"]
+    assert resumed["notice_keys"] == [notice_key]
+
+
+def test_batch_finalization_failure_requeues_and_reuses_durable_attachment(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-CONTINUATION-ATOMIC"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": "R26BK-CONTINUATION-ATOMIC",
+            "title": "첨부 커서 원자성 검증",
+            "agency": "공공기관",
+            "published_at": "2026-08-20T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    durable = False
+    paid_calls = 0
+
+    def resumable(*_args, **_kwargs):
+        nonlocal durable, paid_calls
+        if not durable:
+            durable = True
+            paid_calls += 1
+            return PpsEnrichmentResult(
+                status="SKIPPED",
+                attachments_discovered=3,
+                attachments_attempted=2,
+                attachments_processed=2,
+                openai_calls=1,
+                warnings=[
+                    "ATTACHMENT_CONTINUATION_REQUIRED",
+                    "ATTACHMENT_COVERAGE_INCOMPLETE",
+                ],
+            )
+        return PpsEnrichmentResult(
+            status="REUSED",
+            attachments_discovered=3,
+            attachments_attempted=3,
+            attachments_processed=3,
+        )
+
+    monkeypatch.setattr("pai_loop.analysis_api._has_accepted_pps_extraction", lambda *_: False)
+    monkeypatch.setattr("pai_loop.analysis_api._enrich_one_notice", resumable)
+    plan = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": [notice_key],
+            "chunk_size": 1,
+            "execution_limit": 1,
+        },
+    ).json()
+    payload = {
+        "notice_keys": [notice_key],
+        "enrich_missing": True,
+        "max_notices": 1,
+        "max_attachments_per_notice": 10,
+        "operation_id": plan["job_id"],
+        "segment_id": plan["segment_id"],
+        "chunk_index": plan["chunk_indices"][0],
+    }
+    from pai_loop import analysis_api
+
+    original_store = analysis_api._store_batch_response
+    store_calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal store_calls
+        store_calls += 1
+        if store_calls == 1:
+            raise RuntimeError("synthetic finalization failure")
+        return original_store(*args, **kwargs)
+
+    monkeypatch.setattr("pai_loop.analysis_api._store_batch_response", fail_once)
+    with pytest.raises(RuntimeError, match="synthetic finalization failure"):
+        client.post("/api/v1/notices/analysis/batch", json=payload)
+    progress = client.get(f"/api/v1/operations/analysis-backfills/{plan['job_id']}")
+    assert progress.status_code == 200
+    assert progress.json()["remaining"] == 1
+
+    recovered = client.post("/api/v1/notices/analysis/batch", json=payload)
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["job_id"]
+    assert paid_calls == 1
+    with client.app.state.session_factory() as session:
+        child = session.get(IngestionJob, recovered.json()["job_id"])
+        assert child is not None
+        assert "requeue_notice_keys" not in child.request_json
 
 
 def test_analysis_batch_dry_run_and_missing_notice_write_no_snapshots(client: TestClient) -> None:

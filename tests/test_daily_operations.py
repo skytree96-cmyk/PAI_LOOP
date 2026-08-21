@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from pai_loop.integrations.openai_extraction import PROMPT_VERSION
+from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop.models import (
     AnalysisRun,
     AwardHistoryItem,
@@ -15,7 +15,12 @@ from pai_loop.models import (
     Notice,
     NoticeVersion,
 )
-from pai_loop.pps_enrichment import PPS_ATTACHMENT_SOURCE, PPS_METADATA_KIND
+from pai_loop.pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
+    PPS_METADATA_KIND,
+    PPS_METADATA_SCHEMA,
+    PPS_PROCESSING_VERSION,
+)
 from pai_loop.public_notice_seed import import_public_notice_seed
 
 
@@ -100,7 +105,7 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         "never_attempted_notice_keys": ["DAILY-RECENT"],
         "retryable_notice_keys": [],
         "limit": 50,
-        "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·구형 HWP 전용은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
+        "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·미지원 형식은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
     }
     assert body["source_calls"] == {"pps": 0, "openai": 0, "teams": 0}
     assert body["delivery"] == {
@@ -148,7 +153,7 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
     client: TestClient,
 ) -> None:
     published_at = "2026-08-16T08:30:00+09:00"
-    for notice_key in ("PPS-NEVER", "PPS-RETRY", "PPS-HWP-ONLY"):
+    for notice_key in ("PPS-NEVER", "PPS-RETRY", "PPS-UNSUPPORTED"):
         _create_notice(client, notice_key=notice_key, published_at=published_at)
 
     def attachment(suffix: str, media_type: str, token: str) -> dict:
@@ -165,7 +170,7 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
 
     pdf_never = attachment(".pdf", "application/pdf", "a")
     pdf_retry = attachment(".pdf", "application/pdf", "b")
-    hwp_terminal = attachment(".hwp", "application/x-hwp", "c")
+    unsupported_terminal = attachment(".bin", "application/octet-stream", "c")
     manifest_sha = hashlib.sha256(
         json.dumps(
             pdf_retry,
@@ -182,7 +187,7 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
         for key, manifest in (
             ("PPS-NEVER", [pdf_never]),
             ("PPS-RETRY", [pdf_retry]),
-            ("PPS-HWP-ONLY", [hwp_terminal]),
+            ("PPS-UNSUPPORTED", [unsupported_terminal]),
         ):
             session.add(
                 NoticeVersion(
@@ -194,6 +199,7 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
                     extraction_confidence=1.0,
                     source_payload={
                         "kind": PPS_METADATA_KIND,
+                        "schema_version": PPS_METADATA_SCHEMA,
                         "attachment_manifest": manifest,
                     },
                 )
@@ -211,9 +217,59 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
                     "source_kind": PPS_ATTACHMENT_SOURCE,
                     "attachment_id": pdf_retry["attachment_id"],
                     "manifest_sha256": manifest_sha,
+                    "current_manifest_sha256": hashlib.sha256(
+                        json.dumps(
+                            [pdf_retry],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
                     "prompt_version": PROMPT_VERSION,
+                    "processing_version": PPS_PROCESSING_VERSION,
+                    "schema_version": SCHEMA_VERSION,
                     "status": "REVIEW",
                     "error_code": "UNVERIFIED_QUOTE",
+                },
+            )
+        )
+        unsupported_manifest_sha = hashlib.sha256(
+            json.dumps(
+                unsupported_terminal,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        unsupported_current_manifest_sha = hashlib.sha256(
+            json.dumps(
+                [unsupported_terminal],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        session.add(
+            NoticeVersion(
+                notice_id=notices["PPS-UNSUPPORTED"].id,
+                version_no=2,
+                file_sha256="e" * 64,
+                document_complete=False,
+                extraction_status="REVIEW",
+                extraction_confidence=0.0,
+                source_payload={
+                    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                    "source_kind": PPS_ATTACHMENT_SOURCE,
+                    "attachment_id": unsupported_terminal["attachment_id"],
+                    "source_label": unsupported_terminal["file_name"],
+                    "manifest_sha256": unsupported_manifest_sha,
+                    "current_manifest_sha256": unsupported_current_manifest_sha,
+                    "document_sha256": "e" * 64,
+                    "prompt_version": PROMPT_VERSION,
+                    "processing_version": PPS_PROCESSING_VERSION,
+                    "schema_version": SCHEMA_VERSION,
+                    "status": "REVIEW",
+                    "error_code": "UNSUPPORTED_ATTACHMENT_TYPE",
                 },
             )
         )
@@ -277,6 +333,7 @@ def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
                     extraction_confidence=1.0,
                     source_payload={
                         "kind": PPS_METADATA_KIND,
+                        "schema_version": PPS_METADATA_SCHEMA,
                         "attachment_manifest": [attachment],
                     },
                 ),
@@ -293,8 +350,18 @@ def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
                         "attachment_id": attachment["attachment_id"],
                         "source_label": attachment["file_name"],
                         "manifest_sha256": manifest_sha,
+                        "current_manifest_sha256": hashlib.sha256(
+                            json.dumps(
+                                [attachment],
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest(),
                         "document_sha256": "b" * 64,
                         "prompt_version": PROMPT_VERSION,
+                        "processing_version": PPS_PROCESSING_VERSION,
+                        "schema_version": SCHEMA_VERSION,
                         "status": "REVIEW",
                         "review_code": "R07",
                         "error_code": "INTERNAL_ENRICHMENT_ERROR",
@@ -314,13 +381,13 @@ def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
         },
     )
     assert analysed.status_code == 200, analysed.text
-    assert analysed.json()["results"][0]["document_status"] == "FAILED"
+    assert analysed.json()["results"][0]["document_status"] == "PARTIAL"
     assert analysed.json()["results"][0]["analysis_reason_code"] == "OPENAI_REVIEW"
     with client.app.state.session_factory() as session:
         notice = session.query(Notice).filter_by(notice_key=notice_key).one()
         runs = session.query(AnalysisRun).filter_by(notice_id=notice.id).all()
         assert len(runs) == 1
-        assert runs[0].status == "FAILED"
+        assert runs[0].status == "PARTIAL"
 
     briefing = client.get(
         "/api/v1/operations/daily-briefing",
@@ -341,7 +408,7 @@ def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
         None,
     )
     assert item is not None, briefing_body
-    assert item["analysis_snapshot"]["status"] == "FAILED"
+    assert item["analysis_snapshot"]["status"] == "PARTIAL"
     assert item["analysis_coverage"]["reason_code"] == "OPENAI_REVIEW"
     queue = briefing_body["analysis_queue"]
     assert queue["retryable_notice_keys"] == [notice_key]
