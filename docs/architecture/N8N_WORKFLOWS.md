@@ -28,11 +28,12 @@ W12를 각각 모니터링한다. W12 장애는 W10/W11을 재실행하거나 �
 달라지기 쉬우므로, backend가 데이터·평가 로직을 소유하고 세 운영 workflow는
 수집·continuation·전달 책임만 분리해 가진다.
 
-W10과 W12의 고정 간격은 60분이다. W11의 `*/15` schedule은 변경하지 않으므로
-08:00과 09:00에도 각각 실행될 수 있다. durable lease가 W10/W11의 중복 처리를 막고
-W12는 저장 결과만 읽지만, W12에는 W10/W11 완료 readiness gate가 없다. 분석이
-09:00을 넘기면 W12는 그 시점까지 DB에 반영된 최신 7일 브리핑을 보내며 자동 대기나
-재전송은 하지 않는다. 운영 모니터링으로 이 알려진 시간 race를 확인한다.
+W12의 첫 시도는 W10보다 60분 늦은 09:00이다. W11의 `*/15` schedule은 그대로이며,
+W12도 09:00부터 10:45까지 15분 간격으로 최대 8회 protected read-only readiness를
+확인한다. 오늘 KST LIVE PPS가 완료되고 DAILY parent가 terminal이며
+`remaining=0`, `in_flight=0`, 실패·부분 결과가 0인 경우에만 briefing으로 진행한다.
+공고·분석키가 모두 0인 날은 오늘 PPS COMPLETED, created/updated 0, stored queue 0,
+active DAILY parent 없음이 함께 확인될 때만 `READY_EMPTY`를 허용한다.
 
 따라서 “한 번에 활용”한다는 제품 요구는 충족하면서도 다음을 지킨다.
 
@@ -264,9 +265,10 @@ W11은 공고 수집이나 Teams 전송을 수행하지 않는다.
 
 ## 12 · Teams Daily Delivery
 
-W12는 `settings.timezone=Asia/Seoul`, 매일 09:00 schedule,
-`teams-delivery-1.2` 계약으로 `publish:true`,
-`promotionState=verified-live-e2e`다. W10/W11을 호출하지 않고 저장된 7일 브리핑을
+W12는 `settings.timezone=Asia/Seoul`, 09:00 첫 시도·10:45 마지막 시도의 bounded
+15분 schedule, `teams-delivery-1.3` 계약으로 `publish:true`,
+`promotionState=verified-live-e2e`다. scheduled 경로는
+`GET /api/v1/operations/teams-daily-readiness`가 `READY`인 경우에만 저장된 7일 브리핑을
 고정 공개 origin `https://pai-loop-demo.onrender.com`에서 한 번 읽어 공고 최대
 6건의 sanitized HTML을 native Microsoft Teams v2
 `channelMessage/create` 노드 하나로 `PAI 봇` 채널에 전송한다. Adaptive Card는 같은
@@ -274,8 +276,10 @@ W12는 `settings.timezone=Asia/Seoul`, 매일 09:00 schedule,
 
 Data Table 여섯 Gate가 모두 유효하고 `push_enabled=true`,
 `approval_state=APPROVED`, `emergency_disabled=false`여야 실제 sink에 도달한다.
-수동 live test는 `live_test_enabled=true`도 요구한다. 전송 전 backend mock endpoint에
-`teams-daily:{KST 날짜}:{sanitized payload fingerprint}` correlation을 예약하며,
+수동 live test는 `live_test_enabled=true`도 요구하고 scheduled readiness 분기와
+분리된다. 전송 전 backend mock endpoint에 payload 변경과 무관한
+`teams-daily:{KST 날짜}:{stable daily key}` correlation을 예약한다. stable daily key는
+형식 검증된 Team/Channel ID도 포함하므로 같은 대상의 briefing 변경만 중복 억제하며,
 최초 owner만 전송한다. 중복·예약 오류·Teams 오류는 raw 본문 없이 fail-closed하고
 자동 retry하지 않는 at-most-once 경계를 사용한다. 따라서 Teams 장애는 W10/W11의
 수집·분석을 재실행하지 않는다. 상세 운영·긴급 중지는
@@ -306,6 +310,6 @@ node scripts/test-teams-delivery-workflow.mjs
 - `PARTIAL` 응답의 경고 필수 및 후보 행/PII가 최종 출력에서 제거되는지;
 - Adaptive Card 1.5 및 Teams message attachment wrapper;
 - W10/W11/00~04의 실제 Teams 호출 0개와 W12의 native Microsoft Teams v2 sink 정확히 1개;
-- W12 offline preview 외부 호출 0개, Data Table 6-key Gate, 24KB payload,
-  persistent reservation과 중복 억제;
+- W12 offline preview 외부 호출 0개, Data Table 6-key Gate, protected readiness,
+  09:00~10:45 bounded retry, 24KB payload, 일자 고정 persistent reservation과 중복 억제;
 - secret value와 credential ID 0개.

@@ -131,6 +131,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET/POST` | `/api/v1/notices/{notice_key}/outcomes` | 실제 입찰·낙찰·실주 결과 조회/멱등 upsert |
 | `GET` | `/api/v1/notifications/mock` | Teams 모의 로그 조회 |
 | `GET` | `/api/v1/operations/daily-briefing` | 외부 호출 없이 저장된 최근 7일 공고 브리핑 조립 |
+| `GET` | `/api/v1/operations/teams-daily-readiness` | 오늘 KST PPS·DAILY parent 완료 여부를 mutation 없이 fail-closed 조회 |
 | `POST` | `/api/v1/operations/retention` | 완료 수집로그·mock 알림 7일 보관 preview/apply |
 
 ## n8n 배포
@@ -159,14 +160,16 @@ manifest에서 `publish: false`인 워크플로는 배포 후에도 비활성 �
 검증된 운영 진입점 Workflow 10과, live E2E·3개 HTTP 노드 credential 확인을 마친
 Workflow 11이 현재 `publish: true`이다. Workflow 11은
 `promotionState=verified-live-e2e`로 승격되어 15분 continuation을 수행한다.
-독립 `PAI_LOOP 12 - Teams Daily Delivery`는 매일 09:00 KST에 분석 재실행 없이
-저장 브리핑만 전송하도록 분리되어 있으며, 실제 1건 전송과 동일 payload 중복 억제 검증을 거쳐 현재
+독립 `PAI_LOOP 12 - Teams Daily Delivery`는 매일 09:00 KST에 처음 시도하고
+10:45까지 15분 간격으로 오늘 수집·DAILY 분석 완료 여부를 재확인한다. readiness가
+`READY`인 경우에만 분석 재실행 없이 저장 브리핑을 전송하며, 실제 1건 전송과
+동일 일자 중복 억제 검증을 거쳐 현재
 `publish: true`와 `promotionState=verified-live-e2e`로 승격됐다. 잠긴 n8n Variables
 대신 이름이 고정된 Data Table
 `pai_loop_teams_delivery_config`의 6개 key/value 행만 읽으며, table/tenant ID는
 workflow export에 저장하지 않는다. n8n UI에서 Teams credential을 연결하고 이름 기반
 Data Table에 승인된 Team/Channel ID를 저장한다. Schedule Trigger 기반 live 1건 및
-영속 중복 억제까지 검증한 v1.2 계약만 활성 상태를 유지한다. 자세한 절차는
+영속 중복 억제까지 검증한 v1.3 계약만 활성 상태를 유지한다. 자세한 절차는
 [Teams 실제 전송 운영 가이드](docs/TEAMS_DELIVERY_RUNBOOK_v0.9.0.md)를 따른다.
 나머지 00~04와 deployment smoke는 계속 비활성이다.
 
@@ -187,7 +190,8 @@ dry-run이고, schedule/sub-workflow의 저장 실행은
 - `N8N_API_KEY`
 
 OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON에 넣지 않습니다.
-10번의 9개와 11번의 3개 backend HTTP 노드는 n8n Generic Header Auth credential을 요구하며,
+10번의 9개, 11번의 3개, 12번의 readiness·briefing·reservation 3개 backend HTTP
+노드는 n8n Generic Header Auth credential을 요구하며,
 소스에는 credential ID도 없습니다. n8n UI에서 같은 노드 이름에 연결한 credential은
 후속 GitHub 배포 시 보존됩니다. API/Web origin은 `$env`를 우선하고 없으면 공개
 Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 workflow를
@@ -205,9 +209,10 @@ Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 wo
 있지만 현재 앱을 다시 작성하고 인증 경계를 이중화해야 하므로 이번 호스트로
 사용하지 않습니다.
 
-사내 파일럿은 독립 웹을 기준 제품으로 두고, W12가 매일 09:00 KST에 공개
-allowlist로 정리한 브리핑을 `PAI 봇` Teams 채널에 전송합니다. 전송은 승인 상태,
-Team/Channel 형식, emergency disable, 영속 correlation 예약을 모두 통과해야 하며
+사내 파일럿은 독립 웹을 기준 제품으로 두고, W12가 매일 09:00 KST부터 bounded
+재확인해 오늘 수집·분석이 완전히 끝난 뒤 공개 allowlist 브리핑을 `PAI 봇` Teams
+채널에 전송합니다. 전송은 readiness, 승인 상태, Team/Channel 형식, emergency disable,
+영속 일자 correlation 예약을 모두 통과해야 하며
 실패해도 W10 수집이나 W11 분석을 재실행하지 않습니다. 웹 상세의 Teams 패널은
 계속 외부 전송 없는 mock이고, Teams 탭·Entra SSO/RBAC은 별도 확장 경계입니다.
 자세한 비교와 운영 Gate는

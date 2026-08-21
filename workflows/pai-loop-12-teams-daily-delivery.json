@@ -6,7 +6,7 @@
         "width": 1640,
         "height": 300,
         "color": 7,
-        "content": "# 12 · Teams Daily Delivery · 독립 전송 경계 v1.2\n\nW10 수집·분석과 분리하여 매일 **09:00 Asia/Seoul**에 저장된 7일 브리핑만 읽고 n8n 기본 Microsoft Teams 노드로 안전한 HTML 요약을 보냅니다. Teams 장애는 `FAILED_NON_BLOCKING` 결과로 흡수하므로 PPS 수집이나 OpenAI 분석을 다시 실행하지 않습니다.\n\n실제 전송 설정은 이름이 고정된 Data Table `pai_loop_teams_delivery_config`의 key/value 6행에서만 읽습니다. 승인·enable·target이 모두 유효해야 열리고, 별도 `Run Live Teams Test`에는 `live_test_enabled=true`가 추가로 필요합니다. export에는 table/tenant ID, credential ID, OAuth token, tenant 내부 원문이 없습니다."
+        "content": "# 12 · Teams Daily Delivery · 독립 전송 경계 v1.3\n\nW10 수집·분석과 분리하여 매일 **09:00 Asia/Seoul**에 첫 시도하고 10:45까지 15분 간격으로 bounded 재확인합니다. scheduled 경로는 오늘 KST 수집과 DAILY 분석 parent가 완전히 끝난 경우에만 저장된 7일 브리핑을 읽습니다. Teams 장애는 `FAILED_NON_BLOCKING` 결과로 흡수하므로 PPS 수집이나 OpenAI 분석을 다시 실행하지 않습니다.\n\n실제 전송 설정은 이름이 고정된 Data Table `pai_loop_teams_delivery_config`의 key/value 6행에서만 읽습니다. 승인·enable·target이 모두 유효해야 열리고, 별도 `Run Live Teams Test`에는 `live_test_enabled=true`가 추가로 필요합니다. export에는 table/tenant ID, credential ID, OAuth token, tenant 내부 원문이 없습니다."
       },
       "id": "teams-delivery-overview",
       "name": "Teams delivery overview",
@@ -19,7 +19,7 @@
         "width": 1640,
         "height": 300,
         "color": 5,
-        "content": "## Fail-closed · sanitizer · dedupe\n\n- Offline Manual Trigger는 fixture preview만 만들며 Data Table/backend/Teams 호출이 모두 0건\n- schedule과 별도 `Run Live Teams Test`가 각각 고정 marker를 만들고, 6-key allowlist의 누락·중복·미등록 key를 fail-closed 처리\n- 실행 모드는 실행 엔진 metadata에 의존하지 않으며 manual live marker에만 `live_test_enabled=true`를 요구\n- backend에는 저장된 브리핑만 조회하며 PPS·OpenAI·분석 write를 호출하지 않음\n- allowlist builder가 공개 공고 필드만 HTML 요약과 preview card에 옮기고 링크를 승인된 web origin으로 고정\n- 날짜 + 대상 + sanitized payload fingerprint correlation ID로 동일 메시지 재전송 억제\n- Teams 응답은 message ID와 상태 코드만 남기며 raw 오류/토큰은 저장하지 않음"
+        "content": "## Fail-closed · readiness · sanitizer · dedupe\n\n- Offline Manual Trigger는 fixture preview만 만들며 Data Table/backend/Teams 호출이 모두 0건\n- schedule과 별도 `Run Live Teams Test`가 각각 고정 marker를 만들고, 6-key allowlist의 누락·중복·미등록 key를 fail-closed 처리\n- scheduled 경로만 protected read-only readiness를 확인하며 `READY` 전에는 briefing/reservation/Teams를 호출하지 않음\n- 오늘 LIVE PPS가 COMPLETED이고 신규·변경 0건, 분석 queue 0건, active DAILY parent 없음인 경우만 `READY_EMPTY` 허용\n- 실행 모드는 실행 엔진 metadata에 의존하지 않으며 manual live marker에만 `live_test_enabled=true`를 요구\n- backend에는 readiness와 저장된 브리핑만 조회하며 PPS·OpenAI·분석 write를 호출하지 않음\n- allowlist builder가 공개 공고 필드만 HTML 요약과 preview card에 옮기고 링크를 승인된 web origin으로 고정\n- scheduled correlation은 KST 일자에 고정되어 재시도 중 briefing 변경에도 하루 최대 1회만 예약\n- Teams 응답은 message ID와 상태 코드만 남기며 raw 오류/토큰은 저장하지 않음"
       },
       "id": "teams-delivery-safety",
       "name": "Teams delivery safety contract",
@@ -49,7 +49,7 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 9 * * *"
+              "expression": "0,15,30,45 9-10 * * *"
             }
           ]
         }
@@ -150,6 +150,82 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "teams-scheduled-attempt-condition",
+              "leftValue": "={{ $json.runtime.executionMode }}",
+              "rightValue": "scheduled-live",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "teams-scheduled-attempt-gate",
+      "name": "Scheduled Teams Attempt?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [40, 500]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/teams-daily-readiness' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/json" },
+            { "name": "X-PAI-Request-Source", "value": "n8n-teams-readiness-v1" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "id": "teams-fetch-daily-readiness",
+      "name": "Fetch Today's Daily Analysis Readiness",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 500],
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst configInput = $node['Validate Teams Delivery Config'].json ?? {};\nconst runtime = configInput.runtime ?? {};\nconst kstDate = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);\nconst allowedStatus = new Set(['READY','RUNNING','NOT_PLANNED','FAILED']);\nconst boundedInt = (value, max) => Number.isSafeInteger(value) && value >= 0 && value <= max ? value : null;\nlet contractValid = Boolean(raw && typeof raw === 'object' && !Array.isArray(raw) && raw.schema_version === '1.0' && allowedStatus.has(raw.status) && raw.kst_date === kstDate && typeof raw.reason_code === 'string' && /^[A-Z0-9_]{1,64}$/.test(raw.reason_code) && raw.ready === (raw.status === 'READY'));\nconst ingestion = raw?.ingestion && typeof raw.ingestion === 'object' ? { jobId: raw.ingestion.job_id ?? null, status: raw.ingestion.status ?? null, completed: raw.ingestion.completed === true, created: boundedInt(raw.ingestion.created, 1000000), updated: boundedInt(raw.ingestion.updated, 1000000), matched: boundedInt(raw.ingestion.matched, 1000000) } : null;\nconst analysis = raw?.analysis && typeof raw.analysis === 'object' ? { parentJobId: raw.analysis.parent_job_id ?? null, parentStatus: raw.analysis.parent_status ?? null, terminal: raw.analysis.terminal === true, planned: boundedInt(raw.analysis.planned, 3012), attempted: boundedInt(raw.analysis.attempted, 3012), remaining: boundedInt(raw.analysis.remaining, 3012), inFlight: boundedInt(raw.analysis.in_flight, 3012), completed: boundedInt(raw.analysis.completed, 3012), partial: boundedInt(raw.analysis.partial, 3012), failed: boundedInt(raw.analysis.failed, 3012), queuePending: boundedInt(raw.analysis.queue_pending, 1000000) } : null;\nconst validUuidOrNull = (value) => value == null || /^[0-9a-f-]{36}$/i.test(String(value));\ncontractValid = contractValid && Boolean(ingestion && analysis && validUuidOrNull(ingestion.jobId) && validUuidOrNull(analysis.parentJobId) && Object.values(ingestion).slice(3).every((value) => value !== null) && [analysis.planned,analysis.attempted,analysis.remaining,analysis.inFlight,analysis.completed,analysis.partial,analysis.failed,analysis.queuePending].every((value) => value !== null) && analysis.planned === analysis.attempted + analysis.remaining && analysis.attempted === analysis.completed + analysis.partial + analysis.failed && analysis.inFlight <= analysis.remaining);\nconst zeroCalls = raw?.source_calls;\ncontractValid = contractValid && Boolean(zeroCalls && Number(zeroCalls.pps) === 0 && Number(zeroCalls.openai) === 0 && Number(zeroCalls.teams) === 0);\nif (raw?.status === 'READY') {\n  const completeReady = raw.reason_code === 'DAILY_ANALYSIS_COMPLETE' && ingestion?.completed === true && ingestion?.status === 'COMPLETED' && analysis?.terminal === true && analysis?.parentStatus === 'COMPLETED' && analysis?.parentJobId && analysis?.remaining === 0 && analysis?.inFlight === 0 && analysis?.failed === 0 && analysis?.partial === 0 && analysis?.planned === analysis?.attempted;\n  const emptyReady = raw.reason_code === 'READY_EMPTY' && ingestion?.completed === true && ingestion?.status === 'COMPLETED' && ingestion?.created === 0 && ingestion?.updated === 0 && analysis?.parentJobId == null && analysis?.queuePending === 0;\n  contractValid = contractValid && Boolean(completeReady || emptyReady);\n}\nconst readiness = contractValid ? { status: raw.status, ready: raw.ready === true, reasonCode: raw.reason_code, kstDate: raw.kst_date, retryAfterSeconds: raw.retry_after_seconds ?? null, ingestion, analysis, contractValid: true } : { status: 'FAILED', ready: false, reasonCode: 'READINESS_BACKEND_CONTRACT_INVALID', kstDate, retryAfterSeconds: 900, ingestion: null, analysis: null, contractValid: false };\nreturn [{ json: { runtime, readiness, source_calls: { configTable: Number(configInput.source_calls?.configTable ?? 1), backend: 1, teams: 0 } } }];"
+      },
+      "id": "teams-validate-daily-readiness",
+      "name": "Validate Today's Daily Analysis Readiness",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "teams-daily-ready-condition",
+              "leftValue": "={{ $json.readiness.ready }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "teams-daily-ready-gate",
+      "name": "Today's Daily Analysis Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [740, 500]
+    },
+    {
+      "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=6' }}",
@@ -180,6 +256,16 @@
     },
     {
       "parameters": {
+        "jsCode": "const input = $json;\nconst scheduled = input.runtime?.executionMode === 'scheduled-live';\nlet readiness = null;\nif (scheduled) {\n  try { readiness = $node[\"Validate Today's Daily Analysis Readiness\"].json?.readiness ?? null; } catch { readiness = null; }\n  if (!readiness || readiness.ready !== true || readiness.contractValid !== true) throw new Error('scheduled briefing requires validated daily analysis readiness');\n}\nreturn [{ json: { ...input, ...(scheduled ? { readiness } : {}), source_calls: { configTable: Number(input.source_calls?.configTable ?? 1), backend: scheduled ? 2 : 1, teams: 0 } } }];"
+      },
+      "id": "teams-attach-readiness",
+      "name": "Attach Scheduled Readiness Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [100, 420]
+    },
+    {
+      "parameters": {
         "jsCode": "const input = $json;\nconst runtime = input.runtime;\nconst clean = (value, max) => String(value ?? '').replace(/[\\u0000-\\u001f\\u007f]/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\nconst html = (value, max) => clean(value, max).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\\"/g, '&quot;').replace(/'/g, '&#39;');\nconst won = (value) => { const amount = Number(value); return value == null || value === '' || !Number.isFinite(amount) ? '미정' : `${new Intl.NumberFormat('ko-KR').format(amount)}원`; };\nconst bounded = (value, limit = 3) => Array.isArray(value) ? value.slice(0, limit) : [];\nconst score = (item, keys) => { for (const key of keys) { const raw = item?.[key]; if (raw == null || raw === '') continue; const numeric = Number(raw); if (Number.isFinite(numeric)) return `${numeric.toFixed(1).replace(/\\.0$/, '')}점`; } return '점수 미산정'; };\nconst departmentName = (item) => clean(item?.department_name ?? item?.name ?? '부서 미상', 56);\nconst departmentDisplay = (notice) => {\n  const recommended = bounded(notice?.top_departments, 3).map((item) => `${departmentName(item)} · ${score(item, ['business_score','department_score','score'])}`);\n  const reviews = bounded(notice?.department_review_candidates, 3).map((item) => `${departmentName(item)} · 추가검토 · ${score(item, ['business_score','department_score','score'])}`);\n  const regions = bounded(notice?.region_routing, 2).map((item) => `${departmentName(item)} · 지역 라우팅 · ${score(item, ['routing_score','department_score','score'])}`);\n  return { recommended: clean(recommended.length ? recommended.join(' / ') : '기준 충족 없음', 220), reviews: clean(reviews.join(' / '), 220), regions: clean(regions.join(' / '), 160) };\n};\nconst riskDisplay = (fit) => { const numeric = Number(fit?.risk_score); return fit?.risk_score == null || !Number.isFinite(numeric) ? `${clean(fit?.risk_band || 'UNKNOWN', 24)} · 점수 미산정` : `${clean(fit?.risk_band || 'UNKNOWN', 24)} · ${numeric.toFixed(1)}점`; };\nconst notices = Array.isArray(input.briefing?.notices) ? input.briefing.notices.slice(0, 6) : [];\nconst containers = notices.map((notice, index) => {\n  const fit = notice.fit ?? {};\n  const departments = departmentDisplay(notice);\n  const facts = [\n    { title: '공고명', value: clean(notice.title || '제목 미상', 180) },\n    { title: '발주처', value: clean(notice.agency || '미상', 120) },\n    { title: '마감일', value: clean(notice.deadline || '미정', 64) },\n    { title: '추정금액', value: won(notice.estimated_amount) },\n    { title: '참가자격', value: clean(fit.eligibility || 'PENDING', 24) },\n    { title: '리스크', value: riskDisplay(fit) },\n    { title: '추천 부서', value: departments.recommended },\n  ];\n  if (departments.reviews) facts.push({ title: '추가 검토', value: departments.reviews });\n  if (departments.regions) facts.push({ title: '지역 라우팅', value: departments.regions });\n  return { type: 'Container', separator: index > 0, spacing: 'Medium', items: [{ type: 'TextBlock', text: `${index + 1}. 공고`, weight: 'Bolder', size: 'Medium', color: 'Accent', wrap: true }, { type: 'FactSet', facts }] };\n});\nconst card = { '$schema': 'http://adaptivecards.io/schemas/adaptive-card.json', type: 'AdaptiveCard', version: '1.5', msteams: { width: 'Full' }, body: [{ type: 'TextBlock', text: 'PAI_LOOP · 일일 공고 브리핑', size: 'Large', weight: 'Bolder', color: 'Accent', wrap: true }, { type: 'TextBlock', text: `최근 7일 관측 ${Number(input.briefing?.totals?.observed ?? notices.length)}건 · 표시 ${notices.length}건`, wrap: true, isSubtle: true }, ...containers, { type: 'TextBlock', text: '판단 보조 정보입니다. 원문과 증빙을 확인한 담당자가 최종 입찰 결정을 기록합니다.', wrap: true, isSubtle: true, size: 'Small', spacing: 'Large' }], actions: [{ type: 'Action.OpenUrl', title: '웹에서 근거 확인', url: runtime.webBaseUrl }] };\nif (card.actions.some((action) => action.type !== 'Action.OpenUrl' || action.url !== runtime.webBaseUrl || !action.url.startsWith('https://'))) throw new Error('card action must use the approved HTTPS web origin');\nconst htmlRows = notices.map((notice, index) => {\n  const fit = notice.fit ?? {};\n  const departments = departmentDisplay(notice);\n  const optionalReview = departments.reviews ? `<br><strong>추가 검토:</strong> ${html(departments.reviews, 220)}` : '';\n  const optionalRegion = departments.regions ? `<br><strong>지역 라우팅:</strong> ${html(departments.regions, 160)}` : '';\n  const separator = index > 0 ? '<hr>' : '';\n  return `${separator}<div><p><strong>${index + 1}. 공고</strong></p><p><strong>공고명:</strong> ${html(notice.title || '제목 미상', 180)}<br><strong>발주처:</strong> ${html(notice.agency || '미상', 120)}<br><strong>마감일:</strong> ${html(notice.deadline || '미정', 64)}<br><strong>추정금액:</strong> ${html(won(notice.estimated_amount), 40)}<br><strong>참가자격:</strong> ${html(fit.eligibility || 'PENDING', 24)}<br><strong>리스크:</strong> ${html(riskDisplay(fit), 80)}<br><strong>추천 부서:</strong> ${html(departments.recommended, 220)}${optionalReview}${optionalRegion}</p></div>`;\n}).join('');\nconst htmlMessage = `<h2>PAI_LOOP · 일일 공고 브리핑</h2><p>최근 7일 관측 ${Number(input.briefing?.totals?.observed ?? notices.length)}건 · 표시 ${notices.length}건</p>${htmlRows}<p><a href='${html(runtime.webBaseUrl, 200)}'>웹에서 근거 확인</a></p><p><small>판단 보조 정보입니다. 원문과 증빙을 확인한 담당자가 최종 입찰 결정을 기록합니다.</small></p>`;\nconst cardJson = JSON.stringify(card);\nconst payloadBytes = new TextEncoder().encode(`${cardJson}${htmlMessage}`).length;\nif (payloadBytes > 24 * 1024) throw new Error('sanitized Teams payload exceeds the 24KB delivery budget');\nlet h1 = 0x811c9dc5; let h2 = 0x9e3779b9;\nconst baseFingerprintSource = `${runtime.target.teamId}|${runtime.target.channelId}|${htmlMessage}`;\nconst correlationGeneration = runtime.executionMode === 'manual-live-test' ? 'oauth-scope-retest-v1' : null;\nconst fingerprintSource = correlationGeneration ? `${baseFingerprintSource}|manual-live-test-generation:${correlationGeneration}` : baseFingerprintSource;\nfor (let index = 0; index < fingerprintSource.length; index += 1) { const code = fingerprintSource.charCodeAt(index); h1 = Math.imul(h1 ^ code, 0x01000193); h2 = Math.imul(h2 ^ code, 0x85ebca6b); }\nconst fingerprint = `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;\nconst kstDate = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);\nconst baseCorrelationId = `teams-daily:${kstDate}:${fingerprint}`;\nconst correlationId = correlationGeneration ? `${baseCorrelationId}:${correlationGeneration}` : baseCorrelationId;\nlet executionId = '';\ntry { executionId = String($execution.id ?? '').trim(); } catch { executionId = ''; }\nconst liveMode = ['scheduled-live','manual-live-test'].includes(runtime.executionMode);\nif (liveMode && !/^[A-Za-z0-9_-]{1,120}$/.test(executionId)) throw new Error('bounded n8n execution ID is required for persistent delivery reservation');\nconst ownerToken = liveMode ? `w12:${executionId}` : 'preview';\nconst anchorNoticeKey = clean(notices[0]?.notice_key ?? '', 160);\nconst shouldReserve = liveMode && runtime.deliveryGateOpen === true && Boolean(anchorNoticeKey);\nconst reservationCard = { type: 'AdaptiveCard', version: '1.5', body: [{ type: 'TextBlock', text: 'PAI_LOOP Teams delivery reservation', wrap: true }], paiLoopDeliveryReservation: { ownerToken, correlationId, fingerprint, schemaVersion: '1.0' } };\nreturn [{ json: { ...input, adaptiveCard: card, delivery: { channel: 'teams', deliveryMode: runtime.executionMode === 'manual-fixture' ? 'preview' : 'actual', contentFormat: 'teams-channel-html-v1', status: runtime.executionMode === 'manual-fixture' ? 'PREVIEW_ONLY' : (shouldReserve ? 'READY_TO_RESERVE' : 'SKIPPED_EMPTY_BRIEFING'), ...(correlationGeneration ? { correlationGeneration } : {}), correlationId, fingerprint, shouldReserve, reservation: shouldReserve ? { ownerToken, anchorNoticeKey, endpointPath: `/api/v1/notices/${encodeURIComponent(anchorNoticeKey)}/notifications/teams/mock`, body: { card: reservationCard, channel: 'teams', delivery_mode: 'mock', correlation_id: correlationId } } : null, htmlMessage, actualTeamsRequestAttempted: false, actualTeamsRequestSent: false, actualPushSent: false } } }];"
       },
       "id": "teams-build-envelope",
@@ -187,6 +273,16 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nif (input.runtime?.executionMode !== 'scheduled-live') return [{ json: input }];\nif (!input.readiness?.ready || input.readiness?.contractValid !== true || !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(input.readiness?.kstDate ?? ''))) throw new Error('scheduled correlation requires validated KST readiness date');\nconst teamId = String(input.runtime?.target?.teamId ?? '');\nconst channelId = String(input.runtime?.target?.channelId ?? '');\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(teamId) || channelId.length > 512 || !/^[A-Za-z0-9:._@-]+$/.test(channelId)) throw new Error('scheduled correlation requires validated Teams target');\nlet h1 = 0x811c9dc5; let h2 = 0x9e3779b9;\nconst stableSource = `scheduled-live-v2|${input.readiness.kstDate}|${teamId}|${channelId}`;\nfor (let index = 0; index < stableSource.length; index += 1) { const code = stableSource.charCodeAt(index); h1 = Math.imul(h1 ^ code, 0x01000193); h2 = Math.imul(h2 ^ code, 0x85ebca6b); }\nconst dailyKey = `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;\nconst correlationId = `teams-daily:${input.readiness.kstDate}:${dailyKey}`;\nlet reservation = input.delivery?.reservation ?? null;\nif (reservation) {\n  const body = structuredClone(reservation.body);\n  body.correlation_id = correlationId;\n  if (!body.card?.paiLoopDeliveryReservation) throw new Error('scheduled reservation audit envelope is missing');\n  body.card.paiLoopDeliveryReservation.correlationId = correlationId;\n  reservation = { ...reservation, body };\n}\nreturn [{ json: { ...input, delivery: { ...input.delivery, correlationId, reservation, scheduledDailyKey: dailyKey } } }];"
+      },
+      "id": "teams-stabilize-scheduled-correlation",
+      "name": "Stabilize Scheduled Daily Correlation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 300]
     },
     {
       "parameters": {
@@ -240,7 +336,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst input = $node['Build Sanitized Dedupe Envelope'].json;\nconst expected = input.delivery?.reservation;\nconst recordValid = response && response.channel === 'teams' && response.delivery_mode === 'mock' && response.status === 'MOCK_RECORDED' && response.correlation_id === input.delivery.correlationId && response.notice_key === expected?.anchorNoticeKey && response.card?.type === 'AdaptiveCard' && response.card?.version === '1.5';\nconst stored = recordValid ? response.card?.paiLoopDeliveryReservation : null;\nconst ownerMatches = stored?.ownerToken === expected?.ownerToken && stored?.correlationId === input.delivery.correlationId && stored?.fingerprint === input.delivery.fingerprint;\nconst reservationAcquired = recordValid && ownerMatches;\nconst reservationStatus = !recordValid ? 'RESERVATION_FAILED_NON_BLOCKING' : (reservationAcquired ? 'RESERVATION_ACQUIRED' : 'DUPLICATE_PERSISTENT_SUPPRESSED');\nconst errorCode = recordValid ? null : 'PERSISTENT_RESERVATION_ERROR';\nreturn [{ json: { ...input, source_calls: { ...(input.source_calls ?? {}), backend: Number(input.source_calls?.backend ?? 0) + 1 }, delivery: { ...input.delivery, status: reservationStatus, reservation: { acquired: reservationAcquired, recordId: recordValid ? String(response.id ?? '').slice(0, 64) : null }, reservationAcquired, errorCode } } }];"
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nconst input = $node['Stabilize Scheduled Daily Correlation'].json;\nconst expected = input.delivery?.reservation;\nconst recordValid = response && response.channel === 'teams' && response.delivery_mode === 'mock' && response.status === 'MOCK_RECORDED' && response.correlation_id === input.delivery.correlationId && response.notice_key === expected?.anchorNoticeKey && response.card?.type === 'AdaptiveCard' && response.card?.version === '1.5';\nconst stored = recordValid ? response.card?.paiLoopDeliveryReservation : null;\nconst ownerMatches = stored?.ownerToken === expected?.ownerToken && stored?.correlationId === input.delivery.correlationId && stored?.fingerprint === input.delivery.fingerprint;\nconst reservationAcquired = recordValid && ownerMatches;\nconst reservationStatus = !recordValid ? 'RESERVATION_FAILED_NON_BLOCKING' : (reservationAcquired ? 'RESERVATION_ACQUIRED' : 'DUPLICATE_PERSISTENT_SUPPRESSED');\nconst errorCode = recordValid ? null : 'PERSISTENT_RESERVATION_ERROR';\nreturn [{ json: { ...input, source_calls: { ...(input.source_calls ?? {}), backend: Number(input.source_calls?.backend ?? 0) + 1 }, delivery: { ...input.delivery, status: reservationStatus, reservation: { acquired: reservationAcquired, recordId: recordValid ? String(response.id ?? '').slice(0, 64) : null }, reservationAcquired, errorCode } } }];"
       },
       "id": "teams-validate-persistent-reservation",
       "name": "Validate Persistent Teams Reservation",
@@ -320,6 +416,26 @@
     },
     {
       "parameters": {
+        "jsCode": "const input = $json;\nconst readiness = input.readiness ?? {};\nif (input.runtime?.executionMode !== 'scheduled-live' || readiness.ready === true || !['RUNNING','NOT_PLANNED','FAILED'].includes(readiness.status)) throw new Error('readiness skip requires a fail-closed scheduled state');\nconst status = readiness.status === 'RUNNING' ? 'SKIPPED_ANALYSIS_RUNNING' : (readiness.status === 'NOT_PLANNED' ? 'SKIPPED_ANALYSIS_NOT_PLANNED' : 'SKIPPED_ANALYSIS_FAILED');\nreturn [{ json: { ...input, delivery: { channel: 'teams', deliveryMode: 'actual', status, correlationId: null, fingerprint: null, shouldReserve: false, reservationAcquired: false, messageId: null, errorCode: readiness.reasonCode, actualTeamsRequestAttempted: false, actualTeamsRequestSent: false, actualPushSent: false } } }];"
+      },
+      "id": "teams-record-readiness-skip",
+      "name": "Record Scheduled Readiness Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 620]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst delivery = input.delivery ?? {};\nconst readiness = input.readiness ?? {};\nconst allowed = new Set(['SKIPPED_ANALYSIS_RUNNING','SKIPPED_ANALYSIS_NOT_PLANNED','SKIPPED_ANALYSIS_FAILED']);\nif (input.runtime?.executionMode !== 'scheduled-live' || !allowed.has(delivery.status) || readiness.ready !== false || delivery.actualTeamsRequestAttempted !== false || delivery.actualTeamsRequestSent !== false || delivery.actualPushSent !== false) throw new Error('scheduled readiness skip contract invalid');\nconst calls = input.source_calls ?? {};\nif (Number(calls.configTable) !== 1 || Number(calls.backend) !== 1 || Number(calls.teams) !== 0) throw new Error('readiness skip must make one config read, one readiness read, and zero briefing/reservation/Teams calls');\nreturn [{ json: { schemaVersion: '1.3', status: 'DELIVERY_DEFERRED', executionMode: 'scheduled-live', schedule: { cron: '0,15,30,45 9-10 * * *', firstAttempt: '09:00', lastAttempt: '10:45', intervalMinutes: 15, maxAttempts: 8, timezone: 'Asia/Seoul', workflowActive: true }, config: { source: input.runtime?.configTableName, valid: input.runtime?.configValid, errorCode: input.runtime?.configErrorCode }, readiness: { status: readiness.status, ready: false, reasonCode: readiness.reasonCode, kstDate: readiness.kstDate, retryAfterSeconds: readiness.retryAfterSeconds, contractValid: readiness.contractValid }, delivery: { channel: 'teams', deliveryMode: 'actual', status: delivery.status, correlationId: null, fingerprint: null, reservationAcquired: false, reservationRecordId: null, messageId: null, errorCode: delivery.errorCode, actualTeamsRequestAttempted: false, actualTeamsRequestSent: false, actualPushSent: false }, sourceCalls: { configTable: 1, backend: 1, teams: 0 }, briefing: null, adaptiveCard: null } }];"
+      },
+      "id": "teams-validate-readiness-skip",
+      "name": "Validate Scheduled Readiness Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1220, 620]
+    },
+    {
+      "parameters": {
         "jsCode": "const input = $json;\nconst delivery = input.delivery ?? {};\nconst allowed = new Set(['PREVIEW_ONLY','SENT','FAILED_NON_BLOCKING','DUPLICATE_PERSISTENT_SUPPRESSED','RESERVATION_FAILED_NON_BLOCKING','SKIPPED_EMPTY_BRIEFING','SKIPPED_CONFIG_INVALID','SKIPPED_LIVE_TEST_DISABLED','SKIPPED_EMERGENCY_DISABLED','SKIPPED_PUSH_DISABLED','SKIPPED_NOT_APPROVED','SKIPPED_TARGET_UNCONFIGURED']);\nif (!allowed.has(delivery.status)) throw new Error('Teams delivery terminal status is invalid');\nif (delivery.channel !== 'teams' || delivery.actualPushSent !== delivery.actualTeamsRequestSent) throw new Error('Teams delivery channel/result flags are inconsistent');\nif (delivery.status === 'SENT' && (!delivery.messageId || delivery.errorCode || delivery.reservationAcquired !== true || delivery.actualTeamsRequestAttempted !== true || delivery.actualTeamsRequestSent !== true)) throw new Error('successful Teams delivery requires a persistent reservation and message ID');\nif (delivery.status === 'FAILED_NON_BLOCKING' && (!delivery.errorCode || delivery.messageId || delivery.reservationAcquired !== true || delivery.actualTeamsRequestAttempted !== true || delivery.actualTeamsRequestSent !== false)) throw new Error('failed Teams delivery must retain its reservation and remain non-blocking');\nif (delivery.status === 'DUPLICATE_PERSISTENT_SUPPRESSED' && (delivery.reservationAcquired !== false || delivery.actualTeamsRequestAttempted !== false)) throw new Error('persistent duplicate must be suppressed before the Teams sink');\nif (delivery.status === 'RESERVATION_FAILED_NON_BLOCKING' && (delivery.errorCode !== 'PERSISTENT_RESERVATION_ERROR' || delivery.actualTeamsRequestAttempted !== false)) throw new Error('reservation failure must fail closed before the Teams sink');\nif (delivery.status === 'SKIPPED_CONFIG_INVALID' && (!delivery.errorCode || input.runtime?.configValid !== false || delivery.actualTeamsRequestAttempted !== false)) throw new Error('invalid config must fail closed before external delivery calls');\nif (['PREVIEW_ONLY','DUPLICATE_PERSISTENT_SUPPRESSED'].includes(delivery.status)) { if (input.adaptiveCard?.type !== 'AdaptiveCard' || input.adaptiveCard?.version !== '1.5' || !delivery.fingerprint) throw new Error('preview/dedupe result requires a sanitized card and fingerprint'); }\nif (input.adaptiveCard) { const bytes = new TextEncoder().encode(JSON.stringify(input.adaptiveCard)).length; if (bytes > 24 * 1024) throw new Error('terminal Adaptive Card exceeds the 24KB budget'); if (!Array.isArray(input.adaptiveCard.actions) || !input.adaptiveCard.actions.every((action) => action.type === 'Action.OpenUrl' && action.url === input.runtime.webBaseUrl)) throw new Error('terminal card action escaped the approved web origin'); }\nconst calls = input.source_calls ?? { configTable: 0, backend: 0, teams: 0 };\nif (input.runtime?.executionMode === 'manual-fixture' && (Number(calls.configTable) !== 0 || Number(calls.backend) !== 0 || Number(calls.teams) !== 0 || input.runtime.externalCallsAllowed !== false || delivery.status !== 'PREVIEW_ONLY')) throw new Error('manual Teams preview must make zero config/backend/Teams calls');\nif (input.runtime?.executionMode !== 'manual-fixture' && Number(calls.configTable) !== 1) throw new Error('live/schedule path must read exactly one named config table');\nconst overallStatus = delivery.status === 'SENT' ? 'DELIVERY_SENT' : (delivery.status === 'FAILED_NON_BLOCKING' ? 'DELIVERY_FAILED_NON_BLOCKING' : (delivery.status === 'RESERVATION_FAILED_NON_BLOCKING' ? 'DELIVERY_RESERVATION_FAILED_NON_BLOCKING' : (delivery.status === 'PREVIEW_ONLY' ? 'PREVIEW_READY' : 'DELIVERY_SKIPPED')));\nreturn [{ json: { schemaVersion: '1.2', status: overallStatus, executionMode: input.runtime?.executionMode, schedule: { cron: '0 9 * * *', timezone: 'Asia/Seoul', workflowActive: input.runtime?.triggerSource === 'schedule' }, config: { source: input.runtime?.configTableName, valid: input.runtime?.configValid, errorCode: input.runtime?.configErrorCode }, delivery: { channel: 'teams', deliveryMode: delivery.deliveryMode, status: delivery.status, correlationId: delivery.correlationId, fingerprint: delivery.fingerprint, reservationAcquired: delivery.reservationAcquired ?? null, reservationRecordId: delivery.reservation?.recordId ?? null, messageId: delivery.messageId, errorCode: delivery.errorCode, actualTeamsRequestAttempted: delivery.actualTeamsRequestAttempted, actualTeamsRequestSent: delivery.actualTeamsRequestSent, actualPushSent: delivery.actualPushSent }, sourceCalls: { configTable: Number(calls.configTable ?? 0), backend: Number(calls.backend ?? 0), teams: Number(calls.teams ?? 0) }, briefing: input.briefing ? { generatedAt: input.briefing.generated_at, window: input.briefing.window, totals: input.briefing.totals, noticeKeys: input.briefing.notices.map((item) => item.notice_key) } : null, adaptiveCard: input.adaptiveCard ?? null } }];"
       },
       "id": "teams-validate-terminal",
@@ -329,12 +445,22 @@
       "position": [1300, 320]
     },
     {
+      "parameters": {
+        "jsCode": "const input = $json;\nlet readiness = input.readiness ?? null;\nif (input.executionMode === 'scheduled-live' && !readiness) { try { readiness = $node[\"Validate Today's Daily Analysis Readiness\"].json?.readiness ?? null; } catch { readiness = null; } }\nreturn [{ json: { ...input, schemaVersion: '1.3', schedule: { cron: '0,15,30,45 9-10 * * *', firstAttempt: '09:00', lastAttempt: '10:45', intervalMinutes: 15, maxAttempts: 8, timezone: 'Asia/Seoul', workflowActive: input.executionMode === 'scheduled-live' }, ...(input.executionMode === 'scheduled-live' && readiness ? { readiness } : {}) } }];"
+      },
+      "id": "teams-normalize-schedule-contract",
+      "name": "Normalize Teams Delivery Schedule Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 320]
+    },
+    {
       "parameters": {},
       "id": "teams-delivery-done",
       "name": "Teams Delivery Finished",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [1560, 320]
+      "position": [1720, 320]
     }
   ],
   "connections": {
@@ -347,10 +473,16 @@
     "Mark Config-Gated Delivery Mode": { "main": [[{ "node": "Read Teams Delivery Config", "type": "main", "index": 0 }]] },
     "Read Teams Delivery Config": { "main": [[{ "node": "Validate Teams Delivery Config", "type": "main", "index": 0 }]] },
     "Validate Teams Delivery Config": { "main": [[{ "node": "Approved Teams Push Gate Open?", "type": "main", "index": 0 }]] },
-    "Approved Teams Push Gate Open?": { "main": [[{ "node": "Fetch Stored Briefing for Teams", "type": "main", "index": 0 }], [{ "node": "Record Fail-Closed Teams Skip", "type": "main", "index": 0 }]] },
+    "Approved Teams Push Gate Open?": { "main": [[{ "node": "Scheduled Teams Attempt?", "type": "main", "index": 0 }], [{ "node": "Record Fail-Closed Teams Skip", "type": "main", "index": 0 }]] },
+    "Scheduled Teams Attempt?": { "main": [[{ "node": "Fetch Today's Daily Analysis Readiness", "type": "main", "index": 0 }], [{ "node": "Fetch Stored Briefing for Teams", "type": "main", "index": 0 }]] },
+    "Fetch Today's Daily Analysis Readiness": { "main": [[{ "node": "Validate Today's Daily Analysis Readiness", "type": "main", "index": 0 }]] },
+    "Validate Today's Daily Analysis Readiness": { "main": [[{ "node": "Today's Daily Analysis Ready?", "type": "main", "index": 0 }]] },
+    "Today's Daily Analysis Ready?": { "main": [[{ "node": "Fetch Stored Briefing for Teams", "type": "main", "index": 0 }], [{ "node": "Record Scheduled Readiness Skip", "type": "main", "index": 0 }]] },
     "Fetch Stored Briefing for Teams": { "main": [[{ "node": "Validate Stored Briefing Contract", "type": "main", "index": 0 }]] },
-    "Validate Stored Briefing Contract": { "main": [[{ "node": "Build Sanitized Dedupe Envelope", "type": "main", "index": 0 }]] },
-    "Build Sanitized Dedupe Envelope": { "main": [[{ "node": "New Sanitized Delivery Needed?", "type": "main", "index": 0 }]] },
+    "Validate Stored Briefing Contract": { "main": [[{ "node": "Attach Scheduled Readiness Context", "type": "main", "index": 0 }]] },
+    "Attach Scheduled Readiness Context": { "main": [[{ "node": "Build Sanitized Dedupe Envelope", "type": "main", "index": 0 }]] },
+    "Build Sanitized Dedupe Envelope": { "main": [[{ "node": "Stabilize Scheduled Daily Correlation", "type": "main", "index": 0 }]] },
+    "Stabilize Scheduled Daily Correlation": { "main": [[{ "node": "New Sanitized Delivery Needed?", "type": "main", "index": 0 }]] },
     "New Sanitized Delivery Needed?": { "main": [[{ "node": "Reserve Persistent Teams Correlation", "type": "main", "index": 0 }], [{ "node": "Record Preview or Duplicate Suppressed", "type": "main", "index": 0 }]] },
     "Reserve Persistent Teams Correlation": { "main": [[{ "node": "Validate Persistent Teams Reservation", "type": "main", "index": 0 }]] },
     "Validate Persistent Teams Reservation": { "main": [[{ "node": "Persistent Teams Reservation Acquired?", "type": "main", "index": 0 }]] },
@@ -359,7 +491,10 @@
     "Normalize Non-Blocking Teams Result": { "main": [[{ "node": "Validate Teams Delivery Outcome", "type": "main", "index": 0 }]] },
     "Record Preview or Duplicate Suppressed": { "main": [[{ "node": "Validate Teams Delivery Outcome", "type": "main", "index": 0 }]] },
     "Record Fail-Closed Teams Skip": { "main": [[{ "node": "Validate Teams Delivery Outcome", "type": "main", "index": 0 }]] },
-    "Validate Teams Delivery Outcome": { "main": [[{ "node": "Teams Delivery Finished", "type": "main", "index": 0 }]] }
+    "Record Scheduled Readiness Skip": { "main": [[{ "node": "Validate Scheduled Readiness Skip", "type": "main", "index": 0 }]] },
+    "Validate Scheduled Readiness Skip": { "main": [[{ "node": "Normalize Teams Delivery Schedule Contract", "type": "main", "index": 0 }]] },
+    "Validate Teams Delivery Outcome": { "main": [[{ "node": "Normalize Teams Delivery Schedule Contract", "type": "main", "index": 0 }]] },
+    "Normalize Teams Delivery Schedule Contract": { "main": [[{ "node": "Teams Delivery Finished", "type": "main", "index": 0 }]] }
   },
   "settings": {
     "executionOrder": "v1",

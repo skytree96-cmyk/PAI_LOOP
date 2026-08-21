@@ -26,6 +26,7 @@ from .quantitative_scoring import quantitative_scoring_router
 from .reference_api import router as reference_data_router
 from .reference_registry import sync_packaged_reference_data, sync_public_company_profile
 from .schemas import HealthResponse
+from .teams_readiness import router as teams_readiness_router
 
 
 def create_app(*, database_url: str | None = None, seed_synthetic: bool | None = None) -> FastAPI:
@@ -114,6 +115,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(bid_outcomes_router)
     application.include_router(manual_analysis_router)
     application.include_router(analysis_persistence_router)
+    application.include_router(teams_readiness_router)
 
     @application.get("/healthz", response_model=HealthResponse, tags=["operations"])
     def health(request: Request) -> HealthResponse:
