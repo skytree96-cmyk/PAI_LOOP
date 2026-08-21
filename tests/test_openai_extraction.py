@@ -169,6 +169,9 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert "verify each quote can be found verbatim" in user_prompt
     assert "never calculate a company score" in user_prompt
     assert "metric UNKNOWN" in user_prompt
+    assert "company.performance.amount" in user_prompt
+    assert "never create a new key" in user_prompt
+    assert "never reverse 이상/초과/이하/미만" in user_prompt
 
 
 @pytest.mark.parametrize(

@@ -107,6 +107,96 @@ def payload_with_table(table: dict | None = None) -> ExtractionPayload:
     )
 
 
+def threshold_table(*, operator: str = "GTE") -> tuple[dict, str]:
+    literal = "5억원 이상 충족 10점 미충족 0점"
+    source = "\n".join(
+        ["정량평가표", "수행실적 10점", literal, "정량평가 총점 10점"]
+    )
+    table = {
+        "table_id": "QUANT-THRESHOLD-1",
+        "label": "정량평가표",
+        "criteria": [
+            {
+                "criterion_id": "PERFORMANCE-THRESHOLD-1",
+                "label": "수행실적",
+                "criterion_literal": "수행실적 10점",
+                "max_points": 10,
+                "scoring_method": "THRESHOLD",
+                "metric": "PERFORMANCE_AMOUNT",
+                "unit": "억원",
+                "brackets": [],
+                "threshold": {
+                    "literal": literal,
+                    "operator": operator,
+                    "threshold_value": 5,
+                    "points_if_met": 10,
+                    "points_if_not_met": 0,
+                    "evidence": anchor(literal),
+                },
+                "formula_literal": None,
+                "required_evidence": ["company.performance.amount"],
+                "evidence": anchor("수행실적 10점"),
+                "ambiguity_reason": None,
+            }
+        ],
+        "total_points": 10,
+        "total_evidence": anchor("정량평가 총점 10점"),
+        "minimum_score": None,
+        "minimum_evidence": None,
+        "ambiguity_reason": None,
+    }
+    return table, source
+
+
+def single_range_table(
+    literal: str,
+    *,
+    min_inclusive: bool,
+    max_inclusive: bool,
+) -> tuple[dict, str]:
+    source = "\n".join(
+        ["정량평가표", "수행실적 15점", literal, "정량평가 총점 15점"]
+    )
+    table = {
+        "table_id": "QUANT-RANGE-1",
+        "label": "정량평가표",
+        "criteria": [
+            {
+                "criterion_id": "PERFORMANCE-RANGE-1",
+                "label": "수행실적",
+                "criterion_literal": "수행실적 15점",
+                "max_points": 15,
+                "scoring_method": "BRACKET",
+                "metric": "PERFORMANCE_AMOUNT",
+                "unit": "억원",
+                "brackets": [
+                    {
+                        "label": "수행실적 범위",
+                        "literal": literal,
+                        "min_value": 5,
+                        "max_value": 10,
+                        "min_inclusive": min_inclusive,
+                        "max_inclusive": max_inclusive,
+                        "points": 15,
+                        "evidence": anchor(literal),
+                    }
+                ],
+                "threshold": None,
+                "formula_literal": None,
+                "required_evidence": ["company.performance.amount"],
+                "evidence": anchor("수행실적 15점"),
+                "ambiguity_reason": None,
+            }
+        ],
+        "total_points": 15,
+        "total_evidence": anchor("정량평가 총점 15점"),
+        "minimum_score": None,
+        "minimum_evidence": None,
+        "ambiguity_reason": None,
+    }
+    return table, source
+
+
 def build(payload: ExtractionPayload, *, source: str = VALID_SOURCE):
     return build_quantitative_candidate_profile(
         {ATTACHMENT_ID: payload},
@@ -178,6 +268,70 @@ def test_overlapping_inclusive_brackets_are_incomplete() -> None:
     assert "OVERLAPPING_BRACKETS" in issue_codes(profile)
 
 
+def test_bracket_inclusivity_must_match_literal_comparator() -> None:
+    table = valid_table()
+    table["criteria"][0]["brackets"][0]["min_inclusive"] = False
+    profile = build(payload_with_table(table))
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "BRACKET_COMPARATOR_MISMATCH" in issue_codes(profile)
+
+
+def test_threshold_lt_cannot_bind_to_korean_gte_literal() -> None:
+    table, source = threshold_table(operator="LT")
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "THRESHOLD_COMPARATOR_MISMATCH" in issue_codes(profile)
+
+
+def test_threshold_operator_matching_literal_is_available() -> None:
+    table, source = threshold_table(operator="GTE")
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE"
+    assert profile.available_candidates[0].threshold is not None
+    assert profile.available_candidates[0].threshold.operator == "GTE"
+
+
+@pytest.mark.parametrize(
+    ("literal", "min_inclusive", "max_inclusive"),
+    [
+        ("5억원 초과 10억원 이하 15점", False, True),
+        ("performance >= 5 and performance < 10, 15점", True, False),
+        ("5 <= performance < 10, 15점", True, False),
+    ],
+)
+def test_korean_and_ascii_range_comparators_bind_exactly(
+    literal: str,
+    min_inclusive: bool,
+    max_inclusive: bool,
+) -> None:
+    table, source = single_range_table(
+        literal,
+        min_inclusive=min_inclusive,
+        max_inclusive=max_inclusive,
+    )
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+
+
+def test_ascii_range_reversed_inclusivity_is_incomplete() -> None:
+    literal = "performance >= 5 and performance < 10, 15점"
+    table, source = single_range_table(
+        literal,
+        min_inclusive=False,
+        max_inclusive=False,
+    )
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert "BRACKET_COMPARATOR_MISMATCH" in issue_codes(profile)
+
+
 def test_unknown_metric_is_review_not_available() -> None:
     table = valid_table()
     table["criteria"][0]["metric"] = "UNKNOWN"
@@ -198,6 +352,17 @@ def test_missing_fact_placeholder_is_incomplete(placeholder: str) -> None:
     assert profile.status == "INCOMPLETE"
     assert profile.available_candidates == ()
     assert "REQUIRED_EVIDENCE_INCOMPLETE" in issue_codes(profile)
+
+
+def test_model_invented_evidence_key_is_never_available() -> None:
+    table = valid_table()
+    table["criteria"][0]["required_evidence"] = ["company.fake.max"]
+    profile = build(payload_with_table(table))
+
+    assert profile.status == "REVIEW"
+    assert profile.available_candidates == ()
+    assert profile.review_candidates[0].status == "REVIEW"
+    assert "UNREGISTERED_REQUIRED_EVIDENCE" in issue_codes(profile)
 
 
 def test_explicit_no_table_statement_is_not_applicable_with_exact_evidence() -> None:
@@ -296,6 +461,33 @@ def test_persisted_attachment_record_has_exact_bindings_but_no_raw_source() -> N
     assert len(profile.available_candidates) == 1
 
 
+def test_coherent_review_and_incomplete_records_survive_strict_invariants() -> None:
+    review_table = valid_table()
+    review_table["criteria"][0]["metric"] = "UNKNOWN"
+    review_record = validate_quantitative_attachment_extraction(
+        payload_with_table(review_table),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    assert review_record.status == "REVIEW"
+    assert review_record.review_candidates[0].status == "REVIEW"
+
+    incomplete_table = valid_table()
+    incomplete_table["total_points"] = 30
+    incomplete_table["total_evidence"] = anchor("정량평가 총점 30점")
+    incomplete_record = validate_quantitative_attachment_extraction(
+        payload_with_table(incomplete_table),
+        source_text=VALID_SOURCE.replace("정량평가 총점 20점", "정량평가 총점 30점"),
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="c" * 64,
+        manifest_sha256="d" * 64,
+    )
+    assert incomplete_record.status == "INCOMPLETE"
+    assert incomplete_record.review_candidates[0].status == "INCOMPLETE"
+
+
 def test_durable_merge_accepts_neutral_no_table_record_from_another_chunk() -> None:
     manifest_sha = "c" * 64
     table_record = validate_quantitative_attachment_extraction(
@@ -352,7 +544,7 @@ def test_merge_rejects_stale_manifest_or_tampered_persisted_record() -> None:
     assert stale.status == "INCOMPLETE"
     assert "MANIFEST_BINDING_MISMATCH" in issue_codes(stale)
 
-    tampered = record.model_copy(update={"status": "REVIEW"})
+    tampered = record.model_copy(update={"validation_fingerprint_sha256": "f" * 64})
     altered = merge_validated_quantitative_records(
         [tampered],
         expected_documents={ATTACHMENT_ID: "a" * 64},
@@ -360,3 +552,98 @@ def test_merge_rejects_stale_manifest_or_tampered_persisted_record() -> None:
     )
     assert altered.status == "INCOMPLETE"
     assert "VALIDATION_FINGERPRINT_MISMATCH" in issue_codes(altered)
+
+
+def test_recomputed_fingerprint_cannot_bypass_record_shape_invariants() -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    invalid = record.model_copy(update={"status": "NO_TABLE"})
+    invalid = invalid.model_copy(
+        update={
+            "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                invalid
+            )
+        }
+    )
+
+    profile = merge_validated_quantitative_records(
+        [invalid],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+    )
+    assert profile.status == "INCOMPLETE"
+    assert "RECORD_INVARIANT_VIOLATION" in issue_codes(profile)
+
+
+def test_recomputed_fingerprint_cannot_bypass_nested_source_binding() -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    candidate = record.available_candidates[0]
+    wrong_anchor = candidate.evidence.model_copy(update={"attachment_id": "ATT-OTHER"})
+    wrong_candidate = candidate.model_copy(update={"evidence": wrong_anchor})
+    invalid = record.model_copy(update={"available_candidates": (wrong_candidate,)})
+    invalid = invalid.model_copy(
+        update={
+            "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                invalid
+            )
+        }
+    )
+
+    profile = merge_validated_quantitative_records(
+        [invalid],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+    )
+    assert profile.status == "INCOMPLETE"
+    assert "RECORD_INVARIANT_VIOLATION" in issue_codes(profile)
+
+
+def test_not_applicable_record_requires_exact_evidence_even_with_new_fingerprint() -> None:
+    statement = "본 사업은 정량평가가 해당 없음"
+    payload = ExtractionPayload.model_validate(
+        {
+            "document_type": "RFP",
+            "requirements": [],
+            "quantitative_tables": [],
+            "quantitative_table_not_applicable": {
+                "reason_literal": "정량평가가 해당 없음",
+                "evidence": anchor(statement),
+            },
+            "missing_or_unreadable": [],
+            "summary": "정량평가 비적용",
+        }
+    )
+    record = validate_quantitative_attachment_extraction(
+        payload,
+        source_text=statement,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    invalid = record.model_copy(update={"not_applicable_evidence": ()})
+    invalid = invalid.model_copy(
+        update={
+            "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                invalid
+            )
+        }
+    )
+
+    profile = merge_validated_quantitative_records(
+        [invalid],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+    )
+    assert profile.status == "INCOMPLETE"
+    assert "RECORD_INVARIANT_VIOLATION" in issue_codes(profile)

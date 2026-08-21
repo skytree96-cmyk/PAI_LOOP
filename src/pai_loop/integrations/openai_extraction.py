@@ -4,7 +4,8 @@ import json
 import os
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Any, Literal
 
 import httpx
@@ -66,6 +67,23 @@ KnownQuantitativeMetric = Literal[
 ]
 
 QuantitativeScoringMethod = Literal["BRACKET", "THRESHOLD", "FORMULA", "UNKNOWN"]
+
+KNOWN_QUANTITATIVE_EVIDENCE_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "PERFORMANCE_AMOUNT": frozenset({"company.performance.amount"}),
+        "PERFORMANCE_COUNT": frozenset({"company.performance.count"}),
+        "PERSONNEL_COUNT": frozenset({"company.personnel.count"}),
+        "CERTIFICATION_COUNT": frozenset({"company.certification.count"}),
+        "CREDIT_RATING": frozenset({"company.credit_rating"}),
+        "FINANCIAL_RATIO": frozenset({"company.financial.ratio"}),
+        "BUSINESS_YEARS": frozenset({"company.business.years"}),
+        "FACILITY_EQUIPMENT_COUNT": frozenset(
+            {"company.facility_equipment.count"}
+        ),
+        "AWARD_COUNT": frozenset({"company.award.count"}),
+        "LOCAL_PRESENCE": frozenset({"company.local_presence"}),
+    }
+)
 
 
 class QuantitativeBracketLiteral(BaseModel):
@@ -474,6 +492,10 @@ class OpenAIExtractionClient:
             )
 
         allowed_ids = sorted(allowed_attachment_ids)
+        evidence_registry = {
+            metric: sorted(keys)
+            for metric, keys in KNOWN_QUANTITATIVE_EVIDENCE_KEYS.items()
+        }
         source_prompt = (
             "Allowed attachment IDs: "
             + json.dumps(allowed_ids, ensure_ascii=False)
@@ -484,7 +506,12 @@ class OpenAIExtractionClient:
             "Transcribe quantitative scoring tables as literal source rules only: never insert or "
             "apply company facts, never calculate a company score, and never decide GO/NO-GO. "
             "Use metric UNKNOWN when the stated metric does not exactly fit a known enum. Copy every "
-            "criterion_literal, bracket.literal, and formula_literal from the source. Set "
+            "criterion_literal, bracket.literal, and formula_literal from the source. Bind BRACKET "
+            "min/max inclusivity and THRESHOLD operator exactly to the literal comparator; never "
+            "reverse 이상/초과/이하/미만 or >=/>/<=/<. For a known metric, required_evidence must "
+            "equal its canonical registry value exactly; never create a new key. Registry: "
+            + json.dumps(evidence_registry, ensure_ascii=False, sort_keys=True)
+            + ". Set "
             "quantitative_table_not_applicable only when SOURCE explicitly states that no quantitative "
             "table applies and anchor that statement; ordinary absence is null. Do not invent "
             "required_evidence placeholders. Always return quantitative_tables (possibly []) and "

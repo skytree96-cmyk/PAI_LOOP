@@ -4,15 +4,17 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .integrations.openai_extraction import (
     ExtractionPayload,
     EvidenceAnchor,
+    KNOWN_QUANTITATIVE_EVIDENCE_KEYS,
     KnownQuantitativeMetric,
     PROMPT_VERSION,
     QuantitativeBracketLiteral,
@@ -159,6 +161,11 @@ class ValidatedQuantitativeAttachmentRecord(FrozenModel):
     issues: tuple[QuantitativeValidationIssue, ...]
     validation_fingerprint_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
+    @model_validator(mode="after")
+    def validate_persisted_invariants(self) -> "ValidatedQuantitativeAttachmentRecord":
+        _assert_validated_record_invariants(self)
+        return self
+
 
 _NUMBER_RE = re.compile(r"-?(?:\d[\d,]*)(?:\.\d+)?")
 _PLACEHOLDER_NORMALISED = {
@@ -178,6 +185,94 @@ _PLACEHOLDER_NORMALISED = {
     "추후확인",
     "없음",
 }
+
+_NUM_PATTERN = r"-?(?:\d[\d,]*)(?:\.\d+)?"
+_UNIT_PATTERN = (
+    r"(?:원|천\s*원|만\s*원|백만\s*원|천만\s*원|억\s*원|건|명|개|점|%|"
+    r"퍼센트|년|개월|회|등급|㎡|m2|m²|㎥)"
+)
+_KOREAN_BOUND_RE = re.compile(
+    rf"(?P<num>{_NUM_PATTERN})\s*(?:{_UNIT_PATTERN})?\s*"
+    r"(?P<op>이상|초과|이하|미만)",
+    re.IGNORECASE,
+)
+_ASCII_DIRECT_BOUND_RE = re.compile(
+    rf"(?P<op>>=|<=|==|>|<|=)\s*(?P<num>{_NUM_PATTERN})"
+)
+_ASCII_REVERSED_BOUND_RE = re.compile(
+    rf"(?P<num>{_NUM_PATTERN})\s*(?:{_UNIT_PATTERN})?\s*"
+    r"(?P<op>>=|<=|==|>|<|=)\s*(?=[A-Za-z가-힣_(])",
+    re.IGNORECASE,
+)
+_COMPARATOR_MARKER_RE = re.compile(r"이상|초과|이하|미만|>=|<=|==|>|<|=")
+
+_KOREAN_OPERATOR = {
+    "이상": "GTE",
+    "초과": "GT",
+    "이하": "LTE",
+    "미만": "LT",
+}
+_DIRECT_OPERATOR = {">=": "GTE", ">": "GT", "<=": "LTE", "<": "LT", "=": "EQ", "==": "EQ"}
+_REVERSED_OPERATOR = {"<=": "GTE", "<": "GT", ">=": "LTE", ">": "LT", "=": "EQ", "==": "EQ"}
+
+
+def _comparator_terms(literal: str) -> tuple[tuple[Decimal, str], ...]:
+    terms: list[tuple[Decimal, str]] = []
+    for regex, operator_map in (
+        (_KOREAN_BOUND_RE, _KOREAN_OPERATOR),
+        (_ASCII_DIRECT_BOUND_RE, _DIRECT_OPERATOR),
+        (_ASCII_REVERSED_BOUND_RE, _REVERSED_OPERATOR),
+    ):
+        for match in regex.finditer(literal):
+            try:
+                value = Decimal(match.group("num").replace(",", ""))
+            except InvalidOperation:
+                continue
+            term = (value, operator_map[match.group("op")])
+            terms.append(term)
+    return tuple(terms)
+
+
+def _expected_bracket_terms(
+    bracket: QuantitativeBracketLiteral,
+) -> tuple[tuple[Decimal, str], ...]:
+    expected: list[tuple[Decimal, str]] = []
+    if bracket.min_value is not None:
+        value = _decimal(bracket.min_value)
+        if value is not None:
+            expected.append((value, "GTE" if bracket.min_inclusive else "GT"))
+    if bracket.max_value is not None:
+        value = _decimal(bracket.max_value)
+        if value is not None:
+            expected.append((value, "LTE" if bracket.max_inclusive else "LT"))
+    return tuple(expected)
+
+
+def _comparator_binding_issue(
+    *,
+    literal: str,
+    expected: tuple[tuple[Decimal, str], ...],
+    mismatch_code: str,
+    mismatch_message: str,
+    context: Mapping[str, str],
+) -> QuantitativeValidationIssue | None:
+    parsed = _comparator_terms(literal)
+    if Counter(parsed) == Counter(expected):
+        if expected or not _COMPARATOR_MARKER_RE.search(literal):
+            return None
+    if _COMPARATOR_MARKER_RE.search(literal) and not parsed:
+        return _issue(
+            "COMPARATOR_GRAMMAR_UNSUPPORTED",
+            "REVIEW",
+            "비교 연산 문구를 제한된 문법으로 정확히 해석할 수 없습니다.",
+            **context,
+        )
+    return _issue(
+        mismatch_code,
+        "INCOMPLETE",
+        mismatch_message,
+        **context,
+    )
 
 
 def _frozen_anchor(anchor: EvidenceAnchor) -> ImmutableEvidenceAnchor:
@@ -304,6 +399,283 @@ def _placeholder_evidence_key(value: str) -> bool:
     )
 
 
+def _required_evidence_is_registered(
+    metric: str,
+    required_evidence: Iterable[str],
+) -> bool:
+    values = tuple(required_evidence)
+    allowed = KNOWN_QUANTITATIVE_EVIDENCE_KEYS.get(metric)
+    return (
+        allowed is not None
+        and len(values) == len(set(values))
+        and set(values) == set(allowed)
+    )
+
+
+def _brackets_overlap(
+    brackets: Iterable[QuantitativeBracketLiteral | ImmutableQuantitativeBracket],
+) -> bool:
+    ordered = sorted(
+        brackets,
+        key=lambda item: (
+            float("-inf") if item.min_value is None else item.min_value,
+            float("inf") if item.max_value is None else item.max_value,
+        ),
+    )
+    for left, right in zip(ordered, ordered[1:], strict=False):
+        if left.max_value is None or right.min_value is None:
+            return True
+        if right.min_value < left.max_value:
+            return True
+        if (
+            right.min_value == left.max_value
+            and left.max_inclusive
+            and right.min_inclusive
+        ):
+            return True
+    return False
+
+
+def _assert_available_candidate_invariants(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> None:
+    if candidate.metric == "UNKNOWN" or candidate.scoring_method == "UNKNOWN":
+        raise ValueError("AVAILABLE candidate cannot use UNKNOWN metric or method")
+    if not _required_evidence_is_registered(
+        candidate.metric,
+        candidate.required_evidence,
+    ):
+        raise ValueError("AVAILABLE candidate evidence keys are not registered")
+    if not evidence_quote_matches_source(
+        candidate.criterion_literal,
+        candidate.evidence.quote,
+    ) or not _literal_contains_number(
+        candidate.max_points,
+        candidate.criterion_literal,
+    ):
+        raise ValueError("AVAILABLE candidate literal is not bound to its anchor")
+
+    if candidate.scoring_method == "BRACKET":
+        if not candidate.brackets or candidate.threshold is not None or candidate.formula_literal:
+            raise ValueError("AVAILABLE BRACKET candidate shape is invalid")
+        for bracket in candidate.brackets:
+            if not evidence_quote_matches_source(bracket.literal, bracket.evidence.quote):
+                raise ValueError("AVAILABLE bracket literal is not bound to its anchor")
+            values = [bracket.points]
+            if bracket.min_value is not None:
+                values.append(bracket.min_value)
+            if bracket.max_value is not None:
+                values.append(bracket.max_value)
+            if any(
+                not _literal_contains_number(value, bracket.literal)
+                for value in values
+            ):
+                raise ValueError("AVAILABLE bracket numbers do not match its literal")
+            if bracket.points > candidate.max_points:
+                raise ValueError("AVAILABLE bracket points exceed criterion maximum")
+            if (
+                bracket.min_value is not None
+                and bracket.max_value is not None
+                and bracket.min_value >= bracket.max_value
+            ):
+                raise ValueError("AVAILABLE bracket bounds are invalid")
+            if Counter(_comparator_terms(bracket.literal)) != Counter(
+                _expected_bracket_terms(bracket)
+            ):
+                raise ValueError("AVAILABLE bracket comparator binding is invalid")
+        if _brackets_overlap(candidate.brackets):
+            raise ValueError("AVAILABLE bracket ranges overlap")
+    elif candidate.scoring_method == "THRESHOLD":
+        if candidate.threshold is None or candidate.brackets or candidate.formula_literal:
+            raise ValueError("AVAILABLE THRESHOLD candidate shape is invalid")
+        threshold = candidate.threshold
+        if not evidence_quote_matches_source(
+            threshold.literal,
+            threshold.evidence.quote,
+        ):
+            raise ValueError("AVAILABLE threshold literal is not bound to its anchor")
+        if any(
+            not _literal_contains_number(value, threshold.literal)
+            for value in (
+                threshold.threshold_value,
+                threshold.points_if_met,
+                threshold.points_if_not_met,
+            )
+        ):
+            raise ValueError("AVAILABLE threshold numbers do not match its literal")
+        if (
+            threshold.points_if_met > candidate.max_points
+            or threshold.points_if_not_met > candidate.max_points
+        ):
+            raise ValueError("AVAILABLE threshold points exceed criterion maximum")
+        threshold_value = _decimal(threshold.threshold_value)
+        expected = (
+            ((threshold_value, threshold.operator),)
+            if threshold_value is not None
+            else ()
+        )
+        if Counter(_comparator_terms(threshold.literal)) != Counter(expected):
+            raise ValueError("AVAILABLE threshold comparator binding is invalid")
+    elif candidate.scoring_method == "FORMULA":
+        if candidate.brackets or candidate.threshold is not None or not candidate.formula_literal:
+            raise ValueError("AVAILABLE FORMULA candidate shape is invalid")
+        if not evidence_quote_matches_source(
+            candidate.formula_literal,
+            candidate.evidence.quote,
+        ):
+            raise ValueError("AVAILABLE formula literal is not bound to its anchor")
+
+
+def _record_anchors(
+    record: ValidatedQuantitativeAttachmentRecord,
+) -> Iterable[ImmutableEvidenceAnchor]:
+    for table in record.tables:
+        if table.total_evidence is not None:
+            yield table.total_evidence
+        if table.minimum_evidence is not None:
+            yield table.minimum_evidence
+    for candidate in record.available_candidates:
+        yield candidate.evidence
+        for bracket in candidate.brackets:
+            yield bracket.evidence
+        if candidate.threshold is not None:
+            yield candidate.threshold.evidence
+    yield from record.not_applicable_evidence
+
+
+def _assert_validated_record_invariants(
+    record: ValidatedQuantitativeAttachmentRecord,
+) -> None:
+    attachment_id = record.attachment_id
+    if any(anchor.attachment_id != attachment_id for anchor in _record_anchors(record)):
+        raise ValueError("all persisted anchors must match record attachment_id")
+    if any(table.source_attachment_id != attachment_id for table in record.tables):
+        raise ValueError("all persisted tables must match record attachment_id")
+    if any(
+        candidate.source_attachment_id != attachment_id
+        for candidate in (*record.available_candidates, *record.review_candidates)
+    ):
+        raise ValueError("all persisted candidates must match record attachment_id")
+    if any(issue.attachment_id != attachment_id for issue in record.issues):
+        raise ValueError("all persisted issues must match record attachment_id")
+
+    table_ids = [table.table_id for table in record.tables]
+    if len(table_ids) != len(set(table_ids)):
+        raise ValueError("persisted table IDs must be unique per attachment")
+    known_table_ids = set(table_ids)
+    if any(
+        candidate.table_id not in known_table_ids
+        for candidate in (*record.available_candidates, *record.review_candidates)
+    ):
+        raise ValueError("persisted candidate references an unknown table")
+
+    for candidate in record.available_candidates:
+        _assert_available_candidate_invariants(candidate)
+
+    for table in record.tables:
+        available = [
+            item for item in record.available_candidates if item.table_id == table.table_id
+        ]
+        review = [
+            item for item in record.review_candidates if item.table_id == table.table_id
+        ]
+        if Counter(table.available_criterion_ids) != Counter(
+            item.criterion_id for item in available
+        ):
+            raise ValueError("table AVAILABLE criterion linkage is inconsistent")
+        if Counter(table.review_criterion_ids) != Counter(
+            item.criterion_id for item in review
+        ):
+            raise ValueError("table REVIEW criterion linkage is inconsistent")
+        if Counter(table.criterion_ids) != Counter(
+            [
+                *(item.criterion_id for item in available),
+                *(item.criterion_id for item in review),
+            ]
+        ):
+            raise ValueError("table criterion linkage is incomplete")
+
+        table_issues = [item for item in record.issues if item.table_id == table.table_id]
+        signals = [
+            *table_issues,
+            *(
+                _issue("REVIEW_CANDIDATE", item.status, "", attachment_id=attachment_id)
+                for item in review
+            ),
+        ]
+        if table.status != _candidate_status(signals):
+            raise ValueError("table status is inconsistent with nested candidates/issues")
+        if table.status != "INCOMPLETE":
+            if table.total_points is None or table.total_evidence is None:
+                raise ValueError("complete/review table must retain total and evidence")
+            all_rows = [*available, *review]
+            if sum(
+                (Decimal(str(item.max_points)) for item in all_rows),
+                Decimal("0"),
+            ) != Decimal(str(table.total_points)):
+                raise ValueError("complete/review table total does not reconcile")
+            if not _literal_contains_number(
+                table.total_points,
+                table.total_evidence.quote,
+            ):
+                raise ValueError("table total is not present in its anchor")
+            if (table.minimum_score is None) != (table.minimum_evidence is None):
+                raise ValueError("table minimum and evidence must be paired")
+            if table.minimum_score is not None and table.minimum_evidence is not None:
+                if not _literal_contains_number(
+                    table.minimum_score,
+                    table.minimum_evidence.quote,
+                ):
+                    raise ValueError("table minimum is not present in its anchor")
+                if table.minimum_score > table.total_points:
+                    raise ValueError("table minimum exceeds total")
+
+    has_incomplete = any(
+        item.disposition == "INCOMPLETE" for item in record.issues
+    ) or any(table.status == "INCOMPLETE" for table in record.tables) or any(
+        item.status == "INCOMPLETE" for item in record.review_candidates
+    )
+    has_review = any(item.disposition == "REVIEW" for item in record.issues) or any(
+        table.status == "REVIEW" for table in record.tables
+    ) or any(item.status == "REVIEW" for item in record.review_candidates)
+
+    if record.status == "NO_TABLE":
+        if any(
+            (
+                record.tables,
+                record.available_candidates,
+                record.review_candidates,
+                record.not_applicable_evidence,
+                record.issues,
+            )
+        ):
+            raise ValueError("NO_TABLE record must have an empty nested shape")
+    elif record.status == "NOT_APPLICABLE":
+        if (
+            record.tables
+            or record.available_candidates
+            or record.review_candidates
+            or not record.not_applicable_evidence
+            or record.issues
+        ):
+            raise ValueError("NOT_APPLICABLE record shape is inconsistent")
+    elif record.status == "AVAILABLE":
+        if (
+            not record.tables
+            or not record.available_candidates
+            or record.review_candidates
+            or record.not_applicable_evidence
+            or record.issues
+            or any(table.status != "AVAILABLE" for table in record.tables)
+        ):
+            raise ValueError("AVAILABLE record shape is inconsistent")
+    elif record.status == "REVIEW":
+        if has_incomplete or not has_review or not record.tables:
+            raise ValueError("REVIEW record shape/status is inconsistent")
+    elif record.status == "INCOMPLETE" and not has_incomplete:
+        raise ValueError("INCOMPLETE record lacks an incomplete nested signal")
+
+
 def _validate_brackets(
     candidate: QuantitativeRuleCandidate,
     *,
@@ -376,6 +748,17 @@ def _validate_brackets(
                     **context,
                 )
             )
+        comparator_issue = _comparator_binding_issue(
+            literal=bracket.literal,
+            expected=_expected_bracket_terms(bracket),
+            mismatch_code="BRACKET_COMPARATOR_MISMATCH",
+            mismatch_message=(
+                "배점 구간의 원문 비교 연산자와 하한·상한 포함 여부가 일치하지 않습니다."
+            ),
+            context=context,
+        )
+        if comparator_issue is not None:
+            issues.append(comparator_issue)
         frozen.append(
             ImmutableQuantitativeBracket(
                 label=bracket.label,
@@ -488,6 +871,23 @@ def _validate_threshold(
             )
         )
         return issues, None
+    threshold_decimal = _decimal(threshold.threshold_value)
+    expected_terms = (
+        ((threshold_decimal, threshold.operator),)
+        if threshold_decimal is not None
+        else ()
+    )
+    comparator_issue = _comparator_binding_issue(
+        literal=threshold.literal,
+        expected=expected_terms,
+        mismatch_code="THRESHOLD_COMPARATOR_MISMATCH",
+        mismatch_message=(
+            "임계값 원문의 비교 연산자와 구조화한 threshold operator가 일치하지 않습니다."
+        ),
+        context=context,
+    )
+    if comparator_issue is not None:
+        issues.append(comparator_issue)
     return issues, ImmutableQuantitativeThreshold(
         literal=threshold.literal,
         operator=threshold.operator,
@@ -580,6 +980,18 @@ def validate_quantitative_rule_candidate(
                 "REQUIRED_EVIDENCE_INCOMPLETE",
                 "INCOMPLETE",
                 "필요 증빙 키가 없거나 placeholder입니다.",
+                **context,
+            )
+        )
+    elif candidate.metric != "UNKNOWN" and not _required_evidence_is_registered(
+        candidate.metric,
+        candidate.required_evidence,
+    ):
+        issues.append(
+            _issue(
+                "UNREGISTERED_REQUIRED_EVIDENCE",
+                "REVIEW",
+                "필요 증빙 키가 알려진 정량 지표의 canonical registry와 일치하지 않습니다.",
                 **context,
             )
         )
@@ -1205,7 +1617,9 @@ def validate_quantitative_attachment_extraction(
 
 
 def merge_validated_quantitative_records(
-    records: Iterable[ValidatedQuantitativeAttachmentRecord],
+    records: Iterable[
+        ValidatedQuantitativeAttachmentRecord | Mapping[str, object]
+    ],
     *,
     expected_documents: Mapping[str, str],
     manifest_sha256: str,
@@ -1223,11 +1637,31 @@ def merge_validated_quantitative_records(
         for attachment_id, document_sha256 in sorted(expected_documents.items())
     )
     expected = {item.attachment_id: item.document_sha256 for item in bindings}
+    issues: list[QuantitativeValidationIssue] = []
     grouped: dict[str, list[ValidatedQuantitativeAttachmentRecord]] = {}
-    for record in records:
+    for raw_record in records:
+        raw_data = (
+            raw_record.model_dump(mode="python")
+            if isinstance(raw_record, ValidatedQuantitativeAttachmentRecord)
+            else dict(raw_record)
+        )
+        attachment_hint = raw_data.get("attachment_id")
+        try:
+            record = ValidatedQuantitativeAttachmentRecord.model_validate(raw_data)
+        except ValidationError:
+            issues.append(
+                _issue(
+                    "RECORD_INVARIANT_VIOLATION",
+                    "INCOMPLETE",
+                    "정량 검증 record의 status·shape·source binding 불변식이 깨졌습니다.",
+                    attachment_id=(
+                        attachment_hint if isinstance(attachment_hint, str) else None
+                    ),
+                )
+            )
+            continue
         grouped.setdefault(record.attachment_id, []).append(record)
 
-    issues: list[QuantitativeValidationIssue] = []
     tables: list[ImmutableQuantitativeTable] = []
     available: list[ImmutableQuantitativeRuleCandidate] = []
     review: list[QuantitativeReviewCandidate] = []
