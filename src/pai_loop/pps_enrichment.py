@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import re
+import time
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -46,7 +47,22 @@ G2B_ATTACHMENT_QUERY_KEYS = {
 }
 MAX_ATTACHMENTS_IN_MANIFEST = 10
 DEFAULT_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
-MAX_DOCUMENT_CHARS = 120_000
+MAX_NOTICE_DOWNLOAD_BYTES = MAX_ATTACHMENTS_IN_MANIFEST * DEFAULT_MAX_DOWNLOAD_BYTES
+MAX_EXTRACTED_DOCUMENT_CHARS = 2_000_000
+MAX_NOTICE_EXTRACTED_CHARS = MAX_ATTACHMENTS_IN_MANIFEST * MAX_EXTRACTED_DOCUMENT_CHARS
+MAX_ANALYSIS_INPUT_CHARS = 120_000
+MAX_OPENAI_CALLS_PER_ATTACHMENT = 2
+MAX_OPENAI_CALLS_PER_NOTICE = (
+    MAX_ATTACHMENTS_IN_MANIFEST * MAX_OPENAI_CALLS_PER_ATTACHMENT
+)
+MAX_NEW_ATTACHMENTS_PER_REQUEST = 2
+from .document_extraction import (
+    DocumentExtractionError,
+    DocumentExtractionResult,
+    ExtractionLimits,
+    extract_document_content,
+)
+PPS_PROCESSING_VERSION = "pps-document-processing-0.2.0"
 MAX_PDF_PAGES = 120
 MAX_HWPX_ENTRIES = 240
 MAX_HWPX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
@@ -72,7 +88,30 @@ _SUPPORTED_EXTENSION_MEDIA = {
     ".pdf": "application/pdf",
     ".hwpx": "application/hwp+zip",
     ".hwp": "application/x-hwp",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".xls": "application/vnd.ms-excel",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".zip": "application/zip",
 }
+_EXTRACTABLE_EXTENSIONS = {
+    ".pdf",
+    ".hwpx",
+    ".hwp",
+    ".xlsx",
+    ".xlsm",
+    ".xls",
+    ".docx",
+    ".pptx",
+    ".html",
+    ".htm",
+    ".zip",
+}
+_PUBLIC_METADATA_EXTENSION = re.compile(r"^\.[a-z0-9]{1,12}$")
+UNSUPPORTED_PUBLIC_MEDIA_TYPE = "application/octet-stream"
 _PUBLIC_EMAIL_PATTERN = re.compile(
     r"(?i)\b[A-Z0-9._%+\-]+" + "@" + r"[A-Z0-9.\-]+\.[A-Z]{2,}\b"
 )
@@ -111,22 +150,85 @@ class MetadataVersionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PpsAttachmentEnrichmentResult:
+    """Sanitised, manifest-bound audit for one public attachment.
+
+    The audit deliberately excludes provider URLs, filenames, document text,
+    and model response identifiers.  A row is emitted for every valid item in
+    the current PPS manifest, including deterministic HWP reviews, so callers
+    can prove that one failed attachment did not hide successful siblings.
+    """
+
+    attachment_id: str
+    media_type: str
+    status: Literal["COMPLETED", "REUSED", "REVIEW", "PLANNED"]
+    reason_code: str
+    attempted: bool = False
+    content_extracted: bool = False
+    source_read_complete: bool = False
+    analysis_input_complete: bool = False
+    source_characters: int = 0
+    analysis_input_characters: int = 0
+    members_discovered: int = 0
+    members_processed: int = 0
+    openai_calls: int = 0
+    version_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PpsEnrichmentResult:
     status: Literal["COMPLETED", "REUSED", "REVIEW", "SKIPPED", "PLANNED"]
     attachments_discovered: int = 0
+    attachments_attempted: int = 0
     attachments_processed: int = 0
+    downloaded_bytes: int = 0
+    source_characters: int = 0
+    analysis_input_characters: int = 0
+    source_read_complete: bool = False
+    analysis_input_complete: bool = False
+    members_discovered: int = 0
+    members_processed: int = 0
     openai_calls: int = 0
     version_id: str | None = None
     warnings: list[str] = field(default_factory=list)
+    attachment_results: list[PpsAttachmentEnrichmentResult] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class PpsAttachmentCoverage:
+    discovered: int = 0
+    valid: int = 0
+    audited: int = 0
+    supported: int = 0
+    accepted: int = 0
+    source_complete: int = 0
+    complete: bool = False
+    all_supported_accepted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentAnalysisSelection:
+    """Bounded LLM input plus an audit of how the full extracted text was scanned."""
+
+    text: str
+    complete: bool
+    source_characters: int
+    selected_characters: int
+    total_lines: int
+    selected_line_ranges: tuple[tuple[int, int], ...]
+    signal_line_count: int
 
 
 AnalysisState = Literal["ANALYZED", "REVIEW", "PENDING"]
 AnalysisReasonCode = Literal[
     "ANALYZED",
     "ATTACHMENT_NONE",
+    "ATTACHMENT_COVERAGE_INCOMPLETE",
     "HWP_ONLY_UNSUPPORTED",
+    "UNSUPPORTED_ATTACHMENT",
     "HWPX_EXTRACT_FAILED",
     "PDF_EXTRACT_FAILED",
+    "DOCUMENT_EXTRACT_FAILED",
     "OPENAI_REVIEW",
     "QUOTE_UNVERIFIED",
     "NOT_SELECTED",
@@ -153,9 +255,12 @@ class PublicAnalysisReason:
 _PUBLIC_ANALYSIS_MESSAGES: dict[AnalysisReasonCode, str] = {
     "ANALYZED": "현재 공고 첨부의 근거 추출과 검증이 완료되었습니다.",
     "ATTACHMENT_NONE": "조달청 공고에서 자동 분석 가능한 공개 첨부를 찾지 못했습니다.",
-    "HWP_ONLY_UNSUPPORTED": "공개 첨부가 구형 HWP뿐이어서 현재 자동 텍스트 추출 대상이 아닙니다.",
+    "ATTACHMENT_COVERAGE_INCOMPLETE": "현재 공고의 공개 첨부 중 아직 분석 감사가 완료되지 않은 파일이 있습니다.",
+    "HWP_ONLY_UNSUPPORTED": "구형 HWP 공개 첨부가 포함되어 해당 파일은 원문 검토가 필요합니다.",
+    "UNSUPPORTED_ATTACHMENT": "현재 자동 텍스트 추출을 지원하지 않는 공개 첨부가 포함되어 원문 검토가 필요합니다.",
     "HWPX_EXTRACT_FAILED": "HWPX 첨부의 다운로드 또는 텍스트 추출을 완료하지 못했습니다.",
     "PDF_EXTRACT_FAILED": "PDF 첨부의 다운로드 또는 텍스트 추출을 완료하지 못했습니다.",
+    "DOCUMENT_EXTRACT_FAILED": "공개 첨부의 다운로드 또는 안전한 텍스트 추출을 완료하지 못했습니다.",
     "OPENAI_REVIEW": "문서는 읽었지만 LLM 구조화 또는 검증 단계를 완료하지 못해 재검토가 필요합니다.",
     "QUOTE_UNVERIFIED": "LLM이 제시한 인용문을 첨부 원문에서 정확히 대조하지 못했습니다.",
     "NOT_SELECTED": "아직 일일 분석 대상으로 선택되지 않은 공고입니다.",
@@ -218,9 +323,12 @@ def _safe_filename(value: Any) -> tuple[str, str]:
     if not _SAFE_FILENAME.fullmatch(filename) or PurePath(filename).name != filename:
         raise PpsEnrichmentError("UNSAFE_ATTACHMENT_FILENAME")
     extension = PurePath(filename).suffix.casefold()
-    media_type = _SUPPORTED_EXTENSION_MEDIA.get(extension)
-    if media_type is None:
-        raise PpsEnrichmentError("UNSUPPORTED_ATTACHMENT_TYPE")
+    if not _PUBLIC_METADATA_EXTENSION.fullmatch(extension):
+        raise PpsEnrichmentError("UNSAFE_ATTACHMENT_FILENAME")
+    # Unknown public formats remain in the immutable manifest and receive an
+    # explicit per-attachment REVIEW.  They are never downloaded merely
+    # because their metadata was preserved.
+    media_type = _SUPPORTED_EXTENSION_MEDIA.get(extension, UNSUPPORTED_PUBLIC_MEDIA_TYPE)
     return filename, media_type
 
 
@@ -239,12 +347,28 @@ def build_attachment_manifest(raw_item: dict[str, Any]) -> list[dict[str, Any]]:
     for slot in range(1, MAX_ATTACHMENTS_IN_MANIFEST + 1):
         raw_url = raw_item.get(f"ntceSpecDocUrl{slot}")
         raw_name = raw_item.get(f"ntceSpecFileNm{slot}")
-        if not raw_url or not raw_name:
+        if not raw_url and not raw_name:
             continue
         try:
+            if not raw_url or not raw_name:
+                raise PpsEnrichmentError("ATTACHMENT_METADATA_INCOMPLETE")
             url = _safe_g2b_attachment_url(raw_url)
             filename, media_type = _safe_filename(raw_name)
-        except PpsEnrichmentError:
+        except PpsEnrichmentError as exc:
+            # A provider-declared slot must never disappear from coverage just
+            # because its metadata is unsafe. Persist only a stable digest and
+            # public-safe code; raw filenames/URLs/contact data remain outside
+            # the database boundary.
+            manifest.append(
+                {
+                    "invalid_attachment_slot": slot,
+                    "status": "INVALID",
+                    "error_code": str(exc),
+                    "metadata_sha256": _digest(
+                        {"url": str(raw_url or ""), "name": str(raw_name or "")}
+                    ),
+                }
+            )
             continue
         attachment_id = "PPS-ATT-" + _digest(
             {"notice_no": notice_no, "revision": revision, "slot": slot, "file_name": filename}
@@ -409,16 +533,15 @@ def department_keyword_coverage_count(
     )
 
 
-def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> bool:
-    """Return true only when ACCEPTED evidence matches the latest manifest."""
+def _current_manifest_attempts(
+    versions: list[NoticeVersion],
+) -> tuple[
+    list[dict[str, Any]],
+    int,
+    dict[str, NoticeVersion],
+]:
+    """Return validated current attachments and their latest bound attempts."""
 
-    versions = list(
-        session.scalars(
-            select(NoticeVersion)
-            .where(NoticeVersion.notice_id == notice_id)
-            .order_by(NoticeVersion.version_no.desc())
-        ).all()
-    )
     metadata = next(
         (
             item
@@ -430,26 +553,143 @@ def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> boo
         None,
     )
     if metadata is None:
-        return False
-    manifest = [
+        return [], 0, {}
+    raw_manifest = [
         dict(item)
         for item in metadata.source_payload.get("attachment_manifest", [])
         if isinstance(item, dict)
     ]
-    selected, _warnings = select_preferred_attachments(manifest, limit=1)
-    if not selected:
+    attachments, invalid_count = _validated_manifest_attachments(raw_manifest)
+    current_digests = {
+        attachment["attachment_id"]: _digest(attachment)
+        for attachment in attachments
+    }
+    attempts: dict[str, NoticeVersion] = {}
+    for version in sorted(versions, key=lambda item: item.version_no):
+        payload = version.source_payload
+        if (
+            not isinstance(payload, dict)
+            or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+            or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
+            or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("processing_version") != PPS_PROCESSING_VERSION
+        ):
+            continue
+        attachment_id = str(payload.get("attachment_id") or "")
+        if payload.get("manifest_sha256") != current_digests.get(attachment_id):
+            continue
+        attempts[attachment_id] = version
+    return attachments, invalid_count, attempts
+
+
+def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> bool:
+    """Return true when every current manifest item has a terminal audit.
+
+    Every supported item must be ACCEPTED with complete source/model coverage.
+    A genuinely unsupported format counts as audited only after an explicit,
+    manifest-bound deterministic REVIEW marker. Invalid or missing manifest
+    entries always fail closed.
+    """
+
+    versions = list(
+        session.scalars(
+            select(NoticeVersion)
+            .where(NoticeVersion.notice_id == notice_id)
+            .order_by(NoticeVersion.version_no.desc())
+        ).all()
+    )
+    attachments, invalid_count, attempts = _current_manifest_attempts(versions)
+    if not attachments or invalid_count:
         return False
-    attachment = selected[0]
-    manifest_sha256 = _digest(attachment)
-    return any(
-        isinstance(item.source_payload, dict)
-        and item.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
-        and item.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-        and item.source_payload.get("status") == "ACCEPTED"
-        and item.source_payload.get("prompt_version") == PROMPT_VERSION
-        and item.source_payload.get("attachment_id") == attachment["attachment_id"]
-        and item.source_payload.get("manifest_sha256") == manifest_sha256
-        for item in versions
+    for attachment in attachments:
+        attempt = attempts.get(attachment["attachment_id"])
+        if attempt is None or not isinstance(attempt.source_payload, dict):
+            return False
+        payload = attempt.source_payload
+        extension = PurePath(attachment["file_name"]).suffix.casefold()
+        if extension not in _EXTRACTABLE_EXTENSIONS:
+            if (
+                payload.get("status") != "REVIEW"
+                or payload.get("error_code") not in DETERMINISTIC_REVIEW_CODES
+            ):
+                return False
+        elif (
+            payload.get("status") != "ACCEPTED"
+            or attempt.extraction_status not in {"ACCEPTED", "COMPLETE"}
+            or not attempt.document_complete
+        ):
+            return False
+    return True
+
+
+def current_pps_attachment_coverage(
+    session: Session,
+    notice_id: str,
+) -> PpsAttachmentCoverage:
+    versions = list(
+        session.scalars(
+            select(NoticeVersion)
+            .where(NoticeVersion.notice_id == notice_id)
+            .order_by(NoticeVersion.version_no.desc())
+        ).all()
+    )
+    return pps_attachment_coverage(versions)
+
+
+def pps_attachment_coverage(
+    versions: list[NoticeVersion],
+) -> PpsAttachmentCoverage:
+    metadata = next(
+        (
+            item
+            for item in versions
+            if isinstance(item.source_payload, dict)
+            and item.source_payload.get("kind") == PPS_METADATA_KIND
+            and isinstance(item.source_payload.get("attachment_manifest"), list)
+        ),
+        None,
+    )
+    if metadata is None or not isinstance(metadata.source_payload, dict):
+        return PpsAttachmentCoverage()
+    raw_manifest = [
+        dict(item)
+        for item in metadata.source_payload.get("attachment_manifest", [])
+        if isinstance(item, dict)
+    ]
+    attachments, invalid_count, attempts = _current_manifest_attempts(versions)
+    supported = [
+        item
+        for item in attachments
+        if PurePath(item["file_name"]).suffix.casefold() in _EXTRACTABLE_EXTENSIONS
+    ]
+    accepted = 0
+    source_complete = 0
+    for attachment in supported:
+        attempt = attempts.get(attachment["attachment_id"])
+        payload = attempt.source_payload if attempt and isinstance(attempt.source_payload, dict) else {}
+        if (
+            attempt is not None
+            and payload.get("status") == "ACCEPTED"
+            and attempt.extraction_status in {"ACCEPTED", "COMPLETE"}
+            and attempt.document_complete
+        ):
+            accepted += 1
+            source_complete += 1
+    complete = (
+        bool(attachments)
+        and not invalid_count
+        and len(raw_manifest) == len(attachments)
+        and len(attempts) == len(attachments)
+    )
+    return PpsAttachmentCoverage(
+        discovered=len(raw_manifest),
+        valid=len(attachments),
+        audited=len(attempts),
+        supported=len(supported),
+        accepted=accepted,
+        source_complete=source_complete,
+        complete=complete,
+        all_supported_accepted=complete and accepted == len(supported),
     )
 
 
@@ -473,22 +713,60 @@ def _manifest_item(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validated_manifest_attachments(
+    manifest: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Validate every provider-bound manifest slot without silently truncating it."""
+
+    validated: list[dict[str, Any]] = []
+    invalid_count = max(0, len(manifest) - MAX_ATTACHMENTS_IN_MANIFEST)
+    seen_ids: set[str] = set()
+    # PPS exposes exactly ten numbered attachment slots.  The manifest builder
+    # already enforces that provider boundary; slicing here protects legacy or
+    # manually inserted rows without inventing a smaller business cap.
+    for item in manifest[:MAX_ATTACHMENTS_IN_MANIFEST]:
+        try:
+            attachment = _manifest_item(item)
+        except PpsEnrichmentError:
+            invalid_count += 1
+            continue
+        if attachment["attachment_id"] in seen_ids:
+            invalid_count += 1
+            continue
+        seen_ids.add(attachment["attachment_id"])
+        validated.append(attachment)
+    validated.sort(key=lambda item: (int(item["slot"]), item["attachment_id"]))
+    return validated, invalid_count
+
+
 def select_preferred_attachments(
     manifest: list[dict[str, Any]],
     *,
     limit: int = 1,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    if not 1 <= limit <= 1:
-        raise ValueError("max attachments per notice must be exactly 1")
-    validated: list[dict[str, Any]] = []
-    for item in manifest[:MAX_ATTACHMENTS_IN_MANIFEST]:
-        try:
-            validated.append(_manifest_item(item))
-        except PpsEnrichmentError:
-            continue
-    supported = [item for item in validated if PurePath(item["file_name"]).suffix.casefold() in {".pdf", ".hwpx"}]
+    """Compatibility selector for ranked supported attachments.
+
+    Enrichment no longer uses this function: it audits the entire validated
+    manifest.  The selector remains for callers that explicitly need ranked
+    supported files, and its upper bound is the PPS manifest boundary rather
+    than the former one-file business cap.
+    """
+
+    if not 1 <= limit <= MAX_ATTACHMENTS_IN_MANIFEST:
+        raise ValueError(
+            f"max attachments per notice must be between 1 and {MAX_ATTACHMENTS_IN_MANIFEST}"
+        )
+    validated, invalid_count = _validated_manifest_attachments(manifest)
+    supported = [
+        item
+        for item in validated
+        if PurePath(item["file_name"]).suffix.casefold() in _EXTRACTABLE_EXTENSIONS
+    ]
     if not supported:
-        return [], ["HWP_ONLY_UNSUPPORTED_R07"] if validated else ["ATTACHMENT_MANIFEST_EMPTY"]
+        warnings = ["HWP_ONLY_UNSUPPORTED_R07"] if validated else ["ATTACHMENT_MANIFEST_EMPTY"]
+        if invalid_count:
+            warnings.append("INVALID_ATTACHMENT_MANIFEST")
+        return [], warnings
 
     def priority(item: dict[str, Any]) -> tuple[int, int, int]:
         name = item["file_name"].casefold()
@@ -509,7 +787,8 @@ def select_preferred_attachments(
         return semantic, format_priority, -int(item["slot"])
 
     supported.sort(key=priority, reverse=True)
-    return supported[:limit], []
+    warnings = ["INVALID_ATTACHMENT_MANIFEST"] if invalid_count else []
+    return supported[:limit], warnings
 
 
 def public_analysis_reason(
@@ -570,46 +849,55 @@ def public_analysis_reason(
         for item in metadata.source_payload.get("attachment_manifest", [])
         if isinstance(item, dict)
     ]
-    selected, selection_warnings = select_preferred_attachments(manifest, limit=1)
     attachment_count = len(manifest)
-    if not selected:
-        code: AnalysisReasonCode = (
-            "HWP_ONLY_UNSUPPORTED"
-            if "HWP_ONLY_UNSUPPORTED_R07" in selection_warnings
-            else "ATTACHMENT_NONE"
-        )
+    current_versions = list(reversed(ordered))
+    attachments, invalid_count, attempts = _current_manifest_attempts(current_versions)
+    if not attachments:
         return result(
             "REVIEW",
-            code,
+            "ATTACHMENT_NONE",
             attachment_count=attachment_count,
-            attempted=code == "HWP_ONLY_UNSUPPORTED",
         )
-
-    attachment = selected[0]
-    manifest_sha256 = _digest(attachment)
-    attempts = [
-        item
-        for item in ordered
-        if isinstance(item.source_payload, dict)
-        and item.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
-        and item.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-        and item.source_payload.get("attachment_id") == attachment["attachment_id"]
-        and item.source_payload.get("manifest_sha256") == manifest_sha256
-        and item.source_payload.get("prompt_version") == PROMPT_VERSION
-    ]
-    if not attempts:
+    if invalid_count:
         return result(
-            "PENDING",
-            "NOT_SELECTED",
+            "REVIEW",
+            "ATTACHMENT_COVERAGE_INCOMPLETE",
             attachment_count=attachment_count,
+            attempted=bool(attempts),
+        )
+    if any(attachment["attachment_id"] not in attempts for attachment in attachments):
+        return result(
+            "REVIEW" if attempts else "PENDING",
+            "ATTACHMENT_COVERAGE_INCOMPLETE" if attempts else "NOT_SELECTED",
+            attachment_count=attachment_count,
+            attempted=bool(attempts),
         )
 
-    latest = attempts[-1]
-    payload = latest.source_payload
-    if payload.get("status") == "ACCEPTED" and latest.extraction_status in {
-        "ACCEPTED",
-        "COMPLETE",
-    }:
+    failures: list[tuple[dict[str, Any], NoticeVersion, str]] = []
+    for attachment in attachments:
+        latest = attempts[attachment["attachment_id"]]
+        payload = latest.source_payload if isinstance(latest.source_payload, dict) else {}
+        if payload.get("status") == "ACCEPTED" and latest.extraction_status in {
+            "ACCEPTED",
+            "COMPLETE",
+        }:
+            if latest.document_complete:
+                continue
+            processing = (
+                payload.get("document_processing")
+                if isinstance(payload.get("document_processing"), dict)
+                else {}
+            )
+            error_code = (
+                "DOCUMENT_PROCESSING_INCOMPLETE"
+                if processing.get("source_read_complete") is not True
+                or processing.get("analysis_input_complete") is not True
+                else "OPENAI_SOURCE_GAPS"
+            )
+            failures.append((attachment, latest, error_code))
+            continue
+        failures.append((attachment, latest, str(payload.get("error_code") or "")))
+    if not failures:
         return result(
             "ANALYZED",
             "ANALYZED",
@@ -617,39 +905,70 @@ def public_analysis_reason(
             attempted=True,
         )
 
-    error_code = str(payload.get("error_code") or "")
-    extension = PurePath(str(attachment.get("file_name") or "")).suffix.casefold()
-    if error_code == "UNVERIFIED_QUOTE":
-        code = "QUOTE_UNVERIFIED"
-    elif error_code in {"HWP_ONLY_UNSUPPORTED_R07", "HWP_BINARY_UNSUPPORTED"}:
-        code = "HWP_ONLY_UNSUPPORTED"
-    elif extension == ".hwpx" and (
-        error_code.startswith("HWPX_")
-        or error_code.startswith("ATTACHMENT_")
-        or error_code in {
-            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
-            "DOCUMENT_TEXT_TOO_LARGE",
-            "INVALID_CONTENT_LENGTH",
-            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
-        }
-    ):
-        code = "HWPX_EXTRACT_FAILED"
-    elif extension == ".pdf" and (
-        error_code.startswith("PDF_")
-        or error_code.startswith("ATTACHMENT_")
-        or error_code in {
-            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
-            "DOCUMENT_TEXT_TOO_LARGE",
-            "INVALID_CONTENT_LENGTH",
-            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
-        }
-    ):
-        code = "PDF_EXTRACT_FAILED"
-    else:
-        code = "OPENAI_REVIEW"
+    codes: set[AnalysisReasonCode] = set()
+    for attachment, _latest, error_code in failures:
+        extension = PurePath(str(attachment.get("file_name") or "")).suffix.casefold()
+        if error_code == "UNVERIFIED_QUOTE":
+            codes.add("QUOTE_UNVERIFIED")
+        elif error_code in {"HWP_ONLY_UNSUPPORTED_R07", "HWP_BINARY_UNSUPPORTED"}:
+            codes.add("HWP_ONLY_UNSUPPORTED")
+        elif error_code == "UNSUPPORTED_ATTACHMENT_TYPE":
+            codes.add("UNSUPPORTED_ATTACHMENT")
+        elif extension == ".hwpx" and (
+            error_code.startswith("HWPX_")
+            or error_code.startswith("ATTACHMENT_")
+            or error_code in {
+                "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+                "DOCUMENT_TEXT_TOO_LARGE",
+                "DOCUMENT_PROCESSING_INCOMPLETE",
+                "INVALID_CONTENT_LENGTH",
+                "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+            }
+        ):
+            codes.add("HWPX_EXTRACT_FAILED")
+        elif extension == ".pdf" and (
+            error_code.startswith("PDF_")
+            or error_code.startswith("ATTACHMENT_")
+            or error_code in {
+                "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+                "DOCUMENT_TEXT_TOO_LARGE",
+                "DOCUMENT_PROCESSING_INCOMPLETE",
+                "INVALID_CONTENT_LENGTH",
+                "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+            }
+        ):
+            codes.add("PDF_EXTRACT_FAILED")
+        elif extension in {".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"} and (
+            error_code.startswith(("HWP_", "XLSX_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
+            or error_code in {
+                "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+                "DOCUMENT_TEXT_TOO_LARGE",
+                "INVALID_CONTENT_LENGTH",
+                "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+            }
+        ):
+            codes.add("DOCUMENT_EXTRACT_FAILED")
+        else:
+            codes.add("OPENAI_REVIEW")
+    # Stable worst-current ordering: incomplete binary/source extraction is
+    # more fundamental than quote/schema review, but every sibling success is
+    # still retained in the materialised source set.
+    code = next(
+        candidate
+        for candidate in (
+            "HWP_ONLY_UNSUPPORTED",
+            "UNSUPPORTED_ATTACHMENT",
+            "HWPX_EXTRACT_FAILED",
+            "PDF_EXTRACT_FAILED",
+            "DOCUMENT_EXTRACT_FAILED",
+            "QUOTE_UNVERIFIED",
+            "OPENAI_REVIEW",
+        )
+        if candidate in codes
+    )
     return result(
         "REVIEW",
-        code,
+        code,  # type: ignore[arg-type]
         attachment_count=attachment_count,
         attempted=True,
     )
@@ -698,6 +1017,40 @@ def download_public_attachment(
                             "application/zip",
                             "application/octet-stream",
                         },
+                        ".hwp": {
+                            "application/x-hwp",
+                            "application/haansofthwp",
+                            "application/octet-stream",
+                        },
+                        ".xlsx": {
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/zip",
+                            "application/octet-stream",
+                        },
+                        ".xlsm": {
+                            "application/vnd.ms-excel.sheet.macroenabled.12",
+                            "application/zip",
+                            "application/octet-stream",
+                        },
+                        ".xls": {
+                            "application/vnd.ms-excel",
+                            "application/msexcel",
+                            "application/x-msexcel",
+                            "application/octet-stream",
+                        },
+                        ".docx": {
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "application/zip",
+                            "application/octet-stream",
+                        },
+                        ".pptx": {
+                            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            "application/zip",
+                            "application/octet-stream",
+                        },
+                        ".zip": {"application/zip", "application/octet-stream"},
+                        ".html": {"text/html", "application/octet-stream"},
+                        ".htm": {"text/html", "application/octet-stream"},
                     }[extension]
                     if content_type and content_type not in allowed_content_types:
                         raise PpsEnrichmentError("UNEXPECTED_ATTACHMENT_CONTENT_TYPE")
@@ -734,7 +1087,7 @@ def _extract_pdf_text(content: bytes) -> str:
             if text.strip():
                 part = f"\n[PAGE {index}]\n{text}"
                 total += len(part)
-                if total > MAX_DOCUMENT_CHARS:
+                if total > MAX_EXTRACTED_DOCUMENT_CHARS:
                     raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
                 parts.append(part)
     except PpsEnrichmentError:
@@ -796,36 +1149,206 @@ def _extract_hwpx_text(content: bytes) -> str:
                 if not text:
                     continue
                 total += len(text) + 1
-                if total > MAX_DOCUMENT_CHARS:
+                if total > MAX_EXTRACTED_DOCUMENT_CHARS:
                     raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
                 parts.append(text)
     return "\n".join(parts).strip()
 
 
-def extract_document_text(file_name: str, content: bytes) -> str:
+def extract_pps_document_content(
+    file_name: str,
+    content: bytes,
+) -> DocumentExtractionResult:
+    """Extract one public document with structured, bounded coverage audit."""
+
     filename, _media_type = _safe_filename(file_name)
-    extension = PurePath(filename).suffix.casefold()
-    if extension == ".pdf":
-        text = _extract_pdf_text(content)
-    elif extension == ".hwpx":
-        text = _extract_hwpx_text(content)
-    else:
-        raise PpsEnrichmentError("HWP_BINARY_UNSUPPORTED")
-    # Some public PDFs contain malformed embedded character maps. pypdf can
-    # faithfully surface those glyphs as lone UTF-16 surrogate code points,
-    # but they are not Unicode scalar values and cannot be encoded as UTF-8.
-    # httpx serialises the Responses API JSON body as UTF-8, so letting one
-    # through turns a document-level extraction problem into an unexpected
-    # exception before an auditable model outcome can be persisted. Replace
-    # only those invalid scalar values; all valid source characters and the
-    # exact-quote verification boundary remain unchanged.
-    text = "".join(
+    try:
+        result = extract_document_content(
+            filename,
+            content,
+            leaf_extractors={
+                ".pdf": lambda _name, value: _extract_pdf_text(value),
+                ".hwpx": lambda _name, value: _extract_hwpx_text(value),
+            },
+            limits=ExtractionLimits(
+                max_input_bytes=DEFAULT_MAX_DOWNLOAD_BYTES,
+                max_document_chars=MAX_EXTRACTED_DOCUMENT_CHARS,
+            ),
+        )
+    except DocumentExtractionError as exc:
+        raise PpsEnrichmentError(str(exc)) from exc
+
+    # Some malformed embedded PDF maps expose lone UTF-16 surrogate code
+    # points. They are not Unicode scalar values and cannot be serialised as
+    # UTF-8 by httpx. Replace only those invalid scalars while preserving every
+    # valid source character and the exact-quote verification boundary.
+    safe_text = "".join(
         "\ufffd" if 0xD800 <= ord(character) <= 0xDFFF else character
-        for character in text
+        for character in result.text
     )
-    if len(text.strip()) < 20:
-        raise PpsEnrichmentError("DOCUMENT_TEXT_EMPTY_OR_SHORT")
-    return text[:MAX_DOCUMENT_CHARS]
+    return DocumentExtractionResult(
+        text=safe_text,
+        warnings=result.warnings,
+        members_discovered=result.members_discovered,
+        members_processed=result.members_processed,
+        complete=result.complete,
+        member_issues=result.member_issues,
+    )
+
+
+def extract_document_text(file_name: str, content: bytes) -> str:
+    """Compatibility text projection; enrichment consumes structured audit."""
+
+    result = extract_pps_document_content(file_name, content)
+    if len(result.text.strip()) < 20:
+        error_code = result.warnings[0] if result.warnings else "DOCUMENT_TEXT_EMPTY_OR_SHORT"
+        raise PpsEnrichmentError(error_code)
+    return result.text
+
+
+_ANALYSIS_SIGNAL_TERMS = (
+    "참가자격",
+    "입찰참가",
+    "자격요건",
+    "신청자격",
+    "제안요청",
+    "과업",
+    "평가항목",
+    "평가기준",
+    "배점",
+    "정량",
+    "정성",
+    "점수",
+    "실적",
+    "수행실적",
+    "전문인력",
+    "투입인력",
+    "인력",
+    "기술인력",
+    "자격증",
+    "인증",
+    "직접생산",
+    "업종",
+    "지역제한",
+    "공동수급",
+    "컨소시엄",
+    "제출서류",
+    "제출기한",
+    "마감",
+    "가격평가",
+    "기술평가",
+    "evaluation",
+    "qualification",
+    "eligibility",
+    "score",
+)
+_STRUCTURE_LINE = re.compile(
+    r"^\s*\[(?:PAGE|SHEET|SLIDE|ARCHIVE MEMBER|DOCUMENT|SECTION)\b",
+    re.IGNORECASE,
+)
+
+
+def select_document_analysis_input(
+    text: str,
+    *,
+    maximum: int = MAX_ANALYSIS_INPUT_CHARS,
+) -> DocumentAnalysisSelection:
+    """Scan the full extracted text and select bounded, exact source spans.
+
+    Every line is inspected for eligibility and quantitative-table signals.
+    Inputs at or below the model boundary are passed intact. Larger sources
+    are never silently truncated: deterministic signal/context, structural,
+    head/tail, and evenly distributed sample lines are selected and the audit
+    explicitly records that the model input was partial.
+    """
+
+    if maximum < 20:
+        raise ValueError("maximum must be at least 20 characters")
+    source = text.strip()
+    if len(source) <= maximum:
+        line_count = len(source.splitlines()) or int(bool(source))
+        return DocumentAnalysisSelection(
+            text=source,
+            complete=True,
+            source_characters=len(source),
+            selected_characters=len(source),
+            total_lines=line_count,
+            selected_line_ranges=((1, line_count),) if line_count else (),
+            signal_line_count=sum(
+                1
+                for line in source.splitlines()
+                if any(term in line.casefold() for term in _ANALYSIS_SIGNAL_TERMS)
+            ),
+        )
+
+    lines = source.splitlines()
+    folded = [line.casefold() for line in lines]
+    signal_indices = {
+        index
+        for index, line in enumerate(folded)
+        if any(term in line for term in _ANALYSIS_SIGNAL_TERMS)
+    }
+    priorities: dict[int, int] = {}
+
+    def offer(index: int, priority: int) -> None:
+        if 0 <= index < len(lines) and lines[index].strip():
+            priorities[index] = max(priority, priorities.get(index, 0))
+
+    for index in signal_indices:
+        for offset in range(-3, 4):
+            offer(index + offset, 100 - abs(offset))
+    for index, line in enumerate(lines):
+        if _STRUCTURE_LINE.search(line):
+            offer(index, 80)
+            offer(index + 1, 79)
+    for index in range(min(120, len(lines))):
+        offer(index, 60)
+    for index in range(max(0, len(lines) - 60), len(lines)):
+        offer(index, 55)
+    sample_count = min(96, len(lines))
+    if sample_count:
+        denominator = max(1, sample_count - 1)
+        for offset in range(sample_count):
+            offer(round(offset * (len(lines) - 1) / denominator), 20)
+
+    selected: set[int] = set()
+    consumed = 0
+    # Select higher-value regions first, but emit them later in source order so
+    # the model receives stable local context rather than a ranked collage.
+    for index, _priority in sorted(
+        priorities.items(),
+        key=lambda pair: (-pair[1], pair[0]),
+    ):
+        line_cost = min(len(lines[index]), 8_000) + 1
+        if consumed + line_cost > maximum:
+            continue
+        selected.add(index)
+        consumed += line_cost
+    if not selected:
+        selected.add(0)
+
+    ordered = sorted(selected)
+    selected_lines = [lines[index][:8_000] for index in ordered]
+    selected_text = "\n".join(selected_lines)
+    if len(selected_text) > maximum:
+        selected_text = selected_text[:maximum]
+
+    ranges: list[tuple[int, int]] = []
+    for zero_based in ordered:
+        one_based = zero_based + 1
+        if ranges and one_based == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], one_based)
+        else:
+            ranges.append((one_based, one_based))
+    return DocumentAnalysisSelection(
+        text=selected_text,
+        complete=False,
+        source_characters=len(source),
+        selected_characters=len(selected_text),
+        total_lines=len(lines),
+        selected_line_ranges=tuple(ranges),
+        signal_line_count=len(signal_indices),
+    )
 
 
 def _redact_public_text(value: str) -> str | None:
@@ -871,17 +1394,29 @@ def safe_public_live_extraction(payload: Any) -> dict[str, Any] | None:
         return None
     attachment_id = payload.get("attachment_id")
     source_label = payload.get("source_label")
+    processing = (
+        payload.get("document_processing")
+        if isinstance(payload.get("document_processing"), dict)
+        else {}
+    )
     if (
         payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
         or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
         or payload.get("status") != "ACCEPTED"
         or payload.get("prompt_version") != PROMPT_VERSION
+        or payload.get("processing_version") != PPS_PROCESSING_VERSION
         or payload.get("schema_version") != SCHEMA_VERSION
         or not isinstance(attachment_id, str)
         or not _ATTACHMENT_ID_PATTERN.fullmatch(attachment_id)
         or not isinstance(source_label, str)
-        or not re.fullmatch(r"[^/\\\x00-\x1f\x7f]{1,255}\.(?:pdf|hwpx)", source_label, re.IGNORECASE)
+        or not re.fullmatch(
+            r"[^/\\\x00-\x1f\x7f]{1,255}\.(?:pdf|hwpx|hwp|xlsx|xlsm|xls|docx|pptx|html|htm|zip)",
+            source_label,
+            re.IGNORECASE,
+        )
         or not re.fullmatch(r"[a-f0-9]{64}", str(payload.get("document_sha256") or ""), re.IGNORECASE)
+        or processing.get("source_read_complete") is not True
+        or processing.get("analysis_input_complete") is not True
     ):
         return None
     try:
@@ -934,6 +1469,7 @@ def _matching_extraction_version(
             or payload.get("manifest_sha256") != manifest_sha256
             or payload.get("document_sha256") != document_sha256
             or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("processing_version") != PPS_PROCESSING_VERSION
         ):
             continue
         if payload.get("status") == "ACCEPTED":
@@ -954,6 +1490,58 @@ def _stored_outcome_is_idempotent(version: NoticeVersion, payload: dict[str, Any
     return bool(
         version.created_at
         and datetime.now(timezone.utc) - _as_utc(version.created_at) < REVIEW_RETRY_COOLDOWN
+    )
+
+
+def _manifest_binding_is_current(
+    session: Session,
+    *,
+    notice_id: str,
+    attachment: dict[str, Any],
+    manifest_sha256: str,
+) -> bool:
+    """Verify an exact attachment against the latest metadata inside a write tx."""
+
+    metadata = session.scalar(
+        select(NoticeVersion)
+        .where(NoticeVersion.notice_id == notice_id)
+        .order_by(NoticeVersion.version_no.desc())
+    )
+    # The first row may be an extraction/materialisation. Find the newest
+    # metadata version explicitly rather than relying on row kind ordering.
+    if metadata is None or not (
+        isinstance(metadata.source_payload, dict)
+        and metadata.source_payload.get("kind") == PPS_METADATA_KIND
+    ):
+        metadata = next(
+            (
+                item
+                for item in session.scalars(
+                    select(NoticeVersion)
+                    .where(NoticeVersion.notice_id == notice_id)
+                    .order_by(NoticeVersion.version_no.desc())
+                ).all()
+                if isinstance(item.source_payload, dict)
+                and item.source_payload.get("kind") == PPS_METADATA_KIND
+                and isinstance(item.source_payload.get("attachment_manifest"), list)
+            ),
+            None,
+        )
+    if metadata is None or not isinstance(metadata.source_payload, dict):
+        return False
+    current, invalid_count = _validated_manifest_attachments(
+        [
+            dict(item)
+            for item in metadata.source_payload.get("attachment_manifest", [])
+            if isinstance(item, dict)
+        ]
+    )
+    if invalid_count:
+        return False
+    return any(
+        item["attachment_id"] == attachment["attachment_id"]
+        and _digest(item) == manifest_sha256
+        for item in current
     )
 
 
@@ -1040,7 +1628,15 @@ def _persist_extraction_version(
     document_sha256: str,
     outcome: ExtractionOutcome | None,
     error_code: str | None,
+    processing_audit: dict[str, Any] | None = None,
 ) -> NoticeVersion:
+    if not _manifest_binding_is_current(
+        session,
+        notice_id=notice_id,
+        attachment=attachment,
+        manifest_sha256=manifest_sha256,
+    ):
+        raise PpsEnrichmentError("PPS_MANIFEST_CHANGED_DURING_ENRICHMENT")
     accepted = outcome is not None and outcome.status == "ACCEPTED" and outcome.data is not None
     data = outcome.data.model_dump(mode="json") if accepted and outcome and outcome.data else None
     confidence_values = [
@@ -1063,11 +1659,13 @@ def _persist_extraction_version(
         "response_id": outcome.response_id if outcome else None,
         "model": outcome.model if outcome else None,
         "prompt_version": outcome.prompt_version if outcome else PROMPT_VERSION,
+        "processing_version": PPS_PROCESSING_VERSION,
         "schema_version": outcome.schema_version if outcome else SCHEMA_VERSION,
         "api_calls": outcome.api_calls if outcome else 0,
         "corrective_retry_used": outcome.corrective_retry_used if outcome else False,
         "correction_prompt_version": outcome.correction_prompt_version if outcome else None,
         "result": data,
+        "document_processing": processing_audit,
     }
     existing_versions = list(
         session.scalars(
@@ -1089,6 +1687,7 @@ def _persist_extraction_version(
             and prior.get("manifest_sha256") == payload["manifest_sha256"]
             and prior.get("document_sha256") == payload["document_sha256"]
             and prior.get("prompt_version") == payload["prompt_version"]
+            and prior.get("processing_version") == payload["processing_version"]
             and prior.get("status") == payload["status"]
             and prior.get("error_code") == payload["error_code"]
             and _stored_outcome_is_idempotent(existing, payload)
@@ -1107,7 +1706,13 @@ def _persist_extraction_version(
             version_no=next_version,
             file_sha256=document_sha256,
             document_complete=bool(
-                accepted and outcome and outcome.data and not outcome.data.missing_or_unreadable
+                accepted
+                and outcome
+                and outcome.data
+                and not outcome.data.missing_or_unreadable
+                and isinstance(processing_audit, dict)
+                and processing_audit.get("source_read_complete") is True
+                and processing_audit.get("analysis_input_complete") is True
             ),
             extraction_status="ACCEPTED" if accepted else "REVIEW",
             extraction_confidence=confidence,
@@ -1133,6 +1738,7 @@ def _persist_extraction_version(
                     and prior.get("attachment_id") == payload["attachment_id"]
                     and prior.get("manifest_sha256") == payload["manifest_sha256"]
                     and prior.get("prompt_version") == payload["prompt_version"]
+                    and prior.get("processing_version") == payload["processing_version"]
                     and prior.get("status") == payload["status"]
                     and _stored_outcome_is_idempotent(raced, payload)
                 ):
@@ -1199,15 +1805,19 @@ def record_internal_pps_enrichment_failure(
             for item in metadata.source_payload.get("attachment_manifest", [])
             if isinstance(item, dict)
         ]
-        current_selected, _selection_warnings = select_preferred_attachments(
-            current_manifest,
-            limit=1,
+        current_attachments, invalid_count = _validated_manifest_attachments(current_manifest)
+        current_match = next(
+            (
+                item
+                for item in current_attachments
+                if item["attachment_id"] == attempted_attachment["attachment_id"]
+            ),
+            None,
         )
         if (
-            not current_selected
-            or current_selected[0]["attachment_id"]
-            != attempted_attachment["attachment_id"]
-            or _digest(current_selected[0]) != manifest_sha256
+            invalid_count
+            or current_match is None
+            or _digest(current_match) != manifest_sha256
         ):
             return PpsEnrichmentResult(
                 status="REVIEW",
@@ -1224,6 +1834,8 @@ def record_internal_pps_enrichment_failure(
                 and item.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
                 and item.source_payload.get("status") == "ACCEPTED"
                 and item.source_payload.get("prompt_version") == PROMPT_VERSION
+                and item.source_payload.get("processing_version")
+                == PPS_PROCESSING_VERSION
                 and item.source_payload.get("attachment_id")
                 == attempted_attachment["attachment_id"]
                 and item.source_payload.get("manifest_sha256") == manifest_sha256
@@ -1249,12 +1861,188 @@ def record_internal_pps_enrichment_failure(
             document_sha256=document_sha256,
             outcome=None,
             error_code=warning,
+            processing_audit={
+                "processing_version": PPS_PROCESSING_VERSION,
+                "source_read_complete": False,
+                "analysis_input_complete": False,
+                "source_characters": 0,
+                "analysis_input_characters": 0,
+                "members_discovered": 0,
+                "members_processed": 0,
+                "warnings": [warning],
+                "member_issues": [],
+            },
         )
     return PpsEnrichmentResult(
         status="REVIEW",
         attachments_discovered=attachments_discovered,
         version_id=version.id,
         warnings=[warning],
+    )
+
+
+def _accepted_outcome_for_duplicate_content(
+    session: Session,
+    *,
+    notice_id: str,
+    attachment_id: str,
+    document_sha256: str,
+) -> ExtractionOutcome | None:
+    """Reuse an exact-byte accepted extraction while preserving attachment audit.
+
+    Evidence IDs are rebound only because the downloaded bytes are identical.
+    The cloned outcome is persisted under the sibling attachment's own current
+    manifest digest, so every manifest item retains an independent audit row.
+    """
+
+    versions = list(
+        session.scalars(
+            select(NoticeVersion)
+            .where(
+                NoticeVersion.notice_id == notice_id,
+                NoticeVersion.file_sha256 == document_sha256,
+            )
+            .order_by(NoticeVersion.version_no.desc())
+        ).all()
+    )
+    for version in versions:
+        payload = version.source_payload
+        if (
+            not isinstance(payload, dict)
+            or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+            or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
+            or payload.get("status") != "ACCEPTED"
+            or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("processing_version") != PPS_PROCESSING_VERSION
+            or not isinstance(payload.get("result"), dict)
+        ):
+            continue
+        try:
+            raw_result = json.loads(json.dumps(payload["result"], ensure_ascii=False))
+            for requirement in raw_result.get("requirements", []):
+                for anchor in requirement.get("evidence", []):
+                    anchor["attachment_id"] = attachment_id
+            data = ExtractionPayload.model_validate(raw_result)
+        except Exception:
+            continue
+        return ExtractionOutcome(
+            status="ACCEPTED",
+            message="동일 바이트 공개 첨부의 검증된 추출 결과를 재사용했습니다.",
+            model=(payload.get("model") if isinstance(payload.get("model"), str) else None),
+            prompt_version=PROMPT_VERSION,
+            schema_version=SCHEMA_VERSION,
+            api_calls=0,
+            data=data,
+        )
+    return None
+
+
+def _document_processing_audit(
+    result: DocumentExtractionResult,
+    selection: DocumentAnalysisSelection | None,
+) -> dict[str, Any]:
+    """Build an internal bounded audit without persisting paths or source text."""
+
+    source_text = result.text.strip()
+    safe_warnings = sorted(
+        {
+            warning
+            for warning in result.warnings
+            if re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", warning)
+        }
+    )
+    member_issues = [
+        {
+            # ZIP member names can contain names or contact details. A stable
+            # digest proves the same member failed without exposing that data.
+            "member_path_sha256": hashlib.sha256(
+                issue.member_path.encode("utf-8", errors="replace")
+            ).hexdigest(),
+            "reason": issue.reason,
+        }
+        for issue in result.member_issues
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", issue.reason)
+    ]
+    return {
+        "processing_version": PPS_PROCESSING_VERSION,
+        "source_read_complete": bool(result.complete and source_text),
+        "analysis_input_complete": bool(selection and selection.complete),
+        "source_characters": len(source_text),
+        "analysis_input_characters": selection.selected_characters if selection else 0,
+        "source_text_sha256": (
+            hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            if source_text
+            else None
+        ),
+        "analysis_input_sha256": (
+            hashlib.sha256(selection.text.encode("utf-8")).hexdigest()
+            if selection
+            else None
+        ),
+        "analysis_selection": (
+            {
+                "strategy": (
+                    "FULL_TEXT"
+                    if selection.complete
+                    else "FULL_SCAN_SIGNAL_AND_DISTRIBUTED_SPANS"
+                ),
+                "total_lines": selection.total_lines,
+                "selected_line_ranges": [list(item) for item in selection.selected_line_ranges],
+                "signal_line_count": selection.signal_line_count,
+            }
+            if selection
+            else None
+        ),
+        "members_discovered": result.members_discovered,
+        "members_processed": result.members_processed,
+        "warnings": safe_warnings,
+        "member_issues": member_issues,
+    }
+
+
+def _stored_attachment_result(
+    version: NoticeVersion,
+    *,
+    attachments_discovered: int,
+) -> PpsEnrichmentResult | None:
+    """Project a current terminal attempt so continuation never repeats work."""
+
+    payload = version.source_payload
+    if not isinstance(payload, dict) or not _stored_outcome_is_idempotent(version, payload):
+        return None
+    processing = (
+        payload.get("document_processing")
+        if isinstance(payload.get("document_processing"), dict)
+        else {}
+    )
+    source_complete = processing.get("source_read_complete") is True
+    input_complete = processing.get("analysis_input_complete") is True
+    status = str(payload.get("status") or "REVIEW")
+    if status == "ACCEPTED" and version.document_complete:
+        result_status: Literal["REUSED", "REVIEW"] = "REUSED"
+        warnings: list[str] = []
+    elif status == "ACCEPTED":
+        result_status = "REVIEW"
+        warnings = [
+            "OPENAI_SOURCE_GAPS"
+            if source_complete and input_complete
+            else "DOCUMENT_PROCESSING_INCOMPLETE"
+        ]
+    else:
+        result_status = "REVIEW"
+        warnings = [str(payload.get("error_code") or "OPENAI_REVIEW_R07")]
+    return PpsEnrichmentResult(
+        status=result_status,
+        attachments_discovered=attachments_discovered,
+        attachments_processed=int(bool(processing.get("source_characters"))),
+        source_characters=int(processing.get("source_characters") or 0),
+        analysis_input_characters=int(processing.get("analysis_input_characters") or 0),
+        source_read_complete=source_complete,
+        analysis_input_complete=input_complete,
+        members_discovered=int(processing.get("members_discovered") or 0),
+        members_processed=int(processing.get("members_processed") or 0),
+        version_id=version.id,
+        warnings=warnings,
     )
 
 
@@ -1273,6 +2061,7 @@ def _enrich_selected_pps_attachment(
     download_timeout_seconds: float,
     openai_timeout_seconds: float,
     openai_max_retries: int,
+    max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
 
@@ -1281,9 +2070,10 @@ def _enrich_selected_pps_attachment(
             attachment,
             transport=transport,
             timeout_seconds=download_timeout_seconds,
+            max_bytes=max_download_bytes,
         )
         document_sha256 = hashlib.sha256(content).hexdigest()
-        document_text = extract_document_text(attachment["file_name"], content)
+        extraction = extract_pps_document_content(attachment["file_name"], content)
     except PpsEnrichmentError as exc:
         error_code = str(exc)
         document_sha256 = _digest(
@@ -1302,6 +2092,17 @@ def _enrich_selected_pps_attachment(
                 version_id=prior.id,
                 warnings=[error_code],
             )
+        processing_audit = {
+            "processing_version": PPS_PROCESSING_VERSION,
+            "source_read_complete": False,
+            "analysis_input_complete": False,
+            "source_characters": 0,
+            "analysis_input_characters": 0,
+            "members_discovered": 0,
+            "members_processed": 0,
+            "warnings": [error_code],
+            "member_issues": [],
+        }
         with session.begin():
             version = _persist_extraction_version(
                 session,
@@ -1311,12 +2112,49 @@ def _enrich_selected_pps_attachment(
                 document_sha256=document_sha256,
                 outcome=None,
                 error_code=error_code,
+                processing_audit=processing_audit,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
             attachments_discovered=attachments_discovered,
             version_id=version.id,
             warnings=[error_code],
+        )
+
+    source_text = extraction.text.strip()
+    selection = (
+        select_document_analysis_input(source_text)
+        if len(source_text) >= 20
+        else None
+    )
+    processing_audit = _document_processing_audit(extraction, selection)
+    if not source_text or selection is None:
+        error_code = (
+            extraction.warnings[0]
+            if extraction.warnings
+            else "DOCUMENT_TEXT_EMPTY_OR_SHORT"
+        )
+        with session.begin():
+            version = _persist_extraction_version(
+                session,
+                notice_id=notice_id,
+                attachment=attachment,
+                manifest_sha256=manifest_sha256,
+                document_sha256=document_sha256,
+                outcome=None,
+                error_code=error_code,
+                processing_audit=processing_audit,
+            )
+        return PpsEnrichmentResult(
+            status="REVIEW",
+            attachments_discovered=attachments_discovered,
+            downloaded_bytes=len(content),
+            source_characters=len(source_text),
+            source_read_complete=False,
+            members_discovered=extraction.members_discovered,
+            members_processed=extraction.members_processed,
+            version_id=version.id,
+            warnings=sorted(set([error_code, *extraction.warnings])),
         )
 
     prior = _matching_extraction_version(
@@ -1326,22 +2164,49 @@ def _enrich_selected_pps_attachment(
         document_sha256=document_sha256,
     )
     if prior is not None:
-        prior_status = (
-            prior.source_payload.get("status")
-            if isinstance(prior.source_payload, dict)
-            else None
-        )
-        return PpsEnrichmentResult(
-            status="REUSED" if prior_status == "ACCEPTED" else "REVIEW",
+        stored = _stored_attachment_result(
+            prior,
             attachments_discovered=attachments_discovered,
-            attachments_processed=1,
-            version_id=prior.id,
-            warnings=(
-                []
-                if prior_status == "ACCEPTED"
-                else ["REVIEW_COOLDOWN_REUSED"]
-            ),
         )
+        if stored is not None:
+            return stored
+
+    with session.begin():
+        duplicate_outcome = _accepted_outcome_for_duplicate_content(
+            session,
+            notice_id=notice_id,
+            attachment_id=attachment["attachment_id"],
+            document_sha256=document_sha256,
+        )
+        if duplicate_outcome is not None:
+            version = _persist_extraction_version(
+                session,
+                notice_id=notice_id,
+                attachment=attachment,
+                manifest_sha256=manifest_sha256,
+                document_sha256=document_sha256,
+                outcome=duplicate_outcome,
+                error_code=None,
+                processing_audit=processing_audit,
+            )
+            duplicate_complete = bool(version.document_complete)
+            return PpsEnrichmentResult(
+                status="REUSED" if duplicate_complete else "REVIEW",
+                attachments_discovered=attachments_discovered,
+                attachments_processed=1,
+                downloaded_bytes=len(content),
+                source_characters=len(source_text),
+                analysis_input_characters=selection.selected_characters,
+                source_read_complete=extraction.complete,
+                analysis_input_complete=selection.complete,
+                members_discovered=extraction.members_discovered,
+                members_processed=extraction.members_processed,
+                version_id=version.id,
+                warnings=[
+                    "DUPLICATE_CONTENT_REUSED",
+                    *([] if duplicate_complete else ["DOCUMENT_PROCESSING_INCOMPLETE"]),
+                ],
+            )
 
     if not openai_api_key:
         with session.begin():
@@ -1353,11 +2218,19 @@ def _enrich_selected_pps_attachment(
                 document_sha256=document_sha256,
                 outcome=None,
                 error_code="OPENAI_KEY_MISSING",
+                processing_audit=processing_audit,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
             attachments_discovered=attachments_discovered,
             attachments_processed=1,
+            downloaded_bytes=len(content),
+            source_characters=len(source_text),
+            analysis_input_characters=selection.selected_characters,
+            source_read_complete=extraction.complete,
+            analysis_input_complete=selection.complete,
+            members_discovered=extraction.members_discovered,
+            members_processed=extraction.members_processed,
             version_id=version.id,
             warnings=["OPENAI_KEY_MISSING"],
         )
@@ -1369,9 +2242,11 @@ def _enrich_selected_pps_attachment(
         max_retries=openai_max_retries,
     ) as client:
         outcome = client.extract(
-            document_text=document_text,
+            document_text=selection.text,
             allowed_attachment_ids={attachment["attachment_id"]},
         )
+    if outcome.api_calls > MAX_OPENAI_CALLS_PER_ATTACHMENT:
+        raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")
     with session.begin():
         version = _persist_extraction_version(
             session,
@@ -1381,26 +2256,148 @@ def _enrich_selected_pps_attachment(
             document_sha256=document_sha256,
             outcome=outcome,
             error_code=outcome.error_code,
+            processing_audit=processing_audit,
         )
     retry_warnings = (
         ["CORRECTIVE_EXTRACTION_RETRY_USED"]
         if outcome.corrective_retry_used
         else []
     )
+    document_complete = bool(version.document_complete)
+    processing_warnings = [
+        *extraction.warnings,
+        *([] if selection.complete else ["ANALYSIS_INPUT_PARTIAL"]),
+    ]
+    terminal_warning = None
+    if outcome.status != "ACCEPTED":
+        terminal_warning = outcome.error_code or "OPENAI_REVIEW_R07"
+    elif not document_complete:
+        terminal_warning = (
+            "OPENAI_SOURCE_GAPS"
+            if extraction.complete and selection.complete
+            else "DOCUMENT_PROCESSING_INCOMPLETE"
+        )
     return PpsEnrichmentResult(
-        status="COMPLETED" if outcome.status == "ACCEPTED" else "REVIEW",
+        status=(
+            "COMPLETED"
+            if outcome.status == "ACCEPTED" and document_complete
+            else "REVIEW"
+        ),
         attachments_discovered=attachments_discovered,
         attachments_processed=1,
+        downloaded_bytes=len(content),
+        source_characters=len(source_text),
+        analysis_input_characters=selection.selected_characters,
+        source_read_complete=extraction.complete,
+        analysis_input_complete=selection.complete,
+        members_discovered=extraction.members_discovered,
+        members_processed=extraction.members_processed,
         openai_calls=outcome.api_calls,
         version_id=version.id,
         warnings=[
             *retry_warnings,
-            *(
-                []
-                if outcome.status == "ACCEPTED"
-                else [outcome.error_code or "OPENAI_REVIEW_R07"]
-            ),
+            *processing_warnings,
+            *([terminal_warning] if terminal_warning else []),
         ],
+    )
+
+
+def _audit_result_for_attachment(
+    attachment: dict[str, Any],
+    result: PpsEnrichmentResult,
+    *,
+    attempted: bool,
+    reason_code: str | None = None,
+) -> PpsAttachmentEnrichmentResult:
+    warning_code = next(
+        (
+            item
+            for item in result.warnings
+            if item
+            not in {
+                "CORRECTIVE_EXTRACTION_RETRY_USED",
+                "REVIEW_COOLDOWN_REUSED",
+                "DUPLICATE_CONTENT_REUSED",
+            }
+        ),
+        None,
+    )
+    if reason_code is None:
+        if result.status in {"COMPLETED", "REUSED"} and not warning_code:
+            reason_code = "ANALYZED"
+        elif result.status == "PLANNED":
+            reason_code = "DRY_RUN_PLANNED"
+        else:
+            reason_code = warning_code or "OPENAI_REVIEW"
+    audit_status: Literal["COMPLETED", "REUSED", "REVIEW", "PLANNED"]
+    if result.status == "PLANNED":
+        audit_status = "PLANNED"
+    elif reason_code == "ANALYZED" and result.status in {"COMPLETED", "REUSED"}:
+        audit_status = result.status
+    else:
+        audit_status = "REVIEW"
+    return PpsAttachmentEnrichmentResult(
+        attachment_id=attachment["attachment_id"],
+        media_type=attachment["media_type"],
+        status=audit_status,
+        reason_code=reason_code,
+        attempted=attempted,
+        content_extracted=result.attachments_processed > 0,
+        source_read_complete=result.source_read_complete,
+        analysis_input_complete=result.analysis_input_complete,
+        source_characters=result.source_characters,
+        analysis_input_characters=result.analysis_input_characters,
+        members_discovered=result.members_discovered,
+        members_processed=result.members_processed,
+        openai_calls=result.openai_calls,
+        version_id=result.version_id,
+    )
+
+
+def _record_unsupported_pps_attachment(
+    session: Session,
+    *,
+    notice_id: str,
+    versions: list[NoticeVersion],
+    attachment: dict[str, Any],
+    attachments_discovered: int,
+) -> PpsEnrichmentResult:
+    extension = PurePath(attachment["file_name"]).suffix.casefold()
+    error_code = (
+        "HWP_BINARY_UNSUPPORTED"
+        if extension == ".hwp"
+        else "UNSUPPORTED_ATTACHMENT_TYPE"
+    )
+    manifest_sha256 = _digest(attachment)
+    document_sha256 = _digest({"manifest": manifest_sha256, "error": error_code})
+    prior = _matching_extraction_version(
+        versions,
+        attachment_id=attachment["attachment_id"],
+        manifest_sha256=manifest_sha256,
+        document_sha256=document_sha256,
+    )
+    if prior is not None:
+        return PpsEnrichmentResult(
+            status="REUSED",
+            attachments_discovered=attachments_discovered,
+            version_id=prior.id,
+            warnings=[error_code],
+        )
+    with session.begin():
+        version = _persist_extraction_version(
+            session,
+            notice_id=notice_id,
+            attachment=attachment,
+            manifest_sha256=manifest_sha256,
+            document_sha256=document_sha256,
+            outcome=None,
+            error_code=error_code,
+        )
+    return PpsEnrichmentResult(
+        status="REVIEW",
+        attachments_discovered=attachments_discovered,
+        version_id=version.id,
+        warnings=[error_code],
     )
 
 
@@ -1410,18 +2407,23 @@ def enrich_notice_from_pps(
     notice_id: str,
     openai_api_key: str | None,
     openai_model: str,
-    max_attachments: int = 1,
+    max_attachments: int = MAX_ATTACHMENTS_IN_MANIFEST,
     dry_run: bool = False,
     transport: httpx.BaseTransport | None = None,
     openai_client_factory: Callable[..., OpenAIExtractionClient] = OpenAIExtractionClient,
     download_timeout_seconds: float = 12,
     openai_timeout_seconds: float = 45,
     openai_max_retries: int = 0,
+    deadline_monotonic: float | None = None,
 ) -> PpsEnrichmentResult:
-    """Download one preferred public attachment in memory and persist only evidence output."""
+    """Audit and analyse every valid attachment in the current PPS manifest."""
 
     if session.in_transaction():
         raise RuntimeError("enrich_notice_from_pps requires a clean Session")
+    if max_attachments != MAX_ATTACHMENTS_IN_MANIFEST:
+        raise ValueError(
+            f"max_attachments must equal the PPS manifest bound ({MAX_ATTACHMENTS_IN_MANIFEST})"
+        )
     with session.begin():
         notice = session.get(Notice, notice_id)
         if notice is None:
@@ -1447,99 +2449,217 @@ def enrich_notice_from_pps(
             return PpsEnrichmentResult(status="SKIPPED", warnings=["PPS_ATTACHMENT_MANIFEST_MISSING"])
         raw_manifest = metadata.source_payload.get("attachment_manifest", [])
         manifest = [dict(item) for item in raw_manifest if isinstance(item, dict)]
-        selected, selection_warnings = select_preferred_attachments(manifest, limit=max_attachments)
+        attachments, invalid_count = _validated_manifest_attachments(manifest)
+        _current, _current_invalid, current_attempts = _current_manifest_attempts(versions)
         discovered = len(manifest)
-        if not selected:
-            if dry_run:
-                return PpsEnrichmentResult(
-                    status="PLANNED",
-                    attachments_discovered=discovered,
-                    warnings=["DRY_RUN_NO_EXTERNAL_CALLS", *selection_warnings],
-                )
-            fallback = next((item for item in manifest if isinstance(item, dict)), None)
-            if fallback is None:
-                return PpsEnrichmentResult(
-                    status="SKIPPED",
-                    attachments_discovered=discovered,
-                    warnings=selection_warnings,
-                )
-            try:
-                attachment = _manifest_item(fallback)
-            except PpsEnrichmentError:
-                return PpsEnrichmentResult(
-                    status="SKIPPED",
-                    attachments_discovered=discovered,
-                    warnings=["INVALID_ATTACHMENT_MANIFEST"],
-                )
-            manifest_sha256 = _digest(attachment)
-            document_sha256 = _digest({"manifest": manifest_sha256, "error": selection_warnings})
-        else:
-            attachment = selected[0]
-            manifest_sha256 = _digest(attachment)
-            if dry_run:
-                return PpsEnrichmentResult(
-                    status="PLANNED",
-                    attachments_discovered=discovered,
-                    warnings=["DRY_RUN_NO_EXTERNAL_CALLS"],
-                )
-            document_sha256 = ""
-
-    if not selected:
-        prior = _matching_extraction_version(
-            versions,
-            attachment_id=attachment["attachment_id"],
-            manifest_sha256=manifest_sha256,
-            document_sha256=document_sha256,
-        )
-        if prior is not None:
-            return PpsEnrichmentResult(
-                status="REUSED",
-                attachments_discovered=discovered,
-                version_id=prior.id,
-                warnings=selection_warnings,
-            )
-        with session.begin():
-            version = _persist_extraction_version(
-                session,
-                notice_id=notice_id,
-                attachment=attachment,
-                manifest_sha256=manifest_sha256,
-                document_sha256=document_sha256,
-                outcome=None,
-                error_code=selection_warnings[0] if selection_warnings else "ATTACHMENT_UNSUPPORTED",
-            )
+    base_warnings = ["INVALID_ATTACHMENT_MANIFEST"] if invalid_count else []
+    if not attachments:
         return PpsEnrichmentResult(
-            status="REVIEW",
+            status="PLANNED" if dry_run else ("REVIEW" if invalid_count else "SKIPPED"),
             attachments_discovered=discovered,
-            version_id=version.id,
-            warnings=selection_warnings,
+            warnings=[
+                *( ["DRY_RUN_NO_EXTERNAL_CALLS"] if dry_run else [] ),
+                *(base_warnings or ["ATTACHMENT_MANIFEST_EMPTY"]),
+            ],
         )
 
-    try:
-        return _enrich_selected_pps_attachment(
-            session,
-            notice_id=notice_id,
-            versions=versions,
-            attachment=attachment,
-            manifest_sha256=manifest_sha256,
+    if dry_run:
+        planned = PpsEnrichmentResult(status="PLANNED")
+        audits = [
+            _audit_result_for_attachment(
+                attachment,
+                planned,
+                attempted=False,
+            )
+            for attachment in attachments
+        ]
+        return PpsEnrichmentResult(
+            status="PLANNED",
             attachments_discovered=discovered,
-            openai_api_key=openai_api_key,
-            openai_model=openai_model,
-            transport=transport,
-            openai_client_factory=openai_client_factory,
-            download_timeout_seconds=download_timeout_seconds,
-            openai_timeout_seconds=openai_timeout_seconds,
-            openai_max_retries=openai_max_retries,
+            warnings=["DRY_RUN_NO_EXTERNAL_CALLS", *base_warnings],
+            attachment_results=audits,
         )
-    except Exception:
-        # The exact selection context is still in scope here. Persisting from
-        # an outer API catch would have to re-read the latest manifest and can
-        # misattribute this failure to a concurrent PPS correction.
-        session.rollback()
-        return record_internal_pps_enrichment_failure(
-            session,
-            notice_id=notice_id,
-            attachment=attachment,
-            manifest_sha256=manifest_sha256,
-            attachments_discovered=discovered,
+
+    audits: list[PpsAttachmentEnrichmentResult] = []
+    warnings = list(base_warnings)
+    processed = openai_calls = 0
+    downloaded_bytes = source_characters = analysis_input_characters = 0
+    members_discovered = members_processed = 0
+    new_attempts = 0
+    last_version_id: str | None = None
+    for attachment in attachments:
+        stored_version = current_attempts.get(attachment["attachment_id"])
+        stored_result = (
+            _stored_attachment_result(
+                stored_version,
+                attachments_discovered=discovered,
+            )
+            if stored_version is not None
+            else None
         )
+        if stored_result is not None:
+            audit = _audit_result_for_attachment(
+                attachment,
+                stored_result,
+                attempted=True,
+            )
+            audits.append(audit)
+            warnings.extend(stored_result.warnings)
+            processed += stored_result.attachments_processed
+            source_characters += stored_result.source_characters
+            analysis_input_characters += stored_result.analysis_input_characters
+            members_discovered += stored_result.members_discovered
+            members_processed += stored_result.members_processed
+            if stored_result.version_id:
+                last_version_id = stored_result.version_id
+            continue
+
+        # One missing attachment can require one download plus an initial and
+        # corrective Responses call. Start it only when the enclosing request
+        # still has enough time for that complete bounded unit. Successfully
+        # persisted siblings remain durable and the notice is re-leased.
+        worst_case_seconds = (
+            (download_timeout_seconds * 3)
+            + (openai_timeout_seconds * MAX_OPENAI_CALLS_PER_ATTACHMENT)
+            + 5
+        )
+        if new_attempts >= MAX_NEW_ATTACHMENTS_PER_REQUEST or (
+            deadline_monotonic is not None
+            and deadline_monotonic - time.monotonic() < worst_case_seconds
+        ):
+            warnings.extend(
+                [
+                    "ATTACHMENT_CONTINUATION_REQUIRED",
+                    "ATTACHMENT_COVERAGE_INCOMPLETE",
+                ]
+            )
+            break
+        new_attempts += 1
+        extension = PurePath(attachment["file_name"]).suffix.casefold()
+        if extension not in _EXTRACTABLE_EXTENSIONS:
+            try:
+                item_result = _record_unsupported_pps_attachment(
+                    session,
+                    notice_id=notice_id,
+                    versions=versions,
+                    attachment=attachment,
+                    attachments_discovered=discovered,
+                )
+            except Exception:
+                session.rollback()
+                item_result = record_internal_pps_enrichment_failure(
+                    session,
+                    notice_id=notice_id,
+                    attachment=attachment,
+                    manifest_sha256=_digest(attachment),
+                    attachments_discovered=discovered,
+                )
+            reason_code = (
+                "HWP_BINARY_UNSUPPORTED"
+                if extension == ".hwp"
+                else "UNSUPPORTED_ATTACHMENT_TYPE"
+            )
+        else:
+            try:
+                item_result = _enrich_selected_pps_attachment(
+                    session,
+                    notice_id=notice_id,
+                    versions=versions,
+                    attachment=attachment,
+                    manifest_sha256=_digest(attachment),
+                    attachments_discovered=discovered,
+                    openai_api_key=openai_api_key,
+                    openai_model=openai_model,
+                    transport=transport,
+                    openai_client_factory=openai_client_factory,
+                    download_timeout_seconds=download_timeout_seconds,
+                    openai_timeout_seconds=openai_timeout_seconds,
+                    openai_max_retries=openai_max_retries,
+                )
+            except Exception:
+                # Each exact attachment owns its failure marker. Continue with
+                # siblings so one corrupt document never discards successes.
+                session.rollback()
+                item_result = record_internal_pps_enrichment_failure(
+                    session,
+                    notice_id=notice_id,
+                    attachment=attachment,
+                    manifest_sha256=_digest(attachment),
+                    attachments_discovered=discovered,
+                )
+            reason_code = None
+        audit = _audit_result_for_attachment(
+            attachment,
+            item_result,
+            attempted=True,
+            reason_code=reason_code,
+        )
+        audits.append(audit)
+        warnings.extend(item_result.warnings)
+        processed += item_result.attachments_processed
+        downloaded_bytes += item_result.downloaded_bytes
+        source_characters += item_result.source_characters
+        analysis_input_characters += item_result.analysis_input_characters
+        members_discovered += item_result.members_discovered
+        members_processed += item_result.members_processed
+        openai_calls += item_result.openai_calls
+        if openai_calls > MAX_OPENAI_CALLS_PER_NOTICE:
+            raise PpsEnrichmentError("OPENAI_NOTICE_CALL_LIMIT")
+        if item_result.version_id:
+            last_version_id = item_result.version_id
+
+    continuation_required = "ATTACHMENT_CONTINUATION_REQUIRED" in warnings
+    status: Literal["COMPLETED", "REUSED", "REVIEW", "SKIPPED", "PLANNED"]
+    if continuation_required:
+        status = "SKIPPED"
+    elif invalid_count or any(item.status == "REVIEW" for item in audits):
+        status = "REVIEW"
+    elif any(item.status == "COMPLETED" for item in audits):
+        status = "COMPLETED"
+    else:
+        status = "REUSED"
+    return PpsEnrichmentResult(
+        status=status,
+        attachments_discovered=discovered,
+        attachments_attempted=len(audits),
+        attachments_processed=processed,
+        downloaded_bytes=downloaded_bytes,
+        source_characters=source_characters,
+        analysis_input_characters=analysis_input_characters,
+        source_read_complete=(
+            len(audits) == len(attachments)
+            and all(
+                item.source_read_complete
+                for item in audits
+                if PurePath(
+                    next(
+                        attachment["file_name"]
+                        for attachment in attachments
+                        if attachment["attachment_id"] == item.attachment_id
+                    )
+                ).suffix.casefold()
+                in _EXTRACTABLE_EXTENSIONS
+            )
+        ),
+        analysis_input_complete=(
+            len(audits) == len(attachments)
+            and all(
+                item.analysis_input_complete
+                for item in audits
+                if PurePath(
+                    next(
+                        attachment["file_name"]
+                        for attachment in attachments
+                        if attachment["attachment_id"] == item.attachment_id
+                    )
+                ).suffix.casefold()
+                in _EXTRACTABLE_EXTENSIONS
+            )
+        ),
+        members_discovered=members_discovered,
+        members_processed=members_processed,
+        openai_calls=openai_calls,
+        version_id=last_version_id,
+        warnings=sorted(set(warnings)),
+        attachment_results=audits,
+    )

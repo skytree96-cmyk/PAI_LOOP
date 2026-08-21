@@ -183,12 +183,12 @@ function validateRepositorySafetyContracts(definitions) {
     "daily workflow must route PPS notice keys through the backend batch analysis endpoint",
   );
   assert(
-    serialised.includes("maxAnalysisBatchNotices: 3")
-      && serialised.includes("maxAttachmentsPerNotice: 1")
+    serialised.includes("maxAnalysisBatchNotices: 1")
+      && serialised.includes("maxAttachmentsPerNotice: 10")
       && serialised.includes("maxBacklogRetryNotices: 12")
       && serialised.includes("max_total: 3012")
-      && serialised.includes("openaiCalls > requested * 2"),
-    "daily batch analysis must keep three-notice chunks, twelve backlog notices, and two OpenAI calls per notice bounded",
+      && serialised.includes("enrichment.attachments_discovered * 2"),
+    "daily analysis must use one-notice chunks, all ten provider slots, and two OpenAI calls per discovered attachment",
   );
   assert(
     serialised.includes("created_notice_keys")
@@ -489,10 +489,10 @@ function validateRepositorySafetyContracts(definitions) {
       && continuationSerialised.includes("maxContinuations: 128")
       && continuationSerialised.includes("queueName: 'ANY'")
       && continuationSerialised.includes("resumeOnly: true")
-      && continuationSerialised.includes("response.openai_calls > response.requested * 2")
+      && continuationSerialised.includes("response.openai_calls > enrichment.attachments_discovered * 2")
       && continuationSerialised.includes("segment_id")
       && continuationSerialised.includes("chunk_indices"),
-    "workflow 11 must use the retryable recovery, two-call cap, and resumable 30-notice durable segment contract",
+    "workflow 11 must use retryable recovery, the per-attachment two-call cap, and resumable one-notice chunks",
   );
   const continuationChunkNode = continuation.workflow.nodes.find(
     (node) => node.name === "Analyze One Bounded Chunk",

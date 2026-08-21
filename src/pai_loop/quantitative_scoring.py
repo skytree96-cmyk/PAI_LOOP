@@ -18,11 +18,16 @@ from sqlalchemy.orm import Session
 
 from .auth import require_api_key
 from .eligibility_policy import load_public_company_profile
+from .integrations.openai_extraction import (
+    PROMPT_VERSION,
+    ExtractionPayload,
+    ExtractedQuantitativeCriterion,
+)
 from .models import Notice
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
-    select_preferred_attachments,
+    PPS_PROCESSING_VERSION,
 )
 from .public_performance import load_public_performance_seed
 
@@ -619,8 +624,8 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _current_authoritative_document_digest(notice: Notice) -> str | None:
-    """Return only the document digest authoritative for the current notice.
+def _current_authoritative_document_state(notice: Notice) -> tuple[set[str], str | None]:
+    """Return current-manifest-bound accepted document digests.
 
     A corrected PPS manifest supersedes every older attachment/extraction. For
     curated notices without a PPS manifest, the newest reviewed public
@@ -645,26 +650,43 @@ def _current_authoritative_document_digest(notice: Notice) -> str | None:
             for item in metadata.source_payload.get("attachment_manifest", [])
             if isinstance(item, dict)
         ]
-        selected, _warnings = select_preferred_attachments(manifest, limit=1)
-        if not selected:
-            return None
-        attachment = selected[0]
-        manifest_sha256 = _canonical_digest(attachment)
-        extraction = next(
-            (
-                version
-                for version in versions
-                if isinstance(version.source_payload, dict)
-                and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
-                and version.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-                and version.source_payload.get("status") == "ACCEPTED"
-                and version.source_payload.get("attachment_id") == attachment["attachment_id"]
-                and version.source_payload.get("manifest_sha256") == manifest_sha256
-            ),
-            None,
-        )
-        digest = extraction.file_sha256 if extraction is not None else None
-        return str(digest).casefold() if isinstance(digest, str) else None
+        current = {
+            str(attachment.get("attachment_id")): _canonical_digest(attachment)
+            for attachment in manifest
+            if isinstance(attachment.get("attachment_id"), str)
+            and attachment.get("attachment_id")
+        }
+        attempts: dict[str, Any] = {}
+        for version in reversed(versions):
+            payload = version.source_payload
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+                or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
+                or payload.get("prompt_version") != PROMPT_VERSION
+                or payload.get("processing_version") != PPS_PROCESSING_VERSION
+            ):
+                continue
+            attachment_id = str(payload.get("attachment_id") or "")
+            if payload.get("manifest_sha256") == current.get(attachment_id):
+                # ``versions`` is newest-first, so reversed iteration is
+                # oldest-first and assignment deliberately retains the newest
+                # current-bound outcome for each attachment.
+                attempts[attachment_id] = version
+        if not current or len(current) != len(manifest) or set(attempts) != set(current):
+            return set(), "현재 공고의 모든 공개 첨부에 대한 분석 감사가 완료되지 않았습니다."
+        if any(
+            not isinstance(version.source_payload, dict)
+            or version.source_payload.get("status") != "ACCEPTED"
+            or version.extraction_status not in {"ACCEPTED", "COMPLETE"}
+            or not version.document_complete
+            for version in attempts.values()
+        ):
+            return set(), "현재 공고 첨부 중 읽지 못했거나 검토가 필요한 파일이 있어 정량 배점을 확정할 수 없습니다."
+        return {
+            str(version.file_sha256).casefold()
+            for version in attempts.values()
+        }, None
 
     reference = next(
         (
@@ -676,7 +698,7 @@ def _current_authoritative_document_digest(notice: Notice) -> str | None:
         None,
     )
     digest = reference.file_sha256 if reference is not None else None
-    return str(digest).casefold() if isinstance(digest, str) else None
+    return ({str(digest).casefold()}, None) if isinstance(digest, str) else (set(), None)
 
 
 def _profile_for_notice(notice: Notice) -> tuple[dict[str, Any] | None, str | None]:
@@ -700,8 +722,10 @@ def _profile_for_notice(notice: Notice) -> tuple[dict[str, Any] | None, str | No
         expected_digest = _profile_source_digest(item)
         if expected_digest is None:
             return None, "연결된 정량 프로필에 검증 가능한 원문 문서 해시가 없습니다."
-        current_digest = _current_authoritative_document_digest(notice)
-        if expected_digest != current_digest:
+        current_digests, coverage_error = _current_authoritative_document_state(notice)
+        if coverage_error:
+            return None, coverage_error
+        if expected_digest not in current_digests:
             return None, (
                 "정량 프로필의 원문 문서 해시가 현재 권위 공고 문서와 일치하지 않습니다. "
                 "정정공고 또는 첨부 변경 여부를 확인해야 합니다."

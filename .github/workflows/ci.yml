@@ -107,6 +107,7 @@ jobs:
               "pai_loop/quantitative_scoring.py",
               "pai_loop/daily_operations.py",
               "pai_loop/department_ranking.py",
+              "pai_loop/document_extraction.py",
               "pai_loop/eligibility_policy.py",
               "pai_loop/public_performance.py",
               "pai_loop/public_notice_seed.py",

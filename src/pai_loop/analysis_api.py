@@ -16,7 +16,9 @@ from .analysis_pipeline import AnalysisPipelineError, run_analysis_pipeline
 from .auth import require_api_key
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .pps_enrichment import (
+    MAX_ATTACHMENTS_IN_MANIFEST,
     PpsEnrichmentResult,
+    current_pps_attachment_coverage,
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
@@ -33,7 +35,9 @@ class AnalysisBatchRequest(ApiModel):
     force: Literal[False] = False
     enrich_missing: bool = False
     max_notices: int = Field(default=3, ge=1, le=3)
-    max_attachments_per_notice: int = Field(default=1, ge=1, le=1)
+    # This is an exact provider-manifest contract, not an operator sampling
+    # knob. A smaller value would silently restore the former one-file bug.
+    max_attachments_per_notice: Literal[10] = MAX_ATTACHMENTS_IN_MANIFEST
     # Optional parent operation identity used by n8n backfill/daily chunk
     # orchestration. It never changes analysis semantics; it only links the
     # sanitised child audit to a resumable parent run.
@@ -61,8 +65,8 @@ class AnalysisBatchRequest(ApiModel):
                 "operation_id, segment_id, and chunk_index must be provided together"
             )
         if self.operation_id is not None:
-            if len(self.notice_keys) > 3 or self.max_notices != len(self.notice_keys):
-                raise ValueError("operation chunks must contain exactly max_notices <= 3 keys")
+            if len(self.notice_keys) != 1 or self.max_notices != 1:
+                raise ValueError("operation chunks must contain exactly one notice")
         return self
 
 
@@ -85,15 +89,41 @@ class AnalysisBatchItemOut(ApiModel):
     analysis_reason_code: Literal[
         "ANALYZED",
         "ATTACHMENT_NONE",
+        "ATTACHMENT_COVERAGE_INCOMPLETE",
         "HWP_ONLY_UNSUPPORTED",
+        "UNSUPPORTED_ATTACHMENT",
         "HWPX_EXTRACT_FAILED",
         "PDF_EXTRACT_FAILED",
+        "DOCUMENT_EXTRACT_FAILED",
         "OPENAI_REVIEW",
         "QUOTE_UNVERIFIED",
         "NOT_SELECTED",
     ] | None = None
     analysis_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    attachments_discovered: int = 0
+    attachments_audited: int = 0
+    attachments_supported: int = 0
+    attachments_accepted: int = 0
+    attachment_coverage_complete: bool = False
+    all_supported_attachments_accepted: bool = False
+
+
+class AnalysisAttachmentEnrichmentOut(ApiModel):
+    attachment_id: str
+    media_type: str
+    status: Literal["COMPLETED", "REUSED", "REVIEW", "PLANNED"]
+    reason_code: str
+    attempted: bool = False
+    content_extracted: bool = False
+    source_read_complete: bool = False
+    analysis_input_complete: bool = False
+    source_characters: int = Field(default=0, ge=0, le=2_000_000)
+    analysis_input_characters: int = Field(default=0, ge=0, le=120_000)
+    members_discovered: int = Field(default=0, ge=0, le=1_024)
+    members_processed: int = Field(default=0, ge=0, le=1_024)
+    openai_calls: int = Field(default=0, ge=0, le=2)
+    version_id: str | None = None
 
 
 class AnalysisEnrichmentOut(ApiModel):
@@ -103,9 +133,18 @@ class AnalysisEnrichmentOut(ApiModel):
     skipped: int = 0
     failed: int = 0
     attachments_discovered: int = 0
+    attachments_attempted: int = 0
     attachments_processed: int = 0
+    downloaded_bytes: int = Field(default=0, ge=0, le=80 * 1024 * 1024)
+    source_characters: int = Field(default=0, ge=0, le=20_000_000)
+    analysis_input_characters: int = Field(default=0, ge=0, le=1_200_000)
+    source_read_complete: bool = False
+    analysis_input_complete: bool = False
+    members_discovered: int = Field(default=0, ge=0, le=10_240)
+    members_processed: int = Field(default=0, ge=0, le=10_240)
     openai_calls: int = 0
     warnings: list[str] = Field(default_factory=list)
+    attachment_results: list[AnalysisAttachmentEnrichmentOut] = Field(default_factory=list)
 
 
 class AnalysisBatchResponse(ApiModel):
@@ -153,7 +192,11 @@ class AnalysisBackfillPlanRequest(ApiModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$",
     )
     dry_run: bool = False
-    chunk_size: int = Field(default=3, ge=1, le=3)
+    # Multi-attachment notices can use the full provider manifest (up to ten
+    # files), so a durable operation lease is intentionally one notice. This
+    # prevents an older workflow from recreating an unbounded three-notice HTTP
+    # request while retaining the generic protected batch API for diagnostics.
+    chunk_size: Literal[1] = 1
     max_total: int = Field(default=300, ge=1, le=3012)
     execution_limit: int = Field(default=30, ge=1, le=30)
     # 3,012 keys / 30 per execution requires 101 segments. 128 leaves bounded
@@ -469,6 +512,14 @@ def _store_batch_response(
             raise RuntimeError("analysis batch audit job disappeared")
         request_json = dict(job.request_json or {})
         request_json["result_json"] = response.model_dump(mode="json")
+        if "ATTACHMENT_CONTINUATION_REQUIRED" in response.enrichment.warnings:
+            # A bounded request persisted all completed attachment attempts but
+            # intentionally stopped before the next worst-case unit. Retain the
+            # child as an audit row while making its notice key non-terminal so
+            # the parent planner leases it again with a new chunk index.
+            request_json["requeue_notice_keys"] = [
+                item.notice_key for item in response.results
+            ]
         job.request_json = request_json
         session.commit()
 
@@ -480,6 +531,10 @@ _RETRYABLE_ANALYSIS_CODES = {
     "ANALYZED",
     "HWPX_EXTRACT_FAILED",
     "PDF_EXTRACT_FAILED",
+    "DOCUMENT_EXTRACT_FAILED",
+    "ATTACHMENT_COVERAGE_INCOMPLETE",
+    "HWP_ONLY_UNSUPPORTED",
+    "UNSUPPORTED_ATTACHMENT",
     "OPENAI_REVIEW",
     "QUOTE_UNVERIFIED",
 }
@@ -1826,11 +1881,24 @@ def _attach_public_analysis_reason(
             evaluated=bool(notice.evaluations),
             source_kind=source_kind,
         )
+        coverage = (
+            current_pps_attachment_coverage(session, notice.id)
+            if source_kind == "PPS"
+            else None
+        )
     return item.model_copy(
         update={
             "analysis_state": reason.state,
             "analysis_reason_code": reason.reason_code,
             "analysis_reason": reason.reason,
+            "attachments_discovered": coverage.discovered if coverage else 0,
+            "attachments_audited": coverage.audited if coverage else 0,
+            "attachments_supported": coverage.supported if coverage else 0,
+            "attachments_accepted": coverage.accepted if coverage else 0,
+            "attachment_coverage_complete": coverage.complete if coverage else True,
+            "all_supported_attachments_accepted": (
+                coverage.all_supported_accepted if coverage else True
+            ),
         }
     )
 
@@ -1840,6 +1908,7 @@ def _enrich_one_notice(
     *,
     notice_id: str,
     payload: AnalysisBatchRequest,
+    deadline_monotonic: float,
 ) -> PpsEnrichmentResult:
     settings = request.app.state.settings
     with request.app.state.session_factory() as session:
@@ -1850,13 +1919,14 @@ def _enrich_one_notice(
             openai_model=settings.openai_model,
             max_attachments=payload.max_attachments_per_notice,
             dry_run=payload.dry_run,
-            # One notice is bounded to roughly one minute. Together with the
-            # batch wall-clock guard this keeps the n8n 240 second request
-            # contract below its hard timeout and returns PARTIAL instead of
-            # allowing an unbounded provider retry chain.
+            # Each attachment is one durable unit. The shared deadline starts
+            # another unit only when its full download + two-call worst case
+            # still fits, keeping n8n below its HTTP timeout while returning a
+            # resumable PARTIAL response for the remaining manifest entries.
             download_timeout_seconds=12,
             openai_timeout_seconds=45,
             openai_max_retries=0,
+            deadline_monotonic=deadline_monotonic,
         )
 
 
@@ -1898,9 +1968,18 @@ def _execute_notice_analysis_batch(
     materialized = evaluations = snapshots = 0
     enrichment_requested = min(len(payload.notice_keys), payload.max_notices) if payload.enrich_missing else 0
     enrichment_attempted = enrichment_completed = enrichment_skipped = enrichment_failed = 0
-    enrichment_discovered = enrichment_processed = enrichment_openai_calls = 0
+    enrichment_discovered = enrichment_attachments_attempted = enrichment_processed = 0
+    enrichment_downloaded_bytes = 0
+    enrichment_source_characters = enrichment_analysis_input_characters = 0
+    enrichment_members_discovered = enrichment_members_processed = 0
+    enrichment_source_complete = enrichment_input_complete = True
+    enrichment_openai_calls = 0
     enrichment_warnings: list[str] = []
-    enrichment_deadline = time.monotonic() + 205
+    enrichment_attachment_results: list[AnalysisAttachmentEnrichmentOut] = []
+    # At most two worst-case attachment units fit below this request boundary:
+    # 3 redirect hops * 12s + 2 Responses calls * 45s = 126s per unit. n8n's
+    # HTTP timeout is 600s; a continuation never starts a third unsafe unit.
+    enrichment_deadline = time.monotonic() + 270
 
     for index, notice_key in enumerate(payload.notice_keys):
         enrichment_targeted = payload.enrich_missing and index < payload.max_notices
@@ -1947,6 +2026,7 @@ def _execute_notice_analysis_batch(
                     request,
                     notice_id=notice_id,
                     payload=payload,
+                    deadline_monotonic=enrichment_deadline,
                 )
             except Exception:  # pragma: no cover - provider fail-closed boundary
                 # Exact attachment context is unavailable at this outer
@@ -1964,8 +2044,24 @@ def _execute_notice_analysis_batch(
         item_enrichment_warnings: list[str] = []
         if enrichment_result is not None:
             enrichment_discovered += enrichment_result.attachments_discovered
+            enrichment_attachments_attempted += enrichment_result.attachments_attempted
             enrichment_processed += enrichment_result.attachments_processed
+            enrichment_downloaded_bytes += enrichment_result.downloaded_bytes
+            enrichment_source_characters += enrichment_result.source_characters
+            enrichment_analysis_input_characters += enrichment_result.analysis_input_characters
+            enrichment_members_discovered += enrichment_result.members_discovered
+            enrichment_members_processed += enrichment_result.members_processed
+            enrichment_source_complete = (
+                enrichment_source_complete and enrichment_result.source_read_complete
+            )
+            enrichment_input_complete = (
+                enrichment_input_complete and enrichment_result.analysis_input_complete
+            )
             enrichment_openai_calls += enrichment_result.openai_calls
+            enrichment_attachment_results.extend(
+                AnalysisAttachmentEnrichmentOut.model_validate(item)
+                for item in enrichment_result.attachment_results
+            )
             item_enrichment_warnings.extend(enrichment_result.warnings)
             enrichment_warnings.extend(enrichment_result.warnings)
             if enrichment_result.status in {"COMPLETED", "REUSED"}:
@@ -1988,6 +2084,27 @@ def _execute_notice_analysis_batch(
                 failed += 1
             else:
                 skipped += 1
+            continue
+
+        if (
+            enrichment_result is not None
+            and "ATTACHMENT_CONTINUATION_REQUIRED" in enrichment_result.warnings
+        ):
+            # Do not materialise a misleading terminal AnalysisRun while the
+            # current manifest still has unaudited attachments. The child job
+            # is stored with requeue_notice_keys and the parent leases this
+            # exact notice again; prior per-attachment versions are reused.
+            rows.append(
+                AnalysisBatchItemOut(
+                    notice_key=notice_key,
+                    status="SKIPPED",
+                    document_status="ATTACHMENT_CONTINUATION_REQUIRED",
+                    evaluation_status="NOT_RUN",
+                    snapshot_status="NOT_RUN",
+                    warnings=sorted(set(item_enrichment_warnings)),
+                )
+            )
+            skipped += 1
             continue
 
         with request.app.state.session_factory() as session:
@@ -2084,9 +2201,22 @@ def _execute_notice_analysis_batch(
             skipped=enrichment_skipped,
             failed=enrichment_failed,
             attachments_discovered=enrichment_discovered,
+            attachments_attempted=enrichment_attachments_attempted,
             attachments_processed=enrichment_processed,
+            downloaded_bytes=enrichment_downloaded_bytes,
+            source_characters=enrichment_source_characters,
+            analysis_input_characters=enrichment_analysis_input_characters,
+            source_read_complete=(
+                enrichment_source_complete and enrichment_attempted > 0
+            ),
+            analysis_input_complete=(
+                enrichment_input_complete and enrichment_attempted > 0
+            ),
+            members_discovered=enrichment_members_discovered,
+            members_processed=enrichment_members_processed,
             openai_calls=enrichment_openai_calls,
             warnings=sorted(set(enrichment_warnings)),
+            attachment_results=enrichment_attachment_results,
         ),
     )
     _store_batch_response(request, job_id=job_id, response=response)

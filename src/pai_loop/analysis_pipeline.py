@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -63,9 +64,14 @@ from .quantitative_scoring import (
     estimate_for_notice,
     load_quantitative_profile_catalog,
 )
+from .pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
+    PPS_PROCESSING_VERSION,
+    _validated_manifest_attachments,
+)
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.3.0"
+PIPELINE_VERSION = "analysis-pipeline-0.4.0"
 MATERIALIZATION_VERSION = "atomic-materializer-0.2.0"
 SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -328,6 +334,15 @@ def _select_source_versions(
                     "an explicitly selected source has a different prompt version"
                 )
             continue
+        if (
+            payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and payload.get("processing_version") != PPS_PROCESSING_VERSION
+        ):
+            if source_version_ids is not None and version.id in requested:
+                raise AnalysisPipelineSourceError(
+                    "an explicitly selected PPS source has a different processing version"
+                )
+            continue
         attachment_id = _attachment_identity(payload, version)
         previous = latest_by_attachment.get(attachment_id)
         if previous is None or previous.version_no < version.version_no:
@@ -355,6 +370,11 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         warnings.append("PROMPT_VERSION_MISMATCH")
     if schema_version != SCHEMA_VERSION:
         warnings.append("UNSUPPORTED_SCHEMA_VERSION")
+    if (
+        payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        and payload.get("processing_version") != PPS_PROCESSING_VERSION
+    ):
+        warnings.append("PROCESSING_VERSION_MISMATCH")
     if status != "ACCEPTED" or version.extraction_status not in {"ACCEPTED", "COMPLETE"}:
         warnings.append("SOURCE_STATUS_NOT_ACCEPTED")
 
@@ -551,12 +571,7 @@ def _known_non_eligibility_gaps_only(sources: Sequence[_SourceDocument]) -> bool
 
     if not sources or any(not source.materializable or source.data is None for source in sources):
         return False
-    gaps = [
-        _normalise_text(gap)
-        for source in sources
-        if source.data is not None
-        for gap in source.data.missing_or_unreadable
-    ]
+    gaps, _resolved = _aggregate_source_gaps(sources)
     if not gaps or any(not gap for gap in gaps):
         return False
     return all(
@@ -923,9 +938,190 @@ def _award_history_manifest(rows: Sequence[AwardHistoryItem]) -> list[dict[str, 
     return sorted(result, key=lambda item: item["award_history_id"])
 
 
+def _current_pps_manifest_basis(
+    versions: Sequence[NoticeVersion],
+    *,
+    prompt_version: str,
+) -> dict[str, Any] | None:
+    metadata = next(
+        (
+            version
+            for version in sorted(versions, key=lambda item: item.version_no, reverse=True)
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"
+            and isinstance(version.source_payload.get("attachment_manifest"), list)
+        ),
+        None,
+    )
+    if metadata is None or not isinstance(metadata.source_payload, dict):
+        return None
+    raw_manifest = [
+        dict(item)
+        for item in metadata.source_payload.get("attachment_manifest", [])
+        if isinstance(item, dict)
+    ]
+    validated_manifest, invalid_count = _validated_manifest_attachments(raw_manifest)
+    expected = [
+        {
+            "attachment_id": str(item.get("attachment_id") or ""),
+            "manifest_sha256": _digest(item),
+        }
+        for item in validated_manifest
+    ]
+    expected_by_id = {item["attachment_id"]: item["manifest_sha256"] for item in expected}
+    attempts: dict[str, NoticeVersion] = {}
+    for version in sorted(versions, key=lambda item: item.version_no):
+        payload = version.source_payload
+        if (
+            not isinstance(payload, dict)
+            or payload.get("kind") != SOURCE_KIND
+            or payload.get("source_kind") != "PPS_PUBLIC_ATTACHMENT"
+            or payload.get("prompt_version") != prompt_version
+            or payload.get("processing_version") != PPS_PROCESSING_VERSION
+        ):
+            continue
+        attachment_id = str(payload.get("attachment_id") or "")
+        if payload.get("manifest_sha256") != expected_by_id.get(attachment_id):
+            continue
+        attempts[attachment_id] = version
+    accepted_ids = sorted(
+        attachment_id
+        for attachment_id, version in attempts.items()
+        if isinstance(version.source_payload, dict)
+        and version.source_payload.get("status") == "ACCEPTED"
+        and version.extraction_status in {"ACCEPTED", "COMPLETE"}
+        and version.document_complete
+    )
+    audited_ids = sorted(attempts)
+    expected_ids = sorted(expected_by_id)
+    coverage_complete = (
+        bool(expected)
+        and invalid_count == 0
+        and len(expected) == len(raw_manifest)
+        and len(expected_by_id) == len(expected)
+        and audited_ids == expected_ids
+    )
+    return {
+        "metadata_version_id": metadata.id,
+        "manifest_sha256": _digest(raw_manifest),
+        "expected_attachments": sorted(
+            expected,
+            key=lambda item: (item["attachment_id"], item["manifest_sha256"]),
+        ),
+        "expected_attachment_ids": expected_ids,
+        "audited_attachment_ids": audited_ids,
+        "accepted_attachment_ids": accepted_ids,
+        "processing_version": PPS_PROCESSING_VERSION,
+        "coverage_complete": coverage_complete,
+    }
+
+
+_TYPED_SIBLING_GAP_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^(?:별도\s*)?제안\s*요청서(?:가|는|은|를|을)?\s*"
+            r"(?:없음|누락|미포함|포함되지\s*않음|별도\s*제공)$"
+        ),
+        "RFP",
+    ),
+    (
+        re.compile(
+            r"^(?:별도\s*)?과업\s*(?:지시서|내용서)(?:가|는|은|를|을)?\s*"
+            r"(?:없음|누락|미포함|포함되지\s*않음|별도\s*제공)$"
+        ),
+        "SCOPE",
+    ),
+)
+
+
+def _aggregate_source_gaps(
+    sources: Sequence[_SourceDocument],
+) -> tuple[list[str], list[str]]:
+    """Resolve only exact document-presence gaps using accepted typed siblings."""
+
+    available_types = {
+        source.data.document_type
+        for source in sources
+        if source.materializable and source.data is not None
+    }
+    unresolved: list[str] = []
+    resolved: list[str] = []
+    for source in sources:
+        if source.data is None:
+            continue
+        for raw_gap in source.data.missing_or_unreadable:
+            gap = _normalise_text(raw_gap)
+            matched_type = next(
+                (
+                    document_type
+                    for pattern, document_type in _TYPED_SIBLING_GAP_RULES
+                    if pattern.fullmatch(gap)
+                ),
+                None,
+            )
+            if matched_type is not None and matched_type in available_types:
+                resolved.append(gap)
+            else:
+                unresolved.append(gap)
+    return unresolved, resolved
+
+
+def _source_effectively_complete(
+    source: _SourceDocument,
+    *,
+    unresolved_gaps: set[str],
+) -> bool:
+    if source.complete:
+        return True
+    if not source.materializable or source.data is None:
+        return False
+    source_gaps = {_normalise_text(item) for item in source.data.missing_or_unreadable}
+    if source_gaps & unresolved_gaps:
+        return False
+    remaining_warnings = set(source.warnings) - {
+        "SOURCE_MISSING_OR_UNREADABLE",
+        "DOCUMENT_INCOMPLETE",
+    }
+    return not remaining_warnings
+
+
 def _pricing_profile_for_versions(versions: Sequence[NoticeVersion]) -> dict[str, Any] | None:
-    for version in sorted(versions, key=lambda item: item.version_no, reverse=True):
-        profile = pricing_profile_for_document(version.file_sha256)
+    manifest_basis = _current_pps_manifest_basis(versions, prompt_version=PROMPT_VERSION)
+    if manifest_basis is not None:
+        if (
+            not manifest_basis["coverage_complete"]
+            or manifest_basis["accepted_attachment_ids"]
+            != manifest_basis["expected_attachment_ids"]
+        ):
+            return None
+        accepted_ids = set(manifest_basis["accepted_attachment_ids"])
+        current_digests = sorted(
+            {
+                version.file_sha256
+                for version in versions
+                if isinstance(version.source_payload, dict)
+                and version.source_payload.get("kind") == SOURCE_KIND
+                and version.source_payload.get("attachment_id") in accepted_ids
+                and version.source_payload.get("manifest_sha256")
+                == {
+                    item["attachment_id"]: item["manifest_sha256"]
+                    for item in manifest_basis["expected_attachments"]
+                }.get(version.source_payload.get("attachment_id"))
+                and version.source_payload.get("status") == "ACCEPTED"
+                and version.source_payload.get("processing_version")
+                == PPS_PROCESSING_VERSION
+                and version.document_complete
+            }
+        )
+    else:
+        current_digests = [
+            version.file_sha256
+            for version in sorted(versions, key=lambda item: item.version_no, reverse=True)
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == "PUBLIC_DOCUMENT_REFERENCE"
+        ][:1]
+    for digest in current_digests:
+        profile = pricing_profile_for_document(digest)
         if profile is not None:
             return profile
     return None
@@ -1047,6 +1243,10 @@ def run_analysis_pipeline(
                     .order_by(NoticeVersion.version_no)
                 ).all()
             )
+            pps_manifest_basis = _current_pps_manifest_basis(
+                all_notice_versions,
+                prompt_version=prompt_version,
+            )
             quantitative = estimate_for_notice(notice)
             quantitative_catalog = load_quantitative_profile_catalog()
             department_catalog = load_department_keyword_profiles()
@@ -1078,6 +1278,16 @@ def run_analysis_pipeline(
                     "document_sha256": source.document_sha256,
                     "prompt_version": source.prompt_version,
                     "schema_version": source.schema_version,
+                    "processing_version": (
+                        source.version.source_payload.get("processing_version")
+                        if isinstance(source.version.source_payload, dict)
+                        else None
+                    ),
+                    "manifest_sha256": (
+                        source.version.source_payload.get("manifest_sha256")
+                        if isinstance(source.version.source_payload, dict)
+                        else None
+                    ),
                     "status": source.status,
                     "error_code": source.error_code,
                     "result_sha256": source.result_sha256,
@@ -1104,6 +1314,7 @@ def run_analysis_pipeline(
                     "profile_sha256": profile_sha256,
                     "notice_basis_sha256": notice_basis_sha256,
                     "sources": source_semantics,
+                    "pps_manifest_basis": pps_manifest_basis,
                     "company_facts": fact_manifest,
                     "reference_versions": reference_manifest,
                     "quantitative_output_sha256": _digest(
@@ -1129,14 +1340,35 @@ def run_analysis_pipeline(
                     for warning in source.warnings
                 }
             )
+            unresolved_gaps, resolved_gaps = _aggregate_source_gaps(sources)
+            unresolved_gap_set = set(unresolved_gaps)
+            if resolved_gaps:
+                warnings.append("SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING")
+            if unresolved_gaps:
+                warnings.append("AGGREGATE_GAPS_UNRESOLVED")
             if not sources:
                 warnings.append("NO_EXTRACTION_SOURCES")
+            if pps_manifest_basis is not None and not pps_manifest_basis["coverage_complete"]:
+                warnings.append("ATTACHMENT_COVERAGE_INCOMPLETE")
             accepted_source_count = sum(source.materializable for source in sources)
             if not materialized_policy_items:
                 warnings.append("NO_ELIGIBILITY_OR_ACTION_REQUIREMENTS")
             if not sources or accepted_source_count == 0:
                 run_status = "FAILED"
-            elif any(not source.complete for source in sources) or not materialized_policy_items:
+            elif (
+                any(
+                    not _source_effectively_complete(
+                        source,
+                        unresolved_gaps=unresolved_gap_set,
+                    )
+                    for source in sources
+                )
+                or not materialized_policy_items
+                or (
+                    pps_manifest_basis is not None
+                    and not pps_manifest_basis["coverage_complete"]
+                )
+            ):
                 run_status = "PARTIAL"
             else:
                 run_status = "COMPLETED"
@@ -1192,6 +1424,21 @@ def run_analysis_pipeline(
                         {source.document_sha256 for source in sources}
                     ),
                     "attachment_ids": sorted({source.attachment_id for source in sources}),
+                    "pps_manifest_sha256": (
+                        pps_manifest_basis["manifest_sha256"]
+                        if pps_manifest_basis is not None
+                        else None
+                    ),
+                    "expected_attachment_ids": (
+                        pps_manifest_basis["expected_attachment_ids"]
+                        if pps_manifest_basis is not None
+                        else []
+                    ),
+                    "attachment_coverage_complete": (
+                        pps_manifest_basis["coverage_complete"]
+                        if pps_manifest_basis is not None
+                        else True
+                    ),
                     "warnings": warnings,
                 },
             )
@@ -1273,6 +1520,11 @@ def run_analysis_pipeline(
                 "status": run_status,
                 "source_count": len(sources),
                 "accepted_source_count": accepted_source_count,
+                "attachment_coverage_complete": (
+                    pps_manifest_basis["coverage_complete"]
+                    if pps_manifest_basis is not None
+                    else True
+                ),
                 "eligibility_gate_applied": eligibility_gate_applied,
                 "warnings": warnings,
             }
@@ -1300,6 +1552,11 @@ def run_analysis_pipeline(
             output_summary = {
                 "source_count": len(sources),
                 "accepted_source_count": accepted_source_count,
+                "attachment_coverage_complete": (
+                    pps_manifest_basis["coverage_complete"]
+                    if pps_manifest_basis is not None
+                    else True
+                ),
                 "materialized_requirement_count": len(prospective_atomics),
                 "requirement_snapshot_count": len(policy_items),
                 "score_snapshot_count": 8,
@@ -1380,6 +1637,31 @@ def run_analysis_pipeline(
                         {source.document_sha256 for source in sources}
                     ),
                     "attachment_ids": sorted({source.attachment_id for source in sources}),
+                    "pps_manifest_sha256": (
+                        pps_manifest_basis["manifest_sha256"]
+                        if pps_manifest_basis is not None
+                        else None
+                    ),
+                    "expected_attachment_ids": (
+                        pps_manifest_basis["expected_attachment_ids"]
+                        if pps_manifest_basis is not None
+                        else []
+                    ),
+                    "audited_attachment_ids": (
+                        pps_manifest_basis["audited_attachment_ids"]
+                        if pps_manifest_basis is not None
+                        else []
+                    ),
+                    "accepted_attachment_ids": (
+                        pps_manifest_basis["accepted_attachment_ids"]
+                        if pps_manifest_basis is not None
+                        else []
+                    ),
+                    "attachment_coverage_complete": (
+                        pps_manifest_basis["coverage_complete"]
+                        if pps_manifest_basis is not None
+                        else True
+                    ),
                     "company_fact_ids": [item["company_fact_id"] for item in fact_manifest],
                     "company_fact_basis_sha256s": [
                         item["basis_sha256"] for item in fact_manifest

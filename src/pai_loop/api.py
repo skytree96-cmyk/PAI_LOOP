@@ -52,6 +52,7 @@ from .pps_enrichment import (
     build_attachment_manifest,
     department_keyword_coverage_count,
     persist_pps_metadata_version,
+    pps_attachment_coverage,
     public_analysis_reason,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
@@ -135,6 +136,11 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
         evaluated=latest is not None,
         source_kind=source_kind,
     )
+    attachment_coverage = (
+        pps_attachment_coverage(list(reversed(notice.versions)))
+        if source_kind == "PPS"
+        else None
+    )
     ingestion_state = "EVALUATED" if latest else "VERSIONED" if latest_version else "COLLECTED"
     evaluation = EvaluationOut.model_validate(latest) if latest else None
     recommendation, recommendation_updated_at = _latest_system_recommendation(notice)
@@ -164,6 +170,15 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
         analysis_reason_code=analysis_reason.reason_code,
         analysis_reason=analysis_reason.reason,
         analysis_attachment_count=analysis_reason.attachment_count,
+        analysis_attachments_audited=(
+            attachment_coverage.audited if attachment_coverage else 0
+        ),
+        analysis_attachments_accepted=(
+            attachment_coverage.accepted if attachment_coverage else 0
+        ),
+        analysis_attachment_coverage_complete=(
+            attachment_coverage.complete if attachment_coverage else True
+        ),
         analysis_attempted=analysis_reason.attempted,
         recommendation=recommendation,
         recommendation_updated_at=recommendation_updated_at,
@@ -425,7 +440,7 @@ def runtime_profile(request: Request) -> dict[str, Any]:
         "manual_analysis_policy": (
             {
                 "scope": "ONE_OPEN_PPS_NOTICE",
-                "max_attachments": 1,
+                "max_attachments": 10,
                 "force": False,
                 "cooldown_hours": settings.public_manual_analysis_cooldown_hours,
                 "hourly_limit": settings.public_manual_analysis_hourly_limit,
