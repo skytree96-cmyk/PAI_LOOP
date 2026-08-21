@@ -34,6 +34,8 @@ def valid_output(*, attachment_id: str = "ATT-1", quote: str = "부산광역시�
                 "ambiguity_reason": None,
             }
         ],
+        "quantitative_tables": [],
+        "quantitative_table_not_applicable": None,
         "missing_or_unreadable": [],
         "summary": "지역 제한 조건 한 건",
     }
@@ -51,6 +53,68 @@ def response_payload(output: dict) -> dict:
             }
         ],
     }
+
+
+def quantitative_output(*, total_quote: str = "정량평가 총점 10점") -> dict:
+    output = valid_output()
+    output["quantitative_tables"] = [
+        {
+            "table_id": "TABLE-1",
+            "label": "정량평가",
+            "criteria": [
+                {
+                    "criterion_id": "Q-CREDIT-1",
+                    "label": "신용평가",
+                    "criterion_literal": "신용평가 10점",
+                    "max_points": 10,
+                    "scoring_method": "BRACKET",
+                    "metric": "CREDIT_RATING",
+                    "unit": "등급",
+                    "brackets": [
+                        {
+                            "label": "A등급",
+                            "literal": "A등급 10점",
+                            "min_value": None,
+                            "max_value": None,
+                            "min_inclusive": False,
+                            "max_inclusive": False,
+                            "points": 10,
+                            "evidence": {
+                                "attachment_id": "ATT-1",
+                                "page": 4,
+                                "section": "정량평가",
+                                "quote": "A등급 10점",
+                                "confidence": 0.99,
+                            },
+                        }
+                    ],
+                    "threshold": None,
+                    "formula_literal": None,
+                    "required_evidence": ["company.credit_rating"],
+                    "evidence": {
+                        "attachment_id": "ATT-1",
+                        "page": 4,
+                        "section": "정량평가",
+                        "quote": "신용평가 10점",
+                        "confidence": 0.99,
+                    },
+                    "ambiguity_reason": None,
+                }
+            ],
+            "total_points": 10,
+            "total_evidence": {
+                "attachment_id": "ATT-1",
+                "page": 4,
+                "section": "정량평가",
+                "quote": total_quote,
+                "confidence": 0.99,
+            },
+            "minimum_score": None,
+            "minimum_evidence": None,
+            "ambiguity_reason": None,
+        }
+    ]
+    return output
 
 
 def test_strict_store_false_request_and_anchor_validation() -> None:
@@ -78,18 +142,33 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert captured["max_output_tokens"] == 12_000
     assert captured["text"]["format"]["type"] == "json_schema"
     assert captured["text"]["format"]["strict"] is True
+    payload_schema = captured["text"]["format"]["schema"]
+    assert {"quantitative_tables", "quantitative_table_not_applicable"} <= set(
+        payload_schema["required"]
+    )
+    assert set(payload_schema["required"]) == set(payload_schema["properties"])
+    assert payload_schema["additionalProperties"] is False
+    for definition in payload_schema["$defs"].values():
+        if definition.get("type") == "object":
+            assert definition["additionalProperties"] is False
+            assert set(definition["required"]) == set(definition["properties"])
     evidence_schema = captured["text"]["format"]["schema"]["$defs"]["EvidenceAnchor"]
     assert set(evidence_schema["required"]) == {
         "attachment_id", "page", "section", "quote", "confidence"
     }
     assert "PASS" in captured["input"][0]["content"][0]["text"]
     system_prompt = captured["input"][0]["content"][0]["text"]
+    assert "GO/NO-GO" in system_prompt
+    assert "never use company data" in system_prompt
+    assert "estimate attained points" in system_prompt
     assert "human-readable fields in Korean" in system_prompt
     assert "never translate or paraphrase a quote" in system_prompt
     assert "Keep those derived fields concise" in system_prompt
     user_prompt = captured["input"][1]["content"][0]["text"]
     assert "normally 5-120 characters" in user_prompt
     assert "verify each quote can be found verbatim" in user_prompt
+    assert "never calculate a company score" in user_prompt
+    assert "metric UNKNOWN" in user_prompt
 
 
 @pytest.mark.parametrize(
@@ -185,6 +264,60 @@ def test_unverified_quote_gets_one_bounded_corrective_retry() -> None:
     corrective_text = calls[1]["input"][1]["content"][0]["text"]
     assert "FINAL CORRECTIVE RETRY" in corrective_text
     assert "No fuzzy or semantic matching" in corrective_text
+
+
+def test_quantitative_anchor_uses_the_same_bounded_corrective_quote_retry() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        total_quote = "원문에 없는 총점 10점" if calls == 1 else "정량평가 총점 10점"
+        return httpx.Response(
+            200,
+            json=response_payload(quantitative_output(total_quote=total_quote)),
+        )
+
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+        max_retries=0,
+    )
+    outcome = client.extract(
+        document_text=(
+            "부산광역시에 소재한 업체\n신용평가 10점\nA등급 10점\n정량평가 총점 10점"
+        ),
+        allowed_attachment_ids={"ATT-1"},
+    )
+    client.close()
+
+    assert outcome.status == "ACCEPTED"
+    assert outcome.api_calls == calls == 2
+    assert outcome.corrective_retry_used is True
+    assert outcome.data is not None
+    assert outcome.data.quantitative_tables[0].total_points == 10
+
+
+def test_new_quantitative_fields_are_required_by_strict_output_schema() -> None:
+    output = valid_output()
+    del output["quantitative_tables"]
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=response_payload(output))
+        ),
+        base_url="https://api.openai.test/v1",
+        max_retries=0,
+    )
+    outcome = client.extract(
+        document_text="부산광역시에 소재한 업체",
+        allowed_attachment_ids={"ATT-1"},
+    )
+    client.close()
+
+    assert outcome.status == "REVIEW"
+    assert outcome.error_code == "SCHEMA_VALIDATION_ERROR"
 
 
 def test_total_api_call_budget_includes_transport_retry_and_blocks_third_call() -> None:
