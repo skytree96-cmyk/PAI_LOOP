@@ -551,3 +551,127 @@ def test_latest_ingestion_requires_its_own_bound_parent(
     ready = _readiness(client)
     assert ready["status"] == "READY"
     assert ready["analysis"]["parent_job_id"] == second_parent
+
+
+def test_readiness_rejects_out_of_range_ingestion_counts(client: TestClient) -> None:
+    _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1_000_001,
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "TODAY_PPS_COUNT_INVALID",
+    )
+
+
+def test_readiness_rejects_forged_ingestion_scope(client: TestClient) -> None:
+    ingestion_id = _add_ingestion(client, status="COMPLETED")
+    with client.app.state.session_factory() as session:
+        ingestion = session.get(IngestionJob, ingestion_id)
+        assert ingestion is not None
+        config = dict(ingestion.request_json)
+        config["material_notice_keys_sha256"] = "0" * 64
+        ingestion.request_json = config
+        session.commit()
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "TODAY_PPS_SCOPE_INVALID",
+    )
+
+
+def test_readiness_rejects_multiple_active_daily_parents(client: TestClient) -> None:
+    _add_ingestion(client, status="COMPLETED")
+    for _index in range(2):
+        _add_daily_parent(
+            client,
+            status="RUNNING",
+            notice_keys=[],
+            completed=False,
+        )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "MULTIPLE_ACTIVE_DAILY_PARENTS",
+    )
+
+
+def test_readiness_rejects_multiple_parents_bound_to_ingestion(
+    client: TestClient,
+) -> None:
+    ingestion_id = _add_ingestion(client, status="COMPLETED")
+    for _index in range(2):
+        _add_daily_parent(
+            client,
+            status="COMPLETED",
+            notice_keys=[],
+            completed=True,
+            source_ingestion_job_id=ingestion_id,
+            source_material_keys=[],
+        )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "MULTIPLE_DAILY_PARENTS_FOR_INGESTION",
+    )
+
+
+def test_readiness_rejects_invalid_analysis_bounds(client: TestClient) -> None:
+    key = "PPS-INVALID-BOUNDS"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[key],
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="RUNNING",
+        notice_keys=[key],
+        completed=False,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[key],
+    )
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, parent_id)
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["chunk_size"] = "not-an-integer"
+        parent.request_json = config
+        session.commit()
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "DAILY_ANALYSIS_COUNT_INVALID",
+    )
+
+
+def test_readiness_rejects_out_of_range_stored_queue_count(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_ingestion(client, status="COMPLETED")
+    monkeypatch.setattr(
+        "pai_loop.teams_readiness.daily_briefing",
+        lambda **_kwargs: {"analysis_queue": {"pending_total": 1_000_001}},
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "DAILY_QUEUE_COUNT_INVALID",
+    )

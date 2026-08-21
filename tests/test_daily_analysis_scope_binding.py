@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
+import pytest
 
 from pai_loop.daily_analysis_scope import (
+    MAX_MATERIAL_NOTICE_KEYS,
     MATERIAL_SCOPE_VERSION,
     material_scope_fields,
     material_scope_sha256,
+    validated_material_scope,
 )
 from pai_loop.models import IngestionJob, Notice
 
@@ -70,6 +73,30 @@ def _daily_plan_payload(ingestion_id: str, material_keys: list[str]) -> dict:
         "reservation_ttl_hours": 6,
         "resume_active": True,
     }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"material_scope_version": "wrong"},
+        {"material_notice_keys": "PPS-A"},
+        {"material_notice_keys": ["PPS-A"] * (MAX_MATERIAL_NOTICE_KEYS + 1)},
+        {"material_notice_keys": [""]},
+        {"material_notice_keys": [" PPS-A"]},
+        {"material_notice_keys": ["PPS-B", "PPS-A"]},
+        {"material_notice_key_count": True},
+        {"material_notice_key_count": 2},
+        {"material_notice_keys_sha256": 123},
+        {"material_notice_keys_sha256": "0" * 64},
+    ],
+)
+def test_material_scope_validation_rejects_partial_or_forged_fields(
+    mutation: dict[str, object],
+) -> None:
+    payload = material_scope_fields(["PPS-A"])
+    payload.update(mutation)
+
+    assert validated_material_scope(payload) is None
 
 
 def test_daily_plan_persists_exact_pps_ingestion_scope_binding(
