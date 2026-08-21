@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import copy
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import select
 
 from pai_loop.main import create_app
@@ -14,9 +16,11 @@ from pai_loop.models import AwardHistoryItem, Notice
 from pai_loop.pricing_profiles import pricing_profile_for_document
 from pai_loop.public_award_seed import (
     PublicAwardSeedError,
+    build_public_award_seed_from_db,
     import_public_award_seed,
     load_public_award_seed,
     validate_public_award_seed,
+    write_public_award_seed,
 )
 from pai_loop.public_notice_seed import import_public_notice_seed
 
@@ -224,3 +228,143 @@ def test_packaged_public_award_seed_is_safe_tamper_evident_and_idempotent() -> N
         assert risk["confidence"] == "LOW"
         assert risk["components"]["candidate_similarity"]["value"] == 31.75
         assert risk["market_claim"] == "NOT_DETERMINED"
+
+
+def test_public_award_seed_builder_filters_invalid_rows_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "public-awards.db"
+    connection = sqlite3.connect(source)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE notices (id TEXT PRIMARY KEY, notice_key TEXT NOT NULL);
+            CREATE TABLE award_history_items (
+                target_notice_id TEXT NOT NULL,
+                external_identity TEXT NOT NULL,
+                bid_notice_no TEXT,
+                revision_no TEXT,
+                title TEXT,
+                agency TEXT,
+                winner_name TEXT,
+                participant_count,
+                award_amount,
+                award_rate,
+                opened_at TEXT,
+                awarded_at TEXT,
+                similarity_score
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO notices (id, notice_key) VALUES (?, ?)",
+            ("target", "MANUAL-INCHON-2025-17"),
+        )
+        rows = [
+            (
+                "safe-row",
+                "SAFE-001",
+                "00",
+                "공공기관 교육 운영 용역",
+                "가상 공공기관",
+                "가상 수행사",
+                3,
+                88_000_000,
+                88.0,
+                "2026-08-20T09:00:00",
+                None,
+                75.0,
+            ),
+            (
+                "person-row",
+                "PRIVATE-001",
+                "00",
+                "제외 대상",
+                "가상 기관",
+                "김민수",
+                1,
+                10,
+                10,
+                None,
+                None,
+                1,
+            ),
+            (
+                "numeric-row",
+                "INVALID-001",
+                "00",
+                "숫자 오류 대상",
+                "가상 기관",
+                "가상 수행사",
+                "not-a-number",
+                10,
+                10,
+                None,
+                None,
+                1,
+            ),
+        ]
+        connection.executemany(
+            """
+            INSERT INTO award_history_items (
+                target_notice_id, external_identity, bid_notice_no, revision_no,
+                title, agency, winner_name, participant_count, award_amount,
+                award_rate, opened_at, awarded_at, similarity_score
+            ) VALUES ('target', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    payload = build_public_award_seed_from_db(source, dataset_version="qa-v1")
+
+    assert payload["dataset_version"] == "qa-v1"
+    assert payload["provenance"]["record_count"] == 1
+    assert payload["provenance"]["excluded_privacy_rows"] == 2
+    assert payload["records"][0]["winner_name"] == "가상 수행사"
+    assert payload["records"][0]["opened_at"].endswith("+00:00")
+    assert payload["records"][0]["awarded_at"] is None
+    output = write_public_award_seed(payload, tmp_path / "award-seed.json")
+    assert json.loads(output.read_text(encoding="utf-8")) == payload
+
+
+def test_public_award_seed_validation_rejects_each_public_boundary() -> None:
+    base = load_public_award_seed()
+
+    def rejected(mutator) -> None:
+        payload = copy.deepcopy(base)
+        mutator(payload)
+        with pytest.raises(PublicAwardSeedError):
+            validate_public_award_seed(payload)
+
+    rejected(lambda payload: payload.pop("dataset_version"))
+    rejected(lambda payload: payload.__setitem__("schema_version", "wrong"))
+    rejected(lambda payload: payload.__setitem__("target_notice_key", "wrong"))
+    rejected(lambda payload: payload.__setitem__("allowlist", []))
+    rejected(lambda payload: payload.__setitem__("records", []))
+    rejected(lambda payload: payload["records"][0].__setitem__("unexpected", True))
+    rejected(lambda payload: payload["records"][0].__setitem__("record_key", "bad"))
+    rejected(lambda payload: payload.__setitem__("records", [payload["records"][0]] * 2))
+    rejected(lambda payload: payload["records"][0].__setitem__("title", ""))
+    rejected(
+        lambda payload: payload["records"][0].__setitem__(
+            "title", "person" + "@" + "example.invalid"
+        )
+    )
+    rejected(lambda payload: payload["records"][0].__setitem__("winner_name", "김민수"))
+    rejected(
+        lambda payload: payload["records"][0].__setitem__(
+            "participant_count", "not-numeric"
+        )
+    )
+    rejected(lambda payload: payload["provenance"].__setitem__("unexpected", True))
+
+
+def test_public_award_seed_import_requires_target_notice() -> None:
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app):
+        with app.state.session_factory() as session:
+            with pytest.raises(PublicAwardSeedError, match="target public notice"):
+                import_public_award_seed(session)

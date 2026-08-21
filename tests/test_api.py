@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -9,7 +9,7 @@ from sqlalchemy import select
 import pytest
 
 from pai_loop.main import create_app
-from pai_loop.models import AnalysisRun, Notice, RecommendationSnapshot
+from pai_loop.models import AnalysisRun, IngestionJob, Notice, RecommendationSnapshot
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
     ExtractedRequirement,
@@ -443,6 +443,14 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
         assert first.json()["source"] == "PPS"
         assert first.json()["created_notice_keys"] == first.json()["notice_keys"]
         assert first.json()["updated_notice_keys"] == []
+        with live_client.app.state.session_factory() as session:
+            ingestion_job = session.get(IngestionJob, first.json()["job_id"])
+            assert ingestion_job is not None
+            scope = ingestion_job.request_json
+            assert scope["material_scope_version"] == "pps-material-notice-keys-v1"
+            assert scope["material_notice_keys"] == sorted(first.json()["notice_keys"])
+            assert scope["material_notice_key_count"] == 1
+            assert len(scope["material_notice_keys_sha256"]) == 64
 
         second = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert second.status_code == 200
@@ -542,19 +550,22 @@ def test_existing_open_notice_is_closed_when_provider_marks_it_direct(
 ) -> None:
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     run = {"direct": False}
+    kst = timezone(timedelta(hours=9))
+    future_deadline = datetime.now(kst) + timedelta(days=5)
+    future_published = future_deadline - timedelta(days=1)
 
     class _ReclassifiedContractClient(_FakePpsClient):
         def iter_notices(self, **_kwargs: object):
             direct = run["direct"]
             contract_method = "수의계약" if direct else "일반경쟁"
             yield {
-                "identity": "RECLASSIFY-1|00|2026-08-20T17:00:00+09:00",
+                "identity": f"RECLASSIFY-1|00|{future_deadline.isoformat()}",
                 "bid_notice_no": "RECLASSIFY-1",
                 "revision_no": "00",
                 "title": "공공기관 교육 프로그램 운영",
                 "agency": "공공기관",
-                "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
-                "deadline": datetime.fromisoformat("2026-08-20T17:00:00+09:00"),
+                "published_at": future_published,
+                "deadline": future_deadline,
                 "estimated_amount": 20_000_000,
                 "notice_kind": "등록공고",
                 "contract_method": contract_method,

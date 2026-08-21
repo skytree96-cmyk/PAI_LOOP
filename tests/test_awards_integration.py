@@ -7,7 +7,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pai_loop.api import _award_similarity
-from pai_loop.integrations.awards import PpsAwardClient, normalise_award
+from pai_loop.integrations import awards as awards_module
+from pai_loop.integrations.awards import (
+    DEFAULT_AWARD_OPERATION,
+    PpsAwardClient,
+    normalise_award,
+)
+from pai_loop.integrations.pps import DateWindow, PpsApiError
 from pai_loop.main import create_app
 
 
@@ -51,6 +57,11 @@ def test_award_normalisation_keeps_public_business_facts_and_drops_pii() -> None
         "PRIVATE-OFFICIAL",
     ):
         assert private_value not in serialised
+
+
+def test_award_normalisation_rejects_non_integer_participant_count() -> None:
+    assert normalise_award({})["participant_count"] is None
+    assert normalise_award({"prtcptCnum": "not-an-integer"})["participant_count"] is None
 
 
 def test_korean_compound_title_similarity_uses_core_phrase_not_only_token_boundaries() -> None:
@@ -205,6 +216,132 @@ def test_award_client_returns_partial_without_call_after_wall_deadline() -> None
             end=date(2025, 1, 30),
             keyword="승진후보자",
             deadline_monotonic=0,
+        )
+    )
+    client.close()
+    assert items == []
+    assert client.hit_time_limit is True
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"keyword": "   "}, "keyword is required"),
+        ({"rows": 0}, "rows must be between 1 and 999"),
+        ({"max_pages_per_window": 0}, "max_pages_per_window must be positive"),
+        (
+            {"max_window_days": 30, "fallback_window_days": 30},
+            "fallback_window_days must be shorter than max_window_days",
+        ),
+    ],
+)
+def test_award_client_rejects_invalid_iteration_bounds(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    client = PpsAwardClient(service_key="key", base_url="https://example.test")
+    kwargs: dict[str, object] = {
+        "start": date(2025, 1, 1),
+        "end": date(2025, 1, 1),
+        "keyword": "valid keyword",
+    }
+    kwargs.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        list(client.iter_awards(**kwargs))
+    client.close()
+
+
+def test_award_window_stops_before_request_when_deadline_has_elapsed() -> None:
+    client = PpsAwardClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(
+            lambda _request: pytest.fail("request must not start after deadline")
+        ),
+    )
+    items = client._fetch_window(
+        window=DateWindow(start=date(2025, 1, 1), end=date(2025, 1, 1)),
+        keyword="keyword",
+        operation_path=DEFAULT_AWARD_OPERATION,
+        rows=1,
+        max_pages=1,
+        deadline_monotonic=0,
+    )
+    client.close()
+    assert items == []
+    assert client.hit_time_limit is True
+
+
+def test_award_client_skips_title_mismatch_and_stops_on_empty_page() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["pageNo"])
+        items = [_award_payload(title="unrelated title")] if page == 1 else []
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "00"},
+                    "body": {"totalCount": 2, "items": items},
+                }
+            },
+        )
+
+    client = PpsAwardClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+    )
+    items = list(
+        client.iter_awards(
+            start=date(2025, 1, 1),
+            end=date(2025, 1, 1),
+            keyword="wanted keyword",
+            rows=1,
+            max_pages_per_window=2,
+        )
+    )
+    client.close()
+    assert items == []
+    assert client.request_count == 2
+    assert client.hit_page_limit is False
+
+
+def test_award_client_raises_for_unrecoverable_subwindow_by_default() -> None:
+    client = PpsAwardClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"unexpected": "shape"})
+        ),
+    )
+    with pytest.raises(PpsApiError):
+        list(
+            client.iter_awards(
+                start=date(2025, 1, 1),
+                end=date(2025, 1, 30),
+                keyword="keyword",
+            )
+        )
+    client.close()
+
+
+def test_award_fallback_honours_deadline_before_first_subwindow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = PpsAwardClient(service_key="key", base_url="https://example.test")
+
+    def fail_window(**_kwargs: object) -> list[dict[str, object]]:
+        raise PpsApiError("synthetic envelope failure")
+
+    monotonic_values = iter((0.0, 2.0))
+    monkeypatch.setattr(client, "_fetch_window", fail_window)
+    monkeypatch.setattr(awards_module.time, "monotonic", lambda: next(monotonic_values))
+    items = list(
+        client.iter_awards(
+            start=date(2025, 1, 1),
+            end=date(2025, 1, 30),
+            keyword="keyword",
+            deadline_monotonic=1.0,
         )
     )
     client.close()

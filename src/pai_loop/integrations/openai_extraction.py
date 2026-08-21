@@ -4,15 +4,16 @@ import json
 import os
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-PROMPT_VERSION = "pai-loop-extraction-0.2.1"
-SCHEMA_VERSION = "pai-loop-requirements-0.1.0"
-CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.1.0"
+PROMPT_VERSION = "pai-loop-extraction-0.3.0"
+SCHEMA_VERSION = "pai-loop-requirements-0.2.0"
+CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.2.0"
 
 
 class EvidenceAnchor(BaseModel):
@@ -51,16 +52,131 @@ class ExtractedRequirement(BaseModel):
     ambiguity_reason: str | None
 
 
+KnownQuantitativeMetric = Literal[
+    "PERFORMANCE_AMOUNT",
+    "PERFORMANCE_COUNT",
+    "PERSONNEL_COUNT",
+    "CERTIFICATION_COUNT",
+    "CREDIT_RATING",
+    "FINANCIAL_RATIO",
+    "BUSINESS_YEARS",
+    "FACILITY_EQUIPMENT_COUNT",
+    "AWARD_COUNT",
+    "LOCAL_PRESENCE",
+    "UNKNOWN",
+]
+
+QuantitativeScoringMethod = Literal["BRACKET", "THRESHOLD", "FORMULA", "UNKNOWN"]
+
+KNOWN_QUANTITATIVE_EVIDENCE_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "PERFORMANCE_AMOUNT": frozenset({"company.performance.amount"}),
+        "PERFORMANCE_COUNT": frozenset({"company.performance.count"}),
+        "PERSONNEL_COUNT": frozenset({"company.personnel.count"}),
+        "CERTIFICATION_COUNT": frozenset({"company.certification.count"}),
+        "CREDIT_RATING": frozenset({"company.credit_rating"}),
+        "FINANCIAL_RATIO": frozenset({"company.financial.ratio"}),
+        "BUSINESS_YEARS": frozenset({"company.business.years"}),
+        "FACILITY_EQUIPMENT_COUNT": frozenset(
+            {"company.facility_equipment.count"}
+        ),
+        "AWARD_COUNT": frozenset({"company.award.count"}),
+        "LOCAL_PRESENCE": frozenset({"company.local_presence"}),
+    }
+)
+
+
+class QuantitativeBracketLiteral(BaseModel):
+    """One scoring row copied literally from a quantitative evaluation table.
+
+    Bounds are a transcription aid only. They are never company facts and are
+    never applied by the model. The deterministic boundary validates them
+    against ``literal`` and the exact source anchor before they can become a
+    rule candidate.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    label: str = Field(min_length=1, max_length=300)
+    literal: str = Field(min_length=1, max_length=1_000)
+    min_value: float | None
+    max_value: float | None
+    min_inclusive: bool
+    max_inclusive: bool
+    points: float = Field(ge=0)
+    evidence: EvidenceAnchor
+
+
+class QuantitativeThresholdLiteral(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    literal: str = Field(min_length=1, max_length=1_000)
+    operator: Literal["GT", "GTE", "LT", "LTE", "EQ"]
+    threshold_value: float
+    points_if_met: float = Field(ge=0)
+    points_if_not_met: float | None = Field(ge=0)
+    evidence: EvidenceAnchor
+
+
+class QuantitativeRuleCandidate(BaseModel):
+    """Literal source rule candidate; never a company score or decision."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    criterion_id: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=300)
+    criterion_literal: str = Field(min_length=1, max_length=2_000)
+    max_points: float = Field(gt=0)
+    scoring_method: QuantitativeScoringMethod
+    metric: KnownQuantitativeMetric
+    unit: str | None = Field(max_length=80)
+    brackets: list[QuantitativeBracketLiteral] = Field(max_length=100)
+    threshold: QuantitativeThresholdLiteral | None
+    formula_literal: str | None = Field(max_length=1_000)
+    required_evidence: list[str] = Field(max_length=30)
+    evidence: EvidenceAnchor
+    ambiguity_reason: str | None = Field(max_length=1_000)
+
+
+class QuantitativeTableCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    table_id: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=300)
+    criteria: list[QuantitativeRuleCandidate] = Field(max_length=100)
+    total_points: float | None = Field(ge=0)
+    total_evidence: EvidenceAnchor | None
+    minimum_score: float | None = Field(ge=0)
+    minimum_evidence: EvidenceAnchor | None
+    ambiguity_reason: str | None = Field(max_length=1_000)
+
+
+class QuantitativeTableNotApplicable(BaseModel):
+    """An explicit source statement that no quantitative table applies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason_literal: str = Field(min_length=1, max_length=1_000)
+    evidence: EvidenceAnchor
+
+
 class ExtractionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document_type: Literal["NOTICE", "RFP", "SCOPE", "FORM", "OTHER"]
     requirements: list[ExtractedRequirement]
+    # Defaults preserve validation of historical persisted extraction payloads.
+    # The Responses API boundary below still requires both keys explicitly.
+    quantitative_tables: list[QuantitativeTableCandidate] = Field(default_factory=list)
+    quantitative_table_not_applicable: QuantitativeTableNotApplicable | None = None
     missing_or_unreadable: list[str]
     summary: str = Field(max_length=1000)
 
 
 EXTRACTION_SCHEMA: dict[str, Any] = ExtractionPayload.model_json_schema()
+EXTRACTION_SCHEMA["required"] = list(EXTRACTION_SCHEMA["properties"])
+for _strict_field in ("quantitative_tables", "quantitative_table_not_applicable"):
+    EXTRACTION_SCHEMA["properties"][_strict_field].pop("default", None)
 
 
 class ExtractionOutcome(BaseModel):
@@ -109,6 +225,30 @@ def _verified_quote_in_source(quote: str, source: str) -> bool:
     compact_quote = "".join(normalized_quote.split())
     compact_source = "".join(normalized_source.split())
     return len(compact_quote) >= 8 and compact_quote in compact_source
+
+
+def evidence_quote_matches_source(quote: str, source: str) -> bool:
+    """Public exact-anchor predicate shared by deterministic validators."""
+
+    return _verified_quote_in_source(quote, source)
+
+
+def _iter_evidence_anchors(data: ExtractionPayload):
+    for requirement in data.requirements:
+        yield from requirement.evidence
+    for table in data.quantitative_tables:
+        if table.total_evidence is not None:
+            yield table.total_evidence
+        if table.minimum_evidence is not None:
+            yield table.minimum_evidence
+        for criterion in table.criteria:
+            yield criterion.evidence
+            for bracket in criterion.brackets:
+                yield bracket.evidence
+            if criterion.threshold is not None:
+                yield criterion.threshold.evidence
+    if data.quantitative_table_not_applicable is not None:
+        yield data.quantitative_table_not_applicable.evidence
 
 
 class OpenAIExtractionClient:
@@ -296,28 +436,33 @@ class OpenAIExtractionClient:
                 **metadata,
             )
         try:
-            data = ExtractionPayload.model_validate_json(text)
-        except (ValidationError, json.JSONDecodeError):
+            raw_data = json.loads(text)
+            if not isinstance(raw_data, dict) or not {
+                "quantitative_tables",
+                "quantitative_table_not_applicable",
+            }.issubset(raw_data):
+                raise ValueError("strict quantitative extraction fields are missing")
+            data = ExtractionPayload.model_validate(raw_data)
+        except (ValidationError, ValueError):
             return self._review(
                 "SCHEMA_VALIDATION_ERROR",
                 "모델 출력이 고정 스키마를 통과하지 못했습니다.",
                 **metadata,
             )
 
-        for requirement in data.requirements:
-            for anchor in requirement.evidence:
-                if anchor.attachment_id not in allowed_attachment_ids:
-                    return self._review(
-                        "UNKNOWN_ATTACHMENT",
-                        "허용되지 않은 첨부파일 식별자가 반환되었습니다.",
-                        **metadata,
-                    )
-                if not _verified_quote_in_source(anchor.quote, document_text):
-                    return self._review(
-                        "UNVERIFIED_QUOTE",
-                        "모델의 근거 인용문을 원문에서 확인할 수 없습니다.",
-                        **metadata,
-                    )
+        for anchor in _iter_evidence_anchors(data):
+            if anchor.attachment_id not in allowed_attachment_ids:
+                return self._review(
+                    "UNKNOWN_ATTACHMENT",
+                    "허용되지 않은 첨부파일 식별자가 반환되었습니다.",
+                    **metadata,
+                )
+            if not _verified_quote_in_source(anchor.quote, document_text):
+                return self._review(
+                    "UNVERIFIED_QUOTE",
+                    "모델의 근거 인용문을 원문에서 확인할 수 없습니다.",
+                    **metadata,
+                )
         return ExtractionOutcome(
             status="ACCEPTED",
             message="스키마와 근거 앵커 검증을 통과했습니다.",
@@ -347,13 +492,30 @@ class OpenAIExtractionClient:
             )
 
         allowed_ids = sorted(allowed_attachment_ids)
+        evidence_registry = {
+            metric: sorted(keys)
+            for metric, keys in KNOWN_QUANTITATIVE_EVIDENCE_KEYS.items()
+        }
         source_prompt = (
             "Allowed attachment IDs: "
             + json.dumps(allowed_ids, ensure_ascii=False)
             + "\nFor every evidence anchor, use exactly one allowed attachment_id. Copy quote "
             "as a short exact contiguous substring of the source, normally 5-120 characters. "
             "Do not translate, paraphrase, normalize punctuation, add ellipses, or join separate spans. "
-            "Before returning, verify each quote can be found verbatim in SOURCE.\n\nSOURCE:\n"
+            "Before returning, verify each quote can be found verbatim in SOURCE. "
+            "Transcribe quantitative scoring tables as literal source rules only: never insert or "
+            "apply company facts, never calculate a company score, and never decide GO/NO-GO. "
+            "Use metric UNKNOWN when the stated metric does not exactly fit a known enum. Copy every "
+            "criterion_literal, bracket.literal, and formula_literal from the source. Bind BRACKET "
+            "min/max inclusivity and THRESHOLD operator exactly to the literal comparator; never "
+            "reverse 이상/초과/이하/미만 or >=/>/<=/<. For a known metric, required_evidence must "
+            "equal its canonical registry value exactly; never create a new key. Registry: "
+            + json.dumps(evidence_registry, ensure_ascii=False, sort_keys=True)
+            + ". Set "
+            "quantitative_table_not_applicable only when SOURCE explicitly states that no quantitative "
+            "table applies and anchor that statement; ordinary absence is null. Do not invent "
+            "required_evidence placeholders. Always return quantitative_tables (possibly []) and "
+            "quantitative_table_not_applicable (possibly null).\n\nSOURCE:\n"
             + document_text
         )
 
@@ -370,6 +532,8 @@ class OpenAIExtractionClient:
                             "text": (
                                 "You extract procurement requirements as evidence only. "
                                 "Never decide PASS, FAIL, scores, or GO/NO-GO. "
+                                "For quantitative tables, transcribe literal rules and evidence only; "
+                                "never use company data, estimate attained points, or rank a bidder. "
                                 "Write derived human-readable fields in Korean: normalized_condition, "
                                 "deadline_basis, ambiguity_reason, missing_or_unreadable, and summary. "
                                 "Keep those derived fields concise and specific. "

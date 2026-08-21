@@ -119,8 +119,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(schedules.length === 1, "daily workflow must have exactly one schedule trigger");
   assert(
-    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 9 * * *",
-    "daily workflow schedule must be 09:00 every day",
+    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 8 * * *",
+    "daily workflow schedule must be 08:00 every day",
   );
 
   const manualName = "Run Complete Offline Dry-Run";
@@ -183,12 +183,12 @@ function validateRepositorySafetyContracts(definitions) {
     "daily workflow must route PPS notice keys through the backend batch analysis endpoint",
   );
   assert(
-    serialised.includes("maxAnalysisBatchNotices: 3")
-      && serialised.includes("maxAttachmentsPerNotice: 1")
+    serialised.includes("maxAnalysisBatchNotices: 1")
+      && serialised.includes("maxAttachmentsPerNotice: 10")
       && serialised.includes("maxBacklogRetryNotices: 12")
       && serialised.includes("max_total: 3012")
-      && serialised.includes("openaiCalls > requested * 2"),
-    "daily batch analysis must keep three-notice chunks, twelve backlog notices, and two OpenAI calls per notice bounded",
+      && serialised.includes("enrichment.attachments_discovered * 2"),
+    "daily analysis must use one-notice chunks, all ten provider slots, and two OpenAI calls per discovered attachment",
   );
   assert(
     serialised.includes("created_notice_keys")
@@ -197,6 +197,8 @@ function validateRepositorySafetyContracts(definitions) {
       && serialised.includes("retry_notice_keys")
       && serialised.includes("retry_epoch")
       && serialised.includes("request_token")
+      && serialised.includes("source_ingestion_job_id")
+      && serialised.includes("source_material_notice_keys")
       && serialised.includes("$execution.id")
       && serialised.includes("execution_limit: 30")
       && serialised.includes("max_continuations: 128")
@@ -290,8 +292,8 @@ function validateRepositorySafetyContracts(definitions) {
 
   const teamsSerialised = JSON.stringify(teamsDelivery.workflow);
   assert(
-    teamsDelivery.config.contractVersion === "teams-delivery-1.2",
-    "workflow 12 must use the teams-delivery-1.2 contract",
+    teamsDelivery.config.contractVersion === "teams-delivery-1.3",
+    "workflow 12 must use the teams-delivery-1.3 contract",
   );
   assert(
     teamsDelivery.workflow.settings?.timezone === "Asia/Seoul",
@@ -302,8 +304,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     teamsSchedules.length === 1
-      && teamsSchedules[0].parameters?.rule?.interval?.[0]?.expression === "0 10 * * *",
-    "Teams delivery must run independently at 10:00 Asia/Seoul",
+      && teamsSchedules[0].parameters?.rule?.interval?.[0]?.expression === "0,15,30,45 9-10 * * *",
+    "Teams delivery must first attempt at 09:00 and retry every 15 minutes through 10:45 Asia/Seoul",
   );
   const teamsByName = new Map(
     teamsDelivery.workflow.nodes.map((node) => [node.name, node]),
@@ -330,6 +332,16 @@ function validateRepositorySafetyContracts(definitions) {
       && teamsBackend.parameters?.genericAuthType === "httpHeaderAuth"
       && String(teamsBackend.parameters?.url ?? "").includes("/api/v1/operations/daily-briefing"),
     "workflow 12 may read only the protected stored daily briefing backend boundary",
+  );
+  const teamsReadinessBackend = teamsByName.get("Fetch Today's Daily Analysis Readiness");
+  assert(
+    teamsReadinessBackend?.type === "n8n-nodes-base.httpRequest"
+      && teamsReadinessBackend.parameters?.authentication === "genericCredentialType"
+      && teamsReadinessBackend.parameters?.genericAuthType === "httpHeaderAuth"
+      && String(teamsReadinessBackend.parameters?.url ?? "").includes("/api/v1/operations/teams-daily-readiness")
+      && teamsReadinessBackend.retryOnFail === false
+      && teamsReadinessBackend.onError === "continueRegularOutput",
+    "workflow 12 scheduled path must use the protected read-only daily readiness boundary and fail closed",
   );
   const teamsReservation = teamsByName.get("Reserve Persistent Teams Correlation");
   assert(
@@ -380,7 +392,7 @@ function validateRepositorySafetyContracts(definitions) {
       && !teamsSerialised.includes("$execution.mode")
       && !teamsSerialised.includes("schedule-manual-test")
       && JSON.stringify(teamsTargets("Run Live Teams Test")) === JSON.stringify(["Mark Manual Live Test Mode"])
-      && JSON.stringify(teamsTargets("Every Day 10:00 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
+      && JSON.stringify(teamsTargets("Every Day 09:00 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
       && JSON.stringify(teamsTargets("Mark Manual Live Test Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"])
       && JSON.stringify(teamsTargets("Mark Scheduled Live Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"]),
     "workflow 12 must derive manual-test and scheduled modes from separate constant trigger branches",
@@ -395,19 +407,32 @@ function validateRepositorySafetyContracts(definitions) {
     "the Teams sink must be reachable only after a successful persistent reservation",
   );
   assert(
+    JSON.stringify(teamsTargets("Approved Teams Push Gate Open?", 0))
+      === JSON.stringify(["Scheduled Teams Attempt?"])
+      && JSON.stringify(teamsTargets("Scheduled Teams Attempt?", 0))
+        === JSON.stringify(["Fetch Today's Daily Analysis Readiness"])
+      && JSON.stringify(teamsTargets("Scheduled Teams Attempt?", 1))
+        === JSON.stringify(["Fetch Stored Briefing for Teams"])
+      && JSON.stringify(teamsTargets("Today's Daily Analysis Ready?", 0))
+        === JSON.stringify(["Fetch Stored Briefing for Teams"])
+      && JSON.stringify(teamsTargets("Today's Daily Analysis Ready?", 1))
+        === JSON.stringify(["Record Scheduled Readiness Skip"]),
+    "scheduled delivery must gate briefing/reservation/Teams behind readiness while manual-live stays separate",
+  );
+  assert(
     teamsDelivery.workflow.nodes.filter((node) => (
       node.type === "n8n-nodes-base.dataTable"
       || node.type === "n8n-nodes-base.httpRequest"
       || node.type === "n8n-nodes-base.microsoftTeams"
-    )).length === 4,
-    "workflow 12 must expose one named config table read, one backend read, one persistent reservation, and one Teams boundary",
+    )).length === 5,
+    "workflow 12 must expose one named config table read, readiness read, briefing read, persistent reservation, and one Teams boundary",
   );
   assert(
     teamsDelivery.workflow.nodes.filter((node) => (
       node.type === "n8n-nodes-base.httpRequest"
       || node.type === "n8n-nodes-base.microsoftTeams"
-    )).length === 3,
-    "workflow 12 must expose one backend read, one persistent reservation, and one Teams boundary",
+    )).length === 4,
+    "workflow 12 must expose readiness and briefing reads, one persistent reservation, and one Teams boundary",
   );
   assert(
     teamsSerialised.includes("pai_loop_teams_delivery_config")
@@ -489,10 +514,10 @@ function validateRepositorySafetyContracts(definitions) {
       && continuationSerialised.includes("maxContinuations: 128")
       && continuationSerialised.includes("queueName: 'ANY'")
       && continuationSerialised.includes("resumeOnly: true")
-      && continuationSerialised.includes("response.openai_calls > response.requested * 2")
+      && continuationSerialised.includes("response.openai_calls > enrichment.attachments_discovered * 2")
       && continuationSerialised.includes("segment_id")
       && continuationSerialised.includes("chunk_indices"),
-    "workflow 11 must use the retryable recovery, two-call cap, and resumable 30-notice durable segment contract",
+    "workflow 11 must use retryable recovery, the per-attachment two-call cap, and resumable one-notice chunks",
   );
   const continuationChunkNode = continuation.workflow.nodes.find(
     (node) => node.name === "Analyze One Bounded Chunk",
@@ -714,6 +739,7 @@ const approvedCredentialInheritance = new Map([
     "Finalize Backfill Audit",
   ])],
   ["pai-loop-12-teams-daily-delivery", new Set([
+    "Fetch Today's Daily Analysis Readiness",
     "Fetch Stored Briefing for Teams",
     "Reserve Persistent Teams Correlation",
   ])],

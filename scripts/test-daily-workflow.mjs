@@ -7,6 +7,11 @@ const manifest = JSON.parse(await fs.readFile("manifest.json", "utf8"));
 const nodes = new Map(daily.nodes.map((item) => [item.name, item]));
 const continuationNodes = new Map(continuation.nodes.map((item) => [item.name, item]));
 
+const dailySchedule = nodes.get("Every Day 08:00 KST");
+assert.equal(daily.settings.timezone, "Asia/Seoul");
+assert.equal(dailySchedule.type, "n8n-nodes-base.scheduleTrigger");
+assert.equal(dailySchedule.parameters.rule.interval[0].expression, "0 8 * * *");
+
 function executeCode(map, name, input = {}, globals = {}) {
   const target = map.get(name);
   assert(target && target.type === "n8n-nodes-base.code", `missing Code node ${name}`);
@@ -27,10 +32,10 @@ function one(map, name, input = {}, globals = {}) {
 
 const runtime = one(nodes, "Scheduled Runtime Gates", {}, { env: {} }).runtime;
 assert.equal(runtime.executionMode, "scheduled-live");
-assert.equal(runtime.maxAnalysisBatchNotices, 3);
+assert.equal(runtime.maxAnalysisBatchNotices, 1);
 assert.equal(runtime.maxDailyNewNotices, 3000);
 assert.equal(runtime.maxBacklogRetryNotices, 12);
-assert.equal(runtime.maxAttachmentsPerNotice, 1);
+assert.equal(runtime.maxAttachmentsPerNotice, 10);
 assert.equal(runtime.ppsPageSize, 999);
 assert.equal(runtime.ppsMaxPages, 3);
 assert.equal(runtime.useProfileKeywords, true);
@@ -65,6 +70,8 @@ assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /retry_notice_keys: \$json\.analysisBatch\.retryableBacklogKeys/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /retry_epoch:/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /request_token: 'w10:' \+ \$execution\.id/);
+assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /source_ingestion_job_id: \$json\.ingestion\.jobId/);
+assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /source_material_notice_keys: \$json\.analysisBatch\.newNoticeKeys/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_total: 3012/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_continuations: 128/);
 assert.match(continuationNodes.get("Analyze One Bounded Chunk").parameters.body, /segment_id:/);
@@ -167,12 +174,12 @@ assert.throws(() => one(nodes, "Build Bounded Batch Analysis Plan", {}, {
 const operationResponse = {
   job_id: "11111111-1111-4111-8111-111111111111", status: "RUNNING", queue_name: "DAILY",
   segment_id: "33333333-3333-4333-8333-333333333333",
-  dry_run: false, policy: "OPEN_NOT_SELECTED_THEN_COOLED_RETRY", chunk_size: 3,
+  dry_run: false, policy: "OPEN_NOT_SELECTED_THEN_COOLED_RETRY", chunk_size: 1,
   planned: 35, attempted: 0, remaining: 35, in_flight: 0, offered: 4,
   continuation_required: true, continuation_round: 1, max_continuations: 128,
   completed: 0, partial: 0, failed: 0, child_jobs: 0,
   notice_keys: ["new-a", "shared", "updated-a", "backlog-1"],
-  chunks: [["new-a", "shared", "updated-a"], ["backlog-1"]], chunk_indices: [7, 9], warnings: [], note: "bounded",
+  chunks: [["new-a"], ["shared"], ["updated-a"], ["backlog-1"]], chunk_indices: [7, 9, 10, 11], warnings: [], note: "bounded",
 };
 const operationPlan = one(nodes, "Validate Daily Analysis Operation", operationResponse, {
   node: { "Build Bounded Batch Analysis Plan": { json: rootPlan } },
@@ -180,9 +187,9 @@ const operationPlan = one(nodes, "Validate Daily Analysis Operation", operationR
 assert.equal(operationPlan.analysisBatch.requested, 4);
 assert.equal(operationPlan.analysisOperation.remainingBefore, 35);
 const expanded = executeCode(nodes, "Expand Daily Three-Notice Chunks", operationPlan);
-assert.deepEqual(expanded.map((item) => item.analysisChunk.chunkIndex), [7, 9]);
-assert.deepEqual(expanded.map((item) => item.analysisChunk.segmentId), [operationResponse.segment_id, operationResponse.segment_id]);
-assert.deepEqual(expanded.map((item) => item.analysisChunk.noticeKeys.length), [3, 1]);
+assert.deepEqual(expanded.map((item) => item.analysisChunk.chunkIndex), [7, 9, 10, 11]);
+assert.deepEqual(expanded.map((item) => item.analysisChunk.segmentId), Array(4).fill(operationResponse.segment_id));
+assert.deepEqual(expanded.map((item) => item.analysisChunk.noticeKeys.length), [1, 1, 1, 1]);
 
 function responseFor(keys, jobSuffix) {
   return {
@@ -190,45 +197,45 @@ function responseFor(keys, jobSuffix) {
     status: "COMPLETED", dry_run: false, requested: keys.length, processed: keys.length,
     completed: keys.length, skipped: 0, failed: 0, document_materialized: keys.length,
     evaluations_created: keys.length, snapshots_refreshed: keys.length, openai_calls: keys.length,
-    enrichment: { requested: keys.length, attempted: keys.length, completed: keys.length, skipped: 0, failed: 0, attachments_discovered: keys.length, attachments_processed: keys.length, openai_calls: keys.length, warnings: [] },
+    enrichment: { requested: keys.length, attempted: keys.length, completed: keys.length, skipped: 0, failed: 0, attachments_discovered: keys.length, attachments_attempted: keys.length, attachments_processed: keys.length, openai_calls: keys.length, warnings: [] },
     results: keys.map((key) => ({ notice_key: key, status: "COMPLETED", analysis_state: "ANALYZED", analysis_reason_code: "ANALYZED", analysis_reason: "검증된 분석 snapshot이 생성되었습니다.", warnings: [] })),
     warnings: [],
   };
 }
 const validatedChunks = operationResponse.chunks.map((keys, index) => one(nodes, "Validate Batch Analysis Contract", responseFor(keys, String(index + 1))).chunkResult);
 const correctiveResponse = responseFor(operationResponse.chunks[0], "99");
-correctiveResponse.openai_calls = correctiveResponse.requested * 2;
-correctiveResponse.enrichment.openai_calls = correctiveResponse.requested * 2;
+correctiveResponse.openai_calls = correctiveResponse.enrichment.attachments_discovered * 2;
+correctiveResponse.enrichment.openai_calls = correctiveResponse.enrichment.attachments_discovered * 2;
 assert.equal(
   one(nodes, "Validate Batch Analysis Contract", correctiveResponse).chunkResult.openaiCalls,
-  correctiveResponse.requested * 2,
+  correctiveResponse.enrichment.attachments_discovered * 2,
 );
 assert.throws(() => one(nodes, "Validate Batch Analysis Contract", {
   ...correctiveResponse,
-  openai_calls: correctiveResponse.requested * 2 + 1,
-}), /bounds\/counts invalid/);
+  openai_calls: correctiveResponse.enrichment.attachments_discovered * 2 + 1,
+}), /(?:bounds\/counts|enrichment aggregate) invalid/);
 const aggregated = one(nodes, "Verify Batch Analysis Aggregate Invariants", {}, {
   node: { "Validate Daily Analysis Operation": { json: operationPlan } },
   input: { all: () => validatedChunks.map((chunkResult) => ({ json: { chunkResult } })) },
 });
 assert.equal(aggregated.analysisBatch.processed, 4);
-assert.equal(aggregated.analysisBatch.chunksExecuted, 2);
+assert.equal(aggregated.analysisBatch.chunksExecuted, 4);
 
 const correctiveFinalBatch = structuredClone(aggregated.analysisBatch);
-correctiveFinalBatch.openaiCalls = correctiveFinalBatch.requested * 2;
-correctiveFinalBatch.enrichment.openaiCalls = correctiveFinalBatch.requested * 2;
+correctiveFinalBatch.openaiCalls = correctiveFinalBatch.enrichment.attachmentsDiscovered * 2;
+correctiveFinalBatch.enrichment.openaiCalls = correctiveFinalBatch.enrichment.attachmentsDiscovered * 2;
 assert.equal(
   one(nodes, "Validate End-to-End Analysis Boundary", {
     runtime,
     analysis_batch: correctiveFinalBatch,
   }).analysis_batch.openaiCalls,
-  correctiveFinalBatch.requested * 2,
+  correctiveFinalBatch.enrichment.attachmentsDiscovered * 2,
 );
 assert.throws(() => one(nodes, "Validate End-to-End Analysis Boundary", {
   runtime,
   analysis_batch: {
     ...correctiveFinalBatch,
-    openaiCalls: correctiveFinalBatch.requested * 2 + 1,
+    openaiCalls: correctiveFinalBatch.enrichment.attachmentsDiscovered * 2 + 1,
   },
 }), /OpenAI calls exceed/);
 
@@ -253,10 +260,10 @@ assert.equal(recoveryRuntime.maxTotal, 3000);
 const continuationPlan = one(continuationNodes, "Validate Backfill Plan", {
   ...operationResponse, queue_name: "DAILY", offered: 3,
   notice_keys: ["new-a", "shared", "updated-a"],
-  chunks: [["new-a", "shared", "updated-a"]], chunk_indices: [11],
+  chunks: [["new-a"], ["shared"], ["updated-a"]], chunk_indices: [11, 12, 13],
 }, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
 assert.equal(continuationPlan.operation.segmentId, operationResponse.segment_id);
-assert.deepEqual(continuationPlan.operation.chunkIndices, [11]);
+assert.deepEqual(continuationPlan.operation.chunkIndices, [11, 12, 13]);
 const leasedNoOffer = one(continuationNodes, "Validate Backfill Plan", {
   ...operationResponse, offered: 0, notice_keys: [], chunks: [], chunk_indices: [],
 }, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
@@ -268,16 +275,17 @@ const noActive = one(continuationNodes, "Validate Backfill Plan", {
   notice_keys: [], chunks: [], chunk_indices: [], continuation_round: 0,
 }, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
 assert.equal(noActive.operation.status, "NO_ACTIVE");
-const correctiveChunkResponse = responseFor(["backlog-1", "backlog-2", "backlog-3"], "98");
-correctiveChunkResponse.openai_calls = 6;
+const correctiveChunkResponse = responseFor(["backlog-1"], "98");
+correctiveChunkResponse.openai_calls = 2;
+correctiveChunkResponse.enrichment.openai_calls = 2;
 assert.equal(
   one(continuationNodes, "Validate Chunk Result", correctiveChunkResponse).openaiCalls,
-  6,
+  2,
 );
 assert.throws(() => one(continuationNodes, "Validate Chunk Result", {
   ...correctiveChunkResponse,
-  openai_calls: 7,
-}), /bounds\/counts invalid/);
+  openai_calls: 3,
+}), /(?:bounds\/counts|attachment audit) invalid/);
 const finalContinuation = one(continuationNodes, "Backfill Complete for Operator Review", {
   ...operationResponse, segment_id: null, status: "PARTIAL", attempted: 4, remaining: 31,
   in_flight: 0, offered: 0, notice_keys: [], chunks: [], chunk_indices: [], openai_calls: 4,

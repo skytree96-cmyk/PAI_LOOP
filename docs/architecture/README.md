@@ -31,7 +31,7 @@ backend Teams mock 기록이다.
 
 ## 책임 경계
 
-- n8n: 09:00 일정, 당일 신규·정정 전량의 재개 가능한 batch, 3년 낙찰 refresh, 7일 피드와 통합 mock 카드
+- n8n: 08:00 일정, 당일 신규·정정 전량의 재개 가능한 batch, 3년 낙찰 refresh, 7일 피드와 통합 mock 카드
 - Document Worker: PDF/HWPX 구조·페이지 근거 추출, binary HWP는 변환 경로 마련 전 REVIEW
 - OpenAI: 고정 스키마를 따르는 조건·배점·근거 구조화
 - Rule Engine: 결정론적 자격·정량·준비도·리스크 판정

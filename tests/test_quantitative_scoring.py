@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from pai_loop.main import create_app
+from pai_loop.integrations.openai_extraction import ExtractionPayload
 from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
 from pai_loop.quantitative_scoring import (
     QuantitativeCriterion,
@@ -12,6 +13,11 @@ from pai_loop.quantitative_scoring import (
     SourceAnchor,
     estimate_quantitative_score,
     load_quantitative_profile_catalog,
+    quantitative_request_from_candidate_profile,
+)
+from pai_loop.quantitative_rule_extraction import (
+    merge_validated_quantitative_records,
+    validate_quantitative_attachment_extraction,
 )
 
 
@@ -231,6 +237,155 @@ def test_duplicate_metric_facts_require_review() -> None:
     )
     assert result.overall_status == "REVIEW"
     assert "중복" in result.criteria[0].rationale
+
+
+def test_verified_xlsx_rule_profile_never_scores_without_company_fact() -> None:
+    attachment_id = "ATT-XLSX-QUANT"
+    source = """[SHEET 정량평가]
+수행실적 20점
+10억원 이상 20점
+5억원 이상 10억원 미만 15점
+5억원 미만 10점
+정량평가 총점 20점
+통과 최저점 12점
+"""
+
+    def evidence(quote: str) -> dict:
+        return {
+            "attachment_id": attachment_id,
+            "page": None,
+            "section": "정량평가 worksheet",
+            "quote": quote,
+            "confidence": 0.99,
+        }
+
+    payload = ExtractionPayload.model_validate(
+        {
+            "document_type": "FORM",
+            "requirements": [],
+            "quantitative_tables": [
+                {
+                    "table_id": "XLSX-Q-1",
+                    "label": "정량평가",
+                    "criteria": [
+                        {
+                            "criterion_id": "PERFORMANCE-AMOUNT",
+                            "label": "수행실적",
+                            "criterion_literal": "수행실적 20점",
+                            "max_points": 20,
+                            "scoring_method": "BRACKET",
+                            "metric": "PERFORMANCE_AMOUNT",
+                            "unit": "억원",
+                            "brackets": [
+                                {
+                                    "label": "10억원 이상",
+                                    "literal": "10억원 이상 20점",
+                                    "min_value": 10,
+                                    "max_value": None,
+                                    "min_inclusive": True,
+                                    "max_inclusive": False,
+                                    "points": 20,
+                                    "evidence": evidence("10억원 이상 20점"),
+                                },
+                                {
+                                    "label": "5억원 이상 10억원 미만",
+                                    "literal": "5억원 이상 10억원 미만 15점",
+                                    "min_value": 5,
+                                    "max_value": 10,
+                                    "min_inclusive": True,
+                                    "max_inclusive": False,
+                                    "points": 15,
+                                    "evidence": evidence(
+                                        "5억원 이상 10억원 미만 15점"
+                                    ),
+                                },
+                                {
+                                    "label": "5억원 미만",
+                                    "literal": "5억원 미만 10점",
+                                    "min_value": None,
+                                    "max_value": 5,
+                                    "min_inclusive": False,
+                                    "max_inclusive": False,
+                                    "points": 10,
+                                    "evidence": evidence("5억원 미만 10점"),
+                                },
+                            ],
+                            "threshold": None,
+                            "formula_literal": None,
+                            "required_evidence": ["company.performance.amount"],
+                            "evidence": evidence("수행실적 20점"),
+                            "ambiguity_reason": None,
+                        }
+                    ],
+                    "total_points": 20,
+                    "total_evidence": evidence("정량평가 총점 20점"),
+                    "minimum_score": 12,
+                    "minimum_evidence": evidence("통과 최저점 12점"),
+                    "ambiguity_reason": None,
+                }
+            ],
+            "quantitative_table_not_applicable": None,
+            "missing_or_unreadable": [],
+            "summary": "XLSX 정량평가 규칙",
+        }
+    )
+    manifest_sha256 = "b" * 64
+    document_sha256 = "a" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload,
+        source_text=source,
+        attachment_id=attachment_id,
+        document_sha256=document_sha256,
+        manifest_sha256=manifest_sha256,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={attachment_id: document_sha256},
+        manifest_sha256=manifest_sha256,
+    )
+    assert profile.status == "AVAILABLE"
+
+    no_fact_request = quantitative_request_from_candidate_profile(profile)
+    no_fact = estimate_quantitative_score(no_fact_request)
+    assert no_fact.rule_source_status == "AVAILABLE"
+    assert no_fact.total_max_points == 20
+    assert no_fact.overall_status == "UNSCORABLE"
+    assert no_fact.estimated_points is None
+    assert (no_fact.lower_points, no_fact.upper_points) == (0, 20)
+
+    metric_key = no_fact_request.criteria[0].metric_key
+    confirmed_request = quantitative_request_from_candidate_profile(
+        profile,
+        facts=[
+            QuantitativeFact(
+                metric_key=metric_key,
+                status="CONFIRMED",
+                value=10,
+                evidence_key="company.performance.amount",
+                confidence=1,
+            )
+        ],
+    )
+    confirmed = estimate_quantitative_score(confirmed_request)
+    assert confirmed.overall_status == "CONFIRMED"
+    assert confirmed.estimated_points == 20
+    assert confirmed.meets_minimum is True
+
+    wrong_evidence_request = quantitative_request_from_candidate_profile(
+        profile,
+        facts=[
+            QuantitativeFact(
+                metric_key=metric_key,
+                status="CONFIRMED",
+                value=10,
+                evidence_key="company.performance.count",
+                confidence=1,
+            )
+        ],
+    )
+    wrong_evidence = estimate_quantitative_score(wrong_evidence_request)
+    assert wrong_evidence.overall_status == "REVIEW"
+    assert wrong_evidence.estimated_points is None
 
 
 def test_actual_ai_training_profile_uses_rfp_anchors_and_candidate_range(

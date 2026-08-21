@@ -82,17 +82,35 @@ def test_teams_iframe_headers_allow_only_declared_microsoft_hosts(monkeypatch) -
             assert "x-frame-options" not in response.headers
 
 
-def test_recommendation_arrow_and_manual_analysis_actions_are_functional() -> None:
+def test_table_and_card_detail_arrows_are_functional() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
+    assert (
+        'class="row-arrow" type="button" data-open-notice '
+        'aria-label="${escapeAttribute(notice.title)} 상세 패널 열기"'
+    ) in source
+    assert '<span class="row-arrow" aria-hidden="true">' not in source
+    assert '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>' in source
     assert 'class="recommendation-arrow"' in source
     assert 'data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기"' in source
+    assert 'els.noticeTableBody.addEventListener("click", handleNoticeActivation)' in source
+    assert 'event.target.closest("[data-open-notice]")' in source
+    assert ".row-arrow:focus-visible" in styles
     assert ".recommendation-arrow" in styles
+    assert "styles.css?v=20260820-ui2" in html
+    assert "app.js?v=20260820-ui2" in html
+
+
+def test_manual_analysis_actions_are_functional() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
     assert 'id="manualAnalyzeButton"' in html
     assert "manualAnalysisRequests: new Map()" in source
     assert 'state.manualAnalysisRequests.get(noticeKey) === "running"' in source
     assert "/analysis/request`" in source
-    assert 'method: "POST", timeoutMs: 90000' in source
+    assert '{ method: "POST" }' in source
+    assert "/analysis/requests/${encodeURIComponent(requestId)}`" in source
+    assert "for (let poll = 0; poll < 240; poll += 1)" in source
     assert "data-manual-analysis" in source
     assert "공고 분석 요청 실패" in source

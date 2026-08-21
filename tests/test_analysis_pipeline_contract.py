@@ -98,7 +98,7 @@ def test_pipeline_merges_latest_sources_by_attachment() -> None:
             session.add(
                 NoticeVersion(
                     notice_id=notice_id,
-                    version_no=2,
+                    version_no=source.version_no + 1,
                     file_sha256="a" * 64,
                     document_complete=True,
                     extraction_status="ACCEPTED",
@@ -136,7 +136,7 @@ def test_pipeline_review_attempt_produces_partial_r07_snapshot() -> None:
             session.add(
                 NoticeVersion(
                     notice_id=notice_id,
-                    version_no=2,
+                    version_no=source.version_no + 1,
                     file_sha256=source.file_sha256,
                     document_complete=False,
                     extraction_status="REVIEW",

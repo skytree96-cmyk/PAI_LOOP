@@ -10,7 +10,7 @@
 
 [워크플로우 아키텍처 한눈에 보기](architecture/PAI_LOOP_workflow_architecture_v1.6.png)
 
-**현재:** **[FACT]** PAI LOOP는 조달청 실공고와 첨부문서를 읽고, 회사 증빙과 대조한 참가자격·정량 준비도·3년 낙찰/가격 리스크를 근거와 함께 웹에 보여주는 입찰 사전검토 시스템이다. Render 웹, PostgreSQL, 매일 09:00 n8n이 연결돼 있으며 Teams는 회사 승인 전 mock이다.
+**현재:** **[FACT]** PAI LOOP는 조달청 실공고와 첨부문서를 읽고, 회사 증빙과 대조한 참가자격·정량 준비도·3년 낙찰/가격 리스크를 근거와 함께 웹에 보여주는 입찰 사전검토 시스템이다. Render 웹, PostgreSQL, 매일 08:00 n8n이 연결돼 있으며 Teams는 회사 승인 전 mock이다.
 
 **백필 결과:** **[FACT]** 기존 미분석 89건은 `89/89` 처리됐고 실패·잔여는 0건이다. 2026-08-17 진행 공고 100건의 공개 사유는 `ANALYZED 35 / QUOTE_UNVERIFIED 56 / ATTACHMENT_NONE 3 / HWP_ONLY_UNSUPPORTED 2 / HWPX_EXTRACT_FAILED 1 / PDF_EXTRACT_FAILED 2 / OPENAI_REVIEW 1 / NOT_SELECTED 0`이다. 원문 인용을 확인하지 못한 건은 PASS로 올리지 않고 REVIEW로 남겼다.
 
@@ -58,7 +58,7 @@
 - **[FACT] 실제 데이터:** 공개 실적 1,182건, 낙찰 이력 59건, 실제 인천 공고 요구조건 23건 및 근거 anchor 26건이 검토용 데이터로 연결돼 있다.
 - **[FACT] 정량·경쟁:** 한 개의 검수된 실제 RFP에 대해 20점 배점표 기반 점수 범위를 제공하고, 저장된 3년 유사 낙찰 후보로 수주 집중도·낙찰률·가격 참고범위를 계산한다.
 - **[FACT] 온라인 DB:** 관리형 PostgreSQL에 판단 기준 버전, 분석 run, 조건·점수·추천 snapshot, 실제 입찰 결과를 분리 저장하며 과거 snapshot을 덮어쓰지 않는다.
-- **[FACT] 운영 채널:** Render 웹과 매일 09:00 KST n8n 통합 워크플로가 연결돼 있다. Teams는 회사 승인 전까지 mock-only다.
+- **[FACT] 운영 채널:** Render 웹과 매일 08:00 KST n8n 통합 워크플로가 연결돼 있다. Teams는 회사 승인 전까지 mock-only다.
 - **[FACT] 분석 적체 해소:** `NOT_SELECTED` 89건을 재개 가능한 3개 구간으로 전량 처리했다. n8n 감사 합계는 계획 89·시도 89·완료 89·실패 0·잔여 0이며, 이후에는 당일 신규·변경 공고를 우선 전량 분석하고 재시도 대상은 cooldown이 있는 bounded 순환 큐로 처리한다.
 
 ## 부록 D. 기획안 대비 다음 수정 우선순위
@@ -78,7 +78,7 @@
 ### P2 — 사내 운영 전환
 
 7. **Teams 실제 연결과 사내 권한** — **[TARGET]** 회사 승인 후 Teams 실제 알림, 웹 진입 링크 또는 탭, Entra SSO와 `viewer/reviewer/approver/admin` 권한을 연결한다.
-8. **운영 품질 관리** — **[TARGET]** API 호출량·비용, schema drift, dead-letter, 분석 누락, 09:00 완료시간, 근거 없는 PASS 0건을 모니터링하고 DB backup/restore 및 객체 저장소 보존정책을 검증한다.
+8. **운영 품질 관리** — **[TARGET]** API 호출량·비용, schema drift, dead-letter, 분석 누락, 08:00 완료시간, 근거 없는 PASS 0건을 모니터링하고 DB backup/restore 및 객체 저장소 보존정책을 검증한다.
 
 ## 부록 E. 멘토에게 물을 결정 질문 5개
 

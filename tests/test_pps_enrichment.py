@@ -12,6 +12,8 @@ from sqlalchemy import select
 from pai_loop.pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
+    PPS_METADATA_SCHEMA,
+    PPS_PROCESSING_VERSION,
     PpsEnrichmentError,
     _digest,
     build_attachment_manifest,
@@ -22,6 +24,7 @@ from pai_loop.pps_enrichment import (
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     persist_pps_metadata_version,
+    pps_attachment_coverage,
     public_analysis_reason,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
@@ -31,10 +34,14 @@ from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import (
     CORRECTIVE_PROMPT_VERSION,
     PROMPT_VERSION,
+    SCHEMA_VERSION,
     EvidenceAnchor,
     ExtractedRequirement,
     ExtractionOutcome,
     ExtractionPayload,
+)
+from pai_loop.quantitative_rule_extraction import (
+    validate_quantitative_attachment_extraction,
 )
 from pai_loop.models import Notice, NoticeVersion
 
@@ -63,10 +70,17 @@ def test_attachment_manifest_and_notice_metadata_are_strict_allowlists() -> None
     }
 
     manifest = build_attachment_manifest(raw)
-    assert len(manifest) == 1
+    assert len(manifest) == 2
     assert manifest[0]["file_name"] == "입찰공고문.pdf"
     assert manifest[0]["media_type"] == "application/pdf"
     assert manifest[0]["attachment_id"].startswith("PPS-ATT-")
+    assert manifest[1] == {
+        "invalid_attachment_slot": 2,
+        "status": "INVALID",
+        "error_code": "UNSAFE_ATTACHMENT_URL",
+        "metadata_sha256": manifest[1]["metadata_sha256"],
+    }
+    assert len(manifest[1]["metadata_sha256"]) == 64
 
     metadata = build_notice_metadata(raw)
     assert metadata == {
@@ -80,7 +94,50 @@ def test_attachment_manifest_and_notice_metadata_are_strict_allowlists() -> None
     assert "untrusted" not in serialised
 
 
-def test_attachment_selection_prefers_paired_pdf_and_fails_closed_for_hwp_only() -> None:
+def test_manifest_preserves_invalid_slot_count_without_raw_provider_values() -> None:
+    raw = {
+        "bidNtceNo": "R26BK00000001",
+        "bidNtceOrd": "000",
+        "ntceSpecFileNm1": "공고문.pdf",
+        "ntceSpecDocUrl1": G2B_DOWNLOAD,
+        "ntceSpecFileNm2": "제안요청서.hwpx",
+        "ntceSpecDocUrl2": G2B_DOWNLOAD.replace("fileSeq=1", "fileSeq=2"),
+        "ntceSpecFileNm3": "private.pdf",
+        "ntceSpecDocUrl3": "https://unsafe.invalid/private?token=secret",
+    }
+
+    manifest = build_attachment_manifest(raw)
+
+    assert len(manifest) == 3
+    assert sum("attachment_id" in item for item in manifest) == 2
+    invalid = manifest[2]
+    assert invalid["invalid_attachment_slot"] == 3
+    assert invalid["error_code"] == "UNSAFE_ATTACHMENT_URL"
+    serialised = json.dumps(manifest, ensure_ascii=False)
+    assert "unsafe.invalid" not in serialised
+    assert "token" not in serialised
+    reason = public_analysis_reason(
+        [
+            NoticeVersion(
+                notice_id="notice",
+                version_no=1,
+                file_sha256="1" * 64,
+                document_complete=False,
+                extraction_status="METADATA",
+                extraction_confidence=1.0,
+                source_payload={
+                    "kind": PPS_METADATA_KIND,
+                    "schema_version": PPS_METADATA_SCHEMA,
+                    "attachment_manifest": manifest,
+                },
+            )
+        ]
+    )
+    assert reason.reason_code == "ATTACHMENT_COVERAGE_INCOMPLETE"
+    assert reason.attachment_count == 3
+
+
+def test_attachment_selection_prefers_pdf_but_keeps_hwp_as_supported() -> None:
     hwp = {
         "attachment_id": "PPS-ATT-111111111111111111111111",
         "file_name": "제안요청서.hwp",
@@ -101,8 +158,8 @@ def test_attachment_selection_prefers_paired_pdf_and_fails_closed_for_hwp_only()
     assert warnings == []
 
     selected, warnings = select_preferred_attachments([hwp], limit=1)
-    assert selected == []
-    assert warnings == ["HWP_ONLY_UNSUPPORTED_R07"]
+    assert [item["attachment_id"] for item in selected] == [hwp["attachment_id"]]
+    assert warnings == []
 
 
 def test_hwpx_is_extracted_in_memory_with_archive_limits() -> None:
@@ -119,7 +176,10 @@ def test_hwpx_is_extracted_in_memory_with_archive_limits() -> None:
     assert "입찰참가자격" in text
     assert "교육 컨설팅 수행실적" in text
 
-    with pytest.raises(PpsEnrichmentError, match="HWP_BINARY_UNSUPPORTED"):
+    with pytest.raises(
+        PpsEnrichmentError,
+        match=r"HWP_(?:EXTRACTOR_UNAVAILABLE|CONTAINER_INVALID)",
+    ):
         extract_document_text("제안요청서.hwp", b"binary-hwp")
 
 
@@ -161,6 +221,55 @@ def test_pdf_extraction_replaces_lone_surrogates_before_json_transport(
     assert json.dumps({"input": text}, ensure_ascii=False).encode("utf-8")
 
 
+def test_pdf_embedded_attachment_is_not_silently_marked_complete() -> None:
+    from pypdf import PdfWriter
+
+    buffer = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    writer.add_attachment("hidden-rules.txt", b"quantitative rules")
+    writer.write(buffer)
+
+    with pytest.raises(
+        PpsEnrichmentError,
+        match="PDF_EMBEDDED_ATTACHMENT_NOT_EXTRACTED",
+    ):
+        extract_document_text("공고문.pdf", buffer.getvalue())
+
+
+@pytest.mark.parametrize(
+    ("member_name", "member_content", "error_code"),
+    [
+        (
+            "BinData/embedded.xlsx",
+            b"PK\x03\x04synthetic-workbook",
+            "HWPX_EMBEDDED_ATTACHMENT_NOT_EXTRACTED",
+        ),
+        (
+            "Scripts/default.js",
+            b"alert(1)",
+            "HWPX_ACTIVE_CONTENT_NOT_EXTRACTED",
+        ),
+    ],
+)
+def test_hwpx_hidden_package_content_is_not_silently_marked_complete(
+    member_name: str,
+    member_content: bytes,
+    error_code: str,
+) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/hwp+zip")
+        archive.writestr(
+            "Contents/section0.xml",
+            "<hs:section xmlns:hs='urn:hancom:section'><hs:p>공개 본문</hs:p></hs:section>",
+        )
+        archive.writestr(member_name, member_content)
+
+    with pytest.raises(PpsEnrichmentError, match=error_code):
+        extract_document_text("제안요청서.hwpx", buffer.getvalue())
+
+
 def _analysis_versions(
     extension: str,
     *,
@@ -184,12 +293,28 @@ def _analysis_versions(
         extraction_confidence=1.0,
         source_payload={
             "kind": PPS_METADATA_KIND,
+            "schema_version": PPS_METADATA_SCHEMA,
             "attachment_manifest": manifest,
         },
     )
     if error_code is None and status == "REVIEW":
         return [metadata]
     attachment = manifest[0]
+    current_manifest_sha256 = _digest(manifest)
+    quantitative_record = validate_quantitative_attachment_extraction(
+        ExtractionPayload(
+            document_type="RFP",
+            summary="공개 첨부 원문",
+            requirements=[],
+            missing_or_unreadable=[],
+            quantitative_tables=[],
+            quantitative_table_not_applicable=None,
+        ),
+        source_text="공개 첨부 원문",
+        attachment_id=attachment["attachment_id"],
+        document_sha256="2" * 64,
+        manifest_sha256=current_manifest_sha256,
+    )
     attempt = NoticeVersion(
         notice_id="notice",
         version_no=2,
@@ -202,9 +327,13 @@ def _analysis_versions(
             "source_kind": PPS_ATTACHMENT_SOURCE,
             "attachment_id": attachment["attachment_id"],
             "manifest_sha256": _digest(attachment),
+            "current_manifest_sha256": current_manifest_sha256,
             "prompt_version": PROMPT_VERSION,
+            "processing_version": PPS_PROCESSING_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "status": status,
             "error_code": error_code,
+            "quantitative_validation_record": quantitative_record.model_dump(mode="json"),
         },
     )
     return [metadata, attempt]
@@ -214,7 +343,7 @@ def _analysis_versions(
     ("extension", "error_code", "status", "reason_code"),
     [
         (".pdf", None, "REVIEW", "NOT_SELECTED"),
-        (".hwp", None, "REVIEW", "HWP_ONLY_UNSUPPORTED"),
+        (".hwp", None, "REVIEW", "NOT_SELECTED"),
         (".hwpx", "HWPX_XML_INVALID", "REVIEW", "HWPX_EXTRACT_FAILED"),
         (".pdf", "PDF_TEXT_EXTRACTION_FAILED", "REVIEW", "PDF_EXTRACT_FAILED"),
         (".hwpx", "UNVERIFIED_QUOTE", "REVIEW", "QUOTE_UNVERIFIED"),
@@ -242,6 +371,81 @@ def test_public_analysis_reason_is_current_manifest_bound_and_public_safe(
     )
     assert "http" not in reason.reason.casefold()
     assert "PPS-ATT" not in reason.reason
+
+
+def test_newest_stale_metadata_never_falls_back_to_prior_current_manifest() -> None:
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    current_manifest = list(versions[0].source_payload["attachment_manifest"])
+    versions.append(
+        NoticeVersion(
+            notice_id="notice",
+            version_no=3,
+            file_sha256="3" * 64,
+            document_complete=False,
+            extraction_status="METADATA",
+            extraction_confidence=1.0,
+            source_payload={
+                "kind": PPS_METADATA_KIND,
+                "schema_version": "pai-loop-pps-notice-metadata-0.1.0",
+                "attachment_manifest": current_manifest,
+            },
+        )
+    )
+
+    reason = public_analysis_reason(versions)
+    coverage = pps_attachment_coverage(versions)
+    assert reason.state == "REVIEW"
+    assert reason.reason_code == "ATTACHMENT_COVERAGE_INCOMPLETE"
+    assert coverage.discovered == 1
+    assert coverage.accepted == 0
+    assert coverage.complete is False
+
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        session.add(
+            Notice(
+                id="notice",
+                notice_key="PPS-STALE-METADATA",
+                bid_notice_no="R26BK-STALE-METADATA",
+                revision_no="000",
+                title="stale manifest regression",
+                agency="공공기관",
+                deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+                status="OPEN",
+            )
+        )
+        session.add_all(versions)
+        session.commit()
+    with factory() as session:
+        assert has_current_accepted_pps_extraction(session, "notice") is False
+        session.rollback()
+        enrichment = enrich_notice_from_pps(
+            session,
+            notice_id="notice",
+            openai_api_key=None,
+            openai_model="unused",
+        )
+    assert enrichment.status == "REVIEW"
+    assert "PPS_ATTACHMENT_MANIFEST_SCHEMA_STALE" in enrichment.warnings
+    engine.dispose()
+
+
+def test_non_object_manifest_entry_counts_as_invalid_current_coverage() -> None:
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    manifest = versions[0].source_payload["attachment_manifest"]
+    manifest.append("UNKNOWN_RAW_SLOT")
+
+    reason = public_analysis_reason(versions)
+    coverage = pps_attachment_coverage(versions)
+    assert reason.state == "REVIEW"
+    assert reason.reason_code == "ATTACHMENT_COVERAGE_INCOMPLETE"
+    assert reason.attachment_count == 2
+    assert coverage.discovered == 2
+    assert coverage.valid == 1
+    assert coverage.complete is False
+    assert "UNKNOWN_RAW_SLOT" not in reason.reason
 
 
 def test_download_rejects_unsafe_redirect_and_limits_bytes() -> None:
@@ -315,8 +519,13 @@ def test_live_public_extraction_exposes_only_validated_procurement_evidence() ->
         "status": "ACCEPTED",
         "response_id": "must-not-be-public",
         "model": "must-not-be-public",
-        "prompt_version": "pai-loop-extraction-0.2.1",
-        "schema_version": "pai-loop-requirements-0.1.0",
+        "prompt_version": PROMPT_VERSION,
+        "processing_version": PPS_PROCESSING_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "document_processing": {
+            "source_read_complete": True,
+            "analysis_input_complete": True,
+        },
         "result": {
             "document_type": "NOTICE",
             "requirements": [
@@ -340,6 +549,8 @@ def test_live_public_extraction_exposes_only_validated_procurement_evidence() ->
                 }
             ],
             "missing_or_unreadable": [],
+            "quantitative_tables": [],
+            "quantitative_table_not_applicable": None,
             "summary": "입찰참가자격 조건 1건",
         },
     }
@@ -364,8 +575,13 @@ def test_live_public_extraction_redacts_contact_identifiers() -> None:
         "source_label": "제안요청서.pdf",
         "document_sha256": "b" * 64,
         "status": "ACCEPTED",
-        "prompt_version": "pai-loop-extraction-0.2.1",
-        "schema_version": "pai-loop-requirements-0.1.0",
+        "prompt_version": PROMPT_VERSION,
+        "processing_version": PPS_PROCESSING_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "document_processing": {
+            "source_read_complete": True,
+            "analysis_input_complete": True,
+        },
         "result": {
             "document_type": "RFP",
             "requirements": [
@@ -389,6 +605,8 @@ def test_live_public_extraction_redacts_contact_identifiers() -> None:
                 }
             ],
             "missing_or_unreadable": [],
+            "quantitative_tables": [],
+            "quantitative_table_not_applicable": None,
             "summary": "담당자 합성다 " + email,
         },
     }
@@ -571,6 +789,119 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
         session.commit()
     with factory() as session:
         assert has_current_accepted_pps_extraction(session, notice_id) is False
+    engine.dispose()
+
+
+def test_five_attachments_persist_and_resume_two_plus_two_plus_one() -> None:
+    def hwpx_bytes(sequence: int) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("mimetype", "application/hwp+zip")
+            archive.writestr(
+                "Contents/section0.xml",
+                "<s><p>교육 컨설팅 수행실적을 제출해야 합니다.</p>"
+                f"<p>첨부 순번 {sequence}의 독립 근거입니다.</p></s>",
+            )
+        return buffer.getvalue()
+
+    contents = {str(index): hwpx_bytes(index) for index in range(1, 6)}
+
+    def attachment_response(request: httpx.Request) -> httpx.Response:
+        sequence = dict(request.url.params)["fileSeq"]
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/zip"},
+            content=contents[sequence],
+        )
+
+    raw: dict[str, str] = {
+        "bidNtceNo": "R26BK00000055",
+        "bidNtceOrd": "000",
+    }
+    for index in range(1, 6):
+        raw[f"ntceSpecFileNm{index}"] = f"제안요청서-{index}.hwpx"
+        raw[f"ntceSpecDocUrl{index}"] = G2B_DOWNLOAD.replace(
+            "R26BK00000001", "R26BK00000055"
+        ).replace("fileSeq=1", f"fileSeq={index}")
+
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        notice = Notice(
+            notice_key="PPS-FIVE-ATTACHMENTS",
+            bid_notice_no="R26BK00000055",
+            revision_no="000",
+            title="다섯 첨부 continuation 검증",
+            agency="공공기관",
+            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw,
+            search_keywords=["교육"],
+            dry_run=False,
+        )
+        session.commit()
+        notice_id = notice.id
+
+    _CountingExtractionClient.calls = 0
+    transport = httpx.MockTransport(attachment_response)
+    results = []
+    for _index in range(4):
+        with factory() as session:
+            results.append(
+                enrich_notice_from_pps(
+                    session,
+                    notice_id=notice_id,
+                    openai_api_key="test-key",
+                    openai_model="test-model",
+                    transport=transport,
+                    openai_client_factory=_CountingExtractionClient,
+                )
+            )
+
+    assert [item.status for item in results] == [
+        "SKIPPED",
+        "SKIPPED",
+        "COMPLETED",
+        "REUSED",
+    ]
+    assert [item.attachments_attempted for item in results] == [2, 4, 5, 5]
+    assert [item.openai_calls for item in results] == [4, 4, 2, 0]
+    assert "ATTACHMENT_CONTINUATION_REQUIRED" in results[0].warnings
+    assert "ATTACHMENT_CONTINUATION_REQUIRED" in results[1].warnings
+    assert "ATTACHMENT_CONTINUATION_REQUIRED" not in results[2].warnings
+    assert _CountingExtractionClient.calls == 5
+
+    with factory() as session:
+        assert has_current_accepted_pps_extraction(session, notice_id) is True
+        attempts = [
+            version
+            for version in session.scalars(
+                select(NoticeVersion)
+                .where(NoticeVersion.notice_id == notice_id)
+                .order_by(NoticeVersion.version_no)
+            ).all()
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind")
+            == "OPENAI_REQUIREMENT_EXTRACTION"
+        ]
+        assert len(attempts) == 5
+        whole_digests = {
+            version.source_payload["current_manifest_sha256"]
+            for version in attempts
+        }
+        assert len(whole_digests) == 1
+        assert all(
+            version.source_payload["quantitative_validation_record"]["attachment_id"]
+            == version.source_payload["attachment_id"]
+            for version in attempts
+        )
     engine.dispose()
 
 

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -15,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from .analysis_api import AnalysisBatchRequest, run_notice_analysis_batch
 from .models import IngestionJob, Notice
 from .pps_enrichment import PublicAnalysisReason, public_analysis_reason
+from .pps_enrichment import MAX_ATTACHMENTS_IN_MANIFEST
 
 
 class ManualAnalysisResponse(BaseModel):
@@ -24,7 +25,7 @@ class ManualAnalysisResponse(BaseModel):
 
     request_id: str | None = None
     notice_key: str
-    outcome: Literal["COMPLETED", "REVIEW", "ALREADY_ANALYZED", "COOLDOWN"]
+    outcome: Literal["QUEUED", "COMPLETED", "REVIEW", "ALREADY_ANALYZED", "COOLDOWN"]
     analysis_state: Literal["ANALYZED", "REVIEW", "PENDING"]
     analysis_reason_code: str
     analysis_reason: str
@@ -115,16 +116,22 @@ def _same_origin_request(request: Request) -> bool:
 
 
 @contextmanager
-def _manual_execution_slot(request: Request):
+def _manual_execution_slot(request: Request, *, blocking: bool = False):
     engine = request.app.state.engine
     if engine.dialect.name == "postgresql":
         connection = engine.connect()
         acquired = bool(
             connection.scalar(
-                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                text(
+                    "SELECT pg_advisory_lock(:lock_key)"
+                    if blocking
+                    else "SELECT pg_try_advisory_lock(:lock_key)"
+                ),
                 {"lock_key": _PUBLIC_MANUAL_LOCK_KEY},
             )
         )
+        if blocking:
+            acquired = True
         try:
             yield acquired
         finally:
@@ -136,7 +143,7 @@ def _manual_execution_slot(request: Request):
             connection.close()
         return
 
-    acquired = _PUBLIC_MANUAL_PROCESS_LOCK.acquire(blocking=False)
+    acquired = _PUBLIC_MANUAL_PROCESS_LOCK.acquire(blocking=blocking)
     try:
         yield acquired
     finally:
@@ -193,7 +200,7 @@ def _reserve_manual_job(request: Request, notice_key: str) -> str:
                     "trigger": "PUBLIC_SAME_ORIGIN",
                     "force": False,
                     "max_notices": 1,
-                    "max_attachments_per_notice": 1,
+                    "max_attachments_per_notice": MAX_ATTACHMENTS_IN_MANIFEST,
                     "credential_exposed": False,
                 },
                 matched=1,
@@ -249,6 +256,7 @@ def _already_analysed(notice: Notice, reason: PublicAnalysisReason) -> ManualAna
 def request_manual_notice_analysis(
     notice_key: str,
     request: Request,
+    background_tasks: BackgroundTasks,
 ) -> ManualAnalysisResponse:
     """Run one idempotent server-side analysis without exposing credentials.
 
@@ -324,51 +332,120 @@ def request_manual_notice_analysis(
             raise HTTPException(status_code=503, detail="분석 서비스 설정을 확인해 주세요.")
 
         request_id = _reserve_manual_job(request, notice.notice_key)
+        background_tasks.add_task(
+            _execute_reserved_manual_job,
+            request,
+            request_id,
+            notice.notice_key,
+        )
+        return ManualAnalysisResponse(
+            request_id=request_id,
+            notice_key=notice.notice_key,
+            outcome="QUEUED",
+            analysis_state=reason.state,
+            analysis_reason_code=reason.reason_code,
+            analysis_reason=reason.reason,
+            analysis_attempted=reason.attempted,
+            message="모든 공개 첨부 분석을 시작했습니다. 완료 상태를 자동으로 확인합니다.",
+        )
+
+
+def _execute_reserved_manual_job(
+    request: Request,
+    request_id: str,
+    notice_key: str,
+) -> None:
+    with _manual_execution_slot(request, blocking=True):
         payload = AnalysisBatchRequest(
-            notice_keys=[notice.notice_key],
+            notice_keys=[notice_key],
             dry_run=False,
             force=False,
             enrich_missing=True,
             max_notices=1,
-            max_attachments_per_notice=1,
+            max_attachments_per_notice=MAX_ATTACHMENTS_IN_MANIFEST,
         )
+        total_openai_calls = 0
+        batch = None
         try:
-            batch = run_notice_analysis_batch(payload, request)
+            # Each HTTP-equivalent batch persists at most two new attachment
+            # units. A public background request follows the same durable
+            # continuation contract until the complete current manifest is
+            # audited; completed units are reused with zero additional calls.
+            for _round in range(MAX_ATTACHMENTS_IN_MANIFEST):
+                batch = run_notice_analysis_batch(payload, request)
+                total_openai_calls += batch.openai_calls
+                if "ATTACHMENT_CONTINUATION_REQUIRED" not in batch.enrichment.warnings:
+                    break
+            else:  # pragma: no cover - defensive manifest-bound invariant
+                raise RuntimeError("manual attachment continuation limit exceeded")
         except Exception:
             _finish_manual_job(
                 request,
                 request_id=request_id,
                 status_value="FAILED",
+                openai_calls=total_openai_calls,
                 failed=1,
             )
-            raise
-
-        updated_notice = _load_notice(request, notice.notice_key)
-        updated_reason = _reason(updated_notice)
-        outcome: Literal["COMPLETED", "REVIEW"] = (
-            "COMPLETED" if updated_reason.state == "ANALYZED" else "REVIEW"
-        )
+            return
+        if batch is None:  # pragma: no cover - loop invariant
+            return
         _finish_manual_job(
             request,
             request_id=request_id,
-            status_value="COMPLETED" if batch.failed == 0 else "PARTIAL",
-            openai_calls=batch.openai_calls,
+            status_value=batch.status,
+            openai_calls=total_openai_calls,
             completed=batch.completed,
             failed=batch.failed,
             batch_job_id=batch.job_id,
         )
-        return ManualAnalysisResponse(
-            request_id=request_id,
-            notice_key=updated_notice.notice_key,
-            outcome=outcome,
-            analysis_state=updated_reason.state,
-            analysis_reason_code=updated_reason.reason_code,
-            analysis_reason=updated_reason.reason,
-            analysis_attempted=updated_reason.attempted,
-            openai_calls=batch.openai_calls,
-            message=(
-                "분석과 판정이 완료되었습니다."
-                if outcome == "COMPLETED"
-                else "요청은 처리됐지만 원문 또는 근거 보완이 필요합니다."
-            ),
+
+
+@router.get(
+    "/notices/{notice_key}/analysis/requests/{request_id}",
+    response_model=ManualAnalysisResponse,
+)
+def get_manual_notice_analysis_request(
+    notice_key: str,
+    request_id: str,
+    request: Request,
+) -> ManualAnalysisResponse:
+    if not _same_origin_request(request) and request.headers.get(
+        "sec-fetch-site", ""
+    ).strip().casefold() != "same-origin":
+        raise HTTPException(status_code=403, detail="홈페이지와 동일한 출처에서만 조회할 수 있습니다.")
+    with request.app.state.session_factory() as session:
+        job = session.get(IngestionJob, request_id)
+        if (
+            job is None
+            or job.source != "MANUAL_ANALYSIS"
+            or notice_key not in (job.notice_keys or [])
+        ):
+            raise HTTPException(status_code=404, detail="분석 요청을 찾을 수 없습니다.")
+        job_status = job.status
+        openai_calls = job.api_calls
+    notice = _load_notice(request, notice_key)
+    reason = _reason(notice)
+    if job_status == "RUNNING":
+        outcome: Literal["QUEUED", "COMPLETED", "REVIEW"] = "QUEUED"
+        message = "모든 공개 첨부를 확인하고 있습니다."
+    elif job_status in {"COMPLETED", "PARTIAL"}:
+        outcome = "COMPLETED" if reason.state == "ANALYZED" else "REVIEW"
+        message = (
+            "분석과 판정이 완료되었습니다."
+            if outcome == "COMPLETED"
+            else "요청은 처리됐지만 원문 또는 근거 보완이 필요합니다."
         )
+    else:
+        outcome = "REVIEW"
+        message = "분석을 완료하지 못했습니다. 자동 백필 또는 다음 재시도를 확인해 주세요."
+    return ManualAnalysisResponse(
+        request_id=request_id,
+        notice_key=notice_key,
+        outcome=outcome,
+        analysis_state=reason.state,
+        analysis_reason_code=reason.reason_code,
+        analysis_reason=reason.reason,
+        analysis_attempted=reason.attempted,
+        openai_calls=openai_calls,
+        message=message,
+    )

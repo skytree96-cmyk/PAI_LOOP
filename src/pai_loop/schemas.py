@@ -191,15 +191,21 @@ class NoticeSummary(ApiModel):
     analysis_reason_code: Literal[
         "ANALYZED",
         "ATTACHMENT_NONE",
+        "ATTACHMENT_COVERAGE_INCOMPLETE",
         "HWP_ONLY_UNSUPPORTED",
+        "UNSUPPORTED_ATTACHMENT",
         "HWPX_EXTRACT_FAILED",
         "PDF_EXTRACT_FAILED",
+        "DOCUMENT_EXTRACT_FAILED",
         "OPENAI_REVIEW",
         "QUOTE_UNVERIFIED",
         "NOT_SELECTED",
     ]
     analysis_reason: str
     analysis_attachment_count: int = Field(default=0, ge=0, le=10)
+    analysis_attachments_audited: int = Field(default=0, ge=0, le=10)
+    analysis_attachments_accepted: int = Field(default=0, ge=0, le=10)
+    analysis_attachment_coverage_complete: bool = False
     analysis_attempted: bool = False
     recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
     recommendation_updated_at: datetime | None = None

@@ -1,8 +1,8 @@
-# PAI_LOOP 분석 backfill·09:00 continuation 운영서 v0.8.0
+# PAI_LOOP 분석 backfill·08:00 continuation 운영서 v0.8.0
 
 ## 운영 결과
 
-Workflow 10은 매일 09:00 KST 수집 응답의 `created_notice_keys`와
+Workflow 10은 매일 08:00 KST 수집 응답의 `created_notice_keys`와
 `updated_notice_keys`를 exact union으로 만들고, 저장된 분석 큐의 우선순위 상위
 12건을 뒤에 붙인다. 신규·정정 3,000건과 backlog 12건까지 명시적으로 허용하며,
 초과 범위는 잘라내지 않고 실패한다.
@@ -22,7 +22,7 @@ stable notice key가 이미 terminal이어도 최신 notice metadata/manifest wo
 바뀌었으면 generation을 올려 기존 child 결과는 감사용으로 보존하고 새 chunk에서
 다시 분석한다. token은 authoritative `PPS_NOTICE_METADATA`와 notice metadata 시각만
 사용하며 분석 출력인 `OPENAI_REQUIREMENT_EXTRACTION` version은 제외한다. 따라서
-동일 09:00 요청 재시도는 generation을 재증가시키지 않는다.
+동일 08:00 요청 재시도는 generation을 재증가시키지 않는다.
 
 daily briefing은 합계 순서를 보존한 `notice_keys`와 함께
 `never_attempted_notice_keys`, `retryable_notice_keys`를 서로 겹치지 않는 exact
@@ -45,15 +45,15 @@ token을 소비한 것으로 보지 않아 복구 작업을 막지 않는다.
 Workflow 11은 수동 일회성 `OPEN / NOT_SELECTED + 24시간 cooldown 경과 retryable`
 backfill과 DAILY continuation을
 같은 계약으로 재개한다. 한 n8n 실행이 전량을 붙잡지 않는다. 실행당 최대 30건,
-HTTP 호출당 최대 3건을 직렬 처리한다. 2026-08-19 기준 OPEN
+HTTP 호출당 공고 1건을 직렬 처리한다. 2026-08-19 기준 OPEN
 `QUOTE_UNVERIFIED` 58건의 일회성 회수는 cooldown 충족 뒤 첫 segment 30건,
 15분 continuation의 다음 segment 28건으로 끝낸다. 이후 일일 자동 retry는 최대
 12건으로 제한한다.
 
 `QUOTE_UNVERIFIED`만 strict corrective extraction을 한 번 허용한다. 원문 그대로의
 연속 인용을 요구하고 두 번째 결과도 exact anchor 검증을 다시 통과시킨다. 퍼지 또는
-의미 매칭은 금지하며, 첫 호출을 포함한 hard cap은 공고당 2회다. 따라서 일일 backlog
-12건의 추가 OpenAI 요청 상한은 24회이고, 58건 일회성 회수의 이론상 상한은 116회다.
+의미 매칭은 금지하며, 첫 호출을 포함한 hard cap은 첨부당 2회(공고당 최대 20회)다. 비용
+감사는 실제 발견 첨부 수 × 2와 공고당 20회 중 작은 상한으로 검증한다.
 실패한 두 번째 응답은 계속 `QUOTE_UNVERIFIED / REVIEW`로 남긴다.
 
 ## 저장 계약
@@ -79,7 +79,7 @@ HTTP 호출당 최대 3건을 직렬 처리한다. 2026-08-19 기준 OPEN
 {
   "queue_name": "BACKFILL",
   "dry_run": false,
-  "chunk_size": 3,
+  "chunk_size": 1,
   "max_total": 3000,
   "execution_limit": 30,
   "max_continuations": 128,
@@ -110,7 +110,7 @@ lock으로 전역 직렬화한다. 따라서 Workflow 10, Workflow 11 schedule, 
 
 Planner와 `/complete`는 같은 arbitration lock → parent row lock 순서를 사용한다.
 active parent 조회·append·segment lease는 중간 commit 없이 한 transaction으로
-끝나므로 09:00 신규 append와 15분 finalize가 겹쳐도 terminal parent에 새 key가
+끝나므로 08:00 신규 append와 15분 finalize가 겹쳐도 terminal parent에 새 key가
 유실되지 않는다.
 
 15분 schedule은 `queue_name=ANY`, `resume_only=true`를 사용한다. 활성 부모가
@@ -170,7 +170,7 @@ segment 또는 이미 다음 lease가 열린 뒤의 오래된 segment는 계속 
 - continuation 128회 초과: `DEAD_LETTER / MAX_CONTINUATIONS_EXCEEDED`; 3,012건은
   실행당 30건 기준 101회에 끝나므로 정상 범위 안이며, silent truncate
   또는 무한 반복 대신 운영자 검토로 전환한다.
-- 09:00에 이전 DAILY가 남아 있으면 새 created+updated key를 기존 미처리 key보다
+- 08:00에 이전 DAILY가 남아 있으면 새 created+updated key를 기존 미처리 key보다
   앞에 합치며, 이미 자식 감사가 있는 key는 다시 추가하지 않는다.
 
 ## n8n 배포·승격 체크

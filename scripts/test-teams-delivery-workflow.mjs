@@ -55,9 +55,9 @@ const targets = (name, lane = 0) => (
   workflow.connections?.[name]?.main?.[lane] ?? []
 ).map((item) => item.node);
 
-const scheduled = nodes.get("Every Day 10:00 KST");
+const scheduled = nodes.get("Every Day 09:00 KST");
 assert.equal(scheduled.type, "n8n-nodes-base.scheduleTrigger");
-assert.equal(scheduled.parameters.rule.interval[0].expression, "0 10 * * *");
+assert.equal(scheduled.parameters.rule.interval[0].expression, "0,15,30,45 9-10 * * *");
 assert.equal(workflow.settings.timezone, "Asia/Seoul");
 
 const configTable = nodes.get("Read Teams Delivery Config");
@@ -79,11 +79,31 @@ assert.deepEqual(targets("Run Offline Teams Preview"), ["Build Offline Delivery 
 const liveTestTrigger = nodes.get("Run Live Teams Test");
 assert.equal(liveTestTrigger.type, "n8n-nodes-base.manualTrigger");
 assert.deepEqual(targets("Run Live Teams Test"), ["Mark Manual Live Test Mode"]);
-assert.deepEqual(targets("Every Day 10:00 KST"), ["Mark Scheduled Live Mode"]);
+assert.deepEqual(targets("Every Day 09:00 KST"), ["Mark Scheduled Live Mode"]);
 assert.deepEqual(targets("Mark Manual Live Test Mode"), ["Mark Config-Gated Delivery Mode"]);
 assert.deepEqual(targets("Mark Scheduled Live Mode"), ["Mark Config-Gated Delivery Mode"]);
 assert.deepEqual(targets("Mark Config-Gated Delivery Mode"), ["Read Teams Delivery Config"]);
 assert.deepEqual(targets("Read Teams Delivery Config"), ["Validate Teams Delivery Config"]);
+assert.deepEqual(targets("Approved Teams Push Gate Open?", 0), ["Scheduled Teams Attempt?"]);
+assert.deepEqual(targets("Scheduled Teams Attempt?", 0), ["Fetch Today's Daily Analysis Readiness"]);
+assert.deepEqual(targets("Scheduled Teams Attempt?", 1), ["Fetch Stored Briefing for Teams"]);
+assert.deepEqual(targets("Fetch Today's Daily Analysis Readiness"), ["Validate Today's Daily Analysis Readiness"]);
+assert.deepEqual(targets("Validate Today's Daily Analysis Readiness"), ["Today's Daily Analysis Ready?"]);
+assert.deepEqual(targets("Today's Daily Analysis Ready?", 0), ["Fetch Stored Briefing for Teams"]);
+assert.deepEqual(targets("Today's Daily Analysis Ready?", 1), ["Record Scheduled Readiness Skip"]);
+assert.deepEqual(targets("Validate Stored Briefing Contract"), ["Attach Scheduled Readiness Context"]);
+assert.deepEqual(targets("Attach Scheduled Readiness Context"), ["Build Sanitized Dedupe Envelope"]);
+assert.deepEqual(targets("Build Sanitized Dedupe Envelope"), ["Stabilize Scheduled Daily Correlation"]);
+assert.deepEqual(targets("Stabilize Scheduled Daily Correlation"), ["New Sanitized Delivery Needed?"]);
+
+const readinessNode = nodes.get("Fetch Today's Daily Analysis Readiness");
+assert.equal(readinessNode.type, "n8n-nodes-base.httpRequest");
+assert.equal(readinessNode.parameters.authentication, "genericCredentialType");
+assert.equal(readinessNode.parameters.genericAuthType, "httpHeaderAuth");
+assert.match(readinessNode.parameters.url, /operations\/teams-daily-readiness/);
+assert.equal(readinessNode.retryOnFail, false);
+assert.equal(readinessNode.onError, "continueRegularOutput");
+assert.equal(readinessNode.credentials, undefined);
 
 const send = nodes.get("Send Sanitized Teams Briefing");
 assert.equal(send.type, "n8n-nodes-base.microsoftTeams");
@@ -229,6 +249,105 @@ const wrongCaseKey = configItems(approvedConfig).map((item) => (
 ));
 assert.equal(validateConfig(scheduledMode, {}, [], wrongCaseKey).runtime.configErrorCode, "CONFIG_UNKNOWN_KEY");
 
+const todayKst = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+const readyResponse = {
+  schema_version: "1.0",
+  status: "READY",
+  ready: true,
+  reason_code: "DAILY_ANALYSIS_COMPLETE",
+  kst_date: todayKst,
+  checked_at: new Date().toISOString(),
+  retry_after_seconds: null,
+  ingestion: {
+    job_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    status: "COMPLETED",
+    completed: true,
+    created: 2,
+    updated: 0,
+    matched: 2,
+  },
+  analysis: {
+    parent_job_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    parent_status: "COMPLETED",
+    terminal: true,
+    planned: 2,
+    attempted: 2,
+    remaining: 0,
+    in_flight: 0,
+    completed: 2,
+    partial: 0,
+    failed: 0,
+    queue_pending: 0,
+  },
+  source_calls: { pps: 0, openai: 0, teams: 0 },
+};
+const validatedReady = one(
+  "Validate Today's Daily Analysis Readiness",
+  readyResponse,
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+);
+assert.equal(validatedReady.readiness.ready, true);
+assert.equal(validatedReady.readiness.contractValid, true);
+assert.deepEqual(validatedReady.source_calls, { configTable: 1, backend: 1, teams: 0 });
+
+const readyEmptyResponse = structuredClone(readyResponse);
+readyEmptyResponse.reason_code = "READY_EMPTY";
+readyEmptyResponse.ingestion.created = 0;
+readyEmptyResponse.analysis = {
+  parent_job_id: null,
+  parent_status: null,
+  terminal: false,
+  planned: 0,
+  attempted: 0,
+  remaining: 0,
+  in_flight: 0,
+  completed: 0,
+  partial: 0,
+  failed: 0,
+  queue_pending: 0,
+};
+assert.equal(one(
+  "Validate Today's Daily Analysis Readiness",
+  readyEmptyResponse,
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+).readiness.ready, true);
+
+const runningResponse = structuredClone(readyResponse);
+runningResponse.status = "RUNNING";
+runningResponse.ready = false;
+runningResponse.reason_code = "DAILY_ANALYSIS_RUNNING";
+runningResponse.retry_after_seconds = 900;
+runningResponse.analysis.parent_status = "RUNNING";
+runningResponse.analysis.terminal = false;
+runningResponse.analysis.planned = 2;
+runningResponse.analysis.attempted = 1;
+runningResponse.analysis.remaining = 1;
+runningResponse.analysis.completed = 1;
+const validatedRunning = one(
+  "Validate Today's Daily Analysis Readiness",
+  runningResponse,
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+);
+assert.equal(validatedRunning.readiness.ready, false);
+const runningSkip = one("Record Scheduled Readiness Skip", validatedRunning);
+assert.equal(runningSkip.delivery.status, "SKIPPED_ANALYSIS_RUNNING");
+const runningTerminal = one("Validate Scheduled Readiness Skip", runningSkip);
+assert.equal(runningTerminal.status, "DELIVERY_DEFERRED");
+assert.deepEqual(runningTerminal.sourceCalls, { configTable: 1, backend: 1, teams: 0 });
+assert.equal(runningTerminal.delivery.actualTeamsRequestAttempted, false);
+assert.equal(runningTerminal.schedule.firstAttempt, "09:00");
+assert.equal(runningTerminal.schedule.lastAttempt, "10:45");
+assert.equal(runningTerminal.schedule.maxAttempts, 8);
+
+const malformedReadiness = one(
+  "Validate Today's Daily Analysis Readiness",
+  { error: { message: "raw-backend-error-must-not-leave" } },
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+);
+assert.equal(malformedReadiness.readiness.status, "FAILED");
+assert.equal(malformedReadiness.readiness.reasonCode, "READINESS_BACKEND_CONTRACT_INVALID");
+assert(!JSON.stringify(malformedReadiness).includes("raw-backend-error-must-not-leave"));
+
 const fixture = one("Build Offline Delivery Fixture");
 fixture.briefing.notices[0].raw_provider_payload = "PRIVATE-CONTENT-MARKER";
 fixture.briefing.notices[0].private_blob = "PRIVATE-BLOB-MARKER";
@@ -330,14 +449,20 @@ const storedResponse = {
   totals: { observed: 1, included: 1 },
   notices: fixture.briefing.notices.slice(0, 1),
 };
-const liveInput = one("Validate Stored Briefing Contract", storedResponse, {
+const storedLiveInput = one("Validate Stored Briefing Contract", storedResponse, {
   node: { "Validate Teams Delivery Config": { json: approvedResult } },
 });
-const first = one(
+const liveInput = one("Attach Scheduled Readiness Context", storedLiveInput, {
+  node: { "Validate Today's Daily Analysis Readiness": { json: validatedReady } },
+});
+assert.equal(liveInput.readiness.ready, true);
+assert.deepEqual(liveInput.source_calls, { configTable: 1, backend: 2, teams: 0 });
+const firstEnvelope = one(
   "Build Sanitized Dedupe Envelope",
   liveInput,
   { execution: { id: "execution-first" } },
 );
+const first = one("Stabilize Scheduled Daily Correlation", firstEnvelope);
 assert.equal(first.delivery.status, "READY_TO_RESERVE");
 assert.equal(first.delivery.shouldReserve, true);
 const scheduledFingerprintSource = `${first.runtime.target.teamId}|${first.runtime.target.channelId}|${first.delivery.htmlMessage}`;
@@ -347,19 +472,63 @@ assert.equal(first.delivery.correlationGeneration, undefined);
 assert.equal(first.delivery.reservation.ownerToken, "w12:execution-first");
 assert.match(first.delivery.reservation.endpointPath, /notifications\/teams\/mock$/);
 assert.equal(first.delivery.reservation.body.card.paiLoopDeliveryReservation.ownerToken, "w12:execution-first");
+assert.equal(first.delivery.reservation.body.card.paiLoopDeliveryReservation.correlationId, first.delivery.correlationId);
+assert.equal(first.delivery.reservation.body.correlation_id, first.delivery.correlationId);
 
-const manualRetestInput = structuredClone(liveInput);
-manualRetestInput.runtime = manualLiveRuntime;
-const manualRetestFirst = one(
+const changedTargetLiveInput = structuredClone(liveInput);
+changedTargetLiveInput.runtime.target = {
+  teamId: "22222222-2222-4222-8222-222222222222",
+  channelId: "19:changed-target@thread.tacv2",
+};
+const changedTargetEnvelope = one(
+  "Build Sanitized Dedupe Envelope",
+  changedTargetLiveInput,
+  { execution: { id: "execution-changed-target" } },
+);
+const changedTargetAttempt = one(
+  "Stabilize Scheduled Daily Correlation",
+  changedTargetEnvelope,
+);
+assert.notEqual(changedTargetAttempt.delivery.correlationId, first.delivery.correlationId);
+assert.equal(
+  changedTargetAttempt.delivery.reservation.body.correlation_id,
+  changedTargetAttempt.delivery.correlationId,
+);
+assert.equal(
+  changedTargetAttempt.delivery.reservation.body.card.paiLoopDeliveryReservation.correlationId,
+  changedTargetAttempt.delivery.correlationId,
+);
+const changedTargetReservation = one(
+  "Validate Persistent Teams Reservation",
+  reservationResponse(changedTargetAttempt),
+  { node: { "Stabilize Scheduled Daily Correlation": { json: changedTargetAttempt } } },
+);
+assert.equal(changedTargetReservation.delivery.status, "RESERVATION_ACQUIRED");
+
+const malformedTargetEnvelope = structuredClone(firstEnvelope);
+malformedTargetEnvelope.runtime.target.channelId = "<invalid-channel>";
+assert.throws(
+  () => one("Stabilize Scheduled Daily Correlation", malformedTargetEnvelope),
+  /scheduled correlation requires validated Teams target/,
+);
+
+const manualStoredInput = one("Validate Stored Briefing Contract", storedResponse, {
+  node: { "Validate Teams Delivery Config": { json: { ...approvedResult, runtime: manualLiveRuntime } } },
+});
+const manualRetestInput = one("Attach Scheduled Readiness Context", manualStoredInput);
+assert.deepEqual(manualRetestInput.source_calls, { configTable: 1, backend: 1, teams: 0 });
+const manualRetestFirstEnvelope = one(
   "Build Sanitized Dedupe Envelope",
   manualRetestInput,
   { execution: { id: "manual-retest-first" } },
 );
-const manualRetestSecond = one(
+const manualRetestSecondEnvelope = one(
   "Build Sanitized Dedupe Envelope",
   manualRetestInput,
   { execution: { id: "manual-retest-second" } },
 );
+const manualRetestFirst = one("Stabilize Scheduled Daily Correlation", manualRetestFirstEnvelope);
+const manualRetestSecond = one("Stabilize Scheduled Daily Correlation", manualRetestSecondEnvelope);
 const manualGeneration = "oauth-scope-retest-v1";
 const manualFingerprintSource = `${manualRetestFirst.runtime.target.teamId}|${manualRetestFirst.runtime.target.channelId}|${manualRetestFirst.delivery.htmlMessage}|manual-live-test-generation:${manualGeneration}`;
 assert.equal(manualRetestFirst.delivery.correlationGeneration, manualGeneration);
@@ -370,7 +539,7 @@ assert.notEqual(manualRetestFirst.delivery.correlationId, first.delivery.correla
 const manualRetestDuplicate = one(
   "Validate Persistent Teams Reservation",
   reservationResponse(manualRetestSecond, manualRetestFirst),
-  { node: { "Build Sanitized Dedupe Envelope": { json: manualRetestSecond } } },
+  { node: { "Stabilize Scheduled Daily Correlation": { json: manualRetestSecond } } },
 );
 assert.equal(manualRetestDuplicate.delivery.status, "DUPLICATE_PERSISTENT_SUPPRESSED");
 assert.equal(manualRetestDuplicate.delivery.reservationAcquired, false);
@@ -378,27 +547,53 @@ assert.equal(manualRetestDuplicate.delivery.reservationAcquired, false);
 const acquired = one(
   "Validate Persistent Teams Reservation",
   reservationResponse(first),
-  { node: { "Build Sanitized Dedupe Envelope": { json: first } } },
+  { node: { "Stabilize Scheduled Daily Correlation": { json: first } } },
 );
 assert.equal(acquired.delivery.status, "RESERVATION_ACQUIRED");
 assert.equal(acquired.delivery.reservationAcquired, true);
 assert.equal(acquired.delivery.reservation.recordId, "persistent-reservation-record");
-assert.equal(acquired.source_calls.backend, 2);
+assert.equal(acquired.source_calls.backend, 3);
 
-const duplicateAttempt = one(
+const duplicateEnvelope = one(
   "Build Sanitized Dedupe Envelope",
   liveInput,
   { execution: { id: "execution-second" } },
 );
+const duplicateAttempt = one("Stabilize Scheduled Daily Correlation", duplicateEnvelope);
 assert.equal(duplicateAttempt.delivery.correlationId, first.delivery.correlationId);
 assert.notEqual(duplicateAttempt.delivery.reservation.ownerToken, first.delivery.reservation.ownerToken);
 const duplicateReservation = one(
   "Validate Persistent Teams Reservation",
   reservationResponse(duplicateAttempt, first),
-  { node: { "Build Sanitized Dedupe Envelope": { json: duplicateAttempt } } },
+  { node: { "Stabilize Scheduled Daily Correlation": { json: duplicateAttempt } } },
 );
 assert.equal(duplicateReservation.delivery.status, "DUPLICATE_PERSISTENT_SUPPRESSED");
 assert.equal(duplicateReservation.delivery.reservationAcquired, false);
+
+const changedStoredResponse = structuredClone(storedResponse);
+changedStoredResponse.notices[0].title = `${changedStoredResponse.notices[0].title} (09:15 저장 갱신)`;
+const changedStoredInput = one("Validate Stored Briefing Contract", changedStoredResponse, {
+  node: { "Validate Teams Delivery Config": { json: approvedResult } },
+});
+const changedLiveInput = one("Attach Scheduled Readiness Context", changedStoredInput, {
+  node: { "Validate Today's Daily Analysis Readiness": { json: validatedReady } },
+});
+const changedEnvelope = one(
+  "Build Sanitized Dedupe Envelope",
+  changedLiveInput,
+  { execution: { id: "execution-retry-changed-briefing" } },
+);
+const changedAttempt = one("Stabilize Scheduled Daily Correlation", changedEnvelope);
+assert.notEqual(changedAttempt.delivery.fingerprint, first.delivery.fingerprint);
+assert.equal(changedAttempt.delivery.correlationId, first.delivery.correlationId);
+const changedReservation = one(
+  "Validate Persistent Teams Reservation",
+  reservationResponse(changedAttempt, first),
+  { node: { "Stabilize Scheduled Daily Correlation": { json: changedAttempt } } },
+);
+assert.equal(changedReservation.delivery.status, "DUPLICATE_PERSISTENT_SUPPRESSED");
+assert.equal(changedReservation.delivery.actualTeamsRequestAttempted, false);
+
 const duplicateTerminal = one(
   "Validate Teams Delivery Outcome",
   one("Record Preview or Duplicate Suppressed", duplicateReservation),
@@ -406,12 +601,12 @@ const duplicateTerminal = one(
 assert.equal(duplicateTerminal.status, "DELIVERY_SKIPPED");
 assert.equal(duplicateTerminal.delivery.status, "DUPLICATE_PERSISTENT_SUPPRESSED");
 assert.equal(duplicateTerminal.delivery.actualTeamsRequestAttempted, false);
-assert.deepEqual(duplicateTerminal.sourceCalls, { configTable: 1, backend: 2, teams: 0 });
+assert.deepEqual(duplicateTerminal.sourceCalls, { configTable: 1, backend: 3, teams: 0 });
 
 const reservationFailure = one(
   "Validate Persistent Teams Reservation",
   { error: { message: "raw-reservation-error-must-not-leave" } },
-  { node: { "Build Sanitized Dedupe Envelope": { json: first } } },
+  { node: { "Stabilize Scheduled Daily Correlation": { json: first } } },
 );
 assert.equal(reservationFailure.delivery.status, "RESERVATION_FAILED_NON_BLOCKING");
 assert.equal(reservationFailure.delivery.reservationAcquired, false);
@@ -435,7 +630,13 @@ assert.equal(successful.delivery.actualTeamsRequestSent, true);
 assert.equal(successful.delivery.htmlMessage, undefined);
 const successfulTerminal = one("Validate Teams Delivery Outcome", successful);
 assert.equal(successfulTerminal.status, "DELIVERY_SENT");
-assert.deepEqual(successfulTerminal.sourceCalls, { configTable: 1, backend: 2, teams: 1 });
+assert.deepEqual(successfulTerminal.sourceCalls, { configTable: 1, backend: 3, teams: 1 });
+const scheduledFinal = one("Normalize Teams Delivery Schedule Contract", successfulTerminal, {
+  node: { "Validate Today's Daily Analysis Readiness": { json: validatedReady } },
+});
+assert.equal(scheduledFinal.schemaVersion, "1.3");
+assert.equal(scheduledFinal.schedule.cron, "0,15,30,45 9-10 * * *");
+assert.equal(scheduledFinal.schedule.maxAttempts, 8);
 
 const failed = one(
   "Normalize Non-Blocking Teams Result",
@@ -499,7 +700,7 @@ assert.deepEqual(
     contractVersion: manifestEntry.contractVersion,
     promotionState: manifestEntry.promotionState,
   },
-  { publish: true, contractVersion: "teams-delivery-1.2", promotionState: "verified-live-e2e" },
+  { publish: true, contractVersion: "teams-delivery-1.3", promotionState: "verified-live-e2e" },
 );
 
-console.log("Teams explicit trigger modes, labeled notice sections, bounded department routing, 24KB fail-closed sanitizer, persistent reservation, and native sink contracts passed.");
+console.log("Teams 09:00 readiness gate, bounded 15-minute retries, stable daily correlation, manual-live separation, sanitizer, persistent reservation, and native sink contracts passed.");

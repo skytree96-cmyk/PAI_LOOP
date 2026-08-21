@@ -14,9 +14,18 @@ from sqlalchemy.orm import Session, selectinload
 
 from .analysis_pipeline import AnalysisPipelineError, run_analysis_pipeline
 from .auth import require_api_key
+from .daily_analysis_scope import (
+    MATERIAL_SCOPE_VERSION,
+    MAX_MATERIAL_NOTICE_KEYS,
+    canonical_material_notice_keys,
+    material_scope_sha256,
+    validated_material_scope,
+)
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .pps_enrichment import (
+    MAX_ATTACHMENTS_IN_MANIFEST,
     PpsEnrichmentResult,
+    current_pps_attachment_coverage,
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
@@ -33,7 +42,9 @@ class AnalysisBatchRequest(ApiModel):
     force: Literal[False] = False
     enrich_missing: bool = False
     max_notices: int = Field(default=3, ge=1, le=3)
-    max_attachments_per_notice: int = Field(default=1, ge=1, le=1)
+    # This is an exact provider-manifest contract, not an operator sampling
+    # knob. A smaller value would silently restore the former one-file bug.
+    max_attachments_per_notice: Literal[10] = MAX_ATTACHMENTS_IN_MANIFEST
     # Optional parent operation identity used by n8n backfill/daily chunk
     # orchestration. It never changes analysis semantics; it only links the
     # sanitised child audit to a resumable parent run.
@@ -61,8 +72,8 @@ class AnalysisBatchRequest(ApiModel):
                 "operation_id, segment_id, and chunk_index must be provided together"
             )
         if self.operation_id is not None:
-            if len(self.notice_keys) > 3 or self.max_notices != len(self.notice_keys):
-                raise ValueError("operation chunks must contain exactly max_notices <= 3 keys")
+            if len(self.notice_keys) != 1 or self.max_notices != 1:
+                raise ValueError("operation chunks must contain exactly one notice")
         return self
 
 
@@ -85,15 +96,41 @@ class AnalysisBatchItemOut(ApiModel):
     analysis_reason_code: Literal[
         "ANALYZED",
         "ATTACHMENT_NONE",
+        "ATTACHMENT_COVERAGE_INCOMPLETE",
         "HWP_ONLY_UNSUPPORTED",
+        "UNSUPPORTED_ATTACHMENT",
         "HWPX_EXTRACT_FAILED",
         "PDF_EXTRACT_FAILED",
+        "DOCUMENT_EXTRACT_FAILED",
         "OPENAI_REVIEW",
         "QUOTE_UNVERIFIED",
         "NOT_SELECTED",
     ] | None = None
     analysis_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    attachments_discovered: int = 0
+    attachments_audited: int = 0
+    attachments_supported: int = 0
+    attachments_accepted: int = 0
+    attachment_coverage_complete: bool = False
+    all_supported_attachments_accepted: bool = False
+
+
+class AnalysisAttachmentEnrichmentOut(ApiModel):
+    attachment_id: str
+    media_type: str
+    status: Literal["COMPLETED", "REUSED", "REVIEW", "PLANNED"]
+    reason_code: str
+    attempted: bool = False
+    content_extracted: bool = False
+    source_read_complete: bool = False
+    analysis_input_complete: bool = False
+    source_characters: int = Field(default=0, ge=0, le=2_000_000)
+    analysis_input_characters: int = Field(default=0, ge=0, le=120_000)
+    members_discovered: int = Field(default=0, ge=0, le=1_024)
+    members_processed: int = Field(default=0, ge=0, le=1_024)
+    openai_calls: int = Field(default=0, ge=0, le=2)
+    version_id: str | None = None
 
 
 class AnalysisEnrichmentOut(ApiModel):
@@ -103,9 +140,18 @@ class AnalysisEnrichmentOut(ApiModel):
     skipped: int = 0
     failed: int = 0
     attachments_discovered: int = 0
+    attachments_attempted: int = 0
     attachments_processed: int = 0
+    downloaded_bytes: int = Field(default=0, ge=0, le=80 * 1024 * 1024)
+    source_characters: int = Field(default=0, ge=0, le=20_000_000)
+    analysis_input_characters: int = Field(default=0, ge=0, le=1_200_000)
+    source_read_complete: bool = False
+    analysis_input_complete: bool = False
+    members_discovered: int = Field(default=0, ge=0, le=10_240)
+    members_processed: int = Field(default=0, ge=0, le=10_240)
     openai_calls: int = 0
     warnings: list[str] = Field(default_factory=list)
+    attachment_results: list[AnalysisAttachmentEnrichmentOut] = Field(default_factory=list)
 
 
 class AnalysisBatchResponse(ApiModel):
@@ -134,7 +180,7 @@ class AnalysisBackfillPlanRequest(ApiModel):
     notice_keys: list[str] = Field(default_factory=list, max_length=3012)
     # DAILY callers identify the exact updated/attachment-changed partition.
     # A stable notice_key can then be reopened only when its persisted work
-    # token changed, while a retried 09:00 request remains idempotent.
+    # token changed, while a retried 08:00 request remains idempotent.
     refresh_notice_keys: list[str] = Field(default_factory=list, max_length=3000)
     retry_notice_keys: list[str] = Field(default_factory=list, max_length=12)
     retry_epoch: str | None = Field(
@@ -152,8 +198,25 @@ class AnalysisBackfillPlanRequest(ApiModel):
         max_length=120,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$",
     )
+    # W10 binds every DAILY plan to the exact material key partition emitted
+    # by one durable PPS ingestion audit. W11 resume polling intentionally
+    # omits these fields and preserves the binding already stored on parent.
+    source_ingestion_job_id: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-fA-F-]{36}$",
+    )
+    source_material_notice_keys: list[str] | None = Field(
+        default=None,
+        max_length=MAX_MATERIAL_NOTICE_KEYS,
+    )
     dry_run: bool = False
-    chunk_size: int = Field(default=3, ge=1, le=3)
+    # Multi-attachment notices can use the full provider manifest (up to ten
+    # files), so a durable operation lease is intentionally one notice. This
+    # prevents an older workflow from recreating an unbounded three-notice HTTP
+    # request while retaining the generic protected batch API for diagnostics.
+    chunk_size: Literal[1] = 1
     max_total: int = Field(default=300, ge=1, le=3012)
     execution_limit: int = Field(default=30, ge=1, le=30)
     # 3,012 keys / 30 per execution requires 101 segments. 128 leaves bounded
@@ -174,6 +237,21 @@ class AnalysisBackfillPlanRequest(ApiModel):
             raise ValueError("notice_keys must contain 1..160 character values")
         if len(set(cleaned)) != len(cleaned):
             raise ValueError("notice_keys must be unique")
+        return cleaned
+
+    @field_validator("source_material_notice_keys")
+    @classmethod
+    def validate_source_material_notice_keys(
+        cls,
+        value: list[str] | None,
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [item.strip() for item in value]
+        if any(not item or len(item) > 160 for item in cleaned):
+            raise ValueError("source_material_notice_keys must contain bounded keys")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("source_material_notice_keys must be unique")
         return cleaned
 
     @model_validator(mode="after")
@@ -200,6 +278,21 @@ class AnalysisBackfillPlanRequest(ApiModel):
                 raise ValueError("retry_epoch is required with retry_notice_keys")
         elif self.retry_epoch is not None:
             raise ValueError("retry_epoch requires retry_notice_keys")
+        binding_fields = (
+            self.source_ingestion_job_id,
+            self.source_material_notice_keys,
+        )
+        if any(value is not None for value in binding_fields) and any(
+            value is None for value in binding_fields
+        ):
+            raise ValueError(
+                "source_ingestion_job_id and source_material_notice_keys are required together"
+            )
+        if self.source_ingestion_job_id is not None:
+            if self.queue_name != "DAILY" or self.resume_only:
+                raise ValueError("source ingestion binding is allowed only for DAILY planning")
+            if not set(self.source_material_notice_keys or []).issubset(self.notice_keys):
+                raise ValueError("source material keys must be a subset of notice_keys")
         return self
 
 
@@ -246,7 +339,7 @@ router = APIRouter(
 
 # A single fixed namespace lock serialises the match-or-create arbitration for
 # every DAILY/BACKFILL planner. Queue-specific locks are insufficient because a
-# 09:00 DAILY request and a manual BACKFILL request can contain the same key.
+# 08:00 DAILY request and a manual BACKFILL request can contain the same key.
 # PostgreSQL provides cross-process safety; SQLite and other test dialects use
 # an in-process fallback so concurrent TestClient requests exercise the same
 # contract. 0x5041494C is the stable ASCII namespace "PAIL".
@@ -274,7 +367,7 @@ def _serialize_analysis_completion(function):
     """Use the planner arbitration order for segment completion too.
 
     Both paths acquire the fixed advisory/process lock before the parent row.
-    This prevents a 09:00 append from racing a 15-minute completion between
+    This prevents a 08:00 append from racing a 15-minute completion between
     active-parent selection and durable lease persistence.
     """
 
@@ -374,9 +467,7 @@ def _create_batch_job(
                 )
             requested_keys = set(payload.notice_keys)
             for child in _backfill_children(session, parent.id):
-                child_config = (
-                    child.request_json if isinstance(child.request_json, dict) else {}
-                )
+                child_config = dict(child.request_json or {})
                 child_keys = set(child.notice_keys or [])
                 same_index = child_config.get("chunk_index") == payload.chunk_index
                 overlap = any(
@@ -395,6 +486,44 @@ def _create_batch_job(
                     now=datetime.now(timezone.utc),
                 ):
                     continue
+                # Exact HTTP replay must win over continuation requeue. A
+                # caller retrying a lost response presents the same segment,
+                # chunk index and ordered notice keys; returning the stored
+                # result prevents a second attachment/LLM unit. Only a newly
+                # leased chunk identity may advance the durable cursor.
+                if same_index:
+                    if list(child.notice_keys or []) != payload.notice_keys:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="chunk_index is already bound to different notice keys",
+                        )
+                    if child.status == "RUNNING":
+                        raise HTTPException(
+                            status_code=409,
+                            detail="analysis chunk is already in flight",
+                        )
+                    stored = child_config.get("result_json")
+                    if isinstance(stored, dict):
+                        return child.id, AnalysisBatchResponse.model_validate(stored)
+                    requeue_keys = child_config.get("requeue_notice_keys")
+                    if isinstance(requeue_keys, list) and all(
+                        key in requeue_keys for key in payload.notice_keys
+                    ):
+                        # The previous request failed between durable
+                        # per-attachment persistence and atomic response
+                        # finalisation. Re-open this exact claim; replay reuses
+                        # every prior attachment outcome and safely continues.
+                        child_config.pop("requeue_notice_keys", None)
+                        child.request_json = child_config
+                        child.status = "RUNNING"
+                        child.error_code = None
+                        child.completed_at = None
+                        session.commit()
+                        return child.id, None
+                    raise HTTPException(
+                        status_code=409,
+                        detail="analysis chunk was already processed",
+                    )
                 requeue_keys = child_config.get("requeue_notice_keys")
                 if isinstance(requeue_keys, list) and any(
                     key in requeue_keys for key in child_keys
@@ -405,23 +534,10 @@ def _create_batch_job(
                     continue
                 if not same_index and not overlap:
                     continue
-                if same_index and list(child.notice_keys or []) != payload.notice_keys:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="chunk_index is already bound to different notice keys",
-                    )
                 if child.status == "RUNNING":
                     raise HTTPException(
                         status_code=409,
                         detail="analysis chunk is already in flight",
-                    )
-                if same_index:
-                    stored = child_config.get("result_json")
-                    if isinstance(stored, dict):
-                        return child.id, AnalysisBatchResponse.model_validate(stored)
-                    raise HTTPException(
-                        status_code=409,
-                        detail="analysis chunk was already processed",
                     )
                 if overlap:
                     raise HTTPException(
@@ -469,7 +585,25 @@ def _store_batch_response(
             raise RuntimeError("analysis batch audit job disappeared")
         request_json = dict(job.request_json or {})
         request_json["result_json"] = response.model_dump(mode="json")
+        if "ATTACHMENT_CONTINUATION_REQUIRED" in response.enrichment.warnings:
+            # A bounded request persisted all completed attachment attempts but
+            # intentionally stopped before the next worst-case unit. Retain the
+            # child as an audit row while making its notice key non-terminal so
+            # the parent planner leases it again with a new chunk index.
+            request_json["requeue_notice_keys"] = [
+                item.notice_key for item in response.results
+            ]
         job.request_json = request_json
+        # Status, counters, resumability marker, and replay payload are one
+        # atomic child transition. A crash can no longer leave a terminal job
+        # without the cursor/result needed by its parent and exact retries.
+        job.status = response.status
+        job.fetched = response.processed
+        job.created_count = response.completed
+        job.duplicate_count = response.skipped
+        job.quarantined_count = response.failed
+        job.warnings = response.warnings
+        job.completed_at = datetime.now(timezone.utc)
         session.commit()
 
 
@@ -480,6 +614,10 @@ _RETRYABLE_ANALYSIS_CODES = {
     "ANALYZED",
     "HWPX_EXTRACT_FAILED",
     "PDF_EXTRACT_FAILED",
+    "DOCUMENT_EXTRACT_FAILED",
+    "ATTACHMENT_COVERAGE_INCOMPLETE",
+    "HWP_ONLY_UNSUPPORTED",
+    "UNSUPPORTED_ATTACHMENT",
     "OPENAI_REVIEW",
     "QUOTE_UNVERIFIED",
 }
@@ -600,7 +738,7 @@ def _notice_work_tokens(session: Session, keys: list[str]) -> dict[str, str]:
         # Only provider-authored notice metadata is an authoritative input
         # token. Analysis itself appends OPENAI_REQUIREMENT_EXTRACTION output
         # versions; including those would make a successful child falsely
-        # supersede itself on an idempotent 09:00 retry.
+        # supersede itself on an idempotent 08:00 retry.
         latest = max(
             (
                 version
@@ -706,7 +844,7 @@ def _completed_retry_epoch_keys(
 ) -> set[str]:
     """Find retry keys already executed by a terminal DAILY operation.
 
-    A downstream n8n failure can cause the whole 09:00 workflow to be run
+    A downstream n8n failure can cause the whole 08:00 workflow to be run
     again after its analysis parent has completed.  The active-parent token is
     therefore insufficient: terminal parent+child audits form the durable
     same-epoch dedupe ledger.  A token is consumed only when the key has an
@@ -851,6 +989,43 @@ def _reserved_backfill_keys(
             key for key in (parent.notice_keys or []) if key not in terminal_keys
         )
     return reserved
+
+
+def _daily_source_binding(
+    session: Session,
+    payload: AnalysisBackfillPlanRequest,
+) -> dict[str, Any]:
+    if payload.source_ingestion_job_id is None:
+        return {}
+    source = session.get(IngestionJob, payload.source_ingestion_job_id)
+    if (
+        source is None
+        or source.source != "PPS"
+        or source.mode != "LIVE"
+        or source.status != "COMPLETED"
+        or source.completed_at is None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="DAILY source ingestion must be a completed live PPS audit",
+        )
+    source_config = source.request_json if isinstance(source.request_json, dict) else {}
+    stored_keys = validated_material_scope(source_config)
+    requested_keys = canonical_material_notice_keys(
+        payload.source_material_notice_keys or []
+    )
+    if stored_keys is None or requested_keys != stored_keys:
+        raise HTTPException(
+            status_code=409,
+            detail="DAILY source material scope does not match the PPS audit",
+        )
+    return {
+        "source_ingestion_job_id": source.id,
+        "source_material_scope_version": MATERIAL_SCOPE_VERSION,
+        "source_material_notice_keys": stored_keys,
+        "source_material_notice_key_count": len(stored_keys),
+        "source_material_notice_keys_sha256": material_scope_sha256(stored_keys),
+    }
 
 
 def _select_backfill_notice_keys(
@@ -1066,7 +1241,7 @@ def _backfill_status(
         chunk_indices=chunk_indices,
         warnings=sorted(set(warnings)),
         note=(
-            "신규·정정 OPEN 공고를 우선 예약하고, 선택된 경우에만 cooldown이 지난 재시도 대상을 뒤에 배치합니다. 각 chunk는 최대 3건, 실행당 제공량은 고정되며 child audit로 다음 continuation을 계산합니다."
+            "신규·정정 OPEN 공고를 우선 예약하고, 선택된 경우에만 cooldown이 지난 재시도 대상을 뒤에 배치합니다. 각 chunk는 1건, 실행당 제공량은 고정되며 child audit로 다음 continuation을 계산합니다."
         ),
     )
 
@@ -1083,12 +1258,13 @@ def plan_analysis_backfill(
     """Reserve a resumable snapshot of OPEN analysis work.
 
     This endpoint does not call PPS/OpenAI and does not analyse documents. n8n
-    expands the returned list into independent three-notice calls to the
+    expands the returned list into independent single-notice calls to the
     existing analysis batch endpoint. An active reservation is reused so a
     retried workflow cannot create a second concurrent sweep of the same keys.
     """
 
     now = datetime.now(timezone.utc)
+    source_binding = _daily_source_binding(session, payload)
     parent: IngestionJob | None = None
     planner_mutated = False
     if payload.resume_job_id is not None:
@@ -1228,6 +1404,7 @@ def plan_analysis_backfill(
                     for key in initial_retry_eligible
                     if payload.retry_epoch is not None
                 },
+                **source_binding,
             },
             matched=len(notice_keys),
             notice_keys=notice_keys,
@@ -1252,7 +1429,7 @@ def plan_analysis_backfill(
         session.flush()
         planner_mutated = True
     elif payload.notice_keys and parent.completed_at is None:
-        # A 09:00 daily run may discover new/updated keys while a prior day's
+        # A 08:00 daily run may discover new/updated keys while a prior day's
         # continuation is still active. Append them ahead of the old remaining
         # queue but never re-add child-audited keys.
         children = _backfill_children(session, parent.id)
@@ -1341,6 +1518,7 @@ def plan_analysis_backfill(
         parent_config["work_tokens"] = work_tokens
         parent_config["work_generations"] = work_generations
         parent_config["retry_tokens"] = retry_tokens
+        parent_config.update(source_binding)
         parent.request_json = parent_config
         incoming_set = set(incoming)
         attempted_order = [
@@ -1356,7 +1534,7 @@ def plan_analysis_backfill(
         planner_mutated = True
 
     # Acquire the durable segment lease while holding the parent row lock.
-    # PostgreSQL serialises competing 09:00/15-minute planners here; SQLite
+    # PostgreSQL serialises competing 08:00/15-minute planners here; SQLite
     # ignores FOR UPDATE but remains deterministic in single-process tests.
     parent = session.scalar(
         select(IngestionJob)
@@ -1365,7 +1543,17 @@ def plan_analysis_backfill(
     )
     assert parent is not None  # database invariant
     config = dict(parent.request_json or {})
-    chunk_size = int(config.get("chunk_size", payload.chunk_size))
+    if source_binding:
+        source_keys = set(source_binding["source_material_notice_keys"])
+        if not source_keys.issubset(set(parent.notice_keys or [])):
+            raise HTTPException(
+                status_code=409,
+                detail="DAILY parent does not cover the bound PPS material scope",
+            )
+    # v0.9.1 processes one notice per HTTP lease. This also safely migrates a
+    # parent operation created by the older three-notice workflow contract.
+    chunk_size = 1
+    config["chunk_size"] = chunk_size
     stale_after_hours = int(
         config.get("reservation_ttl_hours", payload.reservation_ttl_hours)
     )
@@ -1552,7 +1740,7 @@ def get_analysis_backfill(
     return _backfill_status(
         session,
         parent,
-        chunk_size=max(1, min(3, int(config.get("chunk_size", 3)))),
+        chunk_size=1,
         stale_after_hours=max(
             1,
             min(24, int(config.get("reservation_ttl_hours", 6))),
@@ -1604,7 +1792,7 @@ def complete_analysis_backfill(
             return _backfill_status(
                 session,
                 parent,
-                chunk_size=max(1, min(3, int(config.get("chunk_size", 3)))),
+                chunk_size=1,
                 stale_after_hours=max(
                     1,
                     min(24, int(config.get("reservation_ttl_hours", 6))),
@@ -1678,7 +1866,7 @@ def complete_analysis_backfill(
     config.pop("leased_chunks", None)
     config.pop("lease_request_token", None)
     parent.request_json = config
-    chunk_size = max(1, min(3, int(config.get("chunk_size", 3))))
+    chunk_size = 1
     ttl_hours = max(1, min(24, int(config.get("reservation_ttl_hours", 6))))
     execution_limit = max(1, min(30, int(config.get("execution_limit", 30))))
     max_continuations = max(
@@ -1760,6 +1948,16 @@ def _finish_batch_job(
         job.quarantined_count = failed
         job.warnings = warnings
         job.completed_at = datetime.now(timezone.utc)
+        request_json = dict(job.request_json or {})
+        if request_json.get("parent_job_id") and not isinstance(
+            request_json.get("result_json"), dict
+        ):
+            # Keep a failed finalisation/non-item boundary recoverable. The
+            # parent must not consume this key as terminal, and the same exact
+            # chunk retry can reopen the claim without duplicating persisted
+            # attachment calls.
+            request_json["requeue_notice_keys"] = list(job.notice_keys or [])
+            job.request_json = request_json
         session.commit()
 
 
@@ -1826,11 +2024,24 @@ def _attach_public_analysis_reason(
             evaluated=bool(notice.evaluations),
             source_kind=source_kind,
         )
+        coverage = (
+            current_pps_attachment_coverage(session, notice.id)
+            if source_kind == "PPS"
+            else None
+        )
     return item.model_copy(
         update={
             "analysis_state": reason.state,
             "analysis_reason_code": reason.reason_code,
             "analysis_reason": reason.reason,
+            "attachments_discovered": coverage.discovered if coverage else 0,
+            "attachments_audited": coverage.audited if coverage else 0,
+            "attachments_supported": coverage.supported if coverage else 0,
+            "attachments_accepted": coverage.accepted if coverage else 0,
+            "attachment_coverage_complete": coverage.complete if coverage else True,
+            "all_supported_attachments_accepted": (
+                coverage.all_supported_accepted if coverage else True
+            ),
         }
     )
 
@@ -1840,6 +2051,7 @@ def _enrich_one_notice(
     *,
     notice_id: str,
     payload: AnalysisBatchRequest,
+    deadline_monotonic: float,
 ) -> PpsEnrichmentResult:
     settings = request.app.state.settings
     with request.app.state.session_factory() as session:
@@ -1850,13 +2062,14 @@ def _enrich_one_notice(
             openai_model=settings.openai_model,
             max_attachments=payload.max_attachments_per_notice,
             dry_run=payload.dry_run,
-            # One notice is bounded to roughly one minute. Together with the
-            # batch wall-clock guard this keeps the n8n 240 second request
-            # contract below its hard timeout and returns PARTIAL instead of
-            # allowing an unbounded provider retry chain.
+            # Each attachment is one durable unit. The shared deadline starts
+            # another unit only when its full download + two-call worst case
+            # still fits, keeping n8n below its HTTP timeout while returning a
+            # resumable PARTIAL response for the remaining manifest entries.
             download_timeout_seconds=12,
             openai_timeout_seconds=45,
             openai_max_retries=0,
+            deadline_monotonic=deadline_monotonic,
         )
 
 
@@ -1898,9 +2111,18 @@ def _execute_notice_analysis_batch(
     materialized = evaluations = snapshots = 0
     enrichment_requested = min(len(payload.notice_keys), payload.max_notices) if payload.enrich_missing else 0
     enrichment_attempted = enrichment_completed = enrichment_skipped = enrichment_failed = 0
-    enrichment_discovered = enrichment_processed = enrichment_openai_calls = 0
+    enrichment_discovered = enrichment_attachments_attempted = enrichment_processed = 0
+    enrichment_downloaded_bytes = 0
+    enrichment_source_characters = enrichment_analysis_input_characters = 0
+    enrichment_members_discovered = enrichment_members_processed = 0
+    enrichment_source_complete = enrichment_input_complete = True
+    enrichment_openai_calls = 0
     enrichment_warnings: list[str] = []
-    enrichment_deadline = time.monotonic() + 205
+    enrichment_attachment_results: list[AnalysisAttachmentEnrichmentOut] = []
+    # At most two worst-case attachment units fit below this request boundary:
+    # 3 redirect hops * 12s + 2 Responses calls * 45s = 126s per unit. n8n's
+    # HTTP timeout is 600s; a continuation never starts a third unsafe unit.
+    enrichment_deadline = time.monotonic() + 270
 
     for index, notice_key in enumerate(payload.notice_keys):
         enrichment_targeted = payload.enrich_missing and index < payload.max_notices
@@ -1947,6 +2169,7 @@ def _execute_notice_analysis_batch(
                     request,
                     notice_id=notice_id,
                     payload=payload,
+                    deadline_monotonic=enrichment_deadline,
                 )
             except Exception:  # pragma: no cover - provider fail-closed boundary
                 # Exact attachment context is unavailable at this outer
@@ -1964,8 +2187,24 @@ def _execute_notice_analysis_batch(
         item_enrichment_warnings: list[str] = []
         if enrichment_result is not None:
             enrichment_discovered += enrichment_result.attachments_discovered
+            enrichment_attachments_attempted += enrichment_result.attachments_attempted
             enrichment_processed += enrichment_result.attachments_processed
+            enrichment_downloaded_bytes += enrichment_result.downloaded_bytes
+            enrichment_source_characters += enrichment_result.source_characters
+            enrichment_analysis_input_characters += enrichment_result.analysis_input_characters
+            enrichment_members_discovered += enrichment_result.members_discovered
+            enrichment_members_processed += enrichment_result.members_processed
+            enrichment_source_complete = (
+                enrichment_source_complete and enrichment_result.source_read_complete
+            )
+            enrichment_input_complete = (
+                enrichment_input_complete and enrichment_result.analysis_input_complete
+            )
             enrichment_openai_calls += enrichment_result.openai_calls
+            enrichment_attachment_results.extend(
+                AnalysisAttachmentEnrichmentOut.model_validate(item)
+                for item in enrichment_result.attachment_results
+            )
             item_enrichment_warnings.extend(enrichment_result.warnings)
             enrichment_warnings.extend(enrichment_result.warnings)
             if enrichment_result.status in {"COMPLETED", "REUSED"}:
@@ -1988,6 +2227,27 @@ def _execute_notice_analysis_batch(
                 failed += 1
             else:
                 skipped += 1
+            continue
+
+        if (
+            enrichment_result is not None
+            and "ATTACHMENT_CONTINUATION_REQUIRED" in enrichment_result.warnings
+        ):
+            # Do not materialise a misleading terminal AnalysisRun while the
+            # current manifest still has unaudited attachments. The child job
+            # is stored with requeue_notice_keys and the parent leases this
+            # exact notice again; prior per-attachment versions are reused.
+            rows.append(
+                AnalysisBatchItemOut(
+                    notice_key=notice_key,
+                    status="SKIPPED",
+                    document_status="ATTACHMENT_CONTINUATION_REQUIRED",
+                    evaluation_status="NOT_RUN",
+                    snapshot_status="NOT_RUN",
+                    warnings=sorted(set(item_enrichment_warnings)),
+                )
+            )
+            skipped += 1
             continue
 
         with request.app.state.session_factory() as session:
@@ -2053,15 +2313,6 @@ def _execute_notice_analysis_batch(
     status_value = "PARTIAL" if partial else "COMPLETED"
     if status_value == "PARTIAL" and not warnings:
         warnings = ["PARTIAL_ANALYSIS"]
-    _finish_batch_job(
-        request,
-        job_id=job_id,
-        status_value=status_value,
-        completed=completed,
-        skipped=skipped,
-        failed=failed,
-        warnings=warnings,
-    )
     response = AnalysisBatchResponse(
         job_id=job_id,
         status=status_value,
@@ -2084,9 +2335,22 @@ def _execute_notice_analysis_batch(
             skipped=enrichment_skipped,
             failed=enrichment_failed,
             attachments_discovered=enrichment_discovered,
+            attachments_attempted=enrichment_attachments_attempted,
             attachments_processed=enrichment_processed,
+            downloaded_bytes=enrichment_downloaded_bytes,
+            source_characters=enrichment_source_characters,
+            analysis_input_characters=enrichment_analysis_input_characters,
+            source_read_complete=(
+                enrichment_source_complete and enrichment_attempted > 0
+            ),
+            analysis_input_complete=(
+                enrichment_input_complete and enrichment_attempted > 0
+            ),
+            members_discovered=enrichment_members_discovered,
+            members_processed=enrichment_members_processed,
             openai_calls=enrichment_openai_calls,
             warnings=sorted(set(enrichment_warnings)),
+            attachment_results=enrichment_attachment_results,
         ),
     )
     _store_batch_response(request, job_id=job_id, response=response)

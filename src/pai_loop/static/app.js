@@ -1080,6 +1080,10 @@
       analysisReasonCode: analysisReason.code,
       analysisReason: analysisReason.message,
       analysisAttempted: booleanValue(firstValue(source.analysis_attempted, source.analysisAttempted)) ?? false,
+      analysisAttachmentCount: numberOrNull(firstValue(source.analysis_attachment_count, source.analysisAttachmentCount)) ?? 0,
+      analysisAttachmentsAudited: numberOrNull(firstValue(source.analysis_attachments_audited, source.analysisAttachmentsAudited)) ?? 0,
+      analysisAttachmentsAccepted: numberOrNull(firstValue(source.analysis_attachments_accepted, source.analysisAttachmentsAccepted)) ?? 0,
+      analysisAttachmentCoverageComplete: booleanValue(firstValue(source.analysis_attachment_coverage_complete, source.analysisAttachmentCoverageComplete)) ?? false,
       analysisUpdatedAt: firstValue(source.analysis_updated_at, source.analysisUpdatedAt, null),
       sourceKind,
       isSynthetic: sourceKind === "SYNTHETIC",
@@ -1642,7 +1646,11 @@
         <td><div class="score-cell ${readinessClass}"><strong class="${analyzed ? "" : "metric-pending"}">${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${analyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
         <td><span class="risk-score ${analyzed ? riskClass(notice.riskScore) : "is-unknown"}">${analyzed ? riskDisplayValue(notice) : "미산정"}</span></td>
         <td>${analysisRecommendationPill(notice)}</td>
-        <td><span class="row-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg></span></td>
+        <td>
+          <button class="row-arrow" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+          </button>
+        </td>
       </tr>`;
   }
 
@@ -1888,10 +1896,24 @@
     if (!state.loading) renderNoticeList();
     if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
     try {
-      const payload = unwrapObject(await apiRequest(
+      let payload = unwrapObject(await apiRequest(
         `/notices/${encodeURIComponent(noticeKey)}/analysis/request`,
-        { method: "POST", timeoutMs: 90000 },
+        { method: "POST" },
       ));
+      if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {
+        const requestId = stringValue(payload.request_id);
+        if (!requestId) throw new Error("분석 요청 식별자가 없습니다.");
+        for (let poll = 0; poll < 240; poll += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+          payload = unwrapObject(await apiRequest(
+            `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(requestId)}`,
+          ));
+          if (stringValue(payload.outcome).toUpperCase() !== "QUEUED") break;
+        }
+        if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {
+          throw new Error("분석이 계속 진행 중입니다. 잠시 후 공고 상태를 다시 확인해 주세요.");
+        }
+      }
       const outcome = stringValue(payload.outcome).toUpperCase();
       const message = stringValue(payload.message, "분석 상태를 갱신했습니다.");
       await loadApplicationData({ forceApi: true });
@@ -2320,12 +2342,18 @@
     const hasRules = notice.requirements.length > 0;
     const analyzed = notice.analysisState === "EVALUATED";
     const version = notice.latestVersion;
-    const extractionComplete = version
-      ? version.documentComplete !== false && version.extractionStatus === "COMPLETE"
-      : hasDocuments;
-    const extractionDetail = version
-      ? `v${version.versionNo} · ${version.extractionConfidence === null ? version.extractionStatus : `${Math.round(version.extractionConfidence)}%`}`
-      : hasDocuments ? `${notice.evidence.length}개 근거` : "확인 필요";
+    const extractionComplete = notice.analysisAttachmentCount > 0
+      ? notice.analysisAttachmentCoverageComplete
+        && notice.analysisAttachmentsAccepted === notice.analysisAttachmentCount
+      : version
+        ? version.documentComplete !== false && version.extractionStatus === "COMPLETE"
+        : hasDocuments;
+    const coverageRemaining = Math.max(0, notice.analysisAttachmentCount - notice.analysisAttachmentsAccepted);
+    const extractionDetail = notice.analysisAttachmentCount > 0
+      ? `첨부 ${notice.analysisAttachmentCount} · 확인 ${notice.analysisAttachmentsAudited} · 분석 ${notice.analysisAttachmentsAccepted} · 보완 ${coverageRemaining}`
+      : version
+        ? `v${version.versionNo} · ${version.extractionConfidence === null ? version.extractionStatus : `${Math.round(version.extractionConfidence)}%`}`
+        : hasDocuments ? `${notice.evidence.length}개 근거` : "확인 필요";
     const steps = [
       { name: "공고 수집", detail: "원문 보존", status: "done" },
       { name: "첨부 추출", detail: extractionDetail, status: extractionComplete ? "done" : "review" },

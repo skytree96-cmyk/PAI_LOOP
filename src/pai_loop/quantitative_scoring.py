@@ -18,16 +18,29 @@ from sqlalchemy.orm import Session
 
 from .auth import require_api_key
 from .eligibility_policy import load_public_company_profile
+from .integrations.openai_extraction import (
+    PROMPT_VERSION,
+    SCHEMA_VERSION,
+)
 from .models import Notice
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
-    select_preferred_attachments,
+    PPS_METADATA_SCHEMA,
+    PPS_PROCESSING_VERSION,
+    _current_manifest_attempts,
+    _validated_manifest_attachments,
+)
+from .quantitative_rule_extraction import (
+    ImmutableQuantitativeRuleCandidate,
+    QuantitativeCandidateProfile,
+    ValidatedQuantitativeAttachmentRecord,
+    merge_validated_quantitative_records,
 )
 from .public_performance import load_public_performance_seed
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.0.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.1.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -51,6 +64,8 @@ class ScoreBracket(QuantModel):
     label: str = Field(min_length=1, max_length=300)
     min_value: float | None = None
     max_value: float | None = None
+    min_inclusive: bool = True
+    max_inclusive: bool = False
     boolean_value: bool | None = None
     points: float = Field(ge=0)
 
@@ -59,7 +74,13 @@ class ScoreBracket(QuantModel):
         if (
             self.min_value is not None
             and self.max_value is not None
-            and self.min_value >= self.max_value
+            and (
+                self.min_value > self.max_value
+                or (
+                    self.min_value == self.max_value
+                    and not (self.min_inclusive and self.max_inclusive)
+                )
+            )
         ):
             raise ValueError("score bracket min_value must be below max_value")
         return self
@@ -106,7 +127,9 @@ class QuantitativeFact(QuantModel):
 
 class QuantitativeEstimateRequest(QuantModel):
     ruleset_version: str = Field(min_length=1, max_length=160)
-    rule_source_status: Literal["AVAILABLE", "MISSING", "INCOMPLETE"] = "AVAILABLE"
+    rule_source_status: Literal[
+        "AVAILABLE", "MISSING", "INCOMPLETE", "NOT_APPLICABLE"
+    ] = "AVAILABLE"
     minimum_score: float | None = Field(default=None, ge=0)
     criteria: list[QuantitativeCriterion] = Field(default_factory=list, max_length=100)
     facts: list[QuantitativeFact] = Field(default_factory=list, max_length=200)
@@ -150,7 +173,9 @@ class QuantitativeEstimateResult(QuantModel):
     engine_version: str
     ruleset_version: str
     source_anchor: SourceAnchor | None
-    rule_source_status: Literal["AVAILABLE", "MISSING", "INCOMPLETE"]
+    rule_source_status: Literal[
+        "AVAILABLE", "MISSING", "INCOMPLETE", "NOT_APPLICABLE"
+    ]
     overall_status: EstimateStatus
     total_max_points: float | None
     confirmed_points: float | None
@@ -213,20 +238,33 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
     if any(item.boolean_value is not None for item in numeric):
         return "BRACKET 산식에는 boolean 구간을 사용할 수 없습니다."
     previous_max: float | None = None
+    previous_max_inclusive = False
     for index, item in enumerate(numeric):
         if index and previous_max is None:
             return "열린 상한 구간 뒤에 다른 구간을 둘 수 없습니다."
-        if previous_max is not None and item.min_value is not None and item.min_value < previous_max:
-            return "배점 구간이 서로 겹칩니다."
+        if previous_max is not None and item.min_value is not None:
+            if item.min_value < previous_max or (
+                item.min_value == previous_max
+                and previous_max_inclusive
+                and item.min_inclusive
+            ):
+                return "배점 구간이 서로 겹칩니다."
         previous_max = item.max_value
+        previous_max_inclusive = item.max_inclusive
     return None
 
 
 def _numeric_bracket_matches(bracket: ScoreBracket, value: float) -> bool:
-    if bracket.min_value is not None and value < bracket.min_value:
-        return False
-    if bracket.max_value is not None and value >= bracket.max_value:
-        return False
+    if bracket.min_value is not None:
+        if value < bracket.min_value or (
+            value == bracket.min_value and not bracket.min_inclusive
+        ):
+            return False
+    if bracket.max_value is not None:
+        if value > bracket.max_value or (
+            value == bracket.max_value and not bracket.max_inclusive
+        ):
+            return False
     return True
 
 
@@ -257,9 +295,13 @@ def _points_for_numeric_range(
     for bracket in criterion.brackets:
         bracket_lower = -math.inf if bracket.min_value is None else bracket.min_value
         bracket_upper = math.inf if bracket.max_value is None else bracket.max_value
-        # Facts use an inclusive uncertainty range; score brackets use an
-        # inclusive lower and exclusive upper bound.
-        if upper >= bracket_lower and lower < bracket_upper:
+        lower_intersects = upper > bracket_lower or (
+            upper == bracket_lower and bracket.min_inclusive
+        )
+        upper_intersects = lower < bracket_upper or (
+            lower == bracket_upper and bracket.max_inclusive
+        )
+        if lower_intersects and upper_intersects:
             candidate_points.append(bracket.points)
     if not candidate_points:
         return None
@@ -619,8 +661,302 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _current_authoritative_document_digest(notice: Notice) -> str | None:
-    """Return only the document digest authoritative for the current notice.
+def _current_dynamic_quantitative_profile(
+    notice: Notice,
+) -> QuantitativeCandidateProfile | None:
+    """Merge only validated records bound to the exact current PPS manifest."""
+
+    versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
+    metadata = next(
+        (
+            version
+            for version in versions
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == PPS_METADATA_KIND
+            and isinstance(version.source_payload.get("attachment_manifest"), list)
+        ),
+        None,
+    )
+    if metadata is None or not isinstance(metadata.source_payload, dict):
+        return None
+    metadata_schema_current = (
+        metadata.source_payload.get("schema_version") == PPS_METADATA_SCHEMA
+    )
+    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_manifest = [
+        dict(item)
+        for item in raw_manifest_values
+        if isinstance(item, dict)
+    ]
+    manifest_sha256 = _canonical_digest(raw_manifest_values)
+    attachments, invalid_count = _validated_manifest_attachments(raw_manifest)
+    invalid_count += len(raw_manifest_values) - len(raw_manifest)
+    descriptors = {
+        item["attachment_id"]: _canonical_digest(item) for item in attachments
+    }
+    attempts: dict[str, Any] = {}
+    for version in reversed(versions):
+        payload = version.source_payload
+        if (
+            not isinstance(payload, dict)
+            or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+            or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
+            or not metadata_schema_current
+            or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("processing_version") != PPS_PROCESSING_VERSION
+            or payload.get("current_manifest_sha256") != manifest_sha256
+        ):
+            continue
+        attachment_id = str(payload.get("attachment_id") or "")
+        if payload.get("manifest_sha256") == descriptors.get(attachment_id):
+            attempts[attachment_id] = version
+
+    expected_documents: dict[str, str] = {}
+    records: list[ValidatedQuantitativeAttachmentRecord] = []
+    incomplete: set[str] = set()
+    for attachment in attachments:
+        attachment_id = attachment["attachment_id"]
+        attempt = attempts.get(attachment_id)
+        if attempt is None:
+            expected_documents[attachment_id] = _canonical_digest(
+                {
+                    "attachment_id": attachment_id,
+                    "manifest_sha256": descriptors[attachment_id],
+                    "state": "NOT_AUDITED",
+                }
+            )
+            incomplete.add(attachment_id)
+            continue
+        expected_documents[attachment_id] = attempt.file_sha256.casefold()
+        payload = attempt.source_payload if isinstance(attempt.source_payload, dict) else {}
+        if (
+            payload.get("status") != "ACCEPTED"
+            or attempt.extraction_status not in {"ACCEPTED", "COMPLETE"}
+            or not attempt.document_complete
+        ):
+            incomplete.add(attachment_id)
+        raw_record = payload.get("quantitative_validation_record")
+        if not isinstance(raw_record, dict):
+            incomplete.add(attachment_id)
+            continue
+        try:
+            records.append(
+                ValidatedQuantitativeAttachmentRecord.model_validate(raw_record)
+            )
+        except ValidationError:
+            incomplete.add(attachment_id)
+
+    if invalid_count:
+        incomplete.update(
+            f"INVALID-MANIFEST-SLOT-{index + 1}"
+            for index in range(invalid_count)
+        )
+    if not metadata_schema_current:
+        incomplete.add("PPS-METADATA-SCHEMA-STALE")
+    if not raw_manifest_values:
+        incomplete.add("EMPTY-MANIFEST")
+    return merge_validated_quantitative_records(
+        records,
+        expected_documents=expected_documents,
+        manifest_sha256=manifest_sha256,
+        incomplete_attachment_ids=sorted(incomplete),
+    )
+
+
+def _dynamic_metric_key(candidate: ImmutableQuantitativeRuleCandidate) -> str:
+    identity = _canonical_digest(
+        {
+            "attachment_id": candidate.source_attachment_id,
+            "table_id": candidate.table_id,
+            "criterion_id": candidate.criterion_id,
+            "metric": candidate.metric,
+        }
+    )[:24]
+    return f"quant.{candidate.metric.casefold()}.{identity}"
+
+
+def _candidate_brackets(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> list[ScoreBracket] | None:
+    if candidate.scoring_method == "BRACKET":
+        return [
+            ScoreBracket(
+                bracket_id=f"dyn-{index}-{_canonical_digest(item.model_dump(mode='json'))[:12]}",
+                label=item.label,
+                min_value=item.min_value,
+                max_value=item.max_value,
+                min_inclusive=item.min_inclusive,
+                max_inclusive=item.max_inclusive,
+                points=item.points,
+            )
+            for index, item in enumerate(candidate.brackets, start=1)
+        ]
+    threshold = candidate.threshold
+    if candidate.scoring_method != "THRESHOLD" or threshold is None:
+        return None
+    # An equality complement cannot be represented as one contiguous numeric
+    # interval. Keep the captured rule available for audit but do not invent a
+    # deterministic scoring formula.
+    if threshold.operator == "EQ":
+        return None
+    value = threshold.threshold_value
+    met = threshold.points_if_met
+    unmet = threshold.points_if_not_met
+    if threshold.operator == "GTE":
+        bounds = (
+            (None, value, True, False, unmet, "임계값 미충족"),
+            (value, None, True, False, met, "임계값 충족"),
+        )
+    elif threshold.operator == "GT":
+        bounds = (
+            (None, value, True, True, unmet, "임계값 미충족"),
+            (value, None, False, False, met, "임계값 충족"),
+        )
+    elif threshold.operator == "LTE":
+        bounds = (
+            (None, value, True, True, met, "임계값 충족"),
+            (value, None, False, False, unmet, "임계값 미충족"),
+        )
+    else:  # LT
+        bounds = (
+            (None, value, True, False, met, "임계값 충족"),
+            (value, None, True, False, unmet, "임계값 미충족"),
+        )
+    return [
+        ScoreBracket(
+            bracket_id=f"dyn-threshold-{index}",
+            label=label,
+            min_value=minimum,
+            max_value=maximum,
+            min_inclusive=min_inclusive,
+            max_inclusive=max_inclusive,
+            points=points,
+        )
+        for index, (
+            minimum,
+            maximum,
+            min_inclusive,
+            max_inclusive,
+            points,
+            label,
+        ) in enumerate(bounds, start=1)
+    ]
+
+
+def quantitative_request_from_candidate_profile(
+    profile: QuantitativeCandidateProfile,
+    *,
+    facts: list[QuantitativeFact] | None = None,
+) -> QuantitativeEstimateRequest:
+    """Convert verified source rules, never model output, into engine inputs."""
+
+    ruleset_version = (
+        "dynamic-quantitative-rules-"
+        f"{_canonical_digest(profile.model_dump(mode='json'))[:24]}"
+    )
+    if profile.status != "AVAILABLE":
+        issue_codes = sorted({item.code for item in profile.issues})
+        return QuantitativeEstimateRequest(
+            ruleset_version=ruleset_version,
+            rule_source_status=(
+                "NOT_APPLICABLE"
+                if profile.status == "NOT_APPLICABLE"
+                else "INCOMPLETE"
+            ),
+            criteria=[],
+            facts=[],
+            missing_reason=(
+                "정량평가 비적용 문구가 현재 첨부 원문에서 확인되었습니다."
+                if profile.status == "NOT_APPLICABLE"
+                else "현재 첨부의 정량 규칙 검증이 완료되지 않았습니다: "
+                + ", ".join(issue_codes[:12])
+            ),
+        )
+
+    bindings = {
+        item.attachment_id: item.document_sha256
+        for item in profile.document_bindings
+    }
+    criteria: list[QuantitativeCriterion] = []
+    conversion_errors: list[str] = []
+    for candidate in profile.available_candidates:
+        brackets = _candidate_brackets(candidate)
+        if not brackets:
+            conversion_errors.append(
+                f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
+            )
+            continue
+        anchor = candidate.evidence
+        criterion_identity = _canonical_digest(
+            {
+                "attachment_id": candidate.source_attachment_id,
+                "table_id": candidate.table_id,
+                "criterion_id": candidate.criterion_id,
+            }
+        )[:28]
+        criteria.append(
+            QuantitativeCriterion(
+                criterion_id=f"dyn-{criterion_identity}",
+                category=candidate.metric,
+                label=candidate.label,
+                max_points=candidate.max_points,
+                metric_key=_dynamic_metric_key(candidate),
+                unit=candidate.unit,
+                formula_type="BRACKET",
+                formula=candidate.criterion_literal,
+                brackets=brackets,
+                source_anchor=SourceAnchor(
+                    document_label=candidate.source_attachment_id,
+                    document_sha256=bindings.get(candidate.source_attachment_id),
+                    section=(
+                        candidate.evidence.section
+                        or f"{candidate.table_id}/{candidate.criterion_id}"
+                    ),
+                    page=candidate.evidence.page,
+                    quote=candidate.evidence.quote,
+                ),
+                required_evidence_keys=list(candidate.required_evidence),
+            )
+        )
+    if conversion_errors or len(criteria) != len(profile.available_candidates):
+        return QuantitativeEstimateRequest(
+            ruleset_version=ruleset_version,
+            rule_source_status="INCOMPLETE",
+            criteria=[],
+            facts=[],
+            missing_reason=(
+                "원문 규칙은 보존했지만 현재 결정론적 점수 엔진으로 안전하게 변환할 수 "
+                "없는 산식이 있습니다: " + ", ".join(conversion_errors[:12])
+            ),
+        )
+    minimums = {
+        table.minimum_score
+        for table in profile.tables
+        if table.minimum_score is not None
+    }
+    if len(minimums) > 1:
+        return QuantitativeEstimateRequest(
+            ruleset_version=ruleset_version,
+            rule_source_status="INCOMPLETE",
+            criteria=[],
+            facts=[],
+            missing_reason="여러 정량평가표의 최저점 기준이 달라 합산 기준을 확정할 수 없습니다.",
+        )
+    return QuantitativeEstimateRequest(
+        ruleset_version=ruleset_version,
+        rule_source_status="AVAILABLE",
+        minimum_score=next(iter(minimums), None),
+        criteria=criteria,
+        facts=list(facts or []),
+        assumptions=[
+            "현재 PPS manifest의 모든 첨부에서 원문 규칙을 검증했습니다.",
+            "회사 증빙값이 없는 항목은 0점이나 만점으로 가정하지 않습니다.",
+        ],
+    )
+
+
+def _current_authoritative_document_state(notice: Notice) -> tuple[set[str], str | None]:
+    """Return current-manifest-bound accepted document digests.
 
     A corrected PPS manifest supersedes every older attachment/extraction. For
     curated notices without a PPS manifest, the newest reviewed public
@@ -640,31 +976,37 @@ def _current_authoritative_document_digest(notice: Notice) -> str | None:
         None,
     )
     if metadata is not None:
+        if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
+            return set(), "현재 PPS 첨부 manifest 스키마가 갱신되지 않아 정량 배점을 확정할 수 없습니다."
+        raw_manifest_values = list(
+            metadata.source_payload.get("attachment_manifest", [])
+        )
         manifest = [
             dict(item)
-            for item in metadata.source_payload.get("attachment_manifest", [])
+            for item in raw_manifest_values
             if isinstance(item, dict)
         ]
-        selected, _warnings = select_preferred_attachments(manifest, limit=1)
-        if not selected:
-            return None
-        attachment = selected[0]
-        manifest_sha256 = _canonical_digest(attachment)
-        extraction = next(
-            (
-                version
-                for version in versions
-                if isinstance(version.source_payload, dict)
-                and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
-                and version.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-                and version.source_payload.get("status") == "ACCEPTED"
-                and version.source_payload.get("attachment_id") == attachment["attachment_id"]
-                and version.source_payload.get("manifest_sha256") == manifest_sha256
-            ),
-            None,
-        )
-        digest = extraction.file_sha256 if extraction is not None else None
-        return str(digest).casefold() if isinstance(digest, str) else None
+        attachments, invalid_count, attempts = _current_manifest_attempts(versions)
+        expected_ids = {attachment["attachment_id"] for attachment in attachments}
+        if (
+            not attachments
+            or invalid_count
+            or len(attachments) != len(raw_manifest_values)
+            or set(attempts) != expected_ids
+        ):
+            return set(), "현재 공고의 모든 공개 첨부에 대한 분석 감사가 완료되지 않았습니다."
+        if any(
+            not isinstance(version.source_payload, dict)
+            or version.source_payload.get("status") != "ACCEPTED"
+            or version.extraction_status not in {"ACCEPTED", "COMPLETE"}
+            or not version.document_complete
+            for version in attempts.values()
+        ):
+            return set(), "현재 공고 첨부 중 읽지 못했거나 검토가 필요한 파일이 있어 정량 배점을 확정할 수 없습니다."
+        return {
+            str(version.file_sha256).casefold()
+            for version in attempts.values()
+        }, None
 
     reference = next(
         (
@@ -676,7 +1018,7 @@ def _current_authoritative_document_digest(notice: Notice) -> str | None:
         None,
     )
     digest = reference.file_sha256 if reference is not None else None
-    return str(digest).casefold() if isinstance(digest, str) else None
+    return ({str(digest).casefold()}, None) if isinstance(digest, str) else (set(), None)
 
 
 def _profile_for_notice(notice: Notice) -> tuple[dict[str, Any] | None, str | None]:
@@ -700,8 +1042,10 @@ def _profile_for_notice(notice: Notice) -> tuple[dict[str, Any] | None, str | No
         expected_digest = _profile_source_digest(item)
         if expected_digest is None:
             return None, "연결된 정량 프로필에 검증 가능한 원문 문서 해시가 없습니다."
-        current_digest = _current_authoritative_document_digest(notice)
-        if expected_digest != current_digest:
+        current_digests, coverage_error = _current_authoritative_document_state(notice)
+        if coverage_error:
+            return None, coverage_error
+        if expected_digest not in current_digests:
             return None, (
                 "정량 프로필의 원문 문서 해시가 현재 권위 공고 문서와 일치하지 않습니다. "
                 "정정공고 또는 첨부 변경 여부를 확인해야 합니다."
@@ -871,6 +1215,11 @@ def _public_evidence_observations(profile: dict[str, Any] | None) -> list[Eviden
 
 
 def estimate_for_notice(notice: Notice) -> QuantitativeEstimateResult:
+    dynamic_profile = _current_dynamic_quantitative_profile(notice)
+    if dynamic_profile is not None:
+        request = quantitative_request_from_candidate_profile(dynamic_profile)
+        return estimate_quantitative_score(request)
+
     profile, profile_binding_error = _profile_for_notice(notice)
     if profile is None:
         request = QuantitativeEstimateRequest(

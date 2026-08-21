@@ -37,7 +37,8 @@ TeamsJS 공식 CDN만 등록합니다.
 - 현재 탭은 공개 안전 데이터만 표시합니다. Entra SSO/RBAC이 연결되기 전까지 내부 판단
   저장과 민감 로그 조회는 기존 서버 API key 경계를 유지합니다.
 - “지금 분석”은 API key를 브라우저에 전달하지 않습니다. same-origin 단일 공고 BFF가
-  `force=false`, 첨부 1개, 전역 직렬 처리, 시간당 한도, 공고별 cooldown을 강제합니다.
+  `force=false`, 현재 manifest의 공개 첨부 최대 10개 전부, durable continuation,
+  첨부당 최대 2회 호출, 시간당 한도와 공고별 cooldown을 강제합니다.
 
 앱 ID나 서비스 URL을 바꾸면 `teams-app/manifest.json`을 수정한 뒤 ZIP을 재생성하고,
 기존 조직 앱의 버전을 올려 다시 업로드합니다.
