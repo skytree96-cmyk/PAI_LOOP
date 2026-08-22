@@ -21,6 +21,7 @@ from .daily_analysis_scope import (
     material_scope_sha256,
     validated_material_scope,
 )
+from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .pps_enrichment import (
     ATTACHMENT_TIMEOUT_GUARD_SECONDS,
@@ -152,6 +153,7 @@ class AnalysisAttachmentEnrichmentOut(ApiModel):
     members_discovered: int = Field(default=0, ge=0, le=1_024)
     members_processed: int = Field(default=0, ge=0, le=1_024)
     openai_calls: int = Field(default=0, ge=0, le=2)
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     version_id: str | None = None
 
 
@@ -172,6 +174,7 @@ class AnalysisEnrichmentOut(ApiModel):
     members_discovered: int = Field(default=0, ge=0, le=10_240)
     members_processed: int = Field(default=0, ge=0, le=10_240)
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     warnings: list[str] = Field(default_factory=list)
     attachment_results: list[AnalysisAttachmentEnrichmentOut] = Field(default_factory=list)
 
@@ -189,6 +192,7 @@ class AnalysisBatchResponse(ApiModel):
     evaluations_created: int
     snapshots_refreshed: int
     openai_calls: int
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     results: list[AnalysisBatchItemOut]
     warnings: list[str]
     enrichment: AnalysisEnrichmentOut
@@ -624,6 +628,7 @@ def _store_batch_response(
         job.created_count = response.completed
         job.duplicate_count = response.skipped
         job.quarantined_count = response.failed
+        job.api_calls = response.openai_calls
         job.warnings = response.warnings
         job.completed_at = datetime.now(timezone.utc)
         session.commit()
@@ -2139,6 +2144,7 @@ def _execute_notice_analysis_batch(
     enrichment_members_discovered = enrichment_members_processed = 0
     enrichment_source_complete = enrichment_input_complete = True
     enrichment_openai_calls = 0
+    enrichment_openai_telemetry = OpenAITelemetry()
     enrichment_warnings: list[str] = []
     enrichment_attachment_results: list[AnalysisAttachmentEnrichmentOut] = []
     # At most two worst-case attachment units fit below this request boundary:
@@ -2223,6 +2229,10 @@ def _execute_notice_analysis_batch(
                 enrichment_input_complete and enrichment_result.analysis_input_complete
             )
             enrichment_openai_calls += enrichment_result.openai_calls
+            enrichment_openai_telemetry = merge_openai_telemetry(
+                enrichment_openai_telemetry,
+                enrichment_result.openai_telemetry,
+            )
             enrichment_attachment_results.extend(
                 AnalysisAttachmentEnrichmentOut.model_validate(item)
                 for item in enrichment_result.attachment_results
@@ -2348,6 +2358,7 @@ def _execute_notice_analysis_batch(
         evaluations_created=evaluations,
         snapshots_refreshed=snapshots,
         openai_calls=enrichment_openai_calls,
+        openai_telemetry=enrichment_openai_telemetry,
         results=rows,
         warnings=warnings,
         enrichment=AnalysisEnrichmentOut(
@@ -2371,6 +2382,7 @@ def _execute_notice_analysis_batch(
             members_discovered=enrichment_members_discovered,
             members_processed=enrichment_members_processed,
             openai_calls=enrichment_openai_calls,
+            openai_telemetry=enrichment_openai_telemetry,
             warnings=sorted(set(enrichment_warnings)),
             attachment_results=enrichment_attachment_results,
         ),

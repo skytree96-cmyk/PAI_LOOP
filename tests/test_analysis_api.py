@@ -18,7 +18,12 @@ from pai_loop.analysis_api import (
     ATTACHMENT_UNIT_WORST_CASE_SECONDS,
     N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS,
 )
-from pai_loop.integrations.openai_extraction import OpenAIExtractionClient
+from pai_loop.integrations.openai_extraction import (
+    OpenAIAttemptTelemetry,
+    OpenAIExtractionClient,
+    OpenAIProviderUsage,
+    aggregate_openai_attempts,
+)
 from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
@@ -415,12 +420,101 @@ def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
             "members_discovered": 0,
             "members_processed": 0,
             "openai_calls": 0,
+            "openai_telemetry": {
+                "api_calls": 0,
+                "usage_reported_calls": 0,
+                "usage_unreported_calls": 0,
+                "input_tokens": None,
+                "cached_input_tokens": None,
+                "output_tokens": None,
+                "reasoning_output_tokens": None,
+                "total_tokens": None,
+                "total_request_latency_ms": 0,
+                "attempts": [],
+            },
             "warnings": [],
             "attachment_results": [],
         }
         assert enrichment["attempted"] == (
             enrichment["completed"] + enrichment["skipped"] + enrichment["failed"]
         )
+
+
+def test_protected_batch_aggregates_and_persists_sanitised_openai_telemetry(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-TELEMETRY-001"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": "R26BK-TELEMETRY-001",
+            "title": "호출 사용량 감사 검증",
+            "agency": "공공기관",
+            "deadline": "2027-01-01T09:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    telemetry = aggregate_openai_attempts(
+        [
+            OpenAIAttemptTelemetry(
+                attempt=1,
+                request_latency_ms=321,
+                response_received=True,
+                usage=OpenAIProviderUsage(
+                    input_tokens=1_200,
+                    cached_input_tokens=200,
+                    output_tokens=300,
+                    reasoning_output_tokens=75,
+                    total_tokens=1_500,
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._has_accepted_pps_extraction",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._enrich_one_notice",
+        lambda *_args, **_kwargs: PpsEnrichmentResult(
+            status="REVIEW",
+            attachments_discovered=1,
+            attachments_attempted=1,
+            attachments_processed=1,
+            openai_calls=1,
+            openai_telemetry=telemetry,
+            warnings=["OPENAI_REVIEW_R07"],
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "max_attachments_per_notice": 10,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["openai_calls"] == 1
+    assert body["openai_telemetry"]["input_tokens"] == 1_200
+    assert body["openai_telemetry"]["cached_input_tokens"] == 200
+    assert body["openai_telemetry"]["reasoning_output_tokens"] == 75
+    assert body["openai_telemetry"]["total_request_latency_ms"] == 321
+    assert body["enrichment"]["openai_telemetry"] == body["openai_telemetry"]
+    assert "response_id" not in response.text
+    assert "api_key" not in response.text.casefold()
+
+    with client.app.state.session_factory() as session:
+        job = session.get(IngestionJob, body["job_id"])
+        assert job is not None
+        assert job.api_calls == 1
+        stored = job.request_json["result_json"]
+        assert stored["openai_telemetry"] == body["openai_telemetry"]
 
 
 def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(

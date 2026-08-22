@@ -179,6 +179,98 @@ for _strict_field in ("quantitative_tables", "quantitative_table_not_applicable"
     EXTRACTION_SCHEMA["properties"][_strict_field].pop("default", None)
 
 
+class OpenAIProviderUsage(BaseModel):
+    """Sanitised token counters returned by one Responses API attempt.
+
+    Optional detail fields stay ``None`` when the provider did not report
+    them.  Treating an absent cached/reasoning counter as zero would make a
+    later cost calculation look more exact than the provider evidence allows.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
+    cached_input_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
+    output_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
+    reasoning_output_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
+    total_tokens: int | None = Field(default=None, ge=0, le=20_000_000)
+
+
+class OpenAIAttemptTelemetry(BaseModel):
+    """Bounded metadata for one HTTP attempt, never its body or credentials."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt: int = Field(ge=1, le=200)
+    request_latency_ms: int = Field(ge=0, le=3_600_000)
+    response_received: bool
+    usage: OpenAIProviderUsage | None = None
+
+
+class OpenAITelemetry(BaseModel):
+    """Aggregate provider usage and request latency for one or more attempts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    api_calls: int = Field(default=0, ge=0, le=200)
+    usage_reported_calls: int = Field(default=0, ge=0, le=200)
+    usage_unreported_calls: int = Field(default=0, ge=0, le=200)
+    input_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    cached_input_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    output_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    reasoning_output_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    total_tokens: int | None = Field(default=None, ge=0, le=4_000_000_000)
+    total_request_latency_ms: int = Field(default=0, ge=0, le=720_000_000)
+    attempts: list[OpenAIAttemptTelemetry] = Field(default_factory=list, max_length=200)
+
+
+def _complete_usage_sum(
+    usages: list[OpenAIProviderUsage],
+    field_name: str,
+) -> int | None:
+    if not usages:
+        return None
+    values = [getattr(item, field_name) for item in usages]
+    if any(value is None for value in values):
+        return None
+    return sum(int(value) for value in values if value is not None)
+
+
+def aggregate_openai_attempts(
+    attempts: list[OpenAIAttemptTelemetry],
+) -> OpenAITelemetry:
+    """Renumber and aggregate attempts without inventing missing usage fields."""
+
+    bounded = [
+        attempt.model_copy(update={"attempt": index})
+        for index, attempt in enumerate(attempts, start=1)
+    ]
+    usages = [item.usage for item in bounded if item.usage is not None]
+    return OpenAITelemetry(
+        api_calls=len(bounded),
+        usage_reported_calls=len(usages),
+        usage_unreported_calls=len(bounded) - len(usages),
+        input_tokens=_complete_usage_sum(usages, "input_tokens"),
+        cached_input_tokens=_complete_usage_sum(usages, "cached_input_tokens"),
+        output_tokens=_complete_usage_sum(usages, "output_tokens"),
+        reasoning_output_tokens=_complete_usage_sum(
+            usages,
+            "reasoning_output_tokens",
+        ),
+        total_tokens=_complete_usage_sum(usages, "total_tokens"),
+        total_request_latency_ms=sum(item.request_latency_ms for item in bounded),
+        attempts=bounded,
+    )
+
+
+def merge_openai_telemetry(*items: OpenAITelemetry) -> OpenAITelemetry:
+    """Merge request/attachment aggregates while keeping attempt order."""
+
+    return aggregate_openai_attempts(
+        [attempt for item in items for attempt in item.attempts]
+    )
+
+
 class ExtractionOutcome(BaseModel):
     status: Literal["ACCEPTED", "REVIEW"]
     review_code: Literal["R07"] | None = None
@@ -189,6 +281,7 @@ class ExtractionOutcome(BaseModel):
     prompt_version: str = PROMPT_VERSION
     schema_version: str = SCHEMA_VERSION
     api_calls: int = Field(default=1, ge=0, le=2)
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     corrective_retry_used: bool = False
     correction_prompt_version: str | None = None
     data: ExtractionPayload | None = None
@@ -276,6 +369,7 @@ class OpenAIExtractionClient:
         max_total_api_calls: int = 2,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if not api_key.strip():
             raise ValueError("api_key is required")
@@ -288,6 +382,7 @@ class OpenAIExtractionClient:
             raise ValueError("max_total_api_calls must be between 1 and 2")
         self.max_total_api_calls = max_total_api_calls
         self._sleep = sleep
+        self._monotonic = monotonic
         self._client = httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout_seconds,
@@ -312,6 +407,9 @@ class OpenAIExtractionClient:
         self.close()
 
     def _review(self, error_code: str, message: str, **metadata: Any) -> ExtractionOutcome:
+        telemetry = metadata.get("openai_telemetry")
+        if not isinstance(telemetry, OpenAITelemetry):
+            telemetry = OpenAITelemetry()
         return ExtractionOutcome(
             status="REVIEW",
             review_code="R07",
@@ -320,6 +418,7 @@ class OpenAIExtractionClient:
             response_id=metadata.get("response_id"),
             model=metadata.get("model", self.model),
             api_calls=int(metadata.get("api_calls", 1)),
+            openai_telemetry=telemetry,
             corrective_retry_used=bool(metadata.get("corrective_retry_used", False)),
             correction_prompt_version=metadata.get("correction_prompt_version"),
         )
@@ -329,58 +428,135 @@ class OpenAIExtractionClient:
         body: dict[str, Any],
         *,
         remaining_calls: int,
-    ) -> tuple[dict[str, Any] | None, ExtractionOutcome | None, int]:
+    ) -> tuple[
+        dict[str, Any] | None,
+        ExtractionOutcome | None,
+        int,
+        OpenAITelemetry,
+    ]:
         attempts_allowed = min(self.max_retries + 1, max(0, remaining_calls))
         if attempts_allowed == 0:
+            telemetry = OpenAITelemetry()
             return (
                 None,
                 self._review(
                     "CALL_BUDGET_EXHAUSTED",
                     "모델 API 호출 상한에 도달해 사람 검토로 전환했습니다.",
                     api_calls=0,
+                    openai_telemetry=telemetry,
                 ),
                 0,
+                telemetry,
             )
         api_calls = 0
+        attempts: list[OpenAIAttemptTelemetry] = []
         for attempt in range(attempts_allowed):
             api_calls += 1
             can_retry = attempt + 1 < attempts_allowed
+            started_at = self._monotonic()
             try:
                 response = self._client.post("responses", json=body)
             except httpx.RequestError:
+                attempts.append(
+                    OpenAIAttemptTelemetry(
+                        attempt=api_calls,
+                        request_latency_ms=max(
+                            0,
+                            round((self._monotonic() - started_at) * 1_000),
+                        ),
+                        response_received=False,
+                    )
+                )
                 if can_retry:
                     self._sleep(0.5 * (2**attempt))
                     continue
+                telemetry = aggregate_openai_attempts(attempts)
                 return None, self._review(
                     "NETWORK_ERROR",
                     "모델 API 네트워크 요청에 실패했습니다.",
                     api_calls=api_calls,
-                ), api_calls
+                    openai_telemetry=telemetry,
+                ), api_calls, telemetry
+            try:
+                decoded_payload: Any = response.json()
+                json_valid = True
+            except ValueError:
+                decoded_payload = None
+                json_valid = False
+            usage = self._provider_usage(decoded_payload)
+            attempts.append(
+                OpenAIAttemptTelemetry(
+                    attempt=api_calls,
+                    request_latency_ms=max(
+                        0,
+                        round((self._monotonic() - started_at) * 1_000),
+                    ),
+                    response_received=True,
+                    usage=usage,
+                )
+            )
             if response.status_code in {408, 429, 500, 502, 503, 504} and can_retry:
                 self._sleep(0.5 * (2**attempt))
                 continue
             if response.status_code >= 400:
+                telemetry = aggregate_openai_attempts(attempts)
                 return None, self._review(
                     "HTTP_ERROR",
                     f"모델 API가 HTTP {response.status_code}를 반환했습니다.",
                     api_calls=api_calls,
-                ), api_calls
-            try:
-                payload = response.json()
-            except ValueError:
+                    openai_telemetry=telemetry,
+                ), api_calls, telemetry
+            if not json_valid:
+                telemetry = aggregate_openai_attempts(attempts)
                 return None, self._review(
                     "INVALID_JSON",
                     "모델 API 응답이 JSON이 아닙니다.",
                     api_calls=api_calls,
-                ), api_calls
-            if not isinstance(payload, dict):
+                    openai_telemetry=telemetry,
+                ), api_calls, telemetry
+            if not isinstance(decoded_payload, dict):
+                telemetry = aggregate_openai_attempts(attempts)
                 return None, self._review(
                     "INVALID_RESPONSE",
                     "모델 API 응답 형식이 올바르지 않습니다.",
                     api_calls=api_calls,
-                ), api_calls
-            return payload, None, api_calls
+                    openai_telemetry=telemetry,
+                ), api_calls, telemetry
+            telemetry = aggregate_openai_attempts(attempts)
+            return decoded_payload, None, api_calls, telemetry
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _provider_usage(payload: Any) -> OpenAIProviderUsage | None:
+        """Read only documented numeric usage counters from a provider body."""
+
+        if not isinstance(payload, dict) or not isinstance(payload.get("usage"), dict):
+            return None
+        raw = payload["usage"]
+        input_details = raw.get("input_tokens_details")
+        output_details = raw.get("output_tokens_details")
+
+        def counter(value: Any, *, maximum: int = 10_000_000) -> int | None:
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None
+            return value if 0 <= value <= maximum else None
+
+        cached_tokens = None
+        if isinstance(input_details, dict):
+            cached_tokens = counter(input_details.get("cached_tokens"))
+        reasoning_tokens = None
+        if isinstance(output_details, dict):
+            reasoning_tokens = counter(output_details.get("reasoning_tokens"))
+        usage = OpenAIProviderUsage(
+            input_tokens=counter(raw.get("input_tokens")),
+            cached_input_tokens=cached_tokens,
+            output_tokens=counter(raw.get("output_tokens")),
+            reasoning_output_tokens=reasoning_tokens,
+            total_tokens=counter(raw.get("total_tokens"), maximum=20_000_000),
+        )
+        if all(value is None for value in usage.model_dump().values()):
+            return None
+        return usage
 
     @staticmethod
     def _output_text(payload: dict[str, Any]) -> tuple[str | None, bool]:
@@ -407,10 +583,12 @@ class OpenAIExtractionClient:
         document_text: str,
         allowed_attachment_ids: set[str],
         api_calls: int,
+        openai_telemetry: OpenAITelemetry,
         corrective_retry_used: bool = False,
     ) -> ExtractionOutcome:
         metadata = {
             "api_calls": api_calls,
+            "openai_telemetry": openai_telemetry,
             "corrective_retry_used": corrective_retry_used,
             "correction_prompt_version": (
                 CORRECTIVE_PROMPT_VERSION if corrective_retry_used else None
@@ -472,6 +650,7 @@ class OpenAIExtractionClient:
             response_id=response_id,
             model=response_model,
             api_calls=api_calls,
+            openai_telemetry=openai_telemetry,
             corrective_retry_used=corrective_retry_used,
             correction_prompt_version=(
                 CORRECTIVE_PROMPT_VERSION if corrective_retry_used else None
@@ -562,7 +741,7 @@ class OpenAIExtractionClient:
                 }
             },
         }
-        response, failure, initial_calls = self._post(
+        response, failure, initial_calls, initial_telemetry = self._post(
             body,
             remaining_calls=self.max_total_api_calls,
         )
@@ -574,6 +753,7 @@ class OpenAIExtractionClient:
             document_text=document_text,
             allowed_attachment_ids=allowed_attachment_ids,
             api_calls=initial_calls,
+            openai_telemetry=initial_telemetry,
         )
         remaining_calls = self.max_total_api_calls - initial_calls
         if outcome.error_code != "UNVERIFIED_QUOTE" or remaining_calls <= 0:
@@ -598,15 +778,25 @@ class OpenAIExtractionClient:
                 },
             ],
         }
-        corrected_response, corrected_failure, corrective_calls = self._post(
+        (
+            corrected_response,
+            corrected_failure,
+            corrective_calls,
+            corrective_telemetry,
+        ) = self._post(
             corrective_body,
             remaining_calls=remaining_calls,
         )
         total_calls = initial_calls + corrective_calls
+        total_telemetry = merge_openai_telemetry(
+            initial_telemetry,
+            corrective_telemetry,
+        )
         if corrected_failure:
             return corrected_failure.model_copy(
                 update={
                     "api_calls": total_calls,
+                    "openai_telemetry": total_telemetry,
                     "corrective_retry_used": True,
                     "correction_prompt_version": CORRECTIVE_PROMPT_VERSION,
                 }
@@ -617,5 +807,6 @@ class OpenAIExtractionClient:
             document_text=document_text,
             allowed_attachment_ids=allowed_attachment_ids,
             api_calls=total_calls,
+            openai_telemetry=total_telemetry,
             corrective_retry_used=True,
         )

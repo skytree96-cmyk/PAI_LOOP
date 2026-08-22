@@ -55,6 +55,25 @@ def response_payload(output: dict) -> dict:
     }
 
 
+def response_payload_with_usage(
+    output: dict,
+    *,
+    input_tokens: int,
+    cached_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+) -> dict:
+    payload = response_payload(output)
+    payload["usage"] = {
+        "input_tokens": input_tokens,
+        "input_tokens_details": {"cached_tokens": cached_tokens},
+        "output_tokens": output_tokens,
+        "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        "total_tokens": input_tokens + output_tokens,
+    }
+    return payload
+
+
 def quantitative_output(*, total_quote: str = "정량평가 총점 10점") -> dict:
     output = valid_output()
     output["quantitative_tables"] = [
@@ -269,6 +288,59 @@ def test_unverified_quote_gets_one_bounded_corrective_retry() -> None:
     assert "No fuzzy or semantic matching" in corrective_text
 
 
+def test_usage_and_wall_latency_are_aggregated_across_corrective_attempts() -> None:
+    calls = 0
+    clock_values = iter([1.0, 1.123, 2.0, 2.234])
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        output = (
+            valid_output(quote="원문에 없는 재구성 문장")
+            if calls == 1
+            else valid_output(quote="부산광역시에 소재한 업체")
+        )
+        return httpx.Response(
+            200,
+            json=response_payload_with_usage(
+                output,
+                input_tokens=100 if calls == 1 else 50,
+                cached_tokens=20 if calls == 1 else 0,
+                output_tokens=40 if calls == 1 else 20,
+                reasoning_tokens=10 if calls == 1 else 5,
+            ),
+        )
+
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+        max_retries=0,
+        monotonic=lambda: next(clock_values),
+    )
+    outcome = client.extract(
+        document_text="참가자격: 부산광역시에 소재한 업체",
+        allowed_attachment_ids={"ATT-1"},
+    )
+    client.close()
+
+    telemetry = outcome.openai_telemetry
+    assert outcome.status == "ACCEPTED"
+    assert outcome.api_calls == telemetry.api_calls == 2
+    assert telemetry.usage_reported_calls == 2
+    assert telemetry.usage_unreported_calls == 0
+    assert telemetry.input_tokens == 150
+    assert telemetry.cached_input_tokens == 20
+    assert telemetry.output_tokens == 60
+    assert telemetry.reasoning_output_tokens == 15
+    assert telemetry.total_tokens == 210
+    assert telemetry.total_request_latency_ms == 357
+    assert [item.request_latency_ms for item in telemetry.attempts] == [123, 234]
+    assert [item.attempt for item in telemetry.attempts] == [1, 2]
+    serialised = outcome.model_dump_json()
+    assert "key" not in serialised
+
+
 def test_quantitative_anchor_uses_the_same_bounded_corrective_quote_retry() -> None:
     calls = 0
 
@@ -353,6 +425,10 @@ def test_total_api_call_budget_includes_transport_retry_and_blocks_third_call() 
     assert outcome.error_code == "UNVERIFIED_QUOTE"
     assert outcome.api_calls == calls == 2
     assert outcome.corrective_retry_used is False
+    assert outcome.openai_telemetry.api_calls == 2
+    assert outcome.openai_telemetry.usage_reported_calls == 0
+    assert outcome.openai_telemetry.usage_unreported_calls == 2
+    assert outcome.openai_telemetry.total_tokens is None
 
 
 @pytest.mark.parametrize(

@@ -29,6 +29,8 @@ from .integrations.openai_extraction import (
     ExtractionOutcome,
     ExtractionPayload,
     OpenAIExtractionClient,
+    OpenAITelemetry,
+    merge_openai_telemetry,
 )
 from .models import Notice, NoticeVersion
 from .quantitative_rule_extraction import (
@@ -180,6 +182,7 @@ class PpsAttachmentEnrichmentResult:
     members_discovered: int = 0
     members_processed: int = 0
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = field(default_factory=OpenAITelemetry)
     version_id: str | None = None
 
 
@@ -197,6 +200,7 @@ class PpsEnrichmentResult:
     members_discovered: int = 0
     members_processed: int = 0
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = field(default_factory=OpenAITelemetry)
     version_id: str | None = None
     warnings: list[str] = field(default_factory=list)
     attachment_results: list[PpsAttachmentEnrichmentResult] = field(default_factory=list)
@@ -1794,6 +1798,11 @@ def _persist_extraction_version(
     ):
         raise PpsEnrichmentError("PPS_MANIFEST_CHANGED_DURING_ENRICHMENT")
     accepted = outcome is not None and outcome.status == "ACCEPTED" and outcome.data is not None
+    if outcome is not None and processing_audit is not None:
+        processing_audit = {
+            **processing_audit,
+            "openai_telemetry": outcome.openai_telemetry.model_dump(mode="json"),
+        }
     data = outcome.data.model_dump(mode="json") if accepted and outcome and outcome.data else None
     confidence_values = [
         anchor.confidence
@@ -2522,6 +2531,7 @@ def _enrich_selected_pps_attachment(
         members_discovered=extraction.members_discovered,
         members_processed=extraction.members_processed,
         openai_calls=outcome.api_calls,
+        openai_telemetry=outcome.openai_telemetry,
         version_id=version.id,
         warnings=[
             *retry_warnings,
@@ -2579,6 +2589,7 @@ def _audit_result_for_attachment(
         members_discovered=result.members_discovered,
         members_processed=result.members_processed,
         openai_calls=result.openai_calls,
+        openai_telemetry=result.openai_telemetry,
         version_id=result.version_id,
     )
 
@@ -2733,6 +2744,7 @@ def enrich_notice_from_pps(
     audits: list[PpsAttachmentEnrichmentResult] = []
     warnings = list(base_warnings)
     processed = openai_calls = 0
+    openai_telemetry = OpenAITelemetry()
     downloaded_bytes = source_characters = analysis_input_characters = 0
     members_discovered = members_processed = 0
     new_attempts = 0
@@ -2857,6 +2869,10 @@ def enrich_notice_from_pps(
         members_discovered += item_result.members_discovered
         members_processed += item_result.members_processed
         openai_calls += item_result.openai_calls
+        openai_telemetry = merge_openai_telemetry(
+            openai_telemetry,
+            item_result.openai_telemetry,
+        )
         if openai_calls > MAX_OPENAI_CALLS_PER_NOTICE:
             raise PpsEnrichmentError("OPENAI_NOTICE_CALL_LIMIT")
         if item_result.version_id:
@@ -2913,6 +2929,7 @@ def enrich_notice_from_pps(
         members_discovered=members_discovered,
         members_processed=members_processed,
         openai_calls=openai_calls,
+        openai_telemetry=openai_telemetry,
         version_id=last_version_id,
         warnings=sorted(set(warnings)),
         attachment_results=audits,

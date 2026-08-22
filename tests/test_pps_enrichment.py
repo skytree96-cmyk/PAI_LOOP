@@ -39,6 +39,9 @@ from pai_loop.integrations.openai_extraction import (
     ExtractedRequirement,
     ExtractionOutcome,
     ExtractionPayload,
+    OpenAIAttemptTelemetry,
+    OpenAIProviderUsage,
+    aggregate_openai_attempts,
 )
 from pai_loop.quantitative_rule_extraction import (
     validate_quantitative_attachment_extraction,
@@ -640,6 +643,34 @@ class _CountingExtractionClient:
             status="ACCEPTED",
             message="validated",
             api_calls=2,
+            openai_telemetry=aggregate_openai_attempts(
+                [
+                    OpenAIAttemptTelemetry(
+                        attempt=1,
+                        request_latency_ms=125,
+                        response_received=True,
+                        usage=OpenAIProviderUsage(
+                            input_tokens=1_000,
+                            cached_input_tokens=100,
+                            output_tokens=200,
+                            reasoning_output_tokens=50,
+                            total_tokens=1_200,
+                        ),
+                    ),
+                    OpenAIAttemptTelemetry(
+                        attempt=2,
+                        request_latency_ms=250,
+                        response_received=True,
+                        usage=OpenAIProviderUsage(
+                            input_tokens=900,
+                            cached_input_tokens=0,
+                            output_tokens=150,
+                            reasoning_output_tokens=25,
+                            total_tokens=1_050,
+                        ),
+                    ),
+                ]
+            ),
             corrective_retry_used=True,
             correction_prompt_version=CORRECTIVE_PROMPT_VERSION,
             data=ExtractionPayload(
@@ -759,6 +790,8 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
 
     assert first.status == "COMPLETED"
     assert first.openai_calls == 2
+    assert first.openai_telemetry.total_tokens == 2_250
+    assert first.openai_telemetry.total_request_latency_ms == 375
     assert first.warnings == ["CORRECTIVE_EXTRACTION_RETRY_USED"]
     assert second.status == "REUSED"
     assert second.openai_calls == 0
@@ -768,6 +801,24 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
         extraction_version = session.get(NoticeVersion, first.version_id)
         assert extraction_version is not None
         assert extraction_version.source_payload["api_calls"] == 2
+        stored_telemetry = extraction_version.source_payload["document_processing"][
+            "openai_telemetry"
+        ]
+        assert stored_telemetry["input_tokens"] == 1_900
+        assert stored_telemetry["cached_input_tokens"] == 100
+        assert stored_telemetry["output_tokens"] == 350
+        assert stored_telemetry["reasoning_output_tokens"] == 75
+        assert stored_telemetry["total_tokens"] == 2_250
+        assert stored_telemetry["total_request_latency_ms"] == 375
+        assert len(stored_telemetry["attempts"]) == 2
+        public_projection = safe_public_live_extraction(
+            extraction_version.source_payload
+        )
+        assert public_projection is not None
+        public_serialised = json.dumps(public_projection, ensure_ascii=False)
+        assert "openai_telemetry" not in public_serialised
+        assert "input_tokens" not in public_serialised
+        assert "request_latency_ms" not in public_serialised
         assert extraction_version.source_payload["corrective_retry_used"] is True
         assert (
             extraction_version.source_payload["correction_prompt_version"]
