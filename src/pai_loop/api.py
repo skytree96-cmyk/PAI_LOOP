@@ -358,6 +358,47 @@ def _effective_notice_status(notice: Notice) -> str:
     return status_value
 
 
+_DOCUMENT_QUALITY_REVIEW_CODES = frozenset(
+    {
+        "ATTACHMENT_MANIFEST_MISSING",
+        "ATTACHMENT_NONE",
+        "ATTACHMENT_COVERAGE_INCOMPLETE",
+        "HWP_ONLY_UNSUPPORTED",
+        "HWPX_EXTRACT_FAILED",
+        "PDF_EXTRACT_FAILED",
+        "DOCUMENT_EXTRACT_FAILED",
+        "UNSUPPORTED_ATTACHMENT",
+        "OPENAI_REVIEW",
+        "QUOTE_UNVERIFIED",
+    }
+)
+
+
+def _needs_analysis_or_review(
+    notice: Notice,
+    current_evaluation: Evaluation | None,
+) -> bool:
+    """Mirror the global analysis/review board contract for one OPEN row."""
+
+    if _effective_notice_status(notice) != "OPEN":
+        return False
+    source_kind = _source_kind(notice)
+    reason = public_analysis_reason(
+        notice.versions,
+        evaluated=current_evaluation is not None,
+        source_kind=source_kind,
+    )
+    if source_kind == "PPS" and not pps_attachment_coverage(notice.versions).complete:
+        return True
+    if current_evaluation is None:
+        return True
+    return bool(
+        current_evaluation.eligibility == Eligibility.REVIEW.value
+        and current_evaluation.reason_code != "R07"
+        and reason.reason_code not in _DOCUMENT_QUALITY_REVIEW_CODES
+    )
+
+
 def _requirement_dict(requirement: AtomicRequirement) -> dict[str, Any]:
     return {
         "id": requirement.id,
@@ -564,6 +605,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     analyzed_ended_count = 0
     cancelled_count = 0
     visible_ended_count = 0
+    analysis_review_backlog_count = 0
     for notice in notices:
         effective_status = _effective_notice_status(notice)
         authority = authorities.get(notice.id)
@@ -588,6 +630,8 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
             eligibility_counts[latest.eligibility] = eligibility_counts.get(latest.eligibility, 0) + 1
             readiness_counts[latest.readiness_status] = readiness_counts.get(latest.readiness_status, 0) + 1
         if effective_status == "OPEN":
+            if not is_cancelled and _needs_analysis_or_review(notice, latest):
+                analysis_review_backlog_count += 1
             recommendation, _updated_at = _latest_system_recommendation(notice)
             if recommendation is not None:
                 active_recommendation_counts[recommendation] += 1
@@ -611,6 +655,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "closed_count": lifecycle_counts["CLOSED"],
         "expired_count": lifecycle_counts["EXPIRED"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],
+        "analysis_review_backlog_count": analysis_review_backlog_count,
         "deadline_soon": sum(
             1
             for item in notices
@@ -638,12 +683,21 @@ def runtime_profile(request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
     public_mode = bool(settings.public_read_only)
     manual_analysis_enabled = bool(
-        public_mode and settings.public_manual_analysis_enabled
+        public_mode
+        and settings.public_manual_analysis_enabled
+        and (
+            settings.environment.casefold() != "production"
+            or settings.public_manual_analysis_token_valid
+        )
     )
     return {
         "access_mode": "PUBLIC_READ_ONLY" if public_mode else "SERVER_AUTHENTICATED",
         "write_controls_enabled": not public_mode,
         "manual_analysis_enabled": manual_analysis_enabled,
+        "manual_analysis_auth_required": bool(
+            manual_analysis_enabled
+            and settings.environment.casefold() == "production"
+        ),
         "manual_analysis_policy": (
             {
                 "scope": "ONE_OPEN_PPS_NOTICE",
@@ -680,7 +734,7 @@ def department_keyword_profiles() -> dict[str, Any]:
 def list_notices(
     request: Request,
     session: DbSession,
-    q: str | None = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
     eligibility: Eligibility | None = None,
     department_id: Annotated[str | None, Query(max_length=80)] = None,
     search_keywords: Annotated[str | None, Query(max_length=500)] = None,
@@ -714,9 +768,18 @@ def list_notices(
         )
         .order_by((Notice.deadline < now).asc(), Notice.deadline.asc())
     )
-    if q:
-        pattern = f"%{q}%"
-        statement = statement.where(or_(Notice.title.ilike(pattern), Notice.agency.ilike(pattern)))
+    if q and (query := " ".join(q.split())):
+        # The dashboard presents this as a stored-notice global search.  Keep
+        # wildcard characters literal and include the identifiers users copy
+        # from PPS, instead of limiting a search to title/agency text.
+        statement = statement.where(
+            or_(
+                Notice.title.icontains(query, autoescape=True),
+                Notice.agency.icontains(query, autoescape=True),
+                Notice.bid_notice_no.icontains(query, autoescape=True),
+                Notice.notice_key.icontains(query, autoescape=True),
+            )
+        )
     if notice_status == "OPEN":
         statement = statement.where(Notice.status == "OPEN", Notice.deadline >= now)
     elif notice_status == "EXPIRED":

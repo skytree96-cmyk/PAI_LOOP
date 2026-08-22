@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import threading
 import uuid
 from contextlib import contextmanager
@@ -15,8 +16,16 @@ from sqlalchemy.orm import selectinload
 from .analysis_api import AnalysisBatchRequest, run_notice_analysis_batch
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import IngestionJob, Notice
-from .pps_enrichment import PublicAnalysisReason, public_analysis_reason
-from .pps_enrichment import MAX_ATTACHMENTS_IN_MANIFEST
+from .notice_freshness import (
+    authoritative_pps_notice_is_cancelled,
+    latest_current_evaluation,
+)
+from .pps_enrichment import (
+    MAX_ATTACHMENTS_IN_MANIFEST,
+    PublicAnalysisReason,
+    has_current_accepted_pps_extraction,
+    public_analysis_reason,
+)
 
 
 class ManualAnalysisResponse(BaseModel):
@@ -34,6 +43,14 @@ class ManualAnalysisResponse(BaseModel):
     openai_calls: int = 0
     openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     message: str
+
+
+class ManualAnalysisRequest(BaseModel):
+    """Caller-approved provider boundary for one manual request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_openai: bool = False
 
 
 router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
@@ -81,6 +98,20 @@ def _load_notice(request: Request, notice_key: str) -> Notice:
         return notice
 
 
+def _is_authoritatively_cancelled(request: Request, notice: Notice) -> bool:
+    """Check PPS authority before reserving public quota or a background job."""
+
+    with request.app.state.session_factory() as session:
+        return authoritative_pps_notice_is_cancelled(session, notice)
+
+
+def _has_complete_current_attachment_audit(request: Request, notice: Notice) -> bool:
+    """Prove a judgement-only retry cannot cross the OpenAI boundary."""
+
+    with request.app.state.session_factory() as session:
+        return has_current_accepted_pps_extraction(session, notice.id)
+
+
 def _same_origin_request(request: Request) -> bool:
     """Require a browser same-origin POST without trusting client credentials."""
 
@@ -115,6 +146,37 @@ def _same_origin_request(request: Request) -> bool:
         return False
     fetch_site = request.headers.get("sec-fetch-site", "").strip().casefold()
     return not fetch_site or fetch_site == "same-origin"
+
+
+def _manual_feature_enabled(request: Request) -> bool:
+    settings = request.app.state.settings
+    if not (settings.public_read_only and settings.public_manual_analysis_enabled):
+        return False
+    # Development remains convenient for local contract tests. Production
+    # never exposes a spend endpoint until a separate, narrow operator secret
+    # is configured; the broad server API key is deliberately not reused in a
+    # browser.
+    return bool(
+        settings.environment.casefold() != "production"
+        or settings.public_manual_analysis_token_valid
+    )
+
+
+def _require_manual_operator(request: Request) -> None:
+    settings = request.app.state.settings
+    if settings.environment.casefold() != "production":
+        return
+    expected = (
+        settings.public_manual_analysis_token
+        if settings.public_manual_analysis_token_valid
+        else ""
+    )
+    supplied = request.headers.get("x-pai-manual-token", "")
+    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="분석 실행 키를 확인해 주세요.",
+        )
 
 
 @contextmanager
@@ -188,7 +250,12 @@ def _cooldown_response(
     )
 
 
-def _reserve_manual_job(request: Request, notice_key: str) -> str:
+def _reserve_manual_job(
+    request: Request,
+    notice_key: str,
+    *,
+    evaluation_only: bool,
+) -> str:
     request_id = str(uuid.uuid4())
     with request.app.state.session_factory() as session:
         session.add(
@@ -201,6 +268,8 @@ def _reserve_manual_job(request: Request, notice_key: str) -> str:
                 request_json={
                     "trigger": "PUBLIC_SAME_ORIGIN",
                     "force": False,
+                    "evaluation_only": evaluation_only,
+                    "enrich_missing": not evaluation_only,
                     "max_notices": 1,
                     "max_attachments_per_notice": MAX_ATTACHMENTS_IN_MANIFEST,
                     "credential_exposed": False,
@@ -263,6 +332,7 @@ def request_manual_notice_analysis(
     notice_key: str,
     request: Request,
     background_tasks: BackgroundTasks,
+    payload: ManualAnalysisRequest | None = None,
 ) -> ManualAnalysisResponse:
     """Run one idempotent server-side analysis without exposing credentials.
 
@@ -272,13 +342,15 @@ def request_manual_notice_analysis(
     """
 
     settings = request.app.state.settings
-    if not (settings.public_read_only and settings.public_manual_analysis_enabled):
+    if not _manual_feature_enabled(request):
         raise HTTPException(status_code=404, detail="수동 분석 기능이 비활성화되어 있습니다.")
     if not _same_origin_request(request):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="홈페이지와 동일한 출처에서만 분석을 요청할 수 있습니다.",
         )
+    _require_manual_operator(request)
+    caller_intent = payload or ManualAnalysisRequest()
     with _manual_execution_slot(request) as acquired:
         if not acquired:
             raise HTTPException(
@@ -291,12 +363,36 @@ def request_manual_notice_analysis(
         notice = _load_notice(request, notice_key)
         if _source_kind(notice) != "PPS":
             raise HTTPException(status_code=422, detail="조달청 공고만 수동 분석할 수 있습니다.")
+        if _is_authoritatively_cancelled(request, notice):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="취소된 공고는 분석할 수 없습니다.",
+            )
         if notice.status != "OPEN" or _utc(notice.deadline) < now:
             raise HTTPException(status_code=409, detail="마감 또는 종료된 공고는 분석할 수 없습니다.")
 
         reason = _reason(notice)
-        if reason.state == "ANALYZED":
+        # Attachment extraction and a current evaluation are separate durable
+        # stages.  Accepted attachment text without a current evaluation must
+        # continue into the deterministic scoring pipeline (normally with
+        # zero new OpenAI calls), while a genuinely current completed result
+        # is reused idempotently.
+        current_evaluation = latest_current_evaluation(notice)
+        if reason.state == "ANALYZED" and current_evaluation is not None:
             return _already_analysed(notice, reason)
+        evaluation_only = bool(
+            reason.state == "ANALYZED"
+            and current_evaluation is None
+            and _has_complete_current_attachment_audit(request, notice)
+        )
+        if not evaluation_only and not caller_intent.allow_openai:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "공고의 첨부 분석 상태가 바뀌어 OpenAI 호출이 필요합니다. "
+                    "최신 상태와 비용 상한을 확인한 뒤 다시 요청해 주세요."
+                ),
+            )
 
         recent_jobs = _manual_jobs_since(request, cutoff=now - timedelta(hours=1))
         same_notice_jobs = [
@@ -309,7 +405,7 @@ def request_manual_notice_analysis(
                 message="같은 공고의 최근 요청을 재사용했습니다. 잠시 후 상태를 다시 확인해 주세요.",
             )
 
-        if reason.attempted:
+        if reason.attempted and not evaluation_only:
             attempt_at = max(
                 (_utc(version.created_at) for version in notice.versions),
                 default=_utc(notice.created_at),
@@ -334,15 +430,20 @@ def request_manual_notice_analysis(
         # Idempotent reads above remain available even during an upstream
         # provider outage.  A provider credential is required only when this
         # request is about to reserve quota and start a new analysis batch.
-        if not settings.openai_api_key:
+        if not settings.openai_api_key and not evaluation_only:
             raise HTTPException(status_code=503, detail="분석 서비스 설정을 확인해 주세요.")
 
-        request_id = _reserve_manual_job(request, notice.notice_key)
+        request_id = _reserve_manual_job(
+            request,
+            notice.notice_key,
+            evaluation_only=evaluation_only,
+        )
         background_tasks.add_task(
             _execute_reserved_manual_job,
             request,
             request_id,
             notice.notice_key,
+            evaluation_only,
         )
         return ManualAnalysisResponse(
             request_id=request_id,
@@ -352,7 +453,11 @@ def request_manual_notice_analysis(
             analysis_reason_code=reason.reason_code,
             analysis_reason=reason.reason,
             analysis_attempted=reason.attempted,
-            message="모든 공개 첨부 분석을 시작했습니다. 완료 상태를 자동으로 확인합니다.",
+            message=(
+                "저장된 첨부 근거로 자격·정량 판단을 시작했습니다."
+                if evaluation_only
+                else "모든 공개 첨부 분석을 시작했습니다. 완료 상태를 자동으로 확인합니다."
+            ),
         )
 
 
@@ -360,13 +465,14 @@ def _execute_reserved_manual_job(
     request: Request,
     request_id: str,
     notice_key: str,
+    evaluation_only: bool = False,
 ) -> None:
     with _manual_execution_slot(request, blocking=True):
         payload = AnalysisBatchRequest(
             notice_keys=[notice_key],
             dry_run=False,
             force=False,
-            enrich_missing=True,
+            enrich_missing=not evaluation_only,
             max_notices=1,
             max_attachments_per_notice=MAX_ATTACHMENTS_IN_MANIFEST,
         )
@@ -425,10 +531,13 @@ def get_manual_notice_analysis_request(
     request_id: str,
     request: Request,
 ) -> ManualAnalysisResponse:
+    if not _manual_feature_enabled(request):
+        raise HTTPException(status_code=404, detail="수동 분석 기능이 비활성화되어 있습니다.")
     if not _same_origin_request(request) and request.headers.get(
         "sec-fetch-site", ""
     ).strip().casefold() != "same-origin":
         raise HTTPException(status_code=403, detail="홈페이지와 동일한 출처에서만 조회할 수 있습니다.")
+    _require_manual_operator(request)
     with request.app.state.session_factory() as session:
         job = session.get(IngestionJob, request_id)
         if (
@@ -450,11 +559,16 @@ def get_manual_notice_analysis_request(
             openai_telemetry = OpenAITelemetry(accounting_complete=False)
     notice = _load_notice(request, notice_key)
     reason = _reason(notice)
+    current_evaluation = latest_current_evaluation(notice)
     if job_status == "RUNNING":
         outcome: Literal["QUEUED", "COMPLETED", "REVIEW"] = "QUEUED"
         message = "모든 공개 첨부를 확인하고 있습니다."
     elif job_status in {"COMPLETED", "PARTIAL"}:
-        outcome = "COMPLETED" if reason.state == "ANALYZED" else "REVIEW"
+        outcome = (
+            "COMPLETED"
+            if reason.state == "ANALYZED" and current_evaluation is not None
+            else "REVIEW"
+        )
         message = (
             "분석과 판정이 완료되었습니다."
             if outcome == "COMPLETED"

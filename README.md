@@ -12,11 +12,17 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.9.4 전체 첨부 분석 · 자동 정량 규칙 · 취소·종료 공고 조회
+## 현재 구현 범위: v0.9.5 전체 공고 검색 · 분석 대기 복원 · 전체 첨부 분석
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
 - 검색 주체 부서와 사용자 추가 키워드에 따라 달라지는 점수·근거·추천 부서
+- 이미 수집된 DB 전체에서 진행·종료·취소 및 우선 키워드 불일치 공고를 제목·기관·
+  공고번호로 찾는 전역 검색; 검색 자체는 모델을 호출하지 않으며 미수집 PPS 공고는 제외
+- 현재 공고의 첨부 전량 감사 또는 최신 평가가 끝나지 않은 건을 `분석·검토 대기`로
+  집계하고, 단일 OPEN PPS 공고를 비용 상한 확인 뒤 서버에서 분석하는 수동 실행 경로.
+  운영에서는 별도 분석 실행 키를 요구하며, 현재 Render 기본값은 $2.7 잔액 보호를 위해
+  시간당 유료·무료 요청 합계 1건으로 제한
 - 수의·직접계약 감사 보존 + 기본 진행목록/분석 큐 제외, 기관명 기반 키워드 오탐 억제
 - 공고 원문 확인 팝업과 자격 REVIEW·원문 근거 보완 상태의 분리 표시
 - 참가요건을 `적격성 / 행동 필요 / 체크리스트 / 정보`로 분리하는 정책 엔진
@@ -151,7 +157,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET` | `/healthz` | 서비스/DB 상태 |
 | `GET` | `/api/v1/runtime-profile` | 공개 읽기/쓰기 경계 |
 | `GET` | `/api/v1/dashboard` | 요약 및 마감 현황 |
-| `GET` | `/api/v1/notices` | 검색·부서 우선순위·사용자 키워드 목록 |
+| `GET` | `/api/v1/notices` | 저장 DB 전체의 제목·기관·공고번호 검색, 상태·부서 우선순위·사용자 키워드 목록 |
 | `GET` | `/api/v1/notices/{notice_key}` | 근거·평가·결정 상세 |
 | `GET` | `/api/v1/departments/keyword-profiles` | 부서별 검색 키워드 registry |
 | `GET` | `/api/v1/company-profile` | 공개 가능한 회사 자격 프로필 |
@@ -170,7 +176,7 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET` | `/api/v1/notices/{notice_key}/quantitative-estimate` | 검수된 공고 프로필의 배점표·공개 근거 기반 정량 하한~상한; 신규 미매핑 공고는 `UNSCORABLE` |
 | `POST` | `/api/v1/notices/{notice_key}/notifications/teams/mock` | Teams 카드 모의 기록 |
 | `POST` | `/api/v1/notices/analysis/batch` | PPS 신규 key의 저장된 ACCEPTED extraction materialize·평가·snapshot 집계 |
-| `POST` | `/api/v1/notices/{notice_key}/analysis/request` | 공개 웹의 same-origin 단일 OPEN PPS 공고 수동 분석; 서버 credential 비노출·직렬·quota/cooldown 적용 |
+| `POST` | `/api/v1/notices/{notice_key}/analysis/request` | 별도 운영자 키와 호출 의도를 확인하는 단일 OPEN PPS 공고 수동 분석; 서버 credential 비노출·직렬·quota/cooldown 적용 |
 | `POST` | `/api/v1/operations/analysis-backfills/plan` | DAILY/BACKFILL 부모 operation 생성·재개 및 최대 30건 durable segment lease |
 | `GET` | `/api/v1/operations/analysis-backfills/{job_id}` | 부모/자식 감사, 처리·진행 중·잔여량 조회 |
 | `POST` | `/api/v1/operations/analysis-backfills/{job_id}/complete` | exact `segment_id`의 모든 chunk가 terminal일 때만 lease 해제·집계 |
@@ -281,11 +287,13 @@ Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 wo
   전송합니다. 문서 속 지시문을 신뢰하지 않으며 strict schema와 근거-anchor
   검증을 거칩니다.
 - 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록을
-  익명 제공합니다. 선택적으로 활성화한 수동 분석 BFF만 same-origin의 OPEN PPS
-  공고 1건을 `force=false`·현재 manifest의 공개 첨부 최대 10개 전부·첨부당 최대
-  2회 OpenAI 호출·durable continuation·시간당 quota·공고별 cooldown으로 처리하며
-  credential은 서버에만 둡니다. 결정·재수집·Teams mock과 다른 쓰기는
-  계속 서버 인증을 요구합니다.
+  익명 제공합니다. 선택적으로 활성화한 수동 분석 BFF는 운영 환경에서 별도 32자
+  이상의 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`이 없으면 자동으로 숨깁니다. 키가
+  설정된 경우에만 same-origin의 OPEN PPS 공고 1건을 `force=false`·현재 manifest의
+  공개 첨부 최대 10개 전부·첨부당 최대 2회 OpenAI 호출·durable continuation·
+  시간당 quota·공고별 cooldown으로 처리합니다. 화면이 0-call 판단만 승인한 요청은
+  서버 상태가 바뀌어 OpenAI가 필요해지면 409로 중단하며 credential은 서버에만 둡니다.
+  결정·재수집·Teams mock과 다른 쓰기는 계속 서버 인증을 요구합니다.
 - 공개 GitHub와 외부 심사용 배포에는 공개 조달공고, 비식별화한 공개 실적,
   파생 회사 자격 facts와 합성 회귀 fixture만 사용합니다. 원본 사내 파일,
   담당자 결정, 직접식별자와 비공개 메모는 포함하지 않습니다.

@@ -11,7 +11,7 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260822-cancel1" />
+    <link rel="stylesheet" href="./styles.css?v=20260823-search-secure1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -52,8 +52,8 @@
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" /><path d="M12 7v6M12 17h.01" /></svg>
             </span>
-            <span>자격 검토</span>
-            <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="자격 검토 대기 수">—</span>
+            <span>분석·검토</span>
+            <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="분석 및 자격 검토 대기 수">—</span>
           </button>
           <button class="nav-item" type="button" data-view="undecided">
             <span class="nav-icon" aria-hidden="true">
@@ -163,10 +163,10 @@
               <p><span class="trend trend--up" id="kpiNewTrend">실시간</span> 데이터베이스 총계</p>
             </article>
             <article class="kpi-card">
-              <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="자격 검토 공고 보기" aria-pressed="false"><span class="sr-only">자격 검토 공고 보기</span></button>
-              <div class="kpi-card__head"><span>자격 검토</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
+              <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="분석 및 자격 검토 대기 공고 보기" aria-pressed="false"><span class="sr-only">분석 및 자격 검토 대기 공고 보기</span></button>
+              <div class="kpi-card__head"><span>분석·검토 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
               <strong class="kpi-value" id="kpiReview">—</strong>
-              <p><span class="trend trend--amber" id="kpiReviewTrend">자격</span> 원문 보완과 별도 집계</p>
+              <p><span class="trend trend--amber" id="kpiReviewTrend">대기</span> 전체 첨부 확인 또는 자격 검토</p>
             </article>
             <article class="kpi-card">
               <button class="kpi-card__action" type="button" data-kpi-view="go" aria-label="GO 추천 공고 보기" aria-pressed="false"><span class="sr-only">GO 추천 공고 보기</span></button>
@@ -225,10 +225,10 @@
 
             <form class="filters" id="filterForm" role="search">
               <label class="search-field">
-                <span class="sr-only">공고명 또는 발주기관 검색</span>
+                <span class="sr-only">공고명, 발주기관 또는 공고번호 검색</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
-                <input id="searchInput" type="search" maxlength="200" placeholder="공고명 또는 발주기관 검색" autocomplete="off" aria-describedby="noticeSearchHelp" />
-                <span class="sr-only" id="noticeSearchHelp">온라인 데이터베이스 전체에서 공고명과 발주기관을 검색합니다.</span>
+                <input id="searchInput" type="search" maxlength="200" placeholder="공고명 · 발주기관 · 공고번호 검색" autocomplete="off" aria-describedby="noticeSearchHelp noticeSearchScope" />
+                <span class="sr-only" id="noticeSearchHelp">검색어를 입력하면 이미 수집된 전체 공고에서 찾습니다.</span>
                 <kbd aria-hidden="true">/</kbd>
               </label>
               <label class="select-field">
@@ -261,6 +261,7 @@
               </label>
               <button class="button button--ghost filter-reset" type="reset" id="resetFiltersButton">초기화</button>
             </form>
+            <p class="notice-search-scope" id="noticeSearchScope" aria-live="polite">현재 화면 범위에서 공고를 표시합니다.</p>
 
             <div class="notice-panel" id="noticePanel">
               <div class="table-scroll" id="noticeTableWrap">
@@ -694,6 +695,28 @@
       </div>
     </dialog>
 
+    <dialog class="source-link-dialog" id="manualAnalysisTokenDialog" aria-labelledby="manualAnalysisTokenTitle" aria-describedby="manualAnalysisTokenHelp">
+      <form class="source-link-dialog__panel" method="dialog">
+        <header class="source-link-dialog__header">
+          <div>
+            <p class="section-kicker">COST-PROTECTED ACTION</p>
+            <h2 id="manualAnalysisTokenTitle">분석 실행 키</h2>
+          </div>
+        </header>
+        <div class="source-link-dialog__body">
+          <p id="manualAnalysisTokenHelp">유료 분석을 보호하는 별도 운영자 키입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
+          <label class="manual-token-field" for="manualAnalysisTokenInput">
+            <span>실행 키</span>
+            <input id="manualAnalysisTokenInput" type="password" minlength="32" autocomplete="off" required />
+          </label>
+        </div>
+        <footer class="source-link-dialog__actions">
+          <button class="button button--secondary" type="submit" value="cancel" formnovalidate>취소</button>
+          <button class="button button--primary" type="submit" value="confirm">확인</button>
+        </footer>
+      </form>
+    </dialog>
+
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
 
     <template id="skeletonRowTemplate">
@@ -712,6 +735,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260822-cancel1" defer></script>
+    <script src="./app.js?v=20260823-search-secure1" defer></script>
   </body>
 </html>
