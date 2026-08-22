@@ -1012,6 +1012,18 @@ svg {
   margin: 8px 0 14px;
 }
 
+.notice-search-scope {
+  margin: -7px 2px 14px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.notice-search-scope.is-global {
+  color: var(--teal-deep);
+  font-weight: 700;
+}
+
 .search-field,
 .select-field {
   position: relative;
@@ -2058,6 +2070,31 @@ svg {
   color: #9fa7a4;
   background: #e7eae6;
   box-shadow: none;
+}
+
+.manual-token-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.manual-token-field input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.manual-token-field input:focus-visible {
+  border-color: var(--teal);
+  outline: 3px solid rgb(20 184 166 / 18%);
 }
 
 .source-badge {

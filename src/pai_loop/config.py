@@ -43,6 +43,7 @@ class Settings:
     api_key: str | None = None
     public_read_only: bool = False
     public_manual_analysis_enabled: bool = False
+    public_manual_analysis_token: str | None = None
     public_manual_analysis_hourly_limit: int = 12
     public_manual_analysis_cooldown_hours: int = 24
     openai_api_key: str | None = None
@@ -51,6 +52,11 @@ class Settings:
     pps_base_url: str = "https://apis.data.go.kr/1230000"
     pps_notice_operation: str = "ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch"
     pps_award_operation: str = "as/ScsbidInfoService/getScsbidListSttusServcPPSSrch"
+
+    @property
+    def public_manual_analysis_token_valid(self) -> bool:
+        token = self.public_manual_analysis_token
+        return bool(token and token == token.strip() and len(token) >= 32)
 
     @classmethod
     def from_env(cls, *, database_url: str | None = None) -> "Settings":
@@ -66,6 +72,9 @@ class Settings:
             public_read_only=_as_bool(os.getenv("PAI_LOOP_PUBLIC_READ_ONLY")),
             public_manual_analysis_enabled=_as_bool(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED")
+            ),
+            public_manual_analysis_token=(
+                os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN") or None
             ),
             public_manual_analysis_hourly_limit=_bounded_int(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"),

@@ -41,6 +41,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             api_key=settings.api_key,
             public_read_only=settings.public_read_only,
             public_manual_analysis_enabled=settings.public_manual_analysis_enabled,
+            public_manual_analysis_token=settings.public_manual_analysis_token,
             public_manual_analysis_hourly_limit=settings.public_manual_analysis_hourly_limit,
             public_manual_analysis_cooldown_hours=settings.public_manual_analysis_cooldown_hours,
             openai_api_key=settings.openai_api_key,

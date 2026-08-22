@@ -38,6 +38,8 @@
     accessMode: "UNKNOWN",
     writeControlsEnabled: true,
     manualAnalysisEnabled: false,
+    manualAnalysisAuthRequired: false,
+    manualAnalysisToken: "",
     manualAnalysisPolicy: null,
     manualAnalysisRequests: new Map(),
     performance: {
@@ -82,6 +84,7 @@
     ATTACHMENT_MANIFEST_MISSING: "조달청 응답에 분석할 첨부파일 목록이 없어 문서 분석을 시작하지 못했습니다.",
     ATTACHMENT_MANIFEST_EMPTY: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않았습니다.",
     ATTACHMENT_NONE: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않아 자동 문서 분석을 시작하지 못했습니다.",
+    ATTACHMENT_COVERAGE_INCOMPLETE: "현재 공고의 모든 공개 첨부에 대한 분석 감사가 아직 완료되지 않았습니다.",
     HWP_ONLY_UNSUPPORTED: "첨부가 구형 HWP 형식뿐이라 현재 온라인 추출기가 읽지 못했습니다. HWP를 HWPX 또는 PDF로 변환하는 보완 경로가 필요합니다.",
     HWPX_EXTRACT_FAILED: "HWPX 첨부는 확인했지만 본문 추출에 실패해 재처리 또는 문서 변환이 필요합니다.",
     PDF_EXTRACT_FAILED: "PDF 첨부는 확인했지만 본문 추출에 실패해 OCR 또는 재처리가 필요합니다.",
@@ -90,6 +93,7 @@
     QUOTE_UNVERIFIED: "AI가 제시한 인용문을 추출 본문에서 검증하지 못해 확정 판정을 보류했습니다.",
     READY: "첨부 분석 준비가 완료되어 다음 자동 분석 배치를 기다리고 있습니다.",
     PARTIAL: "일부 첨부만 처리되어 나머지 문서 분석 또는 담당자 확인이 필요합니다.",
+    EVALUATION_MISSING: "첨부 분석은 완료됐지만 현재 공고 버전의 자격·정량 판단이 아직 저장되지 않았습니다.",
   };
 
   document.addEventListener("DOMContentLoaded", init);
@@ -108,11 +112,12 @@
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
-      "noticeHeading", "noticeSummary", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
+      "noticeHeading", "noticeSummary", "noticeSearchScope", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
       "detailDrawer", "drawerLoading", "closeDetailButton", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
+      "manualAnalysisTokenDialog", "manualAnalysisTokenInput",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
       "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyConcentration", "historyPrediction", "historyCoverage", "historyWarnings", "decisionForm", "decisionExisting", "toggleCommentButton",
@@ -406,6 +411,9 @@
     state.manualAnalysisEnabled = booleanValue(
       firstValue(profile.manual_analysis_enabled, profile.manualAnalysisEnabled),
     ) ?? false;
+    state.manualAnalysisAuthRequired = booleanValue(
+      firstValue(profile.manual_analysis_auth_required, profile.manualAnalysisAuthRequired),
+    ) ?? false;
     state.manualAnalysisPolicy = firstObject(
       profile.manual_analysis_policy,
       profile.manualAnalysisPolicy,
@@ -495,6 +503,10 @@
     }
   }
 
+  function globalNoticeSearchActive() {
+    return Boolean(els.searchInput?.value.trim());
+  }
+
   function buildNoticeRequestPath({
     statusScope = noticeStatusScopeForView(state.currentView),
     limit = NOTICE_PAGE_SIZE,
@@ -504,11 +516,16 @@
     const departmentId = els.departmentSelect?.value || "organization";
     const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
     const query = els.searchInput?.value.trim() || "";
+    const globalSearch = Boolean(query);
     // Keep the organization ranking projection on the default board. The
     // backend now computes every department once per notice, so preserving
     // recommendation badges no longer forces the prior duplicate work.
     params.set("department_id", departmentId);
-    if (searchKeywords) params.set("search_keywords", searchKeywords);
+    // A plain notice search is deliberately global across the stored DB.  A
+    // department priority keyword is a hard server filter, so combining it
+    // with q would hide the exact keyword-mismatch notices users are trying
+    // to recover.  Department ranking still remains available for ordering.
+    if (searchKeywords && !globalSearch) params.set("search_keywords", searchKeywords);
     if (query) params.set("q", query);
     if (["OPEN", "CLOSED", "EXPIRED", "ENDED"].includes(statusScope)) {
       params.set("status", statusScope);
@@ -520,19 +537,32 @@
 
   function noticeRequestTimeoutMs() {
     const departmentId = els.departmentSelect?.value || "organization";
-    const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
+    const searchKeywords = globalNoticeSearchActive()
+      ? ""
+      : els.priorityKeywordInput?.value.trim() || "";
     return departmentId !== "organization" || Boolean(searchKeywords)
       ? RANKING_REQUEST_TIMEOUT_MS
       : NOTICE_REQUEST_TIMEOUT_MS;
   }
 
   function noticeStatusScopeForView(view) {
+    if (globalNoticeSearchActive()) return "ALL";
     if (view === "ended") return "ENDED";
     return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
   }
 
+  function renderNoticeSearchScope() {
+    if (!els.noticeSearchScope) return;
+    const globalSearch = globalNoticeSearchActive();
+    els.noticeSearchScope.classList.toggle("is-global", globalSearch);
+    els.noticeSearchScope.textContent = globalSearch
+      ? "저장된 전체 공고 검색 · 현재 탭, 진행/종료 상태와 우선 키워드 범위를 넘어서 찾습니다. 검색만으로 AI 비용은 발생하지 않습니다."
+      : "현재 화면 범위에서 공고를 표시합니다. 나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다.";
+  }
+
   function scheduleNoticeSearch(event) {
     if (event?.isComposing || state.source === "demo") return;
+    renderNoticeSearchScope();
     window.clearTimeout(state.noticeSearchTimer);
     state.noticeSearchTimer = window.setTimeout(() => {
       state.noticeSearchTimer = null;
@@ -1403,10 +1433,14 @@
     const derived = deriveDashboard(notices);
     return {
       newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.active, totals.notices)) ?? derived.newCount,
-      // The backend aggregate counts every fail-closed REVIEW. The board KPI
-      // is intentionally narrower: substantive eligibility review only.
-      // Document-quality/R07 work is shown separately as "근거 보완".
-      reviewCount: derived.reviewCount,
+      // The backend aggregate cannot distinguish the current all-attachment
+      // audit backlog. Derive this clickable KPI from the loaded projection
+      // so it includes incomplete coverage, missing evaluation and actionable
+      // eligibility review under the same filter used by the board.
+      reviewCount: numberOrNull(firstValue(
+        kpis.analysis_review_backlog_count,
+        kpis.analysisReviewBacklogCount,
+      )) ?? derived.reviewCount,
       qualityReviewCount: derived.qualityReviewCount,
       // These clickable KPIs must match their OPEN-only board filters. The
       // backend aggregate can include already-closed notices with a future
@@ -1430,7 +1464,7 @@
   function deriveDashboard(notices) {
     return {
       newCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN").length,
-      reviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isActionableEligibilityReview(notice)).length,
+      reviewCount: notices.filter(needsAnalysisOrReview).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
       goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO").length,
       urgentCount: notices.filter((notice) => {
@@ -1449,6 +1483,7 @@
   function renderAll() {
     renderKpis();
     renderNavigationCounts();
+    renderNoticeSearchScope();
     applyFilters();
     renderDataSource();
   }
@@ -1462,7 +1497,7 @@
     els.kpiUrgent.textContent = displayNumber(data.urgentCount);
     els.kpiEnded.textContent = displayNumber(data.endedCount);
     els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "실시간";
-    els.kpiReviewTrend.textContent = "자격";
+    els.kpiReviewTrend.textContent = "대기";
     els.kpiGoTrend.textContent = "추천";
   }
 
@@ -1498,25 +1533,32 @@
 
   function applyFilters() {
     if (state.loading) return;
-    const query = els.searchInput.value.trim().toLocaleLowerCase("ko-KR");
+    renderNoticeSearchScope();
+    const query = els.searchInput.value.trim().replace(/\s+/g, " ").toLocaleLowerCase("ko-KR");
+    const globalSearch = Boolean(query);
     const eligibility = els.eligibilityFilter.value;
     const recommendation = els.recommendationFilter.value;
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
-      if (state.currentView === "review" && (noticeLifecycleStatus(notice) !== "OPEN" || !isActionableEligibilityReview(notice))) return false;
-      if (state.currentView === "go" && notice.recommendation !== "GO") return false;
-      if (state.currentView === "urgent") {
-        const days = daysUntil(notice.deadline);
-        if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
+      if (!globalSearch) {
+        if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
+        if (state.currentView === "review" && !needsAnalysisOrReview(notice)) return false;
+        if (state.currentView === "go" && notice.recommendation !== "GO") return false;
+        if (state.currentView === "urgent") {
+          const days = daysUntil(notice.deadline);
+          if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
+        }
+        if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
+        if (state.currentView === "undecided" && notice.decision) return false;
+        if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
-      if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
-      if (state.currentView === "undecided" && notice.decision) return false;
-      if (state.currentView === "closed" && !notice.resultStatus) return false;
       if (eligibility !== "all" && notice.eligibilityStatus !== eligibility) return false;
       if (recommendation !== "all" && notice.recommendation !== recommendation) return false;
-      if (query && !`${notice.title} ${notice.agency} ${notice.noticeNumber}`.toLocaleLowerCase("ko-KR").includes(query)) return false;
+      const searchable = `${notice.title} ${notice.agency} ${notice.noticeNumber} ${notice.noticeKey}`
+        .replace(/\s+/g, " ")
+        .toLocaleLowerCase("ko-KR");
+      if (query && !searchable.includes(query)) return false;
       return true;
     });
 
@@ -1581,6 +1623,7 @@
     return notice.reasonCode === "R07" || [
       "ATTACHMENT_MANIFEST_MISSING",
       "ATTACHMENT_NONE",
+      "ATTACHMENT_COVERAGE_INCOMPLETE",
       "HWP_ONLY_UNSUPPORTED",
       "HWPX_EXTRACT_FAILED",
       "PDF_EXTRACT_FAILED",
@@ -1595,6 +1638,13 @@
     return notice.analysisState === "EVALUATED"
       && notice.eligibilityStatus === "REVIEW"
       && !isDocumentQualityReview(notice);
+  }
+
+  function needsAnalysisOrReview(notice) {
+    if (noticeLifecycleStatus(notice) !== "OPEN") return false;
+    if (notice.sourceKind === "PPS" && !notice.analysisAttachmentCoverageComplete) return true;
+    if (notice.analysisState !== "EVALUATED") return true;
+    return isActionableEligibilityReview(notice);
   }
 
   function nullableNumberSort(a, b) {
@@ -1616,12 +1666,15 @@
   function renderNoticeList() {
     const count = state.filteredNotices.length;
     const total = state.notices.length;
+    const globalSearch = globalNoticeSearchActive();
     const ownerLabel = els.departmentSelect.selectedOptions[0]?.textContent || "전사 공통";
     const keywordLabel = els.priorityKeywordInput.value.trim();
     const context = keywordLabel ? `${ownerLabel} · 검색어 ${keywordLabel}` : ownerLabel;
-    els.noticeSummary.textContent = count === total
-      ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
-      : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
+    els.noticeSummary.textContent = globalSearch
+      ? `저장된 전체 공고 검색 결과 ${formatNumber(count)}건입니다.`
+      : count === total
+        ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
+        : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
 
     els.loadingState.hidden = true;
     els.errorState.hidden = true;
@@ -1642,6 +1695,7 @@
   function renderNoticeRow(notice) {
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
+    const pendingLabel = notice.analysisState === "ANALYZED" ? "판단 대기 사유" : "미분석 사유";
     const readiness = analyzed ? formatScore(notice.readinessScore) : "미산정";
     const readinessClass = analyzed ? scoreClass(notice.readinessScore) : "is-unknown";
     return `
@@ -1650,7 +1704,7 @@
           <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
             <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
-            ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
+            ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
           ${manualAnalysisAction(notice, "table")}
@@ -1671,6 +1725,7 @@
   function renderNoticeCard(notice) {
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
+    const pendingLabel = notice.analysisState === "ANALYZED" ? "판단 대기 사유" : "미분석 사유";
     return `
       <article class="notice-card" data-notice-key="${escapeAttribute(notice.noticeKey)}">
         <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
@@ -1680,7 +1735,7 @@
           </span>
           <h3>${escapeHtml(notice.title)}</h3>
           <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
-          ${analyzed ? "" : `<span class="notice-card__analysis-reason">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
+          ${analyzed ? "" : `<span class="notice-card__analysis-reason">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
           ${departmentPriorityBadge(notice)}
           <span class="notice-card__metrics">
             <span class="notice-card__metric"><small>준비도</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
@@ -1700,20 +1755,89 @@
   }
 
   function canRequestManualAnalysis(notice) {
+    const needsCurrentAnalysis = notice?.analysisState !== "EVALUATED"
+      || !notice?.analysisAttachmentCoverageComplete;
     return Boolean(
       state.manualAnalysisEnabled
       && state.source === "api"
       && notice?.sourceKind === "PPS"
       && noticeLifecycleStatus(notice) === "OPEN"
-      && notice.analysisState !== "EVALUATED",
+      && needsCurrentAnalysis,
     );
+  }
+
+  function manualAnalysisLabel(notice, running = false) {
+    if (running) return "분석 중…";
+    if (notice.analysisState === "ANALYZED") return "판단 실행";
+    if (notice.analysisState === "EVALUATED" && !notice.analysisAttachmentCoverageComplete) {
+      return "첨부 전체 재분석";
+    }
+    return notice.analysisAttempted ? "분석 재시도" : "판단 실행";
+  }
+
+  function confirmManualAnalysis(notice) {
+    const total = Math.max(Number(notice.analysisAttachmentCount) || 0, 0);
+    const audited = Math.max(Number(notice.analysisAttachmentsAudited) || 0, 0);
+    const pending = Math.max(total - audited, 0);
+    const policyMax = Math.max(
+      Number(firstValue(
+        state.manualAnalysisPolicy?.max_attachments,
+        state.manualAnalysisPolicy?.maxAttachments,
+      )) || 10,
+      1,
+    );
+    const evaluationOnly = notice.analysisState === "ANALYZED"
+      && notice.analysisAttachmentCoverageComplete;
+    const knownScope = pending
+      ? `현재 남은 첨부 ${formatNumber(pending)}개`
+      : `첨부 목록 재확인(서버 상한 ${formatNumber(policyMax)}개)`;
+    const usage = evaluationOnly
+      ? "현재 첨부 감사가 완료되어 OpenAI 요청 없이 저장된 근거로 판단만 실행합니다."
+      : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 절대 상한은 OpenAI 요청 ${formatNumber(policyMax * 2)}회입니다. 이미 감사됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
+    return window.confirm(
+      `${notice.title}\n\n모든 공개 첨부를 확인한 뒤 자격·정량 판단을 갱신합니다.\n${usage}\n\n분석을 시작할까요?`,
+    );
+  }
+
+  function evaluationOnlyManualAnalysis(notice) {
+    return notice.analysisState === "ANALYZED"
+      && notice.analysisAttachmentCoverageComplete;
+  }
+
+  async function manualAnalysisAuthHeaders() {
+    if (!state.manualAnalysisAuthRequired) return {};
+    if (!state.manualAnalysisToken) {
+      const supplied = await requestManualAnalysisToken();
+      if (!supplied?.trim()) return null;
+      state.manualAnalysisToken = supplied.trim();
+    }
+    return { "X-PAI-Manual-Token": state.manualAnalysisToken };
+  }
+
+  function requestManualAnalysisToken() {
+    const dialog = els.manualAnalysisTokenDialog;
+    const input = els.manualAnalysisTokenInput;
+    if (!dialog || !input || typeof dialog.showModal !== "function") {
+      showToast("분석 실행 키 입력 불가", "현재 브라우저에서는 보안 입력창을 열 수 없습니다.", "error");
+      return Promise.resolve(null);
+    }
+    input.value = "";
+    return new Promise((resolve) => {
+      dialog.addEventListener("close", () => {
+        const token = dialog.returnValue === "confirm" ? input.value : "";
+        input.value = "";
+        resolve(token || null);
+      }, { once: true });
+      dialog.showModal();
+      window.requestAnimationFrame(() => input.focus());
+    });
   }
 
   function manualAnalysisAction(notice, context) {
     if (!canRequestManualAnalysis(notice)) return "";
     const running = state.manualAnalysisRequests.get(notice.noticeKey) === "running";
-    const retryLabel = notice.analysisAttempted ? "재분석 요청" : "지금 분석";
-    return `<button class="manual-analysis-action manual-analysis-action--${escapeAttribute(context)}" type="button" data-manual-analysis data-notice-key="${escapeAttribute(notice.noticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(notice.title)} ${retryLabel}">${running ? '<span class="button-spinner" aria-hidden="true"></span>분석 중…' : retryLabel}</button>`;
+    const label = manualAnalysisLabel(notice, running);
+    return `<button class="manual-analysis-action manual-analysis-action--${escapeAttribute(context)}" type="button" data-manual-analysis data-notice-key="${escapeAttribute(notice.noticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(notice.title)} ${label}">${running ? '<span class="button-spinner" aria-hidden="true"></span>' : ""}${label}</button>`;
   }
 
   function departmentPriorityBadge(notice) {
@@ -1794,7 +1918,7 @@
       all: ["오늘의 입찰 기회", "검토할 공고"],
       collected: ["수집 공고", "수집된 전체 공고"],
       new: ["진행 공고", "현재 진행 중인 공고"],
-      review: ["자격 검토", "원문 품질 보완과 구분된 자격 검토 공고"],
+      review: ["분석·검토", "전체 첨부 확인 또는 자격 검토가 필요한 공고"],
       go: ["GO 후보", "GO 추천 공고"],
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"],
@@ -1903,9 +2027,16 @@
     if (state.manualAnalysisRequests.get(noticeKey) === "running") return;
     const notice = state.notices.find((item) => item.noticeKey === noticeKey);
     if (!canRequestManualAnalysis(notice)) {
-      showToast("분석 요청 불가", "현재 열려 있는 미분석 조달청 공고만 요청할 수 있습니다.", "warning");
+      showToast("분석 요청 불가", "현재 열려 있고 첨부 분석 또는 판단 갱신이 필요한 조달청 공고만 요청할 수 있습니다.", "warning");
       return;
     }
+    if (!confirmManualAnalysis(notice)) return;
+    const authHeaders = await manualAnalysisAuthHeaders();
+    if (!authHeaders) {
+      showToast("분석 요청 취소", "분석 실행 키가 입력되지 않았습니다.", "warning");
+      return;
+    }
+    const evaluationOnly = evaluationOnlyManualAnalysis(notice);
 
     state.manualAnalysisRequests.set(noticeKey, "running");
     if (!state.loading) renderNoticeList();
@@ -1913,7 +2044,11 @@
     try {
       let payload = unwrapObject(await apiRequest(
         `/notices/${encodeURIComponent(noticeKey)}/analysis/request`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({ allow_openai: !evaluationOnly }),
+        },
       ));
       if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {
         const requestId = stringValue(payload.request_id);
@@ -1922,6 +2057,7 @@
           await new Promise((resolve) => window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS));
           payload = unwrapObject(await apiRequest(
             `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(requestId)}`,
+            { headers: authHeaders },
           ));
           if (stringValue(payload.outcome).toUpperCase() !== "QUEUED") break;
         }
@@ -1940,6 +2076,7 @@
         showToast(outcome === "ALREADY_ANALYZED" ? "기존 분석 결과 사용" : "공고 분석 완료", message, "success");
       }
     } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
       showToast("공고 분석 요청 실패", humanizeError(error), "error");
     } finally {
       state.manualAnalysisRequests.delete(noticeKey);
@@ -2071,7 +2208,7 @@
     els.manualAnalyzeButton.hidden = !visible;
     if (!visible) return;
     const running = state.manualAnalysisRequests.get(notice.noticeKey) === "running";
-    const label = running ? "분석 중…" : notice.analysisAttempted ? "재분석 요청" : "이 공고 분석";
+    const label = manualAnalysisLabel(notice, running);
     els.manualAnalyzeButton.disabled = running;
     els.manualAnalyzeButton.dataset.noticeKey = notice.noticeKey;
     els.manualAnalyzeButton.querySelector("span").textContent = label;
@@ -3447,6 +3584,7 @@
     if (isCancelledNotice(notice)) return '<span class="status-pill status-pill--pending" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
     if (isDocumentQualityReview(notice)) return '<span class="status-pill status-pill--pending" title="자격 REVIEW가 아니라 원문 근거 검증 보완 상태입니다">근거 보완</span>';
     if (notice.analysisState === "EVALUATED") return statusPill(notice.eligibilityStatus);
+    if (notice.analysisState === "ANALYZED") return '<span class="status-pill status-pill--pending" title="첨부 분석은 완료됐지만 현재 판단이 저장되지 않았습니다">판단 대기</span>';
     if (notice.analysisState === "FAILED") return '<span class="status-pill status-pill--fail">분석 오류</span>';
     return '<span class="status-pill status-pill--pending">미분석</span>';
   }
@@ -3455,6 +3593,7 @@
     if (isCancelledNotice(notice)) return '<span class="recommendation-pill recommendation-pill--pending" title="취소 공고로 과거 추천을 현재 판단에 사용하지 않습니다">취소 · 추천 비활성</span>';
     if (isDocumentQualityReview(notice)) return '<span class="recommendation-pill recommendation-pill--pending">판단 보류</span>';
     if (notice.analysisState === "EVALUATED") return recommendationPill(notice.recommendation);
+    if (notice.analysisState === "ANALYZED") return '<span class="recommendation-pill recommendation-pill--pending">판단 전</span>';
     return '<span class="recommendation-pill recommendation-pill--pending">분석 전</span>';
   }
 
@@ -3583,6 +3722,7 @@
 
   function analysisStatusLabel(notice) {
     if (isCancelledNotice(notice)) return "취소 공고";
+    if (notice.analysisState === "ANALYZED") return "판단 대기";
     return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[notice.eligibilityStatus];
   }
 
@@ -3590,6 +3730,7 @@
     if (isCancelledNotice(notice)) return "취소 · 추천 비활성";
     if (isDocumentQualityReview(notice)) return "판단 보류";
     if (notice.analysisState === "EVALUATED") return RECOMMENDATION_LABELS[notice.recommendation];
+    if (notice.analysisState === "ANALYZED") return "판단 전";
     return "분석 전";
   }
 
@@ -3661,7 +3802,11 @@
   function normalizeAnalysisState(value, hasEvaluation, noticeStatus) {
     if (hasEvaluation) return "EVALUATED";
     const normalized = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
-    if (["EVALUATED", "ANALYZED", "COMPLETE"].includes(normalized)) return "EVALUATED";
+    if (["EVALUATED", "COMPLETE"].includes(normalized)) return "EVALUATED";
+    // The API's ANALYZED state proves current attachment coverage, not that a
+    // current deterministic evaluation was persisted. Preserve that stage so
+    // the judgement action can finish the pipeline without document rework.
+    if (normalized === "ANALYZED") return "ANALYZED";
     if (["FAILED", "ERROR", "ANALYSIS_FAILED"].includes(normalized) || ["FAILED", "ERROR"].includes(String(noticeStatus ?? "").toUpperCase())) return "FAILED";
     if (normalized === "VERSIONED") return "VERSIONED";
     return "COLLECTED";
@@ -3696,6 +3841,9 @@
     const providerDisposition = stringValue(firstValue(source.provider_disposition, source.providerDisposition)).toUpperCase();
     if (providerDisposition === "CANCELLED") {
       return { code: "CANCELLED", message: "조달청 취소 공고로 확인되어 현재 입찰 검토 대상에서 제외되었습니다." };
+    }
+    if (analysisState === "ANALYZED" && code === "ANALYZED") {
+      return { code: "EVALUATION_MISSING", message: ANALYSIS_REASON_LABELS.EVALUATION_MISSING };
     }
     const mapped = ANALYSIS_REASON_LABELS[code];
     if (mapped) return { code, message: mapped };

@@ -154,6 +154,9 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     assert dashboard.json()["visible_ended_count"] == 0
     assert dashboard.json()["closed_count"] == 0
     assert dashboard.json()["expired_count"] == 0
+    assert dashboard.json()["analysis_review_backlog_count"] == 0
+
+
 def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClient) -> None:
     first = client.post("/api/v1/ingestion/replay")
     assert first.status_code == 200
@@ -322,6 +325,63 @@ def test_dashboard_deadline_soon_counts_only_open_notices(client: TestClient) ->
     dashboard = client.get("/api/v1/dashboard").json()
     assert dashboard["deadline_soon"] == 1
     assert dashboard["totals"]["active"] == 1
+    assert dashboard["analysis_review_backlog_count"] == 1
+
+
+def test_notice_search_covers_all_stored_statuses_and_public_identifiers(
+    client: TestClient,
+) -> None:
+    deadline = datetime.now(timezone.utc) + timedelta(days=30)
+    rows = (
+        {
+            "notice_key": "PPS-GLOBAL-SEARCH-OPEN",
+            "bid_notice_no": "R26BK-SEARCH-001",
+            "title": "인공지능 교육 운영",
+            "agency": "한국검색공사",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+        {
+            "notice_key": "PPS-GLOBAL-SEARCH-CLOSED",
+            "bid_notice_no": "R26BK-SEARCH-002",
+            "title": "키워드 밖 저장 공고",
+            "agency": "별도 발주기관",
+            "deadline": deadline.isoformat(),
+            "status": "CLOSED",
+        },
+    )
+    for row in rows:
+        created = client.post("/api/v1/notices", json=row)
+        assert created.status_code == 201, created.text
+
+    by_title = client.get("/api/v1/notices", params={"q": "인공지능 교육"})
+    assert by_title.status_code == 200
+    assert [item["notice_key"] for item in by_title.json()] == [
+        "PPS-GLOBAL-SEARCH-OPEN"
+    ]
+
+    by_agency = client.get("/api/v1/notices", params={"q": "별도 발주"})
+    assert by_agency.status_code == 200
+    assert [item["notice_key"] for item in by_agency.json()] == [
+        "PPS-GLOBAL-SEARCH-CLOSED"
+    ]
+
+    by_notice_no = client.get("/api/v1/notices", params={"q": "SEARCH-002"})
+    assert by_notice_no.status_code == 200
+    assert [item["status"] for item in by_notice_no.json()] == ["CLOSED"]
+
+    by_internal_key = client.get(
+        "/api/v1/notices", params={"q": "GLOBAL-SEARCH-CLOSED"}
+    )
+    assert by_internal_key.status_code == 200
+    assert [item["notice_key"] for item in by_internal_key.json()] == [
+        "PPS-GLOBAL-SEARCH-CLOSED"
+    ]
+
+    # User-entered SQL wildcard characters must remain literal search text.
+    assert client.get("/api/v1/notices", params={"q": "%"}).json() == []
+    assert client.get("/api/v1/notices", params={"q": "_"}).json() == []
+    assert client.get("/api/v1/notices", params={"q": "x" * 201}).status_code == 422
 
 
 def test_notice_detail_manual_evaluation_and_user_decision(client: TestClient) -> None:

@@ -50,16 +50,20 @@ def test_raw_requirement_evidence_uses_only_public_source_anchors() -> None:
         assert forbidden not in body
 
 
-def test_notice_search_contract_uses_server_query_and_open_status() -> None:
+def test_notice_search_contract_is_global_across_stored_notices() -> None:
     source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
     load_body = _function_body(source, "loadApplicationData", "applyRuntimeProfile")
     fetch_body = _function_body(source, "fetchNoticePages", "buildNoticeRequestPath")
     request_body = _function_body(source, "buildNoticeRequestPath", "noticeRequestTimeoutMs")
     timeout_body = _function_body(source, "noticeRequestTimeoutMs", "noticeStatusScopeForView")
+    scope_body = _function_body(source, "noticeStatusScopeForView", "renderNoticeSearchScope")
+    explanation_body = _function_body(source, "renderNoticeSearchScope", "scheduleNoticeSearch")
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'params.set("q", query)' in request_body
+    assert "searchKeywords && !globalSearch" in request_body
     assert 'params.set("status", statusScope)' in request_body
     assert '"ENDED"].includes(statusScope)' in request_body
     assert "ANALYZED_ENDED" not in request_body
@@ -80,7 +84,16 @@ def test_notice_search_contract_uses_server_query_and_open_status() -> None:
     assert "RANKING_REQUEST_TIMEOUT_MS = 60000" in source
     assert "RANKING_REQUEST_TIMEOUT_MS" in timeout_body
     assert "NOTICE_REQUEST_TIMEOUT_MS" in timeout_body
-    assert 'id="noticeSearchHelp"' in INDEX_HTML.read_text(encoding="utf-8")
+    assert "globalNoticeSearchActive()" in scope_body
+    assert 'return "ALL"' in scope_body
+    assert "if (!globalSearch)" in filter_body
+    assert "notice.noticeKey" in filter_body
+    assert "저장된 전체 공고 검색" in explanation_body
+    assert "검색만으로 AI 비용은 발생하지 않습니다" in explanation_body
+    assert "나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다" in explanation_body
+    assert 'id="noticeSearchHelp"' in html
+    assert 'id="noticeSearchScope"' in html
+    assert "공고번호 검색" in html
 
 
 def test_api_failure_is_explicit_and_demo_data_requires_demo_query() -> None:
@@ -127,7 +140,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "endedCount:" in dashboard_body
     assert "visible_ended_count" in dashboard_body
     assert "cancelled_count" in dashboard_body
+    assert "analysis_review_backlog_count" in dashboard_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
+    assert "reviewCount: notices.filter(needsAnalysisOrReview).length" in derived_body
     assert 'noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO"' in derived_body
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
@@ -149,8 +164,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260822-cancel1"' in html
-    assert 'src="./app.js?v=20260822-cancel1"' in html
+    assert 'href="./styles.css?v=20260823-search-secure1"' in html
+    assert 'src="./app.js?v=20260823-search-secure1"' in html
 
 
 def test_quantitative_ui_separates_source_validation_from_activation() -> None:
@@ -179,7 +194,7 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    scope_body = _function_body(source, "noticeStatusScopeForView", "scheduleNoticeSearch")
+    scope_body = _function_body(source, "noticeStatusScopeForView", "renderNoticeSearchScope")
     normalize_body = _function_body(source, "normalizeNotice", "mergeRequirementsAndAtomics")
     lifecycle_body = _function_body(source, "noticeLifecycleStatus", "isEndedNotice")
     ended_body = _function_body(source, "isVisibleEndedNotice", "noticeLifecycleLabel")
@@ -296,6 +311,40 @@ def test_manual_analysis_polling_covers_ten_attachment_bounded_continuations() -
     assert "MANUAL_ANALYSIS_MAX_POLLS = 900" in source
     assert "poll < MANUAL_ANALYSIS_MAX_POLLS" in request_body
     assert "window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS)" in request_body
+
+
+def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms_cost() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    normalize_state_body = _function_body(source, "normalizeAnalysisState", "normalizeAnalysisReason")
+    normalize_reason_body = _function_body(source, "normalizeAnalysisReason", "normalizeRecommendation")
+    eligibility_body = _function_body(source, "isActionableEligibilityReview", "needsAnalysisOrReview")
+    backlog_body = _function_body(source, "needsAnalysisOrReview", "nullableNumberSort")
+    action_body = _function_body(source, "canRequestManualAnalysis", "manualAnalysisLabel")
+    label_body = _function_body(source, "manualAnalysisLabel", "confirmManualAnalysis")
+    confirm_body = _function_body(source, "confirmManualAnalysis", "manualAnalysisAction")
+    request_body = _function_body(source, "requestManualAnalysis", "handleNoticeKeydown")
+
+    assert 'if (normalized === "ANALYZED") return "ANALYZED"' in normalize_state_body
+    assert '["EVALUATED", "COMPLETE"].includes(normalized)' in normalize_state_body
+    assert 'analysisState === "ANALYZED" && code === "ANALYZED"' in normalize_reason_body
+    assert "EVALUATION_MISSING" in normalize_reason_body
+    assert "isDocumentQualityReview(notice)" in eligibility_body
+    assert "!notice.analysisAttachmentCoverageComplete" in backlog_body
+    assert 'notice.analysisState !== "EVALUATED"' in backlog_body
+    assert "!notice?.analysisAttachmentCoverageComplete" in action_body
+    assert 'notice.analysisState === "ANALYZED"' in label_body
+    assert "판단 실행" in label_body
+    assert "첨부 전체 재분석" in label_body
+    assert "window.confirm" in confirm_body
+    assert "state.manualAnalysisPolicy?.max_attachments" in confirm_body
+    assert "policyMax * 2" in confirm_body
+    assert "OpenAI 요청 없이" in confirm_body
+    assert "절대 상한" in confirm_body
+    assert "검색" not in confirm_body
+    assert "if (!confirmManualAnalysis(notice)) return" in request_body
+    assert request_body.index("if (!confirmManualAnalysis(notice)) return") < request_body.index(
+        'state.manualAnalysisRequests.set(noticeKey, "running")'
+    )
 
 
 def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order() -> None:
@@ -427,9 +476,9 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
     recommendation_body = _function_body(source, "analysisRecommendationLabel", "formatRelativeDateTime")
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert "isActionableEligibilityReview" in dashboard_body
+    assert "needsAnalysisOrReview" in dashboard_body
     assert "isDocumentQualityReview" in dashboard_body
-    assert "isActionableEligibilityReview(notice)" in filter_body
+    assert "needsAnalysisOrReview(notice)" in filter_body
     assert "근거 보완" in status_body
     assert "자격 REVIEW가 아니라 원문 근거 검증 보완 상태" in status_body
     assert 'analysisState === "EVALUATED"' in reason_body

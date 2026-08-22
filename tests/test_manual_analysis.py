@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -12,7 +13,7 @@ from pai_loop.integrations.openai_extraction import (
     aggregate_openai_attempts,
 )
 from pai_loop.main import create_app
-from pai_loop.models import IngestionJob
+from pai_loop.models import IngestionJob, PpsNoticeAuthority
 from pai_loop.pps_enrichment import PublicAnalysisReason
 
 
@@ -21,6 +22,7 @@ SAME_ORIGIN_HEADERS = {
     "Origin": "http://testserver",
     "Sec-Fetch-Site": "same-origin",
 }
+OPENAI_ALLOWED = {"allow_openai": True}
 
 
 def _app(monkeypatch, *, enabled: bool = True, openai_configured: bool = True):
@@ -155,6 +157,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
         first = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
+            json=OPENAI_ALLOWED,
         )
         assert first.status_code == 200, first.text
         assert first.json()["outcome"] == "QUEUED"
@@ -181,6 +184,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
         repeated = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
+            json=OPENAI_ALLOWED,
         )
         assert repeated.status_code == 200
         assert repeated.json()["outcome"] == "COOLDOWN"
@@ -262,6 +266,7 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
+            json=OPENAI_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         request_id = queued.json()["request_id"]
@@ -314,6 +319,7 @@ def test_manual_batch_exception_marks_cost_accounting_incomplete(monkeypatch) ->
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
+            json=OPENAI_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         request_id = queued.json()["request_id"]
@@ -343,6 +349,10 @@ def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
             attempted=True,
         ),
     )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: object(),
+    )
 
     def should_not_run(*_args, **_kwargs):  # pragma: no cover - assertion helper
         raise AssertionError("already analysed notice must not execute a batch")
@@ -361,6 +371,153 @@ def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
         assert response.json()["outcome"] == "ALREADY_ANALYZED"
         assert response.json()["analysis_attempted"] is True
         assert response.json()["request_id"] is None
+
+
+def test_accepted_attachment_without_current_evaluation_continues_pipeline(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch, openai_configured=False)
+    calls = []
+    evaluation = {"created": False}
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="ANALYZED",
+            reason_code="ANALYZED",
+            reason="첨부 추출은 완료됐지만 현재 판단은 없습니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: object() if evaluation["created"] else None,
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._has_complete_current_attachment_audit",
+        lambda _request, _notice: True,
+    )
+
+    def fake_batch(payload, request):
+        calls.append((payload, request))
+        assert payload.enrich_missing is False
+        evaluation["created"] = True
+        return _review_batch("batch-job-missing-evaluation")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"allow_openai": False},
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["outcome"] == "QUEUED"
+        assert "저장된 첨부 근거" in queued.json()["message"]
+        assert len(calls) == 1
+
+        completed = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{queued.json()['request_id']}",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["outcome"] == "COMPLETED"
+        assert completed.json()["openai_calls"] == 0
+
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, queued.json()["request_id"])
+            assert job is not None
+            assert job.request_json["evaluation_only"] is True
+            assert job.request_json["enrich_missing"] is False
+
+
+def test_manual_analysis_terminal_success_requires_current_evaluation(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch, openai_configured=False)
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="ANALYZED",
+            reason_code="ANALYZED",
+            reason="첨부 추출은 완료됐지만 현재 판단은 없습니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: None,
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._has_complete_current_attachment_audit",
+        lambda _request, _notice: True,
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.run_notice_analysis_batch",
+        lambda _payload, _request: _review_batch("batch-job-no-evaluation"),
+    )
+
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"allow_openai": False},
+        )
+        assert queued.status_code == 200, queued.text
+        completed = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{queued.json()['request_id']}",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["outcome"] == "REVIEW"
+        assert "보완" in completed.json()["message"]
+
+
+def test_public_manual_analysis_rejects_authoritative_cancellation_before_job(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+
+    def should_not_run(*_args, **_kwargs):  # pragma: no cover - assertion helper
+        raise AssertionError("cancelled notice must not execute a batch")
+
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.run_notice_analysis_batch",
+        should_not_run,
+    )
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        now = datetime.now(timezone.utc)
+        with app.state.session_factory() as session:
+            session.add(
+                PpsNoticeAuthority(
+                    bid_notice_no="R26BK-MANUAL-001",
+                    revision_no="00",
+                    event_kind="취소공고",
+                    disposition="CANCELLED",
+                    required_fields_complete=True,
+                    direct_contract_signal=False,
+                    published_at=now,
+                    provider_changed_at=now,
+                    deadline=None,
+                    authority_sha256="c" * 64,
+                )
+            )
+            session.commit()
+
+        response = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert response.status_code == 409
+        assert "취소된 공고" in response.json()["detail"]
+        with app.state.session_factory() as session:
+            assert session.query(IngestionJob).filter(
+                IngestionJob.source == "MANUAL_ANALYSIS"
+            ).count() == 0
 
 
 def test_public_manual_analysis_feature_fails_closed_and_runtime_is_explicit(
@@ -410,6 +567,109 @@ def test_public_manual_analysis_hourly_quota_is_persisted(monkeypatch) -> None:
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
+            json=OPENAI_ALLOWED,
         )
         assert response.status_code == 429
         assert response.headers["Retry-After"] == "3600"
+
+
+def test_zero_call_intent_rejects_a_state_that_requires_openai(monkeypatch) -> None:
+    app = _app(monkeypatch)
+
+    def should_not_run(*_args, **_kwargs):  # pragma: no cover - assertion helper
+        raise AssertionError("zero-call request must not cross the provider boundary")
+
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.run_notice_analysis_batch",
+        should_not_run,
+    )
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        response = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"allow_openai": False},
+        )
+        assert response.status_code == 409
+        assert "비용 상한" in response.json()["detail"]
+        with app.state.session_factory() as session:
+            assert session.query(IngestionJob).filter(
+                IngestionJob.source == "MANUAL_ANALYSIS"
+            ).count() == 0
+
+
+def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) -> None:
+    app = _app(monkeypatch)
+    app.state.settings = replace(
+        app.state.settings,
+        environment="production",
+        public_manual_analysis_token="manual-operator-secret-32-characters",
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.run_notice_analysis_batch",
+        lambda _payload, _request: _review_batch("batch-job-production-token"),
+    )
+    production_origin = {
+        "Origin": "https://testserver",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    with TestClient(app, base_url="https://testserver") as client:
+        _create_open_pps_notice(client)
+        runtime = client.get("/api/v1/runtime-profile")
+        assert runtime.status_code == 200
+        assert runtime.json()["manual_analysis_enabled"] is True
+        assert runtime.json()["manual_analysis_auth_required"] is True
+
+        unauthenticated = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=production_origin,
+            json=OPENAI_ALLOWED,
+        )
+        assert unauthenticated.status_code == 401
+        wrong = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers={**production_origin, "X-PAI-Manual-Token": "wrong"},
+            json=OPENAI_ALLOWED,
+        )
+        assert wrong.status_code == 401
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers={
+                **production_origin,
+                "X-PAI-Manual-Token": "manual-operator-secret-32-characters",
+            },
+            json=OPENAI_ALLOWED,
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["outcome"] == "QUEUED"
+        assert "manual-operator-secret-32-characters" not in queued.text
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, queued.json()["request_id"])
+            assert job is not None
+            assert "manual-operator-secret-32-characters" not in str(job.request_json)
+
+
+def test_production_manual_analysis_is_hidden_until_token_is_configured(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+    app.state.settings = replace(
+        app.state.settings,
+        environment="production",
+        public_manual_analysis_token=None,
+    )
+    production_origin = {
+        "Origin": "https://testserver",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    with TestClient(app, base_url="https://testserver") as client:
+        runtime = client.get("/api/v1/runtime-profile")
+        assert runtime.status_code == 200
+        assert runtime.json()["manual_analysis_enabled"] is False
+        assert runtime.json()["manual_analysis_auth_required"] is False
+        response = client.post(
+            "/api/v1/notices/PPS-MISSING/analysis/request",
+            headers=production_origin,
+            json=OPENAI_ALLOWED,
+        )
+        assert response.status_code == 404
