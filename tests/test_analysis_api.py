@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
 
@@ -10,6 +13,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from pai_loop.analysis_pipeline import AnalysisPipelineError
+from pai_loop.analysis_api import (
+    ANALYSIS_ENRICHMENT_BUDGET_SECONDS,
+    ATTACHMENT_UNIT_WORST_CASE_SECONDS,
+    N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS,
+)
+from pai_loop.integrations.openai_extraction import OpenAIExtractionClient
 from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
@@ -21,6 +30,29 @@ from pai_loop.public_notice_seed import import_public_notice_seed
 
 
 NOTICE_KEY = "MANUAL-INCHON-2025-17"
+
+
+def test_analysis_timeout_contract_fits_two_units_below_n8n_boundary() -> None:
+    assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 90
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 221
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS * 2 <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
+    assert ANALYSIS_ENRICHMENT_BUDGET_SECONDS == 450
+    assert N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS == 600
+
+    root = Path(__file__).parents[1]
+    for filename in (
+        "pai-loop-10-daily-opportunity-briefing.json",
+        "pai-loop-11-analysis-backfill.json",
+    ):
+        workflow = json.loads((root / "workflows" / filename).read_text(encoding="utf-8"))
+        analysis_nodes = [
+            node
+            for node in workflow["nodes"]
+            if node.get("type") == "n8n-nodes-base.httpRequest"
+            and "/api/v1/notices/analysis/batch" in str(node.get("parameters", {}).get("url", ""))
+        ]
+        assert analysis_nodes
+        assert all(node["parameters"]["options"]["timeout"] == 600_000 for node in analysis_nodes)
 
 
 def _seed_public_notice(client: TestClient) -> None:

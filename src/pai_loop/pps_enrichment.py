@@ -61,6 +61,9 @@ MAX_OPENAI_CALLS_PER_NOTICE = (
     MAX_ATTACHMENTS_IN_MANIFEST * MAX_OPENAI_CALLS_PER_ATTACHMENT
 )
 MAX_NEW_ATTACHMENTS_PER_REQUEST = 2
+DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS = 12
+DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS = 90
+ATTACHMENT_TIMEOUT_GUARD_SECONDS = 5
 from .document_extraction import (
     DocumentExtractionError,
     DocumentExtractionResult,
@@ -2640,8 +2643,8 @@ def enrich_notice_from_pps(
     dry_run: bool = False,
     transport: httpx.BaseTransport | None = None,
     openai_client_factory: Callable[..., OpenAIExtractionClient] = OpenAIExtractionClient,
-    download_timeout_seconds: float = 12,
-    openai_timeout_seconds: float = 45,
+    download_timeout_seconds: float = DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
+    openai_timeout_seconds: float = DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
     openai_max_retries: int = 0,
     deadline_monotonic: float | None = None,
 ) -> PpsEnrichmentResult:
@@ -2768,7 +2771,7 @@ def enrich_notice_from_pps(
         worst_case_seconds = (
             (download_timeout_seconds * 3)
             + (openai_timeout_seconds * MAX_OPENAI_CALLS_PER_ATTACHMENT)
-            + 5
+            + ATTACHMENT_TIMEOUT_GUARD_SECONDS
         )
         if new_attempts >= MAX_NEW_ATTACHMENTS_PER_REQUEST or (
             deadline_monotonic is not None

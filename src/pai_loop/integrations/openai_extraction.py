@@ -266,7 +266,10 @@ class OpenAIExtractionClient:
         api_key: str,
         model: str = "gpt-5.6-luna",
         base_url: str = "https://api.openai.com/v1",
-        timeout_seconds: float = 45,
+        # Large Korean procurement documents can legitimately take longer
+        # than the former 45-second read boundary.  This remains finite and
+        # the caller still enforces the two-call attachment budget.
+        timeout_seconds: float = 90,
         max_retries: int = 2,
         max_input_chars: int = 120_000,
         max_output_tokens: int = 12_000,

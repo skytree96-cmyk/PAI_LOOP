@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -395,12 +395,19 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     eligibility_counts = {item.value: 0 for item in Eligibility}
     readiness_counts = {item: 0 for item in ("GREEN", "YELLOW", "RED", "GRAY")}
     active_recommendation_counts = {item: 0 for item in ("GO", "HOLD", "NO_GO")}
+    lifecycle_counts = {"CLOSED": 0, "EXPIRED": 0}
+    analyzed_ended_count = 0
     for notice in notices:
+        effective_status = _effective_notice_status(notice)
+        if effective_status in lifecycle_counts:
+            lifecycle_counts[effective_status] += 1
         latest = _latest_evaluation(notice)
+        if latest and effective_status in lifecycle_counts:
+            analyzed_ended_count += 1
         if latest:
             eligibility_counts[latest.eligibility] = eligibility_counts.get(latest.eligibility, 0) + 1
             readiness_counts[latest.readiness_status] = readiness_counts.get(latest.readiness_status, 0) + 1
-        if _effective_notice_status(notice) == "OPEN":
+        if effective_status == "OPEN":
             recommendation, _updated_at = _latest_system_recommendation(notice)
             if recommendation is not None:
                 active_recommendation_counts[recommendation] += 1
@@ -417,6 +424,10 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "readiness_counts": readiness_counts,
         "recommendation_counts": active_recommendation_counts,
         "go_count": active_recommendation_counts["GO"],
+        "ended_count": lifecycle_counts["CLOSED"] + lifecycle_counts["EXPIRED"],
+        "analyzed_ended_count": analyzed_ended_count,
+        "closed_count": lifecycle_counts["CLOSED"],
+        "expired_count": lifecycle_counts["EXPIRED"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],
         "deadline_soon": sum(1 for item in notices if now <= _comparable_utc(item.deadline) <= soon),
         "recent_notices": [
@@ -480,7 +491,11 @@ def list_notices(
     search_keywords: Annotated[str | None, Query(max_length=500)] = None,
     notice_status: Annotated[
         str | None,
-        Query(alias="status", pattern=r"^(OPEN|CLOSED|EXPIRED)$"),
+        Query(alias="status", pattern=r"^(OPEN|CLOSED|EXPIRED|ENDED)$"),
+    ] = None,
+    analysis_state: Annotated[
+        str | None,
+        Query(pattern=r"^EVALUATED$"),
     ] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -513,6 +528,18 @@ def list_notices(
         statement = statement.where(Notice.status == "OPEN", Notice.deadline < now)
     elif notice_status == "CLOSED":
         statement = statement.where(Notice.status == "CLOSED")
+    elif notice_status == "ENDED":
+        # ENDED is a read-only virtual lifecycle scope.  It deliberately
+        # combines provider-closed rows with still-OPEN rows whose deadline
+        # has elapsed, matching the effective status exposed by _summary.
+        statement = statement.where(
+            or_(
+                Notice.status == "CLOSED",
+                and_(Notice.status == "OPEN", Notice.deadline < now),
+            )
+        )
+    if analysis_state == "EVALUATED":
+        statement = statement.where(Notice.evaluations.any())
     if ranking_requested:
         notices = list(session.scalars(statement).all())
     else:

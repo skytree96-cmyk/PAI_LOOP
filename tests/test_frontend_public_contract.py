@@ -60,13 +60,15 @@ def test_notice_search_contract_uses_server_query_and_open_status() -> None:
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'params.set("q", query)' in request_body
-    assert 'params.set("status", "OPEN")' in request_body
+    assert 'statusScope === "ANALYZED_ENDED"' in request_body
+    assert 'params.set("status", "ENDED")' in request_body
+    assert 'params.set("analysis_state", "EVALUATED")' in request_body
     assert "noticeStatusScopeForView(state.currentView)" in load_body
     assert "requestedStatusScope !== noticeStatusScopeForView(state.currentView)" in load_body
     assert "noticeStatusScopeForView(state.currentView)" in request_body
     assert '["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView)' in filter_body
     assert "noticeStatusScopeForView(view)" in view_body
-    assert 'notice.noticeStatus.toUpperCase() !== "OPEN"' in filter_body
+    assert 'noticeLifecycleStatus(notice) !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
     assert "NOTICE_PAGE_SIZE = 200" in source
     assert "offset += NOTICE_PAGE_SIZE" in fetch_body
@@ -106,10 +108,10 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
-    for view in ("collected", "review", "go", "urgent"):
+    for view in ("collected", "review", "go", "urgent", "ended"):
         assert f'data-kpi-view="{view}"' in html
-    assert html.count('class="kpi-card__action"') == 4
-    assert html.count('aria-pressed="false"') >= 4
+    assert html.count('class="kpi-card__action"') == 5
+    assert html.count('aria-pressed="false"') >= 5
     assert "els.kpiViewButtons" in bind_body
     assert "setView(button.dataset.kpiView)" in bind_body
     assert "scrollIntoView" in bind_body
@@ -117,12 +119,17 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'notice.recommendation !== "GO"' in filter_body
     assert 'state.currentView === "urgent"' in filter_body
     assert "URGENT_DEADLINE_DAYS" in filter_body
+    assert 'state.currentView === "ended"' in filter_body
+    assert "isEndedNotice(notice)" in filter_body
     assert "urgentCount: derived.urgentCount" in dashboard_body
     assert "goCount: derived.goCount" in dashboard_body
-    assert 'notice.noticeStatus.toUpperCase() !== "OPEN"' in derived_body
-    assert 'notice.noticeStatus.toUpperCase() === "OPEN" && notice.recommendation === "GO"' in derived_body
+    assert "endedCount:" in dashboard_body
+    assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
+    assert 'noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO"' in derived_body
+    assert 'isEndedNotice(notice) && notice.analysisState === "EVALUATED"' in derived_body
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
+    assert 'ended: ["분석된 종료 공고", "분석 결과가 있는 마감·종료 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
@@ -138,8 +145,38 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260820-ui2"' in html
-    assert 'src="./app.js?v=20260820-ui2"' in html
+    assert 'href="./styles.css?v=20260822-ended1"' in html
+    assert 'src="./app.js?v=20260822-ended1"' in html
+
+
+def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    scope_body = _function_body(source, "noticeStatusScopeForView", "scheduleNoticeSearch")
+    lifecycle_body = _function_body(source, "noticeLifecycleStatus", "isEndedNotice")
+    badge_body = _function_body(source, "noticeLifecycleBadge", "recommendationPill")
+    detail_body = _function_body(source, "renderDetail", "detailFact")
+
+    assert 'view === "ended"' in scope_body
+    assert 'return "ANALYZED_ENDED"' in scope_body
+    assert 'status === "CLOSED"' in lifecycle_body
+    assert 'status === "EXPIRED"' in lifecycle_body
+    assert 'deadline.getTime() < Date.now()' in lifecycle_body
+    assert "notice-lifecycle-badge" in badge_body
+    assert "noticeLifecycleLabel(notice)" in detail_body
+    assert 'id="kpiEnded"' in html
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr))" in styles
+
+
+def test_manual_analysis_polling_covers_ten_attachment_bounded_continuations() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    request_body = _function_body(source, "requestManualAnalysis", "handleNoticeKeydown")
+
+    assert "MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000" in source
+    assert "MANUAL_ANALYSIS_MAX_POLLS = 900" in source
+    assert "poll < MANUAL_ANALYSIS_MAX_POLLS" in request_body
+    assert "window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS)" in request_body
 
 
 def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order() -> None:

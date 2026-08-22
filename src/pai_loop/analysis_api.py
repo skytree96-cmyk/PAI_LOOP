@@ -23,12 +23,34 @@ from .daily_analysis_scope import (
 )
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .pps_enrichment import (
+    ATTACHMENT_TIMEOUT_GUARD_SECONDS,
+    DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
+    DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
     MAX_ATTACHMENTS_IN_MANIFEST,
+    MAX_NEW_ATTACHMENTS_PER_REQUEST,
+    MAX_OPENAI_CALLS_PER_ATTACHMENT,
     PpsEnrichmentResult,
     current_pps_attachment_coverage,
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
+)
+
+
+# W10/W11 bound each analysis HTTP node at 600 seconds.  A request may start
+# at most two new durable attachment units, so 450 seconds fits two complete
+# 221-second worst-case units and still leaves 150 seconds for HTTP/DB overhead.
+ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 450
+N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS = 600
+ATTACHMENT_UNIT_WORST_CASE_SECONDS = (
+    DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS * 3
+    + DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS * MAX_OPENAI_CALLS_PER_ATTACHMENT
+    + ATTACHMENT_TIMEOUT_GUARD_SECONDS
+)
+assert (
+    ATTACHMENT_UNIT_WORST_CASE_SECONDS * MAX_NEW_ATTACHMENTS_PER_REQUEST
+    <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
+    < N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS
 )
 
 
@@ -2066,8 +2088,8 @@ def _enrich_one_notice(
             # another unit only when its full download + two-call worst case
             # still fits, keeping n8n below its HTTP timeout while returning a
             # resumable PARTIAL response for the remaining manifest entries.
-            download_timeout_seconds=12,
-            openai_timeout_seconds=45,
+            download_timeout_seconds=DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
+            openai_timeout_seconds=DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
             openai_max_retries=0,
             deadline_monotonic=deadline_monotonic,
         )
@@ -2120,9 +2142,9 @@ def _execute_notice_analysis_batch(
     enrichment_warnings: list[str] = []
     enrichment_attachment_results: list[AnalysisAttachmentEnrichmentOut] = []
     # At most two worst-case attachment units fit below this request boundary:
-    # 3 redirect hops * 12s + 2 Responses calls * 45s = 126s per unit. n8n's
-    # HTTP timeout is 600s; a continuation never starts a third unsafe unit.
-    enrichment_deadline = time.monotonic() + 270
+    # 3 redirect hops * 12s + 2 Responses calls * 90s + 5s = 221s per unit.
+    # n8n's HTTP timeout is 600s; a continuation never starts a third unit.
+    enrichment_deadline = time.monotonic() + ANALYSIS_ENRICHMENT_BUDGET_SECONDS
 
     for index, notice_key in enumerate(payload.notice_keys):
         enrichment_targeted = payload.enrich_missing and index < payload.max_notices

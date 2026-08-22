@@ -136,6 +136,10 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
         "evaluations": 0,
         "decisions": 0,
     }
+    assert dashboard.json()["ended_count"] == 0
+    assert dashboard.json()["analyzed_ended_count"] == 0
+    assert dashboard.json()["closed_count"] == 0
+    assert dashboard.json()["expired_count"] == 0
 def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClient) -> None:
     first = client.post("/api/v1/ingestion/replay")
     assert first.status_code == 200
@@ -247,21 +251,34 @@ def test_public_board_does_not_fall_back_to_stale_system_recommendation(
     assert client.get("/api/v1/dashboard").json()["go_count"] == 0
 
 
-def test_past_open_notice_is_exposed_as_expired_and_not_counted_active(
+def test_ended_scope_combines_expired_and_closed_with_dashboard_list_parity(
     client: TestClient,
 ) -> None:
-    created = client.post(
+    client.post("/api/v1/ingestion/replay")
+    with client.app.state.session_factory() as session:
+        expired = session.scalar(select(Notice).where(Notice.notice_key == "SYN-PASS-001"))
+        closed = session.scalar(select(Notice).where(Notice.notice_key == "SYN-REVIEW-001"))
+        assert expired is not None and closed is not None
+        expired.status = "OPEN"
+        expired.deadline = datetime.fromisoformat("2020-01-01T09:00:00+00:00")
+        closed.status = "CLOSED"
+        session.commit()
+
+    dashboard = client.get("/api/v1/dashboard").json()
+    ended_rows = client.get("/api/v1/notices", params={"status": "ENDED"}).json()
+    analyzed_ended_rows = client.get(
         "/api/v1/notices",
-        json={
-            "notice_key": "PAST-NOTICE",
-            "bid_notice_no": "PAST-001",
-            "title": "과거 공개 공고",
-            "deadline": "2020-01-01T09:00:00Z",
-        },
-    )
-    assert created.status_code == 201
-    assert created.json()["status"] == "EXPIRED"
-    assert client.get("/api/v1/dashboard").json()["totals"]["active"] == 0
+        params={"status": "ENDED", "analysis_state": "EVALUATED"},
+    ).json()
+    assert dashboard["totals"]["active"] == 1
+    assert dashboard["ended_count"] == len(ended_rows) == 2
+    assert dashboard["analyzed_ended_count"] == len(analyzed_ended_rows) == 2
+    assert dashboard["closed_count"] == 1
+    assert dashboard["expired_count"] == 1
+    assert {item["status"] for item in analyzed_ended_rows} == {"CLOSED", "EXPIRED"}
+    assert len(client.get("/api/v1/notices", params={"status": "CLOSED"}).json()) == 1
+    assert len(client.get("/api/v1/notices", params={"status": "EXPIRED"}).json()) == 1
+    assert len(client.get("/api/v1/notices", params={"status": "OPEN"}).json()) == 1
 
 
 def test_notice_detail_manual_evaluation_and_user_decision(client: TestClient) -> None:
