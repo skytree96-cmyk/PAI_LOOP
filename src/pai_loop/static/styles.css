@@ -1453,6 +1453,12 @@ svg {
   background: #fbf5ec;
 }
 
+.notice-lifecycle-badge--cancelled {
+  border-color: #e7aaa5;
+  color: #91342d;
+  background: var(--red-pale);
+}
+
 .score-cell {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -2105,6 +2111,11 @@ svg {
 .detail-tag--ended {
   color: #d8e1e3;
   background: rgb(216 225 227 / 0.12);
+}
+
+.detail-tag--cancelled {
+  color: #ffd5d1;
+  background: rgb(189 75 66 / 0.28);
 }
 
 .detail-hero h2 {

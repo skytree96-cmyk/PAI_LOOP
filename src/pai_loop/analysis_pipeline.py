@@ -58,6 +58,7 @@ from .models import (
     RequirementResultSnapshot,
     ScoreSnapshot,
 )
+from .notice_freshness import authoritative_pps_notice_is_cancelled
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
@@ -1261,6 +1262,10 @@ def run_analysis_pipeline(
             notice = session.scalar(select(Notice).where(Notice.id == notice_id))
             if notice is None:
                 raise AnalysisPipelineSourceError("notice was not found")
+            if authoritative_pps_notice_is_cancelled(session, notice):
+                raise AnalysisPipelineSourceError(
+                    "authoritative PPS notice is cancelled; analysis is disabled"
+                )
 
             selected_versions = _select_source_versions(
                 session,

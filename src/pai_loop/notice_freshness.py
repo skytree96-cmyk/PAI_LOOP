@@ -2,10 +2,66 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from .models import AnalysisRun, Evaluation, Notice, NoticeVersion
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .models import (
+    AnalysisRun,
+    Evaluation,
+    Notice,
+    NoticeVersion,
+    PpsNoticeAuthority,
+)
 
 
 PPS_METADATA_KIND = "PPS_NOTICE_METADATA"
+
+
+def authoritative_pps_cancelled_notice_keys(
+    session: Session,
+    notices: list[Notice],
+) -> set[str]:
+    """Return PPS Notice rows whose current logical authority is cancelled.
+
+    Cancellation is scoped by ``bid_notice_no``. Every retained historical
+    row for that logical notice is therefore write-ineligible even though only
+    one current representative receives the public cancellation projection.
+    """
+
+    pps_notices = [
+        notice
+        for notice in notices
+        if notice.notice_key.upper().startswith("PPS-") and notice.bid_notice_no
+    ]
+    notice_nos = {notice.bid_notice_no for notice in pps_notices}
+    if not notice_nos:
+        return set()
+    cancelled_notice_nos = {
+        authority.bid_notice_no
+        for authority in session.scalars(
+            select(PpsNoticeAuthority)
+            .where(
+                PpsNoticeAuthority.bid_notice_no.in_(notice_nos),
+                PpsNoticeAuthority.disposition == "CANCELLED",
+            )
+            .execution_options(populate_existing=True)
+        ).all()
+    }
+    return {
+        notice.notice_key
+        for notice in pps_notices
+        if notice.bid_notice_no in cancelled_notice_nos
+    }
+
+
+def authoritative_pps_notice_is_cancelled(
+    session: Session,
+    notice: Notice,
+) -> bool:
+    return notice.notice_key in authoritative_pps_cancelled_notice_keys(
+        session,
+        [notice],
+    )
 
 
 def _as_utc(value: datetime) -> datetime:
