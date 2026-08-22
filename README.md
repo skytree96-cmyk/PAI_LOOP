@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.9.2 전체 첨부 분석 · 비용 관측 · 종료 공고 조회
+## 현재 구현 범위: v0.9.3 전체 첨부 분석 · 자동 정량 규칙 · 종료 공고 조회
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
@@ -38,6 +38,8 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 공모전용 익명 읽기 허용 목록과 모든 쓰기를 서버 키로 막는 public-read-only 경계
 - Git 기준자료 6종을 PostgreSQL `reference_data_versions`에 불변 버전으로 동기화하고 회사 공개 facts/evidence를 평가 DB에 멱등 반영
 - 저장된 다중 첨부 추출본을 원자조건으로 병합한 뒤 평가·조건결과·정량·가격·경쟁리스크·부서추천·시스템 입찰의견을 한 트랜잭션의 불변 snapshot으로 저장
+- 현재 첨부 전량·원문 인용·표 총점·구간·단위·결정론적 산식 검증을 모두 통과한
+  정량 규칙은 사람의 반복 승인 없이 `AUTO_ACTIVE`로 전환
 - 실제 `NO_BID / SUBMITTED / WON / LOST`와 투찰금액·점수·실주사유를 누적·갱신할 결과 환류 DB/API
 
 GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마친 불변 seed만 둡니다.
@@ -51,6 +53,40 @@ GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마�
 담당자가 입력한 키워드로 후보를 조회한 뒤, 토큰 겹침과 한글 3-gram 유사도를
 혼합한 점수를 함께 보여주는 **검토용 후보 목록**입니다. 사업 범위·발주기관·
 기간·과업 내용은 담당자가 다시 확인해야 합니다.
+
+### 정량 규칙과 회사 사실의 안전 계약
+
+정량 규칙의 원문 검증과 실제 회사값의 점수 적용은 별도 단계입니다. 현재 공고의
+모든 첨부와 정확한 원문 인용, 표 총점, 겹치거나 빠지지 않는 배점 구간, 지원 단위와
+산식을 기계 검증한 규칙은 `SOURCE_VALIDATED / AUTO_ACTIVE`가 되며 추가 사람 승인을
+요구하지 않습니다.
+
+`AUTO_ACTIVE`는 회사 점수가 자동으로 존재한다는 뜻이 아닙니다. 동적 평가항목마다
+현재 문서 해시·표·항목·산식·단위를 묶은 `fact_binding_sha256`를 만들고, 마감일 기준
+유효한 검증 증빙을 가진 canonical `CompanyFact`가 같은 binding digest를 명시할 때만
+결정론적 점수를 계산합니다. 증빙 metadata의 `company_fact_payload_sha256`도 회사값·단위·
+유효기간·출처의 canonical payload와 정확히 일치해야 하므로, 같은 증빙 행을 다른 값에
+재사용하면 점수를 계산하지 않습니다. 인정기간, 유사사업 범위, 단일계약/VAT/공동수급 지분,
+인력 역할·경력처럼 문맥이 다른 generic 회사값은 재사용하지 않고 `UNSCORABLE`로
+남깁니다. 회사 증빙이 없거나 binding이 다를 때 0점이나 만점을 임의로 추정하지
+않으며, 수행실적 금액·건수는 이 문맥 차원을 구조화하기 전까지
+`FACT_DIMENSIONS_UNMODELED / REVIEW_REQUIRED`로 유지합니다. 배점표가 헤더에서 단위를
+한 번 선언한 형식은 허용하지만 구간 행에 다른 환산 단위가 명시되면 자동 활성화하지
+않습니다. 익명 정량 조회는 회사 fact를 DB에서 읽지 않고 원문 앵커·산식·내부 식별자와
+증빙 해시를 제거합니다. 기존 curated 정량 프로필은 원문
+해시가 현재 권위 문서와 일치하는 동안 종전 무binding 계약을 유지합니다.
+
+PPS metadata의 제목·기관·금액·게시/마감·차수·상태·분류·안전한 원문 URL과 첨부
+manifest는 material version을 만들지만, 검색어와 `provider_changed_at`은 동일 version의
+비material provenance로만 합칩니다. v0.9.3 이전 metadata는 canonical Notice basis가
+없으므로 provider metadata/manifest가 같고 upsert가 canonical 필드 무변경을 증명한
+연속 재수집에 한해서만 기존 ID·version·hash를 유지하며
+`UNVERIFIED_LEGACY_COMPAT`로 표시합니다. 이 표시는 migration debt이며, 이후 실제
+material 변경은 반드시 새 version을 만들어 기존 평가·추천을 현재 화면에서 숨깁니다.
+취소·필수필드 누락 최신 이벤트는 credential/raw payload 없이 해시된 compact
+`pps_notice_authorities` 행으로 보존합니다. 실행로그는 7일 뒤 삭제해도 이 authority
+행은 유지됩니다. 따라서 이후 부분 검색에 나타난
+낮은 차수·오래된 등록공고가 취소/연장 상태를 되돌릴 수 없습니다.
 
 ## 빠른 로컬 실행
 

@@ -98,6 +98,13 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
         if deadline is not None:
             deadline_basis = "OPENING_FALLBACK"
     published = _parse_datetime(item.get("bidNtceDt") or item.get("published_at"))
+    # ``chgDt`` is the provider's event-change clock.  Keep it in the
+    # canonical ingestion row even though it is not persisted as a Notice
+    # column: rows for the same notice/revision can share a publication time
+    # while an extension or correction has a later change time.
+    provider_changed = _parse_datetime(
+        item.get("chgDt") or item.get("provider_changed_at")
+    )
     raw_notice_kind = _label(item.get("ntceKindNm") or item.get("notice_kind"))
     # The provider has used more than one cancellation label over time.  The
     # persistence boundary intentionally consumes one canonical value so a
@@ -123,6 +130,7 @@ def normalise_notice(item: dict[str, Any]) -> dict[str, Any]:
             item.get("ntceInsttNm") or item.get("dminsttNm") or item.get("agency") or ""
         ).strip(),
         "published_at": published,
+        "provider_changed_at": provider_changed,
         "deadline": deadline,
         "deadline_basis": deadline_basis,
         "estimated_amount": _number(

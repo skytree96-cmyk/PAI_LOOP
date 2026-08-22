@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from pai_loop.main import create_app
 from pai_loop.integrations.openai_extraction import ExtractionPayload
+from pai_loop.models import CompanyFact, Notice
 from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
 from pai_loop.quantitative_scoring import (
     QuantitativeCriterion,
@@ -34,6 +37,14 @@ def _anchor(*, page: int = 1) -> SourceAnchor:
         document_sha256="a" * 64,
         section="quantitative table",
         page=page,
+    )
+
+
+def _active_request(**values) -> QuantitativeEstimateRequest:
+    return QuantitativeEstimateRequest(
+        source_validation_status="SOURCE_VALIDATED",
+        activation_status="AUTO_ACTIVE",
+        **values,
     )
 
 
@@ -81,7 +92,7 @@ def test_confirmed_synthetic_score_is_deterministic_and_separate_from_go() -> No
         required_evidence_keys=["EVIDENCE-SYNTHETIC"],
     )
     result = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="synthetic-confirmed-v1",
             minimum_score=12,
             criteria=[_numeric_criterion(), boolean],
@@ -116,7 +127,7 @@ def test_confirmed_synthetic_score_is_deterministic_and_separate_from_go() -> No
 
 def test_estimated_range_and_missing_fact_do_not_create_exact_points() -> None:
     ranged = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="synthetic-range-v1",
             criteria=[_numeric_criterion(floor=2)],
             facts=[
@@ -139,7 +150,7 @@ def test_estimated_range_and_missing_fact_do_not_create_exact_points() -> None:
     assert ranged.readiness_band == "RED"  # coverage is deliberately still zero
 
     missing = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="synthetic-missing-v1",
             criteria=[_numeric_criterion(floor=2)],
         )
@@ -155,7 +166,7 @@ def test_invalid_or_missing_rules_fail_closed_to_review() -> None:
     invalid = _numeric_criterion()
     invalid.brackets = []
     result = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="synthetic-invalid-v1",
             criteria=[invalid],
             facts=[
@@ -176,6 +187,7 @@ def test_invalid_or_missing_rules_fail_closed_to_review() -> None:
         QuantitativeEstimateRequest(
             ruleset_version="missing-table-v1",
             rule_source_status="MISSING",
+            source_validation_status="MISSING",
             missing_reason="score table unavailable",
         )
     )
@@ -185,7 +197,7 @@ def test_invalid_or_missing_rules_fail_closed_to_review() -> None:
     assert no_table.lower_points is None
 
     wrong_evidence = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="wrong-evidence-v1",
             criteria=[_numeric_criterion(floor=2)],
             facts=[
@@ -205,7 +217,7 @@ def test_invalid_or_missing_rules_fail_closed_to_review() -> None:
     unanchored = _numeric_criterion(floor=2)
     unanchored.source_anchor = None
     unanchored_result = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="unanchored-floor-v1",
             criteria=[unanchored],
         )
@@ -216,7 +228,7 @@ def test_invalid_or_missing_rules_fail_closed_to_review() -> None:
 
 def test_duplicate_metric_facts_require_review() -> None:
     result = estimate_quantitative_score(
-        QuantitativeEstimateRequest(
+        _active_request(
             ruleset_version="duplicate-fact-v1",
             criteria=[_numeric_criterion()],
             facts=[
@@ -239,13 +251,13 @@ def test_duplicate_metric_facts_require_review() -> None:
     assert "중복" in result.criteria[0].rationale
 
 
-def test_verified_xlsx_rule_profile_never_scores_without_company_fact() -> None:
+def test_verified_xlsx_business_year_rule_auto_activates_without_assuming_fact() -> None:
     attachment_id = "ATT-XLSX-QUANT"
     source = """[SHEET 정량평가]
-수행실적 20점
-10억원 이상 20점
-5억원 이상 10억원 미만 15점
-5억원 미만 10점
+업력 20점
+10년 이상 20점
+5년 이상 10년 미만 15점
+5년 미만 10점
 정량평가 총점 20점
 통과 최저점 12점
 """
@@ -269,51 +281,51 @@ def test_verified_xlsx_rule_profile_never_scores_without_company_fact() -> None:
                     "label": "정량평가",
                     "criteria": [
                         {
-                            "criterion_id": "PERFORMANCE-AMOUNT",
-                            "label": "수행실적",
-                            "criterion_literal": "수행실적 20점",
+                            "criterion_id": "BUSINESS-YEARS",
+                            "label": "업력",
+                            "criterion_literal": "업력 20점",
                             "max_points": 20,
                             "scoring_method": "BRACKET",
-                            "metric": "PERFORMANCE_AMOUNT",
-                            "unit": "억원",
+                            "metric": "BUSINESS_YEARS",
+                            "unit": "년",
                             "brackets": [
                                 {
-                                    "label": "10억원 이상",
-                                    "literal": "10억원 이상 20점",
+                                    "label": "10년 이상",
+                                    "literal": "10년 이상 20점",
                                     "min_value": 10,
                                     "max_value": None,
                                     "min_inclusive": True,
                                     "max_inclusive": False,
                                     "points": 20,
-                                    "evidence": evidence("10억원 이상 20점"),
+                                    "evidence": evidence("10년 이상 20점"),
                                 },
                                 {
-                                    "label": "5억원 이상 10억원 미만",
-                                    "literal": "5억원 이상 10억원 미만 15점",
+                                    "label": "5년 이상 10년 미만",
+                                    "literal": "5년 이상 10년 미만 15점",
                                     "min_value": 5,
                                     "max_value": 10,
                                     "min_inclusive": True,
                                     "max_inclusive": False,
                                     "points": 15,
                                     "evidence": evidence(
-                                        "5억원 이상 10억원 미만 15점"
+                                        "5년 이상 10년 미만 15점"
                                     ),
                                 },
                                 {
-                                    "label": "5억원 미만",
-                                    "literal": "5억원 미만 10점",
+                                    "label": "5년 미만",
+                                    "literal": "5년 미만 10점",
                                     "min_value": None,
                                     "max_value": 5,
                                     "min_inclusive": False,
                                     "max_inclusive": False,
                                     "points": 10,
-                                    "evidence": evidence("5억원 미만 10점"),
+                                    "evidence": evidence("5년 미만 10점"),
                                 },
                             ],
                             "threshold": None,
                             "formula_literal": None,
-                            "required_evidence": ["company.performance.amount"],
-                            "evidence": evidence("수행실적 20점"),
+                            "required_evidence": ["company.business.years"],
+                            "evidence": evidence("업력 20점"),
                             "ambiguity_reason": None,
                         }
                     ],
@@ -348,12 +360,17 @@ def test_verified_xlsx_rule_profile_never_scores_without_company_fact() -> None:
     no_fact_request = quantitative_request_from_candidate_profile(profile)
     no_fact = estimate_quantitative_score(no_fact_request)
     assert no_fact.rule_source_status == "AVAILABLE"
+    assert no_fact.source_validation_status == "SOURCE_VALIDATED"
+    assert no_fact.activation_status == "AUTO_ACTIVE"
+    assert no_fact.activation_reasons == []
     assert no_fact.total_max_points == 20
     assert no_fact.overall_status == "UNSCORABLE"
     assert no_fact.estimated_points is None
     assert (no_fact.lower_points, no_fact.upper_points) == (0, 20)
 
     metric_key = no_fact_request.criteria[0].metric_key
+    assert metric_key == "company.business.years"
+    assert no_fact_request.criteria[0].unit == "YEAR"
     confirmed_request = quantitative_request_from_candidate_profile(
         profile,
         facts=[
@@ -361,7 +378,8 @@ def test_verified_xlsx_rule_profile_never_scores_without_company_fact() -> None:
                 metric_key=metric_key,
                 status="CONFIRMED",
                 value=10,
-                evidence_key="company.performance.amount",
+                evidence_key="company.business.years",
+                fact_binding_sha256=no_fact_request.criteria[0].fact_binding_sha256,
                 confidence=1,
             )
         ],
@@ -378,7 +396,8 @@ def test_verified_xlsx_rule_profile_never_scores_without_company_fact() -> None:
                 metric_key=metric_key,
                 status="CONFIRMED",
                 value=10,
-                evidence_key="company.performance.count",
+                evidence_key="company.performance.amount",
+                fact_binding_sha256=no_fact_request.criteria[0].fact_binding_sha256,
                 confidence=1,
             )
         ],
@@ -422,6 +441,9 @@ def test_actual_ai_training_profile_uses_rfp_anchors_and_candidate_range(
     payload = response.json()
     assert payload["ruleset_version"] == "r25bk00764725-quant-actual-derived-v1"
     assert payload["rule_source_status"] == "AVAILABLE"
+    assert payload["source_validation_status"] == "SOURCE_VALIDATED"
+    assert payload["activation_status"] == "AUTO_ACTIVE"
+    assert payload["activation_reasons"] == []
     assert payload["source_anchor"]["document_sha256"] == ACTUAL_RFP_SHA256
     assert payload["total_max_points"] == 20
     assert (payload["lower_points"], payload["upper_points"]) == (9.7, 20)
@@ -486,6 +508,8 @@ def test_profile_identity_without_exact_source_digest_stays_fail_closed(
     ).json()
 
     assert payload["rule_source_status"] == "INCOMPLETE"
+    assert payload["source_validation_status"] == "INCOMPLETE"
+    assert payload["activation_status"] == "REVIEW_REQUIRED"
     assert payload["overall_status"] == "REVIEW"
     assert payload["total_max_points"] is None
     assert "문서 해시" in payload["assumptions"][0]
@@ -524,6 +548,8 @@ def test_corrected_reference_cannot_reuse_stale_quantitative_profile(
     ).json()
 
     assert payload["rule_source_status"] == "INCOMPLETE"
+    assert payload["source_validation_status"] == "INCOMPLETE"
+    assert payload["activation_status"] == "REVIEW_REQUIRED"
     assert payload["total_max_points"] is None
     assert "현재 권위 공고 문서" in payload["assumptions"][0]
 
@@ -540,6 +566,8 @@ def test_incheon_actual_public_seed_stays_unscored_without_quant_table(
     assert response.status_code == 200
     payload = response.json()
     assert payload["rule_source_status"] == "MISSING"
+    assert payload["source_validation_status"] == "MISSING"
+    assert payload["activation_status"] == "REVIEW_REQUIRED"
     assert payload["overall_status"] == "REVIEW"
     assert payload["readiness_band"] == "GRAY"
     assert payload["total_max_points"] is None
@@ -575,3 +603,120 @@ def test_public_read_only_can_read_public_safe_quantitative_result(monkeypatch) 
     assert response.status_code == 200
     assert response.json()["rule_source_status"] == "MISSING"
     assert "C:\\Users" not in response.text
+
+
+def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindings(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PAI_LOOP_ENV", "development")
+    monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
+    monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    binding = "b" * 64
+    anchor = SourceAnchor(
+        document_label="internal-rfp.pdf",
+        document_sha256="a" * 64,
+        section="내부 감사 위치",
+        page=7,
+        quote="SENSITIVE-EXACT-SOURCE-QUOTE",
+    )
+    criterion = _numeric_criterion().model_copy(
+        update={"source_anchor": anchor, "fact_binding_sha256": binding}
+    )
+    sensitive_result = estimate_quantitative_score(
+        _active_request(
+            ruleset_version="dynamic-sensitive-ruleset",
+            source_anchor=anchor,
+            criteria=[criterion],
+            facts=[
+                QuantitativeFact(
+                    metric_key=criterion.metric_key,
+                    status="CONFIRMED",
+                    value=55,
+                    evidence_key="EVIDENCE-SYNTHETIC",
+                    evidence_reference="INTERNAL-EVIDENCE-REFERENCE",
+                    evidence_sha256="c" * 64,
+                    fact_binding_sha256=binding,
+                    confidence=1,
+                )
+            ],
+        )
+    )
+    observed_company_fact_counts: list[int] = []
+
+    def fake_estimate(_notice, company_facts):
+        observed_company_fact_counts.append(len(tuple(company_facts)))
+        return sensitive_result
+
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring.estimate_for_notice",
+        fake_estimate,
+    )
+    with TestClient(app) as public_client:
+        with app.state.session_factory() as session:
+            session.add(
+                Notice(
+                    notice_key="PUBLIC-DYNAMIC-QUANT",
+                    bid_notice_no="PUBLIC-DYNAMIC-QUANT",
+                    revision_no="00",
+                    title="공개 정량 projection 회귀",
+                    agency="공공기관",
+                    deadline=datetime.now(timezone.utc) + timedelta(days=7),
+                    status="OPEN",
+                )
+            )
+            session.add(
+                CompanyFact(
+                    fact_key="metric.amount",
+                    value=55,
+                    effective_from=datetime.now(timezone.utc) - timedelta(days=1),
+                    verified=False,
+                )
+            )
+            session.commit()
+
+        public_response = public_client.get(
+            "/api/v1/notices/PUBLIC-DYNAMIC-QUANT/quantitative-estimate"
+        )
+        authenticated_response = public_client.get(
+            "/api/v1/notices/PUBLIC-DYNAMIC-QUANT/quantitative-estimate",
+            headers={"X-PAI-LOOP-API-KEY": "server-only-secret"},
+        )
+
+    assert public_response.status_code == 200
+    public_payload = public_response.json()
+    assert observed_company_fact_counts[0] == 0
+    assert observed_company_fact_counts[1] > 0
+    assert public_payload["activation_status"] == "AUTO_ACTIVE"
+    assert public_payload["ruleset_version"] == "public-quantitative-summary-v1"
+    assert public_payload["criteria"][0]["criterion_id"] == "PUBLIC-CRITERION-001"
+    assert public_payload["source_anchor"] is None
+    assert public_payload["evidence_observations"] == []
+    assert public_payload["criteria"][0]["source_anchor"] is None
+    assert public_payload["criteria"][0]["evidence_key"] is None
+    assert public_payload["criteria"][0]["evidence_reference"] is None
+    assert public_payload["criteria"][0]["evidence_sha256"] is None
+    assert public_payload["criteria"][0]["fact_binding_sha256"] is None
+    assert public_payload["criteria"][0]["formula"] == (
+        "공개 화면에서는 세부 원문 산식을 제외합니다."
+    )
+    for sensitive in (
+        "SENSITIVE-EXACT-SOURCE-QUOTE",
+        "INTERNAL-EVIDENCE-REFERENCE",
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "dynamic-sensitive-ruleset",
+        criterion.criterion_id,
+    ):
+        assert sensitive not in public_response.text
+
+    assert authenticated_response.status_code == 200
+    authenticated_payload = authenticated_response.json()
+    assert authenticated_payload["source_anchor"]["quote"] == (
+        "SENSITIVE-EXACT-SOURCE-QUOTE"
+    )
+    assert authenticated_payload["criteria"][0]["evidence_reference"] == (
+        "INTERNAL-EVIDENCE-REFERENCE"
+    )
+    assert authenticated_payload["criteria"][0]["fact_binding_sha256"] == binding

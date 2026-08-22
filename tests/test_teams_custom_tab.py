@@ -98,8 +98,8 @@ def test_table_and_card_detail_arrows_are_functional() -> None:
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".row-arrow:focus-visible" in styles
     assert ".recommendation-arrow" in styles
-    assert "styles.css?v=20260822-ended1" in html
-    assert "app.js?v=20260822-ended1" in html
+    assert "styles.css?v=20260822-quant-auto1" in html
+    assert "app.js?v=20260822-quant-auto1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:

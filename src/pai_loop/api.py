@@ -30,7 +30,12 @@ from .department_ranking import (
 )
 from .integrations.awards import PpsAwardClient
 from .award_intelligence import build_award_intelligence
-from .integrations.pps import PpsApiError, PpsClient, redact_url
+from .integrations.pps import (
+    PpsApiError,
+    PpsClient,
+    _has_direct_contract_marker,
+    redact_url,
+)
 from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
@@ -47,9 +52,12 @@ from .models import (
     MockNotification,
     Notice,
     NoticeVersion,
+    PpsNoticeAuthority,
     UserDecision,
 )
+from .notice_freshness import latest_current_analysis_run, latest_current_evaluation
 from .pps_enrichment import (
+    PPS_METADATA_KIND,
     build_attachment_manifest,
     department_keyword_coverage_count,
     persist_pps_metadata_version,
@@ -101,7 +109,7 @@ DbSession = Annotated[Session, Depends(get_session)]
 
 
 def _latest_evaluation(notice: Notice) -> Evaluation | None:
-    return max(notice.evaluations, key=lambda item: item.evaluated_at) if notice.evaluations else None
+    return latest_current_evaluation(notice)
 
 
 def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime | None]:
@@ -112,9 +120,9 @@ def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime 
     the latest run has no complete ``bid:system`` snapshot.
     """
 
-    if not notice.analysis_runs:
+    latest_run = latest_current_analysis_run(notice)
+    if latest_run is None:
         return None, None
-    latest_run = max(notice.analysis_runs, key=lambda item: item.generated_at)
     recommendation = next(
         (
             item.recommendation
@@ -540,7 +548,8 @@ def list_notices(
         )
     if analysis_state == "EVALUATED":
         statement = statement.where(Notice.evaluations.any())
-    if ranking_requested:
+    requires_current_evaluation_filter = analysis_state == "EVALUATED"
+    if ranking_requested or requires_current_evaluation_filter:
         notices = list(session.scalars(statement).all())
     else:
         notices = list(session.scalars(statement.offset(offset).limit(limit)).all())
@@ -562,8 +571,12 @@ def list_notices(
             for notice in notices
             if (latest := _latest_evaluation(notice)) and latest.eligibility == eligibility
         ]
+    if requires_current_evaluation_filter:
+        notices = [notice for notice in notices if _latest_evaluation(notice) is not None]
 
     if not ranking_requested:
+        if requires_current_evaluation_filter:
+            notices = notices[offset : offset + limit]
         return [
             _summary(notice, public_view=public_read_allowed(request))
             for notice in notices
@@ -811,19 +824,340 @@ def _same_datetime(left: datetime | None, right: datetime | None) -> bool:
     return _comparable_utc(left) == _comparable_utc(right)
 
 
-def _revision_preference(item: dict[str, Any], *, now: datetime) -> tuple[int, int, float, float]:
+def _revision_preference(
+    item: dict[str, Any],
+    *,
+    now: datetime,
+) -> tuple[int, int, float, int, int, int, float]:
+    """Return the provider-authority order for one logical PPS notice.
+
+    Revision and provider change/publication time describe which provider
+    event is newer.
+    Deadline liveness must not outrank them: otherwise an obsolete, still-open
+    revision can resurrect after a newer correction has already expired. A
+    dated cancellation wins only an otherwise exact tie, so a later
+    re-registration with the same revision can still become authoritative. A
+    cancellation with no provider event timestamp is deliberately fail-closed
+    within the same revision; a higher revision still outranks it.
+    """
+
     revision_text = str(item.get("revision_no") or "00")
     digits = re.sub(r"[^0-9]", "", revision_text)
     revision = int(digits or 0)
-    deadline = _comparable_utc(item["deadline"])
+    provider_changed = item.get("provider_changed_at")
     published = item.get("published_at")
-    published_timestamp = _comparable_utc(published).timestamp() if published else 0.0
-    return (
-        int(deadline >= now),
-        revision,
-        published_timestamp,
-        deadline.timestamp(),
+    provider_event_at = provider_changed or published
+    provider_event_timestamp = (
+        _comparable_utc(provider_event_at).timestamp() if provider_event_at else 0.0
     )
+    deadline = item.get("deadline")
+    deadline_timestamp = _comparable_utc(deadline).timestamp() if deadline else 0.0
+    cancelled = int(str(item.get("notice_kind") or "").strip() == "취소공고")
+    direct_contract = int(bool(item.get("direct_contract_signal")))
+    undated_cancellation = int(bool(cancelled and provider_event_at is None))
+    complete = int(bool(str(item.get("title") or "").strip() and deadline is not None))
+    return (
+        revision,
+        undated_cancellation,
+        provider_event_timestamp,
+        cancelled,
+        direct_contract,
+        complete,
+        deadline_timestamp,
+    )
+
+
+def _authoritative_pps_events(
+    rows: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], int]:
+    """Collapse repeated searches and revisions to one authoritative event.
+
+    Cancellation is evaluated *after* this collapse. Treating any historical
+    cancellation row as authoritative would suppress a later extension or
+    re-registration returned in the same provider window.
+    """
+
+    latest_by_notice_no: dict[str, dict[str, Any]] = {}
+    search_keywords_by_notice_no: dict[str, set[str]] = {}
+    superseded = 0
+    for item in rows:
+        notice_no = str(item.get("bid_notice_no") or "").strip()
+        if not notice_no:
+            continue
+        search_keywords_by_notice_no.setdefault(notice_no, set()).update(
+            keyword.strip()
+            for keyword in item.get("_search_keywords") or []
+            if isinstance(keyword, str) and keyword.strip()
+        )
+        previous = latest_by_notice_no.get(notice_no)
+        if previous is None:
+            latest_by_notice_no[notice_no] = item
+            continue
+        superseded += 1
+        if _revision_preference(item, now=now) > _revision_preference(previous, now=now):
+            latest_by_notice_no[notice_no] = item
+    authoritative: list[dict[str, Any]] = []
+    for notice_no, winner in latest_by_notice_no.items():
+        # The winning provider event may come from only one of many keyword
+        # queries.  Preserve the deterministic union on a copy so neither
+        # winner replacement nor caller input order can shrink provenance.
+        projected = dict(winner)
+        projected["_search_keywords"] = sorted(
+            search_keywords_by_notice_no[notice_no],
+            key=lambda value: (value.casefold(), value),
+        )
+        authoritative.append(projected)
+    return authoritative, superseded
+
+
+def _lifecycle_timestamp(value: Any) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    return _comparable_utc(value).isoformat()
+
+
+def _parse_lifecycle_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _pps_lifecycle_audit_event(item: dict[str, Any]) -> dict[str, Any]:
+    """Return a credential-free durable provider-authority checkpoint."""
+
+    complete = bool(str(item.get("title") or "").strip() and item.get("deadline"))
+    notice_kind = str(item.get("notice_kind") or "").strip()
+    event = {
+        "schema_version": "pai-loop-pps-lifecycle-authority-1.0.0",
+        "bid_notice_no": str(item.get("bid_notice_no") or "").strip(),
+        "revision_no": str(item.get("revision_no") or "00"),
+        "event_kind": notice_kind or "미상",
+        "disposition": (
+            "CANCELLED"
+            if notice_kind == "취소공고"
+            else "VALID"
+            if complete
+            else "QUARANTINED"
+        ),
+        "required_fields_complete": complete,
+        "direct_contract_signal": bool(item.get("direct_contract_signal")),
+        "published_at": _lifecycle_timestamp(item.get("published_at")),
+        "provider_changed_at": _lifecycle_timestamp(
+            item.get("provider_changed_at")
+        ),
+        "deadline": _lifecycle_timestamp(item.get("deadline")),
+    }
+    digest_source = json.dumps(
+        event,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **event,
+        "authority_sha256": hashlib.sha256(digest_source).hexdigest(),
+    }
+
+
+def _lifecycle_event_as_notice_row(event: dict[str, Any]) -> dict[str, Any] | None:
+    if event.get("schema_version") != "pai-loop-pps-lifecycle-authority-1.0.0":
+        return None
+    digest = str(event.get("authority_sha256") or "")
+    unsigned = {key: value for key, value in event.items() if key != "authority_sha256"}
+    expected = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if not re.fullmatch(r"[a-f0-9]{64}", digest) or digest != expected:
+        return None
+    notice_no = str(event.get("bid_notice_no") or "").strip()
+    if not notice_no:
+        return None
+    return {
+        "bid_notice_no": notice_no,
+        "revision_no": str(event.get("revision_no") or "00"),
+        "title": "권위 이벤트" if event.get("required_fields_complete") else "",
+        "published_at": _parse_lifecycle_timestamp(event.get("published_at")),
+        "provider_changed_at": _parse_lifecycle_timestamp(
+            event.get("provider_changed_at")
+        ),
+        "deadline": _parse_lifecycle_timestamp(event.get("deadline")),
+        "notice_kind": str(event.get("event_kind") or ""),
+        "direct_contract_signal": bool(event.get("direct_contract_signal")),
+    }
+
+
+def _stored_notice_authority_row(notice: Notice) -> dict[str, Any]:
+    metadata = next(
+        (
+            version
+            for version in sorted(
+                notice.versions,
+                key=lambda value: value.version_no,
+                reverse=True,
+            )
+            if isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == PPS_METADATA_KIND
+        ),
+        None,
+    )
+    payload = metadata.source_payload if metadata is not None else {}
+    payload = payload if isinstance(payload, dict) else {}
+    basis = payload.get("canonical_notice_basis")
+    basis = basis if isinstance(basis, dict) else {}
+    identity = payload.get("notice_identity")
+    identity = identity if isinstance(identity, dict) else {}
+    provenance = payload.get("provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    provider_metadata = payload.get("notice_metadata")
+    provider_metadata = provider_metadata if isinstance(provider_metadata, dict) else {}
+    contract_method = str(provider_metadata.get("contract_method") or "")
+    bid_method = str(provider_metadata.get("bid_method") or "")
+    title = str(basis.get("title") or notice.title or "")
+    # Before the compact authority table existed, the PPS metadata version was
+    # the only durable lifecycle record.  Reconstruct the exact normalization
+    # signal here so a legacy CLOSED direct-contract notice cannot be reopened
+    # by an equal-authority partial provider row merely because the marker was
+    # ``직접계약`` or appeared in bid method/title instead of contract method.
+    direct_contract_signal = notice.status == "CLOSED" and (
+        _has_direct_contract_marker(contract_method)
+        if contract_method
+        else _has_direct_contract_marker(bid_method)
+        or _has_direct_contract_marker(title)
+    )
+    return {
+        "bid_notice_no": notice.bid_notice_no,
+        "revision_no": str(
+            basis.get("revision_no")
+            or identity.get("revision_no")
+            or notice.revision_no
+            or "00"
+        ),
+        "title": title,
+        "published_at": (
+            _parse_lifecycle_timestamp(basis.get("published_at"))
+            or notice.published_at
+        ),
+        "provider_changed_at": _parse_lifecycle_timestamp(
+            provenance.get("provider_changed_at")
+        ),
+        "deadline": (
+            _parse_lifecycle_timestamp(basis.get("deadline"))
+            or notice.deadline
+        ),
+        "notice_kind": str(provider_metadata.get("notice_kind") or ""),
+        "direct_contract_signal": direct_contract_signal,
+    }
+
+
+def _historical_pps_authorities(
+    session: Session,
+    notice_nos: set[str],
+    *,
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    """Load durable authority without trusting one partial search window."""
+
+    if not notice_nos:
+        return {}
+    candidates: dict[str, list[dict[str, Any]]] = {
+        notice_no: [] for notice_no in notice_nos
+    }
+    notices = session.scalars(
+        select(Notice)
+        .options(selectinload(Notice.versions))
+        .where(Notice.bid_notice_no.in_(notice_nos))
+    ).all()
+    for notice in notices:
+        candidates[notice.bid_notice_no].append(_stored_notice_authority_row(notice))
+
+    authority_rows = session.scalars(
+        select(PpsNoticeAuthority).where(
+            PpsNoticeAuthority.bid_notice_no.in_(notice_nos)
+        )
+    ).all()
+    for authority in authority_rows:
+        candidates[authority.bid_notice_no].append(
+            {
+                "bid_notice_no": authority.bid_notice_no,
+                "revision_no": authority.revision_no,
+                "title": (
+                    "권위 이벤트" if authority.required_fields_complete else ""
+                ),
+                "published_at": authority.published_at,
+                "provider_changed_at": authority.provider_changed_at,
+                "deadline": authority.deadline,
+                "notice_kind": authority.event_kind,
+                "direct_contract_signal": authority.direct_contract_signal,
+            }
+        )
+
+    return {
+        notice_no: max(
+            values,
+            key=lambda value: _revision_preference(value, now=now),
+        )
+        for notice_no, values in candidates.items()
+        if values
+    }
+
+
+def _persist_pps_authority(
+    session: Session,
+    item: dict[str, Any],
+    *,
+    now: datetime,
+) -> None:
+    event = _pps_lifecycle_audit_event(item)
+    incoming = _lifecycle_event_as_notice_row(event)
+    if incoming is None:  # pragma: no cover - digest construction invariant
+        raise RuntimeError("invalid internal PPS authority event")
+    notice_no = incoming["bid_notice_no"]
+    authority = session.get(PpsNoticeAuthority, notice_no)
+    if authority is not None:
+        current = {
+            "bid_notice_no": authority.bid_notice_no,
+            "revision_no": authority.revision_no,
+            "title": "권위 이벤트" if authority.required_fields_complete else "",
+            "published_at": authority.published_at,
+            "provider_changed_at": authority.provider_changed_at,
+            "deadline": authority.deadline,
+            "notice_kind": authority.event_kind,
+            "direct_contract_signal": authority.direct_contract_signal,
+        }
+        if _revision_preference(incoming, now=now) < _revision_preference(
+            current,
+            now=now,
+        ):
+            return
+    else:
+        authority = PpsNoticeAuthority(
+            bid_notice_no=notice_no,
+            disposition=str(event["disposition"]),
+            authority_sha256=str(event["authority_sha256"]),
+        )
+        session.add(authority)
+    authority.revision_no = str(event["revision_no"])
+    authority.event_kind = str(event["event_kind"])
+    authority.disposition = str(event["disposition"])
+    authority.required_fields_complete = bool(event["required_fields_complete"])
+    authority.direct_contract_signal = bool(event["direct_contract_signal"])
+    authority.published_at = incoming["published_at"]
+    authority.provider_changed_at = incoming["provider_changed_at"]
+    authority.deadline = incoming["deadline"]
+    authority.authority_sha256 = str(event["authority_sha256"])
 
 
 def _ranked_pps_candidates(
@@ -908,9 +1242,46 @@ def _persist_pps_ingestion_result(
     if payload.dry_run:
         warnings.append("dry_run이므로 공고·첨부 manifest를 저장하지 않았습니다.")
 
+    now = datetime.now(timezone.utc)
+    authoritative_rows, provider_superseded = _authoritative_pps_events(
+        fetched_rows,
+        now=now,
+    )
+    incoming_notice_nos = {
+        str(item.get("bid_notice_no") or "").strip()
+        for item in authoritative_rows
+        if str(item.get("bid_notice_no") or "").strip()
+    }
+    # Authority lookup is read-only and must also run for dry-run previews.
+    # Otherwise an obsolete registration can look eligible in preview while
+    # the identical live run is correctly blocked by a stored cancellation or
+    # extension checkpoint.
+    historical_authorities = _historical_pps_authorities(
+        session,
+        incoming_notice_nos,
+        now=now,
+    )
+    accepted_authoritative_rows: list[dict[str, Any]] = []
+    stale_historical_events = 0
+    for item in authoritative_rows:
+        notice_no = str(item.get("bid_notice_no") or "").strip()
+        stored = historical_authorities.get(notice_no)
+        if stored is not None and _revision_preference(
+            item,
+            now=now,
+        ) < _revision_preference(stored, now=now):
+            stale_historical_events += 1
+            continue
+        accepted_authoritative_rows.append(item)
+    authoritative_rows = accepted_authoritative_rows
+    if stale_historical_events:
+        warnings.append(
+            "저장된 최신 PPS 권위 이벤트보다 오래된 공고 "
+            f"{stale_historical_events}건은 상태를 되돌리지 않고 제외했습니다."
+        )
     cancelled_notice_nos = {
         str(item.get("bid_notice_no"))
-        for item in fetched_rows
+        for item in authoritative_rows
         if item.get("bid_notice_no")
         and str(item.get("notice_kind") or "").strip() == "취소공고"
     }
@@ -919,18 +1290,40 @@ def _persist_pps_ingestion_result(
             f"취소공고 {len(cancelled_notice_nos)}건은 OPEN 후보에서 제외하고 기존 행을 종료했습니다."
         )
 
-    quarantined = 0
+    authoritative_quarantined_notice_nos = {
+        str(item.get("bid_notice_no"))
+        for item in authoritative_rows
+        if item.get("bid_notice_no")
+        and str(item.get("bid_notice_no")) not in cancelled_notice_nos
+        and (
+            not item.get("title")
+            or item.get("deadline") is None
+        )
+    }
+    if authoritative_quarantined_notice_nos:
+        warnings.append(
+            "권위 최신 공고 "
+            f"{len(authoritative_quarantined_notice_nos)}건은 필수 필드가 누락되어 "
+            "OPEN 후보로 만들지 않고 기존 하위 공고를 종료했습니다."
+        )
+
+    quarantined = sum(
+        1
+        for item in fetched_rows
+        if not item.get("bid_notice_no")
+        or not item.get("title")
+        or item.get("deadline") is None
+    )
     matched_rows: list[dict[str, Any]] = []
-    for item in fetched_rows:
+    for item in authoritative_rows:
         if not item.get("bid_notice_no") or not item.get("title") or item.get("deadline") is None:
-            quarantined += 1
             continue
         if str(item["bid_notice_no"]) in cancelled_notice_nos:
             continue
         matched_rows.append(item)
 
     candidates: dict[str, dict[str, Any]] = {}
-    provider_duplicates = 0
+    provider_duplicates = provider_superseded
     for item in matched_rows:
         notice_key = _pps_notice_key(item)
         previous = candidates.get(notice_key)
@@ -942,7 +1335,6 @@ def _persist_pps_ingestion_result(
             continue
         candidates[notice_key] = item
 
-    now = datetime.now(timezone.utc)
     ordered_candidates, superseded_revisions = _ranked_pps_candidates(candidates, now=now)
     direct_contract_count = sum(
         bool(item.get("direct_contract_signal")) for _notice_key, item in ordered_candidates
@@ -953,45 +1345,52 @@ def _persist_pps_ingestion_result(
             "기본 OPEN 분석 큐에서 제외했습니다."
         )
     created = updated = manifests_created = manifests_reused = attachments_discovered = 0
-    duplicates = provider_duplicates + superseded_revisions
+    duplicates = (
+        provider_duplicates + superseded_revisions + stale_historical_events
+    )
     notice_keys: list[str] = []
     created_notice_keys: list[str] = []
     updated_notice_keys: list[str] = []
 
-    if cancelled_notice_nos and not payload.dry_run:
-        cancelled_rows = list(
+    lifecycle_closed_notice_nos = (
+        cancelled_notice_nos | authoritative_quarantined_notice_nos
+    )
+    if lifecycle_closed_notice_nos:
+        lifecycle_rows = list(
             session.scalars(
                 select(Notice).where(
-                    Notice.bid_notice_no.in_(cancelled_notice_nos),
+                    Notice.bid_notice_no.in_(lifecycle_closed_notice_nos),
                     Notice.status != "CLOSED",
                 )
             ).all()
         )
-        for cancelled in cancelled_rows:
-            cancelled.status = "CLOSED"
-        updated += len(cancelled_rows)
+        if not payload.dry_run:
+            for lifecycle_row in lifecycle_rows:
+                lifecycle_row.status = "CLOSED"
+        updated += len(lifecycle_rows)
 
     for notice_key, item in ordered_candidates:
         direct_contract = bool(item.get("direct_contract_signal"))
         target_status = "CLOSED" if direct_contract else "OPEN"
         if not direct_contract:
             notice_keys.append(notice_key)
+        # A corrected revision/deadline supersedes every previously stored row
+        # for the same PPS notice number. Query this in dry-run too so its
+        # ``updated`` prediction matches live execution; only mutation is
+        # conditional.
+        superseded_rows = list(
+            session.scalars(
+                select(Notice).where(
+                    Notice.bid_notice_no == item["bid_notice_no"],
+                    Notice.notice_key != notice_key,
+                    Notice.status != "CLOSED",
+                )
+            ).all()
+        )
         if not payload.dry_run:
-            # A corrected revision/deadline supersedes every previously stored
-            # row for the same PPS notice number. Without this transition old
-            # rows remain phantom OPEN candidates in public search.
-            superseded_rows = list(
-                session.scalars(
-                    select(Notice).where(
-                        Notice.bid_notice_no == item["bid_notice_no"],
-                        Notice.notice_key != notice_key,
-                        Notice.status != "CLOSED",
-                    )
-                ).all()
-            )
             for superseded in superseded_rows:
                 superseded.status = "CLOSED"
-            updated += len(superseded_rows)
+        updated += len(superseded_rows)
 
         existing = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
         existed_before_run = existing is not None
@@ -1073,6 +1472,8 @@ def _persist_pps_ingestion_result(
                 raw_item=raw_item,
                 search_keywords=query_terms,
                 dry_run=False,
+                provider_changed_at=item.get("provider_changed_at"),
+                canonical_material_changed=candidate_changed,
             )
             manifests_created += int(manifest_result.created)
             manifests_reused += int(manifest_result.reused)
@@ -1104,7 +1505,21 @@ def _persist_pps_ingestion_result(
     job.request_json = {
         **(job.request_json if isinstance(job.request_json, dict) else {}),
         **material_scope_fields([*created_notice_keys, *updated_notice_keys]),
+        **(
+            {
+                "lifecycle_events": [
+                    _pps_lifecycle_audit_event(item)
+                    for item in authoritative_rows
+                    if item.get("bid_notice_no")
+                ]
+            }
+            if not payload.dry_run
+            else {}
+        ),
     }
+    if not payload.dry_run:
+        for item in authoritative_rows:
+            _persist_pps_authority(session, item, now=now)
     job.warnings = warnings
     job.completed_at = datetime.now(timezone.utc)
     session.commit()

@@ -1,17 +1,39 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from .database import Base
 
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+class UTCDateTime(TypeDecorator):
+    """Persist aware datetimes as UTC across PostgreSQL and SQLite."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, _dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value: datetime | None, _dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class TimestampMixin:
@@ -119,8 +141,8 @@ class CompanyFact(Base, TimestampMixin):
     fact_key: Mapped[str] = mapped_column(String(120), index=True)
     value: Mapped[Any] = mapped_column(JSON)
     value_label: Mapped[str | None] = mapped_column(String(500))
-    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    effective_from: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    effective_to: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     evidence_id: Mapped[str | None] = mapped_column(ForeignKey("evidence.id", ondelete="SET NULL"), index=True)
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(80), default="MANUAL")
@@ -231,6 +253,28 @@ class IngestionJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PpsNoticeAuthority(Base, TimestampMixin):
+    """Durable, indexed PPS lifecycle winner for one logical notice number.
+
+    This compact row survives short-lived ingestion-log retention and contains
+    only canonical provider authority fields plus a digest.  Raw PPS payloads,
+    contacts, URLs and credentials are never stored here.
+    """
+
+    __tablename__ = "pps_notice_authorities"
+
+    bid_notice_no: Mapped[str] = mapped_column(String(80), primary_key=True)
+    revision_no: Mapped[str] = mapped_column(String(20), default="00")
+    event_kind: Mapped[str] = mapped_column(String(80), default="")
+    disposition: Mapped[str] = mapped_column(String(24), index=True)
+    required_fields_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    direct_contract_signal: Mapped[bool] = mapped_column(Boolean, default=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    authority_sha256: Mapped[str] = mapped_column(String(64))
 
 
 class MockNotification(Base):
