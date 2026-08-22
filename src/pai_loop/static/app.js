@@ -2559,6 +2559,7 @@
       CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE: "현재 공고의 모든 첨부 검증이 끝나지 않았습니다.",
       BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING: "배점 구간에 공백 또는 중복이 있습니다.",
       UNIT_NOT_SOURCE_BOUND: "산정 단위를 원문 인용에서 정확히 확인할 수 없습니다.",
+      BOUND_UNIT_INCONSISTENT: "배점 구간별 단위가 누락되었거나 서로 다른 환산 단위를 사용합니다.",
       UNSUPPORTED_UNIT: "현재 결정론적 엔진이 지원하지 않는 단위입니다.",
       UNSUPPORTED_SCORING_DSL: "현재 결정론적 엔진이 지원하지 않는 산식입니다.",
     };

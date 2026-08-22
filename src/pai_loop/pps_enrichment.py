@@ -7,8 +7,10 @@ import re
 import time
 import unicodedata
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import PurePath
 from typing import Any, Callable, Literal
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -1718,9 +1720,76 @@ def persist_pps_metadata_version(
     raw_item: dict[str, Any],
     search_keywords: list[str],
     dry_run: bool,
+    provider_changed_at: datetime | None = None,
+    canonical_material_changed: bool | None = None,
 ) -> MetadataVersionResult:
+    """Persist one material PPS basis and aggregate non-material discovery audit.
+
+    Search keywords and the provider change clock explain how/when a row was
+    discovered, but do not change its analysis inputs.  They are therefore
+    merged into the existing metadata row without advancing ``version_no``.
+    Canonical notice fields, provider scoring metadata, and the attachment
+    manifest remain material and produce a new immutable analysis basis.
+    """
+
+    def canonical_timestamp(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+
+    def canonical_amount(value: float | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            amount = Decimal(str(value))
+        except InvalidOperation:
+            return None
+        if not amount.is_finite():
+            return None
+        return format(amount.normalize(), "f")
+
+    def normalized_keywords(values: Iterable[Any]) -> list[str]:
+        terms = {
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        }
+        return sorted(terms, key=lambda value: (value.casefold(), value))
+
+    def merged_provenance(
+        prior_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        prior = (
+            prior_payload.get("provenance")
+            if isinstance(prior_payload, dict)
+            and isinstance(prior_payload.get("provenance"), dict)
+            else {}
+        )
+        keywords = normalized_keywords(
+            [*(prior.get("search_keywords") or []), *search_keywords]
+        )
+        changed_values = [
+            value
+            for value in (
+                str(prior.get("provider_changed_at") or "") or None,
+                canonical_timestamp(provider_changed_at),
+            )
+            if value
+        ]
+        return {
+            "provider": "PPS_PUBLIC_API",
+            "search_keywords": keywords,
+            **(
+                {"provider_changed_at": max(changed_values)}
+                if changed_values
+                else {}
+            ),
+        }
+
     manifest = build_attachment_manifest(raw_item)
-    payload = {
+    material_payload = {
         "kind": PPS_METADATA_KIND,
         "source_kind": "PPS",
         "schema_version": PPS_METADATA_SCHEMA,
@@ -1728,25 +1797,106 @@ def persist_pps_metadata_version(
             "bid_notice_no": notice.bid_notice_no,
             "revision_no": notice.revision_no,
         },
-        "provenance": {
-            "provider": "PPS_PUBLIC_API",
-            "search_keywords": sorted(set(search_keywords), key=str.casefold),
+        "canonical_notice_basis": {
+            "notice_key": notice.notice_key,
+            "bid_notice_no": notice.bid_notice_no,
+            "revision_no": notice.revision_no,
+            "title": notice.title,
+            "agency": notice.agency,
+            "published_at": canonical_timestamp(notice.published_at),
+            "deadline": canonical_timestamp(notice.deadline),
+            "status": notice.status,
+            "category": notice.category,
+            "estimated_amount": canonical_amount(notice.estimated_amount),
+            # The ingestion boundary already strips credential-like query
+            # values before assigning ``Notice.source_url``.
+            "source_url": notice.source_url,
         },
         "notice_metadata": build_notice_metadata(raw_item),
         "attachment_manifest": manifest,
     }
-    payload_sha256 = _digest(payload)
+    payload = {
+        **material_payload,
+        "provenance": merged_provenance(None),
+    }
+    payload_sha256 = _digest(material_payload)
     if dry_run:
         return MetadataVersionResult(False, False, len(manifest), None)
     session.flush()
-    prior = session.scalar(
-        select(NoticeVersion).where(
-            NoticeVersion.notice_id == notice.id,
-            NoticeVersion.file_sha256 == payload_sha256,
-        )
+    # Reuse is deliberately limited to the *current* metadata basis.  If the
+    # material sequence is A -> B -> A, the last A is a new provider event and
+    # must become the newest version even though its content hash occurred in
+    # history.  Reusing the historical A would leave B authoritative for every
+    # consumer that selects max(version_no).
+    prior = next(
+        (
+            candidate
+            for candidate in session.scalars(
+                select(NoticeVersion)
+                .where(NoticeVersion.notice_id == notice.id)
+                .order_by(NoticeVersion.version_no.desc())
+            ).all()
+            if isinstance(candidate.source_payload, dict)
+            and candidate.source_payload.get("kind") == PPS_METADATA_KIND
+        ),
+        None,
     )
-    if prior is not None and isinstance(prior.source_payload, dict) and prior.source_payload.get("kind") == PPS_METADATA_KIND:
+    if (
+        prior is not None
+        and prior.file_sha256 == payload_sha256
+        and canonical_material_changed is not True
+    ):
+        updated_payload = {
+            **prior.source_payload,
+            "provenance": merged_provenance(prior.source_payload),
+        }
+        if updated_payload != prior.source_payload:
+            # Assign a fresh JSON object so SQLAlchemy records the
+            # non-material discovery-provenance aggregation as dirty.
+            prior.source_payload = updated_payload
         return MetadataVersionResult(False, True, len(manifest), prior.id)
+
+    # Backward-compatible one-time upgrade for metadata rows whose historical
+    # file hash included discovery provenance and had no canonical basis.  It
+    # is safe only when the caller proved canonical fields did not change and
+    # the stored provider metadata/manifest are byte-for-byte equivalent.
+    if canonical_material_changed is False and prior is not None:
+        legacy = prior
+        legacy_payload = legacy.source_payload
+        if (
+            isinstance(legacy_payload, dict)
+            and legacy_payload.get("kind") == PPS_METADATA_KIND
+            and "canonical_notice_basis" not in legacy_payload
+        ):
+            legacy_material = {
+                key: legacy_payload.get(key)
+                for key in (
+                    "kind",
+                    "source_kind",
+                    "schema_version",
+                    "notice_identity",
+                    "notice_metadata",
+                    "attachment_manifest",
+                )
+            }
+            current_legacy_material = {
+                key: material_payload.get(key)
+                for key in legacy_material
+            }
+            if legacy_material != current_legacy_material:
+                legacy_material = {}
+            if legacy_material:
+                # The historical hash/ID/version number stay immutable.  This
+                # marker records the migration debt: pre-v0.9.3 rows did not
+                # hash a canonical Notice-field basis, so reuse is permitted
+                # only because the ingestion upsert proved those fields were
+                # unchanged and the provider metadata/manifest are identical.
+                legacy.source_payload = {
+                    **legacy_payload,
+                    "provenance": merged_provenance(legacy_payload),
+                    "material_basis_status": "UNVERIFIED_LEGACY_COMPAT",
+                }
+                return MetadataVersionResult(False, True, len(manifest), legacy.id)
     for _attempt in range(3):
         next_version = int(
             session.scalar(
@@ -1770,17 +1920,29 @@ def persist_pps_metadata_version(
             return MetadataVersionResult(True, False, len(manifest), version.id)
         except IntegrityError:
             session.expire_all()
-            raced = session.scalar(
-                select(NoticeVersion).where(
-                    NoticeVersion.notice_id == notice.id,
-                    NoticeVersion.file_sha256 == payload_sha256,
-                )
+            raced = next(
+                (
+                    candidate
+                    for candidate in session.scalars(
+                        select(NoticeVersion)
+                        .where(NoticeVersion.notice_id == notice.id)
+                        .order_by(NoticeVersion.version_no.desc())
+                    ).all()
+                    if isinstance(candidate.source_payload, dict)
+                    and candidate.source_payload.get("kind") == PPS_METADATA_KIND
+                ),
+                None,
             )
             if (
                 raced is not None
+                and raced.file_sha256 == payload_sha256
                 and isinstance(raced.source_payload, dict)
                 and raced.source_payload.get("kind") == PPS_METADATA_KIND
             ):
+                raced.source_payload = {
+                    **raced.source_payload,
+                    "provenance": merged_provenance(raced.source_payload),
+                }
                 return MetadataVersionResult(False, True, len(manifest), raced.id)
     raise PpsEnrichmentError("NOTICE_VERSION_RACE")
 

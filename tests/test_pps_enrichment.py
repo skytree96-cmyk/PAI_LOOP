@@ -47,7 +47,8 @@ from pai_loop.integrations.openai_extraction import (
 from pai_loop.quantitative_rule_extraction import (
     validate_quantitative_attachment_extraction,
 )
-from pai_loop.models import Notice, NoticeVersion
+from pai_loop.models import Evaluation, Notice, NoticeVersion
+from pai_loop.notice_freshness import latest_current_evaluation
 
 
 G2B_DOWNLOAD = (
@@ -55,6 +56,22 @@ G2B_DOWNLOAD = (
     "?bidPbancNo=R26BK00000001&bidPbancOrd=000&fileSeq=1"
     "&fileType=1&prcmBsneSeCd=01"
 )
+
+
+def _metadata_test_notice(*, notice_key: str, bid_notice_no: str) -> Notice:
+    return Notice(
+        notice_key=notice_key,
+        bid_notice_no=bid_notice_no,
+        revision_no="00",
+        title="교육 컨설팅 용역",
+        agency="공공기관",
+        published_at=datetime(2026, 8, 16, 1, tzinfo=timezone.utc),
+        deadline=datetime(2026, 8, 30, 8, tzinfo=timezone.utc),
+        status="OPEN",
+        category="용역",
+        estimated_amount=100_000_000,
+        source_url="https://example.go.kr/notices/safe",
+    )
 
 
 def test_attachment_manifest_and_notice_metadata_are_strict_allowlists() -> None:
@@ -96,6 +113,253 @@ def test_attachment_manifest_and_notice_metadata_are_strict_allowlists() -> None
     assert "example.invalid" not in serialised
     assert raw["ntceInsttOfclTelNo"] not in serialised
     assert "untrusted" not in serialised
+
+
+def test_metadata_provenance_aggregation_does_not_advance_material_version() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    raw = {
+        "bidNtceNo": "R26BK-PROVENANCE",
+        "bidNtceOrd": "00",
+        "ntceKindNm": "등록공고",
+        "bidMethdNm": "전자입찰",
+    }
+    first_changed = datetime(2026, 8, 16, 2, tzinfo=timezone.utc)
+    second_changed = first_changed + timedelta(hours=1)
+    with factory() as session:
+        notice = _metadata_test_notice(
+            notice_key="PPS-PROVENANCE",
+            bid_notice_no="R26BK-PROVENANCE",
+        )
+        session.add(notice)
+        first = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw,
+            search_keywords=["교육"],
+            dry_run=False,
+            provider_changed_at=first_changed,
+            canonical_material_changed=False,
+        )
+        session.commit()
+        first_row = session.get(NoticeVersion, first.version_id)
+        assert first_row is not None
+        original = (first_row.id, first_row.version_no, first_row.file_sha256)
+        second = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw,
+            search_keywords=["컨설팅", "교육"],
+            dry_run=False,
+            provider_changed_at=second_changed,
+            canonical_material_changed=False,
+        )
+        session.commit()
+
+    with factory() as session:
+        rows = list(session.scalars(select(NoticeVersion)).all())
+        assert len(rows) == 1
+        assert second.created is False
+        assert second.reused is True
+        assert (rows[0].id, rows[0].version_no, rows[0].file_sha256) == original
+        assert rows[0].source_payload["provenance"] == {
+            "provider": "PPS_PUBLIC_API",
+            "search_keywords": ["교육", "컨설팅"],
+            "provider_changed_at": second_changed.isoformat(),
+        }
+    engine.dispose()
+
+
+def test_legacy_metadata_semantic_reuse_marks_debt_without_staling_evaluation() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    raw = {
+        "bidNtceNo": "R26BK-LEGACY",
+        "bidNtceOrd": "00",
+        "ntceKindNm": "등록공고",
+    }
+    with factory() as session:
+        notice = _metadata_test_notice(
+            notice_key="PPS-LEGACY",
+            bid_notice_no="R26BK-LEGACY",
+        )
+        session.add(notice)
+        session.flush()
+        legacy_payload = {
+            "kind": PPS_METADATA_KIND,
+            "source_kind": "PPS",
+            "schema_version": PPS_METADATA_SCHEMA,
+            "notice_identity": {
+                "bid_notice_no": notice.bid_notice_no,
+                "revision_no": notice.revision_no,
+            },
+            "provenance": {
+                "provider": "PPS_PUBLIC_API",
+                "search_keywords": ["교육"],
+            },
+            "notice_metadata": build_notice_metadata(raw),
+            "attachment_manifest": build_attachment_manifest(raw),
+        }
+        legacy = NoticeVersion(
+            notice_id=notice.id,
+            version_no=1,
+            file_sha256=_digest(legacy_payload),
+            document_complete=False,
+            extraction_status="METADATA",
+            extraction_confidence=1,
+            source_payload=legacy_payload,
+        )
+        session.add(legacy)
+        session.flush()
+        session.add(
+            Evaluation(
+                notice_id=notice.id,
+                notice_version_id=legacy.id,
+                deadline_snapshot_at=notice.deadline,
+                eligibility="PASS",
+                reason_code="PASS",
+                readiness_score=100,
+                readiness_status="GREEN",
+                evidence_coverage=100,
+                risk_score=None,
+                risk_band="UNKNOWN",
+                ruleset_version="legacy-test",
+                atomic_results=[],
+                explanation={},
+            )
+        )
+        session.commit()
+        original = (legacy.id, legacy.version_no, legacy.file_sha256)
+        reused = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw,
+            search_keywords=["컨설팅"],
+            dry_run=False,
+            provider_changed_at=datetime(2026, 8, 17, tzinfo=timezone.utc),
+            canonical_material_changed=False,
+        )
+        session.commit()
+
+    with factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == "PPS-LEGACY")
+        )
+        assert notice is not None
+        rows = sorted(notice.versions, key=lambda item: item.version_no)
+        assert len(rows) == 1
+        assert reused.reused is True
+        assert (rows[0].id, rows[0].version_no, rows[0].file_sha256) == original
+        assert rows[0].source_payload["material_basis_status"] == (
+            "UNVERIFIED_LEGACY_COMPAT"
+        )
+        assert rows[0].source_payload["provenance"]["search_keywords"] == [
+            "교육",
+            "컨설팅",
+        ]
+        assert latest_current_evaluation(notice) is not None
+        notice.title = "교육 컨설팅 용역 정정"
+        changed = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw,
+            search_keywords=["교육"],
+            dry_run=False,
+            canonical_material_changed=True,
+        )
+        session.commit()
+        assert changed.created is True
+
+    with factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == "PPS-LEGACY")
+        )
+        assert notice is not None
+        assert len(notice.versions) == 2
+        assert latest_current_evaluation(notice) is None
+    engine.dispose()
+
+
+def test_material_reversion_appends_new_current_version_instead_of_reusing_history() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    raw_a = {
+        "bidNtceNo": "R26BK-A-B-A",
+        "bidNtceOrd": "00",
+        "ntceKindNm": "등록공고",
+        "bidMethdNm": "전자입찰",
+    }
+    raw_b = {**raw_a, "bidMethdNm": "직찰"}
+    with factory() as session:
+        notice = _metadata_test_notice(
+            notice_key="PPS-A-B-A",
+            bid_notice_no="R26BK-A-B-A",
+        )
+        session.add(notice)
+        first = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw_a,
+            search_keywords=["교육"],
+            dry_run=False,
+            canonical_material_changed=False,
+        )
+        second = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw_b,
+            search_keywords=["교육"],
+            dry_run=False,
+            canonical_material_changed=False,
+        )
+        session.flush()
+        second_row = session.get(NoticeVersion, second.version_id)
+        assert second_row is not None
+        session.add(
+            Evaluation(
+                notice_id=notice.id,
+                notice_version_id=second_row.id,
+                deadline_snapshot_at=notice.deadline,
+                eligibility="PASS",
+                reason_code="PASS",
+                readiness_score=100,
+                readiness_status="GREEN",
+                evidence_coverage=100,
+                risk_score=None,
+                risk_band="UNKNOWN",
+                ruleset_version="material-b-test",
+                atomic_results=[],
+                explanation={},
+            )
+        )
+        third = persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw_a,
+            search_keywords=["교육"],
+            dry_run=False,
+            canonical_material_changed=False,
+        )
+        session.commit()
+
+    with factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == "PPS-A-B-A")
+        )
+        assert notice is not None
+        rows = sorted(notice.versions, key=lambda item: item.version_no)
+        assert first.created is second.created is third.created is True
+        assert len(rows) == 3
+        assert rows[0].file_sha256 == rows[2].file_sha256
+        assert rows[0].id != rows[2].id
+        assert rows[2].source_payload["notice_metadata"]["bid_method"] == (
+            "전자입찰"
+        )
+        assert latest_current_evaluation(notice) is None
+    engine.dispose()
 
 
 def test_manifest_preserves_invalid_slot_count_without_raw_provider_values() -> None:

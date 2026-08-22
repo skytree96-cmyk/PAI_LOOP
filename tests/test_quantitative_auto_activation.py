@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
+from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import ExtractionPayload
 from pai_loop.models import CompanyFact, Evidence
 from pai_loop.quantitative_rule_extraction import (
@@ -15,6 +17,7 @@ from pai_loop.quantitative_scoring import (
     QuantitativeFact,
     estimate_quantitative_score,
     quantitative_request_from_candidate_profile,
+    quantitative_company_fact_payload_sha256,
     resolve_verified_quantitative_facts,
 )
 
@@ -157,54 +160,44 @@ def test_fully_machine_validated_rule_becomes_auto_active_but_not_auto_scored() 
     assert result.estimated_points is None
 
 
-def test_generic_performance_amount_is_auto_active_but_never_scores_without_binding() -> None:
+@pytest.mark.parametrize(
+    ("metric", "fact_key", "unit"),
+    [
+        ("PERFORMANCE_AMOUNT", "company.performance.amount", "억원"),
+        ("PERFORMANCE_COUNT", "company.performance.count", "건"),
+    ],
+)
+def test_performance_rule_stays_review_required_until_fact_dimensions_are_modeled(
+    metric: str,
+    fact_key: str,
+    unit: str,
+) -> None:
     profile = _validated_profile(
-        metric="PERFORMANCE_AMOUNT",
-        unit="억원",
-        fact_key="company.performance.amount",
+        metric=metric,
+        unit=unit,
+        fact_key=fact_key,
         label="유사사업 수행실적",
     )
     request = quantitative_request_from_candidate_profile(profile)
-    generic_fact = _company_fact(
-        fact_key="company.performance.amount",
-        value={"value": 10, "unit": "억원"},
+    forged_exact_binding_fact = QuantitativeFact(
+        metric_key=fact_key,
+        status="CONFIRMED",
+        value=10,
+        evidence_key=fact_key,
+        fact_binding_sha256="f" * 64,
+        confidence=1,
     )
-    resolved = resolve_verified_quantitative_facts(
-        request.criteria,
-        [generic_fact],
-        as_of=datetime(2026, 8, 22, tzinfo=timezone.utc),
+    result = estimate_quantitative_score(
+        request.model_copy(update={"facts": [forged_exact_binding_fact]})
     )
-    result = estimate_quantitative_score(request.model_copy(update={"facts": resolved}))
 
     assert profile.status == "AVAILABLE"
     assert request.source_validation_status == "SOURCE_VALIDATED"
-    assert request.activation_status == "AUTO_ACTIVE"
-    assert request.activation_reasons == []
-    assert request.criteria[0].fact_binding_sha256 is not None
-    assert len(resolved) == 1
-    assert resolved[0].status == "UNSCORABLE"
-    assert result.overall_status == "UNSCORABLE"
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert request.activation_reasons == ["FACT_DIMENSIONS_UNMODELED"]
+    assert request.criteria == []
+    assert result.overall_status == "REVIEW"
     assert result.estimated_points is None
-    assert "generic 값을" in result.criteria[0].rationale
-
-    bound_fact = _company_fact(
-        fact_key="company.performance.amount",
-        value={
-            "value": 10,
-            "unit": "억원",
-            "fact_binding_sha256": request.criteria[0].fact_binding_sha256,
-        },
-    )
-    bound = resolve_verified_quantitative_facts(
-        request.criteria,
-        [bound_fact],
-        as_of=datetime(2026, 8, 22, tzinfo=timezone.utc),
-    )
-    bound_result = estimate_quantitative_score(
-        request.model_copy(update={"facts": bound})
-    )
-    assert bound_result.overall_status == "CONFIRMED"
-    assert bound_result.estimated_points == 20
 
 
 @pytest.mark.parametrize(
@@ -304,6 +297,78 @@ def test_auto_activation_gate_is_fail_closed(mutation: str, expected_reason: str
     assert result.total_max_points is None
 
 
+def test_mixed_monetary_bound_scales_never_auto_activate() -> None:
+    profile = _validated_profile(
+        metric="PERFORMANCE_AMOUNT",
+        unit="억원",
+        fact_key="company.performance.amount",
+        label="유사사업 수행실적",
+    )
+    candidate = profile.available_candidates[0]
+    mixed_brackets = tuple(
+        bracket.model_copy(
+            update={
+                "literal": bracket.literal.replace("5억원 미만", "5백만원 미만"),
+                "evidence": bracket.evidence.model_copy(
+                    update={
+                        "quote": bracket.evidence.quote.replace(
+                            "5억원 미만",
+                            "5백만원 미만",
+                        )
+                    }
+                ),
+            }
+        )
+        for bracket in candidate.brackets
+    )
+    profile = profile.model_copy(
+        update={
+            "available_candidates": (
+                candidate.model_copy(update={"brackets": mixed_brackets}),
+            )
+        }
+    )
+
+    request, result = _activation_request(profile)
+
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert "BOUND_UNIT_INCONSISTENT" in request.activation_reasons
+    assert request.criteria == []
+    assert result.overall_status == "REVIEW"
+
+
+def test_header_unit_can_be_inherited_by_unitless_numeric_rows() -> None:
+    profile = _validated_profile()
+    candidate = profile.available_candidates[0]
+    unitless_brackets = tuple(
+        bracket.model_copy(
+            update={
+                "literal": bracket.literal.replace("년", ""),
+                "evidence": bracket.evidence.model_copy(
+                    update={"quote": bracket.evidence.quote.replace("년", "")}
+                ),
+            }
+        )
+        for bracket in candidate.brackets
+    )
+    criterion_literal = "업력 20점 (단위: 년)"
+    candidate = candidate.model_copy(
+        update={
+            "criterion_literal": criterion_literal,
+            "evidence": candidate.evidence.model_copy(
+                update={"quote": criterion_literal}
+            ),
+            "brackets": unitless_brackets,
+        }
+    )
+    profile = profile.model_copy(update={"available_candidates": (candidate,)})
+
+    request, _result = _activation_request(profile)
+
+    assert request.activation_status == "AUTO_ACTIVE"
+    assert "BOUND_UNIT_INCONSISTENT" not in request.activation_reasons
+
+
 def _company_fact(
     *,
     value=10,
@@ -314,26 +379,48 @@ def _company_fact(
     with_evidence: bool = True,
 ) -> CompanyFact:
     as_of = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    binding = (
+        str(value.get("fact_binding_sha256"))
+        if isinstance(value, dict) and value.get("fact_binding_sha256")
+        else None
+    )
+    evidence_id = "e" * 36
     evidence = (
         Evidence(
+            id=evidence_id,
             evidence_key=f"E-{id(value)}-{evidence_status}-{fact_key}",
             name="검증 증빙",
             evidence_type="QUANTITATIVE_FACT",
             status=evidence_status,
             issued_at=as_of - timedelta(days=30),
             valid_until=evidence_valid_until,
+            source_location="evidence://quantitative-fact",
+            sha256="c" * 64,
+            metadata_json={
+                "quantitative_fact_key": fact_key,
+                "fact_binding_sha256": binding,
+            },
         )
         if with_evidence
         else None
     )
-    return CompanyFact(
+    fact = CompanyFact(
         fact_key=fact_key,
         value=value,
         effective_from=as_of - timedelta(days=60),
         effective_to=None,
         verified=verified,
+        evidence_id=evidence_id if evidence is not None else None,
         evidence=evidence,
     )
+    if evidence is not None:
+        evidence.metadata_json = {
+            **(evidence.metadata_json or {}),
+            "company_fact_payload_sha256": (
+                quantitative_company_fact_payload_sha256(fact)
+            ),
+        }
+    return fact
 
 
 def test_only_effective_verified_canonical_fact_with_valid_evidence_scores() -> None:
@@ -357,9 +444,77 @@ def test_only_effective_verified_canonical_fact_with_valid_evidence_scores() -> 
     assert len(resolved) == 1
     assert resolved[0].value == 10
     assert resolved[0].evidence_key == "company.business.years"
+    assert resolved[0].evidence_reference == fact.evidence.evidence_key
+    assert resolved[0].evidence_sha256 == "c" * 64
     assert resolved[0].fact_binding_sha256 == request.criteria[0].fact_binding_sha256
     assert result.overall_status == "CONFIRMED"
     assert result.estimated_points == 20
+
+
+def test_company_fact_payload_digest_survives_sqlite_kst_round_trip() -> None:
+    request = quantitative_request_from_candidate_profile(_validated_profile())
+    binding = request.criteria[0].fact_binding_sha256
+    assert binding is not None
+    kst = timezone(timedelta(hours=9))
+    evidence = Evidence(
+        evidence_key="E-KST-ROUNDTRIP",
+        name="KST 회사 사실 증빙",
+        evidence_type="QUANTITATIVE_FACT",
+        status="VERIFIED",
+        issued_at=datetime(2026, 7, 1, tzinfo=kst),
+        source_location="evidence://kst-roundtrip",
+        sha256="9" * 64,
+        metadata_json={
+            "quantitative_fact_key": "company.business.years",
+            "fact_binding_sha256": binding,
+        },
+    )
+    fact = CompanyFact(
+        fact_key="company.business.years",
+        value={
+            "value": 10,
+            "unit": "년",
+            "fact_binding_sha256": binding,
+        },
+        effective_from=datetime(2026, 7, 1, 9, tzinfo=kst),
+        effective_to=datetime(2026, 12, 31, 18, tzinfo=kst),
+        evidence=evidence,
+        verified=True,
+        source="MANUAL",
+    )
+    evidence.metadata_json = {
+        **(evidence.metadata_json or {}),
+        "company_fact_payload_sha256": quantitative_company_fact_payload_sha256(
+            fact
+        ),
+    }
+    expected_digest = evidence.metadata_json["company_fact_payload_sha256"]
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        session.add(fact)
+        session.commit()
+    with factory() as session:
+        reloaded = session.scalar(
+            select(CompanyFact).where(
+                CompanyFact.fact_key == "company.business.years"
+            )
+        )
+        assert reloaded is not None
+        assert quantitative_company_fact_payload_sha256(reloaded) == expected_digest
+        resolved = resolve_verified_quantitative_facts(
+            request.criteria,
+            [reloaded],
+            as_of=datetime(2026, 8, 22, tzinfo=timezone.utc),
+        )
+        result = estimate_quantitative_score(
+            request.model_copy(update={"facts": resolved})
+        )
+        assert resolved[0].status == "CONFIRMED"
+        assert result.overall_status == "CONFIRMED"
+        assert result.estimated_points == 20
+    engine.dispose()
 
 
 @pytest.mark.parametrize(
@@ -410,6 +565,101 @@ def test_context_bound_fact_with_unsupported_unit_is_unscorable() -> None:
     assert resolved[0].status == "UNSCORABLE"
     assert "단위" in resolved[0].rationale
     assert result.overall_status == "UNSCORABLE"
+
+
+@pytest.mark.parametrize("unit_payload", [{}, {"unit": ""}])
+def test_context_bound_fact_requires_explicit_nonblank_unit(
+    unit_payload: dict[str, str],
+) -> None:
+    request = quantitative_request_from_candidate_profile(_validated_profile())
+    fact = _company_fact(
+        value={
+            "value": 10,
+            "fact_binding_sha256": request.criteria[0].fact_binding_sha256,
+            **unit_payload,
+        }
+    )
+
+    resolved = resolve_verified_quantitative_facts(
+        request.criteria,
+        [fact],
+        as_of=datetime(2026, 8, 22, tzinfo=timezone.utc),
+    )
+    result = estimate_quantitative_score(request.model_copy(update={"facts": resolved}))
+
+    assert len(resolved) == 1
+    assert resolved[0].status == "UNSCORABLE"
+    assert "명시적인 단위" in resolved[0].rationale
+    assert result.overall_status == "UNSCORABLE"
+    assert result.estimated_points is None
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("unrelated_key", "canonical 회사 사실 키"),
+        ("wrong_binding", "조건 binding"),
+        ("wrong_type", "증빙 유형"),
+        ("missing_source", "원본 위치"),
+        ("missing_digest", "콘텐츠 해시"),
+        ("detached_row", "실제 증빙 행"),
+        ("missing_payload_digest", "사실 값·단위·유효기간 payload"),
+        ("mutated_fact_value", "사실 값·단위·유효기간 payload"),
+    ],
+)
+def test_dynamic_fact_requires_exact_immutable_evidence_binding(
+    mutation: str,
+    expected_reason: str,
+) -> None:
+    request = quantitative_request_from_candidate_profile(_validated_profile())
+    binding = request.criteria[0].fact_binding_sha256
+    fact = _company_fact(
+        value={"value": 10, "unit": "년", "fact_binding_sha256": binding}
+    )
+    assert fact.evidence is not None
+    if mutation == "unrelated_key":
+        fact.evidence.metadata_json = {
+            "quantitative_fact_key": "company.unrelated.value",
+            "fact_binding_sha256": binding,
+        }
+    elif mutation == "wrong_binding":
+        fact.evidence.metadata_json = {
+            "quantitative_fact_key": fact.fact_key,
+            "fact_binding_sha256": "d" * 64,
+        }
+    elif mutation == "wrong_type":
+        fact.evidence.evidence_type = "UNRELATED_VERIFIED_DOCUMENT"
+    elif mutation == "missing_source":
+        fact.evidence.source_location = None
+    elif mutation == "missing_digest":
+        fact.evidence.sha256 = None
+    elif mutation == "detached_row":
+        fact.evidence_id = "f" * 36
+    elif mutation == "missing_payload_digest":
+        fact.evidence.metadata_json = {
+            key: value
+            for key, value in (fact.evidence.metadata_json or {}).items()
+            if key != "company_fact_payload_sha256"
+        }
+    elif mutation == "mutated_fact_value":
+        fact.value = {
+            "value": 999,
+            "unit": "년",
+            "fact_binding_sha256": binding,
+        }
+
+    resolved = resolve_verified_quantitative_facts(
+        request.criteria,
+        [fact],
+        as_of=datetime(2026, 8, 22, tzinfo=timezone.utc),
+    )
+    result = estimate_quantitative_score(request.model_copy(update={"facts": resolved}))
+
+    assert len(resolved) == 1
+    assert resolved[0].status == "UNSCORABLE"
+    assert expected_reason in resolved[0].rationale
+    assert result.overall_status == "UNSCORABLE"
+    assert result.estimated_points is None
 
 
 def test_duplicate_verified_canonical_facts_require_review() -> None:

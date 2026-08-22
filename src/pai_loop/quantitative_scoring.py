@@ -6,7 +6,7 @@ import json
 import math
 import re
 from collections.abc import Iterable, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from functools import lru_cache
 from importlib import resources
@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .auth import require_api_key
+from .auth import public_read_allowed, require_api_key
 from .evaluator import evidence_state, fact_is_effective
 from .eligibility_policy import load_public_company_profile
 from .integrations.openai_extraction import (
@@ -122,6 +122,8 @@ class QuantitativeFact(QuantModel):
     lower_value: float | None = None
     upper_value: float | None = None
     evidence_key: str | None = Field(default=None, max_length=240)
+    evidence_reference: str | None = Field(default=None, max_length=240)
+    evidence_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     fact_binding_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     confidence: float = Field(default=0, ge=0, le=1)
     rationale: str = Field(default="", max_length=1_000)
@@ -177,6 +179,8 @@ class CriterionEstimate(QuantModel):
     base_condition: str | None
     source_anchor: SourceAnchor | None
     evidence_key: str | None
+    evidence_reference: str | None = None
+    evidence_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     fact_binding_sha256: str | None
     estimated_points: float | None
     lower_points: float
@@ -356,6 +360,8 @@ def _criterion_unscored(
     status: EstimateStatus,
     rationale: str,
     evidence_key: str | None = None,
+    evidence_reference: str | None = None,
+    evidence_sha256: str | None = None,
     assumptions: list[str] | None = None,
 ) -> CriterionEstimate:
     floor = (
@@ -380,6 +386,8 @@ def _criterion_unscored(
         base_condition=criterion.base_condition,
         source_anchor=criterion.source_anchor,
         evidence_key=evidence_key,
+        evidence_reference=evidence_reference,
+        evidence_sha256=evidence_sha256,
         fact_binding_sha256=criterion.fact_binding_sha256,
         estimated_points=None,
         lower_points=floor,
@@ -405,12 +413,17 @@ def _estimate_criterion(
             rationale="연결된 회사 데이터가 없어 점수를 계산하지 않았습니다.",
             assumptions=["누락값을 0점 또는 만점으로 임의 가정하지 않았습니다."],
         )
+    fact_audit = {
+        "evidence_key": fact.evidence_key,
+        "evidence_reference": fact.evidence_reference,
+        "evidence_sha256": fact.evidence_sha256,
+    }
     if fact.evidence_key not in criterion.required_evidence_keys:
         return _criterion_unscored(
             criterion,
             status="REVIEW",
             rationale="회사 데이터의 증빙 키가 평가항목의 허용 증빙과 일치하지 않습니다.",
-            evidence_key=fact.evidence_key,
+            **fact_audit,
         )
     if (
         criterion.fact_binding_sha256 is not None
@@ -423,14 +436,14 @@ def _estimate_criterion(
                 "회사 사실이 이 평가항목의 인정기간·범위·단위 조건에 결합되지 않아 "
                 "generic 값을 점수에 적용하지 않았습니다."
             ),
-            evidence_key=fact.evidence_key,
+            **fact_audit,
         )
     if fact.status in {"REVIEW", "UNSCORABLE"}:
         return _criterion_unscored(
             criterion,
             status=fact.status,
             rationale=fact.rationale or "증빙 상태상 점수를 계산할 수 없습니다.",
-            evidence_key=fact.evidence_key,
+            **fact_audit,
         )
 
     if criterion.formula_type == "BRACKET" and fact.status == "ESTIMATED" and (
@@ -441,7 +454,7 @@ def _estimate_criterion(
                 criterion,
                 status="REVIEW",
                 rationale="추정값 범위의 하한과 상한이 모두 필요합니다.",
-                evidence_key=fact.evidence_key,
+                **fact_audit,
             )
         point_range = _points_for_numeric_range(
             criterion,
@@ -453,7 +466,7 @@ def _estimate_criterion(
                 criterion,
                 status="REVIEW",
                 rationale="회사 데이터 범위를 포괄하는 배점 구간이 없습니다.",
-                evidence_key=fact.evidence_key,
+                **fact_audit,
             )
         lower_points, upper_points = point_range
     else:
@@ -462,7 +475,7 @@ def _estimate_criterion(
                 criterion,
                 status="UNSCORABLE",
                 rationale="산식에 적용할 회사 값이 없습니다.",
-                evidence_key=fact.evidence_key,
+                **fact_audit,
             )
         points = _points_for_value(criterion, fact.value)
         if points is None:
@@ -470,7 +483,7 @@ def _estimate_criterion(
                 criterion,
                 status="REVIEW",
                 rationale="회사 값에 해당하는 유효한 배점 구간이 없습니다.",
-                evidence_key=fact.evidence_key,
+                **fact_audit,
             )
         lower_points = upper_points = points
 
@@ -486,6 +499,8 @@ def _estimate_criterion(
         base_condition=criterion.base_condition,
         source_anchor=criterion.source_anchor,
         evidence_key=fact.evidence_key,
+        evidence_reference=fact.evidence_reference,
+        evidence_sha256=fact.evidence_sha256,
         fact_binding_sha256=criterion.fact_binding_sha256,
         estimated_points=lower_points if lower_points == upper_points else None,
         lower_points=lower_points,
@@ -891,6 +906,13 @@ QUANTITATIVE_CANONICAL_FACT_KEYS = frozenset(
 _FACT_SPEC_BY_KEY = {
     str(item["fact_key"]): item for item in _CANONICAL_METRIC_REGISTRY.values()
 }
+# The extractor does not yet structure the recognition period, comparable-
+# project definition, completion/VAT rules, single-vs-aggregate contract
+# basis, or consortium share conditions needed by performance tables.  A
+# document/binding digest cannot prove semantics that were never modeled.
+_UNMODELED_FACT_DIMENSION_METRICS = frozenset(
+    {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}
+)
 _SOURCE_UNIT_RE = re.compile(
     r"-?(?:\d[\d,]*)(?:\.\d+)?\s*"
     r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원|"
@@ -935,7 +957,51 @@ def _candidate_unit_is_source_bound(
         for literal in literals
         for match in _SOURCE_UNIT_RE.finditer(literal)
     }
-    return _normalize_unit(candidate.unit) in observed
+    expected = _normalize_unit(candidate.unit)
+    if expected in observed:
+        return True
+    # Some tables declare a unit once in the verified header and omit it from
+    # every numeric row.  Accept only the explicit ``단위: X`` form here;
+    # arbitrary free-text occurrence is not sufficient source binding.
+    normalized_literals = [
+        re.sub(r"\s+", "", literal).casefold() for literal in literals
+    ]
+    return any(
+        f"단위:{expected}" in literal or f"단위：{expected}" in literal
+        for literal in normalized_literals
+    )
+
+
+def _candidate_bound_unit_scales_are_consistent(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    """Require each numeric bound row to prove one unambiguous unit scale."""
+
+    spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+    if spec is None:
+        return False
+    unit_scales = spec["unit_scales"]
+    expected = unit_scales.get(_normalize_unit(candidate.unit))
+    if expected is None:
+        return False
+    literals = [item.literal for item in candidate.brackets]
+    if candidate.threshold is not None:
+        literals.append(candidate.threshold.literal)
+    if not literals:
+        return False
+    for literal in literals:
+        observed = {
+            _normalize_unit(match.group("unit"))
+            for match in _SOURCE_UNIT_RE.finditer(literal)
+        }
+        if not observed:
+            # A verified criterion/header unit may be inherited by unitless
+            # numeric rows.  Only an explicit conflicting row is unsafe.
+            continue
+        scales = {unit_scales.get(unit) for unit in observed}
+        if None in scales or scales != {expected}:
+            return False
+    return True
 
 
 def _canonical_company_fact_value(
@@ -976,6 +1042,12 @@ def _canonical_company_fact_value(
             fact_binding_sha256,
             "회사 사실이 이 평가항목의 인정기간·유사범위·단위 조건에 결합되지 않았습니다.",
         )
+    if criterion.fact_binding_sha256 is not None and unit is None:
+        return (
+            None,
+            fact_binding_sha256,
+            "공고별 평가항목에 결합된 회사 사실에는 명시적인 단위가 필요합니다.",
+        )
     if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
         return None, fact_binding_sha256, "회사 사실 값이 유한 숫자가 아닙니다."
     try:
@@ -996,6 +1068,75 @@ def _canonical_company_fact_value(
                     "회사 사실 단위를 canonical 단위로 변환할 수 없습니다.",
                 )
     return float(numeric * scale), fact_binding_sha256, None
+
+
+def _dynamic_evidence_binding_error(
+    fact: CompanyFact,
+    criterion: QuantitativeCriterion,
+) -> str | None:
+    """Validate the immutable evidence row behind a dynamic company fact."""
+
+    if criterion.fact_binding_sha256 is None:
+        # Curated static profiles retain their existing explicit compatibility
+        # contract; this bridge is mandatory for dynamically extracted rules.
+        return None
+    evidence = fact.evidence
+    if (
+        evidence is None
+        or not fact.evidence_id
+        or not evidence.id
+        or fact.evidence_id != evidence.id
+    ):
+        return "회사 사실이 실제 증빙 행과 연결되지 않았습니다."
+    if evidence.evidence_type != "QUANTITATIVE_FACT":
+        return "정량 회사 사실에 허용되지 않은 증빙 유형입니다."
+    if not str(evidence.source_location or "").strip():
+        return "정량 회사 사실 증빙의 원본 위치가 없습니다."
+    evidence_sha256 = str(evidence.sha256 or "").casefold()
+    if not re.fullmatch(r"[a-f0-9]{64}", evidence_sha256):
+        return "정량 회사 사실 증빙의 불변 콘텐츠 해시가 없습니다."
+    metadata = evidence.metadata_json
+    if not isinstance(metadata, dict):
+        return "정량 회사 사실 증빙의 binding 메타데이터가 없습니다."
+    if metadata.get("quantitative_fact_key") != fact.fact_key:
+        return "증빙의 canonical 회사 사실 키가 평가 값과 일치하지 않습니다."
+    if (
+        str(metadata.get("fact_binding_sha256") or "").casefold()
+        != criterion.fact_binding_sha256
+    ):
+        return "증빙이 이 평가항목의 조건 binding과 일치하지 않습니다."
+    payload_digest = str(
+        metadata.get("company_fact_payload_sha256") or ""
+    ).casefold()
+    if (
+        not re.fullmatch(r"[a-f0-9]{64}", payload_digest)
+        or payload_digest != quantitative_company_fact_payload_sha256(fact)
+    ):
+        return "증빙이 현재 회사 사실 값·단위·유효기간 payload와 일치하지 않습니다."
+    return None
+
+
+def quantitative_company_fact_payload_sha256(fact: CompanyFact) -> str:
+    """Digest the semantic CompanyFact payload linked by immutable evidence."""
+
+    def timestamp(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+
+    return _canonical_digest(
+        {
+            "binding_schema": "pai-loop-company-fact-evidence-binding-1.0.0",
+            "fact_key": fact.fact_key,
+            "value": fact.value,
+            "value_label": fact.value_label,
+            "effective_from": timestamp(fact.effective_from),
+            "effective_to": timestamp(fact.effective_to),
+            "source": fact.source,
+        }
+    )
 
 
 def resolve_verified_quantitative_facts(
@@ -1026,12 +1167,29 @@ def resolve_verified_quantitative_facts(
             if value_error:
                 value_errors.append((value_error, binding))
                 continue
+            evidence_binding_error = _dynamic_evidence_binding_error(
+                fact,
+                criterion,
+            )
+            if evidence_binding_error:
+                value_errors.append((evidence_binding_error, binding))
+                continue
+            assert fact.evidence is not None
             confirmed.append(
                 QuantitativeFact(
                     metric_key=fact.fact_key,
                     status="CONFIRMED",
                     value=value,
                     evidence_key=fact.fact_key,
+                    evidence_reference=fact.evidence.evidence_key,
+                    evidence_sha256=(
+                        str(fact.evidence.sha256).casefold()
+                        if re.fullmatch(
+                            r"[a-fA-F0-9]{64}",
+                            str(fact.evidence.sha256 or ""),
+                        )
+                        else None
+                    ),
                     fact_binding_sha256=binding,
                     confidence=1,
                     rationale=(
@@ -1232,6 +1390,8 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
         ):
             reasons.add("SOURCE_ANCHOR_INCOMPLETE")
         spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+        if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS:
+            reasons.add("FACT_DIMENSIONS_UNMODELED")
         if spec is None:
             reasons.add("FACT_KEY_UNREGISTERED")
         elif (
@@ -1243,6 +1403,8 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
             reasons.add("UNSUPPORTED_UNIT")
         elif not _candidate_unit_is_source_bound(candidate):
             reasons.add("UNIT_NOT_SOURCE_BOUND")
+        elif not _candidate_bound_unit_scales_are_consistent(candidate):
+            reasons.add("BOUND_UNIT_INCONSISTENT")
         if candidate.scoring_method not in {"BRACKET", "THRESHOLD"} or (
             candidate.scoring_method == "THRESHOLD"
             and (
@@ -1779,20 +1941,59 @@ quantitative_scoring_router = APIRouter(
 )
 
 
+def _public_quantitative_projection(
+    result: QuantitativeEstimateResult,
+) -> QuantitativeEstimateResult:
+    """Remove company/evidence bindings from the anonymous read-only view."""
+
+    criteria = [
+        criterion.model_copy(
+            update={
+                "criterion_id": f"PUBLIC-CRITERION-{index:03d}",
+                "formula": "공개 화면에서는 세부 원문 산식을 제외합니다.",
+                "source_anchor": None,
+                "evidence_key": None,
+                "evidence_reference": None,
+                "evidence_sha256": None,
+                "fact_binding_sha256": None,
+            }
+        )
+        for index, criterion in enumerate(result.criteria, start=1)
+    ]
+    return result.model_copy(
+        update={
+            "ruleset_version": "public-quantitative-summary-v1",
+            "source_anchor": None,
+            "criteria": criteria,
+            "assumptions": [
+                "공개 화면에서는 회사 사실값과 원문·내부 증빙 식별자를 제외합니다."
+            ],
+            "evidence_observations": [],
+        }
+    )
+
+
 @quantitative_scoring_router.get(
     "/notices/{notice_key}/quantitative-estimate",
     response_model=QuantitativeEstimateResult,
 )
 def get_notice_quantitative_estimate(
     notice_key: str,
+    request: Request,
     session: DbSession,
 ) -> QuantitativeEstimateResult:
     notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
     if notice is None:
         raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
-    company_facts = list(
-        session.scalars(
-            select(CompanyFact).options(selectinload(CompanyFact.evidence))
-        ).all()
+    public_view = public_read_allowed(request)
+    company_facts = (
+        []
+        if public_view
+        else list(
+            session.scalars(
+                select(CompanyFact).options(selectinload(CompanyFact.evidence))
+            ).all()
+        )
     )
-    return estimate_for_notice(notice, company_facts)
+    result = estimate_for_notice(notice, company_facts)
+    return _public_quantitative_projection(result) if public_view else result

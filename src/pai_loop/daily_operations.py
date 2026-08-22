@@ -422,7 +422,13 @@ def apply_operational_retention(
         eligible=eligible,
         deleted=deleted,
         scope=["completed ingestion_jobs", "mock_notifications"],
-        preserved=["notices", "evaluations", "user_decisions", "award_history_items"],
+        preserved=[
+            "notices",
+            "evaluations",
+            "user_decisions",
+            "award_history_items",
+            "pps_notice_authorities",
+        ],
         note=(
             "dry-run: 삭제 대상 수만 계산했습니다."
             if payload.dry_run

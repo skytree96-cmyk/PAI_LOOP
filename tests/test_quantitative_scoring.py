@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from pai_loop.main import create_app
 from pai_loop.integrations.openai_extraction import ExtractionPayload
+from pai_loop.models import CompanyFact, Notice
 from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
 from pai_loop.quantitative_scoring import (
     QuantitativeCriterion,
@@ -600,3 +603,120 @@ def test_public_read_only_can_read_public_safe_quantitative_result(monkeypatch) 
     assert response.status_code == 200
     assert response.json()["rule_source_status"] == "MISSING"
     assert "C:\\Users" not in response.text
+
+
+def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindings(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PAI_LOOP_ENV", "development")
+    monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
+    monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    binding = "b" * 64
+    anchor = SourceAnchor(
+        document_label="internal-rfp.pdf",
+        document_sha256="a" * 64,
+        section="내부 감사 위치",
+        page=7,
+        quote="SENSITIVE-EXACT-SOURCE-QUOTE",
+    )
+    criterion = _numeric_criterion().model_copy(
+        update={"source_anchor": anchor, "fact_binding_sha256": binding}
+    )
+    sensitive_result = estimate_quantitative_score(
+        _active_request(
+            ruleset_version="dynamic-sensitive-ruleset",
+            source_anchor=anchor,
+            criteria=[criterion],
+            facts=[
+                QuantitativeFact(
+                    metric_key=criterion.metric_key,
+                    status="CONFIRMED",
+                    value=55,
+                    evidence_key="EVIDENCE-SYNTHETIC",
+                    evidence_reference="INTERNAL-EVIDENCE-REFERENCE",
+                    evidence_sha256="c" * 64,
+                    fact_binding_sha256=binding,
+                    confidence=1,
+                )
+            ],
+        )
+    )
+    observed_company_fact_counts: list[int] = []
+
+    def fake_estimate(_notice, company_facts):
+        observed_company_fact_counts.append(len(tuple(company_facts)))
+        return sensitive_result
+
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring.estimate_for_notice",
+        fake_estimate,
+    )
+    with TestClient(app) as public_client:
+        with app.state.session_factory() as session:
+            session.add(
+                Notice(
+                    notice_key="PUBLIC-DYNAMIC-QUANT",
+                    bid_notice_no="PUBLIC-DYNAMIC-QUANT",
+                    revision_no="00",
+                    title="공개 정량 projection 회귀",
+                    agency="공공기관",
+                    deadline=datetime.now(timezone.utc) + timedelta(days=7),
+                    status="OPEN",
+                )
+            )
+            session.add(
+                CompanyFact(
+                    fact_key="metric.amount",
+                    value=55,
+                    effective_from=datetime.now(timezone.utc) - timedelta(days=1),
+                    verified=False,
+                )
+            )
+            session.commit()
+
+        public_response = public_client.get(
+            "/api/v1/notices/PUBLIC-DYNAMIC-QUANT/quantitative-estimate"
+        )
+        authenticated_response = public_client.get(
+            "/api/v1/notices/PUBLIC-DYNAMIC-QUANT/quantitative-estimate",
+            headers={"X-PAI-LOOP-API-KEY": "server-only-secret"},
+        )
+
+    assert public_response.status_code == 200
+    public_payload = public_response.json()
+    assert observed_company_fact_counts[0] == 0
+    assert observed_company_fact_counts[1] > 0
+    assert public_payload["activation_status"] == "AUTO_ACTIVE"
+    assert public_payload["ruleset_version"] == "public-quantitative-summary-v1"
+    assert public_payload["criteria"][0]["criterion_id"] == "PUBLIC-CRITERION-001"
+    assert public_payload["source_anchor"] is None
+    assert public_payload["evidence_observations"] == []
+    assert public_payload["criteria"][0]["source_anchor"] is None
+    assert public_payload["criteria"][0]["evidence_key"] is None
+    assert public_payload["criteria"][0]["evidence_reference"] is None
+    assert public_payload["criteria"][0]["evidence_sha256"] is None
+    assert public_payload["criteria"][0]["fact_binding_sha256"] is None
+    assert public_payload["criteria"][0]["formula"] == (
+        "공개 화면에서는 세부 원문 산식을 제외합니다."
+    )
+    for sensitive in (
+        "SENSITIVE-EXACT-SOURCE-QUOTE",
+        "INTERNAL-EVIDENCE-REFERENCE",
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "dynamic-sensitive-ruleset",
+        criterion.criterion_id,
+    ):
+        assert sensitive not in public_response.text
+
+    assert authenticated_response.status_code == 200
+    authenticated_payload = authenticated_response.json()
+    assert authenticated_payload["source_anchor"]["quote"] == (
+        "SENSITIVE-EXACT-SOURCE-QUOTE"
+    )
+    assert authenticated_payload["criteria"][0]["evidence_reference"] == (
+        "INTERNAL-EVIDENCE-REFERENCE"
+    )
+    assert authenticated_payload["criteria"][0]["fact_binding_sha256"] == binding

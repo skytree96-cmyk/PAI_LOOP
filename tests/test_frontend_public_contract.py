@@ -159,7 +159,16 @@ def test_quantitative_ui_separates_source_validation_from_activation() -> None:
     assert 'AUTO_ACTIVE: "규칙 자동 활성"' in app
     assert 'REVIEW_REQUIRED: "자동 산정 보류"' in app
     assert "FACT_DIMENSIONS_UNMODELED" in app
+    assert "점수 산출조건이 아직 구조화되지 않았습니다" in app
     assert 'AVAILABLE: "배점표 연결"' not in app
+
+    mentor_brief = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "PAI_LOOP_TEAM_MENTOR_BRIEF_v0.8.0.md"
+    ).read_text(encoding="utf-8")
+    assert "사람 승인 후에만 규칙 버전으로 승격" not in mentor_brief
+    assert "반복 사람 승인 없이 `AUTO_ACTIVE`" in mentor_brief
 
 
 def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
