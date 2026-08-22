@@ -45,6 +45,17 @@ def _safe_extraction_payload() -> dict[str, object]:
         "error_code": None,
         "message": "검증 완료",
         "response_id": "must-not-be-exported",
+        "document_processing": {
+            "openai_telemetry": {
+                "input_tokens": 1_234,
+                "cached_input_tokens": 123,
+                "cache_write_tokens": 61,
+                "output_tokens": 456,
+                "reasoning_output_tokens": 78,
+                "total_tokens": 1_690,
+                "total_request_latency_ms": 987,
+            }
+        },
         "model": "model-metadata-not-required",
         "prompt_version": "pai-loop-extraction-0.2.1",
         "schema_version": "pai-loop-requirements-0.1.0",
@@ -154,6 +165,9 @@ def test_bounded_builder_is_read_only_and_projects_fixed_allowlists(tmp_path: Pa
     assert "must-not-be-exported" not in serialized
     assert "model-metadata-not-required" not in serialized
     assert "response_id" not in serialized
+    assert "openai_telemetry" not in serialized
+    assert "input_tokens" not in serialized
+    assert "request_latency_ms" not in serialized
 
 
 def test_packaged_actual_notice_seed_is_public_safe_and_complete() -> None:

@@ -9,6 +9,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+import pai_loop.pps_enrichment as pps_enrichment_module
 from pai_loop.pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
@@ -39,6 +40,9 @@ from pai_loop.integrations.openai_extraction import (
     ExtractedRequirement,
     ExtractionOutcome,
     ExtractionPayload,
+    OpenAIAttemptTelemetry,
+    OpenAIProviderUsage,
+    aggregate_openai_attempts,
 )
 from pai_loop.quantitative_rule_extraction import (
     validate_quantitative_attachment_extraction,
@@ -640,6 +644,40 @@ class _CountingExtractionClient:
             status="ACCEPTED",
             message="validated",
             api_calls=2,
+            openai_telemetry=aggregate_openai_attempts(
+                [
+                    OpenAIAttemptTelemetry(
+                        attempt=1,
+                        request_latency_ms=125,
+                        response_received=True,
+                        model="gpt-5.6-luna",
+                        service_tier="default",
+                        usage=OpenAIProviderUsage(
+                            input_tokens=1_000,
+                            cached_input_tokens=100,
+                            cache_write_tokens=50,
+                            output_tokens=200,
+                            reasoning_output_tokens=50,
+                            total_tokens=1_200,
+                        ),
+                    ),
+                    OpenAIAttemptTelemetry(
+                        attempt=2,
+                        request_latency_ms=250,
+                        response_received=True,
+                        model="gpt-5.6-luna",
+                        service_tier="default",
+                        usage=OpenAIProviderUsage(
+                            input_tokens=900,
+                            cached_input_tokens=0,
+                            cache_write_tokens=0,
+                            output_tokens=150,
+                            reasoning_output_tokens=25,
+                            total_tokens=1_050,
+                        ),
+                    ),
+                ]
+            ),
             corrective_retry_used=True,
             correction_prompt_version=CORRECTIVE_PROMPT_VERSION,
             data=ExtractionPayload(
@@ -759,6 +797,8 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
 
     assert first.status == "COMPLETED"
     assert first.openai_calls == 2
+    assert first.openai_telemetry.total_tokens == 2_250
+    assert first.openai_telemetry.total_request_latency_ms == 375
     assert first.warnings == ["CORRECTIVE_EXTRACTION_RETRY_USED"]
     assert second.status == "REUSED"
     assert second.openai_calls == 0
@@ -768,6 +808,27 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
         extraction_version = session.get(NoticeVersion, first.version_id)
         assert extraction_version is not None
         assert extraction_version.source_payload["api_calls"] == 2
+        stored_telemetry = extraction_version.source_payload["document_processing"][
+            "openai_telemetry"
+        ]
+        assert stored_telemetry["input_tokens"] == 1_900
+        assert stored_telemetry["cached_input_tokens"] == 100
+        assert stored_telemetry["cache_write_tokens"] == 50
+        assert stored_telemetry["models"] == ["gpt-5.6-luna"]
+        assert stored_telemetry["service_tiers"] == ["default"]
+        assert stored_telemetry["output_tokens"] == 350
+        assert stored_telemetry["reasoning_output_tokens"] == 75
+        assert stored_telemetry["total_tokens"] == 2_250
+        assert stored_telemetry["total_request_latency_ms"] == 375
+        assert len(stored_telemetry["attempts"]) == 2
+        public_projection = safe_public_live_extraction(
+            extraction_version.source_payload
+        )
+        assert public_projection is not None
+        public_serialised = json.dumps(public_projection, ensure_ascii=False)
+        assert "openai_telemetry" not in public_serialised
+        assert "input_tokens" not in public_serialised
+        assert "request_latency_ms" not in public_serialised
         assert extraction_version.source_payload["corrective_retry_used"] is True
         assert (
             extraction_version.source_payload["correction_prompt_version"]
@@ -789,6 +850,93 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
         session.commit()
     with factory() as session:
         assert has_current_accepted_pps_extraction(session, notice_id) is False
+    engine.dispose()
+
+
+def test_paid_usage_survives_post_openai_persistence_failure(monkeypatch) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/hwp+zip")
+        archive.writestr(
+            "Contents/section0.xml",
+            "<s><p>교육 컨설팅 수행실적을 제출해야 합니다.</p></s>",
+        )
+    content = buffer.getvalue()
+
+    def attachment_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/zip"},
+            content=content,
+        )
+
+    raw = {
+        "bidNtceNo": "R26BK00000001",
+        "bidNtceOrd": "000",
+        "ntceSpecFileNm1": "제안요청서.hwpx",
+        "ntceSpecDocUrl1": G2B_DOWNLOAD,
+    }
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        notice = Notice(
+            notice_key="PPS-PAID-PERSIST-FAIL",
+            bid_notice_no="R26BK00000001",
+            revision_no="000",
+            title="호출 후 저장 실패 감사",
+            agency="공공기관",
+            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item=raw,
+            search_keywords=["교육", "컨설팅"],
+            dry_run=False,
+        )
+        session.commit()
+        notice_id = notice.id
+
+    original_persist = pps_enrichment_module._persist_extraction_version
+    failed_paid_persist = False
+
+    def fail_once_after_paid_call(*args, **kwargs):
+        nonlocal failed_paid_persist
+        if kwargs.get("outcome") is not None and not failed_paid_persist:
+            failed_paid_persist = True
+            raise RuntimeError("synthetic post-provider persistence failure")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        pps_enrichment_module,
+        "_persist_extraction_version",
+        fail_once_after_paid_call,
+    )
+    _CountingExtractionClient.calls = 0
+    with factory() as session:
+        result = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="gpt-5.6-luna",
+            transport=httpx.MockTransport(attachment_response),
+            openai_client_factory=_CountingExtractionClient,
+        )
+
+    assert failed_paid_persist is True
+    assert _CountingExtractionClient.calls == 1
+    assert result.status == "REVIEW"
+    assert "INTERNAL_ENRICHMENT_ERROR" in result.warnings
+    assert result.openai_calls == result.openai_telemetry.api_calls == 2
+    assert result.openai_telemetry.usage_unreported_calls == 0
+    assert result.openai_telemetry.input_tokens == 1_900
+    assert result.openai_telemetry.cache_write_tokens == 50
+    assert result.openai_telemetry.models == ["gpt-5.6-luna"]
+    assert result.openai_telemetry.service_tiers == ["default"]
     engine.dispose()
 
 

@@ -7,7 +7,7 @@ import re
 import time
 import unicodedata
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
 from typing import Any, Callable, Literal
@@ -29,6 +29,8 @@ from .integrations.openai_extraction import (
     ExtractionOutcome,
     ExtractionPayload,
     OpenAIExtractionClient,
+    OpenAITelemetry,
+    merge_openai_telemetry,
 )
 from .models import Notice, NoticeVersion
 from .quantitative_rule_extraction import (
@@ -61,6 +63,9 @@ MAX_OPENAI_CALLS_PER_NOTICE = (
     MAX_ATTACHMENTS_IN_MANIFEST * MAX_OPENAI_CALLS_PER_ATTACHMENT
 )
 MAX_NEW_ATTACHMENTS_PER_REQUEST = 2
+DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS = 12
+DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS = 90
+ATTACHMENT_TIMEOUT_GUARD_SECONDS = 5
 from .document_extraction import (
     DocumentExtractionError,
     DocumentExtractionResult,
@@ -146,6 +151,15 @@ class PpsEnrichmentError(RuntimeError):
     """Public-safe failure code for bounded PPS attachment processing."""
 
 
+class PpsPostOpenAIProcessingError(PpsEnrichmentError):
+    """Preserve paid-attempt telemetry when later local processing fails."""
+
+    def __init__(self, outcome: ExtractionOutcome) -> None:
+        super().__init__("POST_OPENAI_PROCESSING_FAILED")
+        self.openai_calls = outcome.api_calls
+        self.openai_telemetry = outcome.openai_telemetry
+
+
 @dataclass(frozen=True, slots=True)
 class MetadataVersionResult:
     created: bool
@@ -177,6 +191,7 @@ class PpsAttachmentEnrichmentResult:
     members_discovered: int = 0
     members_processed: int = 0
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = field(default_factory=OpenAITelemetry)
     version_id: str | None = None
 
 
@@ -194,6 +209,7 @@ class PpsEnrichmentResult:
     members_discovered: int = 0
     members_processed: int = 0
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = field(default_factory=OpenAITelemetry)
     version_id: str | None = None
     warnings: list[str] = field(default_factory=list)
     attachment_results: list[PpsAttachmentEnrichmentResult] = field(default_factory=list)
@@ -1791,6 +1807,11 @@ def _persist_extraction_version(
     ):
         raise PpsEnrichmentError("PPS_MANIFEST_CHANGED_DURING_ENRICHMENT")
     accepted = outcome is not None and outcome.status == "ACCEPTED" and outcome.data is not None
+    if outcome is not None and processing_audit is not None:
+        processing_audit = {
+            **processing_audit,
+            "openai_telemetry": outcome.openai_telemetry.model_dump(mode="json"),
+        }
     data = outcome.data.model_dump(mode="json") if accepted and outcome and outcome.data else None
     confidence_values = [
         anchor.confidence
@@ -2456,34 +2477,37 @@ def _enrich_selected_pps_attachment(
             document_text=selection.text,
             allowed_attachment_ids={attachment["attachment_id"]},
         )
-    if outcome.api_calls > MAX_OPENAI_CALLS_PER_ATTACHMENT:
-        raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")
-    quantitative_record = (
-        validate_quantitative_attachment_extraction(
-            outcome.data,
-            source_text=source_text,
-            attachment_id=attachment["attachment_id"],
-            document_sha256=document_sha256,
-            manifest_sha256=current_manifest_sha256,
-            prompt_version=outcome.prompt_version,
-            extraction_schema_version=outcome.schema_version,
+    try:
+        if outcome.api_calls > MAX_OPENAI_CALLS_PER_ATTACHMENT:
+            raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")
+        quantitative_record = (
+            validate_quantitative_attachment_extraction(
+                outcome.data,
+                source_text=source_text,
+                attachment_id=attachment["attachment_id"],
+                document_sha256=document_sha256,
+                manifest_sha256=current_manifest_sha256,
+                prompt_version=outcome.prompt_version,
+                extraction_schema_version=outcome.schema_version,
+            )
+            if outcome.status == "ACCEPTED" and outcome.data is not None
+            else None
         )
-        if outcome.status == "ACCEPTED" and outcome.data is not None
-        else None
-    )
-    with session.begin():
-        version = _persist_extraction_version(
-            session,
-            notice_id=notice_id,
-            attachment=attachment,
-            manifest_sha256=manifest_sha256,
-            current_manifest_sha256=current_manifest_sha256,
-            document_sha256=document_sha256,
-            outcome=outcome,
-            error_code=outcome.error_code,
-            processing_audit=processing_audit,
-            quantitative_validation_record=quantitative_record,
-        )
+        with session.begin():
+            version = _persist_extraction_version(
+                session,
+                notice_id=notice_id,
+                attachment=attachment,
+                manifest_sha256=manifest_sha256,
+                current_manifest_sha256=current_manifest_sha256,
+                document_sha256=document_sha256,
+                outcome=outcome,
+                error_code=outcome.error_code,
+                processing_audit=processing_audit,
+                quantitative_validation_record=quantitative_record,
+            )
+    except Exception as exc:
+        raise PpsPostOpenAIProcessingError(outcome) from exc
     retry_warnings = (
         ["CORRECTIVE_EXTRACTION_RETRY_USED"]
         if outcome.corrective_retry_used
@@ -2519,6 +2543,7 @@ def _enrich_selected_pps_attachment(
         members_discovered=extraction.members_discovered,
         members_processed=extraction.members_processed,
         openai_calls=outcome.api_calls,
+        openai_telemetry=outcome.openai_telemetry,
         version_id=version.id,
         warnings=[
             *retry_warnings,
@@ -2576,6 +2601,7 @@ def _audit_result_for_attachment(
         members_discovered=result.members_discovered,
         members_processed=result.members_processed,
         openai_calls=result.openai_calls,
+        openai_telemetry=result.openai_telemetry,
         version_id=result.version_id,
     )
 
@@ -2640,8 +2666,8 @@ def enrich_notice_from_pps(
     dry_run: bool = False,
     transport: httpx.BaseTransport | None = None,
     openai_client_factory: Callable[..., OpenAIExtractionClient] = OpenAIExtractionClient,
-    download_timeout_seconds: float = 12,
-    openai_timeout_seconds: float = 45,
+    download_timeout_seconds: float = DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
+    openai_timeout_seconds: float = DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
     openai_max_retries: int = 0,
     deadline_monotonic: float | None = None,
 ) -> PpsEnrichmentResult:
@@ -2730,6 +2756,7 @@ def enrich_notice_from_pps(
     audits: list[PpsAttachmentEnrichmentResult] = []
     warnings = list(base_warnings)
     processed = openai_calls = 0
+    openai_telemetry = OpenAITelemetry()
     downloaded_bytes = source_characters = analysis_input_characters = 0
     members_discovered = members_processed = 0
     new_attempts = 0
@@ -2768,7 +2795,7 @@ def enrich_notice_from_pps(
         worst_case_seconds = (
             (download_timeout_seconds * 3)
             + (openai_timeout_seconds * MAX_OPENAI_CALLS_PER_ATTACHMENT)
-            + 5
+            + ATTACHMENT_TIMEOUT_GUARD_SECONDS
         )
         if new_attempts >= MAX_NEW_ATTACHMENTS_PER_REQUEST or (
             deadline_monotonic is not None
@@ -2826,6 +2853,24 @@ def enrich_notice_from_pps(
                     openai_timeout_seconds=openai_timeout_seconds,
                     openai_max_retries=openai_max_retries,
                 )
+            except PpsPostOpenAIProcessingError as exc:
+                # The provider already processed a paid request.  Even if a
+                # later validation/DB step fails, retain its usage so callers
+                # cannot mistake the failure for a zero-cost attempt.
+                session.rollback()
+                item_result = record_internal_pps_enrichment_failure(
+                    session,
+                    notice_id=notice_id,
+                    attachment=attachment,
+                    manifest_sha256=_digest(attachment),
+                    current_manifest_sha256=current_manifest_sha256,
+                    attachments_discovered=discovered,
+                )
+                item_result = replace(
+                    item_result,
+                    openai_calls=exc.openai_calls,
+                    openai_telemetry=exc.openai_telemetry,
+                )
             except Exception:
                 # Each exact attachment owns its failure marker. Continue with
                 # siblings so one corrupt document never discards successes.
@@ -2837,6 +2882,10 @@ def enrich_notice_from_pps(
                     manifest_sha256=_digest(attachment),
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
+                )
+                item_result = replace(
+                    item_result,
+                    openai_telemetry=OpenAITelemetry(accounting_complete=False),
                 )
             reason_code = None
         audit = _audit_result_for_attachment(
@@ -2854,6 +2903,10 @@ def enrich_notice_from_pps(
         members_discovered += item_result.members_discovered
         members_processed += item_result.members_processed
         openai_calls += item_result.openai_calls
+        openai_telemetry = merge_openai_telemetry(
+            openai_telemetry,
+            item_result.openai_telemetry,
+        )
         if openai_calls > MAX_OPENAI_CALLS_PER_NOTICE:
             raise PpsEnrichmentError("OPENAI_NOTICE_CALL_LIMIT")
         if item_result.version_id:
@@ -2910,6 +2963,7 @@ def enrich_notice_from_pps(
         members_discovered=members_discovered,
         members_processed=members_processed,
         openai_calls=openai_calls,
+        openai_telemetry=openai_telemetry,
         version_id=last_version_id,
         warnings=sorted(set(warnings)),
         attachment_results=audits,

@@ -733,7 +733,7 @@ svg {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
   margin: -30px 18px 28px;
 }
@@ -827,6 +827,11 @@ svg {
   background: var(--red-pale);
 }
 
+.kpi-icon--slate {
+  color: #596b70;
+  background: #edf1f2;
+}
+
 .kpi-value {
   display: block;
   margin: 9px 0 5px;
@@ -872,6 +877,11 @@ svg {
 .trend--red {
   color: var(--red);
   background: var(--red-pale);
+}
+
+.trend--slate {
+  color: #596b70;
+  background: #edf1f2;
 }
 
 .notice-section {
@@ -1421,6 +1431,26 @@ svg {
   border-color: #d8ddda;
   color: #64716e;
   background: #f2f4f2;
+}
+
+.notice-lifecycle-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid #ced7d9;
+  border-radius: 5px;
+  color: #56676c;
+  background: #f0f3f4;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+
+.notice-lifecycle-badge--expired {
+  border-color: #e0d3c2;
+  color: #805f36;
+  background: #fbf5ec;
 }
 
 .score-cell {
@@ -2070,6 +2100,11 @@ svg {
 .detail-tag--urgent {
   color: #ffc3ab;
   background: rgb(239 113 60 / 0.15);
+}
+
+.detail-tag--ended {
+  color: #d8e1e3;
+  background: rgb(216 225 227 / 0.12);
 }
 
 .detail-hero h2 {

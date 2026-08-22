@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
 
@@ -10,6 +13,17 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from pai_loop.analysis_pipeline import AnalysisPipelineError
+from pai_loop.analysis_api import (
+    ANALYSIS_ENRICHMENT_BUDGET_SECONDS,
+    ATTACHMENT_UNIT_WORST_CASE_SECONDS,
+    N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS,
+)
+from pai_loop.integrations.openai_extraction import (
+    OpenAIAttemptTelemetry,
+    OpenAIExtractionClient,
+    OpenAIProviderUsage,
+    aggregate_openai_attempts,
+)
 from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
@@ -21,6 +35,29 @@ from pai_loop.public_notice_seed import import_public_notice_seed
 
 
 NOTICE_KEY = "MANUAL-INCHON-2025-17"
+
+
+def test_analysis_timeout_contract_fits_two_units_below_n8n_boundary() -> None:
+    assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 90
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 221
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS * 2 <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
+    assert ANALYSIS_ENRICHMENT_BUDGET_SECONDS == 450
+    assert N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS == 600
+
+    root = Path(__file__).parents[1]
+    for filename in (
+        "pai-loop-10-daily-opportunity-briefing.json",
+        "pai-loop-11-analysis-backfill.json",
+    ):
+        workflow = json.loads((root / "workflows" / filename).read_text(encoding="utf-8"))
+        analysis_nodes = [
+            node
+            for node in workflow["nodes"]
+            if node.get("type") == "n8n-nodes-base.httpRequest"
+            and "/api/v1/notices/analysis/batch" in str(node.get("parameters", {}).get("url", ""))
+        ]
+        assert analysis_nodes
+        assert all(node["parameters"]["options"]["timeout"] == 600_000 for node in analysis_nodes)
 
 
 def _seed_public_notice(client: TestClient) -> None:
@@ -383,12 +420,111 @@ def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
             "members_discovered": 0,
             "members_processed": 0,
             "openai_calls": 0,
+            "openai_telemetry": {
+                "accounting_complete": True,
+                "api_calls": 0,
+                "usage_reported_calls": 0,
+                "usage_unreported_calls": 0,
+                "input_tokens": None,
+                "cached_input_tokens": None,
+                "cache_write_tokens": None,
+                "output_tokens": None,
+                "reasoning_output_tokens": None,
+                "total_tokens": None,
+                "total_request_latency_ms": 0,
+                "models": [],
+                "service_tiers": [],
+                "attempts": [],
+            },
             "warnings": [],
             "attachment_results": [],
         }
         assert enrichment["attempted"] == (
             enrichment["completed"] + enrichment["skipped"] + enrichment["failed"]
         )
+
+
+def test_protected_batch_aggregates_and_persists_sanitised_openai_telemetry(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-TELEMETRY-001"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": "R26BK-TELEMETRY-001",
+            "title": "호출 사용량 감사 검증",
+            "agency": "공공기관",
+            "deadline": "2027-01-01T09:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    telemetry = aggregate_openai_attempts(
+        [
+            OpenAIAttemptTelemetry(
+                attempt=1,
+                request_latency_ms=321,
+                response_received=True,
+                model="gpt-5.6-luna",
+                service_tier="default",
+                usage=OpenAIProviderUsage(
+                    input_tokens=1_200,
+                    cached_input_tokens=200,
+                    cache_write_tokens=100,
+                    output_tokens=300,
+                    reasoning_output_tokens=75,
+                    total_tokens=1_500,
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._has_accepted_pps_extraction",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "pai_loop.analysis_api._enrich_one_notice",
+        lambda *_args, **_kwargs: PpsEnrichmentResult(
+            status="REVIEW",
+            attachments_discovered=1,
+            attachments_attempted=1,
+            attachments_processed=1,
+            openai_calls=1,
+            openai_telemetry=telemetry,
+            warnings=["OPENAI_REVIEW_R07"],
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "max_attachments_per_notice": 10,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["openai_calls"] == 1
+    assert body["openai_telemetry"]["input_tokens"] == 1_200
+    assert body["openai_telemetry"]["cached_input_tokens"] == 200
+    assert body["openai_telemetry"]["cache_write_tokens"] == 100
+    assert body["openai_telemetry"]["models"] == ["gpt-5.6-luna"]
+    assert body["openai_telemetry"]["service_tiers"] == ["default"]
+    assert body["openai_telemetry"]["reasoning_output_tokens"] == 75
+    assert body["openai_telemetry"]["total_request_latency_ms"] == 321
+    assert body["enrichment"]["openai_telemetry"] == body["openai_telemetry"]
+    assert "response_id" not in response.text
+    assert "api_key" not in response.text.casefold()
+
+    with client.app.state.session_factory() as session:
+        job = session.get(IngestionJob, body["job_id"])
+        assert job is not None
+        assert job.api_calls == 1
+        stored = job.request_json["result_json"]
+        assert stored["openai_telemetry"] == body["openai_telemetry"]
 
 
 def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
@@ -510,6 +646,7 @@ def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
     assert body["results"][0]["status"] == "COMPLETED"
     assert body["results"][0]["analysis_state"] == "REVIEW"
     assert body["results"][0]["analysis_reason_code"] == "OPENAI_REVIEW"
+    assert body["openai_telemetry"]["accounting_complete"] is False
     assert "INTERNAL_ENRICHMENT_ERROR" in body["results"][0]["warnings"]
 
     detail = client.get(f"/api/v1/notices/{notice_key}")

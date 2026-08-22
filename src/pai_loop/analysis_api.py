@@ -21,14 +21,37 @@ from .daily_analysis_scope import (
     material_scope_sha256,
     validated_material_scope,
 )
+from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .pps_enrichment import (
+    ATTACHMENT_TIMEOUT_GUARD_SECONDS,
+    DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
+    DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
     MAX_ATTACHMENTS_IN_MANIFEST,
+    MAX_NEW_ATTACHMENTS_PER_REQUEST,
+    MAX_OPENAI_CALLS_PER_ATTACHMENT,
     PpsEnrichmentResult,
     current_pps_attachment_coverage,
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
+)
+
+
+# W10/W11 bound each analysis HTTP node at 600 seconds.  A request may start
+# at most two new durable attachment units, so 450 seconds fits two complete
+# 221-second worst-case units and still leaves 150 seconds for HTTP/DB overhead.
+ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 450
+N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS = 600
+ATTACHMENT_UNIT_WORST_CASE_SECONDS = (
+    DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS * 3
+    + DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS * MAX_OPENAI_CALLS_PER_ATTACHMENT
+    + ATTACHMENT_TIMEOUT_GUARD_SECONDS
+)
+assert (
+    ATTACHMENT_UNIT_WORST_CASE_SECONDS * MAX_NEW_ATTACHMENTS_PER_REQUEST
+    <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
+    < N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS
 )
 
 
@@ -130,6 +153,7 @@ class AnalysisAttachmentEnrichmentOut(ApiModel):
     members_discovered: int = Field(default=0, ge=0, le=1_024)
     members_processed: int = Field(default=0, ge=0, le=1_024)
     openai_calls: int = Field(default=0, ge=0, le=2)
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     version_id: str | None = None
 
 
@@ -150,6 +174,7 @@ class AnalysisEnrichmentOut(ApiModel):
     members_discovered: int = Field(default=0, ge=0, le=10_240)
     members_processed: int = Field(default=0, ge=0, le=10_240)
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     warnings: list[str] = Field(default_factory=list)
     attachment_results: list[AnalysisAttachmentEnrichmentOut] = Field(default_factory=list)
 
@@ -167,6 +192,7 @@ class AnalysisBatchResponse(ApiModel):
     evaluations_created: int
     snapshots_refreshed: int
     openai_calls: int
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     results: list[AnalysisBatchItemOut]
     warnings: list[str]
     enrichment: AnalysisEnrichmentOut
@@ -602,6 +628,7 @@ def _store_batch_response(
         job.created_count = response.completed
         job.duplicate_count = response.skipped
         job.quarantined_count = response.failed
+        job.api_calls = response.openai_calls
         job.warnings = response.warnings
         job.completed_at = datetime.now(timezone.utc)
         session.commit()
@@ -2066,8 +2093,8 @@ def _enrich_one_notice(
             # another unit only when its full download + two-call worst case
             # still fits, keeping n8n below its HTTP timeout while returning a
             # resumable PARTIAL response for the remaining manifest entries.
-            download_timeout_seconds=12,
-            openai_timeout_seconds=45,
+            download_timeout_seconds=DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
+            openai_timeout_seconds=DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
             openai_max_retries=0,
             deadline_monotonic=deadline_monotonic,
         )
@@ -2117,12 +2144,13 @@ def _execute_notice_analysis_batch(
     enrichment_members_discovered = enrichment_members_processed = 0
     enrichment_source_complete = enrichment_input_complete = True
     enrichment_openai_calls = 0
+    enrichment_openai_telemetry = OpenAITelemetry()
     enrichment_warnings: list[str] = []
     enrichment_attachment_results: list[AnalysisAttachmentEnrichmentOut] = []
     # At most two worst-case attachment units fit below this request boundary:
-    # 3 redirect hops * 12s + 2 Responses calls * 45s = 126s per unit. n8n's
-    # HTTP timeout is 600s; a continuation never starts a third unsafe unit.
-    enrichment_deadline = time.monotonic() + 270
+    # 3 redirect hops * 12s + 2 Responses calls * 90s + 5s = 221s per unit.
+    # n8n's HTTP timeout is 600s; a continuation never starts a third unit.
+    enrichment_deadline = time.monotonic() + ANALYSIS_ENRICHMENT_BUDGET_SECONDS
 
     for index, notice_key in enumerate(payload.notice_keys):
         enrichment_targeted = payload.enrich_missing and index < payload.max_notices
@@ -2178,6 +2206,7 @@ def _execute_notice_analysis_batch(
                 # contract even when an unexpected precheck error occurs.
                 enrichment_result = PpsEnrichmentResult(
                     status="REVIEW",
+                    openai_telemetry=OpenAITelemetry(accounting_complete=False),
                     warnings=[
                         "INTERNAL_ENRICHMENT_ERROR",
                         *(["DRY_RUN_NO_WRITES"] if payload.dry_run else []),
@@ -2201,6 +2230,10 @@ def _execute_notice_analysis_batch(
                 enrichment_input_complete and enrichment_result.analysis_input_complete
             )
             enrichment_openai_calls += enrichment_result.openai_calls
+            enrichment_openai_telemetry = merge_openai_telemetry(
+                enrichment_openai_telemetry,
+                enrichment_result.openai_telemetry,
+            )
             enrichment_attachment_results.extend(
                 AnalysisAttachmentEnrichmentOut.model_validate(item)
                 for item in enrichment_result.attachment_results
@@ -2326,6 +2359,7 @@ def _execute_notice_analysis_batch(
         evaluations_created=evaluations,
         snapshots_refreshed=snapshots,
         openai_calls=enrichment_openai_calls,
+        openai_telemetry=enrichment_openai_telemetry,
         results=rows,
         warnings=warnings,
         enrichment=AnalysisEnrichmentOut(
@@ -2349,6 +2383,7 @@ def _execute_notice_analysis_batch(
             members_discovered=enrichment_members_discovered,
             members_processed=enrichment_members_processed,
             openai_calls=enrichment_openai_calls,
+            openai_telemetry=enrichment_openai_telemetry,
             warnings=sorted(set(enrichment_warnings)),
             attachment_results=enrichment_attachment_results,
         ),

@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.9.1 전체 첨부 분석 · Teams tab · recovery release
+## 현재 구현 범위: v0.9.2 전체 첨부 분석 · 비용 관측 · 종료 공고 조회
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
@@ -27,6 +27,10 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 공개 안전 낙찰 이력 59건을 이용한 3년 수주 집중도·낙찰률 범위·가격 참고 예측
 - 원문 대신 해시·유효 메타데이터만 공개하는 회사 자격 프로필
 - 제한된 조달청 공고/낙찰 후보 수집, OpenAI strict-schema 추출과 원문 인용 재검증
+- OpenAI 호출별 입력·캐시 읽기·캐시 쓰기·출력·추론 토큰과 지연시간을 원문 없이 감사하고,
+  usage 누락 호출은 비용 확정에서 제외하는 보수적 운영 계측
+- 평가가 저장된 `CLOSED + EXPIRED` 공고를 별도 종료 KPI와 서버 페이지 조회로
+  보존하며, 종료 조회 자체는 모델 호출을 만들지 않는 수명주기 화면
 - GitHub Actions 검증, n8n 이름 기반 멱등 배포, 웹 Adaptive Card mock과 분리된
   W12 Teams 채널 전송의 fail-closed 운영
 - 매일 08:00 KST에 최근 8개 calendar day를 재조회하고 `created_notice_keys + updated_notice_keys` 정확 합집합 전량과 cooled backlog 최대 12건을 신규 우선 순서로 영속 큐에 예약

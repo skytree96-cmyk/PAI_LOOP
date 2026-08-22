@@ -7,6 +7,8 @@
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const NOTICE_PAGE_SIZE = 200;
   const URGENT_DEADLINE_DAYS = 7;
+  const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
+  const MANUAL_ANALYSIS_MAX_POLLS = 900;
   const DECIDER_NAME = "KMA 입찰팀";
   const RUNTIME_CONFIG = readRuntimeConfig();
   const PAI_BOT_TEAMS_URL = String(RUNTIME_CONFIG.paiBotTeamsUrl || "").trim();
@@ -105,7 +107,7 @@
     const ids = [
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
-      "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
+      "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
       "noticeHeading", "noticeSummary", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
@@ -508,7 +510,12 @@
     params.set("department_id", departmentId);
     if (searchKeywords) params.set("search_keywords", searchKeywords);
     if (query) params.set("q", query);
-    if (statusScope === "OPEN") params.set("status", "OPEN");
+    if (statusScope === "ANALYZED_ENDED") {
+      params.set("status", "ENDED");
+      params.set("analysis_state", "EVALUATED");
+    } else if (["OPEN", "CLOSED", "EXPIRED", "ENDED"].includes(statusScope)) {
+      params.set("status", statusScope);
+    }
     params.set("limit", String(limit));
     params.set("offset", String(offset));
     return `/notices?${params.toString()}`;
@@ -523,6 +530,7 @@
   }
 
   function noticeStatusScopeForView(view) {
+    if (view === "ended") return "ANALYZED_ENDED";
     return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
   }
 
@@ -1405,6 +1413,7 @@
       // deadline, so use the loaded notice projection for both counts.
       goCount: derived.goCount,
       urgentCount: derived.urgentCount,
+      endedCount: numberOrNull(firstValue(kpis.analyzed_ended_count, kpis.analyzedEndedCount)) ?? derived.endedCount,
       undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? Math.max((numberOrNull(totals.notices) ?? notices.length) - (numberOrNull(totals.decisions) ?? 0), 0),
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
@@ -1419,15 +1428,16 @@
 
   function deriveDashboard(notices) {
     return {
-      newCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN").length,
-      reviewCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN" && isActionableEligibilityReview(notice)).length,
-      qualityReviewCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN" && isDocumentQualityReview(notice)).length,
-      goCount: notices.filter((notice) => notice.noticeStatus.toUpperCase() === "OPEN" && notice.recommendation === "GO").length,
+      newCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN").length,
+      reviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isActionableEligibilityReview(notice)).length,
+      qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
+      goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO").length,
       urgentCount: notices.filter((notice) => {
-        if (notice.noticeStatus.toUpperCase() !== "OPEN") return false;
+        if (noticeLifecycleStatus(notice) !== "OPEN") return false;
         const days = daysUntil(notice.deadline);
         return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
       }).length,
+      endedCount: notices.filter((notice) => isEndedNotice(notice) && notice.analysisState === "EVALUATED").length,
       undecidedCount: notices.filter((notice) => !notice.decision).length,
       lastSync: new Date().toISOString(),
       systemStatus: "online",
@@ -1448,6 +1458,7 @@
     els.kpiReview.textContent = displayNumber(data.reviewCount);
     els.kpiGo.textContent = displayNumber(data.goCount);
     els.kpiUrgent.textContent = displayNumber(data.urgentCount);
+    els.kpiEnded.textContent = displayNumber(data.endedCount);
     els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "실시간";
     els.kpiReviewTrend.textContent = "자격";
     els.kpiGoTrend.textContent = "추천";
@@ -1491,13 +1502,14 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && notice.noticeStatus.toUpperCase() !== "OPEN") return false;
-      if (state.currentView === "review" && (notice.noticeStatus.toUpperCase() !== "OPEN" || !isActionableEligibilityReview(notice))) return false;
+      if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
+      if (state.currentView === "review" && (noticeLifecycleStatus(notice) !== "OPEN" || !isActionableEligibilityReview(notice))) return false;
       if (state.currentView === "go" && notice.recommendation !== "GO") return false;
       if (state.currentView === "urgent") {
         const days = daysUntil(notice.deadline);
         if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
       }
+      if (state.currentView === "ended" && (!isEndedNotice(notice) || notice.analysisState !== "EVALUATED")) return false;
       if (state.currentView === "undecided" && notice.decision) return false;
       if (state.currentView === "closed" && !notice.resultStatus) return false;
       if (eligibility !== "all" && notice.eligibilityStatus !== eligibility) return false;
@@ -1635,7 +1647,7 @@
         <td>
           <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
-            <span class="notice-meta">${sourceKindBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
+            <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
             ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">미분석 사유 · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
@@ -1661,7 +1673,7 @@
       <article class="notice-card" data-notice-key="${escapeAttribute(notice.noticeKey)}">
         <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
           <span class="notice-card__head">
-            <span>${sourceKindBadge(notice)} ${analysisStatusPill(notice)}</span>
+            <span>${sourceKindBadge(notice)} ${noticeLifecycleBadge(notice)} ${analysisStatusPill(notice)}</span>
             <span class="notice-card__deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}</span>
           </span>
           <h3>${escapeHtml(notice.title)}</h3>
@@ -1690,7 +1702,7 @@
       state.manualAnalysisEnabled
       && state.source === "api"
       && notice?.sourceKind === "PPS"
-      && String(notice.noticeStatus || "").toUpperCase() === "OPEN"
+      && noticeLifecycleStatus(notice) === "OPEN"
       && notice.analysisState !== "EVALUATED",
     );
   }
@@ -1783,13 +1795,14 @@
       review: ["자격 검토", "원문 품질 보완과 구분된 자격 검토 공고"],
       go: ["GO 후보", "GO 추천 공고"],
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
+      ended: ["분석된 종료 공고", "분석 결과가 있는 마감·종료 공고"],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
       closed: ["결과 학습", "결과가 확인된 공고"],
       performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[view]?.[0] || titles.all[0];
     els.noticeHeading.textContent = titles[view]?.[1] || titles.all[1];
-    const navigationView = ["collected", "go", "urgent"].includes(view) ? "all" : view;
+    const navigationView = ["collected", "go", "urgent", "ended"].includes(view) ? "all" : view;
     els.navItems.forEach((item) => {
       const active = item.dataset.view === navigationView;
       item.classList.toggle("is-active", active);
@@ -1903,8 +1916,8 @@
       if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {
         const requestId = stringValue(payload.request_id);
         if (!requestId) throw new Error("분석 요청 식별자가 없습니다.");
-        for (let poll = 0; poll < 240; poll += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        for (let poll = 0; poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS));
           payload = unwrapObject(await apiRequest(
             `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(requestId)}`,
           ));
@@ -2008,6 +2021,7 @@
     els.detailTags.innerHTML = [
       `<span class="detail-tag">${escapeHtml(notice.category)}</span>`,
       `<span class="detail-tag">${escapeHtml(notice.region)}</span>`,
+      isEndedNotice(notice) ? `<span class="detail-tag detail-tag--ended">${escapeHtml(noticeLifecycleLabel(notice))}</span>` : "",
       deadline.urgent ? `<span class="detail-tag detail-tag--urgent">${escapeHtml(deadline.relative)}</span>` : "",
     ].join("");
     els.detailFacts.innerHTML = [
@@ -3375,6 +3389,29 @@
     if (notice.sourceKind === "SYNTHETIC") return detailed ? "합성 회귀 데이터" : "합성";
     if (notice.sourceKind === "MANUAL") return detailed ? "수동 등록 공고" : "수동";
     return detailed ? "조달청 실공고 · API" : "실제";
+  }
+
+  function noticeLifecycleStatus(notice) {
+    const status = stringValue(notice?.noticeStatus).toUpperCase();
+    if (status === "CLOSED") return "CLOSED";
+    if (status === "EXPIRED") return "EXPIRED";
+    const deadline = validDate(notice?.deadline);
+    if (status === "OPEN" && deadline && deadline.getTime() < Date.now()) return "EXPIRED";
+    return "OPEN";
+  }
+
+  function isEndedNotice(notice) {
+    return ["CLOSED", "EXPIRED"].includes(noticeLifecycleStatus(notice));
+  }
+
+  function noticeLifecycleLabel(notice) {
+    return noticeLifecycleStatus(notice) === "CLOSED" ? "공고 종료" : "마감 종료";
+  }
+
+  function noticeLifecycleBadge(notice) {
+    if (!isEndedNotice(notice)) return "";
+    const expired = noticeLifecycleStatus(notice) === "EXPIRED";
+    return `<span class="notice-lifecycle-badge ${expired ? "notice-lifecycle-badge--expired" : ""}">${noticeLifecycleLabel(notice)}</span>`;
   }
 
   function recommendationPill(recommendation) {

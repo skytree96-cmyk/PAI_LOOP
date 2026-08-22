@@ -8,11 +8,12 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from .analysis_api import AnalysisBatchRequest, run_notice_analysis_batch
+from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import IngestionJob, Notice
 from .pps_enrichment import PublicAnalysisReason, public_analysis_reason
 from .pps_enrichment import MAX_ATTACHMENTS_IN_MANIFEST
@@ -31,6 +32,7 @@ class ManualAnalysisResponse(BaseModel):
     analysis_reason: str
     analysis_attempted: bool
     openai_calls: int = 0
+    openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     message: str
 
 
@@ -217,6 +219,7 @@ def _finish_manual_job(
     request_id: str,
     status_value: str,
     openai_calls: int = 0,
+    openai_telemetry: OpenAITelemetry | None = None,
     completed: int = 0,
     failed: int = 0,
     batch_job_id: str | None = None,
@@ -228,6 +231,9 @@ def _finish_manual_job(
         config = dict(job.request_json or {})
         if batch_job_id:
             config["batch_job_id"] = batch_job_id
+        config["openai_telemetry"] = (
+            openai_telemetry or OpenAITelemetry()
+        ).model_dump(mode="json")
         job.request_json = config
         job.status = status_value
         job.api_calls = openai_calls
@@ -365,6 +371,7 @@ def _execute_reserved_manual_job(
             max_attachments_per_notice=MAX_ATTACHMENTS_IN_MANIFEST,
         )
         total_openai_calls = 0
+        total_openai_telemetry = OpenAITelemetry()
         batch = None
         try:
             # Each HTTP-equivalent batch persists at most two new attachment
@@ -374,16 +381,24 @@ def _execute_reserved_manual_job(
             for _round in range(MAX_ATTACHMENTS_IN_MANIFEST):
                 batch = run_notice_analysis_batch(payload, request)
                 total_openai_calls += batch.openai_calls
+                total_openai_telemetry = merge_openai_telemetry(
+                    total_openai_telemetry,
+                    batch.openai_telemetry,
+                )
                 if "ATTACHMENT_CONTINUATION_REQUIRED" not in batch.enrichment.warnings:
                     break
             else:  # pragma: no cover - defensive manifest-bound invariant
                 raise RuntimeError("manual attachment continuation limit exceeded")
         except Exception:
+            total_openai_telemetry = total_openai_telemetry.model_copy(
+                update={"accounting_complete": False}
+            )
             _finish_manual_job(
                 request,
                 request_id=request_id,
                 status_value="FAILED",
                 openai_calls=total_openai_calls,
+                openai_telemetry=total_openai_telemetry,
                 failed=1,
             )
             return
@@ -394,6 +409,7 @@ def _execute_reserved_manual_job(
             request_id=request_id,
             status_value=batch.status,
             openai_calls=total_openai_calls,
+            openai_telemetry=total_openai_telemetry,
             completed=batch.completed,
             failed=batch.failed,
             batch_job_id=batch.job_id,
@@ -423,6 +439,15 @@ def get_manual_notice_analysis_request(
             raise HTTPException(status_code=404, detail="분석 요청을 찾을 수 없습니다.")
         job_status = job.status
         openai_calls = job.api_calls
+        raw_telemetry = (job.request_json or {}).get("openai_telemetry")
+        try:
+            openai_telemetry = (
+                OpenAITelemetry.model_validate(raw_telemetry)
+                if isinstance(raw_telemetry, dict)
+                else OpenAITelemetry()
+            )
+        except ValidationError:
+            openai_telemetry = OpenAITelemetry(accounting_complete=False)
     notice = _load_notice(request, notice_key)
     reason = _reason(notice)
     if job_status == "RUNNING":
@@ -447,5 +472,6 @@ def get_manual_notice_analysis_request(
         analysis_reason=reason.reason,
         analysis_attempted=reason.attempted,
         openai_calls=openai_calls,
+        openai_telemetry=openai_telemetry,
         message=message,
     )

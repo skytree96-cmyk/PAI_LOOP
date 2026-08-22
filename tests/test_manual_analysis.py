@@ -5,6 +5,12 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from pai_loop.analysis_api import AnalysisBatchResponse
+from pai_loop.integrations.openai_extraction import (
+    OpenAIAttemptTelemetry,
+    OpenAIProviderUsage,
+    OpenAITelemetry,
+    aggregate_openai_attempts,
+)
 from pai_loop.main import create_app
 from pai_loop.models import IngestionJob
 from pai_loop.pps_enrichment import PublicAnalysisReason
@@ -51,7 +57,14 @@ def _create_open_pps_notice(client: TestClient, notice_key: str = "PPS-MANUAL-00
     assert response.status_code == 201, response.text
 
 
-def _review_batch(job_id: str = "batch-job-public-manual") -> AnalysisBatchResponse:
+def _review_batch(
+    job_id: str = "batch-job-public-manual",
+    *,
+    openai_telemetry: OpenAITelemetry | None = None,
+    continuation: bool = False,
+) -> AnalysisBatchResponse:
+    telemetry = openai_telemetry or OpenAITelemetry()
+    warnings = ["ATTACHMENT_CONTINUATION_REQUIRED"] if continuation else []
     return AnalysisBatchResponse.model_validate(
         {
             "job_id": job_id,
@@ -65,7 +78,8 @@ def _review_batch(job_id: str = "batch-job-public-manual") -> AnalysisBatchRespo
             "document_materialized": 0,
             "evaluations_created": 0,
             "snapshots_refreshed": 0,
-            "openai_calls": 0,
+            "openai_calls": telemetry.api_calls,
+            "openai_telemetry": telemetry.model_dump(mode="json"),
             "results": [
                 {
                     "notice_key": "PPS-MANUAL-001",
@@ -78,7 +92,7 @@ def _review_batch(job_id: str = "batch-job-public-manual") -> AnalysisBatchRespo
                     "analysis_reason": "공개 첨부를 찾지 못했습니다.",
                 }
             ],
-            "warnings": [],
+            "warnings": warnings,
             "enrichment": {
                 "requested": 1,
                 "attempted": 1,
@@ -87,8 +101,9 @@ def _review_batch(job_id: str = "batch-job-public-manual") -> AnalysisBatchRespo
                 "failed": 0,
                 "attachments_discovered": 0,
                 "attachments_processed": 0,
-                "openai_calls": 0,
-                "warnings": [],
+                "openai_calls": telemetry.api_calls,
+                "openai_telemetry": telemetry.model_dump(mode="json"),
+                "warnings": warnings,
             },
         }
     )
@@ -107,6 +122,17 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+
+        unprotected_batch = client.post(
+            "/api/v1/notices/analysis/batch",
+            json={
+                "notice_keys": ["PPS-MANUAL-001"],
+                "enrich_missing": True,
+                "max_notices": 1,
+                "max_attachments_per_notice": 10,
+            },
+        )
+        assert unprotected_batch.status_code == 401
 
         missing_origin = client.post("/api/v1/notices/PPS-MANUAL-001/analysis/request")
         assert missing_origin.status_code == 403
@@ -171,6 +197,134 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
             assert jobs[0].notice_keys == ["PPS-MANUAL-001"]
             assert jobs[0].request_json["credential_exposed"] is False
             assert "test-server-only-openai-key" not in str(jobs[0].request_json)
+
+
+def test_manual_async_result_aggregates_continuations_behind_same_origin(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+    first_telemetry = aggregate_openai_attempts(
+        [
+            OpenAIAttemptTelemetry(
+                attempt=1,
+                request_latency_ms=410,
+                response_received=True,
+                model="gpt-5.6-luna",
+                service_tier="default",
+                usage=OpenAIProviderUsage(
+                    input_tokens=2_000,
+                    cached_input_tokens=500,
+                    cache_write_tokens=250,
+                    output_tokens=400,
+                    reasoning_output_tokens=100,
+                    total_tokens=2_400,
+                ),
+            )
+        ]
+    )
+    second_telemetry = aggregate_openai_attempts(
+        [
+            OpenAIAttemptTelemetry(
+                attempt=1,
+                request_latency_ms=590,
+                response_received=True,
+                model="gpt-5.6-luna",
+                service_tier="default",
+                usage=OpenAIProviderUsage(
+                    input_tokens=3_000,
+                    cached_input_tokens=0,
+                    cache_write_tokens=0,
+                    output_tokens=600,
+                    reasoning_output_tokens=150,
+                    total_tokens=3_600,
+                ),
+            )
+        ]
+    )
+    batches = [
+        _review_batch(
+            "batch-job-public-manual-1",
+            openai_telemetry=first_telemetry,
+            continuation=True,
+        ),
+        _review_batch(
+            "batch-job-public-manual-2",
+            openai_telemetry=second_telemetry,
+        ),
+    ]
+
+    def fake_batch(_payload, _request):
+        return batches.pop(0)
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert queued.status_code == 200, queued.text
+        request_id = queued.json()["request_id"]
+
+        blocked = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
+            headers={"Origin": "https://attacker.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+        assert blocked.status_code == 403
+        completed = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert completed.status_code == 200, completed.text
+        body = completed.json()
+        telemetry = body["openai_telemetry"]
+        assert body["outcome"] == "REVIEW"
+        assert body["openai_calls"] == telemetry["api_calls"] == 2
+        assert telemetry["usage_reported_calls"] == 2
+        assert telemetry["usage_unreported_calls"] == 0
+        assert telemetry["input_tokens"] == 5_000
+        assert telemetry["cached_input_tokens"] == 500
+        assert telemetry["cache_write_tokens"] == 250
+        assert telemetry["models"] == ["gpt-5.6-luna"]
+        assert telemetry["service_tiers"] == ["default"]
+        assert telemetry["output_tokens"] == 1_000
+        assert telemetry["reasoning_output_tokens"] == 250
+        assert telemetry["total_tokens"] == 6_000
+        assert telemetry["total_request_latency_ms"] == 1_000
+        assert [item["attempt"] for item in telemetry["attempts"]] == [1, 2]
+        assert "response_id" not in completed.text
+        assert "test-server-only-openai-key" not in completed.text
+
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, request_id)
+            assert job is not None
+            assert job.api_calls == 2
+            assert job.request_json["openai_telemetry"] == telemetry
+
+
+def test_manual_batch_exception_marks_cost_accounting_incomplete(monkeypatch) -> None:
+    app = _app(monkeypatch)
+
+    def fail_batch(_payload, _request):
+        raise RuntimeError("synthetic failure after an unknown provider boundary")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fail_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert queued.status_code == 200, queued.text
+        request_id = queued.json()["request_id"]
+        completed = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert completed.status_code == 200, completed.text
+        body = completed.json()
+        assert body["outcome"] == "REVIEW"
+        assert body["openai_telemetry"]["accounting_complete"] is False
 
 
 def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
