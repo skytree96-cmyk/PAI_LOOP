@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from .enums import AtomicOperator, DecisionChoice, Eligibility, EvidenceStatus, ReadinessStatus, RiskBand
 
@@ -183,6 +190,9 @@ class NoticeSummary(ApiModel):
     agency: str
     deadline: datetime
     status: str
+    provider_disposition: Literal["VALID", "CANCELLED", "QUARANTINED"] | None = None
+    provider_event_kind: str | None = None
+    provider_changed_at: datetime | None = None
     estimated_amount: float | None
     source_kind: Literal["SYNTHETIC", "PPS", "MANUAL"]
     ingestion_state: Literal["COLLECTED", "VERSIONED", "EVALUATED"]
@@ -214,6 +224,13 @@ class NoticeSummary(ApiModel):
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)
     department_review_candidates: list[DepartmentRankingOut] = Field(default_factory=list)
     region_routing: list[DepartmentRankingOut] = Field(default_factory=list)
+
+    @field_serializer("provider_changed_at", when_used="json")
+    def serialize_provider_changed_at(
+        self,
+        value: datetime | None,
+    ) -> str | None:
+        return value.isoformat() if value is not None else None
 
 
 class AwardHistoryItemOut(ApiModel):

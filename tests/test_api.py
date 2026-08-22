@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -14,9 +15,12 @@ from pai_loop.models import (
     AnalysisRun,
     Evaluation,
     IngestionJob,
+    MockNotification,
     Notice,
+    NoticeVersion,
     PpsNoticeAuthority,
     RecommendationSnapshot,
+    UserDecision,
 )
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
@@ -146,6 +150,8 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     }
     assert dashboard.json()["ended_count"] == 0
     assert dashboard.json()["analyzed_ended_count"] == 0
+    assert dashboard.json()["cancelled_count"] == 0
+    assert dashboard.json()["visible_ended_count"] == 0
     assert dashboard.json()["closed_count"] == 0
     assert dashboard.json()["expired_count"] == 0
 def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClient) -> None:
@@ -281,12 +287,41 @@ def test_ended_scope_combines_expired_and_closed_with_dashboard_list_parity(
     assert dashboard["totals"]["active"] == 1
     assert dashboard["ended_count"] == len(ended_rows) == 2
     assert dashboard["analyzed_ended_count"] == len(analyzed_ended_rows) == 2
+    assert dashboard["cancelled_count"] == 0
+    assert dashboard["visible_ended_count"] == 2
     assert dashboard["closed_count"] == 1
     assert dashboard["expired_count"] == 1
     assert {item["status"] for item in analyzed_ended_rows} == {"CLOSED", "EXPIRED"}
+    assert all(item["provider_disposition"] is None for item in ended_rows)
+    assert all(item["provider_event_kind"] is None for item in ended_rows)
+    assert all(item["provider_changed_at"] is None for item in ended_rows)
     assert len(client.get("/api/v1/notices", params={"status": "CLOSED"}).json()) == 1
     assert len(client.get("/api/v1/notices", params={"status": "EXPIRED"}).json()) == 1
     assert len(client.get("/api/v1/notices", params={"status": "OPEN"}).json()) == 1
+
+
+def test_dashboard_deadline_soon_counts_only_open_notices(client: TestClient) -> None:
+    deadline = datetime.now(timezone.utc) + timedelta(days=2)
+    for notice_key, status_value in (
+        ("MANUAL-DEADLINE-OPEN", "OPEN"),
+        ("MANUAL-DEADLINE-CLOSED", "CLOSED"),
+    ):
+        created = client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": notice_key,
+                "bid_notice_no": notice_key,
+                "title": notice_key,
+                "agency": "공공기관",
+                "deadline": deadline.isoformat(),
+                "status": status_value,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    dashboard = client.get("/api/v1/dashboard").json()
+    assert dashboard["deadline_soon"] == 1
+    assert dashboard["totals"]["active"] == 1
 
 
 def test_notice_detail_manual_evaluation_and_user_decision(client: TestClient) -> None:
@@ -789,6 +824,11 @@ def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
                 "title": "공공기관 교육 용역",
                 "agency": "공공기관",
                 "published_at": datetime.fromisoformat("2026-08-16T09:00:00+09:00"),
+                "provider_changed_at": datetime.fromisoformat(
+                    "2026-08-16T10:00:00+09:00"
+                    if run["cancelled"]
+                    else "2026-08-16T09:30:00+09:00"
+                ),
                 "deadline": datetime.fromisoformat("2026-08-22T17:00:00+09:00"),
                 "estimated_amount": 100_000_000,
                 "notice_kind": "취소공고" if run["cancelled"] else "등록공고",
@@ -803,6 +843,7 @@ def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200
         assert first.json()["created"] == 1
+        notice_key = first.json()["created_notice_keys"][0]
         run["cancelled"] = True
         cancelled = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert cancelled.status_code == 200
@@ -810,8 +851,31 @@ def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
         assert cancelled.json()["updated"] == 1
         assert live_client.get("/api/v1/notices", params={"status": "OPEN"}).json() == []
         all_rows = live_client.get("/api/v1/notices").json()
+        ended_rows = live_client.get(
+            "/api/v1/notices", params={"status": "ENDED"}
+        ).json()
+        detail = live_client.get(f"/api/v1/notices/{notice_key}").json()
+        dashboard = live_client.get("/api/v1/dashboard").json()
     assert len(all_rows) == 1
     assert all_rows[0]["status"] == "CLOSED"
+    assert ended_rows == all_rows
+    assert all_rows[0]["provider_disposition"] == "CANCELLED"
+    assert all_rows[0]["provider_event_kind"] == "취소공고"
+    assert all_rows[0]["provider_changed_at"].endswith("+00:00")
+    assert detail["notice_key"] == notice_key
+    assert detail["status"] == "CLOSED"
+    assert detail["provider_disposition"] == "CANCELLED"
+    assert detail["provider_event_kind"] == "취소공고"
+    assert detail["provider_changed_at"].endswith("+00:00")
+    for projected in (all_rows[0], detail):
+        assert "authority_sha256" not in projected
+        assert "authority_id" not in projected
+        assert "lifecycle_events" not in projected
+    assert dashboard["ended_count"] == 1
+    assert dashboard["analyzed_ended_count"] == 0
+    assert dashboard["cancelled_count"] == 1
+    assert dashboard["visible_ended_count"] == 1
+    assert dashboard["deadline_soon"] == 0
 
 
 @pytest.mark.parametrize("reverse_rows", [False, True])
@@ -1047,10 +1111,15 @@ def test_newer_expired_revision_closes_older_still_open_revision(
         assert response.status_code == 200, response.text
         rows = live_client.get("/api/v1/notices").json()
         open_rows = live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()
+        dashboard = live_client.get("/api/v1/dashboard").json()
     assert len(rows) == 1
     assert rows[0]["revision_no"] == "01"
     assert rows[0]["status"] == "EXPIRED"
+    assert rows[0]["provider_disposition"] == "VALID"
+    assert rows[0]["provider_event_kind"] == "정정공고"
     assert open_rows == []
+    assert dashboard["cancelled_count"] == 0
+    assert dashboard["visible_ended_count"] == 0
 
 
 def test_deadline_extension_with_same_revision_supersedes_and_requeues(
@@ -1099,13 +1168,228 @@ def test_deadline_extension_with_same_revision_supersedes_and_requeues(
         assert body["created_notice_keys"][0] != original_key
         rows = live_client.get("/api/v1/notices").json()
         open_rows = live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()
+        dashboard = live_client.get("/api/v1/dashboard").json()
     assert len(rows) == 2
     assert {item["notice_key"]: item["status"] for item in rows}[original_key] == "CLOSED"
+    original = next(item for item in rows if item["notice_key"] == original_key)
+    current = next(item for item in rows if item["notice_key"] != original_key)
+    assert original["provider_disposition"] is None
+    assert original["provider_event_kind"] is None
+    assert current["provider_disposition"] == "VALID"
+    assert current["provider_event_kind"] == "연장공고"
     assert len(open_rows) == 1
     assert open_rows[0]["notice_key"] == body["created_notice_keys"][0]
     assert datetime.fromisoformat(open_rows[0]["deadline"]).replace(
         tzinfo=timezone.utc
     ) == extended_deadline
+    assert dashboard["cancelled_count"] == 0
+    assert dashboard["visible_ended_count"] == 0
+
+
+def test_cancel_after_extension_projects_one_representative_and_blocks_all_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    phase = {"value": "registered"}
+    published = datetime(2026, 8, 16, 1, tzinfo=timezone.utc)
+    first_deadline = datetime.now(timezone.utc) + timedelta(days=5)
+    extended_deadline = first_deadline + timedelta(days=5)
+
+    class _ExtendedThenCancelledClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            minute, kind, deadline = {
+                "registered": (1, "등록공고", first_deadline),
+                "extended": (2, "연장공고", extended_deadline),
+                "cancelled": (3, "취소공고", None),
+            }[phase["value"]]
+            yield {
+                "identity": (
+                    f"R26BK-EXTEND-CANCEL|00|"
+                    f"{deadline.isoformat() if deadline else 'cancelled'}"
+                ),
+                "bid_notice_no": "R26BK-EXTEND-CANCEL",
+                "revision_no": "00",
+                "title": "연장 후 취소" if kind == "취소공고" else "교육 용역",
+                "agency": "공공기관",
+                "published_at": published,
+                "provider_changed_at": published + timedelta(minutes=minute),
+                "deadline": deadline,
+                "estimated_amount": 100_000_000,
+                "notice_kind": kind,
+                "source_url": None,
+                "raw": {
+                    "bidNtceNo": "R26BK-EXTEND-CANCEL",
+                    "bidNtceOrd": "00",
+                    "ntceKindNm": kind,
+                },
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _ExtendedThenCancelledClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        registered = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert registered.status_code == 200, registered.text
+        historical_key = registered.json()["created_notice_keys"][0]
+
+        phase["value"] = "extended"
+        extended = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert extended.status_code == 200, extended.text
+        current_key = extended.json()["created_notice_keys"][0]
+        assert current_key != historical_key
+
+        with app.state.session_factory() as session:
+            current = session.scalar(
+                select(Notice).where(Notice.notice_key == current_key)
+            )
+            assert current is not None
+            basis = max(current.versions, key=lambda value: value.version_no)
+            evaluation = Evaluation(
+                notice_id=current.id,
+                notice_version_id=basis.id,
+                deadline_snapshot_at=current.deadline,
+                eligibility="PASS",
+                reason_code="PASS",
+                readiness_score=100,
+                readiness_status="GREEN",
+                evidence_coverage=100,
+                risk_score=10,
+                risk_band="GO",
+                ruleset_version="cancelled-visibility-test",
+                atomic_results=[],
+                explanation={},
+            )
+            run = AnalysisRun(
+                notice_id=current.id,
+                notice_version_id=basis.id,
+                status="COMPLETED",
+                idempotency_key="cancelled-visibility-analysis",
+                input_sha256="b" * 64,
+                output_summary={"eligibility": "PASS"},
+            )
+            run.evaluation = evaluation
+            run.recommendations.append(
+                RecommendationSnapshot(
+                    recommendation_key="bid:system",
+                    rank=0,
+                    recommendation="GO",
+                )
+            )
+            session.add(run)
+            session.flush()
+            session.add(
+                UserDecision(
+                    notice_id=current.id,
+                    evaluation_id=evaluation.id,
+                    choice="GO",
+                    actor_label="기존 담당자",
+                    rationale="취소 전 판단",
+                )
+            )
+            evaluation_id = evaluation.id
+            session.commit()
+
+        phase["value"] = "cancelled"
+        cancelled = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert cancelled.status_code == 200, cancelled.text
+
+        rows = live_client.get("/api/v1/notices").json()
+        ended_rows = live_client.get(
+            "/api/v1/notices", params={"status": "ENDED"}
+        ).json()
+        evaluated_ended_rows = live_client.get(
+            "/api/v1/notices",
+            params={"status": "ENDED", "analysis_state": "EVALUATED"},
+        ).json()
+        paged_rows = [
+            *live_client.get(
+                "/api/v1/notices",
+                params={"status": "ENDED", "limit": 1, "offset": 0},
+            ).json(),
+            *live_client.get(
+                "/api/v1/notices",
+                params={"status": "ENDED", "limit": 1, "offset": 1},
+            ).json(),
+        ]
+        current_detail = live_client.get(f"/api/v1/notices/{current_key}").json()
+        historical_detail = live_client.get(
+            f"/api/v1/notices/{historical_key}"
+        ).json()
+        dashboard = live_client.get("/api/v1/dashboard").json()
+
+        evaluation_write = live_client.post(
+            f"/api/v1/notices/{current_key}/evaluate", json={}
+        )
+        historical_evaluation_write = live_client.post(
+            f"/api/v1/notices/{historical_key}/evaluate", json={}
+        )
+        decision_payload = {
+            "evaluation_id": evaluation_id,
+            "choice": "GO",
+            "actor_label": "신규 담당자",
+            "rationale": "취소 후 판단 시도",
+        }
+        decision_write = live_client.post(
+            f"/api/v1/notices/{current_key}/decisions",
+            json=decision_payload,
+        )
+        historical_decision_write = live_client.post(
+            f"/api/v1/notices/{historical_key}/decisions",
+            json=decision_payload,
+        )
+
+        assert len(rows) == len(ended_rows) == len(paged_rows) == 2
+        assert evaluated_ended_rows == []
+        for projection in (rows, ended_rows, paged_rows):
+            cancelled_rows = [
+                item
+                for item in projection
+                if item["provider_disposition"] == "CANCELLED"
+            ]
+            assert [item["notice_key"] for item in cancelled_rows] == [current_key]
+        current_summary = next(
+            item for item in rows if item["notice_key"] == current_key
+        )
+        assert current_summary["latest_evaluation"] is None
+        assert current_summary["recommendation"] is None
+        assert historical_detail["provider_disposition"] is None
+        assert current_detail["provider_disposition"] == "CANCELLED"
+        assert current_detail["provider_event_kind"] == "취소공고"
+        assert current_detail["provider_changed_at"].endswith("+00:00")
+        assert current_detail["latest_evaluation"] is None
+        assert current_detail["recommendation"] is None
+        assert len(current_detail["decisions"]) == 1
+        assert dashboard["cancelled_count"] == 1
+        assert dashboard["visible_ended_count"] == 1
+        dashboard_cancelled = next(
+            item
+            for item in dashboard["recent_notices"]
+            if item["provider_disposition"] == "CANCELLED"
+        )
+        assert dashboard_cancelled["notice_key"] == current_key
+        assert dashboard_cancelled["provider_changed_at"].endswith("+00:00")
+        assert dashboard["eligibility_counts"]["PASS"] == 0
+        assert dashboard["readiness_counts"]["GREEN"] == 0
+        assert dashboard["go_count"] == 0
+        assert dashboard["totals"]["evaluations"] == 1
+        assert dashboard["totals"]["decisions"] == 1
+        for response in (
+            evaluation_write,
+            historical_evaluation_write,
+            decision_write,
+            historical_decision_write,
+        ):
+            assert response.status_code == 409
+            assert "취소된 공고" in response.json()["detail"]
+
+        with app.state.session_factory() as session:
+            current = session.scalar(
+                select(Notice).where(Notice.notice_key == current_key)
+            )
+            assert current is not None
+            assert len(current.evaluations) == 1
+            assert len(current.decisions) == 1
+            assert len(current.analysis_runs) == 1
 
 
 def test_same_key_provider_update_hides_stale_evaluation_and_recommendation(
@@ -1781,9 +2065,13 @@ def test_same_revision_newer_dated_registration_reopens_after_cancellation(
         ).json()
         assert len(open_rows) == 1
         assert open_rows[0]["bid_notice_no"] == "R26BK-SAME-REV-REOPEN"
+        assert open_rows[0]["provider_disposition"] == "VALID"
+        assert open_rows[0]["provider_event_kind"] == "등록공고"
         detail = live_client.get(f"/api/v1/notices/{notice_key}").json()
         assert detail["latest_evaluation"] is None
         assert detail["recommendation"] is None
+        assert detail["provider_disposition"] == "VALID"
+        assert live_client.get("/api/v1/dashboard").json()["cancelled_count"] == 0
         with app.state.session_factory() as session:
             notice = session.scalar(
                 select(Notice).where(Notice.notice_key == notice_key)
@@ -2027,6 +2315,130 @@ def test_never_seen_cancellation_authority_survives_retention(
         assert stale.status_code == 200, stale.text
         assert stale.json()["matched"] == 0
         assert live_client.get("/api/v1/notices").json() == []
+        dashboard = live_client.get("/api/v1/dashboard").json()
+        assert dashboard["cancelled_count"] == 0
+        assert dashboard["visible_ended_count"] == 0
+
+
+def test_cancelled_notice_default_teams_card_suppresses_historical_current_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    cancelled = {"value": False}
+    published = datetime(2026, 8, 16, 1, tzinfo=timezone.utc)
+    deadline = datetime.now(timezone.utc) + timedelta(days=7)
+
+    class _CancelledTeamsClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            kind = "취소공고" if cancelled["value"] else "등록공고"
+            yield {
+                "identity": (
+                    "R26BK-CANCELLED-TEAMS|00|"
+                    + ("cancelled" if cancelled["value"] else deadline.isoformat())
+                ),
+                "bid_notice_no": "R26BK-CANCELLED-TEAMS",
+                "revision_no": "00",
+                "title": "취소 카드 회귀 공고",
+                "agency": "공공기관",
+                "published_at": published,
+                "provider_changed_at": published
+                + timedelta(minutes=2 if cancelled["value"] else 1),
+                "deadline": None if cancelled["value"] else deadline,
+                "estimated_amount": 100_000_000,
+                "notice_kind": kind,
+                "source_url": None,
+                "raw": {
+                    "bidNtceNo": "R26BK-CANCELLED-TEAMS",
+                    "bidNtceOrd": "00",
+                    "ntceKindNm": kind,
+                },
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _CancelledTeamsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        registered = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert registered.status_code == 200, registered.text
+        notice_key = registered.json()["created_notice_keys"][0]
+
+        with app.state.session_factory() as session:
+            notice = session.scalar(
+                select(Notice).where(Notice.notice_key == notice_key)
+            )
+            assert notice is not None
+            basis = max(notice.versions, key=lambda value: value.version_no)
+            evaluation = Evaluation(
+                notice_id=notice.id,
+                notice_version_id=basis.id,
+                deadline_snapshot_at=notice.deadline,
+                eligibility="PASS",
+                reason_code="PASS",
+                readiness_score=100,
+                readiness_status="GREEN",
+                evidence_coverage=100,
+                risk_score=10,
+                risk_band="GO",
+                ruleset_version="cancelled-teams-card-test",
+                atomic_results=[],
+                explanation={},
+            )
+            run = AnalysisRun(
+                notice_id=notice.id,
+                notice_version_id=basis.id,
+                status="COMPLETED",
+                idempotency_key="cancelled-teams-card-analysis",
+                input_sha256="c" * 64,
+                output_summary={"eligibility": "PASS"},
+            )
+            run.evaluation = evaluation
+            run.recommendations.append(
+                RecommendationSnapshot(
+                    recommendation_key="bid:system",
+                    rank=0,
+                    recommendation="GO",
+                )
+            )
+            session.add(run)
+            session.commit()
+
+        cancelled["value"] = True
+        cancellation = live_client.post(
+            "/api/v1/ingestion/pps/notices", json=payload
+        )
+        assert cancellation.status_code == 200, cancellation.text
+
+        response = live_client.post(
+            f"/api/v1/notices/{notice_key}/notifications/teams/mock",
+            json={"correlation_id": "cancelled-default-card"},
+        )
+        assert response.status_code == 201, response.text
+        card = response.json()["card"]
+        fact_set = next(item for item in card["body"] if item["type"] == "FactSet")
+        facts = {item["title"]: item["value"] for item in fact_set["facts"]}
+        assert facts["현재 상태"] == "취소 공고"
+        assert facts["공고번호"] == "R26BK-CANCELLED-TEAMS"
+        assert card["actions"] == []
+        serialized = json.dumps(card, ensure_ascii=False)
+        for stale_current_value in ("PASS", "GREEN", "GO"):
+            assert stale_current_value not in serialized
+        assert "취소 공고 알림" in serialized
+        assert "현재 행동 근거로 표시하지 않습니다" in serialized
+
+        with app.state.session_factory() as session:
+            stored = session.scalar(
+                select(MockNotification).where(
+                    MockNotification.correlation_id == "cancelled-default-card"
+                )
+            )
+            assert stored is not None
+            assert stored.card == card
+            notice = session.scalar(
+                select(Notice).where(Notice.notice_key == notice_key)
+            )
+            assert notice is not None
+            assert len(notice.evaluations) == 1
+            assert len(notice.analysis_runs) == 1
 
 
 def test_teams_mock_records_real_adaptive_card_without_external_delivery(client: TestClient) -> None:
@@ -2110,6 +2522,130 @@ def test_openai_public_document_extraction_is_versioned_and_idempotent(
         serialised = str(detail)
         assert document_text not in serialised
         assert "server-side-openai-key" not in serialised
+
+
+def test_cancelled_pps_extraction_is_rejected_before_openai_or_version_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "server-side-openai-key")
+    client_initializations = 0
+
+    class _ForbiddenOpenAIClient:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal client_initializations
+            client_initializations += 1
+            raise AssertionError("cancelled notice must not construct an OpenAI client")
+
+    monkeypatch.setattr("pai_loop.api.OpenAIExtractionClient", _ForbiddenOpenAIClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as extraction_client:
+        created = extraction_client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": "PPS-CANCELLED-EXTRACTION",
+                "bid_notice_no": "R26BK-CANCELLED-EXTRACTION",
+                "title": "취소 추출 차단 공고",
+                "agency": "공공기관",
+                "deadline": "2026-08-30T09:00:00Z",
+                "status": "CLOSED",
+            },
+        )
+        assert created.status_code == 201, created.text
+        with app.state.session_factory() as session:
+            session.add(
+                PpsNoticeAuthority(
+                    bid_notice_no="R26BK-CANCELLED-EXTRACTION",
+                    revision_no="00",
+                    event_kind="취소공고",
+                    disposition="CANCELLED",
+                    required_fields_complete=True,
+                    direct_contract_signal=False,
+                    published_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
+                    provider_changed_at=datetime(2026, 8, 22, 1, tzinfo=timezone.utc),
+                    deadline=None,
+                    authority_sha256="e" * 64,
+                )
+            )
+            session.commit()
+
+        response = extraction_client.post(
+            "/api/v1/notices/PPS-CANCELLED-EXTRACTION/analysis/extractions",
+            json={
+                "attachment_id": "ATT-CANCELLED",
+                "source_label": "취소 전 공고문.pdf",
+                "document_text": "취소된 공개 입찰공고 원문이며 추출 호출 차단을 검증합니다.",
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert "취소" in str(response.json()["detail"])
+        assert client_initializations == 0
+        with app.state.session_factory() as session:
+            assert session.query(NoticeVersion).count() == 0
+
+
+def test_openai_extraction_discards_result_when_notice_cancels_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "server-side-openai-key")
+    provider_calls = 0
+
+    class _CountingOpenAIClient(_FakeOpenAIExtractionClient):
+        def extract(
+            self,
+            *,
+            document_text: str,
+            allowed_attachment_ids: set[str],
+        ) -> ExtractionOutcome:
+            nonlocal provider_calls
+            provider_calls += 1
+            return super().extract(
+                document_text=document_text,
+                allowed_attachment_ids=allowed_attachment_ids,
+            )
+
+    cancellation_checks = 0
+
+    def _cancels_after_provider(_session: object, _notice: Notice) -> bool:
+        nonlocal cancellation_checks
+        cancellation_checks += 1
+        return cancellation_checks >= 2
+
+    monkeypatch.setattr("pai_loop.api.OpenAIExtractionClient", _CountingOpenAIClient)
+    monkeypatch.setattr(
+        "pai_loop.api.authoritative_pps_notice_is_cancelled",
+        _cancels_after_provider,
+    )
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    document_text = (
+        "공개 입찰공고입니다. 입찰참가자격은 유효한 사업자등록을 보유한 업체입니다. "
+        "제출 마감 전까지 관련 증빙을 제출해야 합니다."
+    )
+    with TestClient(app) as extraction_client:
+        created = extraction_client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": "PPS-CANCELLED-IN-FLIGHT",
+                "bid_notice_no": "R26BK-CANCELLED-IN-FLIGHT",
+                "title": "진행 중 취소 공고",
+                "agency": "공공기관",
+                "deadline": "2026-08-30T09:00:00Z",
+            },
+        )
+        assert created.status_code == 201, created.text
+        response = extraction_client.post(
+            "/api/v1/notices/PPS-CANCELLED-IN-FLIGHT/analysis/extractions",
+            json={
+                "attachment_id": "ATT-IN-FLIGHT",
+                "source_label": "입찰공고문.pdf",
+                "document_text": document_text,
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert "결과를 저장하지 않았습니다" in str(response.json()["detail"])
+        assert provider_calls == 1
+        assert cancellation_checks == 2
+        with app.state.session_factory() as session:
+            assert session.query(NoticeVersion).count() == 0
 
 def test_review_extraction_is_not_reused_as_a_success(
     monkeypatch: pytest.MonkeyPatch,

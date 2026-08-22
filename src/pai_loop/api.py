@@ -55,7 +55,11 @@ from .models import (
     PpsNoticeAuthority,
     UserDecision,
 )
-from .notice_freshness import latest_current_analysis_run, latest_current_evaluation
+from .notice_freshness import (
+    authoritative_pps_notice_is_cancelled,
+    latest_current_analysis_run,
+    latest_current_evaluation,
+)
 from .pps_enrichment import (
     PPS_METADATA_KIND,
     build_attachment_manifest,
@@ -136,10 +140,146 @@ def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime 
     return recommendation, latest_run.generated_at
 
 
-def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
-    latest = _latest_evaluation(notice)
-    latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
+_PPS_AUTHORITY_PROJECTION_CHUNK_SIZE = 400
+
+
+def _pps_authorities_by_notice_id(
+    session: Session,
+    notices: list[Notice],
+) -> dict[str, PpsNoticeAuthority]:
+    """Project each logical PPS authority onto one current Notice row.
+
+    Authority is keyed by bid notice number, while prior revision/deadline
+    rows remain in ``notices`` for audit. Loading all related rows prevents a
+    paginated historical row from inheriting the current lifecycle label.
+    """
+
+    requested_notice_nos = sorted(
+        {
+            notice.bid_notice_no
+            for notice in notices
+            if _source_kind(notice) == "PPS" and notice.bid_notice_no
+        }
+    )
+    if not requested_notice_nos:
+        return {}
+
+    authorities: dict[str, PpsNoticeAuthority] = {}
+    related_by_notice_no: dict[str, list[Notice]] = {
+        notice_no: [] for notice_no in requested_notice_nos
+    }
+    for offset in range(
+        0,
+        len(requested_notice_nos),
+        _PPS_AUTHORITY_PROJECTION_CHUNK_SIZE,
+    ):
+        batch = requested_notice_nos[
+            offset : offset + _PPS_AUTHORITY_PROJECTION_CHUNK_SIZE
+        ]
+        for authority in session.scalars(
+            select(PpsNoticeAuthority).where(
+                PpsNoticeAuthority.bid_notice_no.in_(batch)
+            )
+        ).all():
+            authorities[authority.bid_notice_no] = authority
+        for related in session.scalars(
+            select(Notice)
+            .options(selectinload(Notice.versions))
+            .where(Notice.bid_notice_no.in_(batch))
+        ).all():
+            if _source_kind(related) == "PPS":
+                related_by_notice_no[related.bid_notice_no].append(related)
+
+    now = datetime.now(timezone.utc)
+    projected: dict[str, PpsNoticeAuthority] = {}
+    for notice_no, authority in authorities.items():
+        candidate_rows = [
+            (notice, _stored_notice_authority_row(notice))
+            for notice in related_by_notice_no.get(notice_no, [])
+        ]
+        if not candidate_rows:
+            continue
+        matching_revision = [
+            pair
+            for pair in candidate_rows
+            if str(pair[1]["revision_no"]) == str(authority.revision_no)
+        ]
+        representative_candidates = matching_revision or candidate_rows
+
+        def representative_order(
+            pair: tuple[Notice, dict[str, Any]],
+        ) -> tuple[Any, ...]:
+            notice, stored_authority = pair
+            created_at = (
+                _comparable_utc(notice.created_at).timestamp()
+                if notice.created_at is not None
+                else 0.0
+            )
+            return (
+                *_revision_preference(stored_authority, now=now),
+                created_at,
+                notice.notice_key,
+                notice.id,
+            )
+
+        representative, _stored_authority = max(
+            representative_candidates,
+            key=representative_order,
+        )
+        projected[representative.id] = authority
+    return projected
+
+
+def _safe_provider_authority_projection(
+    *,
+    source_kind: str,
+    authority: PpsNoticeAuthority | None,
+) -> tuple[str | None, str | None, datetime | None]:
+    """Expose only the bounded lifecycle fields intended for notice readers."""
+
+    if source_kind != "PPS" or authority is None:
+        return None, None, None
+    disposition = str(authority.disposition or "").strip().upper()
+    if disposition not in {"VALID", "CANCELLED", "QUARANTINED"}:
+        return None, None, None
+    event_kind = str(authority.event_kind or "").strip() or None
+    changed_at = (
+        _comparable_utc(authority.provider_changed_at)
+        if authority.provider_changed_at is not None
+        else None
+    )
+    return disposition, event_kind, changed_at
+
+
+def _projected_authority_is_cancelled(
+    notice: Notice,
+    authority: PpsNoticeAuthority | None,
+) -> bool:
+    disposition, _event_kind, _changed_at = _safe_provider_authority_projection(
+        source_kind=_source_kind(notice),
+        authority=authority,
+    )
+    return disposition == "CANCELLED"
+
+
+def _summary(
+    notice: Notice,
+    *,
+    public_view: bool = False,
+    provider_authority: PpsNoticeAuthority | None = None,
+) -> NoticeSummary:
     source_kind = _source_kind(notice)
+    (
+        provider_disposition,
+        provider_event_kind,
+        provider_changed_at,
+    ) = _safe_provider_authority_projection(
+        source_kind=source_kind,
+        authority=provider_authority,
+    )
+    authoritative_cancelled = provider_disposition == "CANCELLED"
+    latest = None if authoritative_cancelled else _latest_evaluation(notice)
+    latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     analysis_reason = public_analysis_reason(
         notice.versions,
         evaluated=latest is not None,
@@ -152,7 +292,11 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
     )
     ingestion_state = "EVALUATED" if latest else "VERSIONED" if latest_version else "COLLECTED"
     evaluation = EvaluationOut.model_validate(latest) if latest else None
-    recommendation, recommendation_updated_at = _latest_system_recommendation(notice)
+    recommendation, recommendation_updated_at = (
+        (None, None)
+        if authoritative_cancelled
+        else _latest_system_recommendation(notice)
+    )
     if evaluation is not None and public_view:
         evaluation = evaluation.model_copy(
             update={
@@ -171,6 +315,9 @@ def _summary(notice: Notice, *, public_view: bool = False) -> NoticeSummary:
         agency=notice.agency,
         deadline=notice.deadline,
         status=_effective_notice_status(notice),
+        provider_disposition=provider_disposition,
+        provider_event_kind=provider_event_kind,
+        provider_changed_at=provider_changed_at,
         estimated_amount=notice.estimated_amount,
         source_kind=source_kind,
         ingestion_state=ingestion_state,
@@ -319,10 +466,19 @@ def _publication_safe_source_url(value: str | None) -> str | None:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), ""))
 
 
-def _detail(notice: Notice, *, public_view: bool = False) -> NoticeDetail:
+def _detail(
+    notice: Notice,
+    *,
+    public_view: bool = False,
+    provider_authority: PpsNoticeAuthority | None = None,
+) -> NoticeDetail:
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     return NoticeDetail(
-        **_summary(notice, public_view=public_view).model_dump(),
+        **_summary(
+            notice,
+            public_view=public_view,
+            provider_authority=provider_authority,
+        ).model_dump(),
         id=notice.id,
         published_at=notice.published_at,
         category=notice.category,
@@ -400,18 +556,34 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     )
     decisions_total = session.scalar(select(func.count(UserDecision.id))) or 0
     evaluation_total = session.scalar(select(func.count(Evaluation.id))) or 0
+    authorities = _pps_authorities_by_notice_id(session, notices)
     eligibility_counts = {item.value: 0 for item in Eligibility}
     readiness_counts = {item: 0 for item in ("GREEN", "YELLOW", "RED", "GRAY")}
     active_recommendation_counts = {item: 0 for item in ("GO", "HOLD", "NO_GO")}
     lifecycle_counts = {"CLOSED": 0, "EXPIRED": 0}
     analyzed_ended_count = 0
+    cancelled_count = 0
+    visible_ended_count = 0
     for notice in notices:
         effective_status = _effective_notice_status(notice)
+        authority = authorities.get(notice.id)
+        provider_disposition, _event_kind, _changed_at = (
+            _safe_provider_authority_projection(
+                source_kind=_source_kind(notice),
+                authority=authority,
+            )
+        )
+        is_cancelled = provider_disposition == "CANCELLED"
         if effective_status in lifecycle_counts:
             lifecycle_counts[effective_status] += 1
-        latest = _latest_evaluation(notice)
+        latest = None if is_cancelled else _latest_evaluation(notice)
         if latest and effective_status in lifecycle_counts:
             analyzed_ended_count += 1
+        if is_cancelled:
+            cancelled_count += 1
+            visible_ended_count += 1
+        elif latest and effective_status in lifecycle_counts:
+            visible_ended_count += 1
         if latest:
             eligibility_counts[latest.eligibility] = eligibility_counts.get(latest.eligibility, 0) + 1
             readiness_counts[latest.readiness_status] = readiness_counts.get(latest.readiness_status, 0) + 1
@@ -434,12 +606,27 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "go_count": active_recommendation_counts["GO"],
         "ended_count": lifecycle_counts["CLOSED"] + lifecycle_counts["EXPIRED"],
         "analyzed_ended_count": analyzed_ended_count,
+        "cancelled_count": cancelled_count,
+        "visible_ended_count": visible_ended_count,
         "closed_count": lifecycle_counts["CLOSED"],
         "expired_count": lifecycle_counts["EXPIRED"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],
-        "deadline_soon": sum(1 for item in notices if now <= _comparable_utc(item.deadline) <= soon),
+        "deadline_soon": sum(
+            1
+            for item in notices
+            if _effective_notice_status(item) == "OPEN"
+            and not _projected_authority_is_cancelled(
+                item,
+                authorities.get(item.id),
+            )
+            and now <= _comparable_utc(item.deadline) <= soon
+        ),
         "recent_notices": [
-            _summary(item, public_view=public_read_allowed(request)).model_dump()
+            _summary(
+                item,
+                public_view=public_read_allowed(request),
+                provider_authority=authorities.get(item.id),
+            ).model_dump(mode="json")
             for item in notices[:10]
         ],
         "synthetic_data_warning": "SYN- 접두 데이터는 데모용이며 실제 성과 지표가 아닙니다.",
@@ -565,20 +752,39 @@ def list_notices(
                 user_keywords=parsed_keywords,
             )
         ]
+    authorities = _pps_authorities_by_notice_id(session, notices)
+
     if eligibility:
         notices = [
             notice
             for notice in notices
-            if (latest := _latest_evaluation(notice)) and latest.eligibility == eligibility
+            if not _projected_authority_is_cancelled(
+                notice,
+                authorities.get(notice.id),
+            )
+            and (latest := _latest_evaluation(notice))
+            and latest.eligibility == eligibility
         ]
     if requires_current_evaluation_filter:
-        notices = [notice for notice in notices if _latest_evaluation(notice) is not None]
+        notices = [
+            notice
+            for notice in notices
+            if not _projected_authority_is_cancelled(
+                notice,
+                authorities.get(notice.id),
+            )
+            and _latest_evaluation(notice) is not None
+        ]
 
     if not ranking_requested:
         if requires_current_evaluation_filter:
             notices = notices[offset : offset + limit]
         return [
-            _summary(notice, public_view=public_read_allowed(request))
+            _summary(
+                notice,
+                public_view=public_read_allowed(request),
+                provider_authority=authorities.get(notice.id),
+            )
             for notice in notices
         ]
 
@@ -610,6 +816,7 @@ def list_notices(
                     **_summary(
                         notice,
                         public_view=public_read_allowed(request),
+                        provider_authority=authorities.get(notice.id),
                     ).model_dump(),
                     "department_ranking": selected_ranking,
                     "top_department_rankings": department_views[
@@ -668,9 +875,14 @@ def create_notice(payload: NoticeCreate, session: DbSession) -> NoticeDetail:
 
 @router.get("/notices/{notice_key}", response_model=NoticeDetail)
 def get_notice(notice_key: str, request: Request, session: DbSession) -> NoticeDetail:
+    notice = _load_notice(session, notice_key)
+    provider_authority = _pps_authorities_by_notice_id(session, [notice]).get(
+        notice.id
+    )
     return _detail(
-        _load_notice(session, notice_key),
+        notice,
         public_view=public_read_allowed(request),
+        provider_authority=provider_authority,
     )
 
 
@@ -733,6 +945,11 @@ def create_company_fact(payload: CompanyFactCreate, session: DbSession) -> dict[
 @router.post("/notices/{notice_key}/evaluate", response_model=EvaluationOut, status_code=status.HTTP_201_CREATED)
 def run_evaluation(notice_key: str, payload: EvaluateRequest, session: DbSession) -> Evaluation:
     notice = _load_notice(session, notice_key)
+    if authoritative_pps_notice_is_cancelled(session, notice):
+        raise HTTPException(
+            status_code=409,
+            detail="조달청에서 취소된 공고이므로 새 평가를 실행할 수 없습니다.",
+        )
     versions = notice.versions
     if payload.version_no is not None:
         versions = [item for item in versions if item.version_no == payload.version_no]
@@ -777,6 +994,11 @@ def list_decisions(notice_key: str, session: DbSession) -> list[UserDecision]:
 )
 def create_decision(notice_key: str, payload: DecisionCreate, session: DbSession) -> UserDecision:
     notice = _load_notice(session, notice_key)
+    if authoritative_pps_notice_is_cancelled(session, notice):
+        raise HTTPException(
+            status_code=409,
+            detail="조달청에서 취소된 공고이므로 새 담당자 결정을 기록할 수 없습니다.",
+        )
     evaluation = None
     if payload.evaluation_id:
         evaluation = session.get(Evaluation, payload.evaluation_id)
@@ -2176,6 +2398,11 @@ def run_openai_extraction(
     """
 
     notice = _load_notice(session, notice_key)
+    if authoritative_pps_notice_is_cancelled(session, notice):
+        raise HTTPException(
+            status_code=409,
+            detail="조달청에서 취소된 공고이므로 새 문서 추출을 실행할 수 없습니다.",
+        )
     settings = request.app.state.settings
     if not settings.openai_api_key:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY가 서버에 설정되지 않았습니다.")
@@ -2214,6 +2441,16 @@ def run_openai_extraction(
         outcome = client.extract(
             document_text=payload.document_text,
             allowed_attachment_ids={payload.attachment_id},
+        )
+
+    # No database work has been staged yet. End the pre-provider read
+    # transaction so the lifecycle recheck observes a cancellation committed
+    # while the provider request was in flight (including SQLite tests).
+    session.rollback()
+    if authoritative_pps_notice_is_cancelled(session, notice):
+        raise HTTPException(
+            status_code=409,
+            detail="문서 추출 중 공고가 취소되어 결과를 저장하지 않았습니다.",
         )
 
     data = outcome.data.model_dump(mode="json") if outcome.data else None
@@ -2265,7 +2502,56 @@ def run_openai_extraction(
     return _extraction_run_out(notice_key, version, reused=False)
 
 
-def _default_teams_card(notice: Notice) -> dict[str, Any]:
+def _cancelled_teams_card(
+    notice: Notice,
+    authority: PpsNoticeAuthority,
+) -> dict[str, Any]:
+    changed_at = (
+        _comparable_utc(authority.provider_changed_at).isoformat()
+        if authority.provider_changed_at is not None
+        else "변경 시각 미제공"
+    )
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.5",
+        "body": [
+            {
+                "type": "TextBlock",
+                "text": "PAI LOOP · 취소 공고 알림",
+                "weight": "Bolder",
+                "size": "Medium",
+            },
+            {"type": "TextBlock", "text": notice.title, "wrap": True},
+            {
+                "type": "FactSet",
+                "facts": [
+                    {"title": "기관", "value": notice.agency or "-"},
+                    {"title": "공고번호", "value": notice.bid_notice_no},
+                    {"title": "현재 상태", "value": "취소 공고"},
+                    {"title": "취소 확인", "value": changed_at},
+                ],
+            },
+            {
+                "type": "TextBlock",
+                "text": "조달청 최신 권위 상태가 취소입니다. 과거 평가·준비도·추천·담당자 판단은 감사 이력으로만 보존하며 현재 행동 근거로 표시하지 않습니다.",
+                "wrap": True,
+                "isSubtle": True,
+            },
+        ],
+        # A cancelled notice is an audit event, not an actionable opportunity.
+        "actions": [],
+    }
+
+
+def _default_teams_card(
+    notice: Notice,
+    *,
+    provider_authority: PpsNoticeAuthority | None = None,
+) -> dict[str, Any]:
+    if _projected_authority_is_cancelled(notice, provider_authority):
+        assert provider_authority is not None
+        return _cancelled_teams_card(notice, provider_authority)
     evaluation = _latest_evaluation(notice)
     eligibility = evaluation.eligibility if evaluation else "분석 대기"
     readiness = evaluation.readiness_status if evaluation else "미산정"
@@ -2349,7 +2635,21 @@ def create_teams_mock_notification(
             if existing.notice_id != notice.id:
                 raise HTTPException(status_code=409, detail="correlation_id가 다른 공고에 사용되었습니다.")
             return _mock_notification_out(existing)
-    card = payload.card or _default_teams_card(notice)
+    if payload.card is not None:
+        # Caller-supplied cards remain inside the existing validated custom
+        # card boundary. Only server-derived current facts need lifecycle
+        # suppression here.
+        card = payload.card
+    else:
+        provider_authority = (
+            session.get(PpsNoticeAuthority, notice.bid_notice_no)
+            if _source_kind(notice) == "PPS"
+            else None
+        )
+        card = _default_teams_card(
+            notice,
+            provider_authority=provider_authority,
+        )
     if len(json.dumps(card, ensure_ascii=False).encode("utf-8")) > 28 * 1024:
         raise HTTPException(status_code=422, detail="Adaptive Card가 Teams 28KB 제한을 초과합니다.")
     notification = MockNotification(

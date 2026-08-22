@@ -12,7 +12,12 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from pai_loop.analysis_pipeline import AnalysisPipelineError
+import pai_loop.analysis_api as analysis_api
+from pai_loop.analysis_pipeline import (
+    AnalysisPipelineError,
+    AnalysisPipelineSourceError,
+    run_analysis_pipeline,
+)
 from pai_loop.analysis_api import (
     ANALYSIS_ENRICHMENT_BUDGET_SECONDS,
     ATTACHMENT_UNIT_WORST_CASE_SECONDS,
@@ -24,7 +29,17 @@ from pai_loop.integrations.openai_extraction import (
     OpenAIProviderUsage,
     aggregate_openai_attempts,
 )
-from pai_loop.models import AnalysisRun, IngestionJob, Notice, NoticeVersion
+from pai_loop.models import (
+    AnalysisRun,
+    Evaluation,
+    IngestionJob,
+    Notice,
+    NoticeVersion,
+    PpsNoticeAuthority,
+    RecommendationSnapshot,
+    RequirementResultSnapshot,
+    ScoreSnapshot,
+)
 from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
     PpsEnrichmentResult,
@@ -64,6 +79,250 @@ def _seed_public_notice(client: TestClient) -> None:
     with client.app.state.session_factory() as session:
         result = import_public_notice_seed(session)
     assert result.requirement_count == 23
+
+
+def _create_pps_notice_with_authority(
+    client: TestClient,
+    *,
+    notice_key: str,
+    bid_notice_no: str,
+    disposition: str,
+) -> str:
+    created = client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": bid_notice_no,
+            "title": "취소 분석 차단 회귀 공고",
+            "agency": "공공기관",
+            "deadline": "2026-08-30T09:00:00Z",
+            "status": "CLOSED" if disposition == "CANCELLED" else "OPEN",
+        },
+    )
+    assert created.status_code == 201, created.text
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == notice_key)
+        )
+        assert notice is not None
+        session.add(
+            PpsNoticeAuthority(
+                bid_notice_no=bid_notice_no,
+                revision_no="00",
+                event_kind=(
+                    "취소공고" if disposition == "CANCELLED" else "등록공고"
+                ),
+                disposition=disposition,
+                required_fields_complete=True,
+                direct_contract_signal=False,
+                published_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
+                provider_changed_at=datetime(2026, 8, 22, 1, tzinfo=timezone.utc),
+                deadline=(notice.deadline if disposition != "CANCELLED" else None),
+                authority_sha256=("c" if disposition == "CANCELLED" else "v")
+                * 64,
+            )
+        )
+        session.commit()
+        return notice.id
+
+
+def _analysis_write_counts(client: TestClient) -> dict[str, int]:
+    models = (
+        IngestionJob,
+        NoticeVersion,
+        Evaluation,
+        AnalysisRun,
+        RequirementResultSnapshot,
+        ScoreSnapshot,
+        RecommendationSnapshot,
+    )
+    with client.app.state.session_factory() as session:
+        return {
+            model.__tablename__: len(session.scalars(select(model.id)).all())
+            for model in models
+        }
+
+
+def test_cancelled_analysis_batch_fails_before_job_openai_or_analysis_writes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice_key = "PPS-CANCELLED-BATCH-PREFLIGHT"
+    notice_id = _create_pps_notice_with_authority(
+        client,
+        notice_key=notice_key,
+        bid_notice_no="R26BK-CANCELLED-BATCH-PREFLIGHT",
+        disposition="CANCELLED",
+    )
+    before = _analysis_write_counts(client)
+    enrich_calls = pipeline_calls = 0
+
+    def _forbidden_enrichment(*_args: object, **_kwargs: object) -> None:
+        nonlocal enrich_calls
+        enrich_calls += 1
+        raise AssertionError("cancelled batch must not enrich")
+
+    def _forbidden_pipeline(*_args: object, **_kwargs: object) -> None:
+        nonlocal pipeline_calls
+        pipeline_calls += 1
+        raise AssertionError("cancelled batch must not analyse")
+
+    monkeypatch.setattr(analysis_api, "_enrich_one_notice", _forbidden_enrichment)
+    monkeypatch.setattr(analysis_api, "run_analysis_pipeline", _forbidden_pipeline)
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "PPS_NOTICE_CANCELLED",
+        "message": "조달청에서 취소된 공고가 포함되어 분석 배치를 시작하지 않았습니다.",
+        "notice_keys": [notice_key],
+    }
+    assert enrich_calls == pipeline_calls == 0
+    assert _analysis_write_counts(client) == before
+
+    # Future/internal callers cannot bypass the HTTP preflight.
+    with client.app.state.session_factory() as session:
+        with pytest.raises(
+            AnalysisPipelineSourceError,
+            match="authoritative PPS notice is cancelled",
+        ):
+            run_analysis_pipeline(session, notice_id=notice_id)
+    assert _analysis_write_counts(client) == before
+
+
+def test_batch_cancellation_after_job_reservation_stops_before_enrichment(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice_key = "PPS-CANCELLED-AFTER-RESERVATION"
+    _create_pps_notice_with_authority(
+        client,
+        notice_key=notice_key,
+        bid_notice_no="R26BK-CANCELLED-AFTER-RESERVATION",
+        disposition="VALID",
+    )
+    original_create_batch_job = analysis_api._create_batch_job
+    enrich_calls = pipeline_calls = 0
+
+    def _reserve_then_cancel(request: object, payload: object):
+        result = original_create_batch_job(request, payload)
+        with client.app.state.session_factory() as session:
+            authority = session.get(
+                PpsNoticeAuthority,
+                "R26BK-CANCELLED-AFTER-RESERVATION",
+            )
+            assert authority is not None
+            authority.disposition = "CANCELLED"
+            authority.event_kind = "취소공고"
+            authority.provider_changed_at = datetime(
+                2026, 8, 22, 2, tzinfo=timezone.utc
+            )
+            authority.authority_sha256 = "r" * 64
+            session.commit()
+        return result
+
+    def _forbidden_enrichment(*_args: object, **_kwargs: object) -> None:
+        nonlocal enrich_calls
+        enrich_calls += 1
+        raise AssertionError("post-reservation cancellation must not enrich")
+
+    def _forbidden_pipeline(*_args: object, **_kwargs: object) -> None:
+        nonlocal pipeline_calls
+        pipeline_calls += 1
+        raise AssertionError("post-reservation cancellation must not analyse")
+
+    monkeypatch.setattr(analysis_api, "_create_batch_job", _reserve_then_cancel)
+    monkeypatch.setattr(analysis_api, "_enrich_one_notice", _forbidden_enrichment)
+    monkeypatch.setattr(analysis_api, "run_analysis_pipeline", _forbidden_pipeline)
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["openai_calls"] == 0
+    assert body["failed"] == 1
+    assert body["results"][0]["document_status"] == "NOTICE_CANCELLED"
+    assert body["enrichment"]["failed"] == 1
+    assert enrich_calls == pipeline_calls == 0
+    counts = _analysis_write_counts(client)
+    assert counts["ingestion_jobs"] == 1
+    assert all(
+        count == 0
+        for table, count in counts.items()
+        if table != "ingestion_jobs"
+    )
+
+
+def test_batch_cancellation_after_enrichment_stops_before_pipeline_writes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice_key = "PPS-CANCELLED-AFTER-ENRICHMENT"
+    _create_pps_notice_with_authority(
+        client,
+        notice_key=notice_key,
+        bid_notice_no="R26BK-CANCELLED-AFTER-ENRICHMENT",
+        disposition="VALID",
+    )
+    pipeline_calls = 0
+
+    def _enrich_then_cancel(*_args: object, **_kwargs: object) -> PpsEnrichmentResult:
+        with client.app.state.session_factory() as session:
+            authority = session.get(
+                PpsNoticeAuthority,
+                "R26BK-CANCELLED-AFTER-ENRICHMENT",
+            )
+            assert authority is not None
+            authority.disposition = "CANCELLED"
+            authority.event_kind = "취소공고"
+            authority.provider_changed_at = datetime(
+                2026, 8, 22, 3, tzinfo=timezone.utc
+            )
+            authority.authority_sha256 = "a" * 64
+            session.commit()
+        return PpsEnrichmentResult(status="COMPLETED")
+
+    def _forbidden_pipeline(*_args: object, **_kwargs: object) -> None:
+        nonlocal pipeline_calls
+        pipeline_calls += 1
+        raise AssertionError("post-enrichment cancellation must not analyse")
+
+    monkeypatch.setattr(analysis_api, "_enrich_one_notice", _enrich_then_cancel)
+    monkeypatch.setattr(analysis_api, "run_analysis_pipeline", _forbidden_pipeline)
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["openai_calls"] == 0
+    assert body["failed"] == 1
+    assert body["results"][0]["document_status"] == "NOTICE_CANCELLED"
+    assert pipeline_calls == 0
+    counts = _analysis_write_counts(client)
+    assert counts["ingestion_jobs"] == 1
+    assert all(
+        count == 0
+        for table, count in counts.items()
+        if table != "ingestion_jobs"
+    )
 
 
 def _run_segment(client: TestClient, plan: dict) -> None:

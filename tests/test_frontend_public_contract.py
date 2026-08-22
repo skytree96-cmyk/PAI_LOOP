@@ -60,9 +60,10 @@ def test_notice_search_contract_uses_server_query_and_open_status() -> None:
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'params.set("q", query)' in request_body
-    assert 'statusScope === "ANALYZED_ENDED"' in request_body
-    assert 'params.set("status", "ENDED")' in request_body
-    assert 'params.set("analysis_state", "EVALUATED")' in request_body
+    assert 'params.set("status", statusScope)' in request_body
+    assert '"ENDED"].includes(statusScope)' in request_body
+    assert "ANALYZED_ENDED" not in request_body
+    assert 'params.set("analysis_state", "EVALUATED")' not in request_body
     assert "noticeStatusScopeForView(state.currentView)" in load_body
     assert "requestedStatusScope !== noticeStatusScopeForView(state.currentView)" in load_body
     assert "noticeStatusScopeForView(state.currentView)" in request_body
@@ -120,16 +121,19 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'state.currentView === "urgent"' in filter_body
     assert "URGENT_DEADLINE_DAYS" in filter_body
     assert 'state.currentView === "ended"' in filter_body
-    assert "isEndedNotice(notice)" in filter_body
+    assert "isVisibleEndedNotice(notice)" in filter_body
     assert "urgentCount: derived.urgentCount" in dashboard_body
     assert "goCount: derived.goCount" in dashboard_body
     assert "endedCount:" in dashboard_body
+    assert "visible_ended_count" in dashboard_body
+    assert "cancelled_count" in dashboard_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
     assert 'noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO"' in derived_body
-    assert 'isEndedNotice(notice) && notice.analysisState === "EVALUATED"' in derived_body
+    assert "notices.filter(isVisibleEndedNotice)" in derived_body
+    assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
-    assert 'ended: ["분석된 종료 공고", "분석 결과가 있는 마감·종료 공고"]' in view_body
+    assert 'ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
@@ -145,8 +149,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260822-quant-auto1"' in html
-    assert 'src="./app.js?v=20260822-quant-auto1"' in html
+    assert 'href="./styles.css?v=20260822-cancel1"' in html
+    assert 'src="./app.js?v=20260822-cancel1"' in html
 
 
 def test_quantitative_ui_separates_source_validation_from_activation() -> None:
@@ -176,19 +180,112 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     scope_body = _function_body(source, "noticeStatusScopeForView", "scheduleNoticeSearch")
+    normalize_body = _function_body(source, "normalizeNotice", "mergeRequirementsAndAtomics")
     lifecycle_body = _function_body(source, "noticeLifecycleStatus", "isEndedNotice")
+    ended_body = _function_body(source, "isVisibleEndedNotice", "noticeLifecycleLabel")
+    label_body = _function_body(source, "noticeLifecycleLabel", "noticeLifecycleBadge")
     badge_body = _function_body(source, "noticeLifecycleBadge", "recommendationPill")
     detail_body = _function_body(source, "renderDetail", "detailFact")
 
     assert 'view === "ended"' in scope_body
-    assert 'return "ANALYZED_ENDED"' in scope_body
+    assert 'return "ENDED"' in scope_body
+    assert "provider_disposition" in normalize_body
+    assert "provider_event_kind" in normalize_body
+    assert "provider_changed_at" in normalize_body
+    assert "조달청 취소 공고로 확인되어 현재 입찰 검토 대상에서 제외되었습니다" in source
+    assert 'providerDisposition === "CANCELLED"' in lifecycle_body
+    assert 'return "CANCELLED"' in lifecycle_body
     assert 'status === "CLOSED"' in lifecycle_body
     assert 'status === "EXPIRED"' in lifecycle_body
     assert 'deadline.getTime() < Date.now()' in lifecycle_body
+    assert "isCancelledNotice(notice)" in ended_body
+    assert 'notice.analysisState === "EVALUATED"' in ended_body
+    assert 'lifecycle === "CANCELLED"' in label_body
+    assert 'return "취소"' in label_body
+    assert "notice-lifecycle-badge--cancelled" in badge_body
+    assert ".notice-lifecycle-badge--cancelled" in styles
+    assert ".detail-tag--cancelled" in styles
     assert "notice-lifecycle-badge" in badge_body
     assert "noticeLifecycleLabel(notice)" in detail_body
+    assert "isCancelledNotice(notice)" in detail_body
     assert 'id="kpiEnded"' in html
+    assert "분석된 종료 · 전체 취소 공고" in html
     assert "grid-template-columns: repeat(5, minmax(0, 1fr))" in styles
+
+
+def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    preview_body = _function_body(
+        source, "focusDecisionDockFromPreview", "renderExistingDecision"
+    )
+    existing_body = _function_body(source, "renderExistingDecision", "selectTab")
+    toggle_body = _function_body(source, "toggleCommentField", "updateDecisionButton")
+    button_body = _function_body(source, "updateDecisionButton", "saveDecision")
+    save_body = _function_body(source, "saveDecision", "renderPipelineIntoExisting")
+    teams_body = _function_body(source, "renderTeamsPreview", "buildAdaptiveCardPayload")
+    card_body = _function_body(source, "buildAdaptiveCardPayload", "recordTeamsMockSend")
+
+    assert "if (isCancelledNotice(notice))" in preview_body
+    assert preview_body.index("if (isCancelledNotice(notice))") < preview_body.index(
+        "if (!state.writeControlsEnabled)"
+    )
+    assert "const cancelled = isCancelledNotice(notice)" in existing_body
+    assert "input.disabled = cancelled ||" in existing_body
+    assert "els.toggleCommentButton.disabled = cancelled ||" in existing_body
+    assert "els.decisionComment.disabled = cancelled ||" in existing_body
+    assert "과거 판단 기록(참고용)" in existing_body
+    assert "담당자 판단을 새로 저장할 수 없습니다" in existing_body
+    assert "if (isCancelledNotice(state.selectedNotice)) return" in toggle_body
+    assert "const cancelled = isCancelledNotice(state.selectedNotice)" in button_body
+    assert "els.saveDecisionButton.disabled = cancelled ||" in button_body
+    assert '"취소 공고 · 저장 불가"' in button_body
+    assert "if (isCancelledNotice(notice))" in save_body
+    assert save_body.index("if (isCancelledNotice(notice))") < save_body.index(
+        "if (!state.writeControlsEnabled)"
+    )
+    assert "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다" in save_body
+    assert "els.teamsPreviewDecisionButton.disabled = cancelled ||" in teams_body
+    assert "...(cancelled ? [] : [" in card_body
+    assert 'action: "OPEN_DECISION"' in card_body
+
+
+def test_cancelled_notice_presentation_never_promotes_historical_go_as_current() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    status_body = _function_body(source, "analysisStatusPill", "analysisRecommendationPill")
+    recommendation_body = _function_body(
+        source, "analysisRecommendationPill", "sourceKindBadge"
+    )
+    status_label_body = _function_body(
+        source, "analysisStatusLabel", "analysisRecommendationLabel"
+    )
+    recommendation_label_body = _function_body(
+        source, "analysisRecommendationLabel", "formatRelativeDateTime"
+    )
+    detail_body = _function_body(source, "renderDetail", "detailFact")
+    teams_body = _function_body(source, "renderTeamsPreview", "buildAdaptiveCardPayload")
+    card_body = _function_body(source, "buildAdaptiveCardPayload", "recordTeamsMockSend")
+
+    assert status_body.index("isCancelledNotice(notice)") < status_body.index(
+        "isDocumentQualityReview(notice)"
+    )
+    assert "취소 공고" in status_body
+    assert recommendation_body.index(
+        "isCancelledNotice(notice)"
+    ) < recommendation_body.index("isDocumentQualityReview(notice)")
+    assert "취소 · 추천 비활성" in recommendation_body
+    assert "if (isCancelledNotice(notice)) return \"취소 공고\"" in status_label_body
+    assert (
+        "if (isCancelledNotice(notice)) return \"취소 · 추천 비활성\""
+        in recommendation_label_body
+    )
+    assert 'cancelled ? "취소 공고"' in detail_body
+    assert 'cancelled ? "과거 분석 참고"' in detail_body
+    assert "취소 공고 · 현재 검토 제외" in teams_body
+    assert "analysisRecommendationLabel(notice)" in teams_body
+    assert "취소 공고 · 현재 검토 제외" in card_body
+    assert "analysisRecommendationLabel(notice)" in card_body
+    assert 'cancelled ? "PAI LOOP · 취소 공고 알림"' in card_body
+    assert 'cancelled ? "과거 분석 참고"' in card_body
 
 
 def test_manual_analysis_polling_covers_ten_attachment_bounded_continuations() -> None:

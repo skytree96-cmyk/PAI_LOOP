@@ -23,6 +23,7 @@ from .daily_analysis_scope import (
 )
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
+from .notice_freshness import authoritative_pps_cancelled_notice_keys
 from .pps_enrichment import (
     ATTACHMENT_TIMEOUT_GUARD_SECONDS,
     DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
@@ -2106,6 +2107,30 @@ def run_notice_analysis_batch(
     request: Request,
 ) -> AnalysisBatchResponse:
     """Boundedly enrich missing PPS documents, then persist analysis snapshots."""
+    with request.app.state.session_factory() as session:
+        requested_notices = list(
+            session.scalars(
+                select(Notice).where(Notice.notice_key.in_(payload.notice_keys))
+            ).all()
+        )
+        cancelled_keys = authoritative_pps_cancelled_notice_keys(
+            session,
+            requested_notices,
+        )
+    if cancelled_keys:
+        ordered_cancelled_keys = [
+            notice_key
+            for notice_key in payload.notice_keys
+            if notice_key in cancelled_keys
+        ]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PPS_NOTICE_CANCELLED",
+                "message": "조달청에서 취소된 공고가 포함되어 분석 배치를 시작하지 않았습니다.",
+                "notice_keys": ordered_cancelled_keys,
+            },
+        )
     job_id, stored_response = _create_batch_job(request, payload)
     if stored_response is not None:
         return stored_response
@@ -2160,8 +2185,14 @@ def _execute_notice_analysis_batch(
             # Workflow 10 validates attempted == completed+skipped+failed.
             enrichment_attempted += 1
         with request.app.state.session_factory() as session:
-            notice_id = session.scalar(select(Notice.id).where(Notice.notice_key == notice_key))
-            session.rollback()
+            notice = session.scalar(
+                select(Notice).where(Notice.notice_key == notice_key)
+            )
+            notice_id = notice.id if notice is not None else None
+            notice_cancelled = bool(
+                notice is not None
+                and authoritative_pps_cancelled_notice_keys(session, [notice])
+            )
         if notice_id is None:
             rows.append(
                 AnalysisBatchItemOut(
@@ -2178,6 +2209,22 @@ def _execute_notice_analysis_batch(
                 enrichment_skipped += 1
                 enrichment_warnings.append("NOTICE_NOT_FOUND")
             continue
+        if notice_cancelled:
+            rows.append(
+                AnalysisBatchItemOut(
+                    notice_key=notice_key,
+                    status="FAILED",
+                    document_status="NOTICE_CANCELLED",
+                    evaluation_status="NOT_CREATED",
+                    snapshot_status="NOT_CREATED",
+                    warnings=["PPS_NOTICE_CANCELLED"],
+                )
+            )
+            failed += 1
+            if enrichment_targeted:
+                enrichment_failed += 1
+                enrichment_warnings.append("PPS_NOTICE_CANCELLED")
+            continue
 
         enrichment_result: PpsEnrichmentResult | None = None
         should_enrich = (
@@ -2192,6 +2239,33 @@ def _execute_notice_analysis_batch(
                 warnings=["ENRICHMENT_TOTAL_TIMEOUT"],
             )
         elif should_enrich:
+            # The provider may publish a cancellation after the batch job was
+            # reserved or after the first per-item lookup. Refresh immediately
+            # before the potentially billable enrichment boundary.
+            with request.app.state.session_factory() as session:
+                notice_before_enrichment = session.get(Notice, notice_id)
+                cancelled_before_enrichment = bool(
+                    notice_before_enrichment is not None
+                    and authoritative_pps_cancelled_notice_keys(
+                        session,
+                        [notice_before_enrichment],
+                    )
+                )
+            if cancelled_before_enrichment:
+                rows.append(
+                    AnalysisBatchItemOut(
+                        notice_key=notice_key,
+                        status="FAILED",
+                        document_status="NOTICE_CANCELLED",
+                        evaluation_status="NOT_CREATED",
+                        snapshot_status="NOT_CREATED",
+                        warnings=["PPS_NOTICE_CANCELLED"],
+                    )
+                )
+                failed += 1
+                enrichment_failed += 1
+                enrichment_warnings.append("PPS_NOTICE_CANCELLED")
+                continue
             try:
                 enrichment_result = _enrich_one_notice(
                     request,
@@ -2284,6 +2358,32 @@ def _execute_notice_analysis_batch(
             continue
 
         with request.app.state.session_factory() as session:
+            notice_for_analysis = session.get(Notice, notice_id)
+            cancelled_before_analysis = bool(
+                notice_for_analysis is not None
+                and authoritative_pps_cancelled_notice_keys(
+                    session,
+                    [notice_for_analysis],
+                )
+            )
+            # run_analysis_pipeline owns its transaction and rejects a Session
+            # with an active read transaction.
+            session.rollback()
+            if cancelled_before_analysis:
+                rows.append(
+                    AnalysisBatchItemOut(
+                        notice_key=notice_key,
+                        status="FAILED",
+                        document_status="NOTICE_CANCELLED",
+                        evaluation_status="NOT_CREATED",
+                        snapshot_status="NOT_CREATED",
+                        warnings=sorted(
+                            set(["PPS_NOTICE_CANCELLED", *item_enrichment_warnings])
+                        ),
+                    )
+                )
+                failed += 1
+                continue
             try:
                 result = run_analysis_pipeline(session, notice_id=notice_id)
             except AnalysisPipelineError as exc:

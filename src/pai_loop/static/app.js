@@ -510,10 +510,7 @@
     params.set("department_id", departmentId);
     if (searchKeywords) params.set("search_keywords", searchKeywords);
     if (query) params.set("q", query);
-    if (statusScope === "ANALYZED_ENDED") {
-      params.set("status", "ENDED");
-      params.set("analysis_state", "EVALUATED");
-    } else if (["OPEN", "CLOSED", "EXPIRED", "ENDED"].includes(statusScope)) {
+    if (["OPEN", "CLOSED", "EXPIRED", "ENDED"].includes(statusScope)) {
       params.set("status", statusScope);
     }
     params.set("limit", String(limit));
@@ -530,7 +527,7 @@
   }
 
   function noticeStatusScopeForView(view) {
-    if (view === "ended") return "ANALYZED_ENDED";
+    if (view === "ended") return "ENDED";
     return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
   }
 
@@ -1068,6 +1065,9 @@
       decidedAt: firstValue(latestDecision.createdAt, source.decided_at, source.decision_at, null),
       resultStatus: stringValue(firstValue(source.result_status, source.award_result, source.outcome), ""),
       noticeStatus: stringValue(firstValue(source.status, source.notice_status), ""),
+      providerDisposition: stringValue(firstValue(source.provider_disposition, source.providerDisposition), "").toUpperCase(),
+      providerEventKind: stringValue(firstValue(source.provider_event_kind, source.providerEventKind), ""),
+      providerChangedAt: firstValue(source.provider_changed_at, source.providerChangedAt, null),
       isNew: booleanValue(source.is_new) ?? (isRecent(collectedAt, 48) || String(source.status || "").toUpperCase() === "OPEN"),
       summary: stringValue(firstValue(source.summary, source.ai_summary, source.brief), buildEvaluationSummary(evaluation, explanation)),
       category,
@@ -1413,8 +1413,9 @@
       // deadline, so use the loaded notice projection for both counts.
       goCount: derived.goCount,
       urgentCount: derived.urgentCount,
-      endedCount: numberOrNull(firstValue(kpis.analyzed_ended_count, kpis.analyzedEndedCount)) ?? derived.endedCount,
-      undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? Math.max((numberOrNull(totals.notices) ?? notices.length) - (numberOrNull(totals.decisions) ?? 0), 0),
+      cancelledCount: numberOrNull(firstValue(kpis.cancelled_count, kpis.cancelledCount)) ?? derived.cancelledCount,
+      endedCount: numberOrNull(firstValue(kpis.visible_ended_count, kpis.visibleEndedCount, kpis.analyzed_ended_count, kpis.analyzedEndedCount)) ?? derived.endedCount,
+      undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
       totalDecisions: numberOrNull(totals.decisions) ?? notices.filter((notice) => notice.decision).length,
@@ -1437,8 +1438,9 @@
         const days = daysUntil(notice.deadline);
         return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
       }).length,
-      endedCount: notices.filter((notice) => isEndedNotice(notice) && notice.analysisState === "EVALUATED").length,
-      undecidedCount: notices.filter((notice) => !notice.decision).length,
+      cancelledCount: notices.filter(isCancelledNotice).length,
+      endedCount: notices.filter(isVisibleEndedNotice).length,
+      undecidedCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length,
       lastSync: new Date().toISOString(),
       systemStatus: "online",
     };
@@ -1509,7 +1511,7 @@
         const days = daysUntil(notice.deadline);
         if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
       }
-      if (state.currentView === "ended" && (!isEndedNotice(notice) || notice.analysisState !== "EVALUATED")) return false;
+      if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
       if (state.currentView === "undecided" && notice.decision) return false;
       if (state.currentView === "closed" && !notice.resultStatus) return false;
       if (eligibility !== "all" && notice.eligibilityStatus !== eligibility) return false;
@@ -1795,7 +1797,7 @@
       review: ["자격 검토", "원문 품질 보완과 구분된 자격 검토 공고"],
       go: ["GO 후보", "GO 추천 공고"],
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
-      ended: ["분석된 종료 공고", "분석 결과가 있는 마감·종료 공고"],
+      ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
       closed: ["결과 학습", "결과가 확인된 공고"],
       performance: ["회사 실적", "회사 수행 실적"],
@@ -2010,6 +2012,7 @@
     const requirements = notice.requirements;
     const evidence = notice.evidence;
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
     const qualityReview = isDocumentQualityReview(notice);
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
@@ -2021,7 +2024,7 @@
     els.detailTags.innerHTML = [
       `<span class="detail-tag">${escapeHtml(notice.category)}</span>`,
       `<span class="detail-tag">${escapeHtml(notice.region)}</span>`,
-      isEndedNotice(notice) ? `<span class="detail-tag detail-tag--ended">${escapeHtml(noticeLifecycleLabel(notice))}</span>` : "",
+      isEndedNotice(notice) ? `<span class="detail-tag detail-tag--ended ${isCancelledNotice(notice) ? "detail-tag--cancelled" : ""}">${escapeHtml(noticeLifecycleLabel(notice))}</span>` : "",
       deadline.urgent ? `<span class="detail-tag detail-tag--urgent">${escapeHtml(deadline.relative)}</span>` : "",
     ].join("");
     els.detailFacts.innerHTML = [
@@ -2030,12 +2033,14 @@
       detailFact("계약방식", notice.method),
     ].join("");
     els.decisionSummary.innerHTML = [
-      summaryMetric("참가 자격", analyzed ? analysisStatusLabel(notice) : "미분석", analyzed && !isDocumentQualityReview(notice) ? "" : "summary-metric--pending"),
-      summaryMetric("준비도 / 증빙", qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}` : "미산정", analyzed && !qualityReview ? "" : "summary-metric--pending"),
-      summaryMetric("AI 추천", analysisRecommendationLabel(notice), analyzed && !isDocumentQualityReview(notice) ? "summary-metric--recommendation" : "summary-metric--pending"),
+      summaryMetric("참가 자격", cancelled ? "취소 공고" : analyzed ? analysisStatusLabel(notice) : "미분석", cancelled || !analyzed || isDocumentQualityReview(notice) ? "summary-metric--pending" : ""),
+      summaryMetric("준비도 / 증빙", cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}` : "미산정", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
+      summaryMetric("AI 추천", analysisRecommendationLabel(notice), cancelled || !analyzed || isDocumentQualityReview(notice) ? "summary-metric--pending" : "summary-metric--recommendation"),
     ].join("");
     els.analysisPipeline.innerHTML = renderPipeline(notice);
-    els.detailSummary.textContent = qualityReview
+    els.detailSummary.textContent = cancelled
+      ? notice.analysisReason || "취소 공고로 현재 입찰 검토와 담당자 판단 대상에서 제외되었습니다."
+      : qualityReview
       ? notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다."
       : analyzed ? notice.summary : notice.analysisReason;
     els.briefEvidenceLabel.innerHTML = qualityReview
@@ -2397,6 +2402,11 @@
   }
 
   function renderActions(notice) {
+    if (isCancelledNotice(notice)) {
+      els.actionCard.hidden = true;
+      els.actionList.innerHTML = "";
+      return;
+    }
     let actions = notice.actions.slice();
     if (!actions.length) {
       actions = notice.requirements
@@ -2784,23 +2794,29 @@
 
   function renderTeamsPreview(notice) {
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
     const qualityReview = isDocumentQualityReview(notice);
     const deadline = deadlineInfo(notice.deadline);
     els.teamsMockSource.textContent = sourceKindLabel(notice, true);
     els.teamsMockTitle.textContent = notice.title;
     els.teamsMockAgency.textContent = notice.agency;
-    els.teamsMockStatus.textContent = analyzed
+    els.teamsMockStatus.textContent = cancelled
+      ? "취소 공고 · 현재 검토 제외"
+      : analyzed
       ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[notice.eligibilityStatus]}`
       : notice.analysisState === "FAILED" ? "분석 오류 · 재처리 필요" : "수집 완료 · 분석 대기";
     els.teamsMockDeadline.textContent = `${deadline.relative} · ${deadline.date}`;
-    els.teamsMockReason.textContent = analyzed
+    els.teamsMockReason.textContent = cancelled
+      ? notice.analysisReason || "취소 공고로 현재 추천과 담당자 판단을 제공하지 않습니다."
+      : analyzed
       ? qualityReview
         ? truncateText(notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다.", 180)
         : truncateText(notice.summary, 180)
       : "아직 결정론적 평가가 실행되지 않았습니다. 준비도·리스크·추천값을 임의로 생성하지 않고 분석 대기 상태만 알립니다.";
-    els.teamsMockReadiness.textContent = qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정";
-    els.teamsMockRisk.textContent = qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정";
+    els.teamsMockReadiness.textContent = cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정";
+    els.teamsMockRisk.textContent = cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정";
     els.teamsMockRecommendation.textContent = analysisRecommendationLabel(notice);
+    els.teamsPreviewDecisionButton.disabled = cancelled || !state.writeControlsEnabled;
     els.teamsMockJson.textContent = JSON.stringify(buildAdaptiveCardPayload(notice), null, 2);
     els.teamsMockSendButton.disabled = !state.writeControlsEnabled || Boolean(state.teamsLogMeta[notice.noticeKey]?.sending);
     renderTeamsMockLogs(notice.noticeKey);
@@ -2808,6 +2824,7 @@
 
   function buildAdaptiveCardPayload(notice) {
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
     const qualityReview = isDocumentQualityReview(notice);
     const deadline = deadlineInfo(notice.deadline);
     return {
@@ -2818,7 +2835,7 @@
       body: [
         {
           type: "TextBlock",
-          text: "PAI LOOP · 새 입찰 검토 알림",
+          text: cancelled ? "PAI LOOP · 취소 공고 알림" : "PAI LOOP · 새 입찰 검토 알림",
           weight: "Bolder",
           color: "Accent",
           size: "Medium",
@@ -2839,16 +2856,18 @@
         {
           type: "FactSet",
           facts: [
-            { title: "분석 상태", value: analyzed ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[notice.eligibilityStatus]}` : "수집 완료 · 분석 대기" },
+            { title: "분석 상태", value: cancelled ? "취소 공고 · 현재 검토 제외" : analyzed ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[notice.eligibilityStatus]}` : "수집 완료 · 분석 대기" },
             { title: "마감", value: `${deadline.relative} · ${deadline.date}` },
-            { title: "준비도", value: qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정" },
-            { title: "리스크", value: qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정" },
+            { title: "준비도", value: cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정" },
+            { title: "리스크", value: cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정" },
             { title: "추천", value: analysisRecommendationLabel(notice) },
           ],
         },
         {
           type: "TextBlock",
-          text: analyzed
+          text: cancelled
+            ? notice.analysisReason || "취소 공고로 현재 추천과 담당자 판단을 제공하지 않습니다."
+            : analyzed
             ? qualityReview
               ? truncateText(notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다.", 240)
               : truncateText(notice.summary, 240)
@@ -2859,7 +2878,9 @@
       ],
       actions: [
         { type: "Action.Submit", title: "근거 상세보기", data: { action: "OPEN_NOTICE", notice_key: notice.noticeKey } },
-        { type: "Action.Submit", title: "담당자 판단", data: { action: "OPEN_DECISION", notice_key: notice.noticeKey } },
+        ...(cancelled ? [] : [
+          { type: "Action.Submit", title: "담당자 판단", data: { action: "OPEN_DECISION", notice_key: notice.noticeKey } },
+        ]),
       ],
     };
   }
@@ -3058,6 +3079,10 @@
   function focusDecisionDockFromPreview() {
     const notice = state.selectedNotice;
     if (!notice) return;
+    if (isCancelledNotice(notice)) {
+      showToast("취소 공고입니다", "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다.", "warning");
+      return;
+    }
     if (!state.writeControlsEnabled) {
       showToast("읽기 전용 화면입니다", "담당자 판단은 사내 로그인 환경에서만 저장할 수 있습니다.", "warning");
       return;
@@ -3073,15 +3098,23 @@
 
   function renderExistingDecision(notice) {
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
     els.decisionInputs.forEach((input) => {
       input.checked = notice.decision === input.value || (notice.decision === "CONDITIONAL_GO" && input.value === "HOLD");
-      input.disabled = !analyzed || !state.writeControlsEnabled;
+      input.disabled = cancelled || !analyzed || !state.writeControlsEnabled;
     });
     els.decisionComment.value = notice.decisionComment;
     els.commentCount.textContent = String(notice.decisionComment.length);
     els.commentField.hidden = !notice.decisionComment;
     els.toggleCommentButton.setAttribute("aria-expanded", String(Boolean(notice.decisionComment)));
-    if (!analyzed) {
+    if (cancelled) {
+      const meta = notice.decision
+        ? [DECISION_LABELS[notice.decision] || notice.decision, notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean)
+        : [];
+      els.decisionExisting.textContent = meta.length
+        ? `취소 공고 · 과거 판단 기록(참고용): ${meta.join(" · ")}`
+        : "취소 공고 · 담당자 판단을 새로 저장할 수 없습니다.";
+    } else if (!analyzed) {
       els.decisionExisting.textContent = "분석 완료 후 담당자 판단을 기록할 수 있습니다.";
     } else if (notice.decision) {
       const meta = [DECISION_LABELS[notice.decision] || notice.decision, notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean);
@@ -3089,8 +3122,8 @@
     } else {
       els.decisionExisting.textContent = "아직 결정되지 않았습니다.";
     }
-    els.toggleCommentButton.disabled = !analyzed || !state.writeControlsEnabled;
-    els.decisionComment.disabled = !state.writeControlsEnabled;
+    els.toggleCommentButton.disabled = cancelled || !analyzed || !state.writeControlsEnabled;
+    els.decisionComment.disabled = cancelled || !state.writeControlsEnabled;
     updateDecisionButton();
   }
 
@@ -3163,6 +3196,7 @@
   }
 
   function toggleCommentField() {
+    if (isCancelledNotice(state.selectedNotice)) return;
     const willOpen = els.commentField.hidden;
     els.commentField.hidden = !willOpen;
     els.toggleCommentButton.setAttribute("aria-expanded", String(willOpen));
@@ -3172,21 +3206,29 @@
   function updateDecisionButton() {
     const selected = els.decisionInputs.some((input) => input.checked);
     const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
-    els.saveDecisionButton.disabled = !state.writeControlsEnabled || !selected || !state.selectedNotice || !analyzed;
-    els.saveDecisionButton.textContent = !state.writeControlsEnabled
+    const cancelled = isCancelledNotice(state.selectedNotice);
+    els.saveDecisionButton.disabled = cancelled || !state.writeControlsEnabled || !selected || !state.selectedNotice || !analyzed;
+    els.saveDecisionButton.textContent = cancelled
+      ? "취소 공고 · 저장 불가"
+      : !state.writeControlsEnabled
       ? "사내 로그인 후 저장 가능"
       : analyzed ? "판단 저장" : "분석 완료 후 저장 가능";
   }
 
   async function saveDecision(event) {
     event.preventDefault();
+    const notice = state.selectedNotice;
+    if (!notice) return;
+    if (isCancelledNotice(notice)) {
+      showToast("취소 공고입니다", "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다.", "warning");
+      return;
+    }
     if (!state.writeControlsEnabled) {
       showToast("읽기 전용 화면입니다", "담당자 판단은 사내 로그인 환경에서만 저장할 수 있습니다.", "warning");
       return;
     }
-    const notice = state.selectedNotice;
     const decision = els.decisionInputs.find((input) => input.checked)?.value;
-    if (!notice || !decision) return;
+    if (!decision) return;
     if (notice.analysisState !== "EVALUATED") {
       showToast("아직 분석 전입니다", "결정론적 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
       return;
@@ -3402,6 +3444,7 @@
   }
 
   function analysisStatusPill(notice) {
+    if (isCancelledNotice(notice)) return '<span class="status-pill status-pill--pending" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
     if (isDocumentQualityReview(notice)) return '<span class="status-pill status-pill--pending" title="자격 REVIEW가 아니라 원문 근거 검증 보완 상태입니다">근거 보완</span>';
     if (notice.analysisState === "EVALUATED") return statusPill(notice.eligibilityStatus);
     if (notice.analysisState === "FAILED") return '<span class="status-pill status-pill--fail">분석 오류</span>';
@@ -3409,6 +3452,7 @@
   }
 
   function analysisRecommendationPill(notice) {
+    if (isCancelledNotice(notice)) return '<span class="recommendation-pill recommendation-pill--pending" title="취소 공고로 과거 추천을 현재 판단에 사용하지 않습니다">취소 · 추천 비활성</span>';
     if (isDocumentQualityReview(notice)) return '<span class="recommendation-pill recommendation-pill--pending">판단 보류</span>';
     if (notice.analysisState === "EVALUATED") return recommendationPill(notice.recommendation);
     return '<span class="recommendation-pill recommendation-pill--pending">분석 전</span>';
@@ -3426,6 +3470,8 @@
   }
 
   function noticeLifecycleStatus(notice) {
+    const providerDisposition = stringValue(notice?.providerDisposition).toUpperCase();
+    if (providerDisposition === "CANCELLED") return "CANCELLED";
     const status = stringValue(notice?.noticeStatus).toUpperCase();
     if (status === "CLOSED") return "CLOSED";
     if (status === "EXPIRED") return "EXPIRED";
@@ -3435,17 +3481,33 @@
   }
 
   function isEndedNotice(notice) {
-    return ["CLOSED", "EXPIRED"].includes(noticeLifecycleStatus(notice));
+    return ["CANCELLED", "CLOSED", "EXPIRED"].includes(noticeLifecycleStatus(notice));
+  }
+
+  function isCancelledNotice(notice) {
+    return noticeLifecycleStatus(notice) === "CANCELLED";
+  }
+
+  function isVisibleEndedNotice(notice) {
+    return isCancelledNotice(notice)
+      || (isEndedNotice(notice) && notice.analysisState === "EVALUATED");
   }
 
   function noticeLifecycleLabel(notice) {
-    return noticeLifecycleStatus(notice) === "CLOSED" ? "공고 종료" : "마감 종료";
+    const lifecycle = noticeLifecycleStatus(notice);
+    if (lifecycle === "CANCELLED") return "취소";
+    return lifecycle === "CLOSED" ? "공고 종료" : "마감 종료";
   }
 
   function noticeLifecycleBadge(notice) {
     if (!isEndedNotice(notice)) return "";
-    const expired = noticeLifecycleStatus(notice) === "EXPIRED";
-    return `<span class="notice-lifecycle-badge ${expired ? "notice-lifecycle-badge--expired" : ""}">${noticeLifecycleLabel(notice)}</span>`;
+    const lifecycle = noticeLifecycleStatus(notice);
+    const modifier = lifecycle === "CANCELLED"
+      ? "notice-lifecycle-badge--cancelled"
+      : lifecycle === "EXPIRED"
+        ? "notice-lifecycle-badge--expired"
+        : "";
+    return `<span class="notice-lifecycle-badge ${modifier}">${noticeLifecycleLabel(notice)}</span>`;
   }
 
   function recommendationPill(recommendation) {
@@ -3520,10 +3582,12 @@
   }
 
   function analysisStatusLabel(notice) {
+    if (isCancelledNotice(notice)) return "취소 공고";
     return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[notice.eligibilityStatus];
   }
 
   function analysisRecommendationLabel(notice) {
+    if (isCancelledNotice(notice)) return "취소 · 추천 비활성";
     if (isDocumentQualityReview(notice)) return "판단 보류";
     if (notice.analysisState === "EVALUATED") return RECOMMENDATION_LABELS[notice.recommendation];
     return "분석 전";
@@ -3629,6 +3693,10 @@
     const detail = typeof explicitDetail === "string" || typeof explicitDetail === "number" ? stringValue(explicitDetail) : "";
     if (!code && detail && /^[A-Z][A-Z0-9_-]+$/.test(detail)) code = detail.replace(/[\s-]+/g, "_");
 
+    const providerDisposition = stringValue(firstValue(source.provider_disposition, source.providerDisposition)).toUpperCase();
+    if (providerDisposition === "CANCELLED") {
+      return { code: "CANCELLED", message: "조달청 취소 공고로 확인되어 현재 입찰 검토 대상에서 제외되었습니다." };
+    }
     const mapped = ANALYSIS_REASON_LABELS[code];
     if (mapped) return { code, message: mapped };
     if (detail && detail.toUpperCase() !== code) return { code: code || "PUBLIC_DESCRIPTION", message: detail };
