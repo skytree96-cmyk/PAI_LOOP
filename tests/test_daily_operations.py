@@ -7,9 +7,12 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
+from pai_loop import daily_operations
 from pai_loop.models import (
     AnalysisRun,
     AwardHistoryItem,
+    CompanyFact,
+    Evidence,
     IngestionJob,
     MockNotification,
     Notice,
@@ -113,6 +116,61 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         "mode": "mock",
         "actual_push_sent": False,
     }
+
+
+def test_daily_briefing_passes_evidence_loaded_company_facts_to_quantitative_bridge(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    _create_notice(
+        client,
+        notice_key="DAILY-QUANT-FACT-BRIDGE",
+        published_at="2026-08-16T08:30:00+09:00",
+    )
+    with client.app.state.session_factory() as session:
+        evidence = Evidence(
+            evidence_key="DAILY-QUANT-EVIDENCE",
+            name="정량 증빙",
+            evidence_type="QUANTITATIVE_FACT",
+            status="VERIFIED",
+            issued_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        session.add(evidence)
+        session.flush()
+        session.add(
+            CompanyFact(
+                fact_key="company.performance.amount",
+                value=1_000_000_000,
+                effective_from=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                verified=True,
+                evidence_id=evidence.id,
+            )
+        )
+        session.commit()
+
+    captured: list[tuple[CompanyFact, ...]] = []
+    original = daily_operations.estimate_for_notice
+
+    def capture(notice: Notice, company_facts=()):
+        facts = tuple(company_facts)
+        captured.append(facts)
+        return original(notice, facts)
+
+    monkeypatch.setattr(daily_operations, "estimate_for_notice", capture)
+    response = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={"days": 7, "as_of": "2026-08-17T09:00:00+09:00"},
+    )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    quantitative_fact = next(
+        item
+        for item in captured[0]
+        if item.fact_key == "company.performance.amount"
+    )
+    assert quantitative_fact.evidence is not None
+    assert quantitative_fact.evidence.status == "VERIFIED"
 
 
 def test_daily_briefing_includes_only_currently_open_notices(client: TestClient) -> None:

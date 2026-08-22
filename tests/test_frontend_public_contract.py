@@ -145,8 +145,21 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260822-ended1"' in html
-    assert 'src="./app.js?v=20260822-ended1"' in html
+    assert 'href="./styles.css?v=20260822-quant-auto1"' in html
+    assert 'src="./app.js?v=20260822-quant-auto1"' in html
+
+
+def test_quantitative_ui_separates_source_validation_from_activation() -> None:
+    app = APP_JS.read_text(encoding="utf-8")
+
+    assert "source_validation_status" in app
+    assert "activation_status" in app
+    assert "activation_reasons" in app
+    assert 'SOURCE_VALIDATED: "원문 기계검증"' in app
+    assert 'AUTO_ACTIVE: "규칙 자동 활성"' in app
+    assert 'REVIEW_REQUIRED: "자동 산정 보류"' in app
+    assert "FACT_DIMENSIONS_UNMODELED" in app
+    assert 'AVAILABLE: "배점표 연결"' not in app
 
 
 def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:

@@ -3025,6 +3025,9 @@ svg {
 }
 
 .quant-source-status.is-available { color: var(--green); background: var(--green-pale); }
+.quant-source-status.is-auto-active { color: var(--green); background: var(--green-pale); }
+.quant-source-status.is-review-required { color: #936411; background: var(--amber-pale); }
+.quant-source-status.is-not-applicable { color: #31577d; background: #eef4fb; }
 .quant-source-status.is-incomplete,
 .quant-source-status.is-loading { color: #936411; background: var(--amber-pale); }
 .quant-source-status.is-missing,

@@ -2525,16 +2525,49 @@
       quantSummaryCard("정량 준비도", data.readiness_band || "GRAY", readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
     ].join("");
 
-    const sourceLabels = { AVAILABLE: "배점표 연결", INCOMPLETE: "배점표 일부", MISSING: "배점표 미확보" };
-    els.quantSourceStatus.className = `quant-source-status is-${String(data.rule_source_status || "missing").toLowerCase()}`;
-    els.quantSourceStatus.textContent = `${sourceLabels[data.rule_source_status] || "배점표 검토"} · ${quantStatusLabel(data.overall_status)}`;
+    const legacySourceMap = {
+      AVAILABLE: "SOURCE_VALIDATED",
+      INCOMPLETE: "INCOMPLETE",
+      MISSING: "MISSING",
+      NOT_APPLICABLE: "NOT_APPLICABLE",
+    };
+    const sourceValidation = data.source_validation_status || legacySourceMap[data.rule_source_status] || "REVIEW_REQUIRED";
+    const activation = data.activation_status || "REVIEW_REQUIRED";
+    const sourceLabels = {
+      SOURCE_VALIDATED: "원문 기계검증",
+      REVIEW_REQUIRED: "원문 추가 확인",
+      INCOMPLETE: "원문 일부",
+      MISSING: "배점표 미확보",
+      NOT_APPLICABLE: "정량평가 비적용",
+    };
+    const activationLabels = {
+      AUTO_ACTIVE: "규칙 자동 활성",
+      REVIEW_REQUIRED: "자동 산정 보류",
+      NOT_APPLICABLE: "산정 비적용",
+    };
+    els.quantSourceStatus.className = `quant-source-status is-${String(activation).toLowerCase().replaceAll("_", "-")}`;
+    els.quantSourceStatus.textContent = `${sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${quantStatusLabel(data.overall_status)}`;
     els.quantOpinion.textContent = data.opinion || "정량 의견이 없습니다.";
     const anchor = data.source_anchor;
     els.quantSourceAnchor.textContent = anchor
       ? `${anchor.document_label} · ${anchor.page ? `PDF ${anchor.page}쪽 · ` : ""}${anchor.section} · SHA-256 ${anchor.document_sha256 ? `${anchor.document_sha256.slice(0, 12)}…` : "미확인"}`
       : "연결된 정량평가표 원문 앵커 없음";
-    els.quantAssumptionList.innerHTML = Array.isArray(data.assumptions) && data.assumptions.length
-      ? data.assumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+    const activationReasonLabels = {
+      FACT_DIMENSIONS_UNMODELED: "인정기간·유사사업·VAT·역할 등 점수 산출조건이 아직 구조화되지 않았습니다.",
+      FACT_KEY_AMBIGUOUS: "여러 평가항목이 같은 회사 사실 키를 사용해 값의 적용 대상을 구분할 수 없습니다.",
+      ALTERNATIVE_TABLE_AMBIGUOUS: "적용 대상이 다른 복수 평가표 중 하나를 기계적으로 선택할 수 없습니다.",
+      CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE: "현재 공고의 모든 첨부 검증이 끝나지 않았습니다.",
+      BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING: "배점 구간에 공백 또는 중복이 있습니다.",
+      UNIT_NOT_SOURCE_BOUND: "산정 단위를 원문 인용에서 정확히 확인할 수 없습니다.",
+      UNSUPPORTED_UNIT: "현재 결정론적 엔진이 지원하지 않는 단위입니다.",
+      UNSUPPORTED_SCORING_DSL: "현재 결정론적 엔진이 지원하지 않는 산식입니다.",
+    };
+    const activationReasons = Array.isArray(data.activation_reasons)
+      ? data.activation_reasons.map((item) => `자동 산정 보류: ${activationReasonLabels[item] || item}`)
+      : [];
+    const quantitativeAssumptions = [...(Array.isArray(data.assumptions) ? data.assumptions : []), ...activationReasons];
+    els.quantAssumptionList.innerHTML = quantitativeAssumptions.length
+      ? quantitativeAssumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
       : "<li>추가 가정 없음</li>";
     els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
       ? data.criteria.map(renderQuantitativeEstimateRow).join("")

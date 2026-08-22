@@ -20,6 +20,7 @@ from .department_ranking import (
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
+    CompanyFact,
     Evaluation,
     IngestionJob,
     MockNotification,
@@ -150,7 +151,12 @@ def _award_snapshot(items: list[AwardHistoryItem]) -> dict[str, Any]:
     }
 
 
-def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
+def _briefing_notice(
+    notice: Notice,
+    *,
+    as_of: datetime,
+    company_facts: tuple[CompanyFact, ...] = (),
+) -> dict[str, Any]:
     latest = _latest_evaluation(notice)
     source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
     analysis_reason = public_analysis_reason(
@@ -215,7 +221,10 @@ def _briefing_notice(notice: Notice, *, as_of: datetime) -> dict[str, Any]:
         "region_routing": region_routing,
         "award_snapshot": _award_snapshot(notice.award_history),
         "competition_risk": pricing_intelligence["competition_risk"],
-        "quantitative_estimate": estimate_for_notice(notice).model_dump(mode="json"),
+        "quantitative_estimate": estimate_for_notice(
+            notice,
+            company_facts,
+        ).model_dump(mode="json"),
         "pricing_intelligence": pricing_intelligence,
         "analysis_snapshot": _latest_analysis_snapshot(notice),
         "analysis_coverage": {
@@ -259,7 +268,19 @@ def daily_briefing(
             .order_by(observed_at.desc())
         ).all()
     )
-    items = [_briefing_notice(notice, as_of=generated_at) for notice in notices]
+    company_facts = tuple(
+        session.scalars(
+            select(CompanyFact).options(selectinload(CompanyFact.evidence))
+        ).all()
+    )
+    items = [
+        _briefing_notice(
+            notice,
+            as_of=generated_at,
+            company_facts=company_facts,
+        )
+        for notice in notices
+    ]
     items.sort(
         key=lambda item: (
             -float(item["priority_score"]),

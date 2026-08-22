@@ -5,7 +5,8 @@ import hashlib
 import json
 import math
 import re
-from datetime import date
+from collections.abc import Iterable, Sequence
+from datetime import date, datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from functools import lru_cache
 from importlib import resources
@@ -14,15 +15,16 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
+from .evaluator import evidence_state, fact_is_effective
 from .eligibility_policy import load_public_company_profile
 from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
 )
-from .models import Notice
+from .models import CompanyFact, Notice
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
@@ -40,11 +42,19 @@ from .quantitative_rule_extraction import (
 from .public_performance import load_public_performance_seed
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.1.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.2.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
 ReadinessBand = Literal["GREEN", "YELLOW", "RED", "GRAY"]
+SourceValidationStatus = Literal[
+    "SOURCE_VALIDATED",
+    "REVIEW_REQUIRED",
+    "INCOMPLETE",
+    "MISSING",
+    "NOT_APPLICABLE",
+]
+ActivationStatus = Literal["AUTO_ACTIVE", "REVIEW_REQUIRED", "NOT_APPLICABLE"]
 
 
 class QuantModel(BaseModel):
@@ -102,6 +112,7 @@ class QuantitativeCriterion(QuantModel):
     base_condition: str | None = Field(default=None, max_length=1_000)
     source_anchor: SourceAnchor | None = None
     required_evidence_keys: list[str] = Field(default_factory=list, max_length=30)
+    fact_binding_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class QuantitativeFact(QuantModel):
@@ -111,6 +122,7 @@ class QuantitativeFact(QuantModel):
     lower_value: float | None = None
     upper_value: float | None = None
     evidence_key: str | None = Field(default=None, max_length=240)
+    fact_binding_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     confidence: float = Field(default=0, ge=0, le=1)
     rationale: str = Field(default="", max_length=1_000)
 
@@ -130,12 +142,27 @@ class QuantitativeEstimateRequest(QuantModel):
     rule_source_status: Literal[
         "AVAILABLE", "MISSING", "INCOMPLETE", "NOT_APPLICABLE"
     ] = "AVAILABLE"
+    source_validation_status: SourceValidationStatus = "REVIEW_REQUIRED"
+    activation_status: ActivationStatus = "REVIEW_REQUIRED"
+    activation_reasons: list[str] = Field(default_factory=list, max_length=100)
     minimum_score: float | None = Field(default=None, ge=0)
     criteria: list[QuantitativeCriterion] = Field(default_factory=list, max_length=100)
     facts: list[QuantitativeFact] = Field(default_factory=list, max_length=200)
     assumptions: list[str] = Field(default_factory=list, max_length=50)
     missing_reason: str | None = Field(default=None, max_length=2_000)
     source_anchor: SourceAnchor | None = None
+
+    @model_validator(mode="after")
+    def validate_activation_contract(self) -> "QuantitativeEstimateRequest":
+        if self.activation_status == "AUTO_ACTIVE" and (
+            self.rule_source_status != "AVAILABLE"
+            or self.source_validation_status != "SOURCE_VALIDATED"
+            or self.activation_reasons
+        ):
+            raise ValueError(
+                "AUTO_ACTIVE requires source-validated AVAILABLE rules without activation reasons"
+            )
+        return self
 
 
 class CriterionEstimate(QuantModel):
@@ -150,6 +177,7 @@ class CriterionEstimate(QuantModel):
     base_condition: str | None
     source_anchor: SourceAnchor | None
     evidence_key: str | None
+    fact_binding_sha256: str | None
     estimated_points: float | None
     lower_points: float
     upper_points: float
@@ -176,6 +204,9 @@ class QuantitativeEstimateResult(QuantModel):
     rule_source_status: Literal[
         "AVAILABLE", "MISSING", "INCOMPLETE", "NOT_APPLICABLE"
     ]
+    source_validation_status: SourceValidationStatus
+    activation_status: ActivationStatus
+    activation_reasons: list[str] = Field(default_factory=list)
     overall_status: EstimateStatus
     total_max_points: float | None
     confirmed_points: float | None
@@ -240,8 +271,12 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
     previous_max: float | None = None
     previous_max_inclusive = False
     for index, item in enumerate(numeric):
+        if index == 0 and item.min_value is not None:
+            return "배점 구간이 가능한 최솟값부터 빠짐없이 이어지지 않습니다."
         if index and previous_max is None:
             return "열린 상한 구간 뒤에 다른 구간을 둘 수 없습니다."
+        if index and item.min_value is None:
+            return "첫 구간이 아닌 배점 구간에는 하한값이 필요합니다."
         if previous_max is not None and item.min_value is not None:
             if item.min_value < previous_max or (
                 item.min_value == previous_max
@@ -249,8 +284,15 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
                 and item.min_inclusive
             ):
                 return "배점 구간이 서로 겹칩니다."
+            if item.min_value > previous_max or (
+                item.min_value == previous_max
+                and previous_max_inclusive == item.min_inclusive
+            ):
+                return "배점 구간 사이에 점수가 정의되지 않은 공백이 있습니다."
         previous_max = item.max_value
         previous_max_inclusive = item.max_inclusive
+    if numeric[-1].max_value is not None:
+        return "배점 구간이 가능한 최댓값까지 빠짐없이 이어지지 않습니다."
     return None
 
 
@@ -338,6 +380,7 @@ def _criterion_unscored(
         base_condition=criterion.base_condition,
         source_anchor=criterion.source_anchor,
         evidence_key=evidence_key,
+        fact_binding_sha256=criterion.fact_binding_sha256,
         estimated_points=None,
         lower_points=floor,
         upper_points=criterion.max_points,
@@ -367,6 +410,19 @@ def _estimate_criterion(
             criterion,
             status="REVIEW",
             rationale="회사 데이터의 증빙 키가 평가항목의 허용 증빙과 일치하지 않습니다.",
+            evidence_key=fact.evidence_key,
+        )
+    if (
+        criterion.fact_binding_sha256 is not None
+        and fact.fact_binding_sha256 != criterion.fact_binding_sha256
+    ):
+        return _criterion_unscored(
+            criterion,
+            status="UNSCORABLE",
+            rationale=(
+                "회사 사실이 이 평가항목의 인정기간·범위·단위 조건에 결합되지 않아 "
+                "generic 값을 점수에 적용하지 않았습니다."
+            ),
             evidence_key=fact.evidence_key,
         )
     if fact.status in {"REVIEW", "UNSCORABLE"}:
@@ -430,6 +486,7 @@ def _estimate_criterion(
         base_condition=criterion.base_condition,
         source_anchor=criterion.source_anchor,
         evidence_key=fact.evidence_key,
+        fact_binding_sha256=criterion.fact_binding_sha256,
         estimated_points=lower_points if lower_points == upper_points else None,
         lower_points=lower_points,
         upper_points=upper_points,
@@ -451,14 +508,25 @@ def estimate_quantitative_score(
         "최종 점수는 발주기관 평가 결과로만 확정됩니다."
     )
     assumptions = list(request.assumptions)
+    activation_reasons = list(request.activation_reasons)
     if request.missing_reason:
         assumptions.append(request.missing_reason)
-    if request.rule_source_status != "AVAILABLE" or not request.criteria:
+    source_is_validated = (
+        request.rule_source_status == "AVAILABLE"
+        and request.source_validation_status == "SOURCE_VALIDATED"
+    )
+    activation_is_safe = request.activation_status == "AUTO_ACTIVE"
+    if not source_is_validated or not activation_is_safe or not request.criteria:
+        if request.rule_source_status == "AVAILABLE" and not activation_reasons:
+            activation_reasons.append("AUTO_ACTIVATION_NOT_ESTABLISHED")
         return QuantitativeEstimateResult(
             engine_version=QUANTITATIVE_ENGINE_VERSION,
             ruleset_version=request.ruleset_version,
             source_anchor=request.source_anchor,
             rule_source_status=request.rule_source_status,
+            source_validation_status=request.source_validation_status,
+            activation_status=request.activation_status,
+            activation_reasons=activation_reasons,
             overall_status="REVIEW",
             total_max_points=None,
             confirmed_points=None,
@@ -476,8 +544,8 @@ def estimate_quantitative_score(
             assumptions=assumptions,
             evidence_observations=evidence_observations or [],
             opinion=(
-                "정량평가표 또는 핵심 배점 산식이 확보되지 않아 점수를 표시하지 않습니다. "
-                "제안요청서의 정량 배점표와 인정 기준을 연결한 뒤 다시 계산해야 합니다."
+                "정량평가표의 원문 검증 또는 자동 활성화 조건이 충족되지 않아 점수를 "
+                "표시하지 않습니다. 배점표·산식·회사 사실 연결을 검토한 뒤 다시 계산해야 합니다."
             ),
             separation_notice=separation_notice,
         )
@@ -562,6 +630,9 @@ def estimate_quantitative_score(
         ruleset_version=request.ruleset_version,
         source_anchor=request.source_anchor,
         rule_source_status=request.rule_source_status,
+        source_validation_status=request.source_validation_status,
+        activation_status=request.activation_status,
+        activation_reasons=activation_reasons,
         overall_status=overall,
         total_max_points=total_max,
         confirmed_points=confirmed,
@@ -763,28 +834,264 @@ def _current_dynamic_quantitative_profile(
     )
 
 
-def _dynamic_metric_key(candidate: ImmutableQuantitativeRuleCandidate) -> str:
-    identity = _canonical_digest(
+_CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
+    "PERFORMANCE_AMOUNT": {
+        "fact_key": "company.performance.amount",
+        "canonical_unit": "KRW",
+        "unit_scales": {
+            "원": Decimal("1"),
+            "krw": Decimal("1"),
+            "천원": Decimal("1000"),
+            "만원": Decimal("10000"),
+            "백만원": Decimal("1000000"),
+            "천만원": Decimal("10000000"),
+            "억원": Decimal("100000000"),
+        },
+    },
+    "PERFORMANCE_COUNT": {
+        "fact_key": "company.performance.count",
+        "canonical_unit": "COUNT",
+        "unit_scales": {"건": Decimal("1"), "회": Decimal("1"), "개": Decimal("1")},
+    },
+    "PERSONNEL_COUNT": {
+        "fact_key": "company.personnel.count",
+        "canonical_unit": "PERSON",
+        "unit_scales": {"명": Decimal("1"), "인": Decimal("1")},
+    },
+    "CERTIFICATION_COUNT": {
+        "fact_key": "company.certification.count",
+        "canonical_unit": "COUNT",
+        "unit_scales": {"건": Decimal("1"), "개": Decimal("1")},
+    },
+    "FINANCIAL_RATIO": {
+        "fact_key": "company.financial.ratio",
+        "canonical_unit": "PERCENT",
+        "unit_scales": {"%": Decimal("1"), "퍼센트": Decimal("1")},
+    },
+    "BUSINESS_YEARS": {
+        "fact_key": "company.business.years",
+        "canonical_unit": "YEAR",
+        "unit_scales": {"년": Decimal("1"), "year": Decimal("1")},
+    },
+    "FACILITY_EQUIPMENT_COUNT": {
+        "fact_key": "company.facility_equipment.count",
+        "canonical_unit": "COUNT",
+        "unit_scales": {"대": Decimal("1"), "개": Decimal("1")},
+    },
+    "AWARD_COUNT": {
+        "fact_key": "company.award.count",
+        "canonical_unit": "COUNT",
+        "unit_scales": {"건": Decimal("1"), "회": Decimal("1"), "개": Decimal("1")},
+    },
+}
+
+QUANTITATIVE_CANONICAL_FACT_KEYS = frozenset(
+    str(item["fact_key"]) for item in _CANONICAL_METRIC_REGISTRY.values()
+)
+_FACT_SPEC_BY_KEY = {
+    str(item["fact_key"]): item for item in _CANONICAL_METRIC_REGISTRY.values()
+}
+_SOURCE_UNIT_RE = re.compile(
+    r"-?(?:\d[\d,]*)(?:\.\d+)?\s*"
+    r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원|"
+    r"퍼센트|%|건|회|개|명|인|대|년|KRW)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_unit(value: str | None) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def _metric_spec(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> dict[str, Any] | None:
+    spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+    if spec is None:
+        return None
+    unit_scales = spec["unit_scales"]
+    return spec if _normalize_unit(candidate.unit) in unit_scales else None
+
+
+def _metric_scale(candidate: ImmutableQuantitativeRuleCandidate) -> Decimal | None:
+    spec = _metric_spec(candidate)
+    if spec is None:
+        return None
+    return spec["unit_scales"][_normalize_unit(candidate.unit)]
+
+
+def _candidate_unit_is_source_bound(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    literals = [candidate.criterion_literal, candidate.evidence.quote]
+    literals.extend(item.literal for item in candidate.brackets)
+    literals.extend(item.evidence.quote for item in candidate.brackets)
+    if candidate.threshold is not None:
+        literals.extend(
+            [candidate.threshold.literal, candidate.threshold.evidence.quote]
+        )
+    observed = {
+        _normalize_unit(match.group("unit"))
+        for literal in literals
+        for match in _SOURCE_UNIT_RE.finditer(literal)
+    }
+    return _normalize_unit(candidate.unit) in observed
+
+
+def _canonical_company_fact_value(
+    fact: CompanyFact,
+    criterion: QuantitativeCriterion,
+) -> tuple[float | None, str | None, str | None]:
+    spec = _FACT_SPEC_BY_KEY.get(fact.fact_key)
+    if spec is None:
+        return None, None, "등록되지 않은 canonical 회사 사실 키입니다."
+    raw = fact.value
+    unit: str | None = None
+    fact_binding_sha256: str | None = None
+    if isinstance(raw, dict):
+        allowed = {"value", "unit", "fact_binding_sha256"}
+        if not raw or set(raw) - allowed or "value" not in raw:
+            return (
+                None,
+                None,
+                "회사 사실 값 구조가 canonical 계약과 일치하지 않습니다.",
+            )
+        unit = str(raw.get("unit") or "") or None
+        raw_binding = raw.get("fact_binding_sha256")
+        if raw_binding is not None:
+            fact_binding_sha256 = str(raw_binding).casefold()
+            if not re.fullmatch(r"[a-f0-9]{64}", fact_binding_sha256):
+                return (
+                    None,
+                    None,
+                    "회사 사실의 평가항목 binding digest가 유효하지 않습니다.",
+                )
+        raw = raw["value"]
+    if (
+        criterion.fact_binding_sha256 is not None
+        and fact_binding_sha256 != criterion.fact_binding_sha256
+    ):
+        return (
+            None,
+            fact_binding_sha256,
+            "회사 사실이 이 평가항목의 인정기간·유사범위·단위 조건에 결합되지 않았습니다.",
+        )
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None, fact_binding_sha256, "회사 사실 값이 유한 숫자가 아닙니다."
+    try:
+        numeric = Decimal(str(raw))
+    except InvalidOperation:
+        return None, fact_binding_sha256, "회사 사실 값을 숫자로 해석할 수 없습니다."
+    if not numeric.is_finite():
+        return None, fact_binding_sha256, "회사 사실 값이 유한 숫자가 아닙니다."
+    scale = Decimal("1")
+    if unit:
+        normalized = _normalize_unit(unit)
+        if normalized != _normalize_unit(str(spec["canonical_unit"])):
+            scale = spec["unit_scales"].get(normalized)
+            if scale is None:
+                return (
+                    None,
+                    fact_binding_sha256,
+                    "회사 사실 단위를 canonical 단위로 변환할 수 없습니다.",
+                )
+    return float(numeric * scale), fact_binding_sha256, None
+
+
+def resolve_verified_quantitative_facts(
+    criteria: Sequence[QuantitativeCriterion],
+    company_facts: Iterable[CompanyFact],
+    *,
+    as_of: datetime,
+) -> list[QuantitativeFact]:
+    """Bridge only exact canonical, effective and evidence-verified facts."""
+
+    stored_facts = tuple(company_facts)
+    resolved: list[QuantitativeFact] = []
+    for criterion in criteria:
+        confirmed: list[QuantitativeFact] = []
+        value_errors: list[tuple[str, str | None]] = []
+        for fact in stored_facts:
+            if fact.fact_key != criterion.metric_key or not fact.verified:
+                continue
+            if not fact_is_effective(fact, as_of):
+                continue
+            evidence_valid, _ = evidence_state(fact, as_of)
+            if not evidence_valid:
+                continue
+            value, binding, value_error = _canonical_company_fact_value(
+                fact,
+                criterion,
+            )
+            if value_error:
+                value_errors.append((value_error, binding))
+                continue
+            confirmed.append(
+                QuantitativeFact(
+                    metric_key=fact.fact_key,
+                    status="CONFIRMED",
+                    value=value,
+                    evidence_key=fact.fact_key,
+                    fact_binding_sha256=binding,
+                    confidence=1,
+                    rationale=(
+                        "공고 마감일 기준 유효한 검증 증빙의 canonical 회사 사실을 적용했습니다."
+                    ),
+                )
+            )
+        if confirmed:
+            resolved.extend(confirmed)
+        elif value_errors:
+            rationale, binding = sorted(
+                set(value_errors),
+                key=lambda item: (item[0], item[1] or ""),
+            )[0]
+            resolved.append(
+                QuantitativeFact(
+                    metric_key=criterion.metric_key,
+                    status="UNSCORABLE",
+                    evidence_key=criterion.metric_key,
+                    fact_binding_sha256=binding,
+                    confidence=0,
+                    rationale=rationale,
+                )
+            )
+    return resolved
+
+
+def _scaled_value(value: float | None, scale: Decimal) -> float | None:
+    if value is None:
+        return None
+    return float(Decimal(str(value)) * scale)
+
+
+def _candidate_fact_binding_sha256(
+    candidate: ImmutableQuantitativeRuleCandidate,
+    *,
+    document_sha256: str,
+) -> str:
+    return _canonical_digest(
         {
-            "attachment_id": candidate.source_attachment_id,
-            "table_id": candidate.table_id,
-            "criterion_id": candidate.criterion_id,
-            "metric": candidate.metric,
+            "binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
+            "document_sha256": document_sha256,
+            "candidate": candidate.model_dump(mode="json"),
         }
-    )[:24]
-    return f"quant.{candidate.metric.casefold()}.{identity}"
+    )
 
 
 def _candidate_brackets(
     candidate: ImmutableQuantitativeRuleCandidate,
 ) -> list[ScoreBracket] | None:
+    scale = _metric_scale(candidate)
+    if scale is None:
+        return None
     if candidate.scoring_method == "BRACKET":
         return [
             ScoreBracket(
                 bracket_id=f"dyn-{index}-{_canonical_digest(item.model_dump(mode='json'))[:12]}",
                 label=item.label,
-                min_value=item.min_value,
-                max_value=item.max_value,
+                min_value=_scaled_value(item.min_value, scale),
+                max_value=_scaled_value(item.max_value, scale),
                 min_inclusive=item.min_inclusive,
                 max_inclusive=item.max_inclusive,
                 points=item.points,
@@ -799,7 +1106,9 @@ def _candidate_brackets(
     # deterministic scoring formula.
     if threshold.operator == "EQ":
         return None
-    value = threshold.threshold_value
+    value = _scaled_value(threshold.threshold_value, scale)
+    if value is None:
+        return None
     met = threshold.points_if_met
     unmet = threshold.points_if_not_met
     if threshold.operator == "GTE":
@@ -843,6 +1152,135 @@ def _candidate_brackets(
     ]
 
 
+def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[str]:
+    """Return stable fail-closed codes for the machine activation contract."""
+
+    reasons: set[str] = set()
+    expected = set(profile.expected_attachment_ids)
+    processed = set(profile.processed_attachment_ids)
+    bound = {item.attachment_id for item in profile.document_bindings}
+    if (
+        not profile.manifest_sha256
+        or not expected
+        or len(expected) != len(profile.expected_attachment_ids)
+        or expected != processed
+        or expected != bound
+    ):
+        reasons.add("CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE")
+    if profile.issues or profile.review_candidates:
+        reasons.add("SOURCE_VALIDATION_ISSUES_PRESENT")
+    if len(profile.tables) != 1:
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+        return sorted(reasons)
+
+    table = profile.tables[0]
+    if table.status != "AVAILABLE":
+        reasons.add("TABLE_NOT_SOURCE_VALIDATED")
+    if table.total_points is None or table.total_evidence is None:
+        reasons.add("TABLE_TOTAL_INCOMPLETE")
+    elif (
+        not table.total_evidence.quote.strip()
+        or table.total_evidence.attachment_id != table.source_attachment_id
+    ):
+        reasons.add("TABLE_TOTAL_ANCHOR_INCOMPLETE")
+
+    table_candidates = [
+        item
+        for item in profile.available_candidates
+        if item.source_attachment_id == table.source_attachment_id
+        and item.table_id == table.table_id
+    ]
+    candidate_ids = [item.criterion_id for item in table_candidates]
+    if (
+        not table_candidates
+        or len(candidate_ids) != len(set(candidate_ids))
+        or set(candidate_ids) != set(table.criterion_ids)
+        or set(candidate_ids) != set(table.available_criterion_ids)
+        or table.review_criterion_ids
+        or len(table_candidates) != len(profile.available_candidates)
+    ):
+        reasons.add("TABLE_CRITERIA_LINKAGE_INCOMPLETE")
+    if table.total_points is not None:
+        candidate_total = sum(
+            (Decimal(str(item.max_points)) for item in table_candidates),
+            Decimal("0"),
+        )
+        if candidate_total != Decimal(str(table.total_points)):
+            reasons.add("TABLE_TOTAL_MISMATCH")
+
+    binding_ids = {item.attachment_id for item in profile.document_bindings}
+    canonical_fact_keys = [
+        str(spec["fact_key"])
+        for candidate in table_candidates
+        if (spec := _CANONICAL_METRIC_REGISTRY.get(candidate.metric)) is not None
+    ]
+    if len(canonical_fact_keys) != len(set(canonical_fact_keys)):
+        reasons.add("FACT_KEY_AMBIGUOUS")
+    for candidate in table_candidates:
+        scoring_anchors = [item.evidence for item in candidate.brackets]
+        if candidate.threshold is not None:
+            scoring_anchors.append(candidate.threshold.evidence)
+        if (
+            candidate.source_attachment_id not in binding_ids
+            or candidate.evidence.attachment_id != candidate.source_attachment_id
+            or not candidate.evidence.quote.strip()
+            or any(
+                item.attachment_id != candidate.source_attachment_id
+                or not item.quote.strip()
+                for item in scoring_anchors
+            )
+        ):
+            reasons.add("SOURCE_ANCHOR_INCOMPLETE")
+        spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+        if spec is None:
+            reasons.add("FACT_KEY_UNREGISTERED")
+        elif (
+            tuple(candidate.required_evidence) != (spec["fact_key"],)
+            or len(candidate.required_evidence) != 1
+        ):
+            reasons.add("FACT_EVIDENCE_KEY_UNREGISTERED")
+        if _metric_spec(candidate) is None:
+            reasons.add("UNSUPPORTED_UNIT")
+        elif not _candidate_unit_is_source_bound(candidate):
+            reasons.add("UNIT_NOT_SOURCE_BOUND")
+        if candidate.scoring_method not in {"BRACKET", "THRESHOLD"} or (
+            candidate.scoring_method == "THRESHOLD"
+            and (
+                candidate.threshold is None
+                or candidate.threshold.operator == "EQ"
+            )
+        ):
+            reasons.add("UNSUPPORTED_SCORING_DSL")
+        if candidate.scoring_method == "BRACKET":
+            brackets = _candidate_brackets(candidate)
+            if not brackets:
+                reasons.add("UNSUPPORTED_SCORING_DSL")
+            else:
+                draft = QuantitativeCriterion(
+                    criterion_id="activation-check",
+                    category=candidate.metric,
+                    label=candidate.label,
+                    max_points=candidate.max_points,
+                    metric_key=str((spec or {}).get("fact_key") or "unregistered"),
+                    unit=str((spec or {}).get("canonical_unit") or candidate.unit),
+                    formula_type="BRACKET",
+                    formula=candidate.criterion_literal,
+                    brackets=brackets,
+                    source_anchor=SourceAnchor(
+                        document_label=candidate.source_attachment_id,
+                        section=candidate.evidence.section or candidate.table_id,
+                        quote=candidate.evidence.quote,
+                    ),
+                    required_evidence_keys=list(candidate.required_evidence),
+                )
+                error = _rule_error(draft)
+                if error and ("겹" in error or "공백" in error or "최솟값" in error or "최댓값" in error):
+                    reasons.add("BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING")
+                elif error:
+                    reasons.add("UNSUPPORTED_SCORING_DSL")
+    return sorted(reasons)
+
+
 def quantitative_request_from_candidate_profile(
     profile: QuantitativeCandidateProfile,
     *,
@@ -856,20 +1294,42 @@ def quantitative_request_from_candidate_profile(
     )
     if profile.status != "AVAILABLE":
         issue_codes = sorted({item.code for item in profile.issues})
+        not_applicable = profile.status == "NOT_APPLICABLE"
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
-            rule_source_status=(
+            rule_source_status="NOT_APPLICABLE" if not_applicable else "INCOMPLETE",
+            source_validation_status=(
                 "NOT_APPLICABLE"
-                if profile.status == "NOT_APPLICABLE"
+                if not_applicable
+                else "REVIEW_REQUIRED"
+                if profile.status == "REVIEW"
                 else "INCOMPLETE"
             ),
+            activation_status="NOT_APPLICABLE" if not_applicable else "REVIEW_REQUIRED",
+            activation_reasons=([] if not_applicable else issue_codes[:100]),
             criteria=[],
             facts=[],
             missing_reason=(
                 "정량평가 비적용 문구가 현재 첨부 원문에서 확인되었습니다."
-                if profile.status == "NOT_APPLICABLE"
+                if not_applicable
                 else "현재 첨부의 정량 규칙 검증이 완료되지 않았습니다: "
                 + ", ".join(issue_codes[:12])
+            ),
+        )
+
+    activation_reasons = _profile_activation_reasons(profile)
+    if activation_reasons:
+        return QuantitativeEstimateRequest(
+            ruleset_version=ruleset_version,
+            rule_source_status="AVAILABLE",
+            source_validation_status="SOURCE_VALIDATED",
+            activation_status="REVIEW_REQUIRED",
+            activation_reasons=activation_reasons,
+            criteria=[],
+            facts=[],
+            missing_reason=(
+                "원문은 검증되었지만 자동 점수 계산 안전조건을 모두 통과하지 못했습니다: "
+                + ", ".join(activation_reasons[:12])
             ),
         )
 
@@ -880,8 +1340,9 @@ def quantitative_request_from_candidate_profile(
     criteria: list[QuantitativeCriterion] = []
     conversion_errors: list[str] = []
     for candidate in profile.available_candidates:
+        spec = _metric_spec(candidate)
         brackets = _candidate_brackets(candidate)
-        if not brackets:
+        if spec is None or not brackets:
             conversion_errors.append(
                 f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
             )
@@ -900,8 +1361,8 @@ def quantitative_request_from_candidate_profile(
                 category=candidate.metric,
                 label=candidate.label,
                 max_points=candidate.max_points,
-                metric_key=_dynamic_metric_key(candidate),
-                unit=candidate.unit,
+                metric_key=str(spec["fact_key"]),
+                unit=str(spec["canonical_unit"]),
                 formula_type="BRACKET",
                 formula=candidate.criterion_literal,
                 brackets=brackets,
@@ -916,12 +1377,19 @@ def quantitative_request_from_candidate_profile(
                     quote=candidate.evidence.quote,
                 ),
                 required_evidence_keys=list(candidate.required_evidence),
+                fact_binding_sha256=_candidate_fact_binding_sha256(
+                    candidate,
+                    document_sha256=bindings[candidate.source_attachment_id],
+                ),
             )
         )
     if conversion_errors or len(criteria) != len(profile.available_candidates):
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
-            rule_source_status="INCOMPLETE",
+            rule_source_status="AVAILABLE",
+            source_validation_status="SOURCE_VALIDATED",
+            activation_status="REVIEW_REQUIRED",
+            activation_reasons=["DETERMINISTIC_CONVERSION_FAILED"],
             criteria=[],
             facts=[],
             missing_reason=(
@@ -937,7 +1405,10 @@ def quantitative_request_from_candidate_profile(
     if len(minimums) > 1:
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
-            rule_source_status="INCOMPLETE",
+            rule_source_status="AVAILABLE",
+            source_validation_status="SOURCE_VALIDATED",
+            activation_status="REVIEW_REQUIRED",
+            activation_reasons=["ALTERNATIVE_MINIMUM_SCORE_AMBIGUOUS"],
             criteria=[],
             facts=[],
             missing_reason="여러 정량평가표의 최저점 기준이 달라 합산 기준을 확정할 수 없습니다.",
@@ -945,6 +1416,9 @@ def quantitative_request_from_candidate_profile(
     return QuantitativeEstimateRequest(
         ruleset_version=ruleset_version,
         rule_source_status="AVAILABLE",
+        source_validation_status="SOURCE_VALIDATED",
+        activation_status="AUTO_ACTIVE",
+        activation_reasons=[],
         minimum_score=next(iter(minimums), None),
         criteria=criteria,
         facts=list(facts or []),
@@ -1214,10 +1688,23 @@ def _public_evidence_observations(profile: dict[str, Any] | None) -> list[Eviden
     return observations
 
 
-def estimate_for_notice(notice: Notice) -> QuantitativeEstimateResult:
+def estimate_for_notice(
+    notice: Notice,
+    company_facts: Iterable[CompanyFact] = (),
+) -> QuantitativeEstimateResult:
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
         request = quantitative_request_from_candidate_profile(dynamic_profile)
+        if request.activation_status == "AUTO_ACTIVE":
+            request = request.model_copy(
+                update={
+                    "facts": resolve_verified_quantitative_facts(
+                        request.criteria,
+                        company_facts,
+                        as_of=notice.deadline,
+                    )
+                }
+            )
         return estimate_quantitative_score(request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
@@ -1225,6 +1712,15 @@ def estimate_for_notice(notice: Notice) -> QuantitativeEstimateResult:
         request = QuantitativeEstimateRequest(
             ruleset_version="unmapped-notice-review-v1",
             rule_source_status=("INCOMPLETE" if profile_binding_error else "MISSING"),
+            source_validation_status=(
+                "INCOMPLETE" if profile_binding_error else "MISSING"
+            ),
+            activation_status="REVIEW_REQUIRED",
+            activation_reasons=[
+                "SOURCE_BINDING_INCOMPLETE"
+                if profile_binding_error
+                else "QUANTITATIVE_PROFILE_MISSING"
+            ],
             criteria=[],
             facts=[],
             missing_reason=(
@@ -1240,6 +1736,19 @@ def estimate_for_notice(notice: Notice) -> QuantitativeEstimateResult:
     request = QuantitativeEstimateRequest(
         ruleset_version=profile["ruleset_version"],
         rule_source_status=source_status,
+        source_validation_status=(
+            "SOURCE_VALIDATED"
+            if source_status == "AVAILABLE"
+            else "MISSING"
+            if source_status == "MISSING"
+            else "INCOMPLETE"
+        ),
+        activation_status=(
+            "AUTO_ACTIVE" if source_status == "AVAILABLE" else "REVIEW_REQUIRED"
+        ),
+        activation_reasons=(
+            [] if source_status == "AVAILABLE" else ["CURATED_PROFILE_NOT_AVAILABLE"]
+        ),
         minimum_score=profile.get("minimum_score"),
         criteria=profile.get("criteria", []),
         facts=facts,
@@ -1281,4 +1790,9 @@ def get_notice_quantitative_estimate(
     notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
     if notice is None:
         raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
-    return estimate_for_notice(notice)
+    company_facts = list(
+        session.scalars(
+            select(CompanyFact).options(selectinload(CompanyFact.evidence))
+        ).all()
+    )
+    return estimate_for_notice(notice, company_facts)

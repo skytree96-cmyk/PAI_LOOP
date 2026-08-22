@@ -61,6 +61,7 @@ from .models import (
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
+    QUANTITATIVE_CANONICAL_FACT_KEYS,
     estimate_for_notice,
     load_quantitative_profile_catalog,
 )
@@ -1288,7 +1289,10 @@ def run_analysis_pipeline(
             )
             fact_manifest = _selected_fact_manifest(
                 company_facts,
-                fact_keys={item.fact_key for item in prospective_atomics},
+                fact_keys=(
+                    {item.fact_key for item in prospective_atomics}
+                    | set(QUANTITATIVE_CANONICAL_FACT_KEYS)
+                ),
                 deadline=notice.deadline,
             )
             all_notice_versions = list(
@@ -1302,7 +1306,7 @@ def run_analysis_pipeline(
                 all_notice_versions,
                 prompt_version=prompt_version,
             )
-            quantitative = estimate_for_notice(notice)
+            quantitative = estimate_for_notice(notice, company_facts)
             quantitative_catalog = load_quantitative_profile_catalog()
             dynamic_quantitative_profile = quantitative.ruleset_version.startswith(
                 "dynamic-quantitative-rules-"
@@ -1879,6 +1883,9 @@ def run_analysis_pipeline(
                             "input_sha256": input_sha256,
                             "ruleset_version": quantitative.ruleset_version,
                             "rule_source_status": quantitative.rule_source_status,
+                            "source_validation_status": quantitative.source_validation_status,
+                            "activation_status": quantitative.activation_status,
+                            "activation_reasons": quantitative.activation_reasons,
                             "total_max_points": quantitative.total_max_points,
                             "confirmed_points": quantitative.confirmed_points,
                             "evidence_coverage_pct": quantitative.evidence_coverage_pct,
