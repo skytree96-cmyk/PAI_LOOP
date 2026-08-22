@@ -26,6 +26,7 @@ from .models import (
     MockNotification,
     Notice,
 )
+from .notice_freshness import latest_current_analysis_run, latest_current_evaluation
 from .quantitative_scoring import estimate_for_notice
 from .pps_enrichment import public_analysis_reason
 
@@ -75,15 +76,13 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _latest_evaluation(notice: Notice) -> Evaluation | None:
-    if not notice.evaluations:
-        return None
-    return max(notice.evaluations, key=lambda item: _as_utc(item.evaluated_at))
+    return latest_current_evaluation(notice)
 
 
 def _latest_analysis_snapshot(notice: Notice) -> dict[str, Any] | None:
-    if not notice.analysis_runs:
+    run = latest_current_analysis_run(notice)
+    if run is None:
         return None
-    run = max(notice.analysis_runs, key=lambda item: _as_utc(item.generated_at))
     return {
         "analysis_run_id": run.id,
         "status": run.status,

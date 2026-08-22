@@ -49,6 +49,7 @@ from .models import (
     NoticeVersion,
     UserDecision,
 )
+from .notice_freshness import latest_current_analysis_run, latest_current_evaluation
 from .pps_enrichment import (
     build_attachment_manifest,
     department_keyword_coverage_count,
@@ -101,7 +102,7 @@ DbSession = Annotated[Session, Depends(get_session)]
 
 
 def _latest_evaluation(notice: Notice) -> Evaluation | None:
-    return max(notice.evaluations, key=lambda item: item.evaluated_at) if notice.evaluations else None
+    return latest_current_evaluation(notice)
 
 
 def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime | None]:
@@ -112,9 +113,9 @@ def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime 
     the latest run has no complete ``bid:system`` snapshot.
     """
 
-    if not notice.analysis_runs:
+    latest_run = latest_current_analysis_run(notice)
+    if latest_run is None:
         return None, None
-    latest_run = max(notice.analysis_runs, key=lambda item: item.generated_at)
     recommendation = next(
         (
             item.recommendation
@@ -540,7 +541,8 @@ def list_notices(
         )
     if analysis_state == "EVALUATED":
         statement = statement.where(Notice.evaluations.any())
-    if ranking_requested:
+    requires_current_evaluation_filter = analysis_state == "EVALUATED"
+    if ranking_requested or requires_current_evaluation_filter:
         notices = list(session.scalars(statement).all())
     else:
         notices = list(session.scalars(statement.offset(offset).limit(limit)).all())
@@ -562,8 +564,12 @@ def list_notices(
             for notice in notices
             if (latest := _latest_evaluation(notice)) and latest.eligibility == eligibility
         ]
+    if requires_current_evaluation_filter:
+        notices = [notice for notice in notices if _latest_evaluation(notice) is not None]
 
     if not ranking_requested:
+        if requires_current_evaluation_filter:
+            notices = notices[offset : offset + limit]
         return [
             _summary(notice, public_view=public_read_allowed(request))
             for notice in notices
@@ -811,19 +817,58 @@ def _same_datetime(left: datetime | None, right: datetime | None) -> bool:
     return _comparable_utc(left) == _comparable_utc(right)
 
 
-def _revision_preference(item: dict[str, Any], *, now: datetime) -> tuple[int, int, float, float]:
+def _revision_preference(item: dict[str, Any], *, now: datetime) -> tuple[int, float, int, float]:
+    """Return the provider-authority order for one logical PPS notice.
+
+    Revision and publication time describe which provider event is newer.
+    Deadline liveness must not outrank them: otherwise an obsolete, still-open
+    revision can resurrect after a newer correction has already expired. A
+    cancellation wins only an otherwise exact tie, so a later re-registration
+    with the same revision can still become authoritative.
+    """
+
     revision_text = str(item.get("revision_no") or "00")
     digits = re.sub(r"[^0-9]", "", revision_text)
     revision = int(digits or 0)
-    deadline = _comparable_utc(item["deadline"])
     published = item.get("published_at")
     published_timestamp = _comparable_utc(published).timestamp() if published else 0.0
+    deadline = item.get("deadline")
+    deadline_timestamp = _comparable_utc(deadline).timestamp() if deadline else 0.0
+    cancelled = int(str(item.get("notice_kind") or "").strip() == "취소공고")
     return (
-        int(deadline >= now),
         revision,
         published_timestamp,
-        deadline.timestamp(),
+        cancelled,
+        deadline_timestamp,
     )
+
+
+def _authoritative_pps_events(
+    rows: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], int]:
+    """Collapse repeated searches and revisions to one authoritative event.
+
+    Cancellation is evaluated *after* this collapse. Treating any historical
+    cancellation row as authoritative would suppress a later extension or
+    re-registration returned in the same provider window.
+    """
+
+    latest_by_notice_no: dict[str, dict[str, Any]] = {}
+    superseded = 0
+    for item in rows:
+        notice_no = str(item.get("bid_notice_no") or "").strip()
+        if not notice_no:
+            continue
+        previous = latest_by_notice_no.get(notice_no)
+        if previous is None:
+            latest_by_notice_no[notice_no] = item
+            continue
+        superseded += 1
+        if _revision_preference(item, now=now) > _revision_preference(previous, now=now):
+            latest_by_notice_no[notice_no] = item
+    return list(latest_by_notice_no.values()), superseded
 
 
 def _ranked_pps_candidates(
@@ -908,9 +953,14 @@ def _persist_pps_ingestion_result(
     if payload.dry_run:
         warnings.append("dry_run이므로 공고·첨부 manifest를 저장하지 않았습니다.")
 
+    now = datetime.now(timezone.utc)
+    authoritative_rows, provider_superseded = _authoritative_pps_events(
+        fetched_rows,
+        now=now,
+    )
     cancelled_notice_nos = {
         str(item.get("bid_notice_no"))
-        for item in fetched_rows
+        for item in authoritative_rows
         if item.get("bid_notice_no")
         and str(item.get("notice_kind") or "").strip() == "취소공고"
     }
@@ -919,18 +969,23 @@ def _persist_pps_ingestion_result(
             f"취소공고 {len(cancelled_notice_nos)}건은 OPEN 후보에서 제외하고 기존 행을 종료했습니다."
         )
 
-    quarantined = 0
+    quarantined = sum(
+        1
+        for item in fetched_rows
+        if not item.get("bid_notice_no")
+        or not item.get("title")
+        or item.get("deadline") is None
+    )
     matched_rows: list[dict[str, Any]] = []
-    for item in fetched_rows:
+    for item in authoritative_rows:
         if not item.get("bid_notice_no") or not item.get("title") or item.get("deadline") is None:
-            quarantined += 1
             continue
         if str(item["bid_notice_no"]) in cancelled_notice_nos:
             continue
         matched_rows.append(item)
 
     candidates: dict[str, dict[str, Any]] = {}
-    provider_duplicates = 0
+    provider_duplicates = provider_superseded
     for item in matched_rows:
         notice_key = _pps_notice_key(item)
         previous = candidates.get(notice_key)
@@ -942,7 +997,6 @@ def _persist_pps_ingestion_result(
             continue
         candidates[notice_key] = item
 
-    now = datetime.now(timezone.utc)
     ordered_candidates, superseded_revisions = _ranked_pps_candidates(candidates, now=now)
     direct_contract_count = sum(
         bool(item.get("direct_contract_signal")) for _notice_key, item in ordered_candidates

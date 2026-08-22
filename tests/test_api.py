@@ -9,7 +9,13 @@ from sqlalchemy import select
 import pytest
 
 from pai_loop.main import create_app
-from pai_loop.models import AnalysisRun, IngestionJob, Notice, RecommendationSnapshot
+from pai_loop.models import (
+    AnalysisRun,
+    Evaluation,
+    IngestionJob,
+    Notice,
+    RecommendationSnapshot,
+)
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
     ExtractedRequirement,
@@ -799,6 +805,253 @@ def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
         all_rows = live_client.get("/api/v1/notices").json()
     assert len(all_rows) == 1
     assert all_rows[0]["status"] == "CLOSED"
+
+
+def test_historical_cancellation_does_not_suppress_newer_re_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    future = datetime.now(timezone.utc) + timedelta(days=10)
+
+    class _CancelledThenRegisteredClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            common = {
+                "bid_notice_no": "R26BK-REOPENED",
+                "title": "연장 후 재등록된 교육 용역",
+                "agency": "공공기관",
+                "estimated_amount": 100_000_000,
+                "source_url": None,
+                "raw": {},
+            }
+            yield {
+                **common,
+                "identity": f"R26BK-REOPENED|00|{future.isoformat()}",
+                "revision_no": "00",
+                "published_at": future - timedelta(days=3),
+                "deadline": future,
+                "notice_kind": "취소공고",
+            }
+            yield {
+                **common,
+                "identity": f"R26BK-REOPENED|01|{(future + timedelta(days=2)).isoformat()}",
+                "revision_no": "01",
+                "published_at": future - timedelta(days=2),
+                "deadline": future + timedelta(days=2),
+                "notice_kind": "등록공고",
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _CancelledThenRegisteredClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] == 1
+        assert len(body["created_notice_keys"]) == 1
+        assert not any("취소공고" in warning for warning in body["warnings"])
+        rows = live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()
+    assert len(rows) == 1
+    assert rows[0]["revision_no"] == "01"
+
+
+def test_newer_expired_revision_closes_older_still_open_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    now = datetime.now(timezone.utc)
+
+    class _NewerExpiredRevisionClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            common = {
+                "bid_notice_no": "R26BK-CORRECTED",
+                "title": "마감 정정 교육 용역",
+                "agency": "공공기관",
+                "estimated_amount": 100_000_000,
+                "notice_kind": "정정공고",
+                "source_url": None,
+                "raw": {},
+            }
+            yield {
+                **common,
+                "identity": f"R26BK-CORRECTED|00|{(now + timedelta(days=5)).isoformat()}",
+                "revision_no": "00",
+                "published_at": now - timedelta(days=4),
+                "deadline": now + timedelta(days=5),
+            }
+            yield {
+                **common,
+                "identity": f"R26BK-CORRECTED|01|{(now - timedelta(days=1)).isoformat()}",
+                "revision_no": "01",
+                "published_at": now - timedelta(days=2),
+                "deadline": now - timedelta(days=1),
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _NewerExpiredRevisionClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
+        )
+        assert response.status_code == 200, response.text
+        rows = live_client.get("/api/v1/notices").json()
+        open_rows = live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()
+    assert len(rows) == 1
+    assert rows[0]["revision_no"] == "01"
+    assert rows[0]["status"] == "EXPIRED"
+    assert open_rows == []
+
+
+def test_deadline_extension_with_same_revision_supersedes_and_requeues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    first_deadline = datetime.now(timezone.utc) + timedelta(days=5)
+    extended_deadline = first_deadline + timedelta(days=7)
+    run = {"extended": False}
+
+    class _DeadlineExtensionClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            deadlines = (
+                [first_deadline, extended_deadline]
+                if run["extended"]
+                else [first_deadline]
+            )
+            for index, deadline in enumerate(deadlines):
+                yield {
+                    "identity": f"R26BK-EXTENDED|00|{deadline.isoformat()}",
+                    "bid_notice_no": "R26BK-EXTENDED",
+                    "revision_no": "00",
+                    "title": "접수기한 연장 교육 용역",
+                    "agency": "공공기관",
+                    "published_at": datetime.now(timezone.utc) + timedelta(minutes=index),
+                    "deadline": deadline,
+                    "estimated_amount": 100_000_000,
+                    "notice_kind": "연장공고" if index else "등록공고",
+                    "source_url": None,
+                    "raw": {},
+                }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _DeadlineExtensionClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert first.status_code == 200, first.text
+        original_key = first.json()["created_notice_keys"][0]
+
+        run["extended"] = True
+        second = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert len(body["created_notice_keys"]) == 1
+        assert body["created_notice_keys"][0] != original_key
+        rows = live_client.get("/api/v1/notices").json()
+        open_rows = live_client.get("/api/v1/notices", params={"status": "OPEN"}).json()
+    assert len(rows) == 2
+    assert {item["notice_key"]: item["status"] for item in rows}[original_key] == "CLOSED"
+    assert len(open_rows) == 1
+    assert open_rows[0]["notice_key"] == body["created_notice_keys"][0]
+    assert datetime.fromisoformat(open_rows[0]["deadline"]).replace(
+        tzinfo=timezone.utc
+    ) == extended_deadline
+
+
+def test_same_key_provider_update_hides_stale_evaluation_and_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    updated = {"value": False}
+    deadline = datetime.now(timezone.utc) + timedelta(days=7)
+
+    class _SameKeyMaterialUpdateClient(_FakePpsClient):
+        def iter_notices(self, **_kwargs: object):
+            yield {
+                "identity": f"R26BK-SAME-KEY|00|{deadline.isoformat()}",
+                "bid_notice_no": "R26BK-SAME-KEY",
+                "revision_no": "00",
+                "title": "동일 키 정정 교육 용역",
+                "agency": "공공기관",
+                "published_at": datetime.now(timezone.utc),
+                "deadline": deadline,
+                "estimated_amount": 100_000_000,
+                "notice_kind": "정정공고" if updated["value"] else "등록공고",
+                "source_url": None,
+                "raw": {
+                    "ntceKindNm": "정정공고" if updated["value"] else "등록공고"
+                },
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _SameKeyMaterialUpdateClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
+    with TestClient(app) as live_client:
+        first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert first.status_code == 200, first.text
+        notice_key = first.json()["created_notice_keys"][0]
+
+        with app.state.session_factory() as session:
+            notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+            assert notice is not None
+            basis = max(notice.versions, key=lambda item: item.version_no)
+            evaluation = Evaluation(
+                notice_id=notice.id,
+                notice_version_id=basis.id,
+                deadline_snapshot_at=notice.deadline,
+                eligibility="PASS",
+                reason_code="PASS",
+                readiness_score=100,
+                readiness_status="GREEN",
+                evidence_coverage=100,
+                risk_score=10,
+                risk_band="GO",
+                ruleset_version="test",
+                atomic_results=[],
+                explanation={},
+            )
+            run = AnalysisRun(
+                notice_id=notice.id,
+                notice_version_id=basis.id,
+                status="COMPLETED",
+                idempotency_key="same-key-before-provider-update",
+                input_sha256="d" * 64,
+                output_summary={"eligibility": "PASS"},
+            )
+            run.evaluation = evaluation
+            run.recommendations.append(
+                RecommendationSnapshot(
+                    recommendation_key="bid:system",
+                    rank=0,
+                    recommendation="GO",
+                )
+            )
+            session.add(run)
+            session.commit()
+
+        before = live_client.get(f"/api/v1/notices/{notice_key}").json()
+        assert before["latest_evaluation"]["eligibility"] == "PASS"
+        assert before["recommendation"] == "GO"
+
+        updated["value"] = True
+        refresh = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
+        assert refresh.status_code == 200, refresh.text
+        assert refresh.json()["updated_notice_keys"] == [notice_key]
+
+        after = live_client.get(f"/api/v1/notices/{notice_key}").json()
+        assert after["latest_evaluation"] is None
+        assert after["recommendation"] is None
+        assert after["ingestion_state"] == "VERSIONED"
+        current_evaluated = live_client.get(
+            "/api/v1/notices",
+            params={"analysis_state": "EVALUATED"},
+        ).json()
+        assert all(item["notice_key"] != notice_key for item in current_evaluated)
+        briefing = live_client.get("/api/v1/operations/daily-briefing").json()
+    assert briefing["notices"][0]["fit"]["eligibility"] == "PENDING"
+    assert briefing["notices"][0]["analysis_snapshot"] is None
 
 
 def test_teams_mock_records_real_adaptive_card_without_external_delivery(client: TestClient) -> None:
