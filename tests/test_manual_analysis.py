@@ -209,9 +209,12 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
                 attempt=1,
                 request_latency_ms=410,
                 response_received=True,
+                model="gpt-5.6-luna",
+                service_tier="default",
                 usage=OpenAIProviderUsage(
                     input_tokens=2_000,
                     cached_input_tokens=500,
+                    cache_write_tokens=250,
                     output_tokens=400,
                     reasoning_output_tokens=100,
                     total_tokens=2_400,
@@ -225,9 +228,12 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
                 attempt=1,
                 request_latency_ms=590,
                 response_received=True,
+                model="gpt-5.6-luna",
+                service_tier="default",
                 usage=OpenAIProviderUsage(
                     input_tokens=3_000,
                     cached_input_tokens=0,
+                    cache_write_tokens=0,
                     output_tokens=600,
                     reasoning_output_tokens=150,
                     total_tokens=3_600,
@@ -278,6 +284,9 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
         assert telemetry["usage_unreported_calls"] == 0
         assert telemetry["input_tokens"] == 5_000
         assert telemetry["cached_input_tokens"] == 500
+        assert telemetry["cache_write_tokens"] == 250
+        assert telemetry["models"] == ["gpt-5.6-luna"]
+        assert telemetry["service_tiers"] == ["default"]
         assert telemetry["output_tokens"] == 1_000
         assert telemetry["reasoning_output_tokens"] == 250
         assert telemetry["total_tokens"] == 6_000
@@ -291,6 +300,31 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
             assert job is not None
             assert job.api_calls == 2
             assert job.request_json["openai_telemetry"] == telemetry
+
+
+def test_manual_batch_exception_marks_cost_accounting_incomplete(monkeypatch) -> None:
+    app = _app(monkeypatch)
+
+    def fail_batch(_payload, _request):
+        raise RuntimeError("synthetic failure after an unknown provider boundary")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fail_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert queued.status_code == 200, queued.text
+        request_id = queued.json()["request_id"]
+        completed = client.get(
+            f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
+            headers=SAME_ORIGIN_HEADERS,
+        )
+        assert completed.status_code == 200, completed.text
+        body = completed.json()
+        assert body["outcome"] == "REVIEW"
+        assert body["openai_telemetry"]["accounting_complete"] is False
 
 
 def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(

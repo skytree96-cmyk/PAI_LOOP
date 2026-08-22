@@ -46,6 +46,7 @@ def response_payload(output: dict) -> dict:
         "id": "resp_synthetic",
         "status": "completed",
         "model": "gpt-5.6-luna",
+        "service_tier": "default",
         "output": [
             {
                 "type": "message",
@@ -60,13 +61,17 @@ def response_payload_with_usage(
     *,
     input_tokens: int,
     cached_tokens: int,
+    cache_write_tokens: int = 0,
     output_tokens: int,
     reasoning_tokens: int,
 ) -> dict:
     payload = response_payload(output)
     payload["usage"] = {
         "input_tokens": input_tokens,
-        "input_tokens_details": {"cached_tokens": cached_tokens},
+        "input_tokens_details": {
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+        },
         "output_tokens": output_tokens,
         "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
         "total_tokens": input_tokens + output_tokens,
@@ -158,6 +163,7 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert outcome.data is not None
     assert outcome.data.requirements[0].category == "REGION"
     assert captured["store"] is False
+    assert captured["service_tier"] == "default"
     assert captured["max_output_tokens"] == 12_000
     assert captured["text"]["format"]["type"] == "json_schema"
     assert captured["text"]["format"]["strict"] is True
@@ -306,6 +312,7 @@ def test_usage_and_wall_latency_are_aggregated_across_corrective_attempts() -> N
                 output,
                 input_tokens=100 if calls == 1 else 50,
                 cached_tokens=20 if calls == 1 else 0,
+                cache_write_tokens=10 if calls == 1 else 0,
                 output_tokens=40 if calls == 1 else 20,
                 reasoning_tokens=10 if calls == 1 else 5,
             ),
@@ -331,10 +338,13 @@ def test_usage_and_wall_latency_are_aggregated_across_corrective_attempts() -> N
     assert telemetry.usage_unreported_calls == 0
     assert telemetry.input_tokens == 150
     assert telemetry.cached_input_tokens == 20
+    assert telemetry.cache_write_tokens == 10
     assert telemetry.output_tokens == 60
     assert telemetry.reasoning_output_tokens == 15
     assert telemetry.total_tokens == 210
     assert telemetry.total_request_latency_ms == 357
+    assert telemetry.models == ["gpt-5.6-luna"]
+    assert telemetry.service_tiers == ["default"]
     assert [item.request_latency_ms for item in telemetry.attempts] == [123, 234]
     assert [item.attempt for item in telemetry.attempts] == [1, 2]
     serialised = outcome.model_dump_json()

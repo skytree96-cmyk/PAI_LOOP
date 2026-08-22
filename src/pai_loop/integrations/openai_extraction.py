@@ -191,6 +191,7 @@ class OpenAIProviderUsage(BaseModel):
 
     input_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
     cached_input_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
+    cache_write_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
     output_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
     reasoning_output_tokens: int | None = Field(default=None, ge=0, le=10_000_000)
     total_tokens: int | None = Field(default=None, ge=0, le=20_000_000)
@@ -204,6 +205,8 @@ class OpenAIAttemptTelemetry(BaseModel):
     attempt: int = Field(ge=1, le=200)
     request_latency_ms: int = Field(ge=0, le=3_600_000)
     response_received: bool
+    model: str | None = Field(default=None, min_length=1, max_length=100)
+    service_tier: str | None = Field(default=None, min_length=1, max_length=32)
     usage: OpenAIProviderUsage | None = None
 
 
@@ -212,15 +215,19 @@ class OpenAITelemetry(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    accounting_complete: bool = True
     api_calls: int = Field(default=0, ge=0, le=200)
     usage_reported_calls: int = Field(default=0, ge=0, le=200)
     usage_unreported_calls: int = Field(default=0, ge=0, le=200)
     input_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
     cached_input_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    cache_write_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
     output_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
     reasoning_output_tokens: int | None = Field(default=None, ge=0, le=2_000_000_000)
     total_tokens: int | None = Field(default=None, ge=0, le=4_000_000_000)
     total_request_latency_ms: int = Field(default=0, ge=0, le=720_000_000)
+    models: list[str] = Field(default_factory=list, max_length=20)
+    service_tiers: list[str] = Field(default_factory=list, max_length=20)
     attempts: list[OpenAIAttemptTelemetry] = Field(default_factory=list, max_length=200)
 
 
@@ -252,6 +259,7 @@ def aggregate_openai_attempts(
         usage_unreported_calls=len(bounded) - len(usages),
         input_tokens=_complete_usage_sum(usages, "input_tokens"),
         cached_input_tokens=_complete_usage_sum(usages, "cached_input_tokens"),
+        cache_write_tokens=_complete_usage_sum(usages, "cache_write_tokens"),
         output_tokens=_complete_usage_sum(usages, "output_tokens"),
         reasoning_output_tokens=_complete_usage_sum(
             usages,
@@ -259,6 +267,10 @@ def aggregate_openai_attempts(
         ),
         total_tokens=_complete_usage_sum(usages, "total_tokens"),
         total_request_latency_ms=sum(item.request_latency_ms for item in bounded),
+        models=sorted({item.model for item in bounded if item.model}),
+        service_tiers=sorted(
+            {item.service_tier for item in bounded if item.service_tier}
+        ),
         attempts=bounded,
     )
 
@@ -266,8 +278,11 @@ def aggregate_openai_attempts(
 def merge_openai_telemetry(*items: OpenAITelemetry) -> OpenAITelemetry:
     """Merge request/attachment aggregates while keeping attempt order."""
 
-    return aggregate_openai_attempts(
+    merged = aggregate_openai_attempts(
         [attempt for item in items for attempt in item.attempts]
+    )
+    return merged.model_copy(
+        update={"accounting_complete": all(item.accounting_complete for item in items)}
     )
 
 
@@ -492,6 +507,12 @@ class OpenAIExtractionClient:
                         round((self._monotonic() - started_at) * 1_000),
                     ),
                     response_received=True,
+                    model=self._provider_label(decoded_payload, "model", 100),
+                    service_tier=self._provider_label(
+                        decoded_payload,
+                        "service_tier",
+                        32,
+                    ),
                     usage=usage,
                 )
             )
@@ -527,6 +548,18 @@ class OpenAIExtractionClient:
         raise AssertionError("unreachable")
 
     @staticmethod
+    def _provider_label(payload: Any, key: str, maximum: int) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get(key)
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        if not value or len(value) > maximum or not value.isascii():
+            return None
+        return value
+
+    @staticmethod
     def _provider_usage(payload: Any) -> OpenAIProviderUsage | None:
         """Read only documented numeric usage counters from a provider body."""
 
@@ -542,14 +575,17 @@ class OpenAIExtractionClient:
             return value if 0 <= value <= maximum else None
 
         cached_tokens = None
+        cache_write_tokens = None
         if isinstance(input_details, dict):
             cached_tokens = counter(input_details.get("cached_tokens"))
+            cache_write_tokens = counter(input_details.get("cache_write_tokens"))
         reasoning_tokens = None
         if isinstance(output_details, dict):
             reasoning_tokens = counter(output_details.get("reasoning_tokens"))
         usage = OpenAIProviderUsage(
             input_tokens=counter(raw.get("input_tokens")),
             cached_input_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
             output_tokens=counter(raw.get("output_tokens")),
             reasoning_output_tokens=reasoning_tokens,
             total_tokens=counter(raw.get("total_tokens"), maximum=20_000_000),
@@ -703,6 +739,10 @@ class OpenAIExtractionClient:
 
         body = {
             "model": self.model,
+            # Pin standard processing so the recorded token counters map to
+            # the public standard-tier price instead of an implicit premium
+            # or flex tier selected outside this request contract.
+            "service_tier": "default",
             "store": False,
             "max_output_tokens": self.max_output_tokens,
             "input": [

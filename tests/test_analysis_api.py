@@ -421,15 +421,19 @@ def test_analysis_enrichment_reuse_preserves_workflow_partition_invariant(
             "members_processed": 0,
             "openai_calls": 0,
             "openai_telemetry": {
+                "accounting_complete": True,
                 "api_calls": 0,
                 "usage_reported_calls": 0,
                 "usage_unreported_calls": 0,
                 "input_tokens": None,
                 "cached_input_tokens": None,
+                "cache_write_tokens": None,
                 "output_tokens": None,
                 "reasoning_output_tokens": None,
                 "total_tokens": None,
                 "total_request_latency_ms": 0,
+                "models": [],
+                "service_tiers": [],
                 "attempts": [],
             },
             "warnings": [],
@@ -462,9 +466,12 @@ def test_protected_batch_aggregates_and_persists_sanitised_openai_telemetry(
                 attempt=1,
                 request_latency_ms=321,
                 response_received=True,
+                model="gpt-5.6-luna",
+                service_tier="default",
                 usage=OpenAIProviderUsage(
                     input_tokens=1_200,
                     cached_input_tokens=200,
+                    cache_write_tokens=100,
                     output_tokens=300,
                     reasoning_output_tokens=75,
                     total_tokens=1_500,
@@ -503,6 +510,9 @@ def test_protected_batch_aggregates_and_persists_sanitised_openai_telemetry(
     assert body["openai_calls"] == 1
     assert body["openai_telemetry"]["input_tokens"] == 1_200
     assert body["openai_telemetry"]["cached_input_tokens"] == 200
+    assert body["openai_telemetry"]["cache_write_tokens"] == 100
+    assert body["openai_telemetry"]["models"] == ["gpt-5.6-luna"]
+    assert body["openai_telemetry"]["service_tiers"] == ["default"]
     assert body["openai_telemetry"]["reasoning_output_tokens"] == 75
     assert body["openai_telemetry"]["total_request_latency_ms"] == 321
     assert body["enrichment"]["openai_telemetry"] == body["openai_telemetry"]
@@ -636,6 +646,7 @@ def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
     assert body["results"][0]["status"] == "COMPLETED"
     assert body["results"][0]["analysis_state"] == "REVIEW"
     assert body["results"][0]["analysis_reason_code"] == "OPENAI_REVIEW"
+    assert body["openai_telemetry"]["accounting_complete"] is False
     assert "INTERNAL_ENRICHMENT_ERROR" in body["results"][0]["warnings"]
 
     detail = client.get(f"/api/v1/notices/{notice_key}")

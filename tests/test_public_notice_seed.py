@@ -49,6 +49,7 @@ def _safe_extraction_payload() -> dict[str, object]:
             "openai_telemetry": {
                 "input_tokens": 1_234,
                 "cached_input_tokens": 123,
+                "cache_write_tokens": 61,
                 "output_tokens": 456,
                 "reasoning_output_tokens": 78,
                 "total_tokens": 1_690,

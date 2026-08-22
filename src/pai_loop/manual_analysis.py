@@ -390,6 +390,9 @@ def _execute_reserved_manual_job(
             else:  # pragma: no cover - defensive manifest-bound invariant
                 raise RuntimeError("manual attachment continuation limit exceeded")
         except Exception:
+            total_openai_telemetry = total_openai_telemetry.model_copy(
+                update={"accounting_complete": False}
+            )
             _finish_manual_job(
                 request,
                 request_id=request_id,
@@ -444,7 +447,7 @@ def get_manual_notice_analysis_request(
                 else OpenAITelemetry()
             )
         except ValidationError:
-            openai_telemetry = OpenAITelemetry()
+            openai_telemetry = OpenAITelemetry(accounting_complete=False)
     notice = _load_notice(request, notice_key)
     reason = _reason(notice)
     if job_status == "RUNNING":

@@ -134,6 +134,7 @@ _FORBIDDEN_KEYS = {
     "email",
     "input_tokens",
     "cached_input_tokens",
+    "cache_write_tokens",
     "openai_telemetry",
     "output_tokens",
     "phone",

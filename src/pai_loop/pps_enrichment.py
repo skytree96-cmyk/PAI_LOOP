@@ -7,7 +7,7 @@ import re
 import time
 import unicodedata
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
 from typing import Any, Callable, Literal
@@ -149,6 +149,15 @@ _METADATA_FIELDS = {
 
 class PpsEnrichmentError(RuntimeError):
     """Public-safe failure code for bounded PPS attachment processing."""
+
+
+class PpsPostOpenAIProcessingError(PpsEnrichmentError):
+    """Preserve paid-attempt telemetry when later local processing fails."""
+
+    def __init__(self, outcome: ExtractionOutcome) -> None:
+        super().__init__("POST_OPENAI_PROCESSING_FAILED")
+        self.openai_calls = outcome.api_calls
+        self.openai_telemetry = outcome.openai_telemetry
 
 
 @dataclass(frozen=True, slots=True)
@@ -2468,34 +2477,37 @@ def _enrich_selected_pps_attachment(
             document_text=selection.text,
             allowed_attachment_ids={attachment["attachment_id"]},
         )
-    if outcome.api_calls > MAX_OPENAI_CALLS_PER_ATTACHMENT:
-        raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")
-    quantitative_record = (
-        validate_quantitative_attachment_extraction(
-            outcome.data,
-            source_text=source_text,
-            attachment_id=attachment["attachment_id"],
-            document_sha256=document_sha256,
-            manifest_sha256=current_manifest_sha256,
-            prompt_version=outcome.prompt_version,
-            extraction_schema_version=outcome.schema_version,
+    try:
+        if outcome.api_calls > MAX_OPENAI_CALLS_PER_ATTACHMENT:
+            raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")
+        quantitative_record = (
+            validate_quantitative_attachment_extraction(
+                outcome.data,
+                source_text=source_text,
+                attachment_id=attachment["attachment_id"],
+                document_sha256=document_sha256,
+                manifest_sha256=current_manifest_sha256,
+                prompt_version=outcome.prompt_version,
+                extraction_schema_version=outcome.schema_version,
+            )
+            if outcome.status == "ACCEPTED" and outcome.data is not None
+            else None
         )
-        if outcome.status == "ACCEPTED" and outcome.data is not None
-        else None
-    )
-    with session.begin():
-        version = _persist_extraction_version(
-            session,
-            notice_id=notice_id,
-            attachment=attachment,
-            manifest_sha256=manifest_sha256,
-            current_manifest_sha256=current_manifest_sha256,
-            document_sha256=document_sha256,
-            outcome=outcome,
-            error_code=outcome.error_code,
-            processing_audit=processing_audit,
-            quantitative_validation_record=quantitative_record,
-        )
+        with session.begin():
+            version = _persist_extraction_version(
+                session,
+                notice_id=notice_id,
+                attachment=attachment,
+                manifest_sha256=manifest_sha256,
+                current_manifest_sha256=current_manifest_sha256,
+                document_sha256=document_sha256,
+                outcome=outcome,
+                error_code=outcome.error_code,
+                processing_audit=processing_audit,
+                quantitative_validation_record=quantitative_record,
+            )
+    except Exception as exc:
+        raise PpsPostOpenAIProcessingError(outcome) from exc
     retry_warnings = (
         ["CORRECTIVE_EXTRACTION_RETRY_USED"]
         if outcome.corrective_retry_used
@@ -2841,6 +2853,24 @@ def enrich_notice_from_pps(
                     openai_timeout_seconds=openai_timeout_seconds,
                     openai_max_retries=openai_max_retries,
                 )
+            except PpsPostOpenAIProcessingError as exc:
+                # The provider already processed a paid request.  Even if a
+                # later validation/DB step fails, retain its usage so callers
+                # cannot mistake the failure for a zero-cost attempt.
+                session.rollback()
+                item_result = record_internal_pps_enrichment_failure(
+                    session,
+                    notice_id=notice_id,
+                    attachment=attachment,
+                    manifest_sha256=_digest(attachment),
+                    current_manifest_sha256=current_manifest_sha256,
+                    attachments_discovered=discovered,
+                )
+                item_result = replace(
+                    item_result,
+                    openai_calls=exc.openai_calls,
+                    openai_telemetry=exc.openai_telemetry,
+                )
             except Exception:
                 # Each exact attachment owns its failure marker. Continue with
                 # siblings so one corrupt document never discards successes.
@@ -2852,6 +2882,10 @@ def enrich_notice_from_pps(
                     manifest_sha256=_digest(attachment),
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
+                )
+                item_result = replace(
+                    item_result,
+                    openai_telemetry=OpenAITelemetry(accounting_complete=False),
                 )
             reason_code = None
         audit = _audit_result_for_attachment(

@@ -2206,6 +2206,7 @@ def _execute_notice_analysis_batch(
                 # contract even when an unexpected precheck error occurs.
                 enrichment_result = PpsEnrichmentResult(
                     status="REVIEW",
+                    openai_telemetry=OpenAITelemetry(accounting_complete=False),
                     warnings=[
                         "INTERNAL_ENRICHMENT_ERROR",
                         *(["DRY_RUN_NO_WRITES"] if payload.dry_run else []),
