@@ -25,11 +25,13 @@ def test_notice_normalisation_handles_pps_fields() -> None:
             "bidNtceNm": "가상 용역",
             "ntceInsttNm": "가상 기관",
             "bidNtceDt": "202608161000",
+            "chgDt": "20260816123045",
             "bidClseDt": "202608201700",
             "presmptPrce": "120,000,000",
         }
     )
     assert item["revision_no"] == "01"
+    assert item["provider_changed_at"].isoformat() == "2026-08-16T12:30:45+09:00"
     assert item["deadline"].isoformat() == "2026-08-20T17:00:00+09:00"
     assert item["deadline_basis"] == "BID_CLOSE"
     assert item["estimated_amount"] == 120_000_000

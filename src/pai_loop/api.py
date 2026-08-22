@@ -817,27 +817,40 @@ def _same_datetime(left: datetime | None, right: datetime | None) -> bool:
     return _comparable_utc(left) == _comparable_utc(right)
 
 
-def _revision_preference(item: dict[str, Any], *, now: datetime) -> tuple[int, float, int, float]:
+def _revision_preference(
+    item: dict[str, Any],
+    *,
+    now: datetime,
+) -> tuple[int, int, float, int, float]:
     """Return the provider-authority order for one logical PPS notice.
 
-    Revision and publication time describe which provider event is newer.
+    Revision and provider change/publication time describe which provider
+    event is newer.
     Deadline liveness must not outrank them: otherwise an obsolete, still-open
     revision can resurrect after a newer correction has already expired. A
-    cancellation wins only an otherwise exact tie, so a later re-registration
-    with the same revision can still become authoritative.
+    dated cancellation wins only an otherwise exact tie, so a later
+    re-registration with the same revision can still become authoritative. A
+    cancellation with no provider event timestamp is deliberately fail-closed
+    within the same revision; a higher revision still outranks it.
     """
 
     revision_text = str(item.get("revision_no") or "00")
     digits = re.sub(r"[^0-9]", "", revision_text)
     revision = int(digits or 0)
+    provider_changed = item.get("provider_changed_at")
     published = item.get("published_at")
-    published_timestamp = _comparable_utc(published).timestamp() if published else 0.0
+    provider_event_at = provider_changed or published
+    provider_event_timestamp = (
+        _comparable_utc(provider_event_at).timestamp() if provider_event_at else 0.0
+    )
     deadline = item.get("deadline")
     deadline_timestamp = _comparable_utc(deadline).timestamp() if deadline else 0.0
     cancelled = int(str(item.get("notice_kind") or "").strip() == "취소공고")
+    undated_cancellation = int(bool(cancelled and provider_event_at is None))
     return (
         revision,
-        published_timestamp,
+        undated_cancellation,
+        provider_event_timestamp,
         cancelled,
         deadline_timestamp,
     )
@@ -856,11 +869,17 @@ def _authoritative_pps_events(
     """
 
     latest_by_notice_no: dict[str, dict[str, Any]] = {}
+    search_keywords_by_notice_no: dict[str, set[str]] = {}
     superseded = 0
     for item in rows:
         notice_no = str(item.get("bid_notice_no") or "").strip()
         if not notice_no:
             continue
+        search_keywords_by_notice_no.setdefault(notice_no, set()).update(
+            keyword.strip()
+            for keyword in item.get("_search_keywords") or []
+            if isinstance(keyword, str) and keyword.strip()
+        )
         previous = latest_by_notice_no.get(notice_no)
         if previous is None:
             latest_by_notice_no[notice_no] = item
@@ -868,7 +887,18 @@ def _authoritative_pps_events(
         superseded += 1
         if _revision_preference(item, now=now) > _revision_preference(previous, now=now):
             latest_by_notice_no[notice_no] = item
-    return list(latest_by_notice_no.values()), superseded
+    authoritative: list[dict[str, Any]] = []
+    for notice_no, winner in latest_by_notice_no.items():
+        # The winning provider event may come from only one of many keyword
+        # queries.  Preserve the deterministic union on a copy so neither
+        # winner replacement nor caller input order can shrink provenance.
+        projected = dict(winner)
+        projected["_search_keywords"] = sorted(
+            search_keywords_by_notice_no[notice_no],
+            key=lambda value: (value.casefold(), value),
+        )
+        authoritative.append(projected)
+    return authoritative, superseded
 
 
 def _ranked_pps_candidates(

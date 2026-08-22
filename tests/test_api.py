@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 import pytest
 
+from pai_loop.api import _authoritative_pps_events
 from pai_loop.main import create_app
 from pai_loop.models import (
     AnalysisRun,
@@ -805,6 +806,147 @@ def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
         all_rows = live_client.get("/api/v1/notices").json()
     assert len(all_rows) == 1
     assert all_rows[0]["status"] == "CLOSED"
+
+
+@pytest.mark.parametrize("reverse_rows", [False, True])
+def test_authoritative_pps_event_keeps_keyword_union_when_changed_at_selects_winner(
+    reverse_rows: bool,
+) -> None:
+    published = datetime(2026, 8, 16, 9, tzinfo=timezone.utc)
+    first_deadline = published + timedelta(days=5)
+    extended_deadline = first_deadline + timedelta(days=3)
+    original = {
+        "identity": f"R26BK-KEYWORD-UNION|00|{first_deadline.isoformat()}",
+        "bid_notice_no": "R26BK-KEYWORD-UNION",
+        "revision_no": "00",
+        "title": "최초 공고",
+        "published_at": published,
+        "provider_changed_at": published + timedelta(minutes=1),
+        "deadline": first_deadline,
+        "notice_kind": "등록공고",
+        "_search_keywords": ["교육", "AI"],
+    }
+    extension = {
+        **original,
+        "identity": f"R26BK-KEYWORD-UNION|00|{extended_deadline.isoformat()}",
+        "title": "기한 연장 공고",
+        "provider_changed_at": published + timedelta(minutes=2),
+        "deadline": extended_deadline,
+        "notice_kind": "연장공고",
+        "_search_keywords": ["컨설팅", "AI"],
+    }
+    rows = [original, extension]
+    if reverse_rows:
+        rows.reverse()
+
+    authoritative, superseded = _authoritative_pps_events(
+        rows,
+        now=published,
+    )
+
+    assert superseded == 1
+    assert len(authoritative) == 1
+    assert authoritative[0]["title"] == "기한 연장 공고"
+    assert authoritative[0]["deadline"] == extended_deadline
+    assert authoritative[0]["_search_keywords"] == ["AI", "교육", "컨설팅"]
+    assert extension["_search_keywords"] == ["컨설팅", "AI"]
+
+
+def test_multi_keyword_ingestion_persists_all_query_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    published = datetime.now(timezone.utc)
+    deadline = published + timedelta(days=5)
+
+    class _MultiKeywordDuplicateClient(_FakePpsClient):
+        def iter_notices(self, **kwargs: object):
+            extra_params = kwargs.get("extra_params")
+            assert isinstance(extra_params, dict)
+            keyword = str(extra_params["bidNtceNm"])
+            changed_offset = {"교육": 1, "컨설팅": 2}[keyword]
+            yield {
+                "identity": f"R26BK-MULTI-QUERY|00|{deadline.isoformat()}",
+                "bid_notice_no": "R26BK-MULTI-QUERY",
+                "revision_no": "00",
+                "title": "교육 컨설팅 통합 용역",
+                "agency": "공공기관",
+                "published_at": published,
+                "provider_changed_at": published + timedelta(minutes=changed_offset),
+                "deadline": deadline,
+                "estimated_amount": 100_000_000,
+                "notice_kind": "등록공고",
+                "source_url": None,
+                "raw": {
+                    "bidNtceNo": "R26BK-MULTI-QUERY",
+                    "bidNtceOrd": "00",
+                },
+            }
+
+    monkeypatch.setattr("pai_loop.api.PpsClient", _MultiKeywordDuplicateClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-16",
+                "keywords": ["교육", "컨설팅"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["created"] == 1
+        with app.state.session_factory() as session:
+            notice = session.scalar(
+                select(Notice).where(Notice.bid_notice_no == "R26BK-MULTI-QUERY")
+            )
+            assert notice is not None
+            metadata = max(notice.versions, key=lambda version: version.version_no)
+            assert metadata.source_payload["provenance"]["search_keywords"] == [
+                "교육",
+                "컨설팅",
+            ]
+
+
+def test_undated_same_revision_cancellation_is_fail_closed_but_higher_revision_wins() -> None:
+    published = datetime(2026, 8, 16, 9, tzinfo=timezone.utc)
+    registered = {
+        "identity": "R26BK-UNDATED-CANCEL|00|registered",
+        "bid_notice_no": "R26BK-UNDATED-CANCEL",
+        "revision_no": "00",
+        "title": "등록 공고",
+        "published_at": published,
+        "provider_changed_at": None,
+        "deadline": published + timedelta(days=5),
+        "notice_kind": "등록공고",
+    }
+    undated_cancellation = {
+        **registered,
+        "identity": "R26BK-UNDATED-CANCEL|00|cancelled",
+        "title": "취소 공고",
+        "published_at": None,
+        "deadline": None,
+        "notice_kind": "취소공고",
+    }
+
+    authoritative, _superseded = _authoritative_pps_events(
+        [registered, undated_cancellation],
+        now=published,
+    )
+    assert authoritative[0]["notice_kind"] == "취소공고"
+
+    higher_revision = {
+        **registered,
+        "identity": "R26BK-UNDATED-CANCEL|01|registered",
+        "revision_no": "01",
+        "title": "상위 차수 재등록 공고",
+    }
+    authoritative, _superseded = _authoritative_pps_events(
+        [registered, undated_cancellation, higher_revision],
+        now=published,
+    )
+    assert authoritative[0]["revision_no"] == "01"
+    assert authoritative[0]["notice_kind"] == "등록공고"
 
 
 def test_historical_cancellation_does_not_suppress_newer_re_registration(
