@@ -465,6 +465,118 @@ def test_hwp5_extracts_every_para_text_and_skips_inline_control_payload() -> Non
     assert "악성페이로드" not in result.text
 
 
+def test_mislabeled_hwpx_ole_content_uses_bounded_hwp5_reader() -> None:
+    section = _hwp_record(
+        67,
+        "오표기 첨부의 입찰 참가자격과 정량평가 근거입니다".encode("utf-16le"),
+    )
+    module = _fake_olefile_module([_raw_deflate(section)])
+
+    def fail_if_hwpx_leaf_is_called(_name: str, _content: bytes) -> str:
+        raise AssertionError("OLE content must not be sent to the HWPX ZIP reader")
+
+    with _with_fake_module("olefile", module):
+        result = extract_document_content(
+            "실제내용은HWP.hwpx",
+            b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1synthetic",
+            leaf_extractors={".hwpx": fail_if_hwpx_leaf_is_called},
+        )
+
+    assert result.complete is True
+    assert result.members_discovered == result.members_processed == 1
+    assert "입찰 참가자격" in result.text
+    assert "정량평가 근거" in result.text
+
+
+def test_hwp5_default_script_streams_are_inert_when_header_flag_is_clear() -> None:
+    section = _hwp_record(
+        67,
+        "기본 스크립트 저장소와 별개인 유효한 정량평가 본문입니다".encode("utf-16le"),
+    )
+    module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        flags=1,
+        extra_streams={
+            "Scripts/DefaultJScript": b"producer-default",
+            "Scripts/JScriptVersion": b"producer-version",
+        },
+    )
+
+    with _with_fake_module("olefile", module):
+        result = extract_document_content("기본스크립트공고.hwp", b"synthetic")
+
+    assert result.complete is True
+    assert result.warnings == ()
+    assert result.member_issues == ()
+
+    malformed_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        flags=1,
+        extra_streams={"Scripts/UnexpectedPayload": b"never execute"},
+    )
+    with _with_fake_module("olefile", malformed_module):
+        malformed = extract_document_content("불일치스크립트공고.hwp", b"synthetic")
+
+    assert malformed.complete is False
+    assert malformed.warnings == ("HWP_ACTIVE_CONTENT_NOT_EXTRACTED",)
+
+
+def test_hwp5_compressed_bindata_is_classified_after_bounded_inflate() -> None:
+    section = _hwp_record(
+        67,
+        "압축 이미지와 별개인 유효한 정량평가 본문입니다".encode("utf-16le"),
+    )
+    image_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        flags=1,
+        extra_streams={
+            "BinData/BIN0001.PNG": _raw_deflate(b"\x89PNG\r\n\x1a\nimage-only")
+        },
+    )
+
+    with _with_fake_module("olefile", image_module):
+        image = extract_document_content("압축이미지공고.hwp", b"synthetic")
+
+    assert image.complete is True
+    assert image.warnings == ()
+    assert image.member_issues == ()
+
+    embedded_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        flags=1,
+        extra_streams={
+            "BinData/BIN0002.OLE": _raw_deflate(
+                b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1embedded"
+            )
+        },
+    )
+    with _with_fake_module("olefile", embedded_module):
+        embedded = extract_document_content("압축임베딩공고.hwp", b"synthetic")
+
+    assert embedded.complete is False
+    assert embedded.warnings == ("HWP_EMBEDDED_DOCUMENT_NOT_EXTRACTED",)
+
+    oversized_module = _fake_olefile_module(
+        [_raw_deflate(section)],
+        flags=1,
+        extra_streams={
+            "BinData/BIN0003.PNG": _raw_deflate(
+                b"\x89PNG\r\n\x1a\n" + (b"x" * 1_024)
+            )
+        },
+    )
+    with _with_fake_module("olefile", oversized_module):
+        with pytest.raises(DocumentExtractionError, match="HWP_SECTION_SIZE_LIMIT"):
+            extract_document_content(
+                "압축한도공고.hwp",
+                b"synthetic",
+                limits=ExtractionLimits(
+                    max_member_uncompressed_bytes=256,
+                    max_total_uncompressed_bytes=512,
+                ),
+            )
+
+
 def test_hwp5_embedded_ole_is_explicitly_incomplete_but_image_bindata_is_safe() -> None:
     section = _hwp_record(
         67,

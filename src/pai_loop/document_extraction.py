@@ -237,6 +237,13 @@ def _extract(
 ) -> DocumentExtractionResult:
     budget.add_input(len(content))
     extension = PurePath(file_name).suffix.casefold()
+    # PPS metadata is not always consistent with the bytes served by the
+    # public attachment endpoint.  In particular, real ``.hwpx`` attachments
+    # can contain an HWP5 OLE compound file.  The OLE signature is unambiguous,
+    # so recover through the bounded HWP5 reader instead of attempting to open
+    # the content as a ZIP and permanently recording HWPX_INVALID_ARCHIVE.
+    if extension == ".hwpx" and content.startswith(_OLE_CFB_SIGNATURE):
+        return _result_from_parsed(_extract_hwp5(content, budget), file_name)
     if extension == ".hwp":
         return _result_from_parsed(_extract_hwp5(content, budget), file_name)
     if extension == ".xls":
@@ -406,7 +413,8 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
         compressed = bool(flags & 1)
         warnings: list[str] = []
         issues: list[MemberIssue] = []
-        if flags & (1 << 3):
+        has_active_scripts = bool(flags & (1 << 3))
+        if has_active_scripts:
             _add_member_issue(
                 warnings,
                 issues,
@@ -415,12 +423,22 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
             )
         for key, path in streams.items():
             if key.startswith("scripts/"):
-                _add_member_issue(
-                    warnings,
-                    issues,
-                    "/".join(path),
-                    "HWP_ACTIVE_CONTENT_NOT_EXTRACTED",
-                )
+                # HWP producers commonly retain the two default Scripts
+                # streams even when the authoritative FileHeader script bit
+                # is clear.  Those inert container defaults are not active
+                # document content.  A set script bit remains fail-closed and
+                # any non-standard script path is treated as a malformed
+                # mismatch rather than silently accepted.
+                if has_active_scripts or key not in {
+                    "scripts/defaultjscript",
+                    "scripts/jscriptversion",
+                }:
+                    _add_member_issue(
+                        warnings,
+                        issues,
+                        "/".join(path),
+                        "HWP_ACTIVE_CONTENT_NOT_EXTRACTED",
+                    )
                 continue
             if not key.startswith("bindata/"):
                 continue
@@ -429,8 +447,12 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
                 path,
                 maximum=budget.limits.max_member_uncompressed_bytes,
             )
-            budget.add_uncompressed(len(embedded))
-            kind = _hwp_bindata_kind(embedded)
+            decoded, kind = _decode_hwp_bindata(
+                embedded,
+                compressed=compressed,
+                maximum=budget.limits.max_member_uncompressed_bytes,
+            )
+            budget.add_uncompressed(len(decoded))
             if kind == "IMAGE":
                 continue
             reason = (
@@ -501,6 +523,35 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
                 ole.close()
             except Exception:
                 pass
+
+
+def _decode_hwp_bindata(
+    content: bytes,
+    *,
+    compressed: bool,
+    maximum: int,
+) -> tuple[bytes, str]:
+    """Return bounded BinData bytes and their non-executing content class.
+
+    HWP5's compression flag also applies to ordinary BinData streams.  Public
+    documents therefore often store PNG/BMP bytes as raw DEFLATE; inspecting
+    only the compressed prefix misclassifies every image as unverified and
+    makes otherwise complete HWP text unusable.  Recognisable uncompressed
+    data is kept as-is. Invalid non-DEFLATE data remains UNKNOWN, while an
+    expanded member that exceeds the existing per-member bound still fails
+    closed.
+    """
+
+    kind = _hwp_bindata_kind(content)
+    if kind != "UNKNOWN" or not compressed:
+        return content, kind
+    try:
+        decoded = _decompress_hwp_section(content, maximum)
+    except DocumentExtractionError as exc:
+        if str(exc) == "HWP_SECTION_DEFLATE_INVALID":
+            return content, kind
+        raise
+    return decoded, _hwp_bindata_kind(decoded)
 
 
 def _read_ole_stream(

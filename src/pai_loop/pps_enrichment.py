@@ -74,7 +74,7 @@ from .document_extraction import (
     ExtractionLimits,
     extract_document_content,
 )
-PPS_PROCESSING_VERSION = "pps-document-processing-0.3.0"
+PPS_PROCESSING_VERSION = "pps-document-processing-0.3.1"
 MAX_PDF_PAGES = 120
 MAX_HWPX_ENTRIES = 240
 MAX_HWPX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
@@ -84,6 +84,7 @@ DETERMINISTIC_REVIEW_CODES = {
     "HWP_BINARY_UNSUPPORTED",
     "UNSUPPORTED_ATTACHMENT_TYPE",
 }
+SEMANTIC_SOURCE_GAPS_WARNING = "SEMANTIC_SOURCE_GAPS_REPORTED"
 
 # These are high-recall provider discovery terms, separate from department
 # ranking vocabulary.  ``연수`` and ``포럼`` cover relevant service notices
@@ -644,6 +645,42 @@ def _has_valid_quantitative_record(
     )
 
 
+def _accepted_source_is_technically_complete(version: NoticeVersion) -> bool:
+    """Separate byte/text coverage from model-reported semantic source gaps.
+
+    ``missing_or_unreadable`` describes information that the model could not
+    establish from one attachment (including a referenced sibling document).
+    It must remain available to the aggregate pipeline, but it does not mean
+    that downloading, text extraction, or the bounded model input failed.
+    """
+
+    payload = version.source_payload if isinstance(version.source_payload, dict) else {}
+    processing = (
+        payload.get("document_processing")
+        if isinstance(payload.get("document_processing"), dict)
+        else {}
+    )
+    source_complete = processing.get("source_read_complete")
+    input_complete = processing.get("analysis_input_complete")
+    processing_complete = (
+        bool(version.document_complete)
+        if source_complete is None and input_complete is None
+        else source_complete is True and input_complete is True
+    )
+    return bool(
+        payload.get("status") == "ACCEPTED"
+        and version.extraction_status in {"ACCEPTED", "COMPLETE"}
+        and processing_complete
+    )
+
+
+def _accepted_source_reports_semantic_gaps(version: NoticeVersion) -> bool:
+    payload = version.source_payload if isinstance(version.source_payload, dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    gaps = result.get("missing_or_unreadable")
+    return bool(isinstance(gaps, list) and gaps)
+
+
 def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> bool:
     """Return true when every current manifest item has a terminal audit.
 
@@ -688,7 +725,7 @@ def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> boo
         elif (
             payload.get("status") != "ACCEPTED"
             or attempt.extraction_status not in {"ACCEPTED", "COMPLETE"}
-            or not attempt.document_complete
+            or not _accepted_source_is_technically_complete(attempt)
             or not _has_valid_quantitative_record(
                 attempt,
                 attachment_id=attachment["attachment_id"],
@@ -750,7 +787,7 @@ def pps_attachment_coverage(
             attempt is not None
             and payload.get("status") == "ACCEPTED"
             and attempt.extraction_status in {"ACCEPTED", "COMPLETE"}
-            and attempt.document_complete
+            and _accepted_source_is_technically_complete(attempt)
             and _has_valid_quantitative_record(
                 attempt,
                 attachment_id=attachment["attachment_id"],
@@ -972,19 +1009,9 @@ def public_analysis_reason(
             "ACCEPTED",
             "COMPLETE",
         }:
-            if latest.document_complete:
+            if _accepted_source_is_technically_complete(latest):
                 continue
-            processing = (
-                payload.get("document_processing")
-                if isinstance(payload.get("document_processing"), dict)
-                else {}
-            )
-            error_code = (
-                "DOCUMENT_PROCESSING_INCOMPLETE"
-                if processing.get("source_read_complete") is not True
-                or processing.get("analysis_input_complete") is not True
-                else "OPENAI_SOURCE_GAPS"
-            )
+            error_code = "DOCUMENT_PROCESSING_INCOMPLETE"
             failures.append((attachment, latest, error_code))
             continue
         failures.append((attachment, latest, str(payload.get("error_code") or "")))
@@ -2053,7 +2080,6 @@ def _persist_extraction_version(
                 accepted
                 and outcome
                 and outcome.data
-                and not outcome.data.missing_or_unreadable
                 and isinstance(processing_audit, dict)
                 and processing_audit.get("source_read_complete") is True
                 and processing_audit.get("analysis_input_complete") is True
@@ -2252,12 +2278,20 @@ def _accepted_outcome_for_duplicate_content(
     notice_id: str,
     attachment_id: str,
     document_sha256: str,
+    source_text_sha256: str,
+    analysis_input_sha256: str,
 ) -> ExtractionOutcome | None:
-    """Reuse an exact-byte accepted extraction while preserving attachment audit.
+    """Reuse an accepted LLM result only for identical bytes and model input.
 
-    Evidence IDs are rebound only because the downloaded bytes are identical.
-    The cloned outcome is persisted under the sibling attachment's own current
-    manifest digest, so every manifest item retains an independent audit row.
+    A document-processing upgrade may change only the completeness audit while
+    preserving both extracted source text and the exact bounded text submitted
+    to the model. In that narrow case a prior paid result remains valid. The
+    caller persists it with the *current* processing audit. Any source/input
+    hash, prompt, or schema change forces a fresh model call.
+
+    Evidence IDs are rebound only because the downloaded bytes are identical;
+    the cloned outcome is persisted under the current attachment's manifest
+    digest so every manifest item retains an independent audit row.
     """
 
     versions = list(
@@ -2272,13 +2306,22 @@ def _accepted_outcome_for_duplicate_content(
     )
     for version in versions:
         payload = version.source_payload
+        processing = (
+            payload.get("document_processing")
+            if isinstance(payload, dict)
+            and isinstance(payload.get("document_processing"), dict)
+            else {}
+        )
         if (
             not isinstance(payload, dict)
             or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
             or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
             or payload.get("status") != "ACCEPTED"
+            or payload.get("document_sha256") != document_sha256
             or payload.get("prompt_version") != PROMPT_VERSION
-            or payload.get("processing_version") != PPS_PROCESSING_VERSION
+            or payload.get("schema_version") != SCHEMA_VERSION
+            or processing.get("source_text_sha256") != source_text_sha256
+            or processing.get("analysis_input_sha256") != analysis_input_sha256
             or not isinstance(payload.get("result"), dict)
         ):
             continue
@@ -2395,9 +2438,13 @@ def _stored_attachment_result(
     source_complete = processing.get("source_read_complete") is True
     input_complete = processing.get("analysis_input_complete") is True
     status = str(payload.get("status") or "REVIEW")
-    if status == "ACCEPTED" and version.document_complete:
+    if status == "ACCEPTED" and _accepted_source_is_technically_complete(version):
         result_status: Literal["REUSED", "REVIEW"] = "REUSED"
-        warnings: list[str] = []
+        warnings: list[str] = (
+            [SEMANTIC_SOURCE_GAPS_WARNING]
+            if _accepted_source_reports_semantic_gaps(version)
+            else []
+        )
     elif status == "ACCEPTED":
         result_status = "REVIEW"
         warnings = [
@@ -2559,6 +2606,8 @@ def _enrich_selected_pps_attachment(
             notice_id=notice_id,
             attachment_id=attachment["attachment_id"],
             document_sha256=document_sha256,
+            source_text_sha256=str(processing_audit["source_text_sha256"]),
+            analysis_input_sha256=str(processing_audit["analysis_input_sha256"]),
         )
         if duplicate_outcome is not None and duplicate_outcome.data is not None:
             quantitative_record = validate_quantitative_attachment_extraction(
@@ -2582,7 +2631,12 @@ def _enrich_selected_pps_attachment(
                 processing_audit=processing_audit,
                 quantitative_validation_record=quantitative_record,
             )
-            duplicate_complete = bool(version.document_complete)
+            duplicate_complete = _accepted_source_is_technically_complete(version)
+            duplicate_semantic_warnings = (
+                [SEMANTIC_SOURCE_GAPS_WARNING]
+                if _accepted_source_reports_semantic_gaps(version)
+                else []
+            )
             return PpsEnrichmentResult(
                 status="REUSED" if duplicate_complete else "REVIEW",
                 attachments_discovered=attachments_discovered,
@@ -2597,6 +2651,7 @@ def _enrich_selected_pps_attachment(
                 version_id=version.id,
                 warnings=[
                     "DUPLICATE_CONTENT_REUSED",
+                    *duplicate_semantic_warnings,
                     *([] if duplicate_complete else ["DOCUMENT_PROCESSING_INCOMPLETE"]),
                 ],
             )
@@ -2675,7 +2730,12 @@ def _enrich_selected_pps_attachment(
         if outcome.corrective_retry_used
         else []
     )
-    document_complete = bool(version.document_complete)
+    document_complete = _accepted_source_is_technically_complete(version)
+    semantic_gap_warning = bool(
+        outcome.status == "ACCEPTED"
+        and outcome.data is not None
+        and outcome.data.missing_or_unreadable
+    )
     processing_warnings = [
         *extraction.warnings,
         *([] if selection.complete else ["ANALYSIS_INPUT_PARTIAL"]),
@@ -2684,11 +2744,7 @@ def _enrich_selected_pps_attachment(
     if outcome.status != "ACCEPTED":
         terminal_warning = outcome.error_code or "OPENAI_REVIEW_R07"
     elif not document_complete:
-        terminal_warning = (
-            "OPENAI_SOURCE_GAPS"
-            if extraction.complete and selection.complete
-            else "DOCUMENT_PROCESSING_INCOMPLETE"
-        )
+        terminal_warning = "DOCUMENT_PROCESSING_INCOMPLETE"
     return PpsEnrichmentResult(
         status=(
             "COMPLETED"
@@ -2710,6 +2766,7 @@ def _enrich_selected_pps_attachment(
         warnings=[
             *retry_warnings,
             *processing_warnings,
+            *([SEMANTIC_SOURCE_GAPS_WARNING] if semantic_gap_warning else []),
             *([terminal_warning] if terminal_warning else []),
         ],
     )
@@ -2731,6 +2788,7 @@ def _audit_result_for_attachment(
                 "CORRECTIVE_EXTRACTION_RETRY_USED",
                 "REVIEW_COOLDOWN_REUSED",
                 "DUPLICATE_CONTENT_REUSED",
+                SEMANTIC_SOURCE_GAPS_WARNING,
             }
         ),
         None,

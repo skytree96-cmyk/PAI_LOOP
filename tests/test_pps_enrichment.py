@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 from sqlalchemy import select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 import pai_loop.pps_enrichment as pps_enrichment_module
 from pai_loop.pps_enrichment import (
@@ -994,6 +996,77 @@ class _RetryableReviewClient:
         )
 
 
+class _SemanticGapExtractionClient(_CountingExtractionClient):
+    calls = 0
+
+    def extract(self, **kwargs: object) -> ExtractionOutcome:
+        outcome = super().extract(**kwargs)
+        assert outcome.data is not None
+        return outcome.model_copy(
+            update={
+                "data": outcome.data.model_copy(
+                    update={
+                        "missing_or_unreadable": [
+                            "별도 제안요청서의 세부 평가표는 이 첨부에 포함되지 않음"
+                        ]
+                    }
+                )
+            }
+        )
+
+
+def _single_hwpx_reuse_case(
+    *,
+    notice_key: str,
+) -> tuple[Engine, sessionmaker[Session], str, httpx.MockTransport]:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/hwp+zip")
+        archive.writestr(
+            "Contents/section0.xml",
+            "<s><p>교육 컨설팅 수행실적을 제출해야 합니다.</p>"
+            "<p>마감일까지 제출합니다.</p></s>",
+        )
+    content = buffer.getvalue()
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"Content-Type": "application/zip"},
+            content=content,
+        )
+    )
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        notice = Notice(
+            notice_key=notice_key,
+            bid_notice_no="R26BK00000001",
+            revision_no="000",
+            title="교육 컨설팅 용역",
+            agency="공공기관",
+            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item={
+                "bidNtceNo": "R26BK00000001",
+                "bidNtceOrd": "000",
+                "ntceSpecFileNm1": "제안요청서.hwpx",
+                "ntceSpecDocUrl1": G2B_DOWNLOAD,
+            },
+            search_keywords=["교육", "컨설팅"],
+            dry_run=False,
+        )
+        session.commit()
+        notice_id = notice.id
+    return engine, factory, notice_id, transport
+
+
 def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_openai() -> None:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -1114,6 +1187,213 @@ def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_open
         session.commit()
     with factory() as session:
         assert has_current_accepted_pps_extraction(session, notice_id) is False
+    engine.dispose()
+
+
+def test_cross_processing_version_reuses_identical_source_and_analysis_input() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-CROSS-PROCESSING-REUSE",
+    )
+    _CountingExtractionClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+    with factory() as session:
+        legacy = session.get(NoticeVersion, first.version_id)
+        assert legacy is not None
+        legacy_payload = json.loads(json.dumps(legacy.source_payload, ensure_ascii=False))
+        legacy_payload["processing_version"] = "pps-document-processing-0.3.0"
+        legacy.source_payload = legacy_payload
+        source_hash = legacy_payload["document_processing"]["source_text_sha256"]
+        input_hash = legacy_payload["document_processing"]["analysis_input_sha256"]
+        session.commit()
+
+    with factory() as session:
+        second = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+        current = session.get(NoticeVersion, second.version_id)
+        assert current is not None
+        assert current.id != first.version_id
+        assert current.document_complete is True
+        assert current.source_payload["processing_version"] == PPS_PROCESSING_VERSION
+        assert current.source_payload["document_processing"]["processing_version"] == (
+            PPS_PROCESSING_VERSION
+        )
+        assert current.source_payload["document_processing"]["source_text_sha256"] == (
+            source_hash
+        )
+        assert current.source_payload["document_processing"]["analysis_input_sha256"] == (
+            input_hash
+        )
+
+    assert first.status == "COMPLETED"
+    assert first.openai_calls == 2
+    assert second.status == "REUSED"
+    assert second.openai_calls == 0
+    assert "DUPLICATE_CONTENT_REUSED" in second.warnings
+    assert _CountingExtractionClient.calls == 1
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("changed_scope", "changed_field", "changed_value"),
+    [
+        ("document_processing", "source_text_sha256", "0" * 64),
+        ("document_processing", "analysis_input_sha256", "0" * 64),
+        ("payload", "document_sha256", "0" * 64),
+        ("payload", "prompt_version", "legacy-prompt"),
+        ("payload", "schema_version", "legacy-schema"),
+    ],
+)
+def test_cross_processing_version_changed_hash_or_contract_forces_openai(
+    changed_scope: str,
+    changed_field: str,
+    changed_value: str,
+) -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key=f"PPS-CROSS-PROCESSING-{changed_field}",
+    )
+    _CountingExtractionClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+    with factory() as session:
+        legacy = session.get(NoticeVersion, first.version_id)
+        assert legacy is not None
+        legacy_payload = json.loads(json.dumps(legacy.source_payload, ensure_ascii=False))
+        legacy_payload["processing_version"] = "pps-document-processing-0.3.0"
+        if changed_scope == "document_processing":
+            legacy_payload["document_processing"][changed_field] = changed_value
+        else:
+            legacy_payload[changed_field] = changed_value
+        legacy.source_payload = legacy_payload
+        session.commit()
+
+    with factory() as session:
+        second = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+        current = session.get(NoticeVersion, second.version_id)
+        assert current is not None
+        assert current.id != first.version_id
+        assert current.source_payload["processing_version"] == PPS_PROCESSING_VERSION
+
+    assert first.openai_calls == 2
+    assert second.status == "COMPLETED"
+    assert second.openai_calls == 2
+    assert "DUPLICATE_CONTENT_REUSED" not in second.warnings
+    assert _CountingExtractionClient.calls == 2
+    engine.dispose()
+
+
+def test_accepted_semantic_gap_does_not_downgrade_technical_document_coverage() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", "application/hwp+zip")
+        archive.writestr(
+            "Contents/section0.xml",
+            "<s><p>교육 컨설팅 수행실적을 제출해야 합니다.</p>"
+            "<p>별도 제안요청서를 참조합니다.</p></s>",
+        )
+    content = buffer.getvalue()
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"Content-Type": "application/zip"},
+            content=content,
+        )
+    )
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        notice = Notice(
+            notice_key="PPS-SEMANTIC-GAP-001",
+            bid_notice_no="R26BK00000001",
+            revision_no="000",
+            title="교육 컨설팅 용역",
+            agency="공공기관",
+            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item={
+                "bidNtceNo": "R26BK00000001",
+                "bidNtceOrd": "000",
+                "ntceSpecFileNm1": "입찰공고.hwpx",
+                "ntceSpecDocUrl1": G2B_DOWNLOAD,
+            },
+            search_keywords=["교육", "컨설팅"],
+            dry_run=False,
+        )
+        session.commit()
+        notice_id = notice.id
+
+    _SemanticGapExtractionClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_SemanticGapExtractionClient,
+        )
+    with factory() as session:
+        second = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_SemanticGapExtractionClient,
+        )
+        version = session.get(NoticeVersion, first.version_id)
+        assert version is not None
+        assert version.document_complete is True
+        assert version.source_payload["result"]["missing_or_unreadable"]
+        coverage = pps_attachment_coverage(list(version.notice.versions))
+        reason = public_analysis_reason(list(version.notice.versions))
+        assert coverage.complete is True
+        assert coverage.accepted == 1
+        assert reason.reason_code == "ANALYZED"
+        assert has_current_accepted_pps_extraction(session, notice_id) is True
+
+    assert first.status == "COMPLETED"
+    assert first.attachment_results[0].status == "COMPLETED"
+    assert first.attachment_results[0].reason_code == "ANALYZED"
+    assert pps_enrichment_module.SEMANTIC_SOURCE_GAPS_WARNING in first.warnings
+    assert second.status == "REUSED"
+    assert pps_enrichment_module.SEMANTIC_SOURCE_GAPS_WARNING in second.warnings
+    assert first.version_id == second.version_id
+    assert _SemanticGapExtractionClient.calls == 1
     engine.dispose()
 
 
