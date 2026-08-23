@@ -5,6 +5,7 @@
   const REQUEST_TIMEOUT_MS = 12000;
   const NOTICE_REQUEST_TIMEOUT_MS = 30000;
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
+  const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
   const NOTICE_PAGE_SIZE = 200;
   const URGENT_DEADLINE_DAYS = 7;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
@@ -42,6 +43,31 @@
     manualAnalysisToken: "",
     manualAnalysisPolicy: null,
     manualAnalysisRequests: new Map(),
+    ppsDiscovery: {
+      query: "",
+      fromDate: "",
+      toDate: "",
+      candidates: [],
+      resultCount: 0,
+      apiCalls: 0,
+      truncated: false,
+      searched: false,
+      loading: false,
+      error: null,
+      saving: new Set(),
+    },
+    companyAwards: {
+      company: null,
+      records: [],
+      count: 0,
+      apiCalls: 0,
+      truncated: false,
+      partial: false,
+      warnings: [],
+      searched: false,
+      loading: false,
+      error: null,
+    },
     performance: {
       summary: null,
       records: [],
@@ -100,6 +126,8 @@
 
   function init() {
     cacheElements();
+    formatAwardBusinessNumberInput();
+    initializeExternalSearchDates();
     configurePaiBotTeamsAccess();
     detectTeamsContext();
     bindEvents();
@@ -113,6 +141,7 @@
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
       "noticeHeading", "noticeSummary", "noticeSearchScope", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
+      "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
       "detailDrawer", "drawerLoading", "closeDetailButton", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
@@ -125,7 +154,9 @@
       "teamsMockSource", "teamsMockTitle", "teamsMockAgency", "teamsMockStatus", "teamsMockDeadline", "teamsMockReason",
       "teamsMockReadiness", "teamsMockRisk", "teamsMockRecommendation", "teamsPreviewOpenButton", "teamsPreviewDecisionButton",
       "teamsMockSendButton", "clearTeamsLogsButton", "teamsMockLogList", "teamsMockJson", "teamsLogStorageLabel",
-      "opportunityHero", "opportunityKpis", "noticeSection", "performanceSection", "footerDisclaimer",
+      "opportunityHero", "opportunityKpis", "noticeSection", "awardResultsSection", "performanceSection", "footerDisclaimer",
+      "awardResultsSummary", "awardSearchForm", "awardCompanyName", "awardBusinessNumber", "awardStartDate", "awardEndDate", "awardSearchButton",
+      "awardResultsPanel", "awardResultsList", "awardResultsLoadingState", "awardResultsErrorState", "awardResultsErrorMessage", "awardResultsEmptyState",
       "performanceTotal", "performancePeriod", "performanceYears", "performancePrivacy", "performanceResultSummary",
       "performanceFilterForm", "performanceSearchInput", "performanceYearFilter", "performanceDivisionFilter",
       "performancePanel", "performanceList", "performanceLoadingState", "performanceErrorState", "performanceErrorMessage",
@@ -143,6 +174,7 @@
     els.tabButtons = [...document.querySelectorAll("[role='tab'][data-tab]")];
     els.tabPanels = [...document.querySelectorAll("[role='tabpanel'][data-panel]")];
     els.decisionInputs = [...document.querySelectorAll("input[name='decision']")];
+    els.awardScopeInputs = [...document.querySelectorAll("input[name='awardScope']")];
   }
 
   function readRuntimeConfig() {
@@ -232,6 +264,11 @@
     els.filterForm.addEventListener("reset", () => window.setTimeout(resetPrioritySearch, 0));
     els.searchInput.addEventListener("input", scheduleNoticeSearch);
     els.emptyResetButton.addEventListener("click", resetFilters);
+    els.ppsDiscoveryForm.addEventListener("submit", searchPpsNotices);
+    els.ppsDiscoveryResults.addEventListener("click", handlePpsDiscoveryAction);
+
+    els.awardSearchForm.addEventListener("submit", searchCompanyAwards);
+    els.awardBusinessNumber.addEventListener("input", formatAwardBusinessNumberInput);
 
     els.performanceFilterForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -316,6 +353,11 @@
   }
 
   function refreshCurrentView() {
+    if (state.currentView === "awards") {
+      if (state.companyAwards.searched) void searchCompanyAwards();
+      else renderCompanyAwardsView();
+      return;
+    }
     if (state.currentView === "performance") {
       void loadPerformance({ force: true });
       return;
@@ -562,6 +604,8 @@
 
   function scheduleNoticeSearch(event) {
     if (event?.isComposing || state.source === "demo") return;
+    const query = els.searchInput.value.trim().replace(/\s+/g, " ");
+    if (state.ppsDiscovery.query !== query && !state.ppsDiscovery.loading) resetPpsDiscovery(query);
     renderNoticeSearchScope();
     window.clearTimeout(state.noticeSearchTimer);
     state.noticeSearchTimer = window.setTimeout(() => {
@@ -578,7 +622,229 @@
     }
     window.clearTimeout(state.noticeSearchTimer);
     state.noticeSearchTimer = null;
+    const query = els.searchInput.value.trim().replace(/\s+/g, " ");
+    if (state.ppsDiscovery.query !== query && !state.ppsDiscovery.loading) resetPpsDiscovery(query);
     void loadApplicationData({ forceApi: true });
+  }
+
+  function initializeExternalSearchDates() {
+    const today = new Date();
+    const ppsFrom = new Date(today);
+    ppsFrom.setDate(ppsFrom.getDate() - 30);
+    const awardFrom = new Date(today);
+    awardFrom.setFullYear(awardFrom.getFullYear() - 3);
+    els.ppsDiscoveryFromDate.value = formatDateInputValue(ppsFrom);
+    els.ppsDiscoveryToDate.value = formatDateInputValue(today);
+    els.awardStartDate.value = formatDateInputValue(awardFrom);
+    els.awardEndDate.value = formatDateInputValue(today);
+  }
+
+  function resetPpsDiscovery(query = "") {
+    state.ppsDiscovery.query = query;
+    state.ppsDiscovery.fromDate = "";
+    state.ppsDiscovery.toDate = "";
+    state.ppsDiscovery.candidates = [];
+    state.ppsDiscovery.resultCount = 0;
+    state.ppsDiscovery.apiCalls = 0;
+    state.ppsDiscovery.truncated = false;
+    state.ppsDiscovery.searched = false;
+    state.ppsDiscovery.loading = false;
+    state.ppsDiscovery.error = null;
+    state.ppsDiscovery.saving.clear();
+  }
+
+  function normalizePpsCandidate(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    return {
+      selectionKey: stringValue(firstValue(source.selection_key, source.selectionKey)),
+      bidNoticeNo: stringValue(firstValue(source.bid_notice_no, source.bidNoticeNo), "공고번호 미확인"),
+      revisionNo: stringValue(firstValue(source.revision_no, source.revisionNo), "00"),
+      title: stringValue(source.title, "공고명 미확인"),
+      agency: stringValue(source.agency, "발주기관 미확인"),
+      publishedAt: stringValue(firstValue(source.published_at, source.publishedAt)),
+      deadline: stringValue(source.deadline),
+      estimatedAmount: numberOrNull(firstValue(source.estimated_amount, source.estimatedAmount)),
+      noticeKind: stringValue(firstValue(source.notice_kind, source.noticeKind), "업무 구분 미확인"),
+      directContractSignal: booleanValue(firstValue(source.direct_contract_signal, source.directContractSignal)) ?? false,
+      sourceUrl: safeHttpUrl(firstValue(source.source_url, source.sourceUrl)),
+      alreadyStored: booleanValue(firstValue(source.already_stored, source.alreadyStored)) ?? false,
+      storedNoticeKey: stringValue(firstValue(source.stored_notice_key, source.storedNoticeKey)),
+      relatedRevisionStored: booleanValue(firstValue(source.related_revision_stored, source.relatedRevisionStored)) ?? false,
+      saveable: booleanValue(source.saveable) ?? false,
+      saveBlockReason: stringValue(firstValue(source.save_block_reason, source.saveBlockReason)),
+    };
+  }
+
+  async function searchPpsNotices(event) {
+    event?.preventDefault?.();
+    const query = els.searchInput.value.trim().replace(/\s+/g, " ");
+    const fromDate = els.ppsDiscoveryFromDate.value;
+    const toDate = els.ppsDiscoveryToDate.value;
+    const span = dateSpanDays(fromDate, toDate);
+    if (query.length < 2 || query.length > 60) {
+      showToast("검색어 확인 필요", "나라장터 검색어는 2–60자로 입력해 주세요.", "warning");
+      return;
+    }
+    if (span === null || span < 0 || span > 30) {
+      showToast("조회 기간 확인 필요", "나라장터 공고 검색은 한 번에 최대 31일까지 조회할 수 있습니다.", "warning");
+      return;
+    }
+    const authHeaders = await manualAnalysisAuthHeaders();
+    if (!authHeaders) {
+      showToast("나라장터 조회 취소", "운영 기능 실행 키가 입력되지 않았습니다.", "warning");
+      return;
+    }
+
+    state.ppsDiscovery.query = query;
+    state.ppsDiscovery.fromDate = fromDate;
+    state.ppsDiscovery.toDate = toDate;
+    state.ppsDiscovery.loading = true;
+    state.ppsDiscovery.searched = false;
+    state.ppsDiscovery.error = null;
+    state.ppsDiscovery.candidates = [];
+    renderPpsDiscovery();
+    try {
+      const payload = unwrapObject(await apiRequest("/pps-discovery/search", {
+        method: "POST",
+        headers: authHeaders,
+        timeoutMs: EXTERNAL_PPS_REQUEST_TIMEOUT_MS,
+        body: JSON.stringify({ query, from_date: fromDate, to_date: toDate, limit: 30 }),
+      }));
+      state.ppsDiscovery.candidates = arrayValue(payload.candidates).map(normalizePpsCandidate);
+      state.ppsDiscovery.resultCount = Math.max(numberOrNull(payload.result_count) ?? state.ppsDiscovery.candidates.length, 0);
+      state.ppsDiscovery.apiCalls = Math.max(numberOrNull(payload.api_calls) ?? 0, 0);
+      state.ppsDiscovery.truncated = booleanValue(payload.truncated) ?? false;
+      state.ppsDiscovery.searched = true;
+      state.ppsDiscovery.error = null;
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      state.ppsDiscovery.error = error;
+      showToast("나라장터 공고 검색 실패", humanizeError(error), "error");
+    } finally {
+      state.ppsDiscovery.loading = false;
+      renderPpsDiscovery();
+    }
+  }
+
+  function renderPpsDiscovery() {
+    if (!els.ppsDiscoverySection) return;
+    const query = els.searchInput.value.trim().replace(/\s+/g, " ");
+    const visible = Boolean(
+      state.source === "api"
+      && !state.loading
+      && query
+      && state.ppsDiscovery.query === query
+      && state.notices.length === 0
+      && state.currentView !== "awards"
+      && state.currentView !== "performance"
+    );
+    els.ppsDiscoverySection.hidden = !visible;
+    if (!visible) return;
+    if (state.ppsDiscovery.query && state.ppsDiscovery.query !== query && !state.ppsDiscovery.loading) {
+      resetPpsDiscovery(query);
+    }
+    els.ppsDiscoveryQuery.textContent = `DB 검색어 · ${query}`;
+    els.ppsDiscoverySearchButton.disabled = state.ppsDiscovery.loading || query.length < 2;
+    els.ppsDiscoveryFromDate.disabled = state.ppsDiscovery.loading;
+    els.ppsDiscoveryToDate.disabled = state.ppsDiscovery.loading;
+
+    if (state.ppsDiscovery.loading) {
+      els.ppsDiscoverySearchButton.textContent = "나라장터 조회 중…";
+      els.ppsDiscoveryStatus.textContent = "현재 수집 DB에는 없습니다. 나라장터 공고 API를 조회하고 있습니다.";
+      els.ppsDiscoveryResults.innerHTML = '<div class="pps-discovery__loading"><span class="spinner" aria-hidden="true"></span><span>외부 공고 목록을 확인하는 중입니다.</span></div>';
+      return;
+    }
+    els.ppsDiscoverySearchButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>나라장터 전체에서 검색';
+    if (state.ppsDiscovery.error) {
+      els.ppsDiscoveryStatus.textContent = `나라장터 조회 실패 · ${humanizeError(state.ppsDiscovery.error)}`;
+      els.ppsDiscoveryResults.replaceChildren();
+      return;
+    }
+    if (!state.ppsDiscovery.searched) {
+      els.ppsDiscoveryStatus.textContent = query.length < 2
+        ? "현재 수집 DB에는 없습니다. 나라장터 조회를 위해 검색어를 2자 이상 입력해 주세요."
+        : "현재 수집 DB에는 없습니다. 아래 버튼을 눌러 선택한 기간의 나라장터 공고를 별도로 조회할 수 있습니다.";
+      els.ppsDiscoveryResults.replaceChildren();
+      return;
+    }
+    const count = state.ppsDiscovery.candidates.length;
+    const suffix = state.ppsDiscovery.truncated ? " · 조회 상한까지 표시" : "";
+    els.ppsDiscoveryStatus.textContent = count
+      ? `나라장터 외부 조회 결과 ${formatNumber(state.ppsDiscovery.resultCount)}건 · API ${formatNumber(state.ppsDiscovery.apiCalls)}회${suffix}`
+      : `선택한 기간의 나라장터에도 일치 공고가 없습니다 · API ${formatNumber(state.ppsDiscovery.apiCalls)}회`;
+    els.ppsDiscoveryResults.innerHTML = count
+      ? state.ppsDiscovery.candidates.map(renderPpsCandidate).join("")
+      : emptyPanel("나라장터 검색 결과가 없습니다", "검색어 또는 게시 날짜 범위를 바꿔 다시 확인해 보세요.");
+  }
+
+  function renderPpsCandidate(candidate, index) {
+    const saving = state.ppsDiscovery.saving.has(candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`);
+    const stored = candidate.alreadyStored || Boolean(candidate.storedNoticeKey);
+    const sourceLink = candidate.sourceUrl
+      ? `<a href="${escapeAttribute(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 보기</a>`
+      : "";
+    const statusLabel = stored ? "저장된 공고" : "현재 수집 공고 아님";
+    const actionLabel = saving ? "저장 중…" : stored ? "이미 저장됨" : candidate.saveable ? "이 공고 저장" : "저장 불가";
+    const disabled = saving || stored || !candidate.saveable;
+    return `<article class="pps-candidate ${stored ? "is-stored" : ""}" role="listitem">
+      <div class="pps-candidate__head">
+        <span class="pps-candidate__state">${escapeHtml(statusLabel)}</span>
+        <span>${escapeHtml(candidate.noticeKind)}${candidate.relatedRevisionStored ? " · 다른 차수 저장됨" : ""}</span>
+      </div>
+      <h4>${escapeHtml(candidate.title)}</h4>
+      <p>${escapeHtml(candidate.agency)} · 공고 ${escapeHtml(candidate.bidNoticeNo)}-${escapeHtml(candidate.revisionNo)}</p>
+      <dl>
+        <div><dt>게시</dt><dd>${escapeHtml(formatShortDateTime(candidate.publishedAt))}</dd></div>
+        <div><dt>마감</dt><dd>${escapeHtml(formatShortDateTime(candidate.deadline))}</dd></div>
+        <div><dt>추정금액</dt><dd>${escapeHtml(formatBudget(candidate.estimatedAmount))}</dd></div>
+      </dl>
+      ${candidate.directContractSignal ? '<p class="pps-candidate__warning">수의계약 신호가 있어 저장 전 원문 확인이 필요합니다.</p>' : ""}
+      ${candidate.saveBlockReason ? `<p class="pps-candidate__warning">${escapeHtml(candidate.saveBlockReason)}</p>` : ""}
+      <footer>${sourceLink}<button class="button ${stored ? "button--ghost" : "button--pps"}" type="button" data-pps-save-index="${index}" ${disabled ? "disabled" : ""}>${escapeHtml(actionLabel)}</button></footer>
+    </article>`;
+  }
+
+  function handlePpsDiscoveryAction(event) {
+    const button = event.target.closest("[data-pps-save-index]");
+    if (!button) return;
+    const index = Number(button.dataset.ppsSaveIndex);
+    const candidate = state.ppsDiscovery.candidates[index];
+    if (candidate) void savePpsCandidate(candidate, index);
+  }
+
+  async function savePpsCandidate(candidate, index) {
+    if (!candidate.saveable || candidate.alreadyStored || !candidate.selectionKey) return;
+    const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 OpenAI 호출은 시작되지 않습니다.\n\n저장할까요?`);
+    if (!confirmed) return;
+    const authHeaders = await manualAnalysisAuthHeaders();
+    if (!authHeaders) return;
+    const savingKey = candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`;
+    state.ppsDiscovery.saving.add(savingKey);
+    renderPpsDiscovery();
+    try {
+      const result = unwrapObject(await apiRequest("/pps-discovery/save", {
+        method: "POST",
+        headers: authHeaders,
+        timeoutMs: EXTERNAL_PPS_REQUEST_TIMEOUT_MS,
+        body: JSON.stringify({
+          query: state.ppsDiscovery.query,
+          from_date: state.ppsDiscovery.fromDate,
+          to_date: state.ppsDiscovery.toDate,
+          bid_notice_no: candidate.bidNoticeNo,
+          selection_key: candidate.selectionKey,
+        }),
+      }));
+      candidate.alreadyStored = true;
+      candidate.storedNoticeKey = stringValue(result.notice_key);
+      showToast("공고 저장 완료", stringValue(result.message, "저장만 완료했습니다. 목록에서 판단 실행을 별도로 눌러 주세요."), "success");
+      await loadApplicationData({ forceApi: true });
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      showToast("공고 저장 실패", humanizeError(error), "error");
+    } finally {
+      state.ppsDiscovery.saving.delete(savingKey);
+      renderPpsDiscovery();
+    }
   }
 
   function populateDepartmentProfiles(catalog) {
@@ -961,6 +1227,188 @@
       .replace(/(?:P\.?\s*M\.?)\s*(?:[:：=]|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?/gi, "[비식별]")
       .replace(/(?:명사\s*특강|총괄책임자|연구책임자|프로젝트책임자|강연자|발표자|담당자|대표자|성명|책임자|강사명?|연사|교수|감독|선수)\s*(?:[:：=]|\s|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?(?:\s*[\(\[\{<「『][^\)\]\}>」』\r\n]{1,40}[\)\]\}>」』])?/gi, "[비식별]")
       .replace(/[가-힣]{2,5}(?:\s+|[\(\[\{<「『])\s*(?:작가|교수|박사|강사|연사|감독|선수)\s*[\)\]\}>」』]?/g, "[비식별]");
+  }
+
+  function formatAwardBusinessNumberInput() {
+    const digits = els.awardBusinessNumber.value.replace(/\D/g, "").slice(0, 10);
+    els.awardBusinessNumber.value = formatBusinessNumber(digits);
+    if (digits !== "1058201810" && els.awardCompanyName.value.trim() === "한국능률협회") {
+      els.awardCompanyName.value = "";
+    } else if (digits === "1058201810" && !els.awardCompanyName.value.trim()) {
+      els.awardCompanyName.value = "한국능률협회";
+    }
+  }
+
+  function normalizeCompanyAward(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    return {
+      scope: stringValue(source.scope, "service").toLowerCase(),
+      bidNoticeNo: stringValue(firstValue(source.bid_notice_no, source.bidNoticeNo), "공고번호 미확인"),
+      revisionNo: stringValue(firstValue(source.revision_no, source.revisionNo), "00"),
+      classificationNo: stringValue(firstValue(source.classification_no, source.classificationNo)),
+      rebidNo: stringValue(firstValue(source.rebid_no, source.rebidNo)),
+      title: stringValue(source.title, "공고명 미확인"),
+      participantCount: numberOrNull(firstValue(source.participant_count, source.participantCount)),
+      winnerName: stringValue(firstValue(source.winner_name, source.winnerName), "낙찰업체명 미확인"),
+      awardAmount: numberOrNull(firstValue(source.award_amount, source.awardAmount)),
+      awardRate: numberOrNull(firstValue(source.award_rate, source.awardRate)),
+      openedAt: stringValue(firstValue(source.opened_at, source.openedAt)),
+      agency: stringValue(source.agency, "발주기관 미확인"),
+      registeredAt: stringValue(firstValue(source.registered_at, source.registeredAt)),
+      awardedAt: stringValue(firstValue(source.awarded_at, source.awardedAt)),
+    };
+  }
+
+  async function searchCompanyAwards(event) {
+    event?.preventDefault?.();
+    if (state.companyAwards.loading) return;
+    const businessNumber = els.awardBusinessNumber.value.trim();
+    const digits = businessNumber.replace(/\D/g, "");
+    const startDate = els.awardStartDate.value;
+    const endDate = els.awardEndDate.value;
+    const scopes = els.awardScopeInputs.filter((input) => input.checked).map((input) => input.value);
+    if (digits.length !== 10) {
+      showToast("사업자등록번호 확인 필요", "숫자 10자리 사업자등록번호를 입력해 주세요.", "warning");
+      return;
+    }
+    const span = dateSpanDays(startDate, endDate);
+    if (span === null || span < 0) {
+      showToast("조회 기간 확인 필요", "시작일과 종료일을 올바르게 입력해 주세요.", "warning");
+      return;
+    }
+    if (!scopes.length) {
+      showToast("업무 구분 확인 필요", "용역·물품·공사·외자 중 하나 이상을 선택해 주세요.", "warning");
+      return;
+    }
+    const estimatedCalls = Math.ceil((span + 1) / 30) * scopes.length;
+    if (estimatedCalls > 60) {
+      showToast("조회 범위가 너무 큽니다", "기간이나 업무 구분을 줄여 주세요. 한 번의 조회는 최대 60회 API 호출로 제한됩니다.", "warning");
+      return;
+    }
+    const authHeaders = await manualAnalysisAuthHeaders();
+    if (!authHeaders) {
+      showToast("낙찰 결과 조회 취소", "운영 기능 실행 키가 입력되지 않았습니다.", "warning");
+      return;
+    }
+
+    state.companyAwards.loading = true;
+    state.companyAwards.error = null;
+    setCompanyAwardsLoading(true);
+    try {
+      const payload = unwrapObject(await apiRequest("/company-awards/search", {
+        method: "POST",
+        headers: authHeaders,
+        timeoutMs: EXTERNAL_PPS_REQUEST_TIMEOUT_MS,
+        body: JSON.stringify({
+          business_number: businessNumber,
+          start_date: startDate,
+          end_date: endDate,
+          scopes,
+          max_pages_per_window: 1,
+        }),
+      }));
+      state.companyAwards.company = firstObject(payload.company);
+      state.companyAwards.records = arrayValue(payload.records).map(normalizeCompanyAward);
+      state.companyAwards.count = Math.max(numberOrNull(payload.count) ?? state.companyAwards.records.length, 0);
+      state.companyAwards.apiCalls = Math.max(numberOrNull(payload.api_calls) ?? 0, 0);
+      state.companyAwards.truncated = booleanValue(payload.truncated) ?? false;
+      state.companyAwards.partial = booleanValue(payload.partial) ?? false;
+      state.companyAwards.warnings = arrayValue(payload.warnings).map((warning) => stringValue(warning)).filter(Boolean);
+      state.companyAwards.searched = true;
+      state.companyAwards.error = null;
+      const resolvedName = stringValue(state.companyAwards.company.name);
+      if (resolvedName && !els.awardCompanyName.value.trim()) els.awardCompanyName.value = resolvedName;
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      state.companyAwards.error = error;
+      showToast("낙찰 결과 검색 실패", humanizeError(error), "error");
+    } finally {
+      state.companyAwards.loading = false;
+      renderCompanyAwardsView();
+    }
+  }
+
+  function setCompanyAwardsLoading(isLoading) {
+    els.awardResultsLoadingState.hidden = !isLoading;
+    els.awardResultsErrorState.hidden = true;
+    els.awardResultsEmptyState.hidden = true;
+    els.awardResultsList.hidden = isLoading;
+    els.awardSearchButton.disabled = isLoading;
+    [
+      els.awardCompanyName,
+      els.awardBusinessNumber,
+      els.awardStartDate,
+      els.awardEndDate,
+      ...els.awardScopeInputs,
+    ].forEach((control) => { control.disabled = isLoading; });
+    if (state.currentView === "awards") els.refreshButton.disabled = isLoading;
+    if (isLoading) els.awardResultsSummary.textContent = "선택한 기간의 나라장터 낙찰 결과를 조회하고 있습니다.";
+  }
+
+  function renderCompanyAwardsView() {
+    const data = state.companyAwards;
+    setCompanyAwardsLoading(false);
+    if (data.error) {
+      els.awardResultsList.replaceChildren();
+      els.awardResultsList.hidden = true;
+      els.awardResultsEmptyState.hidden = true;
+      els.awardResultsErrorState.hidden = false;
+      els.awardResultsErrorMessage.textContent = humanizeError(data.error);
+      els.awardResultsSummary.textContent = "외부 낙찰 API 연결 상태와 조회 조건을 확인해 주세요.";
+      renderDataSource();
+      return;
+    }
+
+    const count = data.records.length;
+    const displayName = stringValue(data.company?.name, els.awardCompanyName.value.trim() || "조회 회사");
+    els.awardResultsErrorState.hidden = true;
+    els.awardResultsLoadingState.hidden = true;
+    els.awardResultsList.hidden = count === 0;
+    els.awardResultsEmptyState.hidden = count !== 0 || !data.searched;
+    if (!data.searched) {
+      els.awardResultsEmptyState.hidden = false;
+      els.awardResultsList.replaceChildren();
+      els.awardResultsSummary.textContent = "조회 조건을 확인한 뒤 검색을 실행하세요.";
+      renderDataSource();
+      return;
+    }
+    const limitLabel = data.truncated || data.partial ? " · 조회 상한/부분 결과" : "";
+    els.awardResultsSummary.textContent = `${displayName} 낙찰 결과 ${formatNumber(data.count)}건 · 나라장터 API ${formatNumber(data.apiCalls)}회${limitLabel}`;
+    if (!count) {
+      const title = els.awardResultsEmptyState.querySelector("strong");
+      const copy = els.awardResultsEmptyState.querySelector("p");
+      if (title) title.textContent = "조건에 맞는 낙찰 결과가 없습니다";
+      if (copy) copy.textContent = "조회 기간, 업무 구분 또는 사업자등록번호를 확인해 주세요.";
+      els.awardResultsList.replaceChildren();
+    } else {
+      const warnings = data.warnings.length
+        ? `<div class="award-result-warnings" role="note">${data.warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>`
+        : "";
+      els.awardResultsList.innerHTML = `${warnings}${data.records.map(renderCompanyAwardCard).join("")}`;
+    }
+    renderDataSource();
+  }
+
+  function renderCompanyAwardCard(record) {
+    const scopeLabels = { service: "용역", goods: "물품", construction: "공사", foreign: "외자" };
+    const opened = record.openedAt || record.awardedAt || record.registeredAt;
+    const rate = record.awardRate === null ? "낙찰률 미확인" : `${formatNumber(record.awardRate, 4)}%`;
+    const participants = record.participantCount === null ? "참가수 미확인" : `${formatNumber(record.participantCount)}개사`;
+    return `<article class="award-result-card" role="listitem">
+      <div class="award-result-card__head">
+        <span>${escapeHtml(scopeLabels[record.scope] || record.scope)}</span>
+        <time datetime="${escapeAttribute(opened)}">${escapeHtml(formatShortDateTime(opened))}</time>
+      </div>
+      <h4>${escapeHtml(record.title)}</h4>
+      <p class="award-result-card__agency">${escapeHtml(record.agency)} · ${escapeHtml(record.bidNoticeNo)}-${escapeHtml(record.revisionNo)}</p>
+      <dl>
+        <div><dt>낙찰업체</dt><dd>${escapeHtml(record.winnerName)}</dd></div>
+        <div><dt>낙찰금액</dt><dd>${escapeHtml(formatBudget(record.awardAmount))}</dd></div>
+        <div><dt>낙찰률</dt><dd>${escapeHtml(rate)}</dd></div>
+        <div><dt>참가업체</dt><dd>${escapeHtml(participants)}</dd></div>
+      </dl>
+      <footer><span>나라장터 낙찰 관측</span><small>수행·완료·실적증명 여부 미확인</small></footer>
+    </article>`;
   }
 
   function extractList(payload) {
@@ -1508,6 +1956,13 @@
   }
 
   function renderDataSource() {
+    if (state.currentView === "awards") {
+      const data = state.companyAwards;
+      els.dataSourceLabel.textContent = data.searched
+        ? `나라장터 낙찰정보 실시간 조회 · ${formatNumber(data.apiCalls)} API 호출 · PAI LOOP DB 미저장`
+        : "나라장터 낙찰정보 · 버튼 실행 시에만 외부 조회";
+      return;
+    }
     if (state.currentView === "performance") {
       const summary = state.performance.summary;
       els.dataSourceLabel.textContent = summary
@@ -1671,7 +2126,9 @@
     const keywordLabel = els.priorityKeywordInput.value.trim();
     const context = keywordLabel ? `${ownerLabel} · 검색어 ${keywordLabel}` : ownerLabel;
     els.noticeSummary.textContent = globalSearch
-      ? `저장된 전체 공고 검색 결과 ${formatNumber(count)}건입니다.`
+      ? count === total
+        ? `저장된 전체 공고 검색 결과 ${formatNumber(total)}건입니다.`
+        : `저장된 전체 공고 검색 결과 ${formatNumber(total)}건 중 현재 판정 필터에 ${formatNumber(count)}건이 표시됩니다.`
       : count === total
         ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
         : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
@@ -1681,6 +2138,7 @@
     els.emptyState.hidden = count !== 0;
     els.noticeTableWrap.hidden = count === 0 || state.layout !== "table";
     els.noticeCardGrid.hidden = count === 0 || state.layout !== "cards";
+    renderPpsDiscovery();
 
     if (count === 0) {
       els.noticeTableBody.replaceChildren();
@@ -1873,6 +2331,7 @@
     state.loading = isLoading;
     els.refreshButton.disabled = isLoading;
     if (isLoading) {
+      els.ppsDiscoverySection.hidden = true;
       els.loadingState.hidden = false;
       els.errorState.hidden = true;
       els.emptyState.hidden = true;
@@ -1901,7 +2360,7 @@
   }
 
   function showDemoBanner(reason) {
-    els.demoBanner.hidden = state.currentView === "performance";
+    els.demoBanner.hidden = ["performance", "awards"].includes(state.currentView);
     els.demoBannerTitle.textContent = state.source === "api" ? "합성 데이터가 포함되어 있습니다." : "데모 데이터로 보고 있습니다.";
     els.demoBannerReason.textContent = reason;
     els.retryApiButton.textContent = state.source === "api" ? "데이터 새로고침" : "실데이터 다시 연결";
@@ -1924,6 +2383,7 @@
       ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
       closed: ["결과 학습", "결과가 확인된 공고"],
+      awards: ["낙찰 결과", "회사별 낙찰 결과"],
       performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[view]?.[0] || titles.all[0];
@@ -1941,18 +2401,26 @@
       button.closest(".kpi-card")?.classList.toggle("is-active", active);
     });
     const performanceView = view === "performance";
-    els.opportunityHero.hidden = performanceView;
-    els.opportunityKpis.hidden = performanceView;
-    els.noticeSection.hidden = performanceView;
+    const awardsView = view === "awards";
+    const customView = performanceView || awardsView;
+    els.opportunityHero.hidden = customView;
+    els.opportunityKpis.hidden = customView;
+    els.noticeSection.hidden = customView;
+    els.awardResultsSection.hidden = !awardsView;
     els.performanceSection.hidden = !performanceView;
-    els.replayButton.hidden = performanceView;
-    els.footerDisclaimer.textContent = performanceView
-      ? "공개 실적은 유사 후보 탐색용이며, 공고별 인정실적·인정금액·정량점수를 확정하지 않습니다."
-      : "PAI LOOP는 담당자의 판단을 돕는 도구이며 자동 입찰을 수행하지 않습니다.";
+    els.replayButton.hidden = customView;
+    els.footerDisclaimer.textContent = awardsView
+      ? "낙찰 결과는 낙찰 사실 조회용이며 사업 수행·완료·실적증명서 발급 여부를 확정하지 않습니다."
+      : performanceView
+        ? "공개 실적은 유사 후보 탐색용이며, 공고별 인정실적·인정금액·정량점수를 확정하지 않습니다."
+        : "PAI LOOP는 담당자의 판단을 돕는 도구이며 자동 입찰을 수행하지 않습니다.";
     if (performanceView) {
       els.demoBanner.hidden = true;
       if (!state.performance.loaded && !state.performance.loading) void loadPerformance();
       else if (state.performance.loaded) renderPerformanceView();
+    } else if (awardsView) {
+      els.demoBanner.hidden = true;
+      renderCompanyAwardsView();
     } else if (state.source === "demo") {
       showDemoBanner(state.sourceReason);
     } else if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) {
@@ -1961,7 +2429,7 @@
       hideDemoBanner();
     }
     closeMobileMenu();
-    if (!performanceView) {
+    if (!customView) {
       const desiredStatusScope = noticeStatusScopeForView(view);
       const requestNeedsReload = state.noticeStatusScope !== desiredStatusScope || clearedServerFilters;
       if ((state.source === "api" || state.loading) && requestNeedsReload) {
@@ -3754,6 +4222,32 @@
     const date = validDate(value);
     if (!date) return "미확인";
     return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+  }
+
+  function formatDateInputValue(value) {
+    const date = validDate(value);
+    if (!date) return "";
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function dateSpanDays(fromDate, toDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) return null;
+    const [fromYear, fromMonth, fromDay] = fromDate.split("-").map(Number);
+    const [toYear, toMonth, toDay] = toDate.split("-").map(Number);
+    const start = Date.UTC(fromYear, fromMonth - 1, fromDay);
+    const end = Date.UTC(toYear, toMonth - 1, toDay);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return Math.round((end - start) / 86400000);
+  }
+
+  function formatBusinessNumber(value) {
+    const digits = String(value || "").replace(/\D/g, "").slice(0, 10);
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 5) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+    return `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}`;
   }
 
   function truncateText(value, maxLength) {

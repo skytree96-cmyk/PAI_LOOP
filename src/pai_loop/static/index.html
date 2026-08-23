@@ -11,7 +11,7 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260823-search-secure1" />
+    <link rel="stylesheet" href="./styles.css?v=20260823-pps-awards1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -67,6 +67,12 @@
               <svg viewBox="0 0 24 24"><path d="M3 3v18h18" /><path d="m7 15 4-4 3 3 6-7" /></svg>
             </span>
             <span>결과 학습</span>
+          </button>
+          <button class="nav-item" type="button" data-view="awards">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M8 4h8v4a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4M16 6h3v1a4 4 0 0 1-4 4M12 12v5M8 20h8M9 17h6" /></svg>
+            </span>
+            <span>낙찰 결과</span>
           </button>
           <button class="nav-item" type="button" data-view="performance">
             <span class="nav-icon" aria-hidden="true">
@@ -263,6 +269,33 @@
             </form>
             <p class="notice-search-scope" id="noticeSearchScope" aria-live="polite">현재 화면 범위에서 공고를 표시합니다.</p>
 
+            <section class="pps-discovery" id="ppsDiscoverySection" aria-labelledby="ppsDiscoveryHeading" hidden>
+              <div class="pps-discovery__head">
+                <div>
+                  <span class="pps-discovery__badge">나라장터 외부 조회</span>
+                  <h3 id="ppsDiscoveryHeading">현재 수집 DB에 없는 공고도 찾아보세요</h3>
+                  <p id="ppsDiscoveryStatus" aria-live="polite">검색 날짜를 정한 뒤 나라장터 전체 조회를 실행하세요. 이 단계에서는 OpenAI를 호출하지 않습니다.</p>
+                </div>
+                <span class="pps-discovery__query" id="ppsDiscoveryQuery">검색어 —</span>
+              </div>
+              <form class="pps-discovery__form" id="ppsDiscoveryForm">
+                <label>
+                  <span>공고 게시 시작일</span>
+                  <input id="ppsDiscoveryFromDate" type="date" required />
+                </label>
+                <label>
+                  <span>공고 게시 종료일</span>
+                  <input id="ppsDiscoveryToDate" type="date" required />
+                </label>
+                <button class="button button--pps" type="submit" id="ppsDiscoverySearchButton">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>
+                  나라장터 전체에서 검색
+                </button>
+              </form>
+              <p class="pps-discovery__boundary"><strong>검색 → 저장 → 판단 실행</strong> 순서입니다. 조회·저장만으로 AI 비용은 발생하지 않으며, 공고는 한 건씩 선택해 저장합니다.</p>
+              <div class="pps-discovery__results" id="ppsDiscoveryResults" role="list" aria-label="나라장터 외부 검색 결과"></div>
+            </section>
+
             <div class="notice-panel" id="noticePanel">
               <div class="table-scroll" id="noticeTableWrap">
                 <table class="notice-table">
@@ -304,6 +337,88 @@
                 <button class="button button--ghost" type="button" id="emptyResetButton">필터 초기화</button>
               </div>
             </div>
+          </section>
+
+          <section class="performance-section award-results-section" id="awardResultsSection" aria-labelledby="awardResultsHeading" hidden>
+            <header class="performance-hero award-results-hero">
+              <div class="performance-hero__copy">
+                <span class="data-classification award-data-classification"><span aria-hidden="true">●</span> PPS LIVE LOOKUP</span>
+                <p class="section-kicker">COMPANY AWARD EXPLORER</p>
+                <h2 id="awardResultsHeading">회사별 낙찰 결과</h2>
+                <p>사업자등록번호를 기준으로 나라장터 낙찰 결과를 조회합니다. 한국능률협회를 기본값으로 두고 다른 회사도 같은 방식으로 찾을 수 있습니다.</p>
+              </div>
+              <aside class="performance-boundary award-results-boundary" aria-label="낙찰 결과와 회사 실적의 구분">
+                <span class="performance-boundary__icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.6 3.1 7.7 8 9 4.9-1.3 8-4.4 8-9V6l-8-3Z" /><path d="M8 12h8M12 8v8" /></svg>
+                </span>
+                <div>
+                  <strong>낙찰 사실과 수행 실적은 다릅니다</strong>
+                  <p>낙찰 결과만으로 사업 기간·완료 여부·실적증명서 발급 여부를 알 수 없습니다. 조회 결과는 회사 실적으로 자동 이동하지 않습니다.</p>
+                </div>
+              </aside>
+            </header>
+
+            <section class="performance-explorer award-results-explorer" aria-labelledby="awardSearchHeading">
+              <div class="section-heading performance-explorer__heading">
+                <div>
+                  <p class="section-kicker">LIVE PPS SEARCH</p>
+                  <h3 id="awardSearchHeading">사업자등록번호로 조회</h3>
+                  <p id="awardResultsSummary" aria-live="polite">조회 조건을 확인한 뒤 검색을 실행하세요.</p>
+                </div>
+                <span class="read-only-badge">DB 저장 안 함</span>
+              </div>
+
+              <form class="award-search-form" id="awardSearchForm" role="search">
+                <label class="award-field award-field--company">
+                  <span>회사 표시명</span>
+                  <input id="awardCompanyName" type="text" maxlength="80" value="한국능률협회" autocomplete="organization" />
+                </label>
+                <label class="award-field award-field--business-number">
+                  <span>사업자등록번호</span>
+                  <input id="awardBusinessNumber" type="text" inputmode="numeric" maxlength="12" value="1058201810" placeholder="숫자 10자리" autocomplete="off" required />
+                  <small>하이픈 유무와 관계없이 조회됩니다.</small>
+                </label>
+                <label class="award-field">
+                  <span>개찰일 시작</span>
+                  <input id="awardStartDate" type="date" required />
+                </label>
+                <label class="award-field">
+                  <span>개찰일 종료</span>
+                  <input id="awardEndDate" type="date" required />
+                </label>
+                <fieldset class="award-scope-field">
+                  <legend>업무 구분</legend>
+                  <label><input type="checkbox" name="awardScope" value="service" checked /> 용역</label>
+                  <label><input type="checkbox" name="awardScope" value="goods" /> 물품</label>
+                  <label><input type="checkbox" name="awardScope" value="construction" /> 공사</label>
+                  <label><input type="checkbox" name="awardScope" value="foreign" /> 외자</label>
+                </fieldset>
+                <button class="button button--primary award-search-submit" type="submit" id="awardSearchButton">낙찰 결과 검색</button>
+              </form>
+
+              <p class="award-search-boundary" role="note"><strong>개찰일 기준 외부 API 실시간 조회</strong> · 최종 낙찰일 기준 검색이 아닙니다. OpenAI를 호출하지 않고 PAI LOOP DB에도 저장하지 않으며 사업자등록번호는 응답·로그·DB에 보관하지 않습니다.</p>
+
+              <div class="performance-panel award-results-panel" id="awardResultsPanel">
+                <div class="award-results-list" id="awardResultsList" role="list" aria-label="회사별 낙찰 결과 목록"></div>
+                <div class="state-view loading-state performance-state" id="awardResultsLoadingState" aria-live="polite" hidden>
+                  <span class="spinner" aria-hidden="true"></span>
+                  <strong>나라장터 낙찰 결과를 조회하고 있습니다</strong>
+                  <p>선택한 기간과 업무 구분을 순서대로 확인합니다.</p>
+                </div>
+                <div class="state-view error-state performance-state" id="awardResultsErrorState" role="alert" hidden>
+                  <span class="state-icon" aria-hidden="true">!</span>
+                  <strong>낙찰 결과를 불러오지 못했습니다</strong>
+                  <p id="awardResultsErrorMessage">조회 조건을 확인하고 다시 시도해 주세요.</p>
+                </div>
+                <div class="state-view empty-state performance-state" id="awardResultsEmptyState">
+                  <span class="state-icon state-icon--search" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>
+                  </span>
+                  <strong>아직 조회하지 않았습니다</strong>
+                  <p>기본값은 한국능률협회 · 최근 3년 · 용역입니다.</p>
+                </div>
+              </div>
+            </section>
           </section>
 
           <section class="performance-section" id="performanceSection" aria-labelledby="performanceHeading" hidden>
@@ -700,11 +815,11 @@
         <header class="source-link-dialog__header">
           <div>
             <p class="section-kicker">COST-PROTECTED ACTION</p>
-            <h2 id="manualAnalysisTokenTitle">분석 실행 키</h2>
+            <h2 id="manualAnalysisTokenTitle">운영 기능 실행 키</h2>
           </div>
         </header>
         <div class="source-link-dialog__body">
-          <p id="manualAnalysisTokenHelp">유료 분석을 보호하는 별도 운영자 키입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
+          <p id="manualAnalysisTokenHelp">나라장터 외부 조회·저장과 유료 분석을 보호하는 별도 운영자 키입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
           <label class="manual-token-field" for="manualAnalysisTokenInput">
             <span>실행 키</span>
             <input id="manualAnalysisTokenInput" type="password" minlength="32" autocomplete="off" required />
@@ -735,6 +850,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260823-search-secure1" defer></script>
+    <script src="./app.js?v=20260823-pps-awards1" defer></script>
   </body>
 </html>

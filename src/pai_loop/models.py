@@ -277,6 +277,24 @@ class PpsNoticeAuthority(Base, TimestampMixin):
     authority_sha256: Mapped[str] = mapped_column(String(64))
 
 
+class NoticeAnalysisPolicy(Base, TimestampMixin):
+    """Durable opt-in boundary for notices discovered outside automation.
+
+    The policy is deliberately independent of short-lived ingestion jobs and
+    has no foreign key so it can be written fail-closed before a Notice upsert.
+    An orphaned marker is harmless; losing a marker could permit an unintended
+    provider/model call. Only bounded public identifiers and policy metadata
+    are stored here.
+    """
+
+    __tablename__ = "notice_analysis_policies"
+
+    notice_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    bid_notice_no: Mapped[str] = mapped_column(String(80), index=True)
+    analysis_policy: Mapped[str] = mapped_column(String(32), index=True)
+    policy_source: Mapped[str] = mapped_column(String(48), default="USER_PPS_DISCOVERY")
+
+
 class MockNotification(Base):
     """Local Teams-shaped delivery record used until tenant approval exists."""
 

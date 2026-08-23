@@ -164,8 +164,46 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260823-search-secure1"' in html
-    assert 'src="./app.js?v=20260823-search-secure1"' in html
+    assert 'href="./styles.css?v=20260823-pps-awards1"' in html
+    assert 'src="./app.js?v=20260823-pps-awards1"' in html
+
+
+def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    search_body = _function_body(source, "searchPpsNotices", "renderPpsDiscovery")
+    save_body = _function_body(source, "savePpsCandidate", "populateDepartmentProfiles")
+    awards_body = _function_body(source, "searchCompanyAwards", "setCompanyAwardsLoading")
+    view_body = _function_body(source, "setView", "setLayout")
+
+    assert 'id="ppsDiscoverySection"' in html
+    assert "현재 수집 DB에 없는 공고" in html
+    assert "나라장터 전체에서 검색" in html
+    assert "검색 → 저장 → 판단 실행" in html
+    assert 'apiRequest("/pps-discovery/search"' in search_body
+    assert "span > 30" in search_body
+    assert "state.notices.length === 0" in source
+    assert "state.filteredNotices.length === 0" not in source
+    assert 'apiRequest("/pps-discovery/save"' in save_body
+    assert "저장만으로 분석이나 OpenAI 호출은 시작되지 않습니다" in save_body
+    assert "/analysis/request" not in search_body
+    assert "/analysis/request" not in save_body
+    assert "allow_openai" not in search_body
+    assert "allow_openai" not in save_body
+    assert "현재 수집 공고 아님" in source
+    assert ".pps-discovery" in styles
+
+    assert 'data-view="awards"' in html
+    assert 'id="awardResultsSection"' in html
+    assert 'value="1058201810"' in html
+    assert "formatAwardBusinessNumberInput()" in source
+    assert "회사 실적으로 자동 이동하지 않습니다" in html
+    assert 'apiRequest("/company-awards/search"' in awards_body
+    assert "manualAnalysisAuthHeaders()" in awards_body
+    assert "/analysis/request" not in awards_body
+    assert "awards: [\"낙찰 결과\", \"회사별 낙찰 결과\"]" in view_body
+    assert "els.awardResultsSection.hidden = !awardsView" in view_body
 
 
 def test_quantitative_ui_separates_source_validation_from_activation() -> None:
