@@ -115,14 +115,18 @@ jobs:
               "pai_loop/public_notice_cli.py",
               "pai_loop/integrations/awards.py",
               "pai_loop/analysis_pipeline.py",
+              "pai_loop/analysis_selection.py",
               "pai_loop/analysis_api.py",
+              "pai_loop/company_awards.py",
               "pai_loop/manual_analysis.py",
+              "pai_loop/pps_discovery.py",
               "pai_loop/daily_analysis_scope.py",
               "pai_loop/teams_readiness.py",
               "pai_loop/reference_registry.py",
               "pai_loop/reference_api.py",
               "pai_loop/outcomes_api.py",
               "pai_loop/migrations.py",
+              "pai_loop/integrations/company_awards.py",
           }
           forbidden = {
               "pai_loop/private_import.py",

@@ -13,6 +13,7 @@ from .database import Base, build_engine
 from .models import (
     AnalysisRun,
     BidOutcome,
+    NoticeAnalysisPolicy,
     RecommendationSnapshot,
     ReferenceDataVersion,
     RequirementResultSnapshot,
@@ -26,6 +27,11 @@ MIGRATION_CONTRACT = (
     "recommendation_snapshots:v1;reference_data_versions:v1;bid_outcomes:v1"
 )
 MIGRATION_CHECKSUM = hashlib.sha256(MIGRATION_CONTRACT.encode("utf-8")).hexdigest()
+NOTICE_ANALYSIS_POLICY_MIGRATION_ID = "20260823_02_notice_analysis_policy"
+NOTICE_ANALYSIS_POLICY_MIGRATION_CONTRACT = "notice_analysis_policies:v1"
+NOTICE_ANALYSIS_POLICY_MIGRATION_CHECKSUM = hashlib.sha256(
+    NOTICE_ANALYSIS_POLICY_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
 
 _ledger_metadata = MetaData()
 schema_migrations = Table(
@@ -44,6 +50,14 @@ _migration_tables = (
     ReferenceDataVersion.__table__,
     BidOutcome.__table__,
 )
+_migrations = (
+    (MIGRATION_ID, MIGRATION_CHECKSUM, _migration_tables),
+    (
+        NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+        NOTICE_ANALYSIS_POLICY_MIGRATION_CHECKSUM,
+        (NoticeAnalysisPolicy.__table__,),
+    ),
+)
 _required_base_tables = {
     "notices",
     "notice_versions",
@@ -56,10 +70,10 @@ class MigrationError(RuntimeError):
     """Raised when an additive schema migration cannot be applied safely."""
 
 
-def _applied_checksum(connection: Connection) -> str | None:
+def _applied_checksum(connection: Connection, migration_id: str) -> str | None:
     return connection.execute(
         select(schema_migrations.c.checksum).where(
-            schema_migrations.c.migration_id == MIGRATION_ID
+            schema_migrations.c.migration_id == migration_id
         )
     ).scalar_one_or_none()
 
@@ -69,15 +83,18 @@ def pending_migrations(engine: Engine) -> list[str]:
 
     with engine.connect() as connection:
         if "schema_migrations" not in inspect(connection).get_table_names():
-            return [MIGRATION_ID]
-        applied = _applied_checksum(connection)
-        if applied is None:
-            return [MIGRATION_ID]
-        if applied != MIGRATION_CHECKSUM:
-            raise MigrationError(
-                f"migration checksum mismatch for {MIGRATION_ID}; manual review is required"
-            )
-        return []
+            return [migration_id for migration_id, _checksum, _tables in _migrations]
+        pending: list[str] = []
+        for migration_id, expected_checksum, _tables in _migrations:
+            applied = _applied_checksum(connection, migration_id)
+            if applied is None:
+                pending.append(migration_id)
+                continue
+            if applied != expected_checksum:
+                raise MigrationError(
+                    f"migration checksum mismatch for {migration_id}; manual review is required"
+                )
+        return pending
 
 
 def apply_additive_migrations(engine: Engine) -> list[str]:
@@ -100,23 +117,25 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
             )
 
         schema_migrations.create(connection, checkfirst=True)
-        applied = _applied_checksum(connection)
-        if applied is not None:
-            if applied != MIGRATION_CHECKSUM:
-                raise MigrationError(
-                    f"migration checksum mismatch for {MIGRATION_ID}; manual review is required"
+        newly_applied: list[str] = []
+        for migration_id, expected_checksum, tables in _migrations:
+            applied = _applied_checksum(connection, migration_id)
+            if applied is not None:
+                if applied != expected_checksum:
+                    raise MigrationError(
+                        f"migration checksum mismatch for {migration_id}; manual review is required"
+                    )
+                continue
+            for table in tables:
+                table.create(connection, checkfirst=True)
+            connection.execute(
+                schema_migrations.insert().values(
+                    migration_id=migration_id,
+                    checksum=expected_checksum,
                 )
-            return []
-
-        for table in _migration_tables:
-            table.create(connection, checkfirst=True)
-        connection.execute(
-            schema_migrations.insert().values(
-                migration_id=MIGRATION_ID,
-                checksum=MIGRATION_CHECKSUM,
             )
-        )
-    return [MIGRATION_ID]
+            newly_applied.append(migration_id)
+    return newly_applied
 
 
 def _parser() -> argparse.ArgumentParser:

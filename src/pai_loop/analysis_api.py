@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from .analysis_pipeline import AnalysisPipelineError, run_analysis_pipeline
+from .analysis_selection import manual_only_notice_keys
 from .auth import require_api_key
 from .daily_analysis_scope import (
     MATERIAL_SCOPE_VERSION,
@@ -447,6 +448,16 @@ def _create_batch_job(
                 raise HTTPException(status_code=409, detail="analysis operation is not active")
             if any(key not in set(parent.notice_keys or []) for key in payload.notice_keys):
                 raise HTTPException(status_code=409, detail="chunk contains an unplanned notice key")
+            # A notice can be marked manual-only after an older automatic
+            # operation was planned but before its leased chunk is dispatched.
+            # Re-check the durable marker at the execution boundary so that
+            # stale planner state can never trigger an OpenAI call. Direct
+            # user analysis has no operation_id and remains permitted.
+            if manual_only_notice_keys(session, payload.notice_keys):
+                raise HTTPException(
+                    status_code=409,
+                    detail="manual-only notice requires an explicit user analysis request",
+                )
             parent_config = (
                 parent.request_json if isinstance(parent.request_json, dict) else {}
             )
@@ -805,8 +816,14 @@ def _eligible_retry_notice_keys(
         ).all()
     )
     cutoff = now - timedelta(hours=cooldown_hours)
+    manual_only = manual_only_notice_keys(
+        session,
+        (notice.notice_key for notice in notices),
+    )
     eligible: set[str] = set()
     for notice in notices:
+        if notice.notice_key in manual_only:
+            continue
         source_kind = (
             "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
         )
@@ -849,8 +866,14 @@ def _never_attempted_notice_keys(
             )
         ).all()
     )
+    manual_only = manual_only_notice_keys(
+        session,
+        (notice.notice_key for notice in notices),
+    )
     never_attempted: set[str] = set()
     for notice in notices:
+        if notice.notice_key in manual_only:
+            continue
         source_kind = (
             "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
         )
@@ -1080,11 +1103,15 @@ def _select_backfill_notice_keys(
         now=now,
         ttl_hours=payload.reservation_ttl_hours,
     )
+    manual_only = manual_only_notice_keys(
+        session,
+        (notice.notice_key for notice in notices),
+    )
     never_attempted: list[tuple[datetime, str]] = []
     retryable: list[tuple[datetime, str]] = []
     retry_cutoff = now - timedelta(hours=payload.retry_cooldown_hours)
     for notice in notices:
-        if notice.notice_key in reserved:
+        if notice.notice_key in reserved or notice.notice_key in manual_only:
             continue
         source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
         reason = public_analysis_reason(
@@ -1355,6 +1382,9 @@ def plan_analysis_backfill(
                         Notice.deadline >= now,
                     )
                 ).all()
+            )
+            eligible.difference_update(
+                manual_only_notice_keys(session, eligible)
             )
             consumed_retry_keys = _completed_retry_epoch_keys(
                 session,

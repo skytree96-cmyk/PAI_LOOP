@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
+from .analysis_selection import manual_only_notice_keys
 from .award_intelligence import build_award_intelligence
 from .department_ranking import (
     rank_notice_across_departments,
@@ -287,17 +288,23 @@ def daily_briefing(
         )
     )
     selected = items[:limit]
+    manual_only_keys = manual_only_notice_keys(
+        session,
+        (item["notice_key"] for item in items),
+    )
     # Keep the operator-facing ranking separate from the bounded analysis queue.
     # The latter must advance through the backlog instead of repeatedly sending
     # the same top three newly-ingested notices to the enrichment pipeline.
     never_attempted = [
         item
         for item in items
+        if item["notice_key"] not in manual_only_keys
         if item["analysis_coverage"]["reason_code"] == "NOT_SELECTED"
     ]
     retryable = [
         item
         for item in items
+        if item["notice_key"] not in manual_only_keys
         if item["analysis_coverage"]["reason_code"]
         in {
             "HWPX_EXTRACT_FAILED",
@@ -428,6 +435,7 @@ def apply_operational_retention(
             "user_decisions",
             "award_history_items",
             "pps_notice_authorities",
+            "notice_analysis_policies",
         ],
         note=(
             "dry-run: 삭제 대상 수만 계산했습니다."

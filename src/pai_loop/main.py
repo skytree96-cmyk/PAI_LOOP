@@ -14,6 +14,7 @@ from sqlalchemy import text
 from . import __version__
 from .analysis_api import router as analysis_persistence_router
 from .api import router
+from .company_awards import router as company_awards_router
 from .config import Settings
 from .database import Base, build_engine, build_session_factory
 from .daily_operations import router as daily_operations_router
@@ -21,6 +22,7 @@ from .demo import seed_synthetic_replay
 from .migrations import apply_additive_migrations
 from .manual_analysis import router as manual_analysis_router
 from .outcomes_api import router as bid_outcomes_router
+from .pps_discovery import router as pps_discovery_router
 from .public_performance import public_performance_router
 from .quantitative_scoring import quantitative_scoring_router
 from .reference_api import router as reference_data_router
@@ -115,6 +117,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(reference_data_router)
     application.include_router(bid_outcomes_router)
     application.include_router(manual_analysis_router)
+    application.include_router(pps_discovery_router)
+    application.include_router(company_awards_router)
     application.include_router(analysis_persistence_router)
     application.include_router(teams_readiness_router)
 

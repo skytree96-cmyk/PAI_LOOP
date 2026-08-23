@@ -14,6 +14,7 @@ from pai_loop.database import Base, build_engine
 from pai_loop.migrations import (
     MIGRATION_CHECKSUM,
     MIGRATION_ID,
+    NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
     MigrationError,
     apply_additive_migrations,
     main as migration_main,
@@ -238,8 +239,14 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         Evaluation.__table__.create(connection)
         UserDecision.__table__.create(connection)
 
-    assert pending_migrations(engine) == [MIGRATION_ID]
-    assert apply_additive_migrations(engine) == [MIGRATION_ID]
+    assert pending_migrations(engine) == [
+        MIGRATION_ID,
+        NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+    ]
+    assert apply_additive_migrations(engine) == [
+        MIGRATION_ID,
+        NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+    ]
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
     tables = set(inspect(engine).get_table_names())
@@ -251,6 +258,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         "recommendation_snapshots",
         "reference_data_versions",
         "bid_outcomes",
+        "notice_analysis_policies",
     } <= tables
     engine.dispose()
 
@@ -259,6 +267,28 @@ def test_additive_migration_refuses_an_uninitialised_database() -> None:
     engine = build_engine("sqlite:///:memory:")
     with pytest.raises(MigrationError, match="--create-base"):
         apply_additive_migrations(engine)
+    engine.dispose()
+
+
+def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        Notice.__table__.create(connection)
+        NoticeVersion.__table__.create(connection)
+        Evaluation.__table__.create(connection)
+        UserDecision.__table__.create(connection)
+        schema_migrations.create(connection)
+        connection.execute(
+            schema_migrations.insert().values(
+                migration_id=MIGRATION_ID,
+                checksum=MIGRATION_CHECKSUM,
+            )
+        )
+
+    assert pending_migrations(engine) == [NOTICE_ANALYSIS_POLICY_MIGRATION_ID]
+    assert apply_additive_migrations(engine) == [NOTICE_ANALYSIS_POLICY_MIGRATION_ID]
+    assert "notice_analysis_policies" in inspect(engine).get_table_names()
+    assert pending_migrations(engine) == []
     engine.dispose()
 
 

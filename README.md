@@ -12,13 +12,18 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.9.5 전체 공고 검색 · 분석 대기 복원 · 전체 첨부 분석
+## 현재 구현 범위: v0.9.6 전체 공고 검색 · 선택 저장/판단 · 회사별 낙찰 조회
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
 - 검색 주체 부서와 사용자 추가 키워드에 따라 달라지는 점수·근거·추천 부서
 - 이미 수집된 DB 전체에서 진행·종료·취소 및 우선 키워드 불일치 공고를 제목·기관·
-  공고번호로 찾는 전역 검색; 검색 자체는 모델을 호출하지 않으며 미수집 PPS 공고는 제외
+  공고번호로 찾는 전역 검색. DB 결과가 없을 때만 명시적 버튼으로 최대 31일의 나라장터
+  용역 공고를 별도 조회하고, 선택한 한 건만 서버 재검증 후 저장한다. 검색·저장은 OpenAI
+  0회이며 수동 저장 공고는 자동 daily/backfill 분석 큐에서 영속 제외한다.
+- 별도 `낙찰 결과` 화면에서 한국능률협회 공개 사업자번호 `1058201810`을 기본값(UI는 하이픈 형식)으로 두고 다른 회사도
+  사업자등록번호로 용역·물품·공사·외자 낙찰을 bounded 조회한다. 식별번호는 provider
+  exact-match 검증 뒤 폐기하며 결과는 DB·회사 실적에 저장하거나 자동 연결하지 않는다.
 - 현재 공고의 첨부 전량 감사 또는 최신 평가가 끝나지 않은 건을 `분석·검토 대기`로
   집계하고, 단일 OPEN PPS 공고를 비용 상한 확인 뒤 서버에서 분석하는 수동 실행 경로.
   운영에서는 별도 분석 실행 키를 요구하며, 현재 Render 기본값은 $2.7 잔액 보호를 위해
@@ -158,6 +163,9 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `GET` | `/api/v1/runtime-profile` | 공개 읽기/쓰기 경계 |
 | `GET` | `/api/v1/dashboard` | 요약 및 마감 현황 |
 | `GET` | `/api/v1/notices` | 저장 DB 전체의 제목·기관·공고번호 검색, 상태·부서 우선순위·사용자 키워드 목록 |
+| `POST` | `/api/v1/pps-discovery/search` | same-origin 운영자 승인 후 최대 31일 나라장터 용역 공고 검색; DB/OpenAI 변경 없음 |
+| `POST` | `/api/v1/pps-discovery/save` | 검색 결과 중 선택한 최신 권위 공고 한 건만 재조회·저장; 자동 분석 제외·OpenAI 0회 |
+| `POST` | `/api/v1/company-awards/search` | 사업자등록번호 exact-match 회사별 낙찰 조회; 식별번호 폐기·DB/OpenAI 변경 없음 |
 | `GET` | `/api/v1/notices/{notice_key}` | 근거·평가·결정 상세 |
 | `GET` | `/api/v1/departments/keyword-profiles` | 부서별 검색 키워드 registry |
 | `GET` | `/api/v1/company-profile` | 공개 가능한 회사 자격 프로필 |
@@ -287,7 +295,8 @@ Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 wo
   전송합니다. 문서 속 지시문을 신뢰하지 않으며 strict schema와 근거-anchor
   검증을 거칩니다.
 - 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록을
-  익명 제공합니다. 선택적으로 활성화한 수동 분석 BFF는 운영 환경에서 별도 32자
+  익명 제공합니다. 선택적으로 활성화한 운영 BFF는 나라장터 외부 공고 검색·단건 저장,
+  회사별 낙찰 조회와 수동 판단을 동일한 same-origin 경계 안에서 제공합니다. 운영 환경에서 별도 32자
   이상의 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`이 없으면 자동으로 숨깁니다. 키가
   설정된 경우에만 same-origin의 OPEN PPS 공고 1건을 `force=false`·현재 manifest의
   공개 첨부 최대 10개 전부·첨부당 최대 2회 OpenAI 호출·durable continuation·
