@@ -13,11 +13,18 @@ from .database import Base, build_engine
 from .models import (
     AnalysisRun,
     BidOutcome,
+    CompanyPerformanceRecord,
     NoticeAnalysisPolicy,
     RecommendationSnapshot,
     ReferenceDataVersion,
     RequirementResultSnapshot,
     ScoreSnapshot,
+)
+from .prespec_models import (
+    PreSpecification,
+    PreSpecificationAnalysisRun,
+    PreSpecificationDocument,
+    PreSpecificationVersion,
 )
 
 
@@ -31,6 +38,19 @@ NOTICE_ANALYSIS_POLICY_MIGRATION_ID = "20260823_02_notice_analysis_policy"
 NOTICE_ANALYSIS_POLICY_MIGRATION_CONTRACT = "notice_analysis_policies:v1"
 NOTICE_ANALYSIS_POLICY_MIGRATION_CHECKSUM = hashlib.sha256(
     NOTICE_ANALYSIS_POLICY_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+COMPANY_PERFORMANCE_MIGRATION_ID = "20260823_03_company_performance_records"
+COMPANY_PERFORMANCE_MIGRATION_CONTRACT = "company_performance_records:v1"
+COMPANY_PERFORMANCE_MIGRATION_CHECKSUM = hashlib.sha256(
+    COMPANY_PERFORMANCE_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
+PRESPEC_MIGRATION_CONTRACT = (
+    "pre_specifications:v1;pre_specification_versions:v1;"
+    "pre_specification_documents:v1;pre_specification_analysis_runs:v1"
+)
+PRESPEC_MIGRATION_CHECKSUM = hashlib.sha256(
+    PRESPEC_MIGRATION_CONTRACT.encode("utf-8")
 ).hexdigest()
 
 _ledger_metadata = MetaData()
@@ -56,6 +76,21 @@ _migrations = (
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         NOTICE_ANALYSIS_POLICY_MIGRATION_CHECKSUM,
         (NoticeAnalysisPolicy.__table__,),
+    ),
+    (
+        COMPANY_PERFORMANCE_MIGRATION_ID,
+        COMPANY_PERFORMANCE_MIGRATION_CHECKSUM,
+        (CompanyPerformanceRecord.__table__,),
+    ),
+    (
+        PRESPEC_MIGRATION_ID,
+        PRESPEC_MIGRATION_CHECKSUM,
+        (
+            PreSpecification.__table__,
+            PreSpecificationVersion.__table__,
+            PreSpecificationDocument.__table__,
+            PreSpecificationAnalysisRun.__table__,
+        ),
     ),
 )
 _required_base_tables = {

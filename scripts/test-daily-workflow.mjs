@@ -6,6 +6,7 @@ const continuation = JSON.parse(await fs.readFile("workflows/pai-loop-11-analysi
 const manifest = JSON.parse(await fs.readFile("manifest.json", "utf8"));
 const nodes = new Map(daily.nodes.map((item) => [item.name, item]));
 const continuationNodes = new Map(continuation.nodes.map((item) => [item.name, item]));
+assert.equal(manifest.workflows["pai-loop-10-daily-opportunity-briefing"].contractVersion, "daily-briefing-1.6");
 
 const dailySchedule = nodes.get("Every Day 08:00 KST");
 assert.equal(daily.settings.timezone, "Asia/Seoul");
@@ -52,12 +53,23 @@ assert.match(
 assert.equal(one(nodes, "Scheduled Runtime Gates", {}, { env: { PAI_LOOP_EMERGENCY_DISABLE: "true" } }).runtime.dailyLiveEnabled, false);
 
 const httpNodes = daily.nodes.filter((item) => item.type === "n8n-nodes-base.httpRequest");
-assert.equal(httpNodes.length, 9);
+assert.equal(httpNodes.length, 10);
 for (const item of [...httpNodes, ...continuation.nodes.filter((node) => node.type === "n8n-nodes-base.httpRequest")]) {
   assert.equal(item.parameters.authentication, "genericCredentialType");
   assert.equal(item.parameters.genericAuthType, "httpHeaderAuth");
   assert.equal(item.credentials, undefined);
 }
+const outcomeFeedbackHttp = nodes.get("Refresh PPS Outcome Feedback Fail-Soft");
+assert.equal(outcomeFeedbackHttp.parameters.method, "POST");
+assert.match(outcomeFeedbackHttp.parameters.url, /\/api\/v1\/outcome-feedback\/pps\/refresh/);
+assert.match(outcomeFeedbackHttp.parameters.body, /max_notices: 10/);
+assert.match(outcomeFeedbackHttp.parameters.body, /max_pages_per_notice: 1/);
+assert.match(outcomeFeedbackHttp.parameters.body, /dry_run: false/);
+assert.equal(outcomeFeedbackHttp.parameters.options.timeout, 120000);
+assert.equal(outcomeFeedbackHttp.retryOnFail, false);
+assert.equal(outcomeFeedbackHttp.alwaysOutputData, true);
+assert.equal(outcomeFeedbackHttp.onError, "continueRegularOutput");
+assert.doesNotMatch(JSON.stringify(outcomeFeedbackHttp), /X-PAI-LOOP-API-KEY/i);
 assert.equal(nodes.get("Process Daily Chunks Serially").type, "n8n-nodes-base.splitInBatches");
 assert.equal(nodes.get("Process Daily Chunks Serially").parameters.batchSize, 1);
 assert.equal(continuationNodes.get("Process Continuation Chunks Serially").parameters.batchSize, 1);
@@ -91,6 +103,11 @@ assert.deepEqual(targets(daily, "Expand Daily Three-Notice Chunks"), ["Process D
 assert.deepEqual(targets(daily, "Process Daily Chunks Serially", 1), ["Analyze Evaluate and Snapshot PPS Notices"]);
 assert.deepEqual(targets(daily, "Validate Batch Analysis Contract"), ["Process Daily Chunks Serially"]);
 assert.deepEqual(targets(daily, "Process Daily Chunks Serially", 0), ["Verify Batch Analysis Aggregate Invariants"]);
+assert.deepEqual(targets(daily, "Validate Daily Continuation State"), ["Refresh PPS Outcome Feedback Fail-Soft"]);
+assert.deepEqual(targets(daily, "Record Batch Analysis Skipped"), ["Refresh PPS Outcome Feedback Fail-Soft"]);
+assert.deepEqual(targets(daily, "Refresh PPS Outcome Feedback Fail-Soft"), ["Normalize PPS Outcome Feedback"]);
+assert.deepEqual(targets(daily, "Normalize PPS Outcome Feedback"), ["Fetch Ranked Seven-Day Briefing"]);
+assert.deepEqual(targets(daily, "Build Seven-Day Offline Fixture"), ["Normalize Optional Quant and Pricing"]);
 assert.deepEqual(targets(continuation, "Expand Bounded Three-Notice Chunks"), ["Process Continuation Chunks Serially"]);
 assert.deepEqual(targets(continuation, "Validate Chunk Result"), ["Process Continuation Chunks Serially"]);
 
@@ -247,6 +264,54 @@ const continuationState = one(nodes, "Validate Daily Continuation State", {
 assert.equal(continuationState.analysisOperation.remaining, 31);
 assert.equal(continuationState.analysisOperation.continuationRequired, true);
 
+const outcomeResponse = {
+  job_id: "44444444-4444-4444-8444-444444444444", status: "PARTIAL", dry_run: false,
+  requested_count: 10, selected_count: 8, processed_count: 7, api_calls: 4,
+  fetched: 5, exact_matches: 3, created: 1, updated: 1, unchanged: 0,
+  review: 1, skipped: 3, errors: 1, openai_calls: 0,
+  items: [{ notice_key: "new-a", bid_notice_no: "20260800001", revision_no: "00", result: "CREATED", outcome_status: "WON", outcome_key: "PPS:20260800001:00", exact_result_count: 1, api_calls: 1, reason_code: "EXACT_COMPANY_MATCH", warnings: [] }],
+  warnings: ["한 건은 공급자 일시 오류로 건너뛰었습니다."],
+};
+const normalizedOutcome = one(nodes, "Normalize PPS Outcome Feedback", outcomeResponse, {
+  node: { "Validate Daily Continuation State": { json: continuationState } },
+});
+assert.equal(normalizedOutcome.analysisOperation.remaining, 31);
+assert.equal(normalizedOutcome.outcomeFeedback.status, "PARTIAL");
+assert.equal(normalizedOutcome.outcomeFeedback.available, true);
+assert.equal(normalizedOutcome.outcomeFeedback.failSoft, true);
+assert.equal(normalizedOutcome.outcomeFeedback.created, 1);
+assert.equal(normalizedOutcome.outcomeFeedback.openaiCalls, 0);
+assert.equal(normalizedOutcome.outcomeFeedback.items[0].noticeKey, "new-a");
+
+const unavailableOutcome = one(nodes, "Normalize PPS Outcome Feedback", {
+  error: { message: "temporary provider failure" },
+}, {
+  node: { "Record Batch Analysis Skipped": { json: { marker: "analysis-skipped" } } },
+});
+assert.equal(unavailableOutcome.marker, "analysis-skipped");
+assert.equal(unavailableOutcome.outcomeFeedback.status, "UNAVAILABLE");
+assert.equal(unavailableOutcome.outcomeFeedback.available, false);
+assert.equal(unavailableOutcome.outcomeFeedback.failSoft, true);
+assert.equal(unavailableOutcome.outcomeFeedback.openaiCalls, 0);
+assert.doesNotMatch(JSON.stringify(unavailableOutcome.outcomeFeedback), /temporary provider failure/);
+
+const liveAudit = one(nodes, "Attach Outcome Feedback Audit Summary", {
+  schemaVersion: "1.3", executionMode: "scheduled-live", externalCalls: { backend: 6 },
+}, {
+  node: { "Normalize PPS Outcome Feedback": { json: normalizedOutcome } },
+});
+assert.equal(liveAudit.schemaVersion, "1.4");
+assert.equal(liveAudit.outcomeFeedback.status, "PARTIAL");
+assert.equal(liveAudit.externalCalls.outcome_feedback, 1);
+assert.equal(liveAudit.externalCalls.outcome_feedback_provider_calls, 4);
+const manualAudit = one(nodes, "Attach Outcome Feedback Audit Summary", {
+  schemaVersion: "1.3", executionMode: "manual-fixture", externalCalls: { backend: 0 },
+}, { node: {} });
+assert.equal(manualAudit.outcomeFeedback.status, "SKIPPED");
+assert.equal(manualAudit.outcomeFeedback.requestAttempted, false);
+assert.equal(manualAudit.externalCalls.outcome_feedback, 0);
+assert.equal(manualAudit.externalCalls.outcome_feedback_provider_calls, 0);
+
 assert.equal(continuationNodes.get("Every 15 Minutes Continue Active Queue").parameters.rule.interval[0].expression, "*/15 * * * *");
 assert.match(continuationNodes.get("Build Scheduled Continuation Runtime").parameters.jsCode, /queueName: 'ANY'/);
 assert.match(continuationNodes.get("Build Scheduled Continuation Runtime").parameters.jsCode, /resumeOnly: true/);
@@ -303,4 +368,4 @@ const validContinuationPromotion = (
 );
 assert.equal(validContinuationPromotion, true);
 
-console.log("Daily created+updated priority, serial chunking, continuation, and no-active contracts passed.");
+console.log("Daily analysis, fail-soft outcome feedback, continuation, and no-active contracts passed.");

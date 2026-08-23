@@ -141,7 +141,7 @@ function validateRepositorySafetyContracts(definitions) {
   const httpNodes = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.httpRequest",
   );
-  assert(httpNodes.length === 9, "daily live branch must expose exactly nine protected backend HTTP boundaries");
+  assert(httpNodes.length === 10, "daily live branch must expose exactly ten protected backend HTTP boundaries");
   for (const node of httpNodes) {
     const url = String(node.parameters?.url ?? "");
     assert(
@@ -181,6 +181,13 @@ function validateRepositorySafetyContracts(definitions) {
   assert(
     serialised.includes("/api/v1/notices/analysis/batch"),
     "daily workflow must route PPS notice keys through the backend batch analysis endpoint",
+  );
+  assert(
+    serialised.includes("/api/v1/outcome-feedback/pps/refresh")
+      && serialised.includes("max_notices: 10")
+      && serialised.includes("max_pages_per_notice: 1")
+      && serialised.includes("PPS_OUTCOME_FEEDBACK_UNAVAILABLE"),
+    "daily workflow must run bounded, fail-soft PPS outcome feedback after analysis",
   );
   assert(
     serialised.includes("maxAnalysisBatchNotices: 1")
@@ -236,6 +243,9 @@ function validateRepositorySafetyContracts(definitions) {
   const awardNode = daily.workflow.nodes.find(
     (node) => node.name === "Refresh Bounded Three-Year Award History",
   );
+  const outcomeFeedbackNode = daily.workflow.nodes.find(
+    (node) => node.name === "Refresh PPS Outcome Feedback Fail-Soft",
+  );
   assert(
     ppsNode?.parameters?.options?.timeout === 600000,
     "daily organization-profile PPS ingestion must have a bounded ten-minute n8n timeout",
@@ -257,6 +267,13 @@ function validateRepositorySafetyContracts(definitions) {
       && serialised.includes("Math.min(3, Math.max(1"),
     "daily award refresh must default to one, hard-cap at three, and use a ten-minute request window",
   );
+  assert(
+    outcomeFeedbackNode?.parameters?.options?.timeout === 120000
+      && outcomeFeedbackNode?.retryOnFail === false
+      && outcomeFeedbackNode?.alwaysOutputData === true
+      && outcomeFeedbackNode?.onError === "continueRegularOutput",
+    "daily outcome feedback must use a bounded, non-blocking backend request",
+  );
   const targets = (source, lane = 0) =>
     (daily.workflow.connections?.[source]?.main?.[lane] ?? []).map((connection) => connection.node);
   assert(
@@ -270,10 +287,14 @@ function validateRepositorySafetyContracts(definitions) {
       && JSON.stringify(targets("Verify Batch Analysis Aggregate Invariants"))
         === JSON.stringify(["Finalize Daily Analysis Segment"])
       && JSON.stringify(targets("Validate Daily Continuation State"))
-        === JSON.stringify(["Fetch Ranked Seven-Day Briefing"])
+        === JSON.stringify(["Refresh PPS Outcome Feedback Fail-Soft"])
       && JSON.stringify(targets("Record Batch Analysis Skipped"))
+        === JSON.stringify(["Refresh PPS Outcome Feedback Fail-Soft"])
+      && JSON.stringify(targets("Refresh PPS Outcome Feedback Fail-Soft"))
+        === JSON.stringify(["Normalize PPS Outcome Feedback"])
+      && JSON.stringify(targets("Normalize PPS Outcome Feedback"))
         === JSON.stringify(["Fetch Ranked Seven-Day Briefing"]),
-    "analysis completion or explicit skip must immediately precede the final briefing",
+    "analysis completion or explicit skip must run fail-soft outcome feedback before the final briefing",
   );
   assert(
     JSON.stringify(targets("Validate Seven-Day Retention Contract"))
@@ -286,8 +307,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(serialised.includes("actualTeamsRequestSent: false"), "daily workflow must keep Teams delivery mocked");
   assert(
-    daily.config.contractVersion === "daily-briefing-1.5",
-    "daily workflow manifest contractVersion must be daily-briefing-1.5",
+    daily.config.contractVersion === "daily-briefing-1.6",
+    "daily workflow manifest contractVersion must be daily-briefing-1.6",
   );
 
   const teamsSerialised = JSON.stringify(teamsDelivery.workflow);
@@ -732,6 +753,7 @@ const approvedCredentialInheritance = new Map([
   ["pai-loop-10-daily-opportunity-briefing", new Set([
     "Reserve or Resume Daily Analysis Operation",
     "Finalize Daily Analysis Segment",
+    "Refresh PPS Outcome Feedback Fail-Soft",
   ])],
   ["pai-loop-11-analysis-backfill", new Set([
     "Reserve or Resume Backfill Plan",

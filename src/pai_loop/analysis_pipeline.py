@@ -50,6 +50,7 @@ from .models import (
     AtomicRequirement,
     AwardHistoryItem,
     CompanyFact,
+    CompanyPerformanceRecord,
     Evaluation,
     Notice,
     NoticeVersion,
@@ -74,7 +75,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.4.0"
+PIPELINE_VERSION = "analysis-pipeline-0.5.0"
 MATERIALIZATION_VERSION = "atomic-materializer-0.2.0"
 SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -1292,6 +1293,13 @@ def run_analysis_pipeline(
                     select(CompanyFact).options(selectinload(CompanyFact.evidence))
                 ).all()
             )
+            performance_records = list(
+                session.scalars(
+                    select(CompanyPerformanceRecord).where(
+                        CompanyPerformanceRecord.record_status == "VALIDATED"
+                    )
+                ).all()
+            )
             fact_manifest = _selected_fact_manifest(
                 company_facts,
                 fact_keys=(
@@ -1311,7 +1319,11 @@ def run_analysis_pipeline(
                 all_notice_versions,
                 prompt_version=prompt_version,
             )
-            quantitative = estimate_for_notice(notice, company_facts)
+            quantitative = (
+                estimate_for_notice(notice, company_facts, performance_records)
+                if performance_records
+                else estimate_for_notice(notice, company_facts)
+            )
             quantitative_catalog = load_quantitative_profile_catalog()
             dynamic_quantitative_profile = quantitative.ruleset_version.startswith(
                 "dynamic-quantitative-rules-"

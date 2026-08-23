@@ -225,7 +225,9 @@ def _manual_jobs_since(
             session.scalars(
                 select(IngestionJob)
                 .where(
-                    IngestionJob.source == "MANUAL_ANALYSIS",
+                    IngestionJob.source.in_(
+                        ("MANUAL_ANALYSIS", "MANUAL_PRESPEC_ANALYSIS")
+                    ),
                     IngestionJob.created_at >= cutoff,
                 )
                 .order_by(IngestionJob.created_at.desc())
