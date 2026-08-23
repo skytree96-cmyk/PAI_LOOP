@@ -165,7 +165,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260824-operations1"' in html
-    assert 'src="./app.js?v=20260824-operations1"' in html
+    assert 'src="./app.js?v=20260824-pin4"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:

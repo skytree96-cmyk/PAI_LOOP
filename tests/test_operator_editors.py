@@ -680,7 +680,7 @@ def test_result_learning_preserves_automatic_source_as_immutable_basis(client: T
 
 
 def test_operator_editors_require_scoped_token_in_public_production(client: TestClient) -> None:
-    token = "operator-editor-token-at-least-32-characters"
+    token = "2468"
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -695,7 +695,7 @@ def test_operator_editors_require_scoped_token_in_public_production(client: Test
     assert no_result_token.status_code == 401
     wrong_token = client.get(
         "/api/v1/performance-records",
-        headers={"X-PAI-Manual-Token": "wrong-operator-token-at-least-32-characters"},
+        headers={"X-PAI-Manual-Token": "1357"},
     )
     assert wrong_token.status_code == 401
     wrong_server_key = client.get(

@@ -41,7 +41,7 @@ from pai_loop.prespec_service import (
 from pai_loop.integrations.pps import PpsApiError
 
 
-_TOKEN = "pre-specification-operator-token-32chars"
+_TOKEN = "2468"
 _HEADERS = {
     "Origin": "https://testserver",
     "Sec-Fetch-Site": "same-origin",

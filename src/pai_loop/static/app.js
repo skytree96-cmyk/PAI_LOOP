@@ -916,7 +916,7 @@
       state.ppsDiscovery.submitting = false;
     }
     if (!authHeaders) {
-      if (!authError) showToast("나라장터 조회 취소", "운영 기능 실행 키가 입력되지 않았습니다.", "warning");
+      if (!authError) showToast("나라장터 조회 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
       renderPpsDiscovery();
       return;
     }
@@ -2386,7 +2386,7 @@
     }
     const authHeaders = await manualAnalysisAuthHeaders();
     if (!authHeaders) {
-      showToast("낙찰 결과 조회 취소", "운영 기능 실행 키가 입력되지 않았습니다.", "warning");
+      showToast("낙찰 결과 조회 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
       return;
     }
 
@@ -3392,7 +3392,7 @@
     const dialog = els.manualAnalysisTokenDialog;
     const input = els.manualAnalysisTokenInput;
     if (!dialog || !input || typeof dialog.showModal !== "function") {
-      showToast("분석 실행 키 입력 불가", "현재 브라우저에서는 보안 입력창을 열 수 없습니다.", "error");
+      showToast("운영 PIN 입력 불가", "현재 브라우저에서는 보안 입력창을 열 수 없습니다.", "error");
       return Promise.resolve(null);
     }
     input.value = "";
@@ -3643,7 +3643,7 @@
     if (!confirmManualAnalysis(notice)) return;
     const authHeaders = await manualAnalysisAuthHeaders();
     if (!authHeaders) {
-      showToast("분석 요청 취소", "분석 실행 키가 입력되지 않았습니다.", "warning");
+      showToast("분석 요청 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
       return;
     }
     const evaluationOnly = evaluationOnlyManualAnalysis(notice);
