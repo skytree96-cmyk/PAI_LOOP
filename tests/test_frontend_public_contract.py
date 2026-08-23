@@ -164,8 +164,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260823-pps-awards1"' in html
-    assert 'src="./app.js?v=20260823-pps-awards1"' in html
+    assert 'href="./styles.css?v=20260823-two-track-search1"' in html
+    assert 'src="./app.js?v=20260823-two-track-search1"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -173,17 +173,28 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     search_body = _function_body(source, "searchPpsNotices", "renderPpsDiscovery")
+    date_invalidation_body = _function_body(source, "invalidatePpsDiscoveryDates", "normalizePpsCandidate")
+    render_body = _function_body(source, "renderPpsDiscovery", "renderPpsCandidate")
     save_body = _function_body(source, "savePpsCandidate", "populateDepartmentProfiles")
     awards_body = _function_body(source, "searchCompanyAwards", "setCompanyAwardsLoading")
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'id="ppsDiscoverySection"' in html
-    assert "현재 수집 DB에 없는 공고" in html
-    assert "나라장터 전체에서 검색" in html
-    assert "검색 → 저장 → 판단 실행" in html
+    assert 'data-notice-search-mode="stored"' in html
+    assert 'data-notice-search-mode="pps"' in html
+    assert "나라장터 용역 공고 실시간 조회" in html
+    assert "검색·저장: OpenAI 0회" in html
     assert 'apiRequest("/pps-discovery/search"' in search_body
     assert "span > 30" in search_body
-    assert "state.notices.length === 0" in source
+    assert 'state.noticeSearchMode !== "pps"' in search_body
+    assert 'state.source !== "api"' in search_body
+    assert "state.ppsDiscovery.submitting" in search_body
+    assert 'els.ppsDiscoveryFromDate.addEventListener("change", invalidatePpsDiscoveryDates)' in source
+    assert 'els.ppsDiscoveryToDate.addEventListener("change", invalidatePpsDiscoveryDates)' in source
+    assert "resetPpsDiscovery" in date_invalidation_body
+    assert 'state.noticeSearchMode === "pps"' in render_body
+    assert "state.notices.length === 0" in render_body
+    assert "const suggestPps" in render_body
     assert "state.filteredNotices.length === 0" not in source
     assert 'apiRequest("/pps-discovery/save"' in save_body
     assert "저장만으로 분석이나 OpenAI 호출은 시작되지 않습니다" in save_body
@@ -204,6 +215,48 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert "/analysis/request" not in awards_body
     assert "awards: [\"낙찰 결과\", \"회사별 낙찰 결과\"]" in view_body
     assert "els.awardResultsSection.hidden = !awardsView" in view_body
+
+
+def test_two_track_search_help_cards_and_deep_links_are_explicit() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    request_path_body = _function_body(source, "buildNoticeRequestPath", "noticeRequestTimeoutMs")
+    mode_body = _function_body(source, "setNoticeSearchMode", "openNoticeSearchHelpDialog")
+    schedule_body = _function_body(source, "scheduleNoticeSearch", "submitNoticeSearch")
+    card_body = _function_body(source, "renderPpsCandidate", "handlePpsDiscoveryAction")
+    hydrate_body = _function_body(source, "hydrateNoticeByKey", "openDetail")
+    route_body = _function_body(source, "noticeDetailHref", "clearNoticeRoute")
+    copy_body = _function_body(source, "copyCurrentNoticeLink", "openCurrentNoticeSourceDialog")
+
+    assert 'id="noticeSearchHelpButton"' in html
+    assert 'aria-haspopup="dialog"' in html
+    assert 'aria-controls="noticeSearchHelpDialog"' in html
+    assert 'id="noticeSearchHelpDialog"' in html
+    assert "두 검색은 결과와 비용이 다릅니다" in html
+    assert 'state.noticeSearchMode = nextMode' in mode_body
+    assert 'const storedMode = state.noticeSearchMode === "stored"' in request_path_body
+    assert 'const query = storedMode ? els.searchInput?.value.trim() || "" : ""' in request_path_body
+    assert 'if (state.noticeSearchMode === "pps")' in schedule_body
+    assert "renderPpsDiscovery();\n      return;" in schedule_body
+
+    for label in ("나라장터 LIVE", "PAI LOOP 저장됨", "판단 필요", "판단 완료"):
+        assert label in card_body
+    assert "data-stored-notice-link" in card_body
+    assert "저장된 공고로 이동" in card_body
+    assert "저장된 판단 결과 보기" in card_body
+    assert "data-pps-analysis-key" in card_body
+    assert "canRequestManualAnalysis(storedNotice)" in card_body
+
+    assert 'url.searchParams.set("notice", noticeKey)' in route_body
+    assert "new URL(window.location.href)" in route_body
+    assert 'apiRequest(`/notices/${encodeURIComponent(noticeKey)}`)' in hydrate_body
+    assert "state.notices.push(hydrated)" in hydrate_body
+    assert "noticeDetailHref(notice.noticeKey)" in copy_body
+    assert "notice.sourceUrl ||" not in copy_body
+    assert ".notice-search-modes" in styles
+    assert ".notice-search-help-dialog" in styles
+    assert ".pps-candidate__detail-link" in styles
 
 
 def test_quantitative_ui_separates_source_validation_from_activation() -> None:

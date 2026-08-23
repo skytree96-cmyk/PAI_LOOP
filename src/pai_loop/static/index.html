@@ -11,7 +11,7 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260823-pps-awards1" />
+    <link rel="stylesheet" href="./styles.css?v=20260823-two-track-search1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -211,7 +211,7 @@
               </div>
             </div>
 
-            <div class="priority-search" role="search" aria-label="부서별 공고 우선순위 검색">
+            <div class="priority-search" id="prioritySearch" role="search" aria-label="부서별 공고 우선순위 검색">
               <div class="priority-search__intro">
                 <strong>검색 주체별 우선순위</strong>
                 <span id="rankingProfileVersion">교육·컨설팅 전사 기본값</span>
@@ -229,15 +229,29 @@
               <button class="button button--primary priority-search__apply" type="button" id="priorityApplyButton">우선순위 적용</button>
             </div>
 
-            <form class="filters" id="filterForm" role="search">
+            <div class="notice-search-toolbar">
+              <div class="notice-search-modes" role="group" aria-label="공고 검색 범위 선택">
+                <button class="notice-search-mode is-active" type="button" data-notice-search-mode="stored" aria-pressed="true">
+                  <span class="notice-search-mode__dot notice-search-mode__dot--stored" aria-hidden="true"></span>
+                  수집된 공고
+                </button>
+                <button class="notice-search-mode" type="button" data-notice-search-mode="pps" aria-pressed="false">
+                  <span class="notice-search-mode__dot notice-search-mode__dot--pps" aria-hidden="true"></span>
+                  나라장터 용역 공고
+                </button>
+              </div>
+              <button class="notice-search-help-button" type="button" id="noticeSearchHelpButton" aria-label="두 검색 방식의 차이 안내" aria-haspopup="dialog" aria-controls="noticeSearchHelpDialog" aria-expanded="false">?</button>
+            </div>
+
+            <form class="filters" id="filterForm" role="search" aria-label="수집된 공고 검색">
               <label class="search-field">
-                <span class="sr-only">공고명, 발주기관 또는 공고번호 검색</span>
+                <span class="sr-only" id="noticeSearchInputLabel">공고명, 발주기관 또는 공고번호 검색</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
                 <input id="searchInput" type="search" maxlength="200" placeholder="공고명 · 발주기관 · 공고번호 검색" autocomplete="off" aria-describedby="noticeSearchHelp noticeSearchScope" />
                 <span class="sr-only" id="noticeSearchHelp">검색어를 입력하면 이미 수집된 전체 공고에서 찾습니다.</span>
                 <kbd aria-hidden="true">/</kbd>
               </label>
-              <label class="select-field">
+              <label class="select-field stored-search-only">
                 <span class="sr-only">자격 판정 필터</span>
                 <select id="eligibilityFilter">
                   <option value="all">자격 전체</option>
@@ -246,7 +260,7 @@
                   <option value="FAIL">FAIL</option>
                 </select>
               </label>
-              <label class="select-field">
+              <label class="select-field stored-search-only">
                 <span class="sr-only">추천 필터</span>
                 <select id="recommendationFilter">
                   <option value="all">추천 전체</option>
@@ -255,7 +269,7 @@
                   <option value="NO_GO">NO-GO</option>
                 </select>
               </label>
-              <label class="select-field select-field--sort">
+              <label class="select-field select-field--sort stored-search-only">
                 <span class="sr-only">정렬 방식</span>
                 <select id="sortSelect">
                   <option value="judgement">판정 우선 · 마감 임박순</option>
@@ -265,18 +279,26 @@
                   <option value="newest">판정 우선 · 최근 수집순</option>
                 </select>
               </label>
-              <button class="button button--ghost filter-reset" type="reset" id="resetFiltersButton">초기화</button>
+              <button class="button button--ghost filter-reset stored-search-only" type="reset" id="resetFiltersButton">초기화</button>
             </form>
             <p class="notice-search-scope" id="noticeSearchScope" aria-live="polite">현재 화면 범위에서 공고를 표시합니다.</p>
+
+            <aside class="pps-search-suggestion" id="ppsSearchSuggestion" hidden>
+              <div>
+                <strong>PAI LOOP에 저장된 결과가 없습니다.</strong>
+                <span>같은 검색어로 나라장터 용역 공고를 별도 조회할 수 있습니다.</span>
+              </div>
+              <button class="button button--pps" type="button" id="ppsSearchSuggestionButton">나라장터에서 찾아보기</button>
+            </aside>
 
             <section class="pps-discovery" id="ppsDiscoverySection" aria-labelledby="ppsDiscoveryHeading" hidden>
               <div class="pps-discovery__head">
                 <div>
-                  <span class="pps-discovery__badge">나라장터 외부 조회</span>
-                  <h3 id="ppsDiscoveryHeading">현재 수집 DB에 없는 공고도 찾아보세요</h3>
-                  <p id="ppsDiscoveryStatus" aria-live="polite">검색 날짜를 정한 뒤 나라장터 전체 조회를 실행하세요. 이 단계에서는 OpenAI를 호출하지 않습니다.</p>
+                  <span class="pps-discovery__badge">나라장터 LIVE · 용역</span>
+                  <h3 id="ppsDiscoveryHeading">나라장터 용역 공고 실시간 조회</h3>
+                  <p id="ppsDiscoveryStatus" aria-live="polite">게시일 기준 최대 31일의 용역 공고명에서 찾습니다. 버튼을 누르기 전에는 외부 API를 호출하지 않습니다.</p>
                 </div>
-                <span class="pps-discovery__query" id="ppsDiscoveryQuery">검색어 —</span>
+                <span class="pps-discovery__query" id="ppsDiscoveryQuery">검색어를 입력하세요</span>
               </div>
               <form class="pps-discovery__form" id="ppsDiscoveryForm">
                 <label>
@@ -289,10 +311,15 @@
                 </label>
                 <button class="button button--pps" type="submit" id="ppsDiscoverySearchButton">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>
-                  나라장터 전체에서 검색
+                  나라장터 용역 공고 조회
                 </button>
               </form>
-              <p class="pps-discovery__boundary"><strong>검색 → 저장 → 판단 실행</strong> 순서입니다. 조회·저장만으로 AI 비용은 발생하지 않으며, 공고는 한 건씩 선택해 저장합니다.</p>
+              <ol class="pps-discovery__steps" aria-label="나라장터 공고 처리 순서">
+                <li class="is-current" aria-current="step"><span>1</span><div><strong>검색</strong><small>현재 · 용역 공고 조회</small></div></li>
+                <li><span>2</span><div><strong>PAI LOOP 저장</strong><small>원하는 공고 한 건</small></div></li>
+                <li><span>3</span><div><strong>분석·판단 실행</strong><small>저장된 OPEN 공고</small></div></li>
+              </ol>
+              <p class="pps-discovery__boundary"><strong>검색·저장: OpenAI 0회</strong><span>저장된 OPEN 공고에서 분석·판단 실행을 눌렀을 때만, 나라장터 API에서 확인된 공개 첨부를 분석하며 OpenAI를 사용할 수 있습니다.</span></p>
               <div class="pps-discovery__results" id="ppsDiscoveryResults" role="list" aria-label="나라장터 외부 검색 결과"></div>
             </section>
 
@@ -832,6 +859,45 @@
       </form>
     </dialog>
 
+    <dialog class="source-link-dialog notice-search-help-dialog" id="noticeSearchHelpDialog" aria-labelledby="noticeSearchHelpDialogTitle" aria-describedby="noticeSearchHelpDialogSummary">
+      <form class="source-link-dialog__panel" method="dialog">
+        <header class="source-link-dialog__header">
+          <div>
+            <p class="section-kicker">TWO-TRACK SEARCH</p>
+            <h2 id="noticeSearchHelpDialogTitle">두 검색은 결과와 비용이 다릅니다</h2>
+          </div>
+          <button class="icon-button" type="submit" value="close" aria-label="검색 방식 안내 닫기">×</button>
+        </header>
+        <div class="source-link-dialog__body notice-search-help-dialog__body">
+          <p id="noticeSearchHelpDialogSummary">나라장터에서 찾은 공고는 바로 판단되지 않습니다. 먼저 저장한 뒤, 필요한 공고만 별도로 판단합니다.</p>
+          <div class="notice-search-help-compare">
+            <section class="notice-search-help-compare__stored">
+              <span>PAI LOOP DB</span>
+              <h3>수집된 공고</h3>
+              <ul>
+                <li>저장된 전체 공고에서 즉시 검색</li>
+                <li>기존 자격·정량 점수와 판단 상태 확인</li>
+                <li>검색만으로 OpenAI 0회</li>
+              </ul>
+            </section>
+            <section class="notice-search-help-compare__pps">
+              <span>나라장터 LIVE</span>
+              <h3>용역 공고 조회</h3>
+              <ul>
+                <li>게시일 기준 최대 31일의 용역 공고명 조회</li>
+                <li>저장 전에는 자격 판단·정량 점수 없음</li>
+                <li>저장된 OPEN 공고에서 필요할 때 분석·판단 실행</li>
+              </ul>
+            </section>
+          </div>
+          <p class="notice-search-help-cost"><strong>검색 → 저장 → 분석·판단 실행</strong><span>검색·저장은 OpenAI를 호출하지 않습니다. 분석·판단 실행은 나라장터 API에서 확인된 공개 첨부를 분석하므로 비용이 발생할 수 있습니다.</span></p>
+        </div>
+        <footer class="source-link-dialog__actions">
+          <button class="button button--primary" type="submit" value="close">확인했습니다</button>
+        </footer>
+      </form>
+    </dialog>
+
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
 
     <template id="skeletonRowTemplate">
@@ -850,6 +916,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260823-pps-awards1" defer></script>
+    <script src="./app.js?v=20260823-two-track-search1" defer></script>
   </body>
 </html>
