@@ -22,6 +22,7 @@ from .models import (
     AnalysisRun,
     AwardHistoryItem,
     CompanyFact,
+    CompanyPerformanceRecord,
     Evaluation,
     IngestionJob,
     MockNotification,
@@ -156,6 +157,7 @@ def _briefing_notice(
     *,
     as_of: datetime,
     company_facts: tuple[CompanyFact, ...] = (),
+    performance_records: tuple[CompanyPerformanceRecord, ...] = (),
 ) -> dict[str, Any]:
     latest = _latest_evaluation(notice)
     source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
@@ -221,9 +223,10 @@ def _briefing_notice(
         "region_routing": region_routing,
         "award_snapshot": _award_snapshot(notice.award_history),
         "competition_risk": pricing_intelligence["competition_risk"],
-        "quantitative_estimate": estimate_for_notice(
-            notice,
-            company_facts,
+        "quantitative_estimate": (
+            estimate_for_notice(notice, company_facts, performance_records)
+            if performance_records
+            else estimate_for_notice(notice, company_facts)
         ).model_dump(mode="json"),
         "pricing_intelligence": pricing_intelligence,
         "analysis_snapshot": _latest_analysis_snapshot(notice),
@@ -273,11 +276,19 @@ def daily_briefing(
             select(CompanyFact).options(selectinload(CompanyFact.evidence))
         ).all()
     )
+    performance_records = tuple(
+        session.scalars(
+            select(CompanyPerformanceRecord).where(
+                CompanyPerformanceRecord.record_status == "VALIDATED"
+            )
+        ).all()
+    )
     items = [
         _briefing_notice(
             notice,
             as_of=generated_at,
             company_facts=company_facts,
+            performance_records=performance_records,
         )
         for notice in notices
     ]

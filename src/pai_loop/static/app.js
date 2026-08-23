@@ -10,6 +10,9 @@
   const URGENT_DEADLINE_DAYS = 7;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const MANUAL_ANALYSIS_MAX_POLLS = 900;
+  const PRESPEC_ANALYSIS_POLL_INTERVAL_MS = 3000;
+  const PRESPEC_ANALYSIS_MAX_POLLS = 40;
+  const PRESPEC_ANALYSIS_POLL_MAX_MS = 120000;
   const DECIDER_NAME = "KMA 입찰팀";
   const RUNTIME_CONFIG = readRuntimeConfig();
   const PAI_BOT_TEAMS_URL = String(RUNTIME_CONFIG.paiBotTeamsUrl || "").trim();
@@ -61,6 +64,15 @@
       saving: new Set(),
       requestSequence: 0,
     },
+    prespec: {
+      stored: { records: [], loaded: false, loading: false, error: null, truncated: false, requestSequence: 0 },
+      live: { records: [], searched: false, loading: false, error: null, apiCalls: 0, fetched: 0, truncated: false, warnings: [], query: "", fromDate: "", toDate: "", limit: 25, saving: new Set(), requestSequence: 0 },
+      details: new Map(),
+      selectedDetail: null,
+      detailLoading: false,
+      helpTrigger: null,
+      analysis: { registryNo: "", analysisId: "", polling: false, polls: 0, response: null },
+    },
     companyAwards: {
       company: null,
       records: [],
@@ -83,6 +95,13 @@
       loading: false,
       error: null,
       requestSequence: 0,
+    },
+    performanceEditor: {
+      records: [], total: 0, loaded: false, loading: false, editingRecord: null,
+    },
+    resultLearning: {
+      records: [], total: 0, offset: 0, limit: 40, loaded: false, loading: false,
+      editingNotice: null, editingOutcome: null,
     },
   };
 
@@ -160,7 +179,10 @@
       "teamsMockSource", "teamsMockTitle", "teamsMockAgency", "teamsMockStatus", "teamsMockDeadline", "teamsMockReason",
       "teamsMockReadiness", "teamsMockRisk", "teamsMockRecommendation", "teamsPreviewOpenButton", "teamsPreviewDecisionButton",
       "teamsMockSendButton", "clearTeamsLogsButton", "teamsMockLogList", "teamsMockJson", "teamsLogStorageLabel",
-      "opportunityHero", "opportunityKpis", "noticeSection", "awardResultsSection", "performanceSection", "footerDisclaimer",
+      "opportunityHero", "opportunityKpis", "noticeSection", "prespecSection", "resultLearningSection", "awardResultsSection", "performanceSection", "footerDisclaimer",
+      "prespecHelpButton", "prespecHelpDialog", "prespecStoredForm", "prespecStoredSearchInput", "prespecStoredStatusFilter", "prespecStoredSubmitButton", "prespecStoredSummary", "prespecStoredList", "prespecStoredState",
+      "prespecLiveForm", "prespecLiveQuery", "prespecLiveFromDate", "prespecLiveToDate", "prespecLiveLimit", "prespecLiveSearchButton", "prespecLiveSummary", "prespecLiveList", "prespecLiveState",
+      "prespecDetailDialog", "prespecDetailTitle", "prespecDetailMeta", "prespecDetailCloseButton", "prespecDetailCancelButton", "prespecDetailBody", "prespecAnalysisStatus", "prespecAnalysisButton",
       "awardResultsSummary", "awardSearchForm", "awardCompanyName", "awardBusinessNumber", "awardStartDate", "awardEndDate", "awardSearchButton",
       "awardResultsPanel", "awardResultsList", "awardResultsLoadingState", "awardResultsErrorState", "awardResultsErrorMessage", "awardResultsEmptyState",
       "performanceTotal", "performancePeriod", "performanceYears", "performancePrivacy", "performanceResultSummary",
@@ -168,6 +190,11 @@
       "performancePanel", "performanceList", "performanceLoadingState", "performanceErrorState", "performanceErrorMessage",
       "performanceRetryButton", "performanceEmptyState", "performanceEmptyResetButton", "performancePagination",
       "performancePageRange", "performancePageLabel", "performancePreviousButton", "performanceNextButton",
+      "performanceEditorSummary", "performanceEditorUnlockButton", "performanceEditorCreateButton", "performanceEditorList", "performanceEditorState",
+      "performanceRecordDialog", "performanceRecordForm", "performanceRecordDialogTitle", "performanceRecordCloseButton", "performanceRecordCancelButton", "performanceRecordSaveButton",
+      "performanceRecordProject", "performanceRecordAgency", "performanceRecordDivision", "performanceRecordStatus", "performanceRecordContractDate", "performanceRecordStartDate", "performanceRecordEndDate", "performanceRecordAmount", "performanceRecordVat", "performanceRecordShare", "performanceRecordCertificate", "performanceRecordCompleted", "performanceRecordEvidence", "performanceRecordKeywords", "performanceRecordOverview",
+      "resultLearningSummary", "resultLearningUnlockButton", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
+      "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
     ];
 
     ids.forEach((id) => {
@@ -295,6 +322,25 @@
       if (trigger?.isConnected) trigger.focus();
     });
 
+    els.prespecStoredForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void loadStoredPreSpecifications({ force: true });
+    });
+    els.prespecStoredList.addEventListener("click", handlePreSpecificationAction);
+    els.prespecLiveForm.addEventListener("submit", searchLivePreSpecifications);
+    els.prespecLiveList.addEventListener("click", handlePreSpecificationAction);
+    els.prespecHelpButton.addEventListener("click", openPreSpecificationHelp);
+    els.prespecHelpDialog.addEventListener("click", (event) => {
+      if (event.target === els.prespecHelpDialog) els.prespecHelpDialog.close("close");
+    });
+    els.prespecHelpDialog.addEventListener("close", restorePreSpecificationHelpFocus);
+    els.prespecDetailCloseButton.addEventListener("click", closePreSpecificationDetail);
+    els.prespecDetailCancelButton.addEventListener("click", closePreSpecificationDetail);
+    els.prespecDetailDialog.addEventListener("click", (event) => {
+      if (event.target === els.prespecDetailDialog) closePreSpecificationDetail();
+    });
+    els.prespecAnalysisButton.addEventListener("click", requestPreSpecificationAnalysis);
+
     els.awardSearchForm.addEventListener("submit", searchCompanyAwards);
     els.awardBusinessNumber.addEventListener("input", formatAwardBusinessNumberInput);
 
@@ -313,6 +359,36 @@
     els.performanceEmptyResetButton.addEventListener("click", resetPerformanceFilters);
     els.performancePreviousButton.addEventListener("click", () => changePerformancePage(-1));
     els.performanceNextButton.addEventListener("click", () => changePerformancePage(1));
+    els.performanceEditorUnlockButton.addEventListener("click", () => loadPerformanceEditor({ force: true }));
+    els.performanceEditorCreateButton.addEventListener("click", () => openPerformanceRecordDialog());
+    els.performanceEditorList.addEventListener("click", handlePerformanceEditorAction);
+    els.performanceRecordForm.addEventListener("submit", savePerformanceRecord);
+    els.performanceRecordCloseButton.addEventListener("click", closePerformanceRecordDialog);
+    els.performanceRecordCancelButton.addEventListener("click", closePerformanceRecordDialog);
+
+    els.resultLearningUnlockButton.addEventListener("click", () => loadResultLearning({ force: true }));
+    els.resultLearningFilterForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      state.resultLearning.offset = 0;
+      void loadResultLearning({ force: true });
+    });
+    els.resultLearningFilterForm.addEventListener("reset", () => {
+      window.setTimeout(() => {
+        state.resultLearning.offset = 0;
+        void loadResultLearning({ force: true });
+      }, 0);
+    });
+    els.resultLearningList.addEventListener("click", handleResultLearningAction);
+    els.resultLearningPreviousButton.addEventListener("click", () => changeResultLearningPage(-1));
+    els.resultLearningNextButton.addEventListener("click", () => changeResultLearningPage(1));
+    els.resultLearningForm.addEventListener("submit", saveResultLearning);
+    els.resultLearningStatus.addEventListener("change", () => {
+      if (els.resultLearningStatus.value !== "NO_BID") return;
+      [els.resultLearningSubmittedAmount, els.resultLearningSubmittedRate, els.resultLearningWinningAmount, els.resultLearningWinningRate, els.resultLearningTechnicalScore, els.resultLearningPriceScore, els.resultLearningTotalScore, els.resultLearningRank].forEach((input) => { input.value = ""; });
+      els.resultLearningWinner.value = "";
+    });
+    els.resultLearningCloseButton.addEventListener("click", closeResultLearningDialog);
+    els.resultLearningCancelButton.addEventListener("click", closeResultLearningDialog);
 
     els.navItems.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
     els.kpiViewButtons.forEach((button) => button.addEventListener("click", () => {
@@ -381,6 +457,14 @@
   }
 
   function refreshCurrentView() {
+    if (state.currentView === "prespec") {
+      void loadStoredPreSpecifications({ force: true });
+      return;
+    }
+    if (state.currentView === "closed") {
+      void loadResultLearning({ force: true });
+      return;
+    }
     if (state.currentView === "awards") {
       if (state.companyAwards.searched) void searchCompanyAwards();
       else renderCompanyAwardsView();
@@ -388,6 +472,7 @@
     }
     if (state.currentView === "performance") {
       void loadPerformance({ force: true });
+      if (state.performanceEditor.loaded) void loadPerformanceEditor({ force: true });
       return;
     }
     void loadApplicationData({ forceApi: true });
@@ -743,6 +828,8 @@
     awardFrom.setFullYear(awardFrom.getFullYear() - 3);
     els.ppsDiscoveryFromDate.value = formatDateInputValue(ppsFrom);
     els.ppsDiscoveryToDate.value = formatDateInputValue(today);
+    els.prespecLiveFromDate.value = formatDateInputValue(ppsFrom);
+    els.prespecLiveToDate.value = formatDateInputValue(today);
     els.awardStartDate.value = formatDateInputValue(awardFrom);
     els.awardEndDate.value = formatDateInputValue(today);
   }
@@ -1457,6 +1544,788 @@
       .replace(/(?:P\.?\s*M\.?)\s*(?:[:：=]|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?/gi, "[비식별]")
       .replace(/(?:명사\s*특강|총괄책임자|연구책임자|프로젝트책임자|강연자|발표자|담당자|대표자|성명|책임자|강사명?|연사|교수|감독|선수)\s*(?:[:：=]|\s|\()\s*[\(\[\{<「『]?\s*[가-힣]{2,5}\s*[\)\]\}>」』]?(?:\s*[\(\[\{<「『][^\)\]\}>」』\r\n]{1,40}[\)\]\}>」』])?/gi, "[비식별]")
       .replace(/[가-힣]{2,5}(?:\s+|[\(\[\{<「『])\s*(?:작가|교수|박사|강사|연사|감독|선수)\s*[\)\]\}>」』]?/g, "[비식별]");
+  }
+
+  function renderPreSpecificationView() {
+    renderStoredPreSpecifications();
+    renderLivePreSpecifications();
+    renderDataSource();
+  }
+
+  function normalizePreSpecification(raw = {}) {
+    const analysisRaw = raw.analysis && typeof raw.analysis === "object" ? raw.analysis : null;
+    const documents = arrayValue(raw.documents).map((item) => ({
+      slot: numberOrNull(item?.slot),
+      safeUrl: safeHttpUrl(item?.safe_url),
+      sourceDigest: stringValue(item?.source_digest),
+    }));
+    return {
+      preSpecificationKey: stringValue(raw.pre_specification_key),
+      registryNo: stringValue(raw.registry_no),
+      selectionToken: stringValue(raw.selection_token),
+      title: stringValue(raw.title, "사전규격명 미확인"),
+      orderingAgency: stringValue(raw.ordering_agency),
+      demandAgency: stringValue(raw.demand_agency),
+      businessDivision: stringValue(raw.business_division),
+      budgetAmount: numberOrNull(raw.budget_amount),
+      registeredAt: stringValue(raw.registered_at),
+      changedAt: stringValue(raw.changed_at),
+      opinionDeadline: stringValue(raw.opinion_deadline),
+      deliveryDue: stringValue(raw.delivery_due),
+      softwareBusiness: Boolean(raw.software_business),
+      status: stringValue(raw.status, "OPINION_CLOSED").toUpperCase(),
+      linkedBidNoticeNos: arrayValue(raw.linked_bid_notice_nos).map(String).filter(Boolean),
+      matchedKeywords: arrayValue(raw.matched_keywords).map(String).filter(Boolean),
+      documentCount: numberOrNull(raw.document_count) ?? (Array.isArray(raw.documents) ? documents.length : null),
+      alreadyStored: Boolean(raw.already_stored),
+      sourceDigest: stringValue(raw.source_digest),
+      versionCount: numberOrNull(raw.version_count),
+      currentVersion: numberOrNull(raw.current_version),
+      documents,
+      analysis: analysisRaw ? {
+        analysisId: stringValue(analysisRaw.analysis_id),
+        status: stringValue(analysisRaw.status).toUpperCase(),
+        sourceDigest: stringValue(analysisRaw.source_digest),
+        warnings: arrayValue(analysisRaw.warnings).map(String),
+        completedAt: stringValue(analysisRaw.completed_at),
+        result: analysisRaw.result && typeof analysisRaw.result === "object" ? analysisRaw.result : null,
+        documents: arrayValue(analysisRaw.documents),
+      } : null,
+    };
+  }
+
+  function preSpecificationStatusLabel(value) {
+    return ({ OPEN_FOR_OPINION: "의견 접수 중", OPINION_CLOSED: "의견 마감", LINKED_TO_BID: "입찰공고 연결" })[value] || "상태 미확인";
+  }
+
+  function preSpecificationAnalysisLabel(value) {
+    return ({ RUNNING: "분석 중", QUEUED: "분석 대기", COMPLETED: "분석 완료", PARTIAL: "일부 분석", REVIEW: "사람 검토 필요", FAILED: "분석 실패", ALREADY_ANALYZED: "기존 분석 재사용", COOLDOWN: "재시도 대기" })[value] || value || "분석 전";
+  }
+
+  function preSpecificationAgency(record) {
+    return record.demandAgency || record.orderingAgency || "기관 미확인";
+  }
+
+  function renderPreSpecificationCard(record, { source }) {
+    const stored = source === "stored" || record.alreadyStored;
+    const documentLabel = record.documentCount === null ? "문서 수 확인 중" : `문서 ${formatNumber(record.documentCount)}개`;
+    const linkedLabel = record.linkedBidNoticeNos.length
+      ? `연결입찰 ${record.linkedBidNoticeNos.slice(0, 2).join(", ")}${record.linkedBidNoticeNos.length > 2 ? ` 외 ${record.linkedBidNoticeNos.length - 2}건` : ""}`
+      : "연결입찰 없음";
+    const analysis = record.analysis?.status ? `<span class="prespec-analysis-badge prespec-analysis-badge--${escapeAttribute(record.analysis.status.toLowerCase())}">${escapeHtml(preSpecificationAnalysisLabel(record.analysis.status))}</span>` : "";
+    const action = stored
+      ? `<button class="button button--secondary" type="button" data-prespec-detail="${escapeAttribute(record.registryNo)}">저장본 상세</button>`
+      : `<button class="button button--prespec" type="button" data-prespec-save="${escapeAttribute(record.registryNo)}" ${state.prespec.live.saving.has(record.registryNo) ? "disabled" : ""}>${state.prespec.live.saving.has(record.registryNo) ? '<span class="button-spinner" aria-hidden="true"></span>저장 중' : "선택 저장"}</button>`;
+    return `<article class="prespec-card prespec-card--${escapeAttribute(source)}" role="listitem">
+      <div class="prespec-card__head"><span class="prespec-status prespec-status--${escapeAttribute(record.status.toLowerCase())}">${escapeHtml(preSpecificationStatusLabel(record.status))}</span>${analysis}<small>${escapeHtml(record.registryNo)}</small></div>
+      <h4>${escapeHtml(record.title)}</h4>
+      <p>${escapeHtml(preSpecificationAgency(record))}</p>
+      <dl><div><dt>의견마감</dt><dd>${escapeHtml(formatShortDateTime(record.opinionDeadline))}</dd></div><div><dt>예산</dt><dd>${escapeHtml(formatBudget(record.budgetAmount))}</dd></div><div><dt>첨부</dt><dd>${escapeHtml(documentLabel)}</dd></div><div><dt>저장상태</dt><dd>${stored ? "PAI LOOP 저장됨" : "미저장"}</dd></div></dl>
+      <div class="prespec-linked ${record.linkedBidNoticeNos.length ? "is-linked" : ""}">${escapeHtml(linkedLabel)}</div>
+      <footer><small>${source === "stored" ? "저장 DB · PPS 0 · OpenAI 0" : "나라장터 조회 · OpenAI 0"}</small>${action}</footer>
+    </article>`;
+  }
+
+  async function loadStoredPreSpecifications({ force = false } = {}) {
+    const stored = state.prespec.stored;
+    if (stored.loading || (stored.loaded && !force)) return;
+    const sequence = ++stored.requestSequence;
+    stored.loading = true;
+    stored.error = null;
+    renderStoredPreSpecifications();
+    const params = new URLSearchParams({ limit: "50" });
+    const keywords = els.prespecStoredSearchInput.value.trim();
+    const statusFilter = els.prespecStoredStatusFilter.value;
+    if (keywords) params.set("search_keywords", keywords);
+    if (statusFilter) params.set("status", statusFilter);
+    try {
+      const payload = unwrapObject(await apiRequest(`/pre-specifications?${params}`));
+      if (sequence !== stored.requestSequence) return;
+      stored.records = arrayValue(payload.items).map(normalizePreSpecification);
+      stored.truncated = Boolean(payload.truncated);
+      stored.loaded = true;
+      renderStoredPreSpecifications();
+      void enrichStoredPreSpecificationDetails(stored.records, sequence);
+    } catch (error) {
+      if (sequence !== stored.requestSequence) return;
+      stored.error = error;
+      stored.loaded = true;
+      renderStoredPreSpecifications();
+    } finally {
+      if (sequence === stored.requestSequence) {
+        stored.loading = false;
+        renderStoredPreSpecifications();
+      }
+    }
+  }
+
+  async function enrichStoredPreSpecificationDetails(records, sequence) {
+    for (let offset = 0; offset < records.length; offset += 6) {
+      const batch = records.slice(offset, offset + 6);
+      const results = await Promise.allSettled(batch.map(async (record) => {
+        const cached = state.prespec.details.get(record.registryNo);
+        if (cached?.sourceDigest === record.sourceDigest) return cached;
+        const payload = await apiRequest(`/pre-specifications/${encodeURIComponent(record.registryNo)}`);
+        const detail = normalizePreSpecification(unwrapObject(payload));
+        state.prespec.details.set(record.registryNo, detail);
+        return detail;
+      }));
+      if (sequence !== state.prespec.stored.requestSequence) return;
+      results.forEach((result, index) => {
+        if (result.status !== "fulfilled") return;
+        batch[index].documentCount = result.value.documentCount;
+        batch[index].analysis = result.value.analysis;
+      });
+      renderStoredPreSpecifications();
+    }
+  }
+
+  function renderStoredPreSpecifications() {
+    const stored = state.prespec.stored;
+    els.prespecStoredSubmitButton.disabled = stored.loading;
+    if (stored.loading) {
+      els.prespecStoredSummary.textContent = "저장 DB를 검색하고 있습니다. PPS 0회 · OpenAI 0회";
+      els.prespecStoredState.hidden = false;
+      els.prespecStoredState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>저장 DB를 확인하고 있습니다</strong>';
+    } else if (stored.error) {
+      els.prespecStoredSummary.textContent = "저장 DB 검색에 실패했습니다.";
+      els.prespecStoredState.hidden = false;
+      els.prespecStoredState.innerHTML = `<strong>저장된 사전규격을 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(stored.error))}</p>`;
+    } else if (stored.loaded && !stored.records.length) {
+      els.prespecStoredSummary.textContent = "조건에 맞는 저장 사전규격이 없습니다. PPS 0회 · OpenAI 0회";
+      els.prespecStoredState.hidden = false;
+      els.prespecStoredState.innerHTML = "<strong>저장 결과가 없습니다</strong><p>나라장터 사전규격 검색에서 필요한 건을 선택 저장할 수 있습니다.</p>";
+    } else {
+      els.prespecStoredSummary.textContent = stored.loaded
+        ? `저장 DB ${formatNumber(stored.records.length)}건${stored.truncated ? " · 표시 상한 도달" : ""} · PPS 0회 · OpenAI 0회`
+        : "저장된 사전규격을 불러오는 중입니다.";
+      els.prespecStoredState.hidden = Boolean(stored.records.length);
+    }
+    els.prespecStoredList.innerHTML = stored.records.map((record) => renderPreSpecificationCard(record, { source: "stored" })).join("");
+    renderDataSource();
+  }
+
+  async function searchLivePreSpecifications(event) {
+    event.preventDefault();
+    const live = state.prespec.live;
+    if (live.loading) return;
+    const query = els.prespecLiveQuery.value.trim().replace(/\s+/g, " ");
+    const fromDate = els.prespecLiveFromDate.value;
+    const toDate = els.prespecLiveToDate.value;
+    const span = dateSpanDays(fromDate, toDate);
+    if (query.length < 2) {
+      showToast("검색어 확인 필요", "나라장터 검색어를 2자 이상 입력해 주세요.", "error");
+      return;
+    }
+    if (span === null || span < 0 || span > 30) {
+      showToast("검색 기간 확인 필요", "사전규격 검색은 한 번에 최대 31일입니다.", "error");
+      return;
+    }
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    const sequence = ++live.requestSequence;
+    live.loading = true;
+    live.error = null;
+    live.query = query;
+    live.fromDate = fromDate;
+    live.toDate = toDate;
+    live.limit = Number(els.prespecLiveLimit.value) || 25;
+    renderLivePreSpecifications();
+    try {
+      const payload = unwrapObject(await apiRequest("/prespec-discovery/search", {
+        method: "POST",
+        headers,
+        timeoutMs: EXTERNAL_PPS_REQUEST_TIMEOUT_MS,
+        body: JSON.stringify({ query, from_date: fromDate, to_date: toDate, limit: live.limit }),
+      }));
+      if (sequence !== live.requestSequence) return;
+      live.records = arrayValue(payload.candidates).map(normalizePreSpecification);
+      live.apiCalls = numberOrNull(payload.api_calls) ?? 0;
+      live.fetched = numberOrNull(payload.fetched) ?? 0;
+      live.truncated = Boolean(payload.truncated);
+      live.warnings = arrayValue(payload.warnings).map(String);
+      live.searched = true;
+      renderLivePreSpecifications();
+    } catch (error) {
+      if (sequence !== live.requestSequence) return;
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      live.error = error;
+      live.searched = true;
+      renderLivePreSpecifications();
+    } finally {
+      if (sequence === live.requestSequence) {
+        live.loading = false;
+        renderLivePreSpecifications();
+      }
+    }
+  }
+
+  function renderLivePreSpecifications() {
+    const live = state.prespec.live;
+    els.prespecLiveSearchButton.disabled = live.loading;
+    if (live.loading) {
+      els.prespecLiveSearchButton.innerHTML = '<span class="button-spinner" aria-hidden="true"></span>검색 중';
+      els.prespecLiveSummary.textContent = "나라장터 사전규격을 조회하고 있습니다. OpenAI 0회";
+      els.prespecLiveState.hidden = false;
+      els.prespecLiveState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>나라장터를 조회하고 있습니다</strong><p>검색 결과는 자동 저장되지 않습니다.</p>';
+    } else {
+      els.prespecLiveSearchButton.textContent = "나라장터 검색";
+      if (live.error) {
+        els.prespecLiveSummary.textContent = "나라장터 사전규격 검색에 실패했습니다.";
+        els.prespecLiveState.hidden = false;
+        els.prespecLiveState.innerHTML = `<strong>검색 결과를 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(live.error))}</p>`;
+      } else if (live.searched && !live.records.length) {
+        els.prespecLiveSummary.textContent = `검색 결과 0건 · 나라장터 ${formatNumber(live.apiCalls)}회 · OpenAI 0회`;
+        els.prespecLiveState.hidden = false;
+        els.prespecLiveState.innerHTML = "<strong>검색 결과가 없습니다</strong><p>검색어 또는 최대 31일의 등록 기간을 바꿔 보세요.</p>";
+      } else if (live.searched) {
+        els.prespecLiveSummary.textContent = `검색 결과 ${formatNumber(live.records.length)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · OpenAI 0회${live.truncated ? " · 일부 결과" : ""}`;
+        els.prespecLiveState.hidden = true;
+      } else {
+        els.prespecLiveSummary.textContent = "버튼을 누르기 전에는 나라장터 API를 호출하지 않습니다.";
+        els.prespecLiveState.hidden = false;
+      }
+    }
+    els.prespecLiveList.innerHTML = live.records.map((record) => renderPreSpecificationCard(record, { source: "live" })).join("");
+    renderDataSource();
+  }
+
+  function handlePreSpecificationAction(event) {
+    const detailButton = event.target.closest("[data-prespec-detail]");
+    if (detailButton) {
+      void openPreSpecificationDetail(detailButton.dataset.prespecDetail);
+      return;
+    }
+    const saveButton = event.target.closest("[data-prespec-save]");
+    if (saveButton) void saveLivePreSpecification(saveButton.dataset.prespecSave);
+  }
+
+  async function saveLivePreSpecification(registryNo) {
+    const live = state.prespec.live;
+    const record = live.records.find((item) => item.registryNo === registryNo);
+    if (!record || live.saving.has(registryNo)) return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    live.saving.add(registryNo);
+    renderLivePreSpecifications();
+    try {
+      const response = unwrapObject(await apiRequest("/prespec-discovery/save", {
+        method: "POST",
+        headers,
+        timeoutMs: EXTERNAL_PPS_REQUEST_TIMEOUT_MS,
+        body: JSON.stringify({
+          query: live.query,
+          from_date: live.fromDate,
+          to_date: live.toDate,
+          limit: live.limit,
+          registry_no: record.registryNo,
+          selection_token: record.selectionToken,
+        }),
+      }));
+      record.alreadyStored = true;
+      state.prespec.details.delete(registryNo);
+      showToast("사전규격 저장 완료", `${record.title} · ${stringValue(response.outcome, "저장됨")} · OpenAI 0회`, "success");
+      await loadStoredPreSpecifications({ force: true });
+      await openPreSpecificationDetail(registryNo, { force: true });
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      showToast("사전규격 저장 실패", editorErrorMessage(error), "error");
+    } finally {
+      live.saving.delete(registryNo);
+      renderLivePreSpecifications();
+    }
+  }
+
+  function openPreSpecificationHelp() {
+    state.prespec.helpTrigger = document.activeElement;
+    els.prespecHelpButton.setAttribute("aria-expanded", "true");
+    els.prespecHelpDialog.showModal();
+  }
+
+  function restorePreSpecificationHelpFocus() {
+    els.prespecHelpButton.setAttribute("aria-expanded", "false");
+    const trigger = state.prespec.helpTrigger;
+    state.prespec.helpTrigger = null;
+    if (trigger?.isConnected) trigger.focus();
+  }
+
+  async function openPreSpecificationDetail(registryNo, { force = false } = {}) {
+    if (!registryNo) return;
+    const cached = state.prespec.details.get(registryNo);
+    if (!els.prespecDetailDialog.open) els.prespecDetailDialog.showModal();
+    if (cached && !force) {
+      state.prespec.selectedDetail = cached;
+      renderPreSpecificationDetail(cached);
+      return;
+    }
+    state.prespec.detailLoading = true;
+    els.prespecDetailTitle.textContent = "사전규격 상세";
+    els.prespecDetailMeta.textContent = registryNo;
+    els.prespecDetailBody.innerHTML = '<div class="prespec-detail-loading"><span class="spinner" aria-hidden="true"></span><strong>저장본 상세를 불러오고 있습니다</strong></div>';
+    els.prespecAnalysisButton.disabled = true;
+    try {
+      const payload = unwrapObject(await apiRequest(`/pre-specifications/${encodeURIComponent(registryNo)}`));
+      const detail = normalizePreSpecification(payload);
+      state.prespec.details.set(registryNo, detail);
+      state.prespec.selectedDetail = detail;
+      state.prespec.detailLoading = false;
+      renderPreSpecificationDetail(detail);
+    } catch (error) {
+      els.prespecDetailBody.innerHTML = `<div class="prespec-detail-error"><strong>상세를 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(error))}</p></div>`;
+      els.prespecAnalysisStatus.innerHTML = "<p>저장본을 확인한 뒤 분석할 수 있습니다.</p>";
+    } finally {
+      state.prespec.detailLoading = false;
+      if (state.prespec.selectedDetail?.registryNo === registryNo) {
+        renderPreSpecificationAnalysisStatus(state.prespec.selectedDetail);
+      }
+    }
+  }
+
+  function closePreSpecificationDetail() {
+    if (els.prespecDetailDialog.open) els.prespecDetailDialog.close();
+    state.prespec.selectedDetail = null;
+  }
+
+  function renderPreSpecificationDetail(detail) {
+    const documents = detail.documents;
+    const documentMarkup = documents.length
+      ? documents.map((document) => {
+        const label = `첨부 ${formatNumber(document.slot ?? 0)}`;
+        return document.safeUrl
+          ? `<a href="${escapeAttribute(document.safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)} 원문</a>`
+          : `<span>${escapeHtml(label)} · 안전 링크 미확인</span>`;
+      }).join("")
+      : "<span>저장된 공개 첨부가 없습니다.</span>";
+    const keywords = detail.matchedKeywords.length
+      ? detail.matchedKeywords.map((value) => `<span>${escapeHtml(value)}</span>`).join("")
+      : "<span>저장 키워드 없음</span>";
+    els.prespecDetailTitle.textContent = detail.title;
+    els.prespecDetailMeta.textContent = `${detail.registryNo} · ${preSpecificationStatusLabel(detail.status)}`;
+    els.prespecDetailBody.innerHTML = `<div class="prespec-detail-facts">
+        <div><span>기관</span><strong>${escapeHtml(preSpecificationAgency(detail))}</strong></div><div><span>의견마감</span><strong>${escapeHtml(formatShortDateTime(detail.opinionDeadline))}</strong></div><div><span>예산</span><strong>${escapeHtml(formatBudget(detail.budgetAmount))}</strong></div><div><span>문서</span><strong>${formatNumber(documents.length)}개</strong></div><div><span>저장 버전</span><strong>${detail.currentVersion ? `v${formatNumber(detail.currentVersion)}` : "—"}</strong></div><div><span>연결입찰</span><strong>${escapeHtml(detail.linkedBidNoticeNos.join(", ") || "없음")}</strong></div>
+      </div><div class="prespec-detail-keywords">${keywords}</div><div class="prespec-detail-documents"><h3>저장 문서</h3>${documentMarkup}</div>${renderPreSpecificationAnalysisResult(detail.analysis)}`;
+    renderPreSpecificationAnalysisStatus(detail);
+  }
+
+  function renderPreSpecificationAnalysisResult(analysis) {
+    if (!analysis?.result) return "";
+    const extractions = arrayValue(analysis.result.extractions);
+    const summaries = extractions.map((item) => stringValue(item?.summary)).filter(Boolean);
+    const requirements = extractions.flatMap((item) => arrayValue(item?.requirements)).slice(0, 12);
+    const requirementMarkup = requirements.length
+      ? `<ul>${requirements.map((item) => `<li><strong>${escapeHtml(stringValue(item?.normalized_condition, "요구조건"))}</strong><span>${escapeHtml(stringValue(item?.category, "분류 미확인"))}${item?.mandatory ? " · 필수" : ""}</span></li>`).join("")}</ul>`
+      : "<p>구조화된 요구조건이 없거나 사람 검토가 필요합니다.</p>";
+    const documentAudits = arrayValue(analysis.documents);
+    const auditMarkup = documentAudits.length
+      ? `<div class="prespec-analysis-audits">${documentAudits.map((item) => `<span>${escapeHtml(`첨부 ${numberOrNull(item?.slot) ?? "—"} · ${stringValue(item?.status, "REVIEW")} · ${stringValue(item?.reason_code, "근거 구조화")}`)}</span>`).join("")}</div>`
+      : "";
+    return `<section class="prespec-analysis-result"><div class="prespec-analysis-result__head"><h3>완료된 분석 결과</h3><span>${formatNumber(numberOrNull(analysis.result.documents_accepted) ?? 0)} / ${formatNumber(numberOrNull(analysis.result.documents_total) ?? documentAudits.length)} 문서</span></div>${summaries.map((summary) => `<p>${escapeHtml(summary)}</p>`).join("")}${requirementMarkup}${auditMarkup}<p class="prespec-analysis-boundary">요구조건 사전 구조화 결과이며 입찰 GO/NO-GO 판정이 아닙니다.</p></section>`;
+  }
+
+  function renderPreSpecificationAnalysisStatus(detail) {
+    const active = state.prespec.analysis.registryNo === detail.registryNo ? state.prespec.analysis : null;
+    const response = active?.response;
+    const statusValue = stringValue(response?.outcome || detail.analysis?.status).toUpperCase();
+    const polling = Boolean(active?.polling);
+    const documentsTotal = numberOrNull(response?.documents_total) ?? detail.documents.length;
+    const documentsProcessed = numberOrNull(response?.documents_processed) ?? 0;
+    const openaiCalls = numberOrNull(response?.openai_calls) ?? 0;
+    const message = stringValue(response?.message) || (detail.analysis ? "저장된 최신 분석 상태입니다." : "분석은 자동 실행되지 않습니다. 필요할 때만 비용 상한을 확인하고 실행하세요.");
+    els.prespecAnalysisStatus.innerHTML = `<div class="prespec-analysis-status ${polling ? "is-polling" : ""}">${polling ? '<span class="spinner" aria-hidden="true"></span>' : ""}<div><strong>${escapeHtml(preSpecificationAnalysisLabel(statusValue))}</strong><p>${escapeHtml(message)}</p><small>문서 ${formatNumber(documentsProcessed)}/${formatNumber(documentsTotal)} · OpenAI ${formatNumber(openaiCalls)}회${polling ? ` · 상태 확인 ${formatNumber(active.polls)}/${PRESPEC_ANALYSIS_MAX_POLLS}` : ""}</small></div></div>`;
+    const completed = detail.analysis?.status === "COMPLETED" || ["COMPLETED", "ALREADY_ANALYZED"].includes(statusValue);
+    els.prespecAnalysisButton.disabled = state.prespec.detailLoading || polling || completed;
+    els.prespecAnalysisButton.textContent = completed ? "분석 결과 저장됨" : polling ? "분석 처리 중" : detail.analysis ? "문서 다시 분석" : "문서 분석 실행";
+  }
+
+  function confirmPreSpecificationAnalysis(detail) {
+    return window.confirm(`${detail.title}\n\nOpenAI 비용을 사용할 수 있는 사전규격 문서 분석입니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 공고 수동 분석과 시간당 공유 quota 사용\n- 결과는 요구조건 구조화이며 GO 판정이 아님\n\n비용 사용을 승인하고 분석을 시작할까요?`);
+  }
+
+  async function requestPreSpecificationAnalysis() {
+    const detail = state.prespec.selectedDetail;
+    if (!detail || state.prespec.analysis.polling || !confirmPreSpecificationAnalysis(detail)) return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    els.prespecAnalysisButton.disabled = true;
+    try {
+      const response = unwrapObject(await apiRequest(`/pre-specifications/${encodeURIComponent(detail.registryNo)}/analysis`, {
+        method: "POST",
+        headers,
+        timeoutMs: 30000,
+        body: JSON.stringify({ allow_openai: true }),
+      }));
+      state.prespec.analysis = { registryNo: detail.registryNo, analysisId: stringValue(response.analysis_id), polling: response.outcome === "QUEUED", polls: 0, response };
+      renderPreSpecificationAnalysisStatus(detail);
+      if (response.outcome === "QUEUED" && response.analysis_id) {
+        void pollPreSpecificationAnalysis(detail.registryNo, response.analysis_id, headers);
+      } else {
+        await refreshPreSpecificationDetailAfterAnalysis(detail.registryNo);
+        showToast("사전규격 분석 상태", stringValue(response.message, preSpecificationAnalysisLabel(response.outcome)), response.outcome === "FAILED" ? "error" : "success");
+      }
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      showToast("사전규격 분석 요청 실패", editorErrorMessage(error), "error");
+      if (state.prespec.selectedDetail) renderPreSpecificationAnalysisStatus(state.prespec.selectedDetail);
+    }
+  }
+
+  async function pollPreSpecificationAnalysis(registryNo, analysisId, headers) {
+    const deadline = Date.now() + PRESPEC_ANALYSIS_POLL_MAX_MS;
+    for (let attempt = 1; attempt <= PRESPEC_ANALYSIS_MAX_POLLS && Date.now() < deadline; attempt += 1) {
+      await delay(Math.min(PRESPEC_ANALYSIS_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+      if (Date.now() >= deadline) break;
+      const active = state.prespec.analysis;
+      if (active.registryNo !== registryNo || active.analysisId !== analysisId || !active.polling) return;
+      active.polls = attempt;
+      try {
+        const response = unwrapObject(await apiRequest(`/pre-specifications/${encodeURIComponent(registryNo)}/analysis/${encodeURIComponent(analysisId)}`, { headers, timeoutMs: 15000 }));
+        active.response = response;
+        active.polling = response.outcome === "QUEUED";
+        if (state.prespec.selectedDetail?.registryNo === registryNo && els.prespecDetailDialog.open) renderPreSpecificationAnalysisStatus(state.prespec.selectedDetail);
+        if (!active.polling) {
+          await refreshPreSpecificationDetailAfterAnalysis(registryNo);
+          showToast("사전규격 분석 완료", stringValue(response.message, preSpecificationAnalysisLabel(response.outcome)), ["FAILED", "REVIEW"].includes(response.outcome) ? "error" : "success");
+          return;
+        }
+      } catch (error) {
+        if (error?.status === 401) state.manualAnalysisToken = "";
+        active.polling = false;
+        if (state.prespec.selectedDetail?.registryNo === registryNo) renderPreSpecificationAnalysisStatus(state.prespec.selectedDetail);
+        showToast("사전규격 분석 상태 확인 실패", editorErrorMessage(error), "error");
+        return;
+      }
+    }
+    const active = state.prespec.analysis;
+    if (active.registryNo === registryNo && active.analysisId === analysisId) {
+      active.polling = false;
+      active.response = { ...active.response, outcome: "QUEUED", message: "약 2분 동안 상태를 확인했습니다. 탭을 새로고침하지 않아도 저장본 상세에서 다시 확인할 수 있습니다." };
+      if (state.prespec.selectedDetail?.registryNo === registryNo) renderPreSpecificationAnalysisStatus(state.prespec.selectedDetail);
+      showToast("분석이 계속 진행 중입니다", "자동 상태 확인은 종료했지만 서버 작업은 계속될 수 있습니다.", "error");
+    }
+  }
+
+  async function refreshPreSpecificationDetailAfterAnalysis(registryNo) {
+    try {
+      const payload = unwrapObject(await apiRequest(`/pre-specifications/${encodeURIComponent(registryNo)}`));
+      const detail = normalizePreSpecification(payload);
+      state.prespec.details.set(registryNo, detail);
+      const storedRecord = state.prespec.stored.records.find((item) => item.registryNo === registryNo);
+      if (storedRecord) {
+        storedRecord.documentCount = detail.documentCount;
+        storedRecord.analysis = detail.analysis;
+      }
+      if (state.prespec.selectedDetail?.registryNo === registryNo) {
+        state.prespec.selectedDetail = detail;
+        renderPreSpecificationDetail(detail);
+      }
+      renderStoredPreSpecifications();
+    } catch (_error) {
+      // The completed polling response remains visible even if the detail
+      // projection cannot be refreshed immediately.
+    }
+  }
+
+  async function loadPerformanceEditor({ force = false } = {}) {
+    if (state.performanceEditor.loading || (state.performanceEditor.loaded && !force)) return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    state.performanceEditor.loading = true;
+    els.performanceEditorUnlockButton.disabled = true;
+    els.performanceEditorState.hidden = false;
+    els.performanceEditorState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>운영 실적을 불러오고 있습니다</strong>';
+    try {
+      const payload = unwrapObject(await apiRequest("/performance-records?limit=200", { headers }));
+      state.performanceEditor.records = arrayValue(payload.records).map(normalizeEditablePerformance);
+      state.performanceEditor.total = Math.max(numberOrNull(payload.total) ?? state.performanceEditor.records.length, 0);
+      state.performanceEditor.loaded = true;
+      renderPerformanceEditor();
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      els.performanceEditorState.hidden = false;
+      els.performanceEditorState.innerHTML = `<strong>운영 실적을 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(error))}</p>`;
+      showToast("운영 실적 조회 실패", editorErrorMessage(error), "error");
+    } finally {
+      state.performanceEditor.loading = false;
+      els.performanceEditorUnlockButton.disabled = false;
+    }
+  }
+
+  function normalizeEditablePerformance(raw = {}) {
+    return {
+      id: stringValue(raw.id), recordKey: stringValue(raw.record_key), recordStatus: stringValue(raw.record_status, "DRAFT").toUpperCase(),
+      projectName: stringValue(raw.project_name), agency: stringValue(raw.agency), division: stringValue(raw.division), overview: stringValue(raw.overview),
+      contractDate: stringValue(raw.contract_date), startDate: stringValue(raw.start_date), endDate: stringValue(raw.end_date),
+      contractAmount: numberOrNull(raw.contract_amount), vatBasis: stringValue(raw.vat_basis, "UNKNOWN").toUpperCase(),
+      completed: Boolean(raw.completed), sharePct: numberOrNull(raw.share_pct) ?? 100,
+      certificateStatus: stringValue(raw.certificate_status, "NOT_REQUESTED").toUpperCase(),
+      evidenceReference: stringValue(raw.evidence_reference), keywords: arrayValue(raw.keywords).map(String),
+      revision: numberOrNull(raw.revision) ?? 1, updatedAt: stringValue(raw.updated_at),
+    };
+  }
+
+  function renderPerformanceEditor() {
+    const editor = state.performanceEditor;
+    els.performanceEditorCreateButton.hidden = !editor.loaded;
+    els.performanceEditorUnlockButton.textContent = editor.loaded ? "목록 새로고침" : "운영 실적 열기";
+    els.performanceEditorSummary.textContent = editor.loaded
+      ? `직접 등록 실적 ${formatNumber(editor.total)}건 · 공개 스냅샷 ${formatNumber(state.performance.summary?.recordCount || 0)}건과 별도 관리`
+      : "공개 스냅샷과 분리된 운영 실적입니다. 운영 키로 초안을 등록하거나 검증·보관 상태를 관리하세요.";
+    els.performanceEditorState.hidden = editor.records.length > 0;
+    if (!editor.records.length && editor.loaded) {
+      els.performanceEditorState.innerHTML = "<strong>직접 등록한 실적이 없습니다</strong><p>새 실적 등록으로 초안을 만든 뒤 근거를 검토해 검증 완료하세요.</p>";
+    }
+    els.performanceEditorList.innerHTML = editor.records.map((record, index) => `
+      <article class="operator-record" role="listitem">
+        <div><span class="record-status record-status--${escapeAttribute(record.recordStatus.toLowerCase())}">${escapeHtml(recordStatusLabel(record.recordStatus))}</span><small>rev.${formatNumber(record.revision)}</small></div>
+        <h4>${escapeHtml(record.projectName)}</h4>
+        <p>${escapeHtml(record.agency || "발주기관 미입력")} · ${escapeHtml(record.division || "수행부서 미입력")}</p>
+        <dl><div><dt>계약일</dt><dd>${escapeHtml(formatPerformanceDate(record.contractDate))}</dd></div><div><dt>계약금액</dt><dd>${escapeHtml(formatBudget(record.contractAmount))}</dd></div><div><dt>수행</dt><dd>${record.completed ? "완료" : "진행/미확인"} · 지분 ${formatScore(record.sharePct)}%</dd></div></dl>
+        <footer><small>${escapeHtml(record.evidenceReference || "근거 참조 미입력")}</small><button class="button button--secondary" type="button" data-edit-performance="${index}">수정</button></footer>
+      </article>`).join("");
+  }
+
+  function handlePerformanceEditorAction(event) {
+    const button = event.target.closest("[data-edit-performance]");
+    if (!button) return;
+    const record = state.performanceEditor.records[Number(button.dataset.editPerformance)];
+    if (record) openPerformanceRecordDialog(record);
+  }
+
+  function openPerformanceRecordDialog(record = null) {
+    state.performanceEditor.editingRecord = record;
+    els.performanceRecordDialogTitle.textContent = record ? "회사 실적 수정" : "회사 실적 등록";
+    els.performanceRecordProject.value = record?.projectName || "";
+    els.performanceRecordAgency.value = record?.agency || "";
+    els.performanceRecordDivision.value = record?.division || "";
+    els.performanceRecordStatus.value = record?.recordStatus || "DRAFT";
+    els.performanceRecordContractDate.value = record?.contractDate || "";
+    els.performanceRecordStartDate.value = record?.startDate || "";
+    els.performanceRecordEndDate.value = record?.endDate || "";
+    els.performanceRecordAmount.value = record?.contractAmount ?? "";
+    els.performanceRecordVat.value = record?.vatBasis || "UNKNOWN";
+    els.performanceRecordShare.value = record?.sharePct ?? 100;
+    els.performanceRecordCertificate.value = record?.certificateStatus || "NOT_REQUESTED";
+    els.performanceRecordCompleted.checked = Boolean(record?.completed);
+    els.performanceRecordEvidence.value = record?.evidenceReference || "";
+    els.performanceRecordKeywords.value = arrayValue(record?.keywords).join(", ");
+    els.performanceRecordOverview.value = record?.overview || "";
+    els.performanceRecordDialog.dataset.requestKey = record ? "" : newIdempotencyKey("performance");
+    els.performanceRecordSaveButton.textContent = record ? "수정 저장" : "초안 저장";
+    els.performanceRecordDialog.showModal();
+    window.requestAnimationFrame(() => els.performanceRecordProject.focus());
+  }
+
+  function closePerformanceRecordDialog() {
+    if (els.performanceRecordDialog.open) els.performanceRecordDialog.close();
+    state.performanceEditor.editingRecord = null;
+  }
+
+  async function savePerformanceRecord(event) {
+    event.preventDefault();
+    const record = state.performanceEditor.editingRecord;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    const payload = {
+      record_status: els.performanceRecordStatus.value,
+      project_name: els.performanceRecordProject.value.trim(), agency: els.performanceRecordAgency.value.trim(), division: els.performanceRecordDivision.value.trim(),
+      overview: nullableText(els.performanceRecordOverview.value), contract_date: nullableText(els.performanceRecordContractDate.value),
+      start_date: nullableText(els.performanceRecordStartDate.value), end_date: nullableText(els.performanceRecordEndDate.value),
+      contract_amount: nullableNumber(els.performanceRecordAmount.value), vat_basis: els.performanceRecordVat.value,
+      completed: els.performanceRecordCompleted.checked, share_pct: nullableNumber(els.performanceRecordShare.value) ?? 100,
+      certificate_status: els.performanceRecordCertificate.value, evidence_reference: nullableText(els.performanceRecordEvidence.value),
+      keywords: els.performanceRecordKeywords.value.split(",").map((value) => value.trim()).filter(Boolean),
+    };
+    const path = record ? `/performance-records/${encodeURIComponent(record.id)}` : "/performance-records";
+    if (record) payload.expected_updated_at = record.updatedAt;
+    else payload.idempotency_key = els.performanceRecordDialog.dataset.requestKey || newIdempotencyKey("performance");
+    els.performanceRecordSaveButton.disabled = true;
+    try {
+      await apiRequest(path, { method: record ? "PATCH" : "POST", headers, body: JSON.stringify(payload) });
+      closePerformanceRecordDialog();
+      await loadPerformanceEditor({ force: true });
+      showToast(record ? "회사 실적 수정 완료" : "회사 실적 등록 완료", "운영 실적과 공개 스냅샷은 분리되어 관리됩니다.", "success");
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      showToast("회사 실적 저장 실패", editorErrorMessage(error), "error");
+    } finally {
+      els.performanceRecordSaveButton.disabled = false;
+    }
+  }
+
+  async function loadResultLearning({ force = false } = {}) {
+    if (state.resultLearning.loading || (state.resultLearning.loaded && !force)) return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    state.resultLearning.loading = true;
+    els.resultLearningUnlockButton.disabled = true;
+    els.resultLearningState.hidden = false;
+    els.resultLearningState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>결과 기록을 불러오고 있습니다</strong>';
+    const params = new URLSearchParams({ scope: "ENDED", limit: String(state.resultLearning.limit), offset: String(state.resultLearning.offset) });
+    const q = els.resultLearningSearchInput.value.trim();
+    if (q) params.set("q", q);
+    if (els.resultLearningOutcomeFilter.value) params.set("outcome_status", els.resultLearningOutcomeFilter.value);
+    if (els.resultLearningRecordFilter.value) params.set("record_status", els.resultLearningRecordFilter.value);
+    try {
+      const payload = unwrapObject(await apiRequest(`/result-learning?${params}`, { headers }));
+      state.resultLearning.records = arrayValue(payload.records).map(normalizeResultLearningNotice);
+      state.resultLearning.total = Math.max(numberOrNull(payload.total) ?? state.resultLearning.records.length, 0);
+      state.resultLearning.loaded = true;
+      renderResultLearning();
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      els.resultLearningState.hidden = false;
+      els.resultLearningState.innerHTML = `<strong>결과 기록을 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(error))}</p>`;
+      showToast("결과 학습 조회 실패", editorErrorMessage(error), "error");
+    } finally {
+      state.resultLearning.loading = false;
+      els.resultLearningUnlockButton.disabled = false;
+    }
+  }
+
+  function normalizeResultLearningNotice(raw = {}) {
+    const outcome = raw.latest_outcome && typeof raw.latest_outcome === "object" ? raw.latest_outcome : null;
+    return {
+      noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
+      deadline: stringValue(raw.deadline), noticeStatus: stringValue(raw.notice_status),
+      outcome: outcome ? {
+        id: stringValue(outcome.id), outcomeKey: stringValue(outcome.outcome_key), recordStatus: stringValue(outcome.record_status, "DRAFT").toUpperCase(),
+        revision: numberOrNull(outcome.revision) ?? 1, status: stringValue(outcome.status).toUpperCase(), submittedBidAmount: numberOrNull(outcome.submitted_bid_amount),
+        submittedBidRate: numberOrNull(outcome.submitted_bid_rate), winningBidAmount: numberOrNull(outcome.winning_bid_amount), winningBidRate: numberOrNull(outcome.winning_bid_rate),
+        technicalScore: numberOrNull(outcome.technical_score), priceScore: numberOrNull(outcome.price_score), totalScore: numberOrNull(outcome.total_score), rank: numberOrNull(outcome.rank),
+        winnerName: stringValue(outcome.winner_name), lossReason: stringValue(outcome.loss_reason), source: stringValue(outcome.source), sourceReference: stringValue(outcome.source_reference),
+        basisOutcomeId: stringValue(outcome.basis_outcome_id), basisSource: stringValue(outcome.basis_source),
+        operatorNote: stringValue(outcome.operator_note), occurredAt: stringValue(outcome.occurred_at), updatedAt: stringValue(outcome.updated_at),
+      } : null,
+    };
+  }
+
+  function renderResultLearning() {
+    const data = state.resultLearning;
+    els.resultLearningUnlockButton.textContent = data.loaded ? "목록 새로고침" : "결과 기록 열기";
+    els.resultLearningSummary.textContent = data.loaded ? `대상 공고 ${formatNumber(data.total)}건` : "운영 키로 결과 기록을 불러오세요.";
+    els.resultLearningState.hidden = data.records.length > 0;
+    if (data.loaded && !data.records.length) els.resultLearningState.innerHTML = "<strong>조건에 맞는 공고가 없습니다</strong><p>필터를 바꾸거나 종료 공고 수집 상태를 확인해 주세요.</p>";
+    els.resultLearningList.innerHTML = data.records.map((notice, index) => {
+      const outcome = notice.outcome;
+      const outcomeLabel = outcome ? resultStatusLabel(outcome.status) : "결과 미입력";
+      return `<article class="operator-record result-record" role="listitem">
+        <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? recordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(notice.noticeStatus)}</small></div>
+        <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
+        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(formatBudget(outcome?.submittedBidAmount))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(formatBudget(outcome?.winningBidAmount))}</dd></div></dl>
+        <footer><small>${escapeHtml(outcome ? `${outcome.source}${outcome.basisSource ? ` · 기준 ${outcome.basisSource}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small><button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "결과 수정" : "검토본 만들기") : "결과 입력"}</button></footer>
+      </article>`;
+    }).join("");
+    const start = data.total ? data.offset + 1 : 0;
+    const end = data.offset + data.records.length;
+    const pages = Math.max(Math.ceil(data.total / data.limit), 1);
+    const page = Math.floor(data.offset / data.limit) + 1;
+    els.resultLearningPageRange.textContent = `${formatNumber(start)}–${formatNumber(end)} / ${formatNumber(data.total)}건`;
+    els.resultLearningPageLabel.textContent = `${page} / ${pages}`;
+    els.resultLearningPreviousButton.disabled = data.loading || data.offset <= 0;
+    els.resultLearningNextButton.disabled = data.loading || data.offset + data.limit >= data.total;
+    els.resultLearningPagination.hidden = !data.loaded || data.total <= data.limit;
+    renderDataSource();
+  }
+
+  function handleResultLearningAction(event) {
+    const button = event.target.closest("[data-edit-result]");
+    if (!button) return;
+    const notice = state.resultLearning.records[Number(button.dataset.editResult)];
+    if (notice) openResultLearningDialog(notice);
+  }
+
+  function openResultLearningDialog(notice) {
+    const outcome = notice.outcome;
+    const isManualRecord = outcome?.source === "MANUAL_UI";
+    state.resultLearning.editingNotice = notice;
+    state.resultLearning.editingOutcome = outcome;
+    els.resultLearningDialogTitle.textContent = !outcome ? "입찰 결과 입력" : (isManualRecord ? "입찰 결과 수정" : "자동 환류 결과 검토본 만들기");
+    els.resultLearningDialogNotice.textContent = `${notice.title} · ${notice.bidNoticeNo}`;
+    els.resultLearningStatus.value = outcome?.status || "NO_BID";
+    els.resultLearningRecordStatus.value = outcome?.recordStatus || "DRAFT";
+    els.resultLearningSubmittedAmount.value = outcome?.submittedBidAmount ?? "";
+    els.resultLearningSubmittedRate.value = outcome?.submittedBidRate ?? "";
+    els.resultLearningWinningAmount.value = outcome?.winningBidAmount ?? "";
+    els.resultLearningWinningRate.value = outcome?.winningBidRate ?? "";
+    els.resultLearningTechnicalScore.value = outcome?.technicalScore ?? "";
+    els.resultLearningPriceScore.value = outcome?.priceScore ?? "";
+    els.resultLearningTotalScore.value = outcome?.totalScore ?? "";
+    els.resultLearningRank.value = outcome?.rank ?? "";
+    els.resultLearningWinner.value = outcome?.winnerName || "";
+    els.resultLearningOccurredAt.value = outcome?.occurredAt ? outcome.occurredAt.slice(0, 10) : "";
+    els.resultLearningLossReason.value = outcome?.lossReason || "";
+    els.resultLearningSourceReference.value = outcome?.sourceReference || "";
+    els.resultLearningOperatorNote.value = outcome?.operatorNote || "";
+    els.resultLearningDialog.dataset.requestKey = isManualRecord ? "" : newIdempotencyKey("result");
+    els.resultLearningDialog.showModal();
+    window.requestAnimationFrame(() => els.resultLearningStatus.focus());
+  }
+
+  function closeResultLearningDialog() {
+    if (els.resultLearningDialog.open) els.resultLearningDialog.close();
+    state.resultLearning.editingNotice = null;
+    state.resultLearning.editingOutcome = null;
+  }
+
+  async function saveResultLearning(event) {
+    event.preventDefault();
+    const notice = state.resultLearning.editingNotice;
+    const outcome = state.resultLearning.editingOutcome;
+    if (!notice) return;
+    const isManualRecord = outcome?.source === "MANUAL_UI";
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    const payload = {
+      record_status: els.resultLearningRecordStatus.value, status: els.resultLearningStatus.value,
+      submitted_bid_amount: nullableNumber(els.resultLearningSubmittedAmount.value), submitted_bid_rate: nullableNumber(els.resultLearningSubmittedRate.value),
+      winning_bid_amount: nullableNumber(els.resultLearningWinningAmount.value), winning_bid_rate: nullableNumber(els.resultLearningWinningRate.value),
+      technical_score: nullableNumber(els.resultLearningTechnicalScore.value), price_score: nullableNumber(els.resultLearningPriceScore.value), total_score: nullableNumber(els.resultLearningTotalScore.value),
+      rank: nullableNumber(els.resultLearningRank.value), winner_name: nullableText(els.resultLearningWinner.value), loss_reason: nullableText(els.resultLearningLossReason.value),
+      source_reference: nullableText(els.resultLearningSourceReference.value), operator_note: nullableText(els.resultLearningOperatorNote.value),
+      occurred_at: els.resultLearningOccurredAt.value ? `${els.resultLearningOccurredAt.value}T00:00:00+09:00` : null,
+    };
+    const path = isManualRecord ? `/result-learning/${encodeURIComponent(outcome.id)}` : "/result-learning";
+    if (isManualRecord) payload.expected_updated_at = outcome.updatedAt;
+    else {
+      payload.notice_key = notice.noticeKey;
+      payload.idempotency_key = els.resultLearningDialog.dataset.requestKey || newIdempotencyKey("result");
+      if (outcome) payload.basis_outcome_id = outcome.id;
+    }
+    els.resultLearningSaveButton.disabled = true;
+    try {
+      await apiRequest(path, { method: isManualRecord ? "PATCH" : "POST", headers, body: JSON.stringify(payload) });
+      closeResultLearningDialog();
+      await loadResultLearning({ force: true });
+      showToast(
+        isManualRecord ? "결과 기록 수정 완료" : (outcome ? "담당자 검토본 저장 완료" : "결과 기록 저장 완료"),
+        !isManualRecord && outcome ? "자동 환류 원본은 변경하지 않고 검토본을 별도로 저장했습니다." : "검증 상태와 출처를 함께 저장했습니다.",
+        "success",
+      );
+    } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
+      showToast("결과 기록 저장 실패", editorErrorMessage(error), "error");
+    } finally {
+      els.resultLearningSaveButton.disabled = false;
+    }
+  }
+
+  function changeResultLearningPage(direction) {
+    const next = state.resultLearning.offset + direction * state.resultLearning.limit;
+    if (next < 0 || next >= state.resultLearning.total) return;
+    state.resultLearning.offset = next;
+    void loadResultLearning({ force: true });
+    els.resultLearningSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function nullableText(value) { const cleaned = String(value || "").trim(); return cleaned || null; }
+  function nullableNumber(value) { const cleaned = String(value ?? "").trim(); return cleaned === "" ? null : Number(cleaned); }
+  function newIdempotencyKey(prefix) { return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`; }
+  function recordStatusLabel(value) { return ({ DRAFT: "초안", VALIDATED: "검증 완료", ARCHIVED: "보관" })[value] || value; }
+  function resultStatusLabel(value) { return ({ NO_BID: "미참여", SUBMITTED: "제출", WON: "낙찰", LOST: "실주", CANCELLED: "취소" })[value] || value; }
+  function editorErrorMessage(error) {
+    const detail = error?.payload?.detail;
+    if (Array.isArray(detail)) return detail.map((item) => stringValue(item?.msg)).filter(Boolean).join(" · ") || humanizeError(error);
+    return stringValue(detail) || humanizeError(error);
   }
 
   function formatAwardBusinessNumberInput() {
@@ -2186,6 +3055,20 @@
   }
 
   function renderDataSource() {
+    if (state.currentView === "prespec") {
+      const stored = state.prespec.stored.records.length;
+      const live = state.prespec.live;
+      els.dataSourceLabel.textContent = live.searched
+        ? `사전규격 · 저장 DB ${formatNumber(stored)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · OpenAI 0회`
+        : `사전규격 저장 DB ${formatNumber(stored)}건 · 저장 검색 PPS 0회 · OpenAI 0회`;
+      return;
+    }
+    if (state.currentView === "closed") {
+      els.dataSourceLabel.textContent = state.resultLearning.loaded
+        ? `결과 학습 DB · 대상 공고 ${formatNumber(state.resultLearning.total)}건 · 자동 환류/담당자 입력 구분`
+        : "결과 학습 DB · 운영 키로 조회";
+      return;
+    }
     if (state.currentView === "awards") {
       const data = state.companyAwards;
       els.dataSourceLabel.textContent = data.searched
@@ -2594,7 +3477,7 @@
   }
 
   function showDemoBanner(reason) {
-    els.demoBanner.hidden = ["performance", "awards"].includes(state.currentView);
+    els.demoBanner.hidden = ["prespec", "closed", "performance", "awards"].includes(state.currentView);
     els.demoBannerTitle.textContent = state.source === "api" ? "합성 데이터가 포함되어 있습니다." : "데모 데이터로 보고 있습니다.";
     els.demoBannerReason.textContent = reason;
     els.retryApiButton.textContent = state.source === "api" ? "데이터 새로고침" : "실데이터 다시 연결";
@@ -2616,6 +3499,7 @@
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
+      prespec: ["사전규격", "사전규격 검색·분석"],
       closed: ["결과 학습", "결과가 확인된 공고"],
       awards: ["낙찰 결과", "회사별 낙찰 결과"],
       performance: ["회사 실적", "회사 수행 실적"],
@@ -2634,21 +3518,37 @@
       button.setAttribute("aria-pressed", String(active));
       button.closest(".kpi-card")?.classList.toggle("is-active", active);
     });
+    const prespecView = view === "prespec";
+    const resultLearningView = view === "closed";
     const performanceView = view === "performance";
     const awardsView = view === "awards";
-    const customView = performanceView || awardsView;
+    const customView = prespecView || resultLearningView || performanceView || awardsView;
     els.opportunityHero.hidden = customView;
     els.opportunityKpis.hidden = customView;
     els.noticeSection.hidden = customView;
+    els.prespecSection.hidden = !prespecView;
+    els.resultLearningSection.hidden = !resultLearningView;
     els.awardResultsSection.hidden = !awardsView;
     els.performanceSection.hidden = !performanceView;
     els.replayButton.hidden = customView;
-    els.footerDisclaimer.textContent = awardsView
+    els.footerDisclaimer.textContent = prespecView
+      ? "사전규격 분석은 요구조건 사전 검토용이며 입찰 참여 GO/NO-GO 판정을 실행하지 않습니다."
+      : resultLearningView
+      ? "결과 학습은 출처가 있는 검증 완료 기록만 후속 분석 사실로 사용합니다."
+      : awardsView
       ? "낙찰 결과는 낙찰 사실 조회용이며 사업 수행·완료·실적증명서 발급 여부를 확정하지 않습니다."
       : performanceView
         ? "공개 실적은 유사 후보 탐색용이며, 공고별 인정실적·인정금액·정량점수를 확정하지 않습니다."
         : "PAI LOOP는 담당자의 판단을 돕는 도구이며 자동 입찰을 수행하지 않습니다.";
-    if (performanceView) {
+    if (prespecView) {
+      els.demoBanner.hidden = true;
+      renderPreSpecificationView();
+      if (!state.prespec.stored.loaded && !state.prespec.stored.loading) void loadStoredPreSpecifications();
+    } else if (resultLearningView) {
+      els.demoBanner.hidden = true;
+      renderResultLearning();
+      if (!state.resultLearning.loaded && !state.resultLearning.loading) void loadResultLearning();
+    } else if (performanceView) {
       els.demoBanner.hidden = true;
       if (!state.performance.loaded && !state.performance.loading) void loadPerformance();
       else if (state.performance.loaded) renderPerformanceView();
@@ -4200,7 +5100,8 @@
     if (document.querySelector("dialog[open]")) return;
     if (event.key === "/" && !isEditableTarget(event.target)) {
       event.preventDefault();
-      if (state.currentView === "performance") els.performanceSearchInput.focus();
+      if (state.currentView === "closed") els.resultLearningSearchInput.focus();
+      else if (state.currentView === "performance") els.performanceSearchInput.focus();
       else els.searchInput.focus();
     }
   }

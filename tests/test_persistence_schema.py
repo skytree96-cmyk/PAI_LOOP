@@ -12,9 +12,11 @@ from sqlalchemy.schema import CreateTable
 
 from pai_loop.database import Base, build_engine
 from pai_loop.migrations import (
+    COMPANY_PERFORMANCE_MIGRATION_ID,
     MIGRATION_CHECKSUM,
     MIGRATION_ID,
     NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+    PRESPEC_MIGRATION_ID,
     MigrationError,
     apply_additive_migrations,
     main as migration_main,
@@ -24,6 +26,7 @@ from pai_loop.migrations import (
 from pai_loop.models import (
     AnalysisRun,
     BidOutcome,
+    CompanyPerformanceRecord,
     Evaluation,
     Notice,
     NoticeVersion,
@@ -32,6 +35,12 @@ from pai_loop.models import (
     RequirementResultSnapshot,
     ScoreSnapshot,
     UserDecision,
+)
+from pai_loop.prespec_models import (
+    PreSpecification,
+    PreSpecificationAnalysisRun,
+    PreSpecificationDocument,
+    PreSpecificationVersion,
 )
 
 
@@ -242,10 +251,14 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
     assert pending_migrations(engine) == [
         MIGRATION_ID,
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+        COMPANY_PERFORMANCE_MIGRATION_ID,
+        PRESPEC_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
         MIGRATION_ID,
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+        COMPANY_PERFORMANCE_MIGRATION_ID,
+        PRESPEC_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
@@ -259,6 +272,11 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         "reference_data_versions",
         "bid_outcomes",
         "notice_analysis_policies",
+        "company_performance_records",
+        "pre_specifications",
+        "pre_specification_versions",
+        "pre_specification_documents",
+        "pre_specification_analysis_runs",
     } <= tables
     engine.dispose()
 
@@ -285,8 +303,13 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
             )
         )
 
-    assert pending_migrations(engine) == [NOTICE_ANALYSIS_POLICY_MIGRATION_ID]
-    assert apply_additive_migrations(engine) == [NOTICE_ANALYSIS_POLICY_MIGRATION_ID]
+    expected = [
+        NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+        COMPANY_PERFORMANCE_MIGRATION_ID,
+        PRESPEC_MIGRATION_ID,
+    ]
+    assert pending_migrations(engine) == expected
+    assert apply_additive_migrations(engine) == expected
     assert "notice_analysis_policies" in inspect(engine).get_table_names()
     assert pending_migrations(engine) == []
     engine.dispose()
@@ -348,6 +371,11 @@ def test_new_tables_compile_for_sqlite_and_postgresql(dialect: object) -> None:
         RecommendationSnapshot.__table__,
         ReferenceDataVersion.__table__,
         BidOutcome.__table__,
+        CompanyPerformanceRecord.__table__,
+        PreSpecification.__table__,
+        PreSpecificationVersion.__table__,
+        PreSpecificationDocument.__table__,
+        PreSpecificationAnalysisRun.__table__,
     ):
         sql = str(CreateTable(table).compile(dialect=dialect))
         assert "CREATE TABLE" in sql

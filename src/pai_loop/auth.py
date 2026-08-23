@@ -14,6 +14,7 @@ _PUBLIC_SAFE_GET_PATHS = {
     "/api/v1/performance",
     "/api/v1/performance/summary",
     "/api/v1/notices",
+    "/api/v1/pre-specifications",
 }
 _PUBLIC_SAFE_GET_PATTERNS = (
     re.compile(r"^/api/v1/notices/[^/]+$"),
@@ -21,6 +22,7 @@ _PUBLIC_SAFE_GET_PATTERNS = (
     re.compile(r"^/api/v1/notices/[^/]+/award-intelligence$"),
     re.compile(r"^/api/v1/notices/[^/]+/quantitative-estimate$"),
     re.compile(r"^/api/v1/notices/[^/]+/analysis/requirement-policy$"),
+    re.compile(r"^/api/v1/pre-specifications/[A-Za-z0-9_-]{1,40}$"),
 )
 
 

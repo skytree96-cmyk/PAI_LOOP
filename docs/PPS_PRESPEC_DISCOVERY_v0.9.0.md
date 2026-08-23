@@ -46,7 +46,7 @@
 
 `ofclNm`, `ofclTelNo`와 알 수 없는 provider 필드는 폐기한다. 규격문서는 HTTPS `www.g2b.go.kr/pn/pnz/pnza/UntyAtchFile/downloadFile.do`만 허용하고 query를 `bfSpecRegNo`, `fileType=BFDTL`, `fileSeq`로 제한한다. 서비스 키·raw payload·문서 본문은 저장하지 않는다.
 
-## 운영 DB 계약(후속 migration)
+## 운영 DB 계약(구현됨)
 
 별도 `pre_specifications` 테이블을 사용한다.
 
@@ -57,25 +57,36 @@
 - `linked_bid_notice_nos` JSON, `matched_keywords` JSON
 - `source_digest`, `first_seen_at`, `last_seen_at`
 
-문서 URL은 `pre_specification_documents(pre_specification_id, slot, safe_url, source_digest)`로 분리한다. `registry_no + source_digest`가 같으면 no-op이고, `chgDt`/digest가 바뀌면 version을 남긴다. `bidNtceNoList`가 채워지면 `Notice.bid_notice_no`와 연결하되 사전규격 행을 삭제하지 않는다.
+문서 URL은 `pre_specification_documents(pre_specification_id, slot, safe_url, source_digest)`로 분리한다. `registry_no + source_digest`가 같으면 no-op이고, `chgDt`/digest가 바뀌면 `pre_specification_versions`에 version을 남긴다. 명시적 분석 결과는 `pre_specification_analysis_runs`에 원문 없이 저장한다. additive migration ID는 `20260823_04_pre_specifications`다. `bidNtceNoList`가 채워지면 기존 `Notice.bid_notice_no`의 연결 수를 확인하되 사전규격 행과 조기발견 이력은 삭제하지 않는다.
 
-## HTTP 계약(후속 route)
+## HTTP 계약(구현됨)
 
-- 보호 write: `POST /api/v1/ingestion/pps/pre-specifications`
-  - 입력: `from_date`, `to_date`, `mode=REGISTERED|CHANGED`, `page_size<=999`, `max_pages<=20`, `dry_run`
-  - 출력: `fetched`, `matched`, `created`, `updated`, `linked`, `quarantined`, `api_calls`, `hit_page_limit`, `next_watermark`
+- 운영자 검색: `POST /api/v1/prespec-discovery/search`
+  - same-origin과 별도 `X-PAI-Manual-Token`을 요구한다.
+  - 입력은 검색어 2~60자, 최대 31일, 응답 50건이고 provider 호출은 999행×3페이지·25초로 제한한다. 2,997행 또는 시간 상한에 닿으면 `PARTIAL`과 경고를 반환해 완전 검색으로 오인하지 않게 한다.
+  - PPS 목록만 읽으며 DB write와 OpenAI 호출은 항상 0이다. page/time/quarantine 경계는 `PARTIAL`과 고정 warning code로 반환한다.
+- 선택 저장: `POST /api/v1/prespec-discovery/save`
+  - 검색 조건과 `registry_no`, `selection_token`을 받아 provider를 다시 조회한다.
+  - 현재 source digest가 선택 당시와 다르면 409이며, 일치할 때 정확히 한 건만 멱등 저장한다. 저장 자체는 OpenAI를 호출하지 않는다.
 - 공개 read: `GET /api/v1/pre-specifications?status=OPEN_FOR_OPINION&search_keywords=...`
   - DB만 읽고 PPS 실호출을 하지 않는다.
-  - 제목·기관 substring match와 부서 ranking 근거를 함께 반환한다.
-- exact recovery: `GET /api/v1/pre-specifications/{registry_no}`
-  - DB 우선이며 운영자 권한에서만 `refresh=true`를 허용한다.
+  - 제목·발주기관·수요기관의 로컬 substring match와 저장된 일치 근거를 반환한다.
+- detail: `GET /api/v1/pre-specifications/{registry_no}`
+  - 현재 version의 안전한 문서 URL, provenance digest, 연결 입찰번호, 최신 분석 상태를 반환하며 source call은 0이다.
+- 명시적 분석: `POST /api/v1/pre-specifications/{registry_no}/analysis`
+  - same-origin·operator token·`allow_openai=true`가 필요하다. 현재 version 완료 결과는 재사용한다.
+  - 공식 문서 최대 5개, 문서당 OpenAI 최대 2회, 요청당 최대 10회이며 기존 공고 수동 분석과 시간당 quota/cooldown을 공유한다.
+  - POST는 `QUEUED`를 반환하고 `GET /api/v1/pre-specifications/{registry_no}/analysis/{analysis_id}`로 상태를 조회한다.
+  - 결과는 연락처를 redaction한 요구사항 구조화이며 GO/REVIEW/FAIL 입찰 판정을 만들지 않는다.
+
+정기 등록/변경 watermark ingestion은 아직 구현하지 않았다. 승인된 scheduler와 장애 복구 정책이 정해질 때 별도 보호 route로 추가한다.
 
 UI에서는 ‘사전규격/예정’ badge와 의견마감일을 보여주며 GO 판정을 숨긴다. 연결 입찰이 생기면 ‘입찰공고 열기’로 전환한다.
 
 ## 승인 기준
 
-- 등록/변경 watermark 각각 멱등성 확인
-- page cap 도달 시 `PARTIAL`로 표시하고 watermark 전진 금지
+- 동일 선택 저장의 멱등성과 변경 digest의 version 증가 확인
+- page/time/quarantine cap 도달 시 `PARTIAL` 표시
 - 담당자 이름·전화와 API key가 DB/API/log에 없음
 - 사전규격이 GO/REVIEW 집계와 Teams 입찰 알림에 섞이지 않음
 - 연결된 입찰공고가 생겨도 사전규격의 조기발견 이력 보존

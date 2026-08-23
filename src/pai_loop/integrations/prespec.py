@@ -92,6 +92,22 @@ def _safe_document_url(value: Any, *, registry_no: str) -> str | None:
     )
 
 
+def canonical_pre_specification_document_url(
+    value: Any,
+    *,
+    registry_no: str,
+) -> str | None:
+    """Return the canonical allowlisted PPS pre-spec document URL.
+
+    This is the public adapter boundary used by persistence and document
+    download code.  It deliberately exposes no generic URL fetch capability:
+    callers receive a URL only for the exact official host, path, registry
+    number, file type, and numeric file slot accepted by the normaliser.
+    """
+
+    return _safe_document_url(value, registry_no=registry_no)
+
+
 def normalise_pre_specification(item: dict[str, Any]) -> dict[str, Any]:
     """Return the public-business allowlist for one PPS service pre-specification.
 
@@ -186,6 +202,8 @@ class PpsPreSpecificationClient(PpsClient):
             raise ValueError("max_pages must be positive")
         self.hit_page_limit = False
         self.hit_time_limit = False
+        self.rows_fetched = 0
+        self.rows_quarantined = 0
         for window in split_date_range(start, end, max_days=max_window_days):
             page = 1
             while True:
@@ -204,9 +222,12 @@ class PpsPreSpecificationClient(PpsClient):
                 )
                 raw_items, total = parse_paged_response(payload)
                 for raw_item in raw_items:
+                    self.rows_fetched += 1
                     record = normalise_pre_specification(raw_item)
                     if record["registry_no"] and record["title"]:
                         yield record
+                    else:
+                        self.rows_quarantined += 1
                 if page * rows >= total or not raw_items:
                     break
                 if max_pages is not None and page >= max_pages:
