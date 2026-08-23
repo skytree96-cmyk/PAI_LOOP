@@ -24,6 +24,9 @@
     selectedTrigger: null,
     sourceDialogTrigger: null,
     currentView: "all",
+    noticeSearchMode: "stored",
+    noticeSearchGuideOpened: false,
+    noticeSearchHelpTrigger: null,
     layout: window.matchMedia("(max-width: 680px)").matches ? "cards" : "table",
     loading: false,
     detailLoading: false,
@@ -53,8 +56,10 @@
       truncated: false,
       searched: false,
       loading: false,
+      submitting: false,
       error: null,
       saving: new Set(),
+      requestSequence: 0,
     },
     companyAwards: {
       company: null,
@@ -131,6 +136,7 @@
     configurePaiBotTeamsAccess();
     detectTeamsContext();
     bindEvents();
+    setNoticeSearchMode("stored", { announce: false });
     setLayout(state.layout);
     loadApplicationData();
   }
@@ -140,8 +146,8 @@
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
-      "noticeHeading", "noticeSummary", "noticeSearchScope", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
-      "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
+      "noticeHeading", "noticeSummary", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
+      "ppsSearchSuggestion", "ppsSearchSuggestionButton", "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
       "detailDrawer", "drawerLoading", "closeDetailButton", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
@@ -171,6 +177,8 @@
     els.navItems = [...document.querySelectorAll(".nav-item[data-view]")];
     els.kpiViewButtons = [...document.querySelectorAll("[data-kpi-view]")];
     els.layoutButtons = [...document.querySelectorAll("[data-layout]")];
+    els.noticeSearchModeButtons = [...document.querySelectorAll("[data-notice-search-mode]")];
+    els.storedSearchControls = [...document.querySelectorAll(".stored-search-only")];
     els.tabButtons = [...document.querySelectorAll("[role='tab'][data-tab]")];
     els.tabPanels = [...document.querySelectorAll("[role='tabpanel'][data-panel]")];
     els.decisionInputs = [...document.querySelectorAll("input[name='decision']")];
@@ -258,14 +266,34 @@
       }
     });
 
-    els.filterForm.addEventListener("input", applyFilters);
-    els.filterForm.addEventListener("change", applyFilters);
+    els.filterForm.addEventListener("input", () => {
+      if (state.noticeSearchMode === "stored") applyFilters();
+    });
+    els.filterForm.addEventListener("change", () => {
+      if (state.noticeSearchMode === "stored") applyFilters();
+    });
     els.filterForm.addEventListener("submit", submitNoticeSearch);
     els.filterForm.addEventListener("reset", () => window.setTimeout(resetPrioritySearch, 0));
     els.searchInput.addEventListener("input", scheduleNoticeSearch);
     els.emptyResetButton.addEventListener("click", resetFilters);
     els.ppsDiscoveryForm.addEventListener("submit", searchPpsNotices);
     els.ppsDiscoveryResults.addEventListener("click", handlePpsDiscoveryAction);
+    els.ppsDiscoveryFromDate.addEventListener("change", invalidatePpsDiscoveryDates);
+    els.ppsDiscoveryToDate.addEventListener("change", invalidatePpsDiscoveryDates);
+    els.ppsSearchSuggestionButton.addEventListener("click", () => setNoticeSearchMode("pps", { showGuide: true }));
+    els.noticeSearchModeButtons.forEach((button) => {
+      button.addEventListener("click", () => setNoticeSearchMode(button.dataset.noticeSearchMode, { showGuide: true }));
+    });
+    els.noticeSearchHelpButton.addEventListener("click", openNoticeSearchHelpDialog);
+    els.noticeSearchHelpDialog.addEventListener("click", (event) => {
+      if (event.target === els.noticeSearchHelpDialog) els.noticeSearchHelpDialog.close("close");
+    });
+    els.noticeSearchHelpDialog.addEventListener("close", () => {
+      els.noticeSearchHelpButton.setAttribute("aria-expanded", "false");
+      const trigger = state.noticeSearchHelpTrigger;
+      state.noticeSearchHelpTrigger = null;
+      if (trigger?.isConnected) trigger.focus();
+    });
 
     els.awardSearchForm.addEventListener("submit", searchCompanyAwards);
     els.awardBusinessNumber.addEventListener("input", formatAwardBusinessNumberInput);
@@ -546,7 +574,7 @@
   }
 
   function globalNoticeSearchActive() {
-    return Boolean(els.searchInput?.value.trim());
+    return state.noticeSearchMode === "stored" && Boolean(els.searchInput?.value.trim());
   }
 
   function buildNoticeRequestPath({
@@ -555,9 +583,10 @@
     offset = 0,
   } = {}) {
     const params = new URLSearchParams();
-    const departmentId = els.departmentSelect?.value || "organization";
-    const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
-    const query = els.searchInput?.value.trim() || "";
+    const storedMode = state.noticeSearchMode === "stored";
+    const departmentId = storedMode ? els.departmentSelect?.value || "organization" : "organization";
+    const searchKeywords = storedMode ? els.priorityKeywordInput?.value.trim() || "" : "";
+    const query = storedMode ? els.searchInput?.value.trim() || "" : "";
     const globalSearch = Boolean(query);
     // Keep the organization ranking projection on the default board. The
     // backend now computes every department once per notice, so preserving
@@ -578,6 +607,7 @@
   }
 
   function noticeRequestTimeoutMs() {
+    if (state.noticeSearchMode !== "stored") return NOTICE_REQUEST_TIMEOUT_MS;
     const departmentId = els.departmentSelect?.value || "organization";
     const searchKeywords = globalNoticeSearchActive()
       ? ""
@@ -595,11 +625,81 @@
 
   function renderNoticeSearchScope() {
     if (!els.noticeSearchScope) return;
+    if (state.noticeSearchMode === "pps") {
+      els.noticeSearchScope.classList.remove("is-global");
+      els.noticeSearchScope.classList.add("is-pps");
+      els.noticeSearchScope.textContent = "나라장터 실시간 조회 · 게시일 기준 최대 31일의 용역 공고명을 검색합니다. 저장 전에는 자격 판단과 정량 점수가 없습니다.";
+      return;
+    }
     const globalSearch = globalNoticeSearchActive();
+    els.noticeSearchScope.classList.remove("is-pps");
     els.noticeSearchScope.classList.toggle("is-global", globalSearch);
     els.noticeSearchScope.textContent = globalSearch
       ? "저장된 전체 공고 검색 · 현재 탭, 진행/종료 상태와 우선 키워드 범위를 넘어서 찾습니다. 검색만으로 AI 비용은 발생하지 않습니다."
       : "현재 화면 범위에서 공고를 표시합니다. 나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다.";
+  }
+
+  function setNoticeSearchMode(mode, { announce = true, showGuide = false } = {}) {
+    const nextMode = mode === "pps" ? "pps" : "stored";
+    const changed = state.noticeSearchMode !== nextMode;
+    state.noticeSearchMode = nextMode;
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = null;
+
+    const ppsMode = nextMode === "pps";
+    els.noticeSearchModeButtons.forEach((button) => {
+      const active = button.dataset.noticeSearchMode === nextMode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    els.filterForm.classList.toggle("is-pps-mode", ppsMode);
+    els.filterForm.setAttribute("aria-label", ppsMode ? "나라장터 용역 공고 검색" : "수집된 공고 검색");
+    els.prioritySearch.hidden = ppsMode;
+    els.storedSearchControls.forEach((control) => {
+      const field = control.matches("select, button, input") ? control : control.querySelector("select, button, input");
+      if (field) field.disabled = ppsMode;
+    });
+    els.searchInput.placeholder = ppsMode
+      ? "나라장터 용역 공고명 검색 (2자 이상)"
+      : "공고명 · 발주기관 · 공고번호 검색";
+    els.noticeSearchInputLabel.textContent = ppsMode
+      ? "나라장터 용역 공고명 검색"
+      : "공고명, 발주기관 또는 공고번호 검색";
+    els.noticeSearchHelp.textContent = ppsMode
+      ? "검색어와 게시일을 입력한 뒤 조회 버튼을 눌러야 나라장터 API를 호출합니다."
+      : "검색어를 입력하면 이미 수집된 전체 공고에서 찾습니다.";
+    els.noticePanel.hidden = ppsMode;
+    if (ppsMode) {
+      els.noticeSummary.textContent = "수집 DB와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다.";
+    }
+    renderNoticeSearchScope();
+    renderPpsDiscovery();
+    if (!ppsMode && changed) {
+      if (state.source === "api") void loadApplicationData({ forceApi: true });
+      else applyFilters();
+    }
+
+    if (ppsMode && showGuide && !state.noticeSearchGuideOpened) {
+      state.noticeSearchGuideOpened = true;
+      openNoticeSearchHelpDialog();
+    }
+    if (announce && changed) {
+      showToast(
+        ppsMode ? "나라장터 용역 공고 조회" : "수집된 공고 검색",
+        ppsMode
+          ? "외부 조회는 버튼을 눌렀을 때만 실행되며, 저장 전에는 판단과 점수가 없습니다."
+          : "PAI LOOP에 저장된 공고와 기존 판단 결과를 검색합니다.",
+        "success",
+      );
+    }
+  }
+
+  function openNoticeSearchHelpDialog() {
+    const dialog = els.noticeSearchHelpDialog;
+    if (!dialog || typeof dialog.showModal !== "function" || dialog.open) return;
+    state.noticeSearchHelpTrigger = document.activeElement;
+    els.noticeSearchHelpButton.setAttribute("aria-expanded", "true");
+    dialog.showModal();
   }
 
   function scheduleNoticeSearch(event) {
@@ -607,6 +707,10 @@
     const query = els.searchInput.value.trim().replace(/\s+/g, " ");
     if (state.ppsDiscovery.query !== query && !state.ppsDiscovery.loading) resetPpsDiscovery(query);
     renderNoticeSearchScope();
+    if (state.noticeSearchMode === "pps") {
+      renderPpsDiscovery();
+      return;
+    }
     window.clearTimeout(state.noticeSearchTimer);
     state.noticeSearchTimer = window.setTimeout(() => {
       state.noticeSearchTimer = null;
@@ -616,6 +720,10 @@
 
   function submitNoticeSearch(event) {
     event.preventDefault();
+    if (state.noticeSearchMode === "pps") {
+      void searchPpsNotices();
+      return;
+    }
     if (state.source === "demo") {
       applyFilters();
       return;
@@ -640,6 +748,7 @@
   }
 
   function resetPpsDiscovery(query = "") {
+    state.ppsDiscovery.requestSequence += 1;
     state.ppsDiscovery.query = query;
     state.ppsDiscovery.fromDate = "";
     state.ppsDiscovery.toDate = "";
@@ -649,8 +758,20 @@
     state.ppsDiscovery.truncated = false;
     state.ppsDiscovery.searched = false;
     state.ppsDiscovery.loading = false;
+    state.ppsDiscovery.submitting = false;
     state.ppsDiscovery.error = null;
-    state.ppsDiscovery.saving.clear();
+  }
+
+  function invalidatePpsDiscoveryDates() {
+    const hadExecutedScope = Boolean(
+      state.ppsDiscovery.fromDate
+      || state.ppsDiscovery.toDate
+      || state.ppsDiscovery.searched
+      || state.ppsDiscovery.error,
+    );
+    if (!hadExecutedScope || state.ppsDiscovery.loading || state.ppsDiscovery.submitting) return;
+    resetPpsDiscovery(els.searchInput.value.trim().replace(/\s+/g, " "));
+    renderPpsDiscovery();
   }
 
   function normalizePpsCandidate(raw) {
@@ -677,6 +798,12 @@
 
   async function searchPpsNotices(event) {
     event?.preventDefault?.();
+    if (
+      state.noticeSearchMode !== "pps"
+      || state.source !== "api"
+      || state.ppsDiscovery.loading
+      || state.ppsDiscovery.submitting
+    ) return;
     const query = els.searchInput.value.trim().replace(/\s+/g, " ");
     const fromDate = els.ppsDiscoveryFromDate.value;
     const toDate = els.ppsDiscoveryToDate.value;
@@ -689,12 +816,25 @@
       showToast("조회 기간 확인 필요", "나라장터 공고 검색은 한 번에 최대 31일까지 조회할 수 있습니다.", "warning");
       return;
     }
-    const authHeaders = await manualAnalysisAuthHeaders();
+    state.ppsDiscovery.submitting = true;
+    renderPpsDiscovery();
+    let authHeaders = null;
+    let authError = null;
+    try {
+      authHeaders = await manualAnalysisAuthHeaders();
+    } catch (error) {
+      authError = error;
+      showToast("나라장터 조회 준비 실패", humanizeError(error), "error");
+    } finally {
+      state.ppsDiscovery.submitting = false;
+    }
     if (!authHeaders) {
-      showToast("나라장터 조회 취소", "운영 기능 실행 키가 입력되지 않았습니다.", "warning");
+      if (!authError) showToast("나라장터 조회 취소", "운영 기능 실행 키가 입력되지 않았습니다.", "warning");
+      renderPpsDiscovery();
       return;
     }
 
+    const requestSequence = ++state.ppsDiscovery.requestSequence;
     state.ppsDiscovery.query = query;
     state.ppsDiscovery.fromDate = fromDate;
     state.ppsDiscovery.toDate = toDate;
@@ -710,6 +850,7 @@
         timeoutMs: EXTERNAL_PPS_REQUEST_TIMEOUT_MS,
         body: JSON.stringify({ query, from_date: fromDate, to_date: toDate, limit: 30 }),
       }));
+      if (requestSequence !== state.ppsDiscovery.requestSequence) return;
       state.ppsDiscovery.candidates = arrayValue(payload.candidates).map(normalizePpsCandidate);
       state.ppsDiscovery.resultCount = Math.max(numberOrNull(payload.result_count) ?? state.ppsDiscovery.candidates.length, 0);
       state.ppsDiscovery.apiCalls = Math.max(numberOrNull(payload.api_calls) ?? 0, 0);
@@ -717,10 +858,12 @@
       state.ppsDiscovery.searched = true;
       state.ppsDiscovery.error = null;
     } catch (error) {
+      if (requestSequence !== state.ppsDiscovery.requestSequence) return;
       if (error?.status === 401) state.manualAnalysisToken = "";
       state.ppsDiscovery.error = error;
       showToast("나라장터 공고 검색 실패", humanizeError(error), "error");
     } finally {
+      if (requestSequence !== state.ppsDiscovery.requestSequence) return;
       state.ppsDiscovery.loading = false;
       renderPpsDiscovery();
     }
@@ -729,48 +872,58 @@
   function renderPpsDiscovery() {
     if (!els.ppsDiscoverySection) return;
     const query = els.searchInput.value.trim().replace(/\s+/g, " ");
-    const visible = Boolean(
-      state.source === "api"
+    const noticeView = state.currentView !== "awards" && state.currentView !== "performance";
+    const visible = state.noticeSearchMode === "pps" && noticeView;
+    const suggestPps = Boolean(
+      state.noticeSearchMode === "stored"
+      && noticeView
+      && state.source === "api"
       && !state.loading
-      && query
-      && state.ppsDiscovery.query === query
+      && query.length >= 2
       && state.notices.length === 0
-      && state.currentView !== "awards"
-      && state.currentView !== "performance"
     );
+    els.ppsSearchSuggestion.hidden = !suggestPps;
     els.ppsDiscoverySection.hidden = !visible;
     if (!visible) return;
     if (state.ppsDiscovery.query && state.ppsDiscovery.query !== query && !state.ppsDiscovery.loading) {
       resetPpsDiscovery(query);
     }
-    els.ppsDiscoveryQuery.textContent = `DB 검색어 · ${query}`;
-    els.ppsDiscoverySearchButton.disabled = state.ppsDiscovery.loading || query.length < 2;
-    els.ppsDiscoveryFromDate.disabled = state.ppsDiscovery.loading;
-    els.ppsDiscoveryToDate.disabled = state.ppsDiscovery.loading;
+    els.ppsDiscoveryQuery.textContent = query ? `검색어 · ${query}` : "검색어를 입력하세요";
+    els.ppsDiscoverySearchButton.disabled = state.source !== "api" || state.ppsDiscovery.loading || state.ppsDiscovery.submitting || query.length < 2;
+    els.ppsDiscoveryFromDate.disabled = state.ppsDiscovery.loading || state.ppsDiscovery.submitting;
+    els.ppsDiscoveryToDate.disabled = state.ppsDiscovery.loading || state.ppsDiscovery.submitting;
+
+    if (state.ppsDiscovery.submitting) {
+      els.ppsDiscoverySearchButton.textContent = "실행 권한 확인 중…";
+      els.ppsDiscoveryStatus.textContent = "나라장터 조회를 실행하기 전에 운영 기능 권한을 확인하고 있습니다.";
+      return;
+    }
 
     if (state.ppsDiscovery.loading) {
-      els.ppsDiscoverySearchButton.textContent = "나라장터 조회 중…";
-      els.ppsDiscoveryStatus.textContent = "현재 수집 DB에는 없습니다. 나라장터 공고 API를 조회하고 있습니다.";
+      els.ppsDiscoverySearchButton.textContent = "용역 공고 조회 중…";
+      els.ppsDiscoveryStatus.textContent = "나라장터 용역 공고 API를 조회하고 있습니다. 아직 PAI LOOP에 저장하거나 분석·판단을 실행하지 않았습니다.";
       els.ppsDiscoveryResults.innerHTML = '<div class="pps-discovery__loading"><span class="spinner" aria-hidden="true"></span><span>외부 공고 목록을 확인하는 중입니다.</span></div>';
       return;
     }
-    els.ppsDiscoverySearchButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>나라장터 전체에서 검색';
+    els.ppsDiscoverySearchButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>나라장터 용역 공고 조회';
     if (state.ppsDiscovery.error) {
       els.ppsDiscoveryStatus.textContent = `나라장터 조회 실패 · ${humanizeError(state.ppsDiscovery.error)}`;
       els.ppsDiscoveryResults.replaceChildren();
       return;
     }
     if (!state.ppsDiscovery.searched) {
-      els.ppsDiscoveryStatus.textContent = query.length < 2
-        ? "현재 수집 DB에는 없습니다. 나라장터 조회를 위해 검색어를 2자 이상 입력해 주세요."
-        : "현재 수집 DB에는 없습니다. 아래 버튼을 눌러 선택한 기간의 나라장터 공고를 별도로 조회할 수 있습니다.";
+      els.ppsDiscoveryStatus.textContent = state.source !== "api"
+        ? "PAI LOOP 서버 연결을 확인한 뒤 나라장터 조회를 실행할 수 있습니다."
+        : query.length < 2
+          ? "나라장터 용역 공고명 조회를 위해 검색어를 2자 이상 입력해 주세요."
+          : "아래 버튼을 누르면 선택한 게시일 범위의 용역 공고명을 조회합니다. 버튼을 누르기 전에는 외부 API를 호출하지 않습니다.";
       els.ppsDiscoveryResults.replaceChildren();
       return;
     }
     const count = state.ppsDiscovery.candidates.length;
     const suffix = state.ppsDiscovery.truncated ? " · 조회 상한까지 표시" : "";
     els.ppsDiscoveryStatus.textContent = count
-      ? `나라장터 외부 조회 결과 ${formatNumber(state.ppsDiscovery.resultCount)}건 · API ${formatNumber(state.ppsDiscovery.apiCalls)}회${suffix}`
+      ? `나라장터 용역 공고 조회 결과 ${formatNumber(state.ppsDiscovery.resultCount)}건 · API ${formatNumber(state.ppsDiscovery.apiCalls)}회${suffix}`
       : `선택한 기간의 나라장터에도 일치 공고가 없습니다 · API ${formatNumber(state.ppsDiscovery.apiCalls)}회`;
     els.ppsDiscoveryResults.innerHTML = count
       ? state.ppsDiscovery.candidates.map(renderPpsCandidate).join("")
@@ -780,31 +933,89 @@
   function renderPpsCandidate(candidate, index) {
     const saving = state.ppsDiscovery.saving.has(candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`);
     const stored = candidate.alreadyStored || Boolean(candidate.storedNoticeKey);
+    const storedNotice = stored
+      ? state.notices.find((notice) => notice.noticeKey === candidate.storedNoticeKey) || null
+      : null;
+    const completed = storedNotice?.analysisState === "EVALUATED"
+      && storedNotice.analysisAttachmentCoverageComplete;
+    const ended = storedNotice ? noticeLifecycleStatus(storedNotice) !== "OPEN" : false;
     const sourceLink = candidate.sourceUrl
-      ? `<a href="${escapeAttribute(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">원문 보기</a>`
+      ? `<a class="pps-candidate__source-link" href="${escapeAttribute(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">나라장터 원문 ↗</a>`
       : "";
-    const statusLabel = stored ? "저장된 공고" : "현재 수집 공고 아님";
-    const actionLabel = saving ? "저장 중…" : stored ? "이미 저장됨" : candidate.saveable ? "이 공고 저장" : "저장 불가";
-    const disabled = saving || stored || !candidate.saveable;
-    return `<article class="pps-candidate ${stored ? "is-stored" : ""}" role="listitem">
+    const detailHref = stored && candidate.storedNoticeKey
+      ? noticeDetailHref(candidate.storedNoticeKey)
+      : "";
+    const stateLabel = !stored
+      ? "현재 수집 공고 아님"
+      : !storedNotice
+        ? "저장 상태 확인"
+        : completed
+          ? "판단 완료"
+          : ended
+            ? "종료 · 판단 비활성"
+            : "판단 필요";
+    const stateClass = completed ? "is-complete" : ended ? "is-ended" : storedNotice ? "is-pending" : stored ? "is-stored-unknown" : "is-external";
+    const title = detailHref
+      ? `<a class="pps-candidate__title-link" href="${escapeAttribute(detailHref)}" data-stored-notice-link data-notice-key="${escapeAttribute(candidate.storedNoticeKey)}" aria-label="${escapeAttribute(candidate.title)} 저장된 공고 상세 보기">${escapeHtml(candidate.title)}</a>`
+      : escapeHtml(candidate.title);
+    const guidance = !stored
+      ? "PAI LOOP에 저장하기 전에는 자격 판단과 정량 점수가 없습니다."
+      : !storedNotice
+        ? "정확히 저장된 공고입니다. 저장된 공고로 이동해 현재 판단 상태를 확인할 수 있습니다."
+        : completed
+          ? "저장된 공고의 자격·정량 판단 결과를 확인할 수 있습니다."
+          : ended
+            ? "종료 또는 취소된 공고입니다. 저장된 공고 이력은 상세 화면에서 확인할 수 있습니다."
+            : "이미 저장된 공고입니다. 중복 저장하지 않고 기존 공고에서 판단을 계속할 수 있습니다.";
+    const running = storedNotice && state.manualAnalysisRequests.get(storedNotice.noticeKey) === "running";
+    const canAnalyze = storedNotice && canRequestManualAnalysis(storedNotice);
+    const detailLink = detailHref
+      ? `<a class="button button--ghost pps-candidate__detail-link" href="${escapeAttribute(detailHref)}" data-stored-notice-link data-notice-key="${escapeAttribute(candidate.storedNoticeKey)}" aria-label="${escapeAttribute(candidate.title)} ${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"}">${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"} →</a>`
+      : "";
+    const analysisButton = canAnalyze
+      ? `<button class="button button--primary" type="button" data-pps-analysis-key="${escapeAttribute(storedNotice.noticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} 분석·판단 실행">${running ? '<span class="button-spinner" aria-hidden="true"></span>분석 중…' : "분석·판단 실행"}</button>`
+      : "";
+    const saveButton = !stored
+      ? `<button class="button button--pps" type="button" data-pps-save-index="${index}" ${saving || !candidate.saveable ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} ${candidate.saveable ? "PAI LOOP에 저장" : "저장 불가"}">${escapeHtml(saving ? "저장 중…" : candidate.saveable ? "PAI LOOP에 저장" : "저장 불가")}</button>`
+      : "";
+    return `<article class="pps-candidate ${stored ? "is-stored" : ""} ${stateClass}" role="listitem" ${saving ? 'aria-busy="true"' : ""}>
       <div class="pps-candidate__head">
-        <span class="pps-candidate__state">${escapeHtml(statusLabel)}</span>
+        <span class="pps-candidate__badges"><span class="pps-candidate__source-state">${stored ? "PAI LOOP 저장됨" : "나라장터 LIVE"}</span><span class="pps-candidate__state">${escapeHtml(stateLabel)}</span></span>
         <span>${escapeHtml(candidate.noticeKind)}${candidate.relatedRevisionStored ? " · 다른 차수 저장됨" : ""}</span>
       </div>
-      <h4>${escapeHtml(candidate.title)}</h4>
+      <h4>${title}</h4>
       <p>${escapeHtml(candidate.agency)} · 공고 ${escapeHtml(candidate.bidNoticeNo)}-${escapeHtml(candidate.revisionNo)}</p>
       <dl>
         <div><dt>게시</dt><dd>${escapeHtml(formatShortDateTime(candidate.publishedAt))}</dd></div>
         <div><dt>마감</dt><dd>${escapeHtml(formatShortDateTime(candidate.deadline))}</dd></div>
         <div><dt>추정금액</dt><dd>${escapeHtml(formatBudget(candidate.estimatedAmount))}</dd></div>
       </dl>
+      <p class="pps-candidate__guidance">${escapeHtml(guidance)}</p>
       ${candidate.directContractSignal ? '<p class="pps-candidate__warning">수의계약 신호가 있어 저장 전 원문 확인이 필요합니다.</p>' : ""}
       ${candidate.saveBlockReason ? `<p class="pps-candidate__warning">${escapeHtml(candidate.saveBlockReason)}</p>` : ""}
-      <footer>${sourceLink}<button class="button ${stored ? "button--ghost" : "button--pps"}" type="button" data-pps-save-index="${index}" ${disabled ? "disabled" : ""}>${escapeHtml(actionLabel)}</button></footer>
+      <footer>${sourceLink}<span class="pps-candidate__actions">${detailLink}${analysisButton}${saveButton}</span></footer>
+      <small class="pps-candidate__cost">${stored ? (canAnalyze ? "분석·판단 실행 시 공개 첨부 분석 · 비용 발생 가능" : "저장된 공고 상세 링크") : "저장만으로 OpenAI 0회"}</small>
     </article>`;
   }
 
   function handlePpsDiscoveryAction(event) {
+    const storedLink = event.target.closest("[data-stored-notice-link]");
+    if (storedLink) {
+      const modified = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+      if (!modified) {
+        event.preventDefault();
+        const noticeKey = storedLink.dataset.noticeKey;
+        if (noticeKey) void openDetail(noticeKey, storedLink);
+      }
+      return;
+    }
+    const analysisButton = event.target.closest("[data-pps-analysis-key]");
+    if (analysisButton) {
+      event.preventDefault();
+      const noticeKey = analysisButton.dataset.ppsAnalysisKey;
+      if (noticeKey) void requestManualAnalysis(noticeKey);
+      return;
+    }
     const button = event.target.closest("[data-pps-save-index]");
     if (!button) return;
     const index = Number(button.dataset.ppsSaveIndex);
@@ -814,13 +1025,19 @@
 
   async function savePpsCandidate(candidate, index) {
     if (!candidate.saveable || candidate.alreadyStored || !candidate.selectionKey) return;
+    const savingKey = candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`;
+    if (state.ppsDiscovery.saving.has(savingKey)) return;
     const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 OpenAI 호출은 시작되지 않습니다.\n\n저장할까요?`);
     if (!confirmed) return;
-    const authHeaders = await manualAnalysisAuthHeaders();
-    if (!authHeaders) return;
-    const savingKey = candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`;
     state.ppsDiscovery.saving.add(savingKey);
     renderPpsDiscovery();
+    const authHeaders = await manualAnalysisAuthHeaders();
+    if (!authHeaders) {
+      state.ppsDiscovery.saving.delete(savingKey);
+      renderPpsDiscovery();
+      return;
+    }
+    let savedNoticeKey = "";
     try {
       const result = unwrapObject(await apiRequest("/pps-discovery/save", {
         method: "POST",
@@ -834,10 +1051,11 @@
           selection_key: candidate.selectionKey,
         }),
       }));
+      savedNoticeKey = stringValue(result.notice_key);
+      if (!savedNoticeKey) throw new Error("저장된 공고 식별자가 응답에 없습니다.");
       candidate.alreadyStored = true;
-      candidate.storedNoticeKey = stringValue(result.notice_key);
-      showToast("공고 저장 완료", stringValue(result.message, "저장만 완료했습니다. 목록에서 판단 실행을 별도로 눌러 주세요."), "success");
-      await loadApplicationData({ forceApi: true });
+      candidate.storedNoticeKey = savedNoticeKey;
+      showToast("공고 저장 완료", stringValue(result.message, "저장만 완료했습니다. 저장된 공고 링크에서 분석·판단을 별도로 실행할 수 있습니다."), "success");
     } catch (error) {
       if (error?.status === 401) state.manualAnalysisToken = "";
       showToast("공고 저장 실패", humanizeError(error), "error");
@@ -845,6 +1063,18 @@
       state.ppsDiscovery.saving.delete(savingKey);
       renderPpsDiscovery();
     }
+    if (!savedNoticeKey) return;
+    try {
+      await hydrateNoticeByKey(savedNoticeKey, { force: true });
+      renderPpsDiscovery();
+    } catch (error) {
+      showToast("저장은 완료되었습니다", `저장된 공고 상세 상태 새로고침 실패 · ${humanizeError(error)}`, "warning");
+    }
+    window.requestAnimationFrame(() => {
+      const link = [...els.ppsDiscoveryResults.querySelectorAll("[data-stored-notice-link]")]
+        .find((item) => item.dataset.noticeKey === savedNoticeKey);
+      link?.focus();
+    });
   }
 
   function populateDepartmentProfiles(catalog) {
@@ -2125,14 +2355,17 @@
     const ownerLabel = els.departmentSelect.selectedOptions[0]?.textContent || "전사 공통";
     const keywordLabel = els.priorityKeywordInput.value.trim();
     const context = keywordLabel ? `${ownerLabel} · 검색어 ${keywordLabel}` : ownerLabel;
-    els.noticeSummary.textContent = globalSearch
-      ? count === total
-        ? `저장된 전체 공고 검색 결과 ${formatNumber(total)}건입니다.`
-        : `저장된 전체 공고 검색 결과 ${formatNumber(total)}건 중 현재 판정 필터에 ${formatNumber(count)}건이 표시됩니다.`
-      : count === total
-        ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
-        : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
+    els.noticeSummary.textContent = state.noticeSearchMode === "pps"
+      ? "수집 DB와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다."
+      : globalSearch
+        ? count === total
+          ? `저장된 전체 공고 검색 결과 ${formatNumber(total)}건입니다.`
+          : `저장된 전체 공고 검색 결과 ${formatNumber(total)}건 중 현재 판정 필터에 ${formatNumber(count)}건이 표시됩니다.`
+        : count === total
+          ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
+          : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
 
+    els.noticePanel.hidden = state.noticeSearchMode === "pps";
     els.loadingState.hidden = true;
     els.errorState.hidden = true;
     els.emptyState.hidden = count !== 0;
@@ -2331,7 +2564,8 @@
     state.loading = isLoading;
     els.refreshButton.disabled = isLoading;
     if (isLoading) {
-      els.ppsDiscoverySection.hidden = true;
+      els.ppsDiscoverySection.hidden = state.noticeSearchMode !== "pps";
+      els.noticePanel.hidden = state.noticeSearchMode === "pps";
       els.loadingState.hidden = false;
       els.errorState.hidden = true;
       els.emptyState.hidden = true;
@@ -2493,7 +2727,15 @@
 
   async function requestManualAnalysis(noticeKey) {
     if (state.manualAnalysisRequests.get(noticeKey) === "running") return;
-    const notice = state.notices.find((item) => item.noticeKey === noticeKey);
+    let notice = state.notices.find((item) => item.noticeKey === noticeKey);
+    if (!notice && state.source !== "demo") {
+      try {
+        notice = await hydrateNoticeByKey(noticeKey);
+      } catch (error) {
+        showToast("분석 요청 불가", `저장된 공고 상태를 확인하지 못했습니다 · ${humanizeError(error)}`, "error");
+        return;
+      }
+    }
     if (!canRequestManualAnalysis(notice)) {
       showToast("분석 요청 불가", "현재 열려 있고 첨부 분석 또는 판단 갱신이 필요한 조달청 공고만 요청할 수 있습니다.", "warning");
       return;
@@ -2561,8 +2803,49 @@
     }
   }
 
+  async function hydrateNoticeByKey(noticeKey, { force = false } = {}) {
+    const existingIndex = state.notices.findIndex((notice) => notice.noticeKey === noticeKey);
+    const existing = existingIndex >= 0 ? state.notices[existingIndex] : null;
+    if (existing && !force) return existing;
+    const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}`);
+    const detail = normalizeNotice(unwrapObject(payload));
+    const mergedSource = existing
+      ? { ...existing.raw, ...detail.raw, notice_key: noticeKey }
+      : { ...detail.raw, notice_key: noticeKey };
+    if (existing) {
+      if (!detail.departmentRanking && existing.raw.department_ranking) {
+        mergedSource.department_ranking = existing.raw.department_ranking;
+      }
+      if (!detail.topDepartmentRankings.length && existing.raw.top_department_rankings) {
+        mergedSource.top_department_rankings = existing.raw.top_department_rankings;
+      }
+      if (!detail.departmentReviewCandidates.length && existing.raw.department_review_candidates) {
+        mergedSource.department_review_candidates = existing.raw.department_review_candidates;
+      }
+      if (!detail.regionRouting.length && existing.raw.region_routing) {
+        mergedSource.region_routing = existing.raw.region_routing;
+      }
+    }
+    const hydrated = normalizeNotice(mergedSource);
+    if (existingIndex >= 0) state.notices[existingIndex] = hydrated;
+    else state.notices.push(hydrated);
+    return hydrated;
+  }
+
   async function openDetail(noticeKey, trigger = null, { updateRoute = true } = {}) {
-    const baseNotice = state.notices.find((notice) => notice.noticeKey === noticeKey);
+    let baseNotice = state.notices.find((notice) => notice.noticeKey === noticeKey);
+    let hydratedFromRoute = false;
+    if (!baseNotice && state.source !== "demo") {
+      try {
+        baseNotice = await hydrateNoticeByKey(noticeKey);
+        hydratedFromRoute = true;
+      } catch (error) {
+        showToast("저장된 공고를 열 수 없습니다", humanizeError(error), "error");
+        const routeKey = new URLSearchParams(window.location.search).get("notice");
+        if (routeKey === noticeKey) clearNoticeRoute();
+        return;
+      }
+    }
     if (!baseNotice) return;
     state.selectedNotice = baseNotice;
     state.selectedTrigger = trigger || document.activeElement;
@@ -2577,29 +2860,12 @@
 
     if (updateRoute) updateNoticeRoute(noticeKey);
     if (baseNotice.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
-    if (state.source !== "api") return;
+    if (state.source !== "api" || hydratedFromRoute) return;
 
     state.detailLoading = true;
     els.drawerLoading.hidden = false;
     try {
-      const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}`);
-      const detail = normalizeNotice(unwrapObject(payload));
-      const mergedSource = { ...baseNotice.raw, ...detail.raw, notice_key: noticeKey };
-      if (!detail.departmentRanking && baseNotice.raw.department_ranking) {
-        mergedSource.department_ranking = baseNotice.raw.department_ranking;
-      }
-      if (!detail.topDepartmentRankings.length && baseNotice.raw.top_department_rankings) {
-        mergedSource.top_department_rankings = baseNotice.raw.top_department_rankings;
-      }
-      if (!detail.departmentReviewCandidates.length && baseNotice.raw.department_review_candidates) {
-        mergedSource.department_review_candidates = baseNotice.raw.department_review_candidates;
-      }
-      if (!detail.regionRouting.length && baseNotice.raw.region_routing) {
-        mergedSource.region_routing = baseNotice.raw.region_routing;
-      }
-      const merged = normalizeNotice(mergedSource);
-      const index = state.notices.findIndex((notice) => notice.noticeKey === noticeKey);
-      if (index >= 0) state.notices[index] = merged;
+      const merged = await hydrateNoticeByKey(noticeKey, { force: true });
       state.selectedNotice = merged;
       renderDetail(merged);
       if (merged.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
@@ -3931,7 +4197,7 @@
   }
 
   function handleGlobalKeydown(event) {
-    if (els.sourceLinkDialog.open) return;
+    if (document.querySelector("dialog[open]")) return;
     if (event.key === "/" && !isEditableTarget(event.target)) {
       event.preventDefault();
       if (state.currentView === "performance") els.performanceSearchInput.focus();
@@ -3945,23 +4211,27 @@
     history.pushState({ noticeKey }, "", url);
   }
 
+  function noticeDetailHref(noticeKey) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("notice", noticeKey);
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
   function clearNoticeRoute() {
     const url = new URL(window.location.href);
     url.searchParams.delete("notice");
-    history.pushState({}, "", url);
+    history.replaceState({}, "", url);
   }
 
   function openNoticeFromRoute() {
     const key = new URLSearchParams(window.location.search).get("notice");
-    if (key && state.notices.some((notice) => notice.noticeKey === key)) {
-      openDetail(key, null, { updateRoute: false });
-    }
+    if (key) void openDetail(key, null, { updateRoute: false });
   }
 
   function handleRouteChange() {
     const key = new URLSearchParams(window.location.search).get("notice");
-    if (key && state.notices.some((notice) => notice.noticeKey === key)) {
-      openDetail(key, null, { updateRoute: false });
+    if (key) {
+      void openDetail(key, null, { updateRoute: false });
     } else {
       closeDetail({ updateRoute: false });
     }
@@ -3970,10 +4240,10 @@
   async function copyCurrentNoticeLink() {
     const notice = state.selectedNotice;
     if (!notice) return;
-    const url = notice.sourceUrl || window.location.href;
+    const url = new URL(noticeDetailHref(notice.noticeKey), window.location.origin).href;
     try {
       await navigator.clipboard.writeText(url);
-      showToast("링크를 복사했습니다", notice.sourceUrl ? "조달청 원문 링크가 클립보드에 복사되었습니다." : "현재 상세 화면 링크가 복사되었습니다.", "success");
+      showToast("링크를 복사했습니다", "저장된 PAI LOOP 공고 상세 링크가 클립보드에 복사되었습니다.", "success");
     } catch (_error) {
       showToast("링크 복사 실패", "브라우저의 클립보드 권한을 확인해 주세요.", "error");
     }
