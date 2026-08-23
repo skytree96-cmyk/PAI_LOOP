@@ -19,11 +19,14 @@ def test_environment_parsers_fail_closed_and_clamp_bounds() -> None:
     assert _bounded_int("99", default=12, minimum=1, maximum=30) == 30
 
 
-def test_manual_operator_token_requires_32_trimmed_characters() -> None:
+def test_manual_operator_token_requires_exactly_four_ascii_digits() -> None:
     assert Settings(public_manual_analysis_token=None).public_manual_analysis_token_valid is False
-    assert Settings(public_manual_analysis_token="short").public_manual_analysis_token_valid is False
-    assert Settings(public_manual_analysis_token="x" * 32 + " ").public_manual_analysis_token_valid is False
-    assert Settings(public_manual_analysis_token="x" * 32).public_manual_analysis_token_valid is True
+    assert Settings(public_manual_analysis_token="123").public_manual_analysis_token_valid is False
+    assert Settings(public_manual_analysis_token="12345").public_manual_analysis_token_valid is False
+    assert Settings(public_manual_analysis_token="12a4").public_manual_analysis_token_valid is False
+    assert Settings(public_manual_analysis_token="１２３４").public_manual_analysis_token_valid is False
+    assert Settings(public_manual_analysis_token="1234 ").public_manual_analysis_token_valid is False
+    assert Settings(public_manual_analysis_token="1234").public_manual_analysis_token_valid is True
 
 
 def test_manual_analysis_default_cost_cap_is_one_call_per_hour() -> None:

@@ -16,7 +16,7 @@ from pai_loop.integrations.company_awards import (
     normalise_business_number,
 )
 
-TOKEN = "company-award-operator-token-32-characters"
+TOKEN = "2468"
 AUTH_HEADERS = {
     "Origin": "https://testserver",
     "Sec-Fetch-Site": "same-origin",

@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.10.1 운영 데이터 편집 · 결과 자동 환류 · 사전규격 분석
+## 현재 구현 범위: v0.10.2 운영 데이터 편집 · 결과 자동 환류 · 사전규격 분석
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
@@ -43,7 +43,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
   입찰공고나 GO 판정 큐와 분리하며 저장·검색 자체의 OpenAI 호출은 0회다.
 - 현재 공고의 첨부 전량 감사 또는 최신 평가가 끝나지 않은 건을 `분석·검토 대기`로
   집계하고, 단일 OPEN PPS 공고를 비용 상한 확인 뒤 서버에서 분석하는 수동 실행 경로.
-  운영에서는 별도 분석 실행 키를 요구하며, 현재 Render 기본값은 $2.7 잔액 보호를 위해
+  데모 운영에서는 별도 4자리 운영 PIN을 요구하며, 현재 Render 기본값은 $2.7 잔액 보호를 위해
   시간당 유료·무료 요청 합계 1건으로 제한
 - 수의·직접계약 감사 보존 + 기본 진행목록/분석 큐 제외, 기관명 기반 키워드 오탐 억제
 - 공고 원문 확인 팝업과 자격 REVIEW·원문 근거 보완 상태의 분리 표시
@@ -330,8 +330,8 @@ Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 wo
   검증을 거칩니다.
 - 공모전 공개 URL은 `PAI_LOOP_PUBLIC_READ_ONLY=true`의 명시적 GET 허용 목록을
   익명 제공합니다. 선택적으로 활성화한 운영 BFF는 나라장터 외부 공고 검색·단건 저장,
-  회사별 낙찰 조회와 수동 판단을 동일한 same-origin 경계 안에서 제공합니다. 운영 환경에서 별도 32자
-  이상의 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`이 없으면 자동으로 숨깁니다. 키가
+  회사별 낙찰 조회와 수동 판단을 동일한 same-origin 경계 안에서 제공합니다. 데모 운영 환경에서 숫자
+  4자리의 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`이 없으면 자동으로 숨깁니다. PIN이
   설정된 경우에만 same-origin의 OPEN PPS 공고 1건을 `force=false`·현재 manifest의
   공개 첨부 최대 10개 전부·첨부당 최대 2회 OpenAI 호출·durable continuation·
   시간당 quota·공고별 cooldown으로 처리합니다. 화면이 0-call 판단만 승인한 요청은

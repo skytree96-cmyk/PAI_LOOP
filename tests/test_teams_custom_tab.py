@@ -99,7 +99,7 @@ def test_table_and_card_detail_arrows_are_functional() -> None:
     assert ".row-arrow:focus-visible" in styles
     assert ".recommendation-arrow" in styles
     assert "styles.css?v=20260824-operations1" in html
-    assert "app.js?v=20260824-operations1" in html
+    assert "app.js?v=20260824-pin4" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:
@@ -112,6 +112,9 @@ def test_manual_analysis_actions_are_functional() -> None:
     assert 'body: JSON.stringify({ allow_openai: !evaluationOnly })' in source
     assert '"X-PAI-Manual-Token": state.manualAnalysisToken' in source
     assert 'id="manualAnalysisTokenInput" type="password"' in html
+    assert 'inputmode="numeric"' in html
+    assert 'pattern="[0-9]{4}"' in html
+    assert 'minlength="4" maxlength="4"' in html
     assert "window.prompt" not in source
     assert "/analysis/requests/${encodeURIComponent(requestId)}`" in source
     assert "for (let poll = 0; poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1)" in source

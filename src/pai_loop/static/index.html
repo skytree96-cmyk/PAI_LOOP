@@ -459,7 +459,7 @@
                 <button class="button button--ghost" type="reset">초기화</button>
               </form>
               <div class="operator-list" id="resultLearningList" role="list"></div>
-              <div class="state-view performance-state" id="resultLearningState"><strong>운영 기능 실행 키가 필요합니다</strong><p>키는 브라우저 메모리에만 유지되며 새로고침하면 지워집니다.</p></div>
+              <div class="state-view performance-state" id="resultLearningState"><strong>4자리 운영 PIN이 필요합니다</strong><p>PIN은 브라우저 메모리에만 유지되며 새로고침하면 지워집니다.</p></div>
               <footer class="performance-pagination" id="resultLearningPagination" hidden>
                 <div><strong id="resultLearningPageRange">—</strong><span>종료 공고와 결과가 있는 공고</span></div>
                 <nav aria-label="결과 학습 페이지"><button class="button button--ghost" id="resultLearningPreviousButton" type="button">이전</button><span id="resultLearningPageLabel">1 / 1</span><button class="button button--ghost" id="resultLearningNextButton" type="button">다음</button></nav>
@@ -604,7 +604,7 @@
                 </div>
               </div>
               <div class="operator-list operator-list--compact" id="performanceEditorList" role="list"></div>
-              <div class="state-view operator-empty" id="performanceEditorState"><strong>운영 기능 실행 키가 필요합니다</strong><p>패키지에 포함된 PUBLIC_DERIVED 실적은 수정되지 않습니다.</p></div>
+              <div class="state-view operator-empty" id="performanceEditorState"><strong>4자리 운영 PIN이 필요합니다</strong><p>패키지에 포함된 PUBLIC_DERIVED 실적은 수정되지 않습니다.</p></div>
             </section>
 
             <section class="performance-explorer" aria-labelledby="performanceListHeading">
@@ -1044,14 +1044,14 @@
         <header class="source-link-dialog__header">
           <div>
             <p class="section-kicker">COST-PROTECTED ACTION</p>
-            <h2 id="manualAnalysisTokenTitle">운영 기능 실행 키</h2>
+            <h2 id="manualAnalysisTokenTitle">4자리 운영 PIN</h2>
           </div>
         </header>
         <div class="source-link-dialog__body">
-          <p id="manualAnalysisTokenHelp">나라장터 외부 조회·저장과 유료 분석을 보호하는 별도 운영자 키입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
+          <p id="manualAnalysisTokenHelp">데모의 나라장터 외부 조회·저장과 유료 분석을 여는 숫자 4자리 PIN입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
           <label class="manual-token-field" for="manualAnalysisTokenInput">
-            <span>실행 키</span>
-            <input id="manualAnalysisTokenInput" type="password" minlength="32" autocomplete="off" required />
+            <span>운영 PIN</span>
+            <input id="manualAnalysisTokenInput" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required />
           </label>
         </div>
         <footer class="source-link-dialog__actions">
@@ -1118,6 +1118,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260824-operations1" defer></script>
+    <script src="./app.js?v=20260824-pin4" defer></script>
   </body>
 </html>

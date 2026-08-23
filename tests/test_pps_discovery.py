@@ -31,7 +31,7 @@ from pai_loop.models import IngestionJob, Notice, NoticeAnalysisPolicy, NoticeVe
 from pai_loop.pps_discovery import router as pps_discovery_router
 
 
-_OPERATOR_TOKEN = "pps-discovery-operator-token-32-chars"
+_OPERATOR_TOKEN = "2468"
 _HEADERS = {
     "Origin": "https://testserver",
     "Sec-Fetch-Site": "same-origin",

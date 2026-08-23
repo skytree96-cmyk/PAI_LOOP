@@ -603,7 +603,7 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
     app.state.settings = replace(
         app.state.settings,
         environment="production",
-        public_manual_analysis_token="manual-operator-secret-32-characters",
+        public_manual_analysis_token="2468",
     )
     monkeypatch.setattr(
         "pai_loop.manual_analysis.run_notice_analysis_batch",
@@ -628,7 +628,7 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
         assert unauthenticated.status_code == 401
         wrong = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers={**production_origin, "X-PAI-Manual-Token": "wrong"},
+            headers={**production_origin, "X-PAI-Manual-Token": "1357"},
             json=OPENAI_ALLOWED,
         )
         assert wrong.status_code == 401
@@ -636,17 +636,17 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers={
                 **production_origin,
-                "X-PAI-Manual-Token": "manual-operator-secret-32-characters",
+                "X-PAI-Manual-Token": "2468",
             },
             json=OPENAI_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         assert queued.json()["outcome"] == "QUEUED"
-        assert "manual-operator-secret-32-characters" not in queued.text
+        assert "2468" not in queued.text
         with app.state.session_factory() as session:
             job = session.get(IngestionJob, queued.json()["request_id"])
             assert job is not None
-            assert "manual-operator-secret-32-characters" not in str(job.request_json)
+            assert "2468" not in str(job.request_json)
 
 
 def test_production_manual_analysis_is_hidden_until_token_is_configured(

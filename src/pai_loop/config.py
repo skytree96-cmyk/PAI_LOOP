@@ -56,7 +56,13 @@ class Settings:
     @property
     def public_manual_analysis_token_valid(self) -> bool:
         token = self.public_manual_analysis_token
-        return bool(token and token == token.strip() and len(token) >= 32)
+        return bool(
+            token
+            and token == token.strip()
+            and len(token) == 4
+            and token.isascii()
+            and token.isdigit()
+        )
 
     @classmethod
     def from_env(cls, *, database_url: str | None = None) -> "Settings":
