@@ -26,6 +26,7 @@ from .department_ranking import (
     load_department_keyword_profiles,
 )
 from .integrations.openai_extraction import (
+    CORRECTIVE_PROMPT_VERSION,
     PROMPT_VERSION,
     SCHEMA_VERSION,
     ExtractionOutcome,
@@ -1660,6 +1661,15 @@ def _matching_extraction_version(
         error_code = str(payload.get("error_code") or "")
         if error_code in DETERMINISTIC_REVIEW_CODES:
             return item
+        if (
+            error_code == "UNVERIFIED_QUOTE"
+            and payload.get("correction_prompt_version")
+            != CORRECTIVE_PROMPT_VERSION
+        ):
+            # A new corrective prompt is the recovery mechanism for this
+            # exact failure.  Do not let a recent result from the superseded
+            # correction contract consume the new version's retry window.
+            continue
         if item.created_at and now - _as_utc(item.created_at) < REVIEW_RETRY_COOLDOWN:
             return item
     return None
@@ -1676,6 +1686,15 @@ def _stored_outcome_is_idempotent(version: NoticeVersion, payload: dict[str, Any
         )
     if str(payload.get("error_code") or "") in DETERMINISTIC_REVIEW_CODES:
         return True
+    if str(payload.get("error_code") or "") == "UNVERIFIED_QUOTE":
+        prior = version.source_payload if isinstance(version.source_payload, dict) else {}
+        correction_prompt_version = payload.get("correction_prompt_version")
+        if (
+            correction_prompt_version != CORRECTIVE_PROMPT_VERSION
+            or prior.get("error_code") != "UNVERIFIED_QUOTE"
+            or prior.get("correction_prompt_version") != correction_prompt_version
+        ):
+            return False
     return bool(
         version.created_at
         and datetime.now(timezone.utc) - _as_utc(version.created_at) < REVIEW_RETRY_COOLDOWN
