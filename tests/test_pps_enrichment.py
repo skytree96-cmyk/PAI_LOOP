@@ -996,6 +996,31 @@ class _RetryableReviewClient:
         )
 
 
+class _QuoteReviewClient:
+    calls = 0
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> "_QuoteReviewClient":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def extract(self, **_kwargs: object) -> ExtractionOutcome:
+        type(self).calls += 1
+        return ExtractionOutcome(
+            status="REVIEW",
+            review_code="R07",
+            error_code="UNVERIFIED_QUOTE",
+            message="quote correction did not verify",
+            api_calls=2,
+            corrective_retry_used=True,
+            correction_prompt_version=CORRECTIVE_PROMPT_VERSION,
+        )
+
+
 class _SemanticGapExtractionClient(_CountingExtractionClient):
     calls = 0
 
@@ -1685,6 +1710,62 @@ def test_retryable_review_creates_fresh_attempt_after_cooldown_then_reuses() -> 
     assert first.openai_calls == second.openai_calls == 1
     assert third.openai_calls == 0
     assert _RetryableReviewClient.calls == 2
+    engine.dispose()
+
+
+def test_stale_quote_correction_retries_immediately_then_observes_cooldown() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-QUOTE-CORRECTION-VERSION",
+    )
+    _QuoteReviewClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_QuoteReviewClient,
+        )
+    with factory() as session:
+        stale = session.get(NoticeVersion, first.version_id)
+        assert stale is not None
+        stale_payload = json.loads(json.dumps(stale.source_payload, ensure_ascii=False))
+        stale_payload["correction_prompt_version"] = "pai-loop-quote-correction-legacy"
+        stale.source_payload = stale_payload
+        session.commit()
+
+    with factory() as session:
+        retried = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_QuoteReviewClient,
+        )
+    with factory() as session:
+        cooldown_reuse = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_QuoteReviewClient,
+        )
+        current = session.get(NoticeVersion, retried.version_id)
+        assert current is not None
+        assert (
+            current.source_payload["correction_prompt_version"]
+            == CORRECTIVE_PROMPT_VERSION
+        )
+
+    assert first.status == retried.status == cooldown_reuse.status == "REVIEW"
+    assert first.openai_calls == retried.openai_calls == 2
+    assert cooldown_reuse.openai_calls == 0
+    assert first.version_id != retried.version_id
+    assert retried.version_id == cooldown_reuse.version_id
+    assert _QuoteReviewClient.calls == 2
     engine.dispose()
 
 
