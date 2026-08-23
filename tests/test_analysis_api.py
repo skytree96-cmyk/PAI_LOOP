@@ -196,6 +196,80 @@ def test_cancelled_analysis_batch_fails_before_job_openai_or_analysis_writes(
     assert _analysis_write_counts(client) == before
 
 
+def test_automatic_lease_rechecks_expiration_before_any_paid_work(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice_key = "PPS-EXPIRED-AFTER-LEASE"
+    _create_pps_notice_with_authority(
+        client,
+        notice_key=notice_key,
+        bid_notice_no="R26BK-EXPIRED-AFTER-LEASE",
+        disposition="VALID",
+    )
+    plan_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": [notice_key],
+            "dry_run": False,
+            "chunk_size": 1,
+            "max_total": 1,
+            "execution_limit": 1,
+            "include_retryable": False,
+        },
+    )
+    assert plan_response.status_code == 200, plan_response.text
+    plan = plan_response.json()
+    assert plan["notice_keys"] == [notice_key]
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == notice_key)
+        )
+        assert notice is not None
+        notice.deadline = datetime.now(timezone.utc) - timedelta(minutes=1)
+        session.commit()
+
+    monkeypatch.setattr(
+        analysis_api,
+        "_enrich_one_notice",
+        lambda *_args, **_kwargs: pytest.fail("expired lease must not enrich"),
+    )
+    monkeypatch.setattr(
+        analysis_api,
+        "run_analysis_pipeline",
+        lambda *_args, **_kwargs: pytest.fail("expired lease must not analyse"),
+    )
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "operation_id": plan["job_id"],
+            "segment_id": plan["segment_id"],
+            "chunk_index": plan["chunk_indices"][0],
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "AUTOMATIC_NOTICE_NOT_ACTIVE",
+        "message": "종료되었거나 비활성인 공고는 자동 분석하지 않습니다.",
+        "notice_keys": [notice_key],
+    }
+    with client.app.state.session_factory() as session:
+        children = [
+            job
+            for job in session.scalars(
+                select(IngestionJob).where(IngestionJob.source == "ANALYSIS")
+            ).all()
+            if isinstance(job.request_json, dict)
+            and job.request_json.get("parent_job_id") == plan["job_id"]
+        ]
+        assert children == []
+
+
 def test_batch_cancellation_after_job_reservation_stops_before_enrichment(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

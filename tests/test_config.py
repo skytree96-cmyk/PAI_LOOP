@@ -26,6 +26,10 @@ def test_manual_operator_token_requires_32_trimmed_characters() -> None:
     assert Settings(public_manual_analysis_token="x" * 32).public_manual_analysis_token_valid is True
 
 
+def test_manual_analysis_default_cost_cap_is_one_call_per_hour() -> None:
+    assert Settings().public_manual_analysis_hourly_limit == 1
+
+
 def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
     manifest = yaml.safe_load((PROJECT_ROOT / "render.yaml").read_text(encoding="utf-8"))
     env_vars = {
