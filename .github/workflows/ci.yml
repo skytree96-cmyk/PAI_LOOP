@@ -125,8 +125,17 @@ jobs:
               "pai_loop/reference_registry.py",
               "pai_loop/reference_api.py",
               "pai_loop/outcomes_api.py",
+              "pai_loop/outcome_feedback.py",
+              "pai_loop/performance_records.py",
+              "pai_loop/prespec_api.py",
+              "pai_loop/prespec_models.py",
+              "pai_loop/prespec_service.py",
+              "pai_loop/quantitative_formula.py",
+              "pai_loop/quantitative_performance.py",
+              "pai_loop/result_learning.py",
               "pai_loop/migrations.py",
               "pai_loop/integrations/company_awards.py",
+              "pai_loop/integrations/outcome_feedback.py",
           }
           forbidden = {
               "pai_loop/private_import.py",

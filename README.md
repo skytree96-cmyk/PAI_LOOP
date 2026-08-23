@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.9.7 투 트랙 공고 검색 · 저장본 상세 링크 · 회사별 낙찰 조회
+## 현재 구현 범위: v0.10.0 운영 데이터 편집 · 결과 자동 환류 · 사전규격 분석
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위
@@ -27,6 +27,20 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 별도 `낙찰 결과` 화면에서 한국능률협회 공개 사업자번호 `1058201810`을 기본값(UI는 하이픈 형식)으로 두고 다른 회사도
   사업자등록번호로 용역·물품·공사·외자 낙찰을 bounded 조회한다. 식별번호는 provider
   exact-match 검증 뒤 폐기하며 결과는 DB·회사 실적에 저장하거나 자동 연결하지 않는다.
+- 저장된 종료 PPS 공고는 08:00 일일 운영에서 최종 낙찰 결과를 최대 10건씩 oldest-first로
+  재확인한다. 공고번호·차수를 exact-match하고 우리 회사 사업자번호가 낙찰자와 일치하면
+  `WON`, 별도 제출 근거가 있는 타사 낙찰만 `LOST`로 멱등 환류한다. 참가 여부가 불명확한
+  타사 낙찰은 패배로 추측하지 않고 검토 대상으로 남기며 OpenAI는 호출하지 않는다.
+- `결과 학습` 화면에서 종료 공고의 `NO_BID / SUBMITTED / WON / LOST / CANCELLED`, 투찰·
+  낙찰금액, 점수, 순위, 사유와 근거를 초안/검증/보관 상태로 신규 입력·수정한다. 자동 환류
+  원본은 직접 덮어쓰지 않고 담당자 검토본을 별도 연결하며, 멱등 생성과 낙관적 동시성 검사를
+  적용한다.
+- `회사 실적` 화면에서 공개 비식별 seed와 분리된 운영 실적을 신규 등록·수정하고, 계약기간·
+  금액·VAT·완료·공동수급 지분·실적증명서·키워드와 근거를 관리한다. 공고 정량 계산에는
+  `VALIDATED` 실적만 사용하고 원문 인정범위를 다시 적용한다.
+- 별도 `사전규격` 화면에서 최근 최대 31일의 나라장터 용역 사전규격을 검색하고, 선택한 한 건을
+  재검증해 멱등 저장한 뒤 명시적 비용 승인 시 최대 5개 공식 문서를 비동기 분석한다. 사전규격은
+  입찰공고나 GO 판정 큐와 분리하며 저장·검색 자체의 OpenAI 호출은 0회다.
 - 현재 공고의 첨부 전량 감사 또는 최신 평가가 끝나지 않은 건을 `분석·검토 대기`로
   집계하고, 단일 OPEN PPS 공고를 비용 상한 확인 뒤 서버에서 분석하는 수동 실행 경로.
   운영에서는 별도 분석 실행 키를 요구하며, 현재 Render 기본값은 $2.7 잔액 보호를 위해
@@ -54,6 +68,10 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 - 저장된 다중 첨부 추출본을 원자조건으로 병합한 뒤 평가·조건결과·정량·가격·경쟁리스크·부서추천·시스템 입찰의견을 한 트랜잭션의 불변 snapshot으로 저장
 - 현재 첨부 전량·원문 인용·표 총점·구간·단위·결정론적 산식 검증을 모두 통과한
   정량 규칙은 사람의 반복 승인 없이 `AUTO_ACTIVE`로 전환
+- 정량 엔진은 연속 배점구간, 초과/이상/미만/이하/같음 임계값, 단일 지표 비례 산식,
+  신용등급 등 명시적 범주표와 boolean 유형을 결정론적으로 계산한다. 실적 금액·건수는
+  인정기간·유사범위·단일계약·VAT·완료·공동수급·증명서 조건이 원문에 모두 있으면 검증된
+  운영 실적대장에서 자동 집계하며, 불완전하거나 임의 판단이 필요한 규칙은 점수를 추측하지 않는다.
 - 실제 `NO_BID / SUBMITTED / WON / LOST`와 투찰금액·점수·실주사유를 누적·갱신할 결과 환류 DB/API
 
 GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마친 불변 seed만 둡니다.
@@ -83,8 +101,10 @@ GitHub에는 공개 런타임 코드·규칙·부서 키워드와 검토를 마�
 재사용하면 점수를 계산하지 않습니다. 인정기간, 유사사업 범위, 단일계약/VAT/공동수급 지분,
 인력 역할·경력처럼 문맥이 다른 generic 회사값은 재사용하지 않고 `UNSCORABLE`로
 남깁니다. 회사 증빙이 없거나 binding이 다를 때 0점이나 만점을 임의로 추정하지
-않으며, 수행실적 금액·건수는 이 문맥 차원을 구조화하기 전까지
-`FACT_DIMENSIONS_UNMODELED / REVIEW_REQUIRED`로 유지합니다. 배점표가 헤더에서 단위를
+않습니다. 수행실적 금액·건수는 인정기간·유사범위·단일계약금액·VAT·완료·공동수급
+지분·실적증명서 조건을 원문에서 구조화하고 운영자가 `VALIDATED`로 확정한 실적대장에
+같은 조건을 적용할 수 있을 때만 자동 집계합니다. 조건 하나라도 불명확하면
+`FACT_DIMENSIONS_UNMODELED / REVIEW_REQUIRED` 또는 항목 `REVIEW`로 유지합니다. 배점표가 헤더에서 단위를
 한 번 선언한 형식은 허용하지만 구간 행에 다른 환산 단위가 명시되면 자동 활성화하지
 않습니다. 익명 정량 조회는 회사 fact를 DB에서 읽지 않고 원문 앵커·산식·내부 식별자와
 증빙 해시를 제거합니다. 기존 curated 정량 프로필은 원문
@@ -169,12 +189,21 @@ CI는 Python 테스트, n8n JSON/연결/Code 문법 검증과 공개 저장소�
 | `POST` | `/api/v1/pps-discovery/search` | same-origin 운영자 승인 후 최대 31일 나라장터 용역 공고 검색; DB/OpenAI 변경 없음 |
 | `POST` | `/api/v1/pps-discovery/save` | 검색 결과 중 선택한 최신 권위 공고 한 건만 재조회·저장; 자동 분석 제외·OpenAI 0회 |
 | `POST` | `/api/v1/company-awards/search` | 사업자등록번호 exact-match 회사별 낙찰 조회; 식별번호 폐기·DB/OpenAI 변경 없음 |
+| `POST` | `/api/v1/outcome-feedback/pps/refresh` | 종료 PPS 공고 최종낙찰 exact-match 자동 환류; 제출 근거 없는 타사 낙찰은 REVIEW, OpenAI 0회 |
+| `GET/POST/PATCH` | `/api/v1/result-learning` | 결과 학습 목록·담당자 검토본 신규 입력·수정; 자동 원본 불변·낙관적 잠금 |
 | `GET` | `/api/v1/notices/{notice_key}` | 근거·평가·결정 상세 |
 | `GET` | `/api/v1/departments/keyword-profiles` | 부서별 검색 키워드 registry |
 | `GET` | `/api/v1/company-profile` | 공개 가능한 회사 자격 프로필 |
 | `GET` | `/api/v1/notices/{notice_key}/analysis/requirement-policy` | 적격성/행동/체크/정보 분류 |
 | `GET` | `/api/v1/performance/summary` | 공개 실적 집계 |
 | `GET` | `/api/v1/performance` | 공개 실적 검색·필터·페이지 조회 |
+| `GET/POST/PATCH` | `/api/v1/performance-records` | 운영 회사 실적 초안·검증·보관 목록과 신규 등록·수정 |
+| `POST` | `/api/v1/prespec-discovery/search` | same-origin 운영자 승인 후 최대 31일 나라장터 용역 사전규격 검색; DB/OpenAI 변경 없음 |
+| `POST` | `/api/v1/prespec-discovery/save` | 선택한 사전규격 한 건 provider 재검증·멱등 저장; 분석 자동 시작 없음 |
+| `GET` | `/api/v1/pre-specifications` | 저장된 사전규격 DB 검색·상태 필터; PPS/OpenAI 호출 없음 |
+| `GET` | `/api/v1/pre-specifications/{registry_no}` | 사전규격 현재 버전·공식 문서·연결 입찰·최신 분석 상세 |
+| `POST` | `/api/v1/pre-specifications/{registry_no}/analysis` | 최대 5개 문서 비동기 근거 구조화 예약; 명시적 비용 승인·공유 quota |
+| `GET` | `/api/v1/pre-specifications/{registry_no}/analysis/{analysis_id}` | 예약한 사전규격 분석의 처리 상태·호출량·경고 조회 |
 | `POST` | `/api/v1/notices/{notice_key}/evaluate` | 버전 규칙 재평가 |
 | `POST` | `/api/v1/notices/{notice_key}/decisions` | 담당자 결정 기록 |
 | `POST` | `/api/v1/ingestion/replay` | 합성 회귀 fixture 재생 |
@@ -217,9 +246,11 @@ mock 기록을 한 번에 검증한다. 기존 00~04는
 `교육·컨설팅·연수·포럼·위탁 운영`과 backend 조직 profile keyword로
 수집하고, ranking된 `notice_keys`의 3년 낙찰을 먼저 refresh한다(기본 1건,
 hard max 3). 그 다음 생성·정정된 공고를 누락 없이 durable queue에 넣고, 공고당
-최대 1개 첨부를 보강해 평가·snapshot을 만든다. Workflow 11은 수동 89건 backfill도
+PPS manifest의 현재 첨부 전량(공식 슬롯 상한 10개)을 보강해 평가·snapshot을 만든다. Workflow 11은 수동 89건 backfill도
 동일하게 `30 + 30 + 29`처럼 여러 실행으로 나눠 처리한다.
-입찰/개찰/낙찰/계약 결과의 완전 자동 환류는 계속 확장 경계다.
+분석 후 브리핑을 조립하기 전에 종료 공고 최대 10건의 최종 낙찰을 oldest-first로
+확인해 결과 학습 DB에 fail-soft 환류한다. 낙찰 API만으로 참가를 증명할 수 없는 타사
+낙찰은 `LOST`로 만들지 않으며, 개찰 참가자 전체·계약 이행 결과 자동화는 후속 확장 경계다.
 
 `main`에 `workflows/**`, `manifest.json` 또는 배포 스크립트 변경이 push되면
 GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
@@ -258,7 +289,7 @@ dry-run이고, schedule/sub-workflow의 저장 실행은
 - `N8N_API_KEY`
 
 OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON에 넣지 않습니다.
-10번의 9개, 11번의 3개, 12번의 readiness·briefing·reservation 3개 backend HTTP
+10번의 10개, 11번의 3개, 12번의 readiness·briefing·reservation 3개 backend HTTP
 노드는 n8n Generic Header Auth credential을 요구하며,
 소스에는 credential ID도 없습니다. n8n UI에서 같은 노드 이름에 연결한 credential은
 후속 GitHub 배포 시 보존됩니다. API/Web origin은 `$env`를 우선하고 없으면 공개

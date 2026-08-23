@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from pai_loop.models import BidOutcome, Notice
 
 
 def _notice_key(client: TestClient) -> str:
@@ -66,3 +72,86 @@ def test_outcome_rejects_foreign_evaluation(client: TestClient) -> None:
         },
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("source", "outcome_key"),
+    (
+        ("PPS_AUTO_FEEDBACK", "provider-owned-result"),
+        ("MANUAL_UI", "operator-review-result"),
+        ("MANUAL", "pps-final-award:reserved-provider-key"),
+        ("MANUAL", "manual-ui:reserved-review-key"),
+    ),
+)
+def test_generic_outcome_upsert_rejects_reserved_source_and_key_namespaces(
+    client: TestClient,
+    source: str,
+    outcome_key: str,
+) -> None:
+    notice_key = _notice_key(client)
+    response = client.post(
+        f"/api/v1/notices/{notice_key}/outcomes",
+        json={
+            "outcome_key": outcome_key,
+            "status": "WON",
+            "source": source,
+            "winner_name": "원본 생성 시도",
+        },
+    )
+    assert response.status_code == 409
+    assert "결과 학습 검토본" in response.text
+    assert client.get(f"/api/v1/notices/{notice_key}/outcomes").json() == []
+
+
+@pytest.mark.parametrize(
+    ("original_source", "outcome_key"),
+    (
+        ("PPS_AUTO_FEEDBACK", "pps-final-award:immutable-001"),
+        ("EXTERNAL_PROVIDER", "external-provider-result:001"),
+    ),
+)
+def test_generic_outcome_upsert_cannot_overwrite_an_external_original(
+    client: TestClient,
+    original_source: str,
+    outcome_key: str,
+) -> None:
+    notice_key = _notice_key(client)
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+        assert notice is not None
+        original = BidOutcome(
+            notice_id=notice.id,
+            outcome_key=outcome_key,
+            status="WON",
+            winning_bid_amount=99_000_000,
+            winner_name="공개 원본 낙찰자",
+            source=original_source,
+            source_reference="provider:immutable:001",
+            evidence_json={"provider_result_sha256": "a" * 64},
+            observed_at=datetime.now(timezone.utc),
+        )
+        session.add(original)
+        session.commit()
+        original_id = original.id
+
+    overwritten = client.post(
+        f"/api/v1/notices/{notice_key}/outcomes",
+        json={
+            "outcome_key": outcome_key,
+            "status": "LOST",
+            "source": "MANUAL",
+            "winner_name": "덮어쓰기 시도",
+            "source_reference": "manual",
+            "evidence_json": {},
+        },
+    )
+    assert overwritten.status_code == 409
+    assert "결과 학습 검토본" in overwritten.text
+
+    history = client.get(f"/api/v1/notices/{notice_key}/outcomes").json()
+    assert len(history) == 1
+    assert history[0]["id"] == original_id
+    assert history[0]["status"] == "WON"
+    assert history[0]["source"] == original_source
+    assert history[0]["winner_name"] == "공개 원본 낙찰자"
+    assert history[0]["evidence_json"] == {"provider_result_sha256": "a" * 64}

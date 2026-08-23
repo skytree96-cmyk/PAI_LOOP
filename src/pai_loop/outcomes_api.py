@@ -91,6 +91,11 @@ router = APIRouter(
 )
 
 
+_GENERIC_MUTABLE_SOURCE = "MANUAL"
+_RESERVED_OUTCOME_SOURCES = frozenset({"PPS_AUTO_FEEDBACK", "MANUAL_UI"})
+_RESERVED_OUTCOME_KEY_PREFIXES = ("pps-final-award:", "manual-ui:")
+
+
 def get_session(request: Request):
     session = request.app.state.session_factory()
     try:
@@ -107,6 +112,35 @@ def _notice(session: Session, notice_key: str) -> Notice:
     if notice is None:
         raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
     return notice
+
+
+def _reject_reserved_generic_mutation(*, source: str, outcome_key: str) -> None:
+    """Keep adapter/operator-owned outcome streams outside the generic upsert.
+
+    The generic endpoint is retained for its historical MANUAL idempotent
+    contract.  Provider automation and the result-learning editor each own a
+    separate append-style namespace; accepting either namespace here would
+    let a broad upsert overwrite their immutable source observation.
+    """
+
+    normalised_source = source.strip().upper()
+    normalised_key = outcome_key.strip().casefold()
+    owns_reserved_namespace = (
+        normalised_source in _RESERVED_OUTCOME_SOURCES
+        or any(
+            normalised_key.startswith(prefix)
+            for prefix in _RESERVED_OUTCOME_KEY_PREFIXES
+        )
+    )
+    unsupported_generic_source = normalised_source != _GENERIC_MUTABLE_SOURCE
+    if owns_reserved_namespace or unsupported_generic_source:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "외부·자동 결과 원본은 일반 결과 저장 API에서 만들거나 수정할 수 없습니다. "
+                "담당자 수정은 별도 결과 학습 검토본으로 저장해 주세요."
+            ),
+        )
 
 
 def _out(item: BidOutcome, *, public_view: bool = False) -> BidOutcomeOut:
@@ -185,6 +219,7 @@ def upsert_bid_outcome(
             )
         ).encode("utf-8")
     ).hexdigest()[:40]
+    _reject_reserved_generic_mutation(source=payload.source, outcome_key=key)
     item = session.scalar(
         select(BidOutcome).where(
             BidOutcome.notice_id == notice.id,
@@ -195,6 +230,14 @@ def upsert_bid_outcome(
         item = BidOutcome(notice_id=notice.id, outcome_key=key, **values)
         session.add(item)
     else:
+        if item.source.strip().upper() != _GENERIC_MUTABLE_SOURCE:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "외부·자동 결과 원본은 일반 결과 저장 API에서 수정할 수 없습니다. "
+                    "담당자 수정은 별도 결과 학습 검토본으로 저장해 주세요."
+                ),
+            )
         for field, value in values.items():
             setattr(item, field, value)
     session.commit()

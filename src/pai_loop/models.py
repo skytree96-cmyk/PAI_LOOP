@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -566,3 +566,42 @@ class BidOutcome(Base, TimestampMixin):
     notice: Mapped[Notice] = relationship(back_populates="bid_outcomes")
     evaluation: Mapped[Evaluation | None] = relationship(back_populates="bid_outcomes")
     decision: Mapped[UserDecision | None] = relationship(back_populates="bid_outcomes")
+
+
+class CompanyPerformanceRecord(Base, TimestampMixin):
+    """Operator-maintained company performance, separate from the public seed.
+
+    The packaged ``PUBLIC_DERIVED`` snapshot is immutable.  Records in this
+    table are explicit operational drafts that may be validated or archived by
+    an operator.  Quantitative rules must use only validated records and still
+    apply their own notice-specific evidence checks.
+    """
+
+    __tablename__ = "company_performance_records"
+    __table_args__ = (
+        UniqueConstraint("record_key", name="uq_company_performance_record_key"),
+        Index("ix_company_performance_status_date", "record_status", "contract_date"),
+        Index("ix_company_performance_project", "project_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    record_key: Mapped[str] = mapped_column(String(180))
+    record_status: Mapped[str] = mapped_column(String(24), default="DRAFT", index=True)
+    project_name: Mapped[str] = mapped_column(String(500), index=True)
+    agency: Mapped[str] = mapped_column(String(255), default="")
+    division: Mapped[str] = mapped_column(String(255), default="")
+    overview: Mapped[str | None] = mapped_column(Text)
+    contract_date: Mapped[date | None] = mapped_column(Date)
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    contract_amount: Mapped[int | None] = mapped_column(BigInteger)
+    vat_basis: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    share_pct: Mapped[float] = mapped_column(Float, default=100.0)
+    certificate_status: Mapped[str] = mapped_column(String(32), default="NOT_REQUESTED")
+    evidence_reference: Mapped[str | None] = mapped_column(Text)
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(48), default="MANUAL")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(120), default="KMA 입찰팀")
+    updated_by: Mapped[str] = mapped_column(String(120), default="KMA 입찰팀")

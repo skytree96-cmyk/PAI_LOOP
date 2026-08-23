@@ -7,7 +7,7 @@ import math
 import re
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, timezone
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import lru_cache
 from importlib import resources
 from typing import Annotated, Any, Literal
@@ -24,7 +24,7 @@ from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
 )
-from .models import CompanyFact, Notice
+from .models import CompanyFact, CompanyPerformanceRecord, Notice
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
@@ -40,9 +40,25 @@ from .quantitative_rule_extraction import (
     merge_validated_quantitative_records,
 )
 from .public_performance import load_public_performance_seed
+from .quantitative_formula import (
+    CategoryScore,
+    DeterministicFormula,
+    boolean_categories_complete,
+    category_points,
+    category_values_are_disjoint,
+    compile_arithmetic_formula,
+    compile_category_formula,
+    evaluate_formula,
+    evaluate_formula_range,
+)
+from .quantitative_performance import (
+    PerformanceRecognitionScope,
+    derive_performance_value,
+    parse_performance_recognition_scope,
+)
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.2.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.3.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -58,7 +74,7 @@ ActivationStatus = Literal["AUTO_ACTIVE", "REVIEW_REQUIRED", "NOT_APPLICABLE"]
 
 
 class QuantModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class SourceAnchor(QuantModel):
@@ -103,9 +119,22 @@ class QuantitativeCriterion(QuantModel):
     max_points: float = Field(gt=0)
     metric_key: str = Field(min_length=1, max_length=160)
     unit: str | None = Field(default=None, max_length=80)
-    formula_type: Literal["BRACKET", "BOOLEAN"]
+    formula_type: Literal[
+        "BRACKET",
+        "BOOLEAN",
+        "THRESHOLD",
+        "FORMULA",
+        "CATEGORICAL",
+    ]
     formula: str = Field(min_length=1, max_length=1_000)
     brackets: list[ScoreBracket] = Field(default_factory=list)
+    categories: list[CategoryScore] = Field(default_factory=list, max_length=100)
+    threshold_operator: Literal["GT", "GTE", "LT", "LTE", "EQ"] | None = None
+    threshold_value: float | None = None
+    threshold_points_if_met: float | None = Field(default=None, ge=0)
+    threshold_points_if_not_met: float | None = Field(default=None, ge=0)
+    deterministic_formula: DeterministicFormula | None = None
+    performance_scope: PerformanceRecognitionScope | None = None
     rule_floor_points: float = Field(default=0, ge=0)
     floor_condition: str | None = Field(default=None, max_length=1_000)
     rule_base_points: float | None = Field(default=None, ge=0)
@@ -118,7 +147,7 @@ class QuantitativeCriterion(QuantModel):
 class QuantitativeFact(QuantModel):
     metric_key: str = Field(min_length=1, max_length=160)
     status: EstimateStatus
-    value: float | bool | None = None
+    value: float | bool | str | None = None
     lower_value: float | None = None
     upper_value: float | None = None
     evidence_key: str | None = Field(default=None, max_length=240)
@@ -236,7 +265,9 @@ class QuantitativeProfileError(RuntimeError):
 
 
 def _round_points(value: float) -> float:
-    return round(float(value), 2)
+    return float(
+        Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )
 
 
 def _rule_error(criterion: QuantitativeCriterion) -> str | None:
@@ -244,6 +275,18 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
         return "평가표 원문 위치가 연결되지 않았습니다."
     if not criterion.required_evidence_keys:
         return "필요 증빙 키가 정의되지 않았습니다."
+    if (
+        criterion.performance_scope is not None
+        and criterion.performance_scope.metric_key != criterion.metric_key
+    ):
+        return "실적 인정범위와 평가항목의 회사 사실 키가 일치하지 않습니다."
+    if (
+        criterion.fact_binding_sha256 is not None
+        and criterion.metric_key
+        in {"company.performance.amount", "company.performance.count"}
+        and criterion.performance_scope is None
+    ):
+        return "공고별 실적 평가항목에 원문 인정기간·범위·VAT 조건이 없습니다."
     if criterion.rule_floor_points > criterion.max_points:
         return "원문상 최소점수가 항목 만점을 초과합니다."
     if criterion.rule_floor_points and not criterion.floor_condition:
@@ -252,15 +295,70 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
         return "원문상 기본점수가 항목 만점을 초과합니다."
     if criterion.rule_base_points is not None and not criterion.base_condition:
         return "원문상 기본점수의 적용 조건이 정의되지 않았습니다."
+    threshold_configured = any(
+        value is not None
+        for value in (
+            criterion.threshold_operator,
+            criterion.threshold_value,
+            criterion.threshold_points_if_met,
+            criterion.threshold_points_if_not_met,
+        )
+    )
+    if criterion.formula_type == "FORMULA":
+        if criterion.deterministic_formula is None:
+            return "원문 산식을 안전한 결정론 산식으로 변환하지 못했습니다."
+        if criterion.brackets or criterion.categories or threshold_configured:
+            return "FORMULA 산식에 다른 배점 구조를 함께 사용할 수 없습니다."
+        if criterion.deterministic_formula.maximum_points > criterion.max_points:
+            return "산식 상한이 항목 만점을 초과합니다."
+        return None
+    if criterion.formula_type == "CATEGORICAL":
+        if (
+            criterion.brackets
+            or not criterion.categories
+            or criterion.deterministic_formula is not None
+            or threshold_configured
+        ):
+            return "범주형 배점표가 완전하게 정의되지 않았습니다."
+        if not category_values_are_disjoint(tuple(criterion.categories)):
+            return "범주형 배점 값이 서로 중복됩니다."
+        if any(row.points > criterion.max_points for row in criterion.categories):
+            return "범주형 배점이 항목 만점을 초과합니다."
+        if criterion.metric_key == "company.local_presence" and not boolean_categories_complete(
+            tuple(criterion.categories)
+        ):
+            return "보유 여부 배점은 보유·미보유 양쪽 원문 행이 각각 필요합니다."
+        return None
+    if criterion.formula_type == "THRESHOLD":
+        if (
+            criterion.brackets
+            or criterion.categories
+            or criterion.deterministic_formula is not None
+            or criterion.threshold_operator is None
+            or criterion.threshold_value is None
+            or criterion.threshold_points_if_met is None
+            or criterion.threshold_points_if_not_met is None
+        ):
+            return "임계값 산식의 비교조건 또는 충족·미충족 배점이 불완전합니다."
+        if max(
+            criterion.threshold_points_if_met,
+            criterion.threshold_points_if_not_met,
+        ) > criterion.max_points:
+            return "임계값 배점이 항목 만점을 초과합니다."
+        return None
     if not criterion.brackets:
         return "배점 구간이 정의되지 않았습니다."
+    if criterion.categories or criterion.deterministic_formula is not None or threshold_configured:
+        return "배점 구간 산식에 다른 배점 구조를 함께 사용할 수 없습니다."
     if any(bracket.points > criterion.max_points for bracket in criterion.brackets):
         return "배점 구간 점수가 항목 만점을 초과합니다."
     if any(bracket.points < criterion.rule_floor_points for bracket in criterion.brackets):
         return "배점 구간 점수가 원문상 최소점수보다 낮습니다."
     if criterion.formula_type == "BOOLEAN":
         values = [bracket.boolean_value for bracket in criterion.brackets]
-        if sorted(value for value in values if value is not None) != [False, True]:
+        if len(values) != 2 or sorted(
+            value for value in values if value is not None
+        ) != [False, True]:
             return "BOOLEAN 산식은 true/false 배점 구간이 각각 필요합니다."
         if any(bracket.min_value is not None or bracket.max_value is not None for bracket in criterion.brackets):
             return "BOOLEAN 산식에는 숫자 구간을 함께 사용할 수 없습니다."
@@ -314,7 +412,24 @@ def _numeric_bracket_matches(bracket: ScoreBracket, value: float) -> bool:
     return True
 
 
-def _points_for_value(criterion: QuantitativeCriterion, value: float | bool) -> float | None:
+def _threshold_matches(
+    operator: Literal["GT", "GTE", "LT", "LTE", "EQ"],
+    value: float,
+    threshold: float,
+) -> bool:
+    return {
+        "GT": value > threshold,
+        "GTE": value >= threshold,
+        "LT": value < threshold,
+        "LTE": value <= threshold,
+        "EQ": value == threshold,
+    }[operator]
+
+
+def _points_for_value(
+    criterion: QuantitativeCriterion,
+    value: float | bool | str,
+) -> float | None:
     if criterion.formula_type == "BOOLEAN":
         if not isinstance(value, bool):
             return None
@@ -322,6 +437,44 @@ def _points_for_value(criterion: QuantitativeCriterion, value: float | bool) -> 
             (item for item in criterion.brackets if item.boolean_value is value),
             None,
         )
+    elif criterion.formula_type == "CATEGORICAL":
+        if not isinstance(value, (str, bool)):
+            return None
+        points = category_points(tuple(criterion.categories), value)
+        return _round_points(points) if points is not None else None
+    elif criterion.formula_type == "THRESHOLD":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if (
+            criterion.threshold_operator is None
+            or criterion.threshold_value is None
+            or criterion.threshold_points_if_met is None
+            or criterion.threshold_points_if_not_met is None
+        ):
+            return None
+        points = (
+            criterion.threshold_points_if_met
+            if _threshold_matches(
+                criterion.threshold_operator,
+                float(value),
+                criterion.threshold_value,
+            )
+            else criterion.threshold_points_if_not_met
+        )
+        return _round_points(points)
+    elif criterion.formula_type == "FORMULA":
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or criterion.deterministic_formula is None
+        ):
+            return None
+        try:
+            return _round_points(
+                evaluate_formula(criterion.deterministic_formula, float(value))
+            )
+        except (ValueError, ArithmeticError, OverflowError):
+            return None
     else:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
@@ -337,6 +490,42 @@ def _points_for_numeric_range(
     lower: float,
     upper: float,
 ) -> tuple[float, float] | None:
+    if criterion.formula_type == "FORMULA":
+        if criterion.deterministic_formula is None:
+            return None
+        try:
+            return tuple(
+                _round_points(value)
+                for value in evaluate_formula_range(
+                    criterion.deterministic_formula,
+                    lower,
+                    upper,
+                )
+            )
+        except (ValueError, ArithmeticError, OverflowError):
+            return None
+    if criterion.formula_type == "THRESHOLD":
+        if (
+            criterion.threshold_operator is None
+            or criterion.threshold_value is None
+            or criterion.threshold_points_if_met is None
+            or criterion.threshold_points_if_not_met is None
+        ):
+            return None
+        candidates = {
+            _points_for_value(criterion, lower),
+            _points_for_value(criterion, upper),
+        }
+        threshold = criterion.threshold_value
+        if (
+            criterion.threshold_operator == "EQ"
+            and lower < threshold < upper
+        ):
+            candidates.add(criterion.threshold_points_if_met)
+        values = [float(value) for value in candidates if value is not None]
+        return (_round_points(min(values)), _round_points(max(values))) if values else None
+    if criterion.formula_type != "BRACKET":
+        return None
     candidate_points: list[float] = []
     for bracket in criterion.brackets:
         bracket_lower = -math.inf if bracket.min_value is None else bracket.min_value
@@ -446,7 +635,7 @@ def _estimate_criterion(
             **fact_audit,
         )
 
-    if criterion.formula_type == "BRACKET" and fact.status == "ESTIMATED" and (
+    if criterion.formula_type in {"BRACKET", "THRESHOLD", "FORMULA"} and fact.status == "ESTIMATED" and (
         fact.lower_value is not None or fact.upper_value is not None
     ):
         if fact.lower_value is None or fact.upper_value is None:
@@ -856,10 +1045,15 @@ _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
         "unit_scales": {
             "원": Decimal("1"),
             "krw": Decimal("1"),
+            "천": Decimal("1000"),
             "천원": Decimal("1000"),
+            "만": Decimal("10000"),
             "만원": Decimal("10000"),
+            "백만": Decimal("1000000"),
             "백만원": Decimal("1000000"),
+            "천만": Decimal("10000000"),
             "천만원": Decimal("10000000"),
+            "억": Decimal("100000000"),
             "억원": Decimal("100000000"),
         },
     },
@@ -877,6 +1071,12 @@ _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
         "fact_key": "company.certification.count",
         "canonical_unit": "COUNT",
         "unit_scales": {"건": Decimal("1"), "개": Decimal("1")},
+    },
+    "CREDIT_RATING": {
+        "fact_key": "company.credit_rating",
+        "canonical_unit": "RATING",
+        "value_kind": "CATEGORICAL",
+        "unit_scales": {"등급": Decimal("1"), "신용등급": Decimal("1"), "rating": Decimal("1")},
     },
     "FINANCIAL_RATIO": {
         "fact_key": "company.financial.ratio",
@@ -898,6 +1098,12 @@ _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
         "canonical_unit": "COUNT",
         "unit_scales": {"건": Decimal("1"), "회": Decimal("1"), "개": Decimal("1")},
     },
+    "LOCAL_PRESENCE": {
+        "fact_key": "company.local_presence",
+        "canonical_unit": "BOOLEAN",
+        "value_kind": "BOOLEAN",
+        "unit_scales": {"여부": Decimal("1"), "유무": Decimal("1"), "boolean": Decimal("1")},
+    },
 }
 
 QUANTITATIVE_CANONICAL_FACT_KEYS = frozenset(
@@ -915,8 +1121,9 @@ _UNMODELED_FACT_DIMENSION_METRICS = frozenset(
 )
 _SOURCE_UNIT_RE = re.compile(
     r"-?(?:\d[\d,]*)(?:\.\d+)?\s*"
-    r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원|"
-    r"퍼센트|%|건|회|개|명|인|대|년|KRW)",
+    r"(?P<unit>천\s*만\s*원|천\s*만|백\s*만\s*원|백\s*만|억\s*원|억|"
+    r"만\s*원|만|천\s*원|천|원|"
+    r"퍼센트|%|건|회|개|명|인|대|년|등급|신용등급|여부|유무|KRW)",
     re.IGNORECASE,
 )
 
@@ -937,7 +1144,7 @@ def _metric_spec(
 
 def _metric_scale(candidate: ImmutableQuantitativeRuleCandidate) -> Decimal | None:
     spec = _metric_spec(candidate)
-    if spec is None:
+    if spec is None or spec.get("value_kind", "NUMERIC") != "NUMERIC":
         return None
     return spec["unit_scales"][_normalize_unit(candidate.unit)]
 
@@ -952,6 +1159,8 @@ def _candidate_unit_is_source_bound(
         literals.extend(
             [candidate.threshold.literal, candidate.threshold.evidence.quote]
         )
+    if candidate.formula_literal:
+        literals.append(candidate.formula_literal)
     observed = {
         _normalize_unit(match.group("unit"))
         for literal in literals
@@ -960,6 +1169,28 @@ def _candidate_unit_is_source_bound(
     expected = _normalize_unit(candidate.unit)
     if expected in observed:
         return True
+    spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+    if spec is not None:
+        value_kind = str(spec.get("value_kind", "NUMERIC"))
+        if value_kind != "NUMERIC":
+            normalized_literals = [
+                re.sub(r"\s+", "", literal).casefold() for literal in literals
+            ]
+            observed.update(
+                unit
+                for unit in spec["unit_scales"]
+                if unit and any(unit in literal for literal in normalized_literals)
+            )
+        # Numeric scale equivalence is meaningful only for currency aliases
+        # (``억``/``억원`` etc.).  Treating every scale-1 unit as synonymous
+        # would let YEAR bind to a source that explicitly says ``년`` and
+        # similarly conflate 건/회/개, bypassing the source-unit gate.
+        if value_kind != "NUMERIC" or candidate.metric == "PERFORMANCE_AMOUNT":
+            expected_scale = spec["unit_scales"].get(expected)
+            if expected_scale is not None and any(
+                spec["unit_scales"].get(unit) == expected_scale for unit in observed
+            ):
+                return True
     # Some tables declare a unit once in the verified header and omit it from
     # every numeric row.  Accept only the explicit ``단위: X`` form here;
     # arbitrary free-text occurrence is not sufficient source binding.
@@ -980,6 +1211,8 @@ def _candidate_bound_unit_scales_are_consistent(
     spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
     if spec is None:
         return False
+    if spec.get("value_kind", "NUMERIC") != "NUMERIC":
+        return True
     unit_scales = spec["unit_scales"]
     expected = unit_scales.get(_normalize_unit(candidate.unit))
     if expected is None:
@@ -987,6 +1220,8 @@ def _candidate_bound_unit_scales_are_consistent(
     literals = [item.literal for item in candidate.brackets]
     if candidate.threshold is not None:
         literals.append(candidate.threshold.literal)
+    if candidate.formula_literal:
+        literals.append(candidate.formula_literal)
     if not literals:
         return False
     for literal in literals:
@@ -1007,7 +1242,7 @@ def _candidate_bound_unit_scales_are_consistent(
 def _canonical_company_fact_value(
     fact: CompanyFact,
     criterion: QuantitativeCriterion,
-) -> tuple[float | None, str | None, str | None]:
+) -> tuple[float | bool | str | None, str | None, str | None]:
     spec = _FACT_SPEC_BY_KEY.get(fact.fact_key)
     if spec is None:
         return None, None, "등록되지 않은 canonical 회사 사실 키입니다."
@@ -1048,6 +1283,31 @@ def _canonical_company_fact_value(
             fact_binding_sha256,
             "공고별 평가항목에 결합된 회사 사실에는 명시적인 단위가 필요합니다.",
         )
+    if unit:
+        normalized_unit = _normalize_unit(unit)
+        if (
+            normalized_unit != _normalize_unit(str(spec["canonical_unit"]))
+            and normalized_unit not in spec["unit_scales"]
+        ):
+            return (
+                None,
+                fact_binding_sha256,
+                "회사 사실 단위를 canonical 단위로 변환할 수 없습니다.",
+            )
+    value_kind = str(spec.get("value_kind", "NUMERIC"))
+    if value_kind == "CATEGORICAL":
+        if not isinstance(raw, str) or not raw.strip():
+            return None, fact_binding_sha256, "회사 사실의 범주 값이 비어 있습니다."
+        return re.sub(r"\s+", " ", raw).strip(), fact_binding_sha256, None
+    if value_kind == "BOOLEAN":
+        if isinstance(raw, bool):
+            return raw, fact_binding_sha256, None
+        normalized = str(raw).strip().casefold()
+        if normalized in {"y", "yes", "true", "1", "보유", "있음", "해당"}:
+            return True, fact_binding_sha256, None
+        if normalized in {"n", "no", "false", "0", "미보유", "없음", "비해당"}:
+            return False, fact_binding_sha256, None
+        return None, fact_binding_sha256, "회사 사실 값을 boolean으로 해석할 수 없습니다."
     if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
         return None, fact_binding_sha256, "회사 사실 값이 유한 숫자가 아닙니다."
     try:
@@ -1217,6 +1477,45 @@ def resolve_verified_quantitative_facts(
     return resolved
 
 
+def resolve_performance_register_facts(
+    criteria: Sequence[QuantitativeCriterion],
+    performance_records: Iterable[CompanyPerformanceRecord],
+    *,
+    as_of: datetime,
+) -> list[QuantitativeFact]:
+    """Apply source-bound recognition scopes to operator-validated records.
+
+    These values remain ESTIMATED until the ordering authority accepts the
+    evidence.  They are nevertheless deterministic: drafts, archived rows,
+    unknown VAT/completion/share conditions, and records outside the exact
+    lookback/similarity scope never silently contribute to a score.
+    """
+
+    records = tuple(performance_records)
+    resolved: list[QuantitativeFact] = []
+    for criterion in criteria:
+        scope = criterion.performance_scope
+        if scope is None:
+            continue
+        derived = derive_performance_value(scope, records, as_of=as_of)
+        resolved.append(
+            QuantitativeFact(
+                metric_key=criterion.metric_key,
+                status=derived.status,
+                value=derived.value,
+                lower_value=derived.lower_value,
+                upper_value=derived.upper_value,
+                evidence_key=criterion.metric_key,
+                evidence_reference=derived.evidence_reference,
+                evidence_sha256=derived.evidence_sha256,
+                fact_binding_sha256=criterion.fact_binding_sha256,
+                confidence=(0.85 if derived.status == "ESTIMATED" else 0),
+                rationale=derived.rationale,
+            )
+        )
+    return resolved
+
+
 def _scaled_value(value: float | None, scale: Decimal) -> float | None:
     if value is None:
         return None
@@ -1310,6 +1609,38 @@ def _candidate_brackets(
     ]
 
 
+def _compiled_formula_contract(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> tuple[DeterministicFormula | None, tuple[CategoryScore, ...] | None]:
+    if candidate.scoring_method != "FORMULA" or not candidate.formula_literal:
+        return None, None
+    spec = _metric_spec(candidate)
+    if spec is None:
+        return None, None
+    value_kind = str(spec.get("value_kind", "NUMERIC"))
+    if value_kind in {"CATEGORICAL", "BOOLEAN"}:
+        categories = compile_category_formula(
+            candidate.formula_literal,
+            maximum_points=candidate.max_points,
+        )
+        if value_kind == "BOOLEAN" and (
+            categories is None or not boolean_categories_complete(categories)
+        ):
+            return None, None
+        return None, categories
+    scale = _metric_scale(candidate)
+    if scale is None:
+        return None, None
+    return (
+        compile_arithmetic_formula(
+            candidate.formula_literal,
+            maximum_points=candidate.max_points,
+            source_unit_scale=float(scale),
+        ),
+        None,
+    )
+
+
 def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[str]:
     """Return stable fail-closed codes for the machine activation contract."""
 
@@ -1391,7 +1722,20 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
             reasons.add("SOURCE_ANCHOR_INCOMPLETE")
         spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
         if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS:
-            reasons.add("FACT_DIMENSIONS_UNMODELED")
+            metric_key = str((spec or {}).get("fact_key") or "")
+            performance_literal = " ".join(
+                value
+                for value in (
+                    candidate.criterion_literal,
+                    candidate.formula_literal or "",
+                )
+                if value
+            )
+            if parse_performance_recognition_scope(
+                performance_literal,
+                metric_key=metric_key,
+            ) is None:
+                reasons.add("FACT_DIMENSIONS_UNMODELED")
         if spec is None:
             reasons.add("FACT_KEY_UNREGISTERED")
         elif (
@@ -1405,14 +1749,14 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
             reasons.add("UNIT_NOT_SOURCE_BOUND")
         elif not _candidate_bound_unit_scales_are_consistent(candidate):
             reasons.add("BOUND_UNIT_INCONSISTENT")
-        if candidate.scoring_method not in {"BRACKET", "THRESHOLD"} or (
-            candidate.scoring_method == "THRESHOLD"
-            and (
-                candidate.threshold is None
-                or candidate.threshold.operator == "EQ"
-            )
-        ):
+        if candidate.scoring_method not in {"BRACKET", "THRESHOLD", "FORMULA"}:
             reasons.add("UNSUPPORTED_SCORING_DSL")
+        elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is None:
+            reasons.add("UNSUPPORTED_SCORING_DSL")
+        elif candidate.scoring_method == "FORMULA":
+            compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
+            if compiled_formula is None and compiled_categories is None:
+                reasons.add("UNSUPPORTED_SCORING_DSL")
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
             if not brackets:
@@ -1503,8 +1847,68 @@ def quantitative_request_from_candidate_profile(
     conversion_errors: list[str] = []
     for candidate in profile.available_candidates:
         spec = _metric_spec(candidate)
-        brackets = _candidate_brackets(candidate)
-        if spec is None or not brackets:
+        if spec is None:
+            conversion_errors.append(
+                f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
+            )
+            continue
+        performance_scope = (
+            parse_performance_recognition_scope(
+                " ".join(
+                    value
+                    for value in (
+                        candidate.criterion_literal,
+                        candidate.formula_literal or "",
+                    )
+                    if value
+                ),
+                metric_key=str(spec["fact_key"]),
+            )
+            if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS
+            else None
+        )
+        scoring_fields: dict[str, Any]
+        if candidate.scoring_method == "BRACKET":
+            brackets = _candidate_brackets(candidate)
+            if not brackets:
+                conversion_errors.append(
+                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
+                )
+                continue
+            scoring_fields = {"formula_type": "BRACKET", "brackets": brackets}
+        elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is not None:
+            scale = _metric_scale(candidate)
+            threshold_value = _scaled_value(candidate.threshold.threshold_value, scale) if scale is not None else None
+            if threshold_value is None:
+                conversion_errors.append(
+                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
+                )
+                continue
+            scoring_fields = {
+                "formula_type": "THRESHOLD",
+                "threshold_operator": candidate.threshold.operator,
+                "threshold_value": threshold_value,
+                "threshold_points_if_met": candidate.threshold.points_if_met,
+                "threshold_points_if_not_met": candidate.threshold.points_if_not_met,
+            }
+        elif candidate.scoring_method == "FORMULA":
+            compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
+            if compiled_formula is not None:
+                scoring_fields = {
+                    "formula_type": "FORMULA",
+                    "deterministic_formula": compiled_formula,
+                }
+            elif compiled_categories is not None:
+                scoring_fields = {
+                    "formula_type": "CATEGORICAL",
+                    "categories": list(compiled_categories),
+                }
+            else:
+                conversion_errors.append(
+                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
+                )
+                continue
+        else:
             conversion_errors.append(
                 f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
             )
@@ -1525,9 +1929,9 @@ def quantitative_request_from_candidate_profile(
                 max_points=candidate.max_points,
                 metric_key=str(spec["fact_key"]),
                 unit=str(spec["canonical_unit"]),
-                formula_type="BRACKET",
                 formula=candidate.criterion_literal,
-                brackets=brackets,
+                **scoring_fields,
+                performance_scope=performance_scope,
                 source_anchor=SourceAnchor(
                     document_label=candidate.source_attachment_id,
                     document_sha256=bindings.get(candidate.source_attachment_id),
@@ -1853,18 +2257,46 @@ def _public_evidence_observations(profile: dict[str, Any] | None) -> list[Eviden
 def estimate_for_notice(
     notice: Notice,
     company_facts: Iterable[CompanyFact] = (),
+    performance_records: Iterable[CompanyPerformanceRecord] = (),
 ) -> QuantitativeEstimateResult:
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
         request = quantitative_request_from_candidate_profile(dynamic_profile)
         if request.activation_status == "AUTO_ACTIVE":
+            verified_facts = resolve_verified_quantitative_facts(
+                request.criteria,
+                company_facts,
+                as_of=notice.deadline,
+            )
+            register_facts = resolve_performance_register_facts(
+                request.criteria,
+                performance_records,
+                as_of=notice.deadline,
+            )
+            register_by_key = {item.metric_key: item for item in register_facts}
+            # An exact immutable CompanyFact remains authoritative.  A generic
+            # CompanyFact that failed the dynamic binding contract must not,
+            # however, suppress the notice-scoped value derived from the
+            # validated performance register.
+            merged_facts = [
+                item
+                for item in verified_facts
+                if item.status == "CONFIRMED"
+                or item.metric_key not in register_by_key
+            ]
+            confirmed_keys = {
+                item.metric_key
+                for item in verified_facts
+                if item.status == "CONFIRMED"
+            }
+            merged_facts.extend(
+                item
+                for item in register_facts
+                if item.metric_key not in confirmed_keys
+            )
             request = request.model_copy(
                 update={
-                    "facts": resolve_verified_quantitative_facts(
-                        request.criteria,
-                        company_facts,
-                        as_of=notice.deadline,
-                    )
+                    "facts": merged_facts
                 }
             )
         return estimate_quantitative_score(request)
@@ -1995,5 +2427,20 @@ def get_notice_quantitative_estimate(
             ).all()
         )
     )
-    result = estimate_for_notice(notice, company_facts)
+    performance_records = (
+        []
+        if public_view
+        else list(
+            session.scalars(
+                select(CompanyPerformanceRecord).where(
+                    CompanyPerformanceRecord.record_status == "VALIDATED"
+                )
+            ).all()
+        )
+    )
+    result = (
+        estimate_for_notice(notice, company_facts, performance_records)
+        if performance_records
+        else estimate_for_notice(notice, company_facts)
+    )
     return _public_quantitative_projection(result) if public_view else result

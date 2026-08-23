@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+STATIC_DIR = Path(__file__).parents[1] / "src" / "pai_loop" / "static"
+APP_JS = STATIC_DIR / "app.js"
+INDEX_HTML = STATIC_DIR / "index.html"
+STYLES_CSS = STATIC_DIR / "styles.css"
+
+
+def test_pre_specification_has_a_separate_navigation_view_and_two_search_tracks() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'data-view="prespec"' in html
+    assert 'id="prespecSection"' in html
+    assert 'id="prespecStoredForm"' in html
+    assert 'id="prespecStoredStatusFilter"' in html
+    assert 'id="prespecLiveForm"' in html
+    assert 'id="prespecLiveFromDate"' in html
+    assert 'id="prespecLiveToDate"' in html
+    assert 'id="prespecLiveLimit"' in html
+    assert 'apiRequest(`/pre-specifications?${params}`)' in source
+    assert 'apiRequest("/prespec-discovery/search"' in source
+    assert 'apiRequest("/prespec-discovery/save"' in source
+    assert 'span > 30' in source
+    assert 'els.prespecSection.hidden = !prespecView' in source
+
+
+def test_pre_specification_help_explains_boundaries_and_zero_openai_search() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'id="prespecHelpButton"' in html
+    assert 'id="prespecHelpDialog"' in html
+    for phrase in (
+        "입찰공고 전 단계",
+        "검색·저장 OpenAI 0회",
+        "선택 저장",
+        "분석은 별도 비용 승인",
+        "GO 판정 아님",
+    ):
+        assert phrase in html
+    assert "나라장터 API 0회 · OpenAI 0회" in html
+    assert "검색 결과는 저장되지 않으며" in html
+
+
+def test_pre_specification_cards_and_saved_detail_expose_required_facts_safely() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+
+    for phrase in ("의견마감", "예산", "첨부", "저장상태", "연결입찰"):
+        assert phrase in source
+    assert "preSpecificationAgency(record)" in source
+    assert "formatBudget(record.budgetAmount)" in source
+    assert "record.documentCount" in source
+    assert "record.alreadyStored" in source
+    assert "detail.linkedBidNoticeNos" in source
+    assert "escapeHtml(record.title)" in source
+    assert "escapeAttribute(record.registryNo)" in source
+    assert "safeHttpUrl(item?.safe_url)" in source
+    assert 'rel="noopener noreferrer"' in source
+
+
+def test_pre_specification_analysis_requires_explicit_cost_approval_and_bounded_polling() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+
+    for phrase in (
+        "문서당 최대 2회",
+        "사전규격 1건당 총 최대 10회",
+        "시간당 공유 quota",
+        "GO 판정이 아님",
+    ):
+        assert phrase in source
+    assert "window.confirm" in source
+    assert "manualAnalysisAuthHeaders()" in source
+    assert "body: JSON.stringify({ allow_openai: true })" in source
+    assert "PRESPEC_ANALYSIS_POLL_INTERVAL_MS = 3000" in source
+    assert "PRESPEC_ANALYSIS_MAX_POLLS = 40" in source
+    assert "PRESPEC_ANALYSIS_POLL_MAX_MS = 120000" in source
+    assert "Date.now() < deadline" in source
+    assert "for (let attempt = 1; attempt <= PRESPEC_ANALYSIS_MAX_POLLS" in source
+    assert "/analysis/${encodeURIComponent(analysisId)}" in source
+    assert "void pollPreSpecificationAnalysis" in source
+    assert "await pollPreSpecificationAnalysis" not in source
+    assert 'credentials: "same-origin"' in source
+    assert "X-PAI-LOOP-API-KEY" not in source
+
+
+def test_pre_specification_styles_distinguish_sources_and_cover_teams_mobile() -> None:
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert ".prespec-track--stored" in styles
+    assert ".prespec-track--live" in styles
+    assert ".prespec-card--live" in styles
+    assert ".prespec-help-dialog" in styles
+    assert ".prespec-detail-dialog" in styles
+    assert "body.teams-context .prespec-hero" in styles
+    assert "@media (max-width: 680px)" in styles
+    assert ".prespec-search-form--live { grid-template-columns: 1fr" in styles
+
+
+def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'href="./styles.css?v=20260824-operations1"' in html
+    assert 'src="./app.js?v=20260824-operations1"' in html
+
+
+def test_pre_specification_search_forms_use_card_safe_responsive_columns() -> None:
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert ".prespec-search-form:not(.prespec-search-form--live) .prespec-field--query" in styles
+    assert ".prespec-search-form--live .prespec-field--query { grid-column: 1 / -1; }" in styles
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles

@@ -232,6 +232,58 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/outcome-feedback/pps/refresh' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-daily-outcome-feedback-v1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ max_notices: 10, lookback_days: 730, max_pages_per_notice: 1, dry_run: false }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "daily-refresh-outcome-feedback",
+      "name": "Refresh PPS Outcome Feedback Fail-Soft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        1180
+      ],
+      "retryOnFail": false,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $json?.body && typeof $json.body === 'object' ? $json.body : $json;\nlet root = null;\ntry { root = $node['Validate Daily Continuation State'].json; } catch {}\nif (!root) { try { root = $node['Record Batch Analysis Skipped'].json; } catch {} }\nif (!root || typeof root !== 'object' || Array.isArray(root)) root = {};\nconst boundedInt = (value, max = 100000) => Number.isSafeInteger(value) && value >= 0 && value <= max ? value : null;\nconst safeText = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max && !/[\\u0000-\\u001f\\u007f]/.test(value) ? value : null;\nconst statuses = new Set(['COMPLETED','PARTIAL','FAILED']);\nconst itemResults = new Set(['CREATED','UPDATED','UNCHANGED','DRY_RUN_CREATE','DRY_RUN_UPDATE','NO_RESULT','REVIEW','SKIPPED','ERROR']);\nconst requiredCounts = ['requested_count','selected_count','processed_count','api_calls','fetched','exact_matches','created','updated','unchanged','review','skipped','errors'];\nconst counts = Object.fromEntries(requiredCounts.map((field) => [field, boundedInt(response?.[field])]));\nconst responseValid = Boolean(response && typeof response === 'object' && !Array.isArray(response) && statuses.has(response.status) && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(response.job_id ?? '')) && response.dry_run === false && response.openai_calls === 0 && requiredCounts.every((field) => counts[field] !== null) && counts.requested_count >= counts.selected_count && counts.selected_count >= counts.processed_count && Array.isArray(response.items) && response.items.length <= 25 && Array.isArray(response.warnings));\nlet outcomeFeedback;\nif (responseValid) {\n  const items = response.items.slice(0, 25).map((item) => {\n    const result = itemResults.has(item?.result) ? item.result : 'ERROR';\n    const warnings = Array.isArray(item?.warnings) ? item.warnings.map((value) => safeText(value, 500)).filter(Boolean).slice(0, 10) : [];\n    return { noticeKey: safeText(item?.notice_key, 160) ?? 'INVALID_NOTICE_KEY', bidNoticeNo: safeText(item?.bid_notice_no, 80), revisionNo: safeText(item?.revision_no, 40), result, outcomeStatus: ['WON','LOST'].includes(item?.outcome_status) ? item.outcome_status : null, outcomeKey: safeText(item?.outcome_key, 200), exactResultCount: boundedInt(item?.exact_result_count, 10000) ?? 0, apiCalls: boundedInt(item?.api_calls, 20) ?? 0, reasonCode: safeText(item?.reason_code, 80) ?? 'INVALID_ITEM_CONTRACT', warnings };\n  });\n  outcomeFeedback = { schemaVersion: 'pai-loop-pps-outcome-feedback-1.0.0', provider: 'PPS', status: response.status, available: true, requestAttempted: true, failSoft: response.status !== 'COMPLETED', dryRun: false, jobId: response.job_id, requestedCount: counts.requested_count, selectedCount: counts.selected_count, processedCount: counts.processed_count, apiCalls: counts.api_calls, fetched: counts.fetched, exactMatches: counts.exact_matches, created: counts.created, updated: counts.updated, unchanged: counts.unchanged, review: counts.review, skipped: counts.skipped, errors: counts.errors, openaiCalls: 0, items, warnings: response.warnings.map((value) => safeText(value, 500)).filter(Boolean).slice(0, 20), errorCode: response.status === 'FAILED' ? 'PPS_OUTCOME_ALL_FAILED' : null };\n} else {\n  outcomeFeedback = { schemaVersion: 'pai-loop-pps-outcome-feedback-1.0.0', provider: 'PPS', status: 'UNAVAILABLE', available: false, requestAttempted: true, failSoft: true, dryRun: false, jobId: null, requestedCount: 0, selectedCount: 0, processedCount: 0, apiCalls: 0, fetched: 0, exactMatches: 0, created: 0, updated: 0, unchanged: 0, review: 0, skipped: 0, errors: 1, openaiCalls: 0, items: [], warnings: ['PPS 낙찰 결과 자동 환류 요청을 완료하지 못했습니다. 브리핑은 계속 진행합니다.'], errorCode: 'PPS_OUTCOME_FEEDBACK_UNAVAILABLE' };\n}\nreturn [{ json: { ...root, outcomeFeedback } }];"
+      },
+      "id": "daily-normalize-outcome-feedback",
+      "name": "Normalize PPS Outcome Feedback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        1180
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "url": "={{ $node['Scheduled Runtime Gates'].json.runtime.apiBaseUrl + '/api/v1/operations/daily-briefing?days=7&limit=20' }}",
         "sendHeaders": true,
         "headerParameters": {
@@ -257,7 +309,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst retention = $node['Validate Seven-Day Retention Contract'].json.retention;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsAttempted: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet analysisBatch = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 10, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'unavailable' };\ntry { analysisBatch = $node['Verify Batch Analysis Aggregate Invariants'].json.analysisBatch; } catch {}\nif (analysisBatch.status === 'SKIPPED' && analysisBatch.skippedReason === 'unavailable') { try { analysisBatch = $node['Record Batch Analysis Skipped'].json.analysisBatch; } catch {} }\nlet awardRefresh = { status: 'SKIPPED', enabled: false, dryRun: true, selected: 0, attempted: 0, completed: 0, candidates: [], skippedReason: 'unavailable' };\ntry { awardRefresh = $node['Validate Award Refresh Batch'].json.awardRefresh; } catch {}\nif (awardRefresh.status === 'SKIPPED' && awardRefresh.skippedReason === 'unavailable') { try { awardRefresh = $node['Record Award Refresh Skipped'].json.awardRefresh; } catch {} }\nlet analysisOperation = null; try { analysisOperation = $node['Validate Daily Continuation State'].json.analysisOperation; } catch {} if (!analysisOperation) { try { analysisOperation = $node['Validate Daily Analysis Operation'].json.analysisOperation; } catch {} }\nconst analysisHttpCalls = Number(analysisBatch.chunksExecuted ?? 0);\nreturn [{ json: { ...body, runtime, retention, ingestion, analysisOperation, analysis_batch: analysisBatch, award_refresh: awardRefresh, source_calls: { backend: 5 + analysisHttpCalls + (analysisHttpCalls > 0 ? 1 : 0) + Number(awardRefresh.attempted ?? 0), pps: 1, awards: Number(awardRefresh.attempted ?? 0), openai: Number(analysisBatch.openaiCalls ?? 0), teams_mock_log: 0, teams: 0 } } }];"
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nif (!Array.isArray(body.notices)) throw new Error('daily briefing response must contain notices[]');\nconst runtime = $node['Scheduled Runtime Gates'].json.runtime;\nconst retention = $node['Validate Seven-Day Retention Contract'].json.retention;\nconst ingestion = $node['Validate PPS Ingestion Contract'].json.ingestion;\nconst emptyEnrichment = { requested: 0, attempted: 0, completed: 0, skipped: 0, failed: 0, attachmentsDiscovered: 0, attachmentsAttempted: 0, attachmentsProcessed: 0, openaiCalls: 0, warnings: [], available: false };\nlet analysisBatch = { status: 'SKIPPED', enabled: false, dryRun: true, enrichMissing: true, maxAttachmentsPerNotice: 10, requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, documentMaterialized: 0, evaluationsCreated: 0, snapshotsRefreshed: 0, openaiCalls: 0, enrichment: emptyEnrichment, noticeKeys: [], results: [], warnings: [], skippedReason: 'unavailable' };\ntry { analysisBatch = $node['Verify Batch Analysis Aggregate Invariants'].json.analysisBatch; } catch {}\nif (analysisBatch.status === 'SKIPPED' && analysisBatch.skippedReason === 'unavailable') { try { analysisBatch = $node['Record Batch Analysis Skipped'].json.analysisBatch; } catch {} }\nlet awardRefresh = { status: 'SKIPPED', enabled: false, dryRun: true, selected: 0, attempted: 0, completed: 0, candidates: [], skippedReason: 'unavailable' };\ntry { awardRefresh = $node['Validate Award Refresh Batch'].json.awardRefresh; } catch {}\nif (awardRefresh.status === 'SKIPPED' && awardRefresh.skippedReason === 'unavailable') { try { awardRefresh = $node['Record Award Refresh Skipped'].json.awardRefresh; } catch {} }\nlet outcomeFeedback = { schemaVersion: 'pai-loop-pps-outcome-feedback-1.0.0', provider: 'PPS', status: 'UNAVAILABLE', available: false, requestAttempted: true, failSoft: true, dryRun: false, jobId: null, requestedCount: 0, selectedCount: 0, processedCount: 0, apiCalls: 0, fetched: 0, exactMatches: 0, created: 0, updated: 0, unchanged: 0, review: 0, skipped: 0, errors: 1, openaiCalls: 0, items: [], warnings: ['PPS 낙찰 결과 자동 환류 결과를 사용할 수 없습니다.'], errorCode: 'PPS_OUTCOME_FEEDBACK_UNAVAILABLE' };\ntry { outcomeFeedback = $node['Normalize PPS Outcome Feedback'].json.outcomeFeedback; } catch {}\nlet analysisOperation = null; try { analysisOperation = $node['Validate Daily Continuation State'].json.analysisOperation; } catch {} if (!analysisOperation) { try { analysisOperation = $node['Validate Daily Analysis Operation'].json.analysisOperation; } catch {} }\nconst analysisHttpCalls = Number(analysisBatch.chunksExecuted ?? 0);\nreturn [{ json: { ...body, runtime, retention, ingestion, analysisOperation, analysis_batch: analysisBatch, award_refresh: awardRefresh, outcome_feedback: outcomeFeedback, source_calls: { backend: 6 + analysisHttpCalls + (analysisHttpCalls > 0 ? 1 : 0) + Number(awardRefresh.attempted ?? 0), pps: 1, awards: Number(awardRefresh.attempted ?? 0) + Number(outcomeFeedback.apiCalls ?? 0), outcome_feedback: 1, outcome_feedback_provider_calls: Number(outcomeFeedback.apiCalls ?? 0), openai: Number(analysisBatch.openaiCalls ?? 0), teams_mock_log: 0, teams: 0 } } }];"
       },
       "id": "daily-attach-live-context",
       "name": "Attach Live Runtime Contract",
@@ -358,6 +410,19 @@
         4300,
         700
       ]
+    },
+    {
+      "id": "daily-outcome-feedback-audit",
+      "name": "Attach Outcome Feedback Audit Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4420,
+        700
+      ],
+      "parameters": {
+        "jsCode": "const input = $json;\nconst manual = input.executionMode === 'manual-fixture';\nlet outcomeFeedback = { schemaVersion: 'pai-loop-pps-outcome-feedback-1.0.0', provider: 'PPS', status: 'SKIPPED', available: false, requestAttempted: false, failSoft: false, dryRun: true, jobId: null, requestedCount: 0, selectedCount: 0, processedCount: 0, apiCalls: 0, fetched: 0, exactMatches: 0, created: 0, updated: 0, unchanged: 0, review: 0, skipped: 0, errors: 0, openaiCalls: 0, items: [], warnings: [], errorCode: null, skippedReason: 'manual-fixture' };\nif (!manual) { try { outcomeFeedback = $node['Normalize PPS Outcome Feedback'].json.outcomeFeedback; } catch {} }\nif (!outcomeFeedback || !['SKIPPED','COMPLETED','PARTIAL','FAILED','UNAVAILABLE'].includes(outcomeFeedback.status)) throw new Error('outcome feedback audit status invalid');\nfor (const field of ['requestedCount','selectedCount','processedCount','apiCalls','fetched','exactMatches','created','updated','unchanged','review','skipped','errors','openaiCalls']) { const value = Number(outcomeFeedback[field] ?? 0); if (!Number.isSafeInteger(value) || value < 0) throw new Error(`outcome feedback ${field} invalid`); }\nif (Number(outcomeFeedback.openaiCalls) !== 0) throw new Error('outcome feedback must not call OpenAI');\nif (manual && (outcomeFeedback.status !== 'SKIPPED' || outcomeFeedback.requestAttempted !== false || outcomeFeedback.dryRun !== true || Number(outcomeFeedback.apiCalls) !== 0)) throw new Error('manual fixture must skip PPS outcome feedback');\nif (!manual && (outcomeFeedback.requestAttempted !== true || outcomeFeedback.dryRun !== false)) throw new Error('live outcome feedback audit contract invalid');\nconst externalCalls = { ...(input.externalCalls ?? {}), outcome_feedback: manual ? 0 : 1, outcome_feedback_provider_calls: manual ? 0 : Number(outcomeFeedback.apiCalls ?? 0) };\nreturn [{ json: { ...input, schemaVersion: '1.4', outcomeFeedback, externalCalls } }];"
+      }
     },
     {
       "parameters": {},
@@ -1068,7 +1133,7 @@
       "main": [
         [
           {
-            "node": "Fetch Ranked Seven-Day Briefing",
+            "node": "Refresh PPS Outcome Feedback Fail-Soft",
             "type": "main",
             "index": 0
           }
@@ -1175,6 +1240,28 @@
         [
           {
             "node": "Build Bounded Batch Analysis Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh PPS Outcome Feedback Fail-Soft": {
+      "main": [
+        [
+          {
+            "node": "Normalize PPS Outcome Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize PPS Outcome Feedback": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ranked Seven-Day Briefing",
             "type": "main",
             "index": 0
           }
@@ -1335,6 +1422,17 @@
       "main": [
         [
           {
+            "node": "Attach Outcome Feedback Audit Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Outcome Feedback Audit Summary": {
+      "main": [
+        [
+          {
             "node": "Ready for Operator Review",
             "type": "main",
             "index": 0
@@ -1408,7 +1506,7 @@
       "main": [
         [
           {
-            "node": "Fetch Ranked Seven-Day Briefing",
+            "node": "Refresh PPS Outcome Feedback Fail-Soft",
             "type": "main",
             "index": 0
           }
