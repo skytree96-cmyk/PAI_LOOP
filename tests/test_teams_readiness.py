@@ -11,6 +11,7 @@ from pai_loop.daily_analysis_scope import (
     MATERIAL_SCOPE_VERSION,
     material_scope_fields,
     material_scope_sha256,
+    source_analysis_scope_fields,
 )
 from pai_loop.models import IngestionJob, Notice
 
@@ -69,6 +70,8 @@ def _add_daily_parent(
     lease_started_at: datetime | None = None,
     source_ingestion_job_id: str | None = None,
     source_material_keys: list[str] | None = None,
+    source_analysis_keys: list[str] | None = None,
+    legacy_source_scope: bool = False,
 ) -> str:
     now = _now()
     config: dict[str, object] = {
@@ -87,6 +90,9 @@ def _add_daily_parent(
         config["lease_id"] = "11111111-1111-4111-8111-111111111111"
     if source_ingestion_job_id is not None:
         source_keys = sorted(source_material_keys or [])
+        analysis_keys = sorted(
+            source_keys if source_analysis_keys is None else source_analysis_keys
+        )
         config.update(
             {
                 "source_ingestion_job_id": source_ingestion_job_id,
@@ -96,6 +102,15 @@ def _add_daily_parent(
                 "source_material_notice_keys_sha256": material_scope_sha256(source_keys),
             }
         )
+        if not legacy_source_scope:
+            config.update(
+                {
+                    **source_analysis_scope_fields(analysis_keys, scoped_at=now),
+                    "source_analysis_excluded_notice_key_count": (
+                        len(source_keys) - len(analysis_keys)
+                    ),
+                }
+            )
     with client.app.state.session_factory() as session:
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
@@ -501,6 +516,174 @@ def test_bound_empty_parent_fails_exact_material_scope_coverage(
     )
     assert body["analysis"]["parent_job_id"] == parent_id
     assert body["ready"] is False
+
+
+def test_readiness_accepts_audited_non_analyzable_source_subset(
+    client: TestClient,
+) -> None:
+    active_key = "PPS-BOUND-ACTIVE"
+    expired_key = "PPS-BOUND-EXPIRED"
+    material_keys = [active_key, expired_key]
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=2,
+        matched=2,
+        material_keys=material_keys,
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[active_key],
+        child_outcomes={active_key: "COMPLETED"},
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=material_keys,
+        source_analysis_keys=[active_key],
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "READY",
+        "DAILY_ANALYSIS_COMPLETE",
+    )
+    assert body["analysis"]["parent_job_id"] == parent_id
+    assert body["analysis"]["planned"] == 1
+
+
+def test_readiness_accepts_audited_empty_analysis_subset(
+    client: TestClient,
+) -> None:
+    expired_key = "PPS-BOUND-ONLY-EXPIRED"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[expired_key],
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[],
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[expired_key],
+        source_analysis_keys=[],
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "READY",
+        "DAILY_ANALYSIS_COMPLETE",
+    )
+    assert body["analysis"]["parent_job_id"] == parent_id
+    assert body["analysis"]["planned"] == 0
+
+
+def test_readiness_rejects_forged_source_analysis_scope(
+    client: TestClient,
+) -> None:
+    key = "PPS-FORGED-ANALYSIS-SCOPE"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[key],
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[key],
+        child_outcomes={key: "COMPLETED"},
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[key],
+    )
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, parent_id)
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["source_analysis_notice_keys_sha256"] = "0" * 64
+        parent.request_json = config
+        session.commit()
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "DAILY_ANALYSIS_SCOPE_INVALID",
+    )
+
+
+def test_readiness_preserves_legacy_full_material_scope_contract(
+    client: TestClient,
+) -> None:
+    key = "PPS-LEGACY-FULL-SCOPE"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[key],
+    )
+    _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[key],
+        child_outcomes={key: "COMPLETED"},
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[key],
+        legacy_source_scope=True,
+    )
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "READY",
+        "DAILY_ANALYSIS_COMPLETE",
+    )
+
+
+def test_readiness_rejects_partial_source_analysis_audit(
+    client: TestClient,
+) -> None:
+    key = "PPS-PARTIAL-ANALYSIS-AUDIT"
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=1,
+        matched=1,
+        material_keys=[key],
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="COMPLETED",
+        notice_keys=[key],
+        child_outcomes={key: "COMPLETED"},
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=[key],
+        legacy_source_scope=True,
+    )
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, parent_id)
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["source_analysis_notice_keys"] = [key]
+        parent.request_json = config
+        session.commit()
+
+    body = _readiness(client)
+
+    assert (body["status"], body["reason_code"]) == (
+        "FAILED",
+        "DAILY_ANALYSIS_SCOPE_INVALID",
+    )
 
 
 def test_latest_ingestion_requires_its_own_bound_parent(

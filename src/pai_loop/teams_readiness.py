@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 from .analysis_api import _backfill_status
 from .auth import require_api_key
 from .daily_analysis_scope import (
+    SOURCE_ANALYSIS_ELIGIBILITY_POLICY,
     validated_material_scope,
+    validated_source_analysis_scope,
     validated_source_material_scope,
 )
 from .daily_operations import daily_briefing
@@ -376,10 +378,61 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
                 analysis=analysis,
             )
         parent_material_keys = validated_source_material_scope(parent_config)
+        analysis_scope_fields = (
+            "source_analysis_scope_version",
+            "source_analysis_notice_keys",
+            "source_analysis_notice_key_count",
+            "source_analysis_notice_keys_sha256",
+            "source_analysis_excluded_notice_key_count",
+            "source_analysis_eligibility_policy",
+            "source_analysis_scoped_at",
+        )
+        has_any_analysis_scope = any(
+            field in parent_config for field in analysis_scope_fields
+        )
+        has_all_analysis_scope = all(
+            field in parent_config for field in analysis_scope_fields
+        )
+        parent_analysis_keys = (
+            validated_source_analysis_scope(parent_config)
+            if has_all_analysis_scope
+            else parent_material_keys
+            if not has_any_analysis_scope
+            else None
+        )
+        excluded_count = parent_config.get(
+            "source_analysis_excluded_notice_key_count"
+        )
+        scoped_at_raw = parent_config.get("source_analysis_scoped_at")
+        try:
+            scoped_at = datetime.fromisoformat(str(scoped_at_raw))
+        except (TypeError, ValueError):
+            scoped_at = None
+        analysis_scope_valid = bool(
+            parent_material_keys is not None
+            and parent_analysis_keys is not None
+            and set(parent_analysis_keys).issubset(set(parent_material_keys))
+            and (
+                not has_any_analysis_scope
+                or (
+                    isinstance(excluded_count, int)
+                    and not isinstance(excluded_count, bool)
+                    and excluded_count
+                    == len(parent_material_keys) - len(parent_analysis_keys)
+                    and parent_config.get("source_analysis_eligibility_policy")
+                    == SOURCE_ANALYSIS_ELIGIBILITY_POLICY
+                    and scoped_at is not None
+                    and scoped_at.tzinfo is not None
+                )
+            )
+        )
         scope_covered = (
             parent_material_keys == ingestion_material_keys
-            and set(ingestion_material_keys).issubset(set(parent.notice_keys or []))
-            and analysis.planned >= len(ingestion_material_keys)
+            and analysis_scope_valid
+            and set(parent_analysis_keys or []).issubset(
+                set(parent.notice_keys or [])
+            )
+            and analysis.planned >= len(parent_analysis_keys or [])
         )
         if not scope_covered:
             return _response(

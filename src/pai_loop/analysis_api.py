@@ -18,9 +18,13 @@ from .auth import require_api_key
 from .daily_analysis_scope import (
     MATERIAL_SCOPE_VERSION,
     MAX_MATERIAL_NOTICE_KEYS,
+    SOURCE_ANALYSIS_ELIGIBILITY_POLICY,
     canonical_material_notice_keys,
     material_scope_sha256,
+    source_analysis_scope_fields,
     validated_material_scope,
+    validated_source_analysis_scope,
+    validated_source_material_scope,
 )
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
@@ -1015,6 +1019,52 @@ def _matching_active_backfill(
     return compatible[0] if compatible else None
 
 
+def _matching_terminal_daily_source_parent(
+    session: Session,
+    source_binding: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> IngestionJob | None:
+    """Reuse a terminal parent when the same immutable PPS audit is retried."""
+
+    source_ingestion_job_id = source_binding.get("source_ingestion_job_id")
+    if not isinstance(source_ingestion_job_id, str):
+        return None
+    expected_material_keys = source_binding.get("source_material_notice_keys")
+    candidates = list(
+        session.scalars(
+            select(IngestionJob)
+            .where(
+                IngestionJob.source == "ANALYSIS_BACKFILL",
+                IngestionJob.completed_at.is_not(None),
+            )
+            .order_by(IngestionJob.created_at)
+            .with_for_update()
+        ).all()
+    )
+    matches = []
+    for candidate in candidates:
+        config = (
+            candidate.request_json
+            if isinstance(candidate.request_json, dict)
+            else {}
+        )
+        if (
+            candidate.mode == ("DRY_RUN" if dry_run else "LIVE")
+            and config.get("queue_name") == "DAILY"
+            and bool(config.get("dry_run")) == dry_run
+            and config.get("source_ingestion_job_id") == source_ingestion_job_id
+            and validated_source_material_scope(config) == expected_material_keys
+        ):
+            matches.append(candidate)
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="multiple terminal DAILY parents are bound to the PPS audit",
+        )
+    return matches[0] if matches else None
+
+
 def _reserved_backfill_keys(
     session: Session,
     *,
@@ -1045,6 +1095,8 @@ def _reserved_backfill_keys(
 def _daily_source_binding(
     session: Session,
     payload: AnalysisBackfillPlanRequest,
+    *,
+    now: datetime,
 ) -> dict[str, Any]:
     if payload.source_ingestion_job_id is None:
         return {}
@@ -1070,13 +1122,169 @@ def _daily_source_binding(
             status_code=409,
             detail="DAILY source material scope does not match the PPS audit",
         )
+    notices = list(
+        session.scalars(
+            select(Notice).where(Notice.notice_key.in_(stored_keys))
+        ).all()
+    )
+    notices_by_key = {notice.notice_key: notice for notice in notices}
+    missing_keys = set(stored_keys) - set(notices_by_key)
+    if missing_keys:
+        raise HTTPException(
+            status_code=409,
+            detail="DAILY source material notice is missing from the database",
+        )
+    analysis_keys = _eligible_analysis_notice_keys(
+        session,
+        list(notices_by_key.values()),
+        now=now,
+    )
     return {
         "source_ingestion_job_id": source.id,
         "source_material_scope_version": MATERIAL_SCOPE_VERSION,
         "source_material_notice_keys": stored_keys,
         "source_material_notice_key_count": len(stored_keys),
         "source_material_notice_keys_sha256": material_scope_sha256(stored_keys),
+        **source_analysis_scope_fields(analysis_keys, scoped_at=now),
+        "source_analysis_excluded_notice_key_count": (
+            len(stored_keys) - len(analysis_keys)
+        ),
     }
+
+
+def _eligible_analysis_notice_keys(
+    session: Session,
+    notices: list[Notice],
+    *,
+    now: datetime,
+) -> set[str]:
+    eligible_notices = [
+        notice
+        for notice in notices
+        if notice.status == "OPEN" and _utc(notice.deadline) >= now
+    ]
+    cancelled_keys = authoritative_pps_cancelled_notice_keys(
+        session,
+        eligible_notices,
+    )
+    eligible_keys = {
+        notice.notice_key
+        for notice in eligible_notices
+        if notice.notice_key not in cancelled_keys
+    }
+    eligible_keys.difference_update(manual_only_notice_keys(session, eligible_keys))
+    return eligible_keys
+
+
+def _refresh_and_prune_daily_parent(
+    session: Session,
+    parent: IngestionJob,
+    config: dict[str, Any],
+    *,
+    now: datetime,
+    stale_cutoff: datetime,
+) -> bool:
+    """Drop only unclaimed ineligible work and refresh the bound source audit."""
+
+    if config.get("queue_name") != "DAILY" or parent.completed_at is not None:
+        return False
+    children = _backfill_children(session, parent.id)
+    protected_keys = _effective_terminal_keys(parent, children)
+    for child in children:
+        if child.status == "RUNNING" and _utc(child.created_at) >= stale_cutoff:
+            protected_keys.update(child.notice_keys or [])
+    candidate_keys = [
+        key for key in (parent.notice_keys or []) if key not in protected_keys
+    ]
+    candidate_notices = list(
+        session.scalars(
+            select(Notice).where(Notice.notice_key.in_(candidate_keys))
+        ).all()
+    )
+    eligible_keys = _eligible_analysis_notice_keys(
+        session,
+        candidate_notices,
+        now=now,
+    )
+    pruned_keys = set(candidate_keys) - eligible_keys
+    mutated = False
+    if pruned_keys:
+        parent.notice_keys = [
+            key for key in (parent.notice_keys or []) if key not in pruned_keys
+        ]
+        parent.matched = len(parent.notice_keys)
+        for field in ("work_tokens", "work_generations", "retry_tokens"):
+            raw = config.get(field)
+            if isinstance(raw, dict):
+                config[field] = {
+                    key: value
+                    for key, value in raw.items()
+                    if key not in pruned_keys
+                }
+        parent.warnings = sorted(
+            set(
+                [
+                    *(parent.warnings or []),
+                    f"INELIGIBLE_UNCLAIMED_PRUNED:{len(pruned_keys)}",
+                ]
+            )
+        )
+        mutated = True
+
+    source_material_keys = validated_source_material_scope(config)
+    if source_material_keys is not None:
+        source_notices = list(
+            session.scalars(
+                select(Notice).where(
+                    Notice.notice_key.in_(source_material_keys)
+                )
+            ).all()
+        )
+        if len({notice.notice_key for notice in source_notices}) != len(
+            source_material_keys
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="DAILY source material notice is missing from the database",
+            )
+        source_analysis_keys = _eligible_analysis_notice_keys(
+            session,
+            source_notices,
+            now=now,
+        )
+        excluded_count = len(source_material_keys) - len(source_analysis_keys)
+        stored_analysis_keys = validated_source_analysis_scope(config)
+        if (
+            stored_analysis_keys != canonical_material_notice_keys(
+                source_analysis_keys
+            )
+            or config.get("source_analysis_excluded_notice_key_count")
+            != excluded_count
+            or config.get("source_analysis_eligibility_policy")
+            != SOURCE_ANALYSIS_ELIGIBILITY_POLICY
+            or not isinstance(config.get("source_analysis_scoped_at"), str)
+        ):
+            config.update(
+                source_analysis_scope_fields(
+                    source_analysis_keys,
+                    scoped_at=now,
+                )
+            )
+            config["source_analysis_excluded_notice_key_count"] = excluded_count
+            if excluded_count:
+                parent.warnings = sorted(
+                    set(
+                        [
+                            *(parent.warnings or []),
+                            f"SOURCE_MATERIAL_NOT_ANALYZABLE:{excluded_count}",
+                        ]
+                    )
+                )
+            mutated = True
+    if mutated:
+        parent.request_json = config
+        session.flush()
+    return mutated
 
 
 def _select_backfill_notice_keys(
@@ -1103,15 +1311,16 @@ def _select_backfill_notice_keys(
         now=now,
         ttl_hours=payload.reservation_ttl_hours,
     )
-    manual_only = manual_only_notice_keys(
+    eligible_keys = _eligible_analysis_notice_keys(
         session,
-        (notice.notice_key for notice in notices),
+        notices,
+        now=now,
     )
     never_attempted: list[tuple[datetime, str]] = []
     retryable: list[tuple[datetime, str]] = []
     retry_cutoff = now - timedelta(hours=payload.retry_cooldown_hours)
     for notice in notices:
-        if notice.notice_key in reserved or notice.notice_key in manual_only:
+        if notice.notice_key in reserved or notice.notice_key not in eligible_keys:
             continue
         source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
         reason = public_analysis_reason(
@@ -1319,7 +1528,7 @@ def plan_analysis_backfill(
     """
 
     now = datetime.now(timezone.utc)
-    source_binding = _daily_source_binding(session, payload)
+    source_binding = _daily_source_binding(session, payload, now=now)
     parent: IngestionJob | None = None
     planner_mutated = False
     if payload.resume_job_id is not None:
@@ -1333,7 +1542,14 @@ def plan_analysis_backfill(
         if parent.status not in {"RUNNING", "PARTIAL", "COMPLETED"}:
             raise HTTPException(status_code=409, detail="analysis backfill cannot be resumed")
     else:
-        parent = _matching_active_backfill(session, payload, now=now)
+        if source_binding:
+            parent = _matching_terminal_daily_source_parent(
+                session,
+                source_binding,
+                dry_run=payload.dry_run,
+            )
+        if parent is None:
+            parent = _matching_active_backfill(session, payload, now=now)
 
     if parent is None and payload.resume_only:
         return AnalysisBackfillPlanResponse(
@@ -1374,17 +1590,15 @@ def plan_analysis_backfill(
                 now=now,
                 ttl_hours=payload.reservation_ttl_hours,
             )
-            eligible = set(
+            candidate_notices = list(
                 session.scalars(
-                    select(Notice.notice_key).where(
-                        Notice.notice_key.in_(payload.notice_keys),
-                        Notice.status == "OPEN",
-                        Notice.deadline >= now,
-                    )
+                    select(Notice).where(Notice.notice_key.in_(payload.notice_keys))
                 ).all()
             )
-            eligible.difference_update(
-                manual_only_notice_keys(session, eligible)
+            eligible = _eligible_analysis_notice_keys(
+                session,
+                candidate_notices,
+                now=now,
             )
             consumed_retry_keys = _completed_retry_epoch_keys(
                 session,
@@ -1468,6 +1682,16 @@ def plan_analysis_backfill(
             notice_keys=notice_keys,
             warnings=[
                 *(
+                    [
+                        "SOURCE_MATERIAL_NOT_ANALYZABLE:"
+                        f"{source_binding.get('source_analysis_excluded_notice_key_count', 0)}"
+                    ]
+                    if source_binding.get(
+                        "source_analysis_excluded_notice_key_count", 0
+                    )
+                    else []
+                ),
+                *(
                     [f"RETRY_KEYS_NOT_ELIGIBLE:{initial_rejected_retry_count}"]
                     if initial_rejected_retry_count
                     else []
@@ -1495,14 +1719,15 @@ def plan_analysis_backfill(
         old_remaining = [
             key for key in (parent.notice_keys or []) if key not in attempted
         ]
-        eligible = set(
+        candidate_notices = list(
             session.scalars(
-                select(Notice.notice_key).where(
-                    Notice.notice_key.in_(payload.notice_keys),
-                    Notice.status == "OPEN",
-                    Notice.deadline >= now,
-                )
+                select(Notice).where(Notice.notice_key.in_(payload.notice_keys))
             ).all()
+        )
+        eligible = _eligible_analysis_notice_keys(
+            session,
+            candidate_notices,
+            now=now,
         )
         incoming = [
             key
@@ -1540,6 +1765,18 @@ def plan_analysis_backfill(
                     [
                         *(parent.warnings or []),
                         f"RETRY_KEYS_NOT_ELIGIBLE:{rejected_retry_count}",
+                    ]
+                )
+            )
+        excluded_source_count = source_binding.get(
+            "source_analysis_excluded_notice_key_count", 0
+        )
+        if excluded_source_count:
+            parent.warnings = sorted(
+                set(
+                    [
+                        *(parent.warnings or []),
+                        f"SOURCE_MATERIAL_NOT_ANALYZABLE:{excluded_source_count}",
                     ]
                 )
             )
@@ -1602,11 +1839,11 @@ def plan_analysis_backfill(
     assert parent is not None  # database invariant
     config = dict(parent.request_json or {})
     if source_binding:
-        source_keys = set(source_binding["source_material_notice_keys"])
+        source_keys = set(source_binding["source_analysis_notice_keys"])
         if not source_keys.issubset(set(parent.notice_keys or [])):
             raise HTTPException(
                 status_code=409,
-                detail="DAILY parent does not cover the bound PPS material scope",
+                detail="DAILY parent does not cover the analyzable PPS material scope",
             )
     # v0.9.1 processes one notice per HTTP lease. This also safely migrates a
     # parent operation created by the older three-notice workflow contract.
@@ -1641,8 +1878,29 @@ def plan_analysis_backfill(
         and lease_started is not None
         and lease_started >= now - timedelta(hours=stale_after_hours)
     )
-    parent_generations = _parent_work_generations(parent)
     stale_cutoff = now - timedelta(hours=stale_after_hours)
+    if not lease_active and _refresh_and_prune_daily_parent(
+        session,
+        parent,
+        config,
+        now=now,
+        stale_cutoff=stale_cutoff,
+    ):
+        planner_mutated = True
+        config = dict(parent.request_json or {})
+    if (
+        parent.completed_at is None
+        and validated_source_material_scope(config) is not None
+    ):
+        stored_analysis_keys = validated_source_analysis_scope(config)
+        if stored_analysis_keys is None or not set(stored_analysis_keys).issubset(
+            set(parent.notice_keys or [])
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="DAILY parent analysis scope audit is invalid",
+            )
+    parent_generations = _parent_work_generations(parent)
     stale_children_cleaned = False
     for child in _backfill_children(session, parent.id):
         stale_children_cleaned = _terminalize_stale_analysis_child(
@@ -2147,6 +2405,15 @@ def run_notice_analysis_batch(
             session,
             requested_notices,
         )
+        inactive_automatic_keys = {
+            notice.notice_key
+            for notice in requested_notices
+            if payload.operation_id is not None
+            and (
+                notice.status != "OPEN"
+                or _utc(notice.deadline) < datetime.now(timezone.utc)
+            )
+        }
     if cancelled_keys:
         ordered_cancelled_keys = [
             notice_key
@@ -2159,6 +2426,19 @@ def run_notice_analysis_batch(
                 "code": "PPS_NOTICE_CANCELLED",
                 "message": "조달청에서 취소된 공고가 포함되어 분석 배치를 시작하지 않았습니다.",
                 "notice_keys": ordered_cancelled_keys,
+            },
+        )
+    if inactive_automatic_keys:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AUTOMATIC_NOTICE_NOT_ACTIVE",
+                "message": "종료되었거나 비활성인 공고는 자동 분석하지 않습니다.",
+                "notice_keys": [
+                    notice_key
+                    for notice_key in payload.notice_keys
+                    if notice_key in inactive_automatic_keys
+                ],
             },
         )
     job_id, stored_response = _create_batch_job(request, payload)

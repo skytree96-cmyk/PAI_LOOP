@@ -44,7 +44,7 @@ class Settings:
     public_read_only: bool = False
     public_manual_analysis_enabled: bool = False
     public_manual_analysis_token: str | None = None
-    public_manual_analysis_hourly_limit: int = 12
+    public_manual_analysis_hourly_limit: int = 1
     public_manual_analysis_cooldown_hours: int = 24
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-luna"
@@ -78,7 +78,7 @@ class Settings:
             ),
             public_manual_analysis_hourly_limit=_bounded_int(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"),
-                default=12,
+                default=1,
                 minimum=1,
                 maximum=30,
             ),
