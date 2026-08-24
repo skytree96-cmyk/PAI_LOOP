@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,10 @@ router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
 _PUBLIC_MANUAL_LOCK_KEY = 0x5041494D  # "PAIM"
 _PUBLIC_MANUAL_PROCESS_LOCK = threading.Lock()
 _NON_ATTEMPT_REQUEST_COOLDOWN = timedelta(minutes=5)
+_PIN_FAILURE_LOCK = threading.Lock()
+_PIN_FAILURE_WINDOW_SECONDS = 10 * 60
+_PIN_FAILURES_PER_CLIENT = 5
+_PIN_FAILURES_GLOBAL = 20
 
 
 def _utc(value: datetime) -> datetime:
@@ -172,7 +177,39 @@ def _require_manual_operator(request: Request) -> None:
         else ""
     )
     supplied = request.headers.get("x-pai-manual-token", "")
-    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+    client_key = str(request.client.host if request.client else "unknown")[:128]
+    now = time.monotonic()
+    valid = bool(
+        expected
+        and supplied
+        and secrets.compare_digest(supplied, expected)
+    )
+    with _PIN_FAILURE_LOCK:
+        failures = list(getattr(request.app.state, "manual_pin_failures", []))
+        failures = [
+            item
+            for item in failures
+            if now - float(item[0]) < _PIN_FAILURE_WINDOW_SECONDS
+        ]
+        if valid:
+            request.app.state.manual_pin_failures = [
+                item for item in failures if item[1] != client_key
+            ]
+        else:
+            client_failures = sum(1 for _, key in failures if key == client_key)
+            if (
+                client_failures >= _PIN_FAILURES_PER_CLIENT
+                or len(failures) >= _PIN_FAILURES_GLOBAL
+            ):
+                request.app.state.manual_pin_failures = failures
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="운영 PIN 확인 실패가 반복되어 잠시 잠겼습니다.",
+                    headers={"Retry-After": str(_PIN_FAILURE_WINDOW_SECONDS)},
+                )
+            failures.append((now, client_key))
+            request.app.state.manual_pin_failures = failures
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="분석 실행 키를 확인해 주세요.",
@@ -422,7 +459,10 @@ def request_manual_notice_analysis(
                     message=f"최근 분석을 재사용했습니다. {retry_at.isoformat()} 이후 재분석할 수 있습니다.",
                 )
 
-        if len(recent_jobs) >= settings.public_manual_analysis_hourly_limit:
+        if (
+            settings.public_manual_analysis_hourly_limit > 0
+            and len(recent_jobs) >= settings.public_manual_analysis_hourly_limit
+        ):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="시간당 수동 분석 한도에 도달했습니다. 자동 분석 큐 또는 다음 시간대를 이용해 주세요.",
@@ -432,7 +472,7 @@ def request_manual_notice_analysis(
         # Idempotent reads above remain available even during an upstream
         # provider outage.  A provider credential is required only when this
         # request is about to reserve quota and start a new analysis batch.
-        if not settings.openai_api_key and not evaluation_only:
+        if not settings.extraction_configured and not evaluation_only:
             raise HTTPException(status_code=503, detail="분석 서비스 설정을 확인해 주세요.")
 
         request_id = _reserve_manual_job(

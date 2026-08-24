@@ -29,8 +29,35 @@ def test_manual_operator_token_requires_exactly_four_ascii_digits() -> None:
     assert Settings(public_manual_analysis_token="1234").public_manual_analysis_token_valid is True
 
 
-def test_manual_analysis_default_cost_cap_is_one_call_per_hour() -> None:
-    assert Settings().public_manual_analysis_hourly_limit == 1
+def test_n8n_claude_selection_reuses_server_boundary_without_openai_key() -> None:
+    settings = Settings(
+        api_key="server-boundary-key",
+        openai_api_key=None,
+        llm_provider="n8n_claude",
+        llm_gateway_base_url="https://n8n.example/webhook/pai-loop-claude",
+        claude_model="claude-sonnet-4-6",
+    )
+
+    assert settings.extraction_configured is True
+    assert settings.extraction_api_key == "server-boundary-key"
+    assert settings.extraction_model == "claude-sonnet-4-6"
+    settings.validate_security()
+
+
+def test_n8n_claude_model_must_match_gateway_contract() -> None:
+    settings = Settings(
+        api_key="server-boundary-key",
+        llm_provider="n8n_claude",
+        llm_gateway_base_url="https://n8n.example/webhook/pai-loop-claude",
+        claude_model="typo-model",
+    )
+
+    with pytest.raises(RuntimeError, match="gateway contract"):
+        settings.validate_security()
+
+
+def test_manual_analysis_default_hourly_quota_is_disabled() -> None:
+    assert Settings().public_manual_analysis_hourly_limit == 0
 
 
 def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
@@ -44,7 +71,7 @@ def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
         "key": "PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN",
         "sync": False,
     }
-    assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "1"
+    assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "0"
 
 
 def test_production_security_rejects_synthetic_and_unguarded_manual_analysis() -> None:

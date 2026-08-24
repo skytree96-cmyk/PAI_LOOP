@@ -23,6 +23,7 @@ from .migrations import apply_additive_migrations
 from .manual_analysis import router as manual_analysis_router
 from .outcomes_api import router as bid_outcomes_router
 from .outcome_feedback import router as outcome_feedback_router
+from .operator_decisions import router as operator_decisions_router
 from .performance_records import router as performance_records_router
 from .prespec_api import router as prespec_router
 from .pps_discovery import router as pps_discovery_router
@@ -52,6 +53,9 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             public_manual_analysis_cooldown_hours=settings.public_manual_analysis_cooldown_hours,
             openai_api_key=settings.openai_api_key,
             openai_model=settings.openai_model,
+            llm_provider=settings.llm_provider,
+            llm_gateway_base_url=settings.llm_gateway_base_url,
+            claude_model=settings.claude_model,
             pps_api_key=settings.pps_api_key,
             pps_base_url=settings.pps_base_url,
             pps_notice_operation=settings.pps_notice_operation,
@@ -123,6 +127,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(outcome_feedback_router)
     application.include_router(performance_records_router)
     application.include_router(result_learning_router)
+    application.include_router(operator_decisions_router)
     application.include_router(manual_analysis_router)
     application.include_router(pps_discovery_router)
     application.include_router(prespec_router)

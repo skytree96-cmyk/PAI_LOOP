@@ -44,6 +44,7 @@
     departmentCatalog: null,
     accessMode: "UNKNOWN",
     writeControlsEnabled: true,
+    operatorDecisionEnabled: false,
     manualAnalysisEnabled: false,
     manualAnalysisAuthRequired: false,
     manualAnalysisToken: "",
@@ -573,18 +574,26 @@
       profile.manual_analysis_policy,
       profile.manualAnalysisPolicy,
     );
+    state.operatorDecisionEnabled = booleanValue(
+      firstValue(profile.operator_decisions_enabled, profile.operatorDecisionsEnabled),
+    ) ?? state.manualAnalysisEnabled;
     const readOnly = !state.writeControlsEnabled;
+    const decisionWritable = canWriteDecision();
     els.replayButton.disabled = readOnly;
     els.replayButton.title = readOnly ? "공개 읽기 전용 화면에서는 서버 작업을 실행하지 않습니다." : "";
     els.teamsMockSendButton.disabled = readOnly;
     els.clearTeamsLogsButton.disabled = readOnly;
-    els.decisionInputs.forEach((input) => { input.disabled = readOnly; });
-    els.toggleCommentButton.disabled = readOnly;
-    els.decisionComment.disabled = readOnly;
-    if (readOnly) {
+    els.decisionInputs.forEach((input) => { input.disabled = !decisionWritable; });
+    els.toggleCommentButton.disabled = !decisionWritable;
+    els.decisionComment.disabled = !decisionWritable;
+    if (!decisionWritable) {
       els.saveDecisionButton.disabled = true;
       els.saveDecisionButton.textContent = "사내 로그인 후 저장 가능";
     }
+  }
+
+  function canWriteDecision() {
+    return Boolean(state.writeControlsEnabled || state.operatorDecisionEnabled);
   }
 
   function finishLoading() {
@@ -627,6 +636,9 @@
           : await response.text();
 
       if (!response.ok) {
+        if (response.status === 401 && headers.has("X-PAI-Manual-Token")) {
+          clearManualAnalysisToken();
+        }
         const message = payload?.detail || payload?.message || (typeof payload === "string" ? payload : "") || `HTTP ${response.status}`;
         const requestError = new Error(message);
         requestError.status = response.status;
@@ -1077,7 +1089,7 @@
       ${candidate.directContractSignal ? '<p class="pps-candidate__warning">수의계약 신호가 있어 저장 전 원문 확인이 필요합니다.</p>' : ""}
       ${candidate.saveBlockReason ? `<p class="pps-candidate__warning">${escapeHtml(candidate.saveBlockReason)}</p>` : ""}
       <footer>${sourceLink}<span class="pps-candidate__actions">${detailLink}${analysisButton}${saveButton}</span></footer>
-      <small class="pps-candidate__cost">${stored ? (canAnalyze ? "분석·판단 실행 시 공개 첨부 분석 · 비용 발생 가능" : "저장된 공고 상세 링크") : "저장만으로 OpenAI 0회"}</small>
+      <small class="pps-candidate__cost">${stored ? (canAnalyze ? "분석·판단 실행 시 공개 첨부를 Claude로 분석" : "저장된 공고 상세 링크") : "저장만으로 AI 모델 0회"}</small>
     </article>`;
   }
 
@@ -1110,7 +1122,7 @@
     if (!candidate.saveable || candidate.alreadyStored || !candidate.selectionKey) return;
     const savingKey = candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`;
     if (state.ppsDiscovery.saving.has(savingKey)) return;
-    const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 OpenAI 호출은 시작되지 않습니다.\n\n저장할까요?`);
+    const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다.\n\n저장할까요?`);
     if (!confirmed) return;
     state.ppsDiscovery.saving.add(savingKey);
     renderPpsDiscovery();
@@ -1620,7 +1632,7 @@
       <p>${escapeHtml(preSpecificationAgency(record))}</p>
       <dl><div><dt>의견마감</dt><dd>${escapeHtml(formatShortDateTime(record.opinionDeadline))}</dd></div><div><dt>예산</dt><dd>${escapeHtml(formatBudget(record.budgetAmount))}</dd></div><div><dt>첨부</dt><dd>${escapeHtml(documentLabel)}</dd></div><div><dt>저장상태</dt><dd>${stored ? "PAI LOOP 저장됨" : "미저장"}</dd></div></dl>
       <div class="prespec-linked ${record.linkedBidNoticeNos.length ? "is-linked" : ""}">${escapeHtml(linkedLabel)}</div>
-      <footer><small>${source === "stored" ? "저장 DB · PPS 0 · OpenAI 0" : "나라장터 조회 · OpenAI 0"}</small>${action}</footer>
+      <footer><small>${source === "stored" ? "저장 DB · PPS 0 · AI 모델 0" : "나라장터 조회 · AI 모델 0"}</small>${action}</footer>
     </article>`;
   }
 
@@ -1682,7 +1694,7 @@
     const stored = state.prespec.stored;
     els.prespecStoredSubmitButton.disabled = stored.loading;
     if (stored.loading) {
-      els.prespecStoredSummary.textContent = "저장 DB를 검색하고 있습니다. PPS 0회 · OpenAI 0회";
+      els.prespecStoredSummary.textContent = "저장 DB를 검색하고 있습니다. PPS 0회 · AI 모델 0회";
       els.prespecStoredState.hidden = false;
       els.prespecStoredState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>저장 DB를 확인하고 있습니다</strong>';
     } else if (stored.error) {
@@ -1690,12 +1702,12 @@
       els.prespecStoredState.hidden = false;
       els.prespecStoredState.innerHTML = `<strong>저장된 사전규격을 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(stored.error))}</p>`;
     } else if (stored.loaded && !stored.records.length) {
-      els.prespecStoredSummary.textContent = "조건에 맞는 저장 사전규격이 없습니다. PPS 0회 · OpenAI 0회";
+      els.prespecStoredSummary.textContent = "조건에 맞는 저장 사전규격이 없습니다. PPS 0회 · AI 모델 0회";
       els.prespecStoredState.hidden = false;
       els.prespecStoredState.innerHTML = "<strong>저장 결과가 없습니다</strong><p>나라장터 사전규격 검색에서 필요한 건을 선택 저장할 수 있습니다.</p>";
     } else {
       els.prespecStoredSummary.textContent = stored.loaded
-        ? `저장 DB ${formatNumber(stored.records.length)}건${stored.truncated ? " · 표시 상한 도달" : ""} · PPS 0회 · OpenAI 0회`
+        ? `저장 DB ${formatNumber(stored.records.length)}건${stored.truncated ? " · 표시 상한 도달" : ""} · PPS 0회 · AI 모델 0회`
         : "저장된 사전규격을 불러오는 중입니다.";
       els.prespecStoredState.hidden = Boolean(stored.records.length);
     }
@@ -1763,7 +1775,7 @@
     els.prespecLiveSearchButton.disabled = live.loading;
     if (live.loading) {
       els.prespecLiveSearchButton.innerHTML = '<span class="button-spinner" aria-hidden="true"></span>검색 중';
-      els.prespecLiveSummary.textContent = "나라장터 사전규격을 조회하고 있습니다. OpenAI 0회";
+      els.prespecLiveSummary.textContent = "나라장터 사전규격을 조회하고 있습니다. AI 모델 0회";
       els.prespecLiveState.hidden = false;
       els.prespecLiveState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>나라장터를 조회하고 있습니다</strong><p>검색 결과는 자동 저장되지 않습니다.</p>';
     } else {
@@ -1773,11 +1785,11 @@
         els.prespecLiveState.hidden = false;
         els.prespecLiveState.innerHTML = `<strong>검색 결과를 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(live.error))}</p>`;
       } else if (live.searched && !live.records.length) {
-        els.prespecLiveSummary.textContent = `검색 결과 0건 · 나라장터 ${formatNumber(live.apiCalls)}회 · OpenAI 0회`;
+        els.prespecLiveSummary.textContent = `검색 결과 0건 · 나라장터 ${formatNumber(live.apiCalls)}회 · AI 모델 0회`;
         els.prespecLiveState.hidden = false;
         els.prespecLiveState.innerHTML = "<strong>검색 결과가 없습니다</strong><p>검색어 또는 최대 31일의 등록 기간을 바꿔 보세요.</p>";
       } else if (live.searched) {
-        els.prespecLiveSummary.textContent = `검색 결과 ${formatNumber(live.records.length)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · OpenAI 0회${live.truncated ? " · 일부 결과" : ""}`;
+        els.prespecLiveSummary.textContent = `검색 결과 ${formatNumber(live.records.length)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · AI 모델 0회${live.truncated ? " · 일부 결과" : ""}`;
         els.prespecLiveState.hidden = true;
       } else {
         els.prespecLiveSummary.textContent = "버튼을 누르기 전에는 나라장터 API를 호출하지 않습니다.";
@@ -1822,7 +1834,7 @@
       }));
       record.alreadyStored = true;
       state.prespec.details.delete(registryNo);
-      showToast("사전규격 저장 완료", `${record.title} · ${stringValue(response.outcome, "저장됨")} · OpenAI 0회`, "success");
+      showToast("사전규격 저장 완료", `${record.title} · ${stringValue(response.outcome, "저장됨")} · AI 모델 0회`, "success");
       await loadStoredPreSpecifications({ force: true });
       await openPreSpecificationDetail(registryNo, { force: true });
     } catch (error) {
@@ -1929,14 +1941,14 @@
     const documentsProcessed = numberOrNull(response?.documents_processed) ?? 0;
     const openaiCalls = numberOrNull(response?.openai_calls) ?? 0;
     const message = stringValue(response?.message) || (detail.analysis ? "저장된 최신 분석 상태입니다." : "분석은 자동 실행되지 않습니다. 필요할 때만 비용 상한을 확인하고 실행하세요.");
-    els.prespecAnalysisStatus.innerHTML = `<div class="prespec-analysis-status ${polling ? "is-polling" : ""}">${polling ? '<span class="spinner" aria-hidden="true"></span>' : ""}<div><strong>${escapeHtml(preSpecificationAnalysisLabel(statusValue))}</strong><p>${escapeHtml(message)}</p><small>문서 ${formatNumber(documentsProcessed)}/${formatNumber(documentsTotal)} · OpenAI ${formatNumber(openaiCalls)}회${polling ? ` · 상태 확인 ${formatNumber(active.polls)}/${PRESPEC_ANALYSIS_MAX_POLLS}` : ""}</small></div></div>`;
+    els.prespecAnalysisStatus.innerHTML = `<div class="prespec-analysis-status ${polling ? "is-polling" : ""}">${polling ? '<span class="spinner" aria-hidden="true"></span>' : ""}<div><strong>${escapeHtml(preSpecificationAnalysisLabel(statusValue))}</strong><p>${escapeHtml(message)}</p><small>문서 ${formatNumber(documentsProcessed)}/${formatNumber(documentsTotal)} · Claude ${formatNumber(openaiCalls)}회${polling ? ` · 상태 확인 ${formatNumber(active.polls)}/${PRESPEC_ANALYSIS_MAX_POLLS}` : ""}</small></div></div>`;
     const completed = detail.analysis?.status === "COMPLETED" || ["COMPLETED", "ALREADY_ANALYZED"].includes(statusValue);
     els.prespecAnalysisButton.disabled = state.prespec.detailLoading || polling || completed;
     els.prespecAnalysisButton.textContent = completed ? "분석 결과 저장됨" : polling ? "분석 처리 중" : detail.analysis ? "문서 다시 분석" : "문서 분석 실행";
   }
 
   function confirmPreSpecificationAnalysis(detail) {
-    return window.confirm(`${detail.title}\n\nOpenAI 비용을 사용할 수 있는 사전규격 문서 분석입니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 공고 수동 분석과 시간당 공유 quota 사용\n- 결과는 요구조건 구조화이며 GO 판정이 아님\n\n비용 사용을 승인하고 분석을 시작할까요?`);
+    return window.confirm(`${detail.title}\n\nn8n의 Claude로 사전규격 문서를 분석합니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 시간당 총량 제한 없음(중복 실행 잠금·공고별 재시도 대기는 유지)\n- 결과는 요구조건 구조화이며 GO 판정이 아님\n\n분석을 시작할까요?`);
   }
 
   async function requestPreSpecificationAnalysis() {
@@ -2377,7 +2389,10 @@
       showToast("업무 구분 확인 필요", "용역·물품·공사·외자 중 하나 이상을 선택해 주세요.", "warning");
       return;
     }
-    const estimatedCalls = Math.ceil((span + 1) / 30) * scopes.length;
+    // PPS calls this a one-month bound, but a 30-day inclusive range that
+    // crosses February is rejected.  Keep the browser-side estimate aligned
+    // with the server's universally safe 28-day windows.
+    const estimatedCalls = Math.ceil((span + 1) / 28) * scopes.length;
     if (estimatedCalls > 60) {
       showToast("조회 범위가 너무 큽니다", "기간이나 업무 구분을 줄여 주세요. 한 번의 조회는 최대 60회 API 호출로 제한됩니다.", "warning");
       return;
@@ -3057,8 +3072,8 @@
       const stored = state.prespec.stored.records.length;
       const live = state.prespec.live;
       els.dataSourceLabel.textContent = live.searched
-        ? `사전규격 · 저장 DB ${formatNumber(stored)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · OpenAI 0회`
-        : `사전규격 저장 DB ${formatNumber(stored)}건 · 저장 검색 PPS 0회 · OpenAI 0회`;
+        ? `사전규격 · 저장 DB ${formatNumber(stored)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · AI 모델 0회`
+        : `사전규격 저장 DB ${formatNumber(stored)}건 · 저장 검색 PPS 0회 · AI 모델 0회`;
       return;
     }
     if (state.currentView === "closed") {
@@ -3368,8 +3383,8 @@
       ? `현재 남은 첨부 ${formatNumber(pending)}개`
       : `첨부 목록 재확인(서버 상한 ${formatNumber(policyMax)}개)`;
     const usage = evaluationOnly
-      ? "현재 첨부 감사가 완료되어 OpenAI 요청 없이 저장된 근거로 판단만 실행합니다."
-      : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 절대 상한은 OpenAI 요청 ${formatNumber(policyMax * 2)}회입니다. 이미 감사됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
+      ? "현재 첨부 감사가 완료되어 Claude 요청 없이 저장된 근거로 판단만 실행합니다."
+      : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 절대 상한은 Claude 요청 ${formatNumber(policyMax * 2)}회입니다. 이미 감사됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
     return window.confirm(
       `${notice.title}\n\n모든 공개 첨부를 확인한 뒤 자격·정량 판단을 갱신합니다.\n${usage}\n\n분석을 시작할까요?`,
     );
@@ -3383,11 +3398,32 @@
   async function manualAnalysisAuthHeaders() {
     if (!state.manualAnalysisAuthRequired) return {};
     if (!state.manualAnalysisToken) {
+      try {
+        state.manualAnalysisToken = window.sessionStorage.getItem("pai-loop-operator-pin") || "";
+      } catch (_) {
+        state.manualAnalysisToken = "";
+      }
+    }
+    if (!state.manualAnalysisToken) {
       const supplied = await requestManualAnalysisToken();
       if (!supplied?.trim()) return null;
       state.manualAnalysisToken = supplied.trim();
+      try {
+        window.sessionStorage.setItem("pai-loop-operator-pin", state.manualAnalysisToken);
+      } catch (_) {
+        // A private or policy-restricted browser may disable session storage.
+      }
     }
     return { "X-PAI-Manual-Token": state.manualAnalysisToken };
+  }
+
+  function clearManualAnalysisToken() {
+    state.manualAnalysisToken = "";
+    try {
+      window.sessionStorage.removeItem("pai-loop-operator-pin");
+    } catch (_) {
+      // Keep the in-memory clear effective even when storage is unavailable.
+    }
   }
 
   function requestManualAnalysisToken() {
@@ -3715,6 +3751,9 @@
       ? { ...existing.raw, ...detail.raw, notice_key: noticeKey }
       : { ...detail.raw, notice_key: noticeKey };
     if (existing) {
+      if (!detail.decisions.length && existing.raw.decisions) {
+        mergedSource.decisions = existing.raw.decisions;
+      }
       if (!detail.departmentRanking && existing.raw.department_ranking) {
         mergedSource.department_ranking = existing.raw.department_ranking;
       }
@@ -3732,6 +3771,36 @@
     if (existingIndex >= 0) state.notices[existingIndex] = hydrated;
     else state.notices.push(hydrated);
     return hydrated;
+  }
+
+  async function hydrateOperatorDecisions(notice) {
+    if (
+      state.source !== "api"
+      || state.writeControlsEnabled
+      || !state.operatorDecisionEnabled
+      || !notice?.noticeKey
+    ) return notice;
+    let storedToken = "";
+    try {
+      storedToken = window.sessionStorage.getItem("pai-loop-operator-pin") || "";
+    } catch (_) {
+      storedToken = state.manualAnalysisToken;
+    }
+    if (!storedToken) return notice;
+    state.manualAnalysisToken = storedToken;
+    try {
+      const decisions = arrayValue(await apiRequest(
+        `/operator-decisions/notices/${encodeURIComponent(notice.noticeKey)}`,
+        { headers: { "X-PAI-Manual-Token": storedToken } },
+      ));
+      const merged = normalizeNotice({ ...notice.raw, decisions });
+      const index = state.notices.findIndex((item) => item.noticeKey === notice.noticeKey);
+      if (index >= 0) state.notices[index] = merged;
+      return merged;
+    } catch (error) {
+      if (error?.status === 401 || error?.status === 429) clearManualAnalysisToken();
+      return notice;
+    }
   }
 
   async function openDetail(noticeKey, trigger = null, { updateRoute = true } = {}) {
@@ -3762,12 +3831,15 @@
 
     if (updateRoute) updateNoticeRoute(noticeKey);
     if (baseNotice.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
-    if (state.source !== "api" || hydratedFromRoute) return;
+    if (state.source !== "api") return;
 
     state.detailLoading = true;
     els.drawerLoading.hidden = false;
     try {
-      const merged = await hydrateNoticeByKey(noticeKey, { force: true });
+      let merged = hydratedFromRoute
+        ? baseNotice
+        : await hydrateNoticeByKey(noticeKey, { force: true });
+      merged = await hydrateOperatorDecisions(merged);
       state.selectedNotice = merged;
       renderDetail(merged);
       if (merged.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
@@ -4856,8 +4928,8 @@
       showToast("취소 공고입니다", "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다.", "warning");
       return;
     }
-    if (!state.writeControlsEnabled) {
-      showToast("읽기 전용 화면입니다", "담당자 판단은 사내 로그인 환경에서만 저장할 수 있습니다.", "warning");
+    if (!canWriteDecision()) {
+      showToast("판단 저장 권한이 없습니다", "사내 로그인 또는 데모 운영 PIN이 필요합니다.", "warning");
       return;
     }
     if (notice.analysisState !== "EVALUATED") {
@@ -4874,7 +4946,7 @@
     const cancelled = isCancelledNotice(notice);
     els.decisionInputs.forEach((input) => {
       input.checked = notice.decision === input.value || (notice.decision === "CONDITIONAL_GO" && input.value === "HOLD");
-      input.disabled = cancelled || !analyzed || !state.writeControlsEnabled;
+      input.disabled = cancelled || !analyzed || !canWriteDecision();
     });
     els.decisionComment.value = notice.decisionComment;
     els.commentCount.textContent = String(notice.decisionComment.length);
@@ -4895,8 +4967,8 @@
     } else {
       els.decisionExisting.textContent = "아직 결정되지 않았습니다.";
     }
-    els.toggleCommentButton.disabled = cancelled || !analyzed || !state.writeControlsEnabled;
-    els.decisionComment.disabled = cancelled || !state.writeControlsEnabled;
+    els.toggleCommentButton.disabled = cancelled || !analyzed || !canWriteDecision();
+    els.decisionComment.disabled = cancelled || !canWriteDecision();
     updateDecisionButton();
   }
 
@@ -4980,12 +5052,14 @@
     const selected = els.decisionInputs.some((input) => input.checked);
     const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(state.selectedNotice);
-    els.saveDecisionButton.disabled = cancelled || !state.writeControlsEnabled || !selected || !state.selectedNotice || !analyzed;
+    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !selected || !state.selectedNotice || !analyzed;
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
-      : !state.writeControlsEnabled
+      : !canWriteDecision()
       ? "사내 로그인 후 저장 가능"
-      : analyzed ? "판단 저장" : "분석 완료 후 저장 가능";
+      : analyzed
+      ? (state.writeControlsEnabled ? "판단 저장" : "운영 PIN으로 판단 저장")
+      : "분석 완료 후 저장 가능";
   }
 
   async function saveDecision(event) {
@@ -4996,8 +5070,8 @@
       showToast("취소 공고입니다", "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다.", "warning");
       return;
     }
-    if (!state.writeControlsEnabled) {
-      showToast("읽기 전용 화면입니다", "담당자 판단은 사내 로그인 환경에서만 저장할 수 있습니다.", "warning");
+    if (!canWriteDecision()) {
+      showToast("판단 저장 권한이 없습니다", "사내 로그인 또는 데모 운영 PIN이 필요합니다.", "warning");
       return;
     }
     const decision = els.decisionInputs.find((input) => input.checked)?.value;
@@ -5009,6 +5083,7 @@
     const comment = els.decisionComment.value.trim();
     const rationale = comment || `${DECISION_LABELS[decision]} 판단을 기록했습니다.`;
     const payload = {
+      evaluation_id: notice.evaluationId,
       choice: decision,
       actor_label: DECIDER_NAME,
       rationale,
@@ -5021,8 +5096,17 @@
     try {
       let result = null;
       if (state.source === "api") {
-        result = await apiRequest(`/notices/${encodeURIComponent(notice.noticeKey)}/decisions`, {
+        const operatorHeaders = state.writeControlsEnabled ? {} : await manualAnalysisAuthHeaders();
+        if (!operatorHeaders) {
+          showToast("판단 저장 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
+          return;
+        }
+        const path = state.writeControlsEnabled
+          ? `/notices/${encodeURIComponent(notice.noticeKey)}/decisions`
+          : `/operator-decisions/notices/${encodeURIComponent(notice.noticeKey)}`;
+        result = await apiRequest(path, {
           method: "POST",
+          headers: operatorHeaders,
           body: JSON.stringify(payload),
         });
       }
@@ -5047,6 +5131,7 @@
         state.source === "demo" ? "warning" : "success",
       );
     } catch (error) {
+      if (error?.status === 401) state.manualAnalysisToken = "";
       showToast("판단 저장 실패", humanizeError(error), "error");
     } finally {
       els.saveDecisionButton.textContent = originalText;

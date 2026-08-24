@@ -693,6 +693,13 @@ def runtime_profile(request: Request) -> dict[str, Any]:
     return {
         "access_mode": "PUBLIC_READ_ONLY" if public_mode else "SERVER_AUTHENTICATED",
         "write_controls_enabled": not public_mode,
+        "operator_decisions_enabled": manual_analysis_enabled or not public_mode,
+        "analysis_provider": (
+            "CLAUDE_VIA_N8N"
+            if settings.llm_provider == "n8n_claude"
+            else "OPENAI_DIRECT"
+        ),
+        "analysis_model": settings.extraction_model,
         "manual_analysis_enabled": manual_analysis_enabled,
         "manual_analysis_auth_required": bool(
             manual_analysis_enabled
@@ -2575,8 +2582,8 @@ def run_openai_extraction(
             detail="조달청에서 취소된 공고이므로 새 문서 추출을 실행할 수 없습니다.",
         )
     settings = request.app.state.settings
-    if not settings.openai_api_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY가 서버에 설정되지 않았습니다.")
+    if not settings.extraction_configured:
+        raise HTTPException(status_code=503, detail="모델 분석 연결이 서버에 설정되지 않았습니다.")
     calculated_sha = hashlib.sha256(payload.document_text.encode("utf-8")).hexdigest()
     if payload.document_sha256 and payload.document_sha256.casefold() != calculated_sha:
         raise HTTPException(status_code=422, detail="document_sha256이 입력 텍스트와 일치하지 않습니다.")
@@ -2606,8 +2613,10 @@ def run_openai_extraction(
             return _extraction_run_out(notice_key, prior, reused=True)
 
     with OpenAIExtractionClient(
-        api_key=settings.openai_api_key,
-        model=settings.openai_model,
+        api_key=settings.extraction_api_key or "",
+        model=settings.extraction_model,
+        provider=settings.llm_provider,
+        base_url=settings.llm_gateway_base_url,
     ) as client:
         outcome = client.extract(
             document_text=payload.document_text,

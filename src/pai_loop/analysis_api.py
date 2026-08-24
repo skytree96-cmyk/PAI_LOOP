@@ -2374,8 +2374,10 @@ def _enrich_one_notice(
         return enrich_notice_from_pps(
             session,
             notice_id=notice_id,
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
+            openai_api_key=settings.extraction_api_key,
+            openai_model=settings.extraction_model,
+            llm_provider=settings.llm_provider,
+            llm_gateway_base_url=settings.llm_gateway_base_url,
             max_attachments=payload.max_attachments_per_notice,
             dry_run=payload.dry_run,
             # Each attachment is one durable unit. The shared deadline starts

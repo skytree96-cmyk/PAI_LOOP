@@ -13,7 +13,7 @@ def test_release_version_is_aligned_across_package_and_documentation() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert __version__ == "0.10.5"
+    assert __version__ == "0.11.0"
     assert project["project"]["version"] == __version__
     assert "현재 구현 범위: v0.10.5" in readme
     assert "SOURCE_VALIDATED / AUTO_ACTIVE" in readme

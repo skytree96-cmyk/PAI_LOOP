@@ -35,13 +35,13 @@ def test_pre_specification_help_explains_boundaries_and_zero_openai_search() -> 
     assert 'id="prespecHelpDialog"' in html
     for phrase in (
         "입찰공고 전 단계",
-        "검색·저장 OpenAI 0회",
+        "검색·저장 AI 모델 0회",
         "선택 저장",
-        "분석은 별도 비용 승인",
+        "분석은 별도 실행",
         "GO 판정 아님",
     ):
         assert phrase in html
-    assert "나라장터 API 0회 · OpenAI 0회" in html
+    assert "나라장터 API 0회 · AI 모델 0회" in html
     assert "검색 결과는 저장되지 않으며" in html
 
 
@@ -67,7 +67,7 @@ def test_pre_specification_analysis_requires_explicit_cost_approval_and_bounded_
     for phrase in (
         "문서당 최대 2회",
         "사전규격 1건당 총 최대 10회",
-        "시간당 공유 quota",
+        "시간당 총량 제한 없음",
         "GO 판정이 아님",
     ):
         assert phrase in source
@@ -102,8 +102,8 @@ def test_pre_specification_styles_distinguish_sources_and_cover_teams_mobile() -
 def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-searchfix1"' in html
-    assert 'src="./app.js?v=20260824-searchfix1"' in html
+    assert 'href="./styles.css?v=20260824-claude1"' in html
+    assert 'src="./app.js?v=20260824-claude1"' in html
 
 
 def test_pre_specification_search_forms_use_card_safe_responsive_columns() -> None:
