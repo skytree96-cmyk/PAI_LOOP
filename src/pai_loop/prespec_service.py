@@ -629,10 +629,10 @@ def analyse_pre_specification_documents(
         model=openai_model,
         provider=llm_provider,
         base_url=llm_gateway_base_url,
-        timeout_seconds=90,
+        timeout_seconds=180,
         max_retries=0,
         max_input_chars=120_000,
-        max_output_tokens=24_000,
+        max_output_tokens=20_000,
         max_total_api_calls=2,
     ) as openai_client:
         for document in sorted(documents, key=lambda item: item.slot):

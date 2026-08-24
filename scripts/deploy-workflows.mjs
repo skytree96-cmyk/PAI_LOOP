@@ -180,7 +180,7 @@ function validateRepositorySafetyContracts(definitions) {
   const claudeSerialised = JSON.stringify(claudeGateway.workflow);
   assert(
     claudeSerialised.includes("request fields do not match the extraction gateway contract")
-      && claudeSerialised.includes("body.max_output_tokens > 24000")
+      && claudeSerialised.includes("body.max_output_tokens > 20000")
       && claudeSerialised.includes("body.input.length !== 2")
       && claudeSerialised.includes("format.type !== 'json_schema'")
       && claudeSerialised.includes("format.strict !== true")

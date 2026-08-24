@@ -4,6 +4,13 @@ This is a one-time, fail-closed migration for the production extraction path.
 The repository keeps Workflow 13 at `publish:false` until a live Sonnet 5 E2E
 has passed. Do not combine this migration with a normal all-workflow deploy.
 
+W13 currently calls Anthropic through n8n's non-streaming `lmChatAnthropic`
+sub-node. The Anthropic SDK rejects non-streaming requests whose estimated
+duration exceeds ten minutes; its current calculation makes values above
+21,333 output tokens unsafe. The backend and W13 therefore enforce a 20,000
+token ceiling. Do not raise it until n8n passes streaming through this sub-node
+and that path has a separate live E2E.
+
 ## Preconditions
 
 1. Run the offline contracts:

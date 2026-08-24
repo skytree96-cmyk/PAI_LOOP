@@ -37,7 +37,7 @@ const validBody = {
   model: "claude-sonnet-5",
   service_tier: "default",
   store: false,
-  max_output_tokens: 24000,
+  max_output_tokens: 20000,
   input: [
     {
       role: "system",
@@ -77,7 +77,7 @@ const validated = executeValidation({ body: validBody });
 assert.equal(validated.length, 1);
 assert.equal(validated[0].json.system_prompt, validBody.input[0].content[0].text);
 assert.match(validated[0].json.user_prompt, /RESPONSE JSON SCHEMA/);
-assert.equal(validated[0].json.max_output_tokens, 24000);
+assert.equal(validated[0].json.max_output_tokens, 20000);
 
 const correctiveBody = structuredClone(validBody);
 correctiveBody.input[1].content[0].text =
@@ -89,7 +89,7 @@ assert.throws(
   /model must be claude-sonnet-5/,
 );
 assert.throws(
-  () => executeValidation({ body: { ...validBody, max_output_tokens: 24001 } }),
+  () => executeValidation({ body: { ...validBody, max_output_tokens: 20001 } }),
   /max_output_tokens is outside/,
 );
 assert.throws(
