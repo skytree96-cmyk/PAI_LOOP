@@ -157,6 +157,11 @@ assert.throws(
   () => executeNormaliserText('[{"summary":"array"}]'),
   /plain JSON object/,
 );
+assert.equal(
+  normalizer.parameters.jsCode.includes("Object.getPrototypeOf(parsed)"),
+  false,
+  "n8n Code-node values can cross a sandbox realm, so prototype identity must not be used",
+);
 assert.throws(
   () => executeNormaliserText(" ".repeat(500001)),
   /empty or oversized/,
