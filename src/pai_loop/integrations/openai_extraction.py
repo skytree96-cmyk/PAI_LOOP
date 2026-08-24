@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -400,7 +401,9 @@ class OpenAIExtractionClient:
     ) -> None:
         if not api_key.strip():
             raise ValueError("api_key is required")
-        selected_provider = (provider or os.environ.get("PAI_LOOP_LLM_PROVIDER", "openai")).strip().casefold()
+        selected_provider = (
+            provider or os.environ.get("PAI_LOOP_LLM_PROVIDER", "openai")
+        ).strip().casefold()
         if selected_provider not in {"openai", "n8n_claude"}:
             raise ValueError("provider must be openai or n8n_claude")
         if base_url is None:
@@ -411,6 +414,21 @@ class OpenAIExtractionClient:
             )
         if not base_url:
             raise ValueError("base_url is required for n8n_claude")
+        if os.environ.get("PAI_LOOP_ENV", "development").strip().casefold() == "production":
+            parsed_gateway = urlsplit(base_url)
+            if selected_provider != "n8n_claude":
+                raise ValueError("direct OpenAI extraction is disabled in production")
+            if (
+                parsed_gateway.scheme != "https"
+                or parsed_gateway.hostname != "n8n.kma.or.kr"
+                or parsed_gateway.port not in {None, 443}
+                or parsed_gateway.path.rstrip("/") != "/webhook/pai-loop-claude"
+                or parsed_gateway.query
+                or parsed_gateway.fragment
+                or parsed_gateway.username
+                or parsed_gateway.password
+            ):
+                raise ValueError("production extraction must use the approved n8n Claude gateway")
         self._api_key = api_key
         self.provider = selected_provider
         self.model = model

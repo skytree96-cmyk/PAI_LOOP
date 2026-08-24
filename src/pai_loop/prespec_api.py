@@ -157,7 +157,7 @@ class PreSpecificationSaveResponse(BaseModel):
 class PreSpecificationAnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    allow_openai: bool = False
+    run_extraction: bool = False
 
 
 class PreSpecificationAnalysisResponse(BaseModel):
@@ -717,7 +717,7 @@ def request_pre_specification_analysis(
                         status_code=409,
                         detail="현재 사전규격 분석이 이미 실행 중입니다.",
                     )
-            if documents and not payload.allow_openai:
+            if documents and not payload.run_extraction:
                 raise HTTPException(
                     status_code=409,
                     detail="현재 사전규격은 모델 호출이 필요합니다. 비용 사용을 명시적으로 승인해 주세요.",
@@ -825,7 +825,7 @@ def request_pre_specification_analysis(
                     "pre_specification_key": stored.pre_specification_key,
                     "source_digest": stored.source_digest,
                     "analysis_id": analysis.id,
-                    "allow_openai": bool(payload.allow_openai),
+                    "run_extraction": bool(payload.run_extraction),
                     "max_documents": PRESPEC_MAX_DOCUMENTS,
                     "credential_exposed": False,
                 },

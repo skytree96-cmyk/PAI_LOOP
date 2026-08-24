@@ -51,7 +51,7 @@ class ManualAnalysisRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    allow_openai: bool = False
+    run_extraction: bool = False
 
 
 router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
@@ -111,7 +111,7 @@ def _is_authoritatively_cancelled(request: Request, notice: Notice) -> bool:
 
 
 def _has_complete_current_attachment_audit(request: Request, notice: Notice) -> bool:
-    """Prove a judgement-only retry cannot cross the OpenAI boundary."""
+    """Prove a judgement-only retry cannot cross the model boundary."""
 
     with request.app.state.session_factory() as session:
         return has_current_accepted_pps_extraction(session, notice.id)
@@ -414,7 +414,7 @@ def request_manual_notice_analysis(
         # Attachment extraction and a current evaluation are separate durable
         # stages.  Accepted attachment text without a current evaluation must
         # continue into the deterministic scoring pipeline (normally with
-        # zero new OpenAI calls), while a genuinely current completed result
+        # zero new model calls), while a genuinely current completed result
         # is reused idempotently.
         current_evaluation = latest_current_evaluation(notice)
         if reason.state == "ANALYZED" and current_evaluation is not None:
@@ -424,11 +424,11 @@ def request_manual_notice_analysis(
             and current_evaluation is None
             and _has_complete_current_attachment_audit(request, notice)
         )
-        if not evaluation_only and not caller_intent.allow_openai:
+        if not evaluation_only and not caller_intent.run_extraction:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    "공고의 첨부 분석 상태가 바뀌어 OpenAI 호출이 필요합니다. "
+                    "공고의 첨부 분석 상태가 바뀌어 Claude 호출이 필요합니다. "
                     "최신 상태와 비용 상한을 확인한 뒤 다시 요청해 주세요."
                 ),
             )

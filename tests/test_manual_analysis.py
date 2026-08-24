@@ -22,7 +22,7 @@ SAME_ORIGIN_HEADERS = {
     "Origin": "http://testserver",
     "Sec-Fetch-Site": "same-origin",
 }
-OPENAI_ALLOWED = {"allow_openai": True}
+EXTRACTION_ALLOWED = {"run_extraction": True}
 
 
 def _app(monkeypatch, *, enabled: bool = True, openai_configured: bool = True):
@@ -157,7 +157,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
         first = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert first.status_code == 200, first.text
         assert first.json()["outcome"] == "QUEUED"
@@ -184,7 +184,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
         repeated = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert repeated.status_code == 200
         assert repeated.json()["outcome"] == "COOLDOWN"
@@ -266,7 +266,7 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         request_id = queued.json()["request_id"]
@@ -319,7 +319,7 @@ def test_manual_batch_exception_marks_cost_accounting_incomplete(monkeypatch) ->
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         request_id = queued.json()["request_id"]
@@ -410,7 +410,7 @@ def test_accepted_attachment_without_current_evaluation_continues_pipeline(
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json={"allow_openai": False},
+            json={"run_extraction": False},
         )
         assert queued.status_code == 200, queued.text
         assert queued.json()["outcome"] == "QUEUED"
@@ -464,7 +464,7 @@ def test_manual_analysis_terminal_success_requires_current_evaluation(
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json={"allow_openai": False},
+            json={"run_extraction": False},
         )
         assert queued.status_code == 200, queued.text
         completed = client.get(
@@ -567,7 +567,7 @@ def test_public_manual_analysis_hourly_quota_is_persisted(monkeypatch) -> None:
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert response.status_code == 429
         assert response.headers["Retry-After"] == "3600"
@@ -588,7 +588,7 @@ def test_zero_call_intent_rejects_a_state_that_requires_openai(monkeypatch) -> N
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=SAME_ORIGIN_HEADERS,
-            json={"allow_openai": False},
+            json={"run_extraction": False},
         )
         assert response.status_code == 409
         assert "비용 상한" in response.json()["detail"]
@@ -623,13 +623,13 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
         unauthenticated = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers=production_origin,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert unauthenticated.status_code == 401
         wrong = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
             headers={**production_origin, "X-PAI-Manual-Token": "1357"},
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert wrong.status_code == 401
         queued = client.post(
@@ -638,7 +638,7 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
                 **production_origin,
                 "X-PAI-Manual-Token": "2468",
             },
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         assert queued.json()["outcome"] == "QUEUED"
@@ -670,6 +670,6 @@ def test_production_manual_analysis_is_hidden_until_token_is_configured(
         response = client.post(
             "/api/v1/notices/PPS-MISSING/analysis/request",
             headers=production_origin,
-            json=OPENAI_ALLOWED,
+            json=EXTRACTION_ALLOWED,
         )
         assert response.status_code == 404

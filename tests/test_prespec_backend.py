@@ -587,14 +587,14 @@ def test_prespec_public_read_and_explicit_analysis_reuse(
     not_approved = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": False},
+        json={"run_extraction": False},
     )
     assert not_approved.status_code == 409
 
     analysed = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert analysed.status_code == 200
     assert analysed.json()["outcome"] == "QUEUED"
@@ -624,7 +624,7 @@ def test_prespec_public_read_and_explicit_analysis_reuse(
     reused = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": False},
+        json={"run_extraction": False},
     )
     assert reused.status_code == 200
     assert reused.json()["outcome"] == "ALREADY_ANALYZED"
@@ -729,7 +729,7 @@ def test_prespec_analysis_shares_the_existing_hourly_quota(
     response = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert response.status_code == 429
     assert _FakeDocumentFetcher.calls == 0
@@ -749,7 +749,7 @@ def test_prespec_analysis_cooldown_and_missing_model_configuration(
     cooldown = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert cooldown.status_code == 200
     assert cooldown.json()["outcome"] == "COOLDOWN"
@@ -767,7 +767,7 @@ def test_prespec_analysis_cooldown_and_missing_model_configuration(
     missing_key = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert missing_key.status_code == 503
 
@@ -780,7 +780,7 @@ def test_prespec_analysis_without_documents_is_queued_for_review_without_cost(
     queued = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": False},
+        json={"run_extraction": False},
     )
     assert queued.status_code == 200
     assert queued.json()["outcome"] == "QUEUED"
@@ -805,7 +805,7 @@ def test_prespec_background_failure_is_audited_and_status_is_failed(
     queued = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert queued.status_code == 200
     status_response = prespec_client.get(
@@ -846,7 +846,7 @@ def test_prespec_status_maps_running_partial_review_and_missing(
     fresh_duplicate = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert fresh_duplicate.status_code == 409
 
@@ -903,7 +903,7 @@ def test_stale_running_analysis_is_failed_on_status_and_can_be_requeued(
     requeued = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert requeued.status_code == 200
     assert requeued.json()["outcome"] == "QUEUED"
@@ -926,7 +926,7 @@ def test_stale_running_analysis_is_recovered_during_direct_requeue(
     requeued = prespec_client.post(
         "/api/v1/pre-specifications/R26BD00999999/analysis",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert requeued.status_code == 200
     assert requeued.json()["outcome"] == "QUEUED"

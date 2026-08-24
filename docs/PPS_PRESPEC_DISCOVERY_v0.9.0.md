@@ -74,7 +74,7 @@
 - detail: `GET /api/v1/pre-specifications/{registry_no}`
   - 현재 version의 안전한 문서 URL, provenance digest, 연결 입찰번호, 최신 분석 상태를 반환하며 source call은 0이다.
 - 명시적 분석: `POST /api/v1/pre-specifications/{registry_no}/analysis`
-  - same-origin·operator token·`allow_openai=true`가 필요하다. 현재 version 완료 결과는 재사용한다.
+  - same-origin·operator token·`run_extraction=true`가 필요하다. 현재 version 완료 결과는 재사용한다.
   - 공식 문서 최대 5개, 문서당 OpenAI 최대 2회, 요청당 최대 10회이며 기존 공고 수동 분석과 시간당 quota/cooldown을 공유한다.
   - POST는 `QUEUED`를 반환하고 `GET /api/v1/pre-specifications/{registry_no}/analysis/{analysis_id}`로 상태를 조회한다.
   - 결과는 연락처를 redaction한 요구사항 구조화이며 GO/REVIEW/FAIL 입찰 판정을 만들지 않는다.

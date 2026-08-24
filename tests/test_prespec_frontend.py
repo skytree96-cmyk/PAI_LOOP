@@ -73,7 +73,7 @@ def test_pre_specification_analysis_requires_explicit_cost_approval_and_bounded_
         assert phrase in source
     assert "window.confirm" in source
     assert "manualAnalysisAuthHeaders()" in source
-    assert "body: JSON.stringify({ allow_openai: true })" in source
+    assert "body: JSON.stringify({ run_extraction: true })" in source
     assert "PRESPEC_ANALYSIS_POLL_INTERVAL_MS = 3000" in source
     assert "PRESPEC_ANALYSIS_MAX_POLLS = 40" in source
     assert "PRESPEC_ANALYSIS_POLL_MAX_MS = 120000" in source
@@ -102,8 +102,8 @@ def test_pre_specification_styles_distinguish_sources_and_cover_teams_mobile() -
 def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-claude1"' in html
-    assert 'src="./app.js?v=20260824-claude1"' in html
+    assert 'href="./styles.css?v=20260824-claude2"' in html
+    assert 'src="./app.js?v=20260824-claude2"' in html
 
 
 def test_pre_specification_search_forms_use_card_safe_responsive_columns() -> None:

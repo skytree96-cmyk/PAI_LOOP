@@ -162,6 +162,22 @@ class Settings:
                 )
         if self.environment.casefold() != "production":
             return
+        if self.llm_provider != "n8n_claude":
+            raise RuntimeError(
+                "production requires PAI_LOOP_LLM_PROVIDER=n8n_claude; direct OpenAI is disabled"
+            )
+        if self.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY must not be configured in production")
+        gateway = urlsplit(self.llm_gateway_base_url or "")
+        if (
+            gateway.scheme != "https"
+            or gateway.hostname != "n8n.kma.or.kr"
+            or gateway.port not in {None, 443}
+            or gateway.path.rstrip("/") != "/webhook/pai-loop-claude"
+        ):
+            raise RuntimeError(
+                "production Claude gateway must be https://n8n.kma.or.kr/webhook/pai-loop-claude"
+            )
         if self.llm_provider == "n8n_claude" and urlsplit(
             self.llm_gateway_base_url or ""
         ).scheme != "https":
