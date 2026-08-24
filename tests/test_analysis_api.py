@@ -2127,6 +2127,89 @@ def test_any_continuation_poll_prioritises_daily_over_backfill(client: TestClien
     assert polled.json()["job_id"] == daily["job_id"]
 
 
+def test_any_continuation_inherits_backfill_retry_policy_without_duplicate_lease(
+    client: TestClient,
+) -> None:
+    keys = ["MANUAL-RETRY-POLICY-A", "MANUAL-RETRY-POLICY-B"]
+    for key in keys:
+        assert client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": key,
+                "bid_notice_no": key,
+                "title": f"retry policy continuation {key}",
+                "agency": "가상 기관",
+                "published_at": "2026-08-17T08:00:00+09:00",
+                "deadline": "2026-08-31T18:00:00+09:00",
+                "status": "OPEN",
+            },
+        ).status_code == 201
+
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": keys,
+            "dry_run": True,
+            "execution_limit": 1,
+            "include_retryable": True,
+            "request_token": "w11:manual-retry-policy",
+        },
+    ).json()
+    assert first["notice_keys"] == [keys[0]]
+    _run_segment(client, first)
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{first['job_id']}/complete",
+        json={"segment_id": first["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["remaining"] == 1
+
+    continuation_payload = {
+        "queue_name": "ANY",
+        "resume_only": True,
+        "dry_run": True,
+        "execution_limit": 1,
+        # The scheduled W11 continuation intentionally sends its default.
+        # The active BACKFILL parent's stored True policy remains authoritative.
+        "include_retryable": False,
+        "request_token": "w11:scheduled-retry-policy",
+    }
+    resumed = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=continuation_payload,
+    )
+    assert resumed.status_code == 200, resumed.text
+    resumed_plan = resumed.json()
+    assert resumed_plan["job_id"] == first["job_id"]
+    assert resumed_plan["queue_name"] == "BACKFILL"
+    assert resumed_plan["notice_keys"] == [keys[1]]
+    assert resumed_plan["offered"] == 1
+
+    replayed = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=continuation_payload,
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["job_id"] == resumed_plan["job_id"]
+    assert replayed.json()["segment_id"] == resumed_plan["segment_id"]
+    assert replayed.json()["chunks"] == resumed_plan["chunks"]
+
+    with client.app.state.session_factory() as session:
+        parents = list(
+            session.scalars(
+                select(IngestionJob).where(
+                    IngestionJob.source == "ANALYSIS_BACKFILL"
+                )
+            ).all()
+        )
+        assert len(parents) == 1
+        config = parents[0].request_json
+        assert config["include_retryable"] is True
+        assert config["lease_id"] == resumed_plan["segment_id"]
+        assert len(config["leased_chunks"]) == 1
+
+
 def test_any_plan_response_retry_prefers_exact_lease_owner_over_new_daily_parent(
     client: TestClient,
 ) -> None:
