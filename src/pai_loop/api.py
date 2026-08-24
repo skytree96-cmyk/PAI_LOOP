@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -22,7 +23,6 @@ from .eligibility_policy import classify_requirements, load_public_company_profi
 from .department_ranking import (
     get_department_profile,
     load_department_keyword_profiles,
-    notice_matches_user_keywords,
     parse_search_keywords,
     rank_notice_across_departments,
     rank_notice_department_views,
@@ -730,6 +730,106 @@ def department_keyword_profiles() -> dict[str, Any]:
     return load_department_keyword_profiles()
 
 
+_STORED_NOTICE_COMPOUND_PARTS = (
+    "컨설팅",
+    "교육",
+    "훈련",
+    "연수",
+    "역량",
+    "평가",
+    "운영",
+    "포럼",
+    "위탁",
+    "용역",
+    "연구",
+    "조사",
+)
+
+
+def _split_stored_notice_query_token(token: str) -> list[str]:
+    """Split a compact Korean business phrase into precise AND terms.
+
+    PPS titles commonly insert qualifiers between words users type together,
+    for example ``역량교육`` versus ``역량 강화 2기 교육훈련``.  We only
+    split bounded, domain-specific compounds whose resulting pieces are at
+    least two characters long.  Every piece remains mandatory, which avoids
+    turning the search into a broad OR match.
+    """
+
+    normalized = token.casefold()
+    # Latin abbreviations deliberately stay intact: splitting ``AI교육``
+    # into ``ai`` + ``교육`` would make a portable SQL substring query match
+    # unrelated words such as ``training``.  Users can safely search ``AI 교육``
+    # as two explicit terms when they want that looser form.
+    if len(normalized) < 4 or re.fullmatch(r"[0-9가-힣]+", normalized) is None:
+        return [token]
+
+    boundaries = {0, len(normalized)}
+    for part in _STORED_NOTICE_COMPOUND_PARTS:
+        for match in re.finditer(re.escape(part), normalized):
+            boundaries.update((match.start(), match.end()))
+    ordered = sorted(boundaries)
+    pieces = [normalized[start:end] for start, end in zip(ordered, ordered[1:])]
+    if len(pieces) < 2 or any(len(piece) < 2 for piece in pieces):
+        return [token]
+    return pieces
+
+
+def _stored_notice_query_terms(value: str) -> list[str]:
+    """Return de-duplicated mandatory terms for stored-notice search."""
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"\s+", value.strip()):
+        if not token:
+            continue
+        for term in _split_stored_notice_query_token(token):
+            key = term.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            terms.append(term)
+    return terms
+
+
+def _stored_notice_term_clause(term: str) -> Any:
+    """Build one literal term match across the public stored-search fields."""
+
+    return or_(
+        Notice.title.icontains(term, autoescape=True),
+        Notice.agency.icontains(term, autoescape=True),
+        Notice.bid_notice_no.icontains(term, autoescape=True),
+        Notice.notice_key.icontains(term, autoescape=True),
+    )
+
+
+def _normalized_stored_notice_search_value(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _stored_notice_value_matches_term(value: object, term: str) -> bool:
+    """Apply token boundaries that portable SQL ``icontains`` cannot express."""
+
+    text = _normalized_stored_notice_search_value(value)
+    needle = _normalized_stored_notice_search_value(term)
+    if not needle:
+        return False
+    if re.fullmatch(r"[a-z0-9][a-z0-9 .+/#-]*", needle):
+        return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", text) is not None
+    if re.fullmatch(r"\d+급", needle):
+        return re.search(rf"(?<!\d){re.escape(needle)}(?!\d)", text) is not None
+    return needle in text
+
+
+def _stored_notice_matches_query_terms(notice: Notice, terms: list[str]) -> bool:
+    fields = (notice.title, notice.agency, notice.bid_notice_no, notice.notice_key)
+    return all(
+        any(_stored_notice_value_matches_term(field, term) for field in fields)
+        for term in terms
+    )
+
+
 @router.get("/notices", response_model=list[NoticeSummary])
 def list_notices(
     request: Request,
@@ -766,19 +866,22 @@ def list_notices(
             selectinload(Notice.versions),
             selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
         )
-        .order_by((Notice.deadline < now).asc(), Notice.deadline.asc())
+        .order_by(
+            (Notice.deadline < now).asc(),
+            Notice.deadline.asc(),
+            Notice.notice_key.asc(),
+        )
     )
+    query_terms: list[str] = []
     if q and (query := " ".join(q.split())):
         # The dashboard presents this as a stored-notice global search.  Keep
-        # wildcard characters literal and include the identifiers users copy
-        # from PPS, instead of limiting a search to title/agency text.
+        # wildcard characters literal and include identifiers users copy from
+        # PPS.  Space-delimited and safe Korean compound terms are mandatory
+        # AND conditions so abbreviated phrases survive inserted qualifiers
+        # without becoming an overly broad any-word search.
+        query_terms = _stored_notice_query_terms(query)
         statement = statement.where(
-            or_(
-                Notice.title.icontains(query, autoescape=True),
-                Notice.agency.icontains(query, autoescape=True),
-                Notice.bid_notice_no.icontains(query, autoescape=True),
-                Notice.notice_key.icontains(query, autoescape=True),
-            )
+            and_(*(_stored_notice_term_clause(term) for term in query_terms))
         )
     if notice_status == "OPEN":
         statement = statement.where(Notice.status == "OPEN", Notice.deadline >= now)
@@ -799,22 +902,26 @@ def list_notices(
     if analysis_state == "EVALUATED":
         statement = statement.where(Notice.evaluations.any())
     requires_current_evaluation_filter = analysis_state == "EVALUATED"
-    if ranking_requested or requires_current_evaluation_filter:
+    if (
+        ranking_requested
+        or requires_current_evaluation_filter
+        or eligibility is not None
+        or query_terms
+    ):
         notices = list(session.scalars(statement).all())
     else:
         notices = list(session.scalars(statement.offset(offset).limit(limit)).all())
 
-    if parsed_keywords:
+    if query_terms:
         notices = [
             notice
             for notice in notices
-            if notice_matches_user_keywords(
-                title=notice.title,
-                agency=notice.agency,
-                category=notice.category or "",
-                user_keywords=parsed_keywords,
-            )
+            if _stored_notice_matches_query_terms(notice, query_terms)
         ]
+
+    # ``search_keywords`` belongs to the priority control above the board.  It
+    # contributes explainable match scores and ordering below, but must never
+    # hide a stored notice.  Text filtering is exclusively the ``q`` contract.
     authorities = _pps_authorities_by_notice_id(session, notices)
 
     if eligibility:
@@ -840,7 +947,7 @@ def list_notices(
         ]
 
     if not ranking_requested:
-        if requires_current_evaluation_filter:
+        if requires_current_evaluation_filter or eligibility is not None or query_terms:
             notices = notices[offset : offset + limit]
         return [
             _summary(
@@ -919,6 +1026,7 @@ def list_notices(
             -selected_department_order(item)[1],
             -selected_department_order(item)[2],
             _comparable_utc(item.deadline),
+            item.notice_key.casefold(),
         )
     )
     return ranked[offset : offset + limit]

@@ -672,16 +672,13 @@
     const departmentId = storedMode ? els.departmentSelect?.value || "organization" : "organization";
     const searchKeywords = storedMode ? els.priorityKeywordInput?.value.trim() || "" : "";
     const query = storedMode ? els.searchInput?.value.trim() || "" : "";
-    const globalSearch = Boolean(query);
     // Keep the organization ranking projection on the default board. The
     // backend now computes every department once per notice, so preserving
     // recommendation badges no longer forces the prior duplicate work.
     params.set("department_id", departmentId);
-    // A plain notice search is deliberately global across the stored DB.  A
-    // department priority keyword is a hard server filter, so combining it
-    // with q would hide the exact keyword-mismatch notices users are trying
-    // to recover.  Department ranking still remains available for ordering.
-    if (searchKeywords && !globalSearch) params.set("search_keywords", searchKeywords);
+    // Department and interest keywords only influence ranking. They must not
+    // narrow the stored-notice result set, including during a global search.
+    if (searchKeywords) params.set("search_keywords", searchKeywords);
     if (query) params.set("q", query);
     if (["OPEN", "CLOSED", "EXPIRED", "ENDED"].includes(statusScope)) {
       params.set("status", statusScope);
@@ -694,9 +691,7 @@
   function noticeRequestTimeoutMs() {
     if (state.noticeSearchMode !== "stored") return NOTICE_REQUEST_TIMEOUT_MS;
     const departmentId = els.departmentSelect?.value || "organization";
-    const searchKeywords = globalNoticeSearchActive()
-      ? ""
-      : els.priorityKeywordInput?.value.trim() || "";
+    const searchKeywords = els.priorityKeywordInput?.value.trim() || "";
     return departmentId !== "organization" || Boolean(searchKeywords)
       ? RANKING_REQUEST_TIMEOUT_MS
       : NOTICE_REQUEST_TIMEOUT_MS;
@@ -719,9 +714,10 @@
     const globalSearch = globalNoticeSearchActive();
     els.noticeSearchScope.classList.remove("is-pps");
     els.noticeSearchScope.classList.toggle("is-global", globalSearch);
+    const priorityNote = "부서·관심 키워드는 공고를 숨기지 않고 표시 순서에만 반영합니다.";
     els.noticeSearchScope.textContent = globalSearch
-      ? "저장된 전체 공고 검색 · 현재 탭, 진행/종료 상태와 우선 키워드 범위를 넘어서 찾습니다. 검색만으로 AI 비용은 발생하지 않습니다."
-      : "현재 화면 범위에서 공고를 표시합니다. 나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다.";
+      ? `저장된 전체 공고 검색 · 현재 탭과 진행/종료 상태를 넘어서 찾습니다. ${priorityNote} 검색만으로 AI 비용은 발생하지 않습니다.`
+      : `현재 화면 범위에서 공고를 표시합니다. ${priorityNote} 나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다.`;
   }
 
   function setNoticeSearchMode(mode, { announce = true, showGuide = false } = {}) {
@@ -1194,7 +1190,9 @@
     els.departmentSelect.value = [...els.departmentSelect.options].some((option) => option.value === selected)
       ? selected
       : "organization";
-    els.rankingProfileVersion.textContent = catalog.version ? `키워드 기준 ${catalog.version}` : "키워드 기준 확인됨";
+    els.rankingProfileVersion.textContent = catalog.version
+      ? `키워드 기준 ${catalog.version} · 목록 제외 없음`
+      : "키워드 기준 확인됨 · 목록 제외 없음";
     populatePerformanceDivisionOptions(state.performance.records);
   }
 
@@ -3104,6 +3102,7 @@
     renderNoticeSearchScope();
     const query = els.searchInput.value.trim().replace(/\s+/g, " ").toLocaleLowerCase("ko-KR");
     const globalSearch = Boolean(query);
+    const serverBackedSearch = globalSearch && state.source === "api";
     const eligibility = els.eligibilityFilter.value;
     const recommendation = els.recommendationFilter.value;
     const sort = els.sortSelect.value;
@@ -3126,7 +3125,10 @@
       const searchable = `${notice.title} ${notice.agency} ${notice.noticeNumber} ${notice.noticeKey}`
         .replace(/\s+/g, " ")
         .toLocaleLowerCase("ko-KR");
-      if (query && !searchable.includes(query)) return false;
+      // API results already reflect the server's stored-notice matching
+      // contract (including multi-token Korean searches). Reapplying an
+      // exact browser substring check would incorrectly hide valid results.
+      if (query && !serverBackedSearch && !searchable.includes(query)) return false;
       return true;
     });
 
@@ -3237,7 +3239,7 @@
     const globalSearch = globalNoticeSearchActive();
     const ownerLabel = els.departmentSelect.selectedOptions[0]?.textContent || "전사 공통";
     const keywordLabel = els.priorityKeywordInput.value.trim();
-    const context = keywordLabel ? `${ownerLabel} · 검색어 ${keywordLabel}` : ownerLabel;
+    const context = keywordLabel ? `${ownerLabel} · 관심 키워드 ${keywordLabel}` : ownerLabel;
     els.noticeSummary.textContent = state.noticeSearchMode === "pps"
       ? "수집 DB와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다."
       : globalSearch
