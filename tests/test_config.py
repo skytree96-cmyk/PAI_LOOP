@@ -72,6 +72,31 @@ def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
         "sync": False,
     }
     assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "0"
+    assert env_vars["PAI_LOOP_LLM_PROVIDER"]["value"] == "n8n_claude"
+    assert env_vars["PAI_LOOP_CLAUDE_MODEL"]["value"] == "claude-sonnet-4-6"
+    assert "OPENAI_API_KEY" not in env_vars
+    assert "PAI_LOOP_OPENAI_MODEL" not in env_vars
+
+
+def test_production_allows_only_the_pinned_n8n_claude_boundary() -> None:
+    base = {
+        "environment": "production",
+        "database_url": "postgresql+psycopg://database.example/pai",
+        "api_key": "configured-server-key",
+        "llm_provider": "n8n_claude",
+        "llm_gateway_base_url": "https://n8n.kma.or.kr/webhook/pai-loop-claude",
+        "claude_model": "claude-sonnet-4-6",
+    }
+
+    Settings(**base).validate_security()
+    with pytest.raises(RuntimeError, match="direct OpenAI is disabled"):
+        Settings(**{**base, "llm_provider": "openai"}).validate_security()
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        Settings(**base, openai_api_key="must-not-exist").validate_security()
+    with pytest.raises(RuntimeError, match="production Claude gateway"):
+        Settings(
+            **{**base, "llm_gateway_base_url": "https://other.example/webhook/pai-loop-claude"}
+        ).validate_security()
 
 
 def test_production_security_rejects_synthetic_and_unguarded_manual_analysis() -> None:
@@ -79,6 +104,9 @@ def test_production_security_rejects_synthetic_and_unguarded_manual_analysis() -
         "environment": "production",
         "database_url": "postgresql+psycopg://database.example/pai",
         "api_key": "configured-server-key",
+        "llm_provider": "n8n_claude",
+        "llm_gateway_base_url": "https://n8n.kma.or.kr/webhook/pai-loop-claude",
+        "claude_model": "claude-sonnet-4-6",
     }
     with pytest.raises(RuntimeError, match="SEED_SYNTHETIC"):
         Settings(**base, seed_synthetic=True).validate_security()

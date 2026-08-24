@@ -1962,7 +1962,7 @@
         method: "POST",
         headers,
         timeoutMs: 30000,
-        body: JSON.stringify({ allow_openai: true }),
+        body: JSON.stringify({ run_extraction: true }),
       }));
       state.prespec.analysis = { registryNo: detail.registryNo, analysisId: stringValue(response.analysis_id), polling: response.outcome === "QUEUED", polls: 0, response };
       renderPreSpecificationAnalysisStatus(detail);
@@ -3695,7 +3695,7 @@
         {
           method: "POST",
           headers: authHeaders,
-          body: JSON.stringify({ allow_openai: !evaluationOnly }),
+          body: JSON.stringify({ run_extraction: !evaluationOnly }),
         },
       ));
       if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {

@@ -382,7 +382,7 @@ def test_manually_saved_notice_is_visible_but_excluded_from_automatic_queues(
     manual = discovery_client.post(
         f"/api/v1/notices/{notice_key}/analysis/request",
         headers=_HEADERS,
-        json={"allow_openai": True},
+        json={"run_extraction": True},
     )
     assert manual.status_code == 200
     assert manual.json()["outcome"] == "QUEUED"

@@ -267,6 +267,26 @@ def test_n8n_claude_gateway_does_not_repeat_ambiguous_http_failures() -> None:
     assert outcome.error_code == "HTTP_ERROR"
 
 
+def test_production_client_refuses_direct_or_unapproved_model_egress(monkeypatch) -> None:
+    monkeypatch.setenv("PAI_LOOP_ENV", "production")
+
+    with pytest.raises(ValueError, match="direct OpenAI extraction is disabled"):
+        OpenAIExtractionClient(
+            api_key="unused",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+        )
+    with pytest.raises(ValueError, match="approved n8n Claude gateway"):
+        OpenAIExtractionClient(
+            api_key="unused",
+            provider="n8n_claude",
+            model="claude-sonnet-4-6",
+            base_url="https://other.example/webhook/pai-loop-claude",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+        )
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_error"),
     [
