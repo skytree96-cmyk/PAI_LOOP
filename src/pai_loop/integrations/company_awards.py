@@ -78,7 +78,11 @@ class PpsCompanyAwardClient(PpsClient):
         business_number: str,
         scopes: Sequence[AwardScope] = ("service",),
         rows: int = 100,
-        max_window_days: int = 30,
+        # PPS enforces a calendar-month limit.  A fixed 30-day inclusive
+        # window can cross from February 20 to March 21 and is rejected as an
+        # input-range error, so the standalone client also defaults to the
+        # universally safe 28-day boundary used by the API route.
+        max_window_days: int = 28,
         max_pages_per_window: int = 1,
         deadline_monotonic: float | None = None,
     ) -> Iterator[dict[str, Any]]:

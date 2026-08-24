@@ -178,8 +178,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-searchfix1"' in html
-    assert 'src="./app.js?v=20260824-searchfix1"' in html
+    assert 'href="./styles.css?v=20260824-claude1"' in html
+    assert 'src="./app.js?v=20260824-claude1"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -197,7 +197,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert 'data-notice-search-mode="stored"' in html
     assert 'data-notice-search-mode="pps"' in html
     assert "나라장터 용역 공고 실시간 조회" in html
-    assert "검색·저장: OpenAI 0회" in html
+    assert "검색·저장: AI 모델 0회" in html
     assert 'apiRequest("/pps-discovery/search"' in search_body
     assert "span > 30" in search_body
     assert 'state.noticeSearchMode !== "pps"' in search_body
@@ -211,7 +211,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert "const suggestPps" in render_body
     assert "state.filteredNotices.length === 0" not in source
     assert 'apiRequest("/pps-discovery/save"' in save_body
-    assert "저장만으로 분석이나 OpenAI 호출은 시작되지 않습니다" in save_body
+    assert "저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다" in save_body
     assert "/analysis/request" not in search_body
     assert "/analysis/request" not in save_body
     assert "allow_openai" not in search_body
@@ -226,6 +226,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert "회사 실적으로 자동 이동하지 않습니다" in html
     assert 'apiRequest("/company-awards/search"' in awards_body
     assert "manualAnalysisAuthHeaders()" in awards_body
+    assert "Math.ceil((span + 1) / 28)" in awards_body
     assert "/analysis/request" not in awards_body
     assert "awards: [\"낙찰 결과\", \"회사별 낙찰 결과\"]" in view_body
     assert "els.awardResultsSection.hidden = !awardsView" in view_body
@@ -347,7 +348,7 @@ def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None
 
     assert "if (isCancelledNotice(notice))" in preview_body
     assert preview_body.index("if (isCancelledNotice(notice))") < preview_body.index(
-        "if (!state.writeControlsEnabled)"
+        "if (!canWriteDecision())"
     )
     assert "const cancelled = isCancelledNotice(notice)" in existing_body
     assert "input.disabled = cancelled ||" in existing_body
@@ -361,7 +362,7 @@ def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None
     assert '"취소 공고 · 저장 불가"' in button_body
     assert "if (isCancelledNotice(notice))" in save_body
     assert save_body.index("if (isCancelledNotice(notice))") < save_body.index(
-        "if (!state.writeControlsEnabled)"
+        "if (!canWriteDecision())"
     )
     assert "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다" in save_body
     assert "els.teamsPreviewDecisionButton.disabled = cancelled ||" in teams_body
@@ -443,7 +444,7 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     assert "window.confirm" in confirm_body
     assert "state.manualAnalysisPolicy?.max_attachments" in confirm_body
     assert "policyMax * 2" in confirm_body
-    assert "OpenAI 요청 없이" in confirm_body
+    assert "Claude 요청 없이" in confirm_body
     assert "절대 상한" in confirm_body
     assert "검색" not in confirm_body
     assert "if (!confirmManualAnalysis(notice)) return" in request_body

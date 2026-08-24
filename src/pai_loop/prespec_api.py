@@ -781,13 +781,17 @@ def request_pre_specification_analysis(
                 if job.id not in recovered_stale_job_ids
                 and job.error_code != "PRESPEC_ANALYSIS_STALE"
             ]
-            if len(counted_manual_jobs) >= settings.public_manual_analysis_hourly_limit:
+            if (
+                settings.public_manual_analysis_hourly_limit > 0
+                and len(counted_manual_jobs)
+                >= settings.public_manual_analysis_hourly_limit
+            ):
                 raise HTTPException(
                     status_code=429,
                     detail="시간당 수동 분석 한도에 도달했습니다.",
                     headers={"Retry-After": "3600"},
                 )
-            if documents and not settings.openai_api_key:
+            if documents and not settings.extraction_configured:
                 raise HTTPException(status_code=503, detail="모델 분석 설정을 확인해 주세요.")
 
             request_material = {
@@ -872,8 +876,10 @@ def _execute_reserved_pre_specification_analysis(
                 registry_no=registry_no,
                 source_digest=source_digest,
                 documents=documents,
-                openai_api_key=request.app.state.settings.openai_api_key or "",
-                openai_model=request.app.state.settings.openai_model,
+                openai_api_key=request.app.state.settings.extraction_api_key or "",
+                openai_model=request.app.state.settings.extraction_model,
+                llm_provider=request.app.state.settings.llm_provider,
+                llm_gateway_base_url=request.app.state.settings.llm_gateway_base_url,
                 document_fetcher=getattr(
                     request.app.state,
                     "prespec_document_fetcher",

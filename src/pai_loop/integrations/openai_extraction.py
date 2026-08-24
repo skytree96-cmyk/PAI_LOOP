@@ -384,7 +384,8 @@ class OpenAIExtractionClient:
         *,
         api_key: str,
         model: str = "gpt-5.6-luna",
-        base_url: str = "https://api.openai.com/v1",
+        base_url: str | None = None,
+        provider: str | None = None,
         # Large Korean procurement documents can legitimately take longer
         # than the former 45-second read boundary.  This remains finite and
         # the caller still enforces the two-call attachment budget.
@@ -399,9 +400,24 @@ class OpenAIExtractionClient:
     ) -> None:
         if not api_key.strip():
             raise ValueError("api_key is required")
+        selected_provider = (provider or os.environ.get("PAI_LOOP_LLM_PROVIDER", "openai")).strip().casefold()
+        if selected_provider not in {"openai", "n8n_claude"}:
+            raise ValueError("provider must be openai or n8n_claude")
+        if base_url is None:
+            base_url = (
+                os.environ.get("PAI_LOOP_LLM_GATEWAY_BASE_URL", "").strip()
+                if selected_provider == "n8n_claude"
+                else "https://api.openai.com/v1"
+            )
+        if not base_url:
+            raise ValueError("base_url is required for n8n_claude")
         self._api_key = api_key
+        self.provider = selected_provider
         self.model = model
-        self.max_retries = max_retries
+        # A timed-out n8n webhook may still finish the Anthropic request. Do
+        # not blindly repeat that request across the extra gateway hop; the
+        # caller may still perform the one evidence-correction attempt.
+        self.max_retries = 0 if selected_provider == "n8n_claude" else max_retries
         self.max_input_chars = max_input_chars
         self.max_output_tokens = max_output_tokens
         if not 1 <= max_total_api_calls <= 2:
@@ -409,18 +425,33 @@ class OpenAIExtractionClient:
         self.max_total_api_calls = max_total_api_calls
         self._sleep = sleep
         self._monotonic = monotonic
+        auth_headers = (
+            {"X-PAI-LOOP-API-KEY": api_key, "Content-Type": "application/json"}
+            if selected_provider == "n8n_claude"
+            else {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        )
         self._client = httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             timeout=timeout_seconds,
             transport=transport,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers=auth_headers,
         )
 
     @classmethod
     def from_env(cls) -> "OpenAIExtractionClient":
+        provider = os.environ.get("PAI_LOOP_LLM_PROVIDER", "openai").strip().casefold()
         return cls(
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
-            model=os.environ.get("PAI_LOOP_OPENAI_MODEL", "gpt-5.6-luna"),
+            api_key=(
+                os.environ.get("PAI_LOOP_API_KEY", "")
+                if provider == "n8n_claude"
+                else os.environ.get("OPENAI_API_KEY", "")
+            ),
+            model=(
+                os.environ.get("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-4-6")
+                if provider == "n8n_claude"
+                else os.environ.get("PAI_LOOP_OPENAI_MODEL", "gpt-5.6-luna")
+            ),
+            provider=provider,
         )
 
     def close(self) -> None:

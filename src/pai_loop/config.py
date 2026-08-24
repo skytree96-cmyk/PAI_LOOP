@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -44,10 +45,15 @@ class Settings:
     public_read_only: bool = False
     public_manual_analysis_enabled: bool = False
     public_manual_analysis_token: str | None = None
-    public_manual_analysis_hourly_limit: int = 1
+    # Zero disables the aggregate hourly demo quota. Per-notice cooldown,
+    # advisory locking, idempotency, and bounded attachment/call budgets remain.
+    public_manual_analysis_hourly_limit: int = 0
     public_manual_analysis_cooldown_hours: int = 24
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-luna"
+    llm_provider: str = "openai"
+    llm_gateway_base_url: str | None = None
+    claude_model: str = "claude-sonnet-4-6"
     pps_api_key: str | None = None
     pps_base_url: str = "https://apis.data.go.kr/1230000"
     pps_notice_operation: str = "ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch"
@@ -63,6 +69,26 @@ class Settings:
             and token.isascii()
             and token.isdigit()
         )
+
+    @property
+    def extraction_api_key(self) -> str | None:
+        """Return the server-only credential used at the selected LLM boundary."""
+
+        if self.llm_provider == "n8n_claude":
+            # The same server credential already used by W10/W11 authenticates
+            # the private n8n webhook. The Anthropic credential never leaves n8n.
+            return self.api_key
+        return self.openai_api_key
+
+    @property
+    def extraction_model(self) -> str:
+        return self.claude_model if self.llm_provider == "n8n_claude" else self.openai_model
+
+    @property
+    def extraction_configured(self) -> bool:
+        if self.llm_provider == "n8n_claude":
+            return bool(self.extraction_api_key and self.llm_gateway_base_url)
+        return bool(self.openai_api_key)
 
     @classmethod
     def from_env(cls, *, database_url: str | None = None) -> "Settings":
@@ -84,9 +110,9 @@ class Settings:
             ),
             public_manual_analysis_hourly_limit=_bounded_int(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"),
-                default=1,
-                minimum=1,
-                maximum=30,
+                default=0,
+                minimum=0,
+                maximum=1_000,
             ),
             public_manual_analysis_cooldown_hours=_bounded_int(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_COOLDOWN_HOURS"),
@@ -96,6 +122,12 @@ class Settings:
             ),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("PAI_LOOP_OPENAI_MODEL", "gpt-5.6-luna"),
+            llm_provider=os.getenv("PAI_LOOP_LLM_PROVIDER", "openai").strip().casefold(),
+            llm_gateway_base_url=(
+                os.getenv("PAI_LOOP_LLM_GATEWAY_BASE_URL", "").strip().rstrip("/")
+                or None
+            ),
+            claude_model=os.getenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-4-6"),
             pps_api_key=os.getenv("PPS_API_KEY") or None,
             pps_base_url=os.getenv("PAI_LOOP_PPS_BASE_URL", "https://apis.data.go.kr/1230000"),
             pps_notice_operation=os.getenv(
@@ -109,8 +141,31 @@ class Settings:
         )
 
     def validate_security(self) -> None:
+        if self.llm_provider not in {"openai", "n8n_claude"}:
+            raise RuntimeError("PAI_LOOP_LLM_PROVIDER must be openai or n8n_claude")
+        if self.llm_provider == "n8n_claude":
+            if self.claude_model != "claude-sonnet-4-6":
+                raise RuntimeError(
+                    "PAI_LOOP_CLAUDE_MODEL must match the deployed Claude gateway contract"
+                )
+            parsed = urlsplit(self.llm_gateway_base_url or "")
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise RuntimeError(
+                    "PAI_LOOP_LLM_GATEWAY_BASE_URL must be an absolute credential-free HTTP(S) URL"
+                )
         if self.environment.casefold() != "production":
             return
+        if self.llm_provider == "n8n_claude" and urlsplit(
+            self.llm_gateway_base_url or ""
+        ).scheme != "https":
+            raise RuntimeError("PAI_LOOP_LLM_GATEWAY_BASE_URL must use HTTPS in production")
         if not self.api_key:
             raise RuntimeError(
                 "PAI_LOOP_API_KEY is required in production until Entra SSO/RBAC is configured"

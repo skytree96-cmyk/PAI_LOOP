@@ -119,6 +119,7 @@ jobs:
               "pai_loop/analysis_api.py",
               "pai_loop/company_awards.py",
               "pai_loop/manual_analysis.py",
+              "pai_loop/operator_decisions.py",
               "pai_loop/pps_discovery.py",
               "pai_loop/daily_analysis_scope.py",
               "pai_loop/teams_readiness.py",
@@ -162,9 +163,11 @@ jobs:
       - name: Validate deployment script and n8n workflows
         run: |
           node --check scripts/deploy-workflows.mjs
+          node --check scripts/bind-claude-gateway-credentials.mjs
           node scripts/deploy-workflows.mjs --validate-only
           node scripts/test-daily-workflow.mjs
           node scripts/test-teams-delivery-workflow.mjs
+          node scripts/test-claude-gateway-workflow.mjs
 
       - name: Verify local frontend assets
         shell: python

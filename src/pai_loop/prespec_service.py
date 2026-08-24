@@ -597,6 +597,8 @@ def analyse_pre_specification_documents(
     documents: list[PreSpecificationDocument],
     openai_api_key: str,
     openai_model: str,
+    llm_provider: str = "openai",
+    llm_gateway_base_url: str | None = None,
     document_fetcher: PreSpecificationDocumentFetcher | None = None,
     openai_client_factory: Callable[..., OpenAIExtractionClient] = OpenAIExtractionClient,
 ) -> PreSpecificationAnalysisResult:
@@ -625,6 +627,8 @@ def analyse_pre_specification_documents(
     with openai_client_factory(
         api_key=openai_api_key,
         model=openai_model,
+        provider=llm_provider,
+        base_url=llm_gateway_base_url,
         timeout_seconds=90,
         max_retries=0,
         max_input_chars=120_000,

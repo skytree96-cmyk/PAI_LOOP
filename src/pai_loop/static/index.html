@@ -11,7 +11,7 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260824-searchfix1" />
+    <link rel="stylesheet" href="./styles.css?v=20260824-claude1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -326,7 +326,7 @@
                 <li><span>2</span><div><strong>PAI LOOP 저장</strong><small>원하는 공고 한 건</small></div></li>
                 <li><span>3</span><div><strong>분석·판단 실행</strong><small>저장된 OPEN 공고</small></div></li>
               </ol>
-              <p class="pps-discovery__boundary"><strong>검색·저장: OpenAI 0회</strong><span>저장된 OPEN 공고에서 분석·판단 실행을 눌렀을 때만, 나라장터 API에서 확인된 공개 첨부를 분석하며 OpenAI를 사용할 수 있습니다.</span></p>
+              <p class="pps-discovery__boundary"><strong>검색·저장: AI 모델 0회</strong><span>저장된 OPEN 공고에서 분석·판단 실행을 눌렀을 때만, 나라장터 API에서 확인된 공개 첨부를 Claude로 분석합니다.</span></p>
               <div class="pps-discovery__results" id="ppsDiscoveryResults" role="list" aria-label="나라장터 외부 검색 결과"></div>
             </section>
 
@@ -384,7 +384,7 @@
               <aside class="performance-boundary prespec-boundary" aria-label="사전규격 이용 범위">
                 <button class="prespec-help-button" id="prespecHelpButton" type="button" aria-label="사전규격 기능 안내" aria-haspopup="dialog" aria-controls="prespecHelpDialog" aria-expanded="false">?</button>
                 <div>
-                  <strong>검색·저장은 OpenAI 0회</strong>
+                  <strong>검색·저장은 AI 모델 0회</strong>
                   <p>저장할 사전규격은 사용자가 선택합니다. 문서 분석은 비용 승인을 별도로 받은 뒤 실행하며 입찰 GO 판정은 하지 않습니다.</p>
                 </div>
               </aside>
@@ -396,9 +396,9 @@
                   <div>
                     <span class="prespec-track__badge">PAI LOOP 저장 DB</span>
                     <h3 id="prespecStoredHeading">저장된 사전규격 검색</h3>
-                    <p>이미 선택·저장한 사전규격만 찾습니다. 나라장터 API 0회 · OpenAI 0회입니다.</p>
+                    <p>이미 선택·저장한 사전규격만 찾습니다. 나라장터 API 0회 · AI 모델 0회입니다.</p>
                   </div>
-                  <span class="prespec-zero-cost">PPS 0 · OpenAI 0</span>
+                  <span class="prespec-zero-cost">PPS 0 · AI 모델 0</span>
                 </div>
                 <form class="prespec-search-form" id="prespecStoredForm" role="search">
                   <label class="prespec-field prespec-field--query"><span>저장 DB 검색어</span><input id="prespecStoredSearchInput" type="search" maxlength="620" placeholder="사업명·기관 키워드 (쉼표로 최대 10개)" autocomplete="off" /></label>
@@ -417,7 +417,7 @@
                     <h3 id="prespecLiveHeading">나라장터 사전규격 검색</h3>
                     <p>최근 최대 31일 범위를 직접 조회합니다. 검색 결과는 저장되지 않으며 원하는 건만 선택해 저장합니다.</p>
                   </div>
-                  <span class="prespec-zero-cost">검색·저장 OpenAI 0</span>
+                  <span class="prespec-zero-cost">검색·저장 AI 모델 0</span>
                 </div>
                 <form class="prespec-search-form prespec-search-form--live" id="prespecLiveForm" role="search">
                   <label class="prespec-field prespec-field--query"><span>나라장터 검색어 *</span><input id="prespecLiveQuery" type="search" required minlength="2" maxlength="60" placeholder="예: AI 교육" autocomplete="off" /></label>
@@ -428,7 +428,7 @@
                 </form>
                 <p class="prespec-track__summary" id="prespecLiveSummary" aria-live="polite">버튼을 누르기 전에는 나라장터 API를 호출하지 않습니다.</p>
                 <div class="prespec-card-list" id="prespecLiveList" role="list" aria-label="나라장터 사전규격 검색 결과"></div>
-                <div class="state-view prespec-state" id="prespecLiveState"><strong>검색 조건을 입력하세요</strong><p>조회·저장 단계에서는 OpenAI가 호출되지 않습니다.</p></div>
+                <div class="state-view prespec-state" id="prespecLiveState"><strong>검색 조건을 입력하세요</strong><p>조회·저장 단계에서는 AI 모델이 호출되지 않습니다.</p></div>
               </section>
             </div>
           </section>
@@ -525,7 +525,7 @@
                 <button class="button button--primary award-search-submit" type="submit" id="awardSearchButton">낙찰 결과 검색</button>
               </form>
 
-              <p class="award-search-boundary" role="note"><strong>개찰일 기준 외부 API 실시간 조회</strong> · 최종 낙찰일 기준 검색이 아닙니다. OpenAI를 호출하지 않고 PAI LOOP DB에도 저장하지 않으며 사업자등록번호는 응답·로그·DB에 보관하지 않습니다.</p>
+              <p class="award-search-boundary" role="note"><strong>개찰일 기준 외부 API 실시간 조회</strong> · 최종 낙찰일 기준 검색이 아닙니다. AI 모델을 호출하지 않고 PAI LOOP DB에도 저장하지 않으며 사업자등록번호는 응답·로그·DB에 보관하지 않습니다.</p>
 
               <div class="performance-panel award-results-panel" id="awardResultsPanel">
                 <div class="award-results-list" id="awardResultsList" role="list" aria-label="회사별 낙찰 결과 목록"></div>
@@ -994,9 +994,9 @@
           <p id="prespecHelpDialogSummary">사전규격 검색과 저장, 문서 분석은 서로 다른 단계입니다.</p>
           <ol class="prespec-guide-steps">
             <li><strong>입찰공고 전 단계</strong><span>발주기관이 규격을 미리 공개하고 의견을 받는 단계이며 최종 입찰공고와 다를 수 있습니다.</span></li>
-            <li><strong>검색·저장 OpenAI 0회</strong><span>저장 DB 검색은 외부 호출 0회, 나라장터 검색·선택 저장도 OpenAI 0회입니다.</span></li>
+            <li><strong>검색·저장 AI 모델 0회</strong><span>저장 DB 검색은 외부 호출 0회, 나라장터 검색·선택 저장도 AI 모델 0회입니다.</span></li>
             <li><strong>선택 저장</strong><span>나라장터 검색 결과가 자동 저장되지 않습니다. 필요한 사전규격만 저장 버튼으로 선택합니다.</span></li>
-            <li><strong>분석은 별도 비용 승인</strong><span>저장본 상세의 분석 버튼을 누르고 호출 상한과 공유 quota를 확인·승인한 때만 문서를 분석합니다.</span></li>
+            <li><strong>분석은 별도 실행</strong><span>저장본 상세의 분석 버튼을 눌렀을 때만 문서를 분석합니다. 시간당 총량 제한은 없고 중복 실행 잠금과 공고별 재시도 대기는 유지됩니다.</span></li>
             <li><strong>GO 판정 아님</strong><span>분석 결과는 요구조건을 미리 구조화한 참고자료이며 입찰 참여 GO/NO-GO를 결정하지 않습니다.</span></li>
           </ol>
         </div>
@@ -1049,7 +1049,7 @@
           </div>
         </header>
         <div class="source-link-dialog__body">
-          <p id="manualAnalysisTokenHelp">데모의 나라장터 외부 조회·저장과 유료 분석을 여는 숫자 4자리 PIN입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
+          <p id="manualAnalysisTokenHelp">데모의 나라장터 외부 조회·저장, 문서 분석, 최종 판단 저장을 여는 숫자 4자리 PIN입니다. 이 화면을 새로고침하면 입력값은 지워집니다.</p>
           <label class="manual-token-field" for="manualAnalysisTokenInput">
             <span>운영 PIN</span>
             <input id="manualAnalysisTokenInput" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required />
@@ -1080,7 +1080,7 @@
               <ul>
                 <li>저장된 전체 공고에서 즉시 검색</li>
                 <li>기존 자격·정량 점수와 판단 상태 확인</li>
-                <li>검색만으로 OpenAI 0회</li>
+                <li>검색만으로 AI 모델 0회</li>
               </ul>
             </section>
             <section class="notice-search-help-compare__pps">
@@ -1093,7 +1093,7 @@
               </ul>
             </section>
           </div>
-          <p class="notice-search-help-cost"><strong>검색 → 저장 → 분석·판단 실행</strong><span>검색·저장은 OpenAI를 호출하지 않습니다. 분석·판단 실행은 나라장터 API에서 확인된 공개 첨부를 분석하므로 비용이 발생할 수 있습니다.</span></p>
+          <p class="notice-search-help-cost"><strong>검색 → 저장 → 분석·판단 실행</strong><span>검색·저장은 AI 모델을 호출하지 않습니다. 분석·판단 실행에서만 n8n의 Claude를 사용합니다.</span></p>
         </div>
         <footer class="source-link-dialog__actions">
           <button class="button button--primary" type="submit" value="close">확인했습니다</button>
@@ -1119,6 +1119,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260824-searchfix1" defer></script>
+    <script src="./app.js?v=20260824-claude1" defer></script>
   </body>
 </html>

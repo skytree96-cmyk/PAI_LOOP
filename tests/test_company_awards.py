@@ -168,6 +168,43 @@ def test_company_award_client_exactly_post_filters_provider_rows() -> None:
     assert [record["title"] for record in records] == ["공공기관 리더십 교육"]
 
 
+def test_company_award_client_uses_february_safe_default_windows() -> None:
+    """PPS rejects Feb 20-Mar 21 as longer than one calendar month."""
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_payload([]))
+
+    with PpsCompanyAwardClient(
+        service_key="server-key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        records = list(
+            client.iter_company_awards(
+                start=date(2026, 2, 20),
+                end=date(2026, 3, 21),
+                business_number="1058201810",
+            )
+        )
+
+    assert records == []
+    # Newest windows are fetched first, but the underlying fixed windows must
+    # remain at most 28 inclusive days even across February.
+    assert [
+        (
+            request.url.params["inqryBgnDt"],
+            request.url.params["inqryEndDt"],
+        )
+        for request in requests
+    ] == [
+        ("202603200000", "202603212359"),
+        ("202602200000", "202603192359"),
+    ]
+
+
 class _FakeCompanyAwardClient:
     instances: list["_FakeCompanyAwardClient"] = []
 
@@ -189,6 +226,7 @@ class _FakeCompanyAwardClient:
 
     def iter_company_awards(self, **kwargs: object):
         assert kwargs["business_number"] == "1058201810"
+        assert kwargs["max_window_days"] == 28
         assert isinstance(kwargs["deadline_monotonic"], float)
         self.request_count += 1
         yield {

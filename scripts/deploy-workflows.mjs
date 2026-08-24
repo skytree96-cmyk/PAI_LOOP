@@ -80,11 +80,14 @@ function validateRepositorySafetyContracts(definitions) {
   assert(continuation, "analysis continuation workflow is required");
   const teamsDelivery = definitions.find(({ key }) => key === "pai-loop-12-teams-daily-delivery");
   assert(teamsDelivery, "independent Teams delivery workflow is required");
+  const claudeGateway = definitions.find(({ key }) => key === "pai-loop-13-claude-extraction-gateway");
+  assert(claudeGateway, "isolated Claude extraction gateway workflow is required");
   for (const definition of definitions) {
     if (
       definition.key === daily.key
       || definition.key === continuation.key
       || definition.key === teamsDelivery.key
+      || definition.key === claudeGateway.key
     ) continue;
     assert(
       definition.config.publish === false,
@@ -112,6 +115,80 @@ function validateRepositorySafetyContracts(definitions) {
   assert(
     validTeamsPromotion,
     "workflow 12 may publish only after credential binding, target selection, and verified-live-e2e",
+  );
+  const validClaudePromotion = (
+    claudeGateway.config.publish === false
+    && claudeGateway.config.promotionState === "awaiting-live-e2e"
+  ) || (
+    claudeGateway.config.publish === true
+    && claudeGateway.config.promotionState === "verified-live-e2e"
+  );
+  assert(
+    validClaudePromotion,
+    "workflow 13 may publish only after both credentials are bound and verified-live-e2e",
+  );
+
+  const claudeNodes = new Map(
+    claudeGateway.workflow.nodes.map((node) => [node.name, node]),
+  );
+  const claudeWebhook = claudeNodes.get("Claude Extraction Webhook");
+  const claudeValidation = claudeNodes.get("Validate Gateway Request");
+  const claudeChain = claudeNodes.get("Claude JSON Extraction");
+  const claudeModel = claudeNodes.get("Claude Sonnet 4.6");
+  const claudeResponse = claudeNodes.get("Normalize Gateway Response");
+  assert(
+    claudeGateway.workflow.nodes.length === 5
+      && claudeWebhook?.type === "n8n-nodes-base.webhook"
+      && claudeValidation?.type === "n8n-nodes-base.code"
+      && claudeChain?.type === "@n8n/n8n-nodes-langchain.chainLlm"
+      && claudeModel?.type === "@n8n/n8n-nodes-langchain.lmChatAnthropic"
+      && claudeResponse?.type === "n8n-nodes-base.code",
+    "workflow 13 must contain only webhook, validation, Claude chain/model, and response nodes",
+  );
+  assert(
+    claudeWebhook.parameters?.httpMethod === "POST"
+      && claudeWebhook.parameters?.path === "pai-loop-claude/responses"
+      && claudeWebhook.parameters?.authentication === "headerAuth"
+      && claudeWebhook.parameters?.responseMode === "lastNode"
+      && claudeWebhook.parameters?.options?.responseData === "firstEntryJson",
+    "workflow 13 webhook must be the authenticated bounded response endpoint",
+  );
+  assert(
+    claudeModel.parameters?.model?.value === "claude-sonnet-4-6"
+      && claudeModel.parameters?.options?.maxTokensToSample === "={{ $json.max_output_tokens }}"
+      && claudeModel.parameters?.options?.temperature === 0,
+    "workflow 13 must pin Claude Sonnet 4.6 with bounded deterministic output",
+  );
+  const claudeSerialised = JSON.stringify(claudeGateway.workflow);
+  assert(
+    claudeSerialised.includes("request fields do not match the extraction gateway contract")
+      && claudeSerialised.includes("body.max_output_tokens > 12000")
+      && claudeSerialised.includes("body.input.length !== 2")
+      && claudeSerialised.includes("format.type !== 'json_schema'")
+      && claudeSerialised.includes("format.strict !== true")
+      && claudeSerialised.includes("schemaJson.length > 64000")
+      && claudeSerialised.includes("combinedCharacters > 210000")
+      && claudeSerialised.includes("status: 'completed'")
+      && claudeSerialised.includes("output_text: outputText")
+      && claudeSerialised.includes("input_tokens: inputTokens")
+      && claudeSerialised.includes("output_tokens: outputTokens"),
+    "workflow 13 must validate the OpenAI-style request and return the provider-neutral envelope",
+  );
+  assert(
+    claudeGateway.workflow.settings?.saveDataSuccessExecution === "none"
+      && claudeGateway.workflow.settings?.saveDataErrorExecution === "none"
+      && claudeGateway.workflow.settings?.saveManualExecutions === false,
+    "workflow 13 must not persist document prompts or model outputs in n8n executions",
+  );
+  assert(
+    !claudeGateway.workflow.nodes.some((node) => (
+      node.type === "n8n-nodes-base.scheduleTrigger"
+      || node.type === "n8n-nodes-base.httpRequest"
+      || node.type.includes("agent")
+      || node.type.includes("memory")
+      || node.type.includes("Tool")
+    )),
+    "workflow 13 must remain a tool-free, stateless, request-only Claude gateway",
   );
   assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
   const schedules = daily.workflow.nodes.filter(

@@ -40,6 +40,12 @@
       "contractVersion": "teams-delivery-1.3",
       "promotionState": "verified-live-e2e"
     },
+    "pai-loop-13-claude-extraction-gateway": {
+      "file": "workflows/pai-loop-13-claude-extraction-gateway.json",
+      "publish": false,
+      "contractVersion": "claude-extraction-gateway-1.0",
+      "promotionState": "awaiting-live-e2e"
+    },
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
       "publish": false

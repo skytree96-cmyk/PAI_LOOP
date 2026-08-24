@@ -30,7 +30,11 @@ _MAX_SEARCH_API_CALLS = 60
 # Three calendar years can contain a leap day; inclusive date bounds therefore
 # need room for 1,097 days.
 _MAX_SEARCH_DAYS = 1097
-_WINDOW_DAYS = 30
+# The PPS PPSSrch contract says "one month", not "30 days".  In particular,
+# a 30-day inclusive window beginning in February is rejected with provider
+# resultCode=07 (input range exceeded).  Twenty-eight inclusive days are valid
+# in every calendar month and keep the operator search deterministic.
+_WINDOW_DAYS = 28
 _ROWS_PER_PAGE = 100
 # The current Render deployment runs one application worker, so a process lock
 # prevents overlapping operator searches without blocking the separate manual

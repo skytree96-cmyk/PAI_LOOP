@@ -199,6 +199,74 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert "never reverse 이상/초과/이하/미만" in user_prompt
 
 
+def test_n8n_claude_gateway_uses_scoped_header_and_compatible_response() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("X-PAI-LOOP-API-KEY")
+        captured["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200,
+            json={
+                "id": "n8n-execution-test",
+                "status": "completed",
+                "model": "claude-sonnet-4-6",
+                "output_text": json.dumps(valid_output(), ensure_ascii=False),
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                },
+            },
+        )
+
+    with OpenAIExtractionClient(
+        api_key="server-boundary-key",
+        model="claude-sonnet-4-6",
+        provider="n8n_claude",
+        base_url="https://n8n.example/webhook/pai-loop-claude",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        outcome = client.extract(
+            document_text="참가자격: 부산광역시에 소재한 업체만 참여할 수 있다.",
+            allowed_attachment_ids={"ATT-1"},
+        )
+
+    assert outcome.status == "ACCEPTED"
+    assert outcome.model == "claude-sonnet-4-6"
+    assert captured == {
+        "url": "https://n8n.example/webhook/pai-loop-claude/responses",
+        "auth": "server-boundary-key",
+        "authorization": None,
+    }
+
+
+def test_n8n_claude_gateway_does_not_repeat_ambiguous_http_failures() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={"message": "temporary"})
+
+    with OpenAIExtractionClient(
+        api_key="server-boundary-key",
+        model="claude-sonnet-4-6",
+        provider="n8n_claude",
+        base_url="https://n8n.example/webhook/pai-loop-claude",
+        transport=httpx.MockTransport(handler),
+        max_retries=3,
+    ) as client:
+        outcome = client.extract(
+            document_text="참가자격 원문",
+            allowed_attachment_ids={"ATT-1"},
+        )
+
+    assert calls == 1
+    assert outcome.error_code == "HTTP_ERROR"
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_error"),
     [
