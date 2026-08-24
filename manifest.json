@@ -42,9 +42,9 @@
     },
     "pai-loop-13-claude-extraction-gateway": {
       "file": "workflows/pai-loop-13-claude-extraction-gateway.json",
-      "publish": false,
-      "contractVersion": "claude-extraction-gateway-1.0",
-      "promotionState": "awaiting-live-e2e"
+      "publish": true,
+      "contractVersion": "claude-extraction-gateway-1.1",
+      "promotionState": "verified-live-e2e"
     },
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
