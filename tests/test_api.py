@@ -272,6 +272,18 @@ def test_ended_scope_combines_expired_and_closed_with_dashboard_list_parity(
     client: TestClient,
 ) -> None:
     client.post("/api/v1/ingestion/replay")
+    unanalysed = client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": "MANUAL-CLOSED-UNANALYSED",
+            "bid_notice_no": "MANUAL-CLOSED-UNANALYSED",
+            "title": "분석 전 종료 공고",
+            "agency": "공공기관",
+            "deadline": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "status": "CLOSED",
+        },
+    )
+    assert unanalysed.status_code == 201, unanalysed.text
     with client.app.state.session_factory() as session:
         expired = session.scalar(select(Notice).where(Notice.notice_key == "SYN-PASS-001"))
         closed = session.scalar(select(Notice).where(Notice.notice_key == "SYN-REVIEW-001"))
@@ -288,17 +300,20 @@ def test_ended_scope_combines_expired_and_closed_with_dashboard_list_parity(
         params={"status": "ENDED", "analysis_state": "EVALUATED"},
     ).json()
     assert dashboard["totals"]["active"] == 1
-    assert dashboard["ended_count"] == len(ended_rows) == 2
+    assert dashboard["ended_count"] == len(ended_rows) == 3
     assert dashboard["analyzed_ended_count"] == len(analyzed_ended_rows) == 2
     assert dashboard["cancelled_count"] == 0
     assert dashboard["visible_ended_count"] == 2
-    assert dashboard["closed_count"] == 1
+    assert dashboard["closed_count"] == 2
     assert dashboard["expired_count"] == 1
     assert {item["status"] for item in analyzed_ended_rows} == {"CLOSED", "EXPIRED"}
+    assert next(
+        item for item in ended_rows if item["notice_key"] == "MANUAL-CLOSED-UNANALYSED"
+    )["latest_evaluation"] is None
     assert all(item["provider_disposition"] is None for item in ended_rows)
     assert all(item["provider_event_kind"] is None for item in ended_rows)
     assert all(item["provider_changed_at"] is None for item in ended_rows)
-    assert len(client.get("/api/v1/notices", params={"status": "CLOSED"}).json()) == 1
+    assert len(client.get("/api/v1/notices", params={"status": "CLOSED"}).json()) == 2
     assert len(client.get("/api/v1/notices", params={"status": "EXPIRED"}).json()) == 1
     assert len(client.get("/api/v1/notices", params={"status": "OPEN"}).json()) == 1
 
@@ -1527,12 +1542,24 @@ def test_cancel_after_extension_projects_one_representative_and_blocks_all_write
             item for item in rows if item["notice_key"] == current_key
         )
         assert current_summary["latest_evaluation"] is None
+        assert current_summary["historical_evaluation"]["id"] == evaluation_id
+        assert current_summary["historical_evaluation"]["eligibility"] == "PASS"
+        assert (
+            current_summary["historical_evaluation_reason_code"]
+            == "PROVIDER_CANCELLED"
+        )
+        assert "현재 입찰 판단에는 사용하지 않습니다" in current_summary[
+            "historical_evaluation_reason"
+        ]
         assert current_summary["recommendation"] is None
         assert historical_detail["provider_disposition"] is None
+        assert historical_detail["historical_evaluation"] is None
         assert current_detail["provider_disposition"] == "CANCELLED"
         assert current_detail["provider_event_kind"] == "취소공고"
         assert current_detail["provider_changed_at"].endswith("+00:00")
         assert current_detail["latest_evaluation"] is None
+        assert current_detail["historical_evaluation"]["id"] == evaluation_id
+        assert current_detail["historical_evaluation_reason_code"] == "PROVIDER_CANCELLED"
         assert current_detail["recommendation"] is None
         assert len(current_detail["decisions"]) == 1
         assert dashboard["cancelled_count"] == 1
@@ -1650,6 +1677,12 @@ def test_same_key_provider_update_hides_stale_evaluation_and_recommendation(
 
         after = live_client.get(f"/api/v1/notices/{notice_key}").json()
         assert after["latest_evaluation"] is None
+        assert after["historical_evaluation"]["eligibility"] == "PASS"
+        assert (
+            after["historical_evaluation_reason_code"]
+            == "NOTICE_CHANGED_AFTER_ANALYSIS"
+        )
+        assert "재판정되지 않아 당시 분석값" in after["historical_evaluation_reason"]
         assert after["recommendation"] is None
         assert after["ingestion_state"] == "VERSIONED"
         current_evaluated = live_client.get(

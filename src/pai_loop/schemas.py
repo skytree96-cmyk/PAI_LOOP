@@ -220,6 +220,16 @@ class NoticeSummary(ApiModel):
     recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
     recommendation_updated_at: datetime | None = None
     latest_evaluation: EvaluationOut | None = None
+    # A PPS revision or deadline change can make the latest stored evaluation
+    # unsuitable for an active decision without deleting it.  Keep that prior
+    # result in an explicitly historical projection so ended-notice screens do
+    # not look as though their data disappeared.
+    historical_evaluation: EvaluationOut | None = None
+    historical_evaluation_reason_code: Literal[
+        "NOTICE_CHANGED_AFTER_ANALYSIS",
+        "PROVIDER_CANCELLED",
+    ] | None = None
+    historical_evaluation_reason: str | None = None
     department_ranking: DepartmentRankingOut | None = None
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)
     department_review_candidates: list[DepartmentRankingOut] = Field(default_factory=list)

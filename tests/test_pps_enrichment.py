@@ -21,6 +21,7 @@ from pai_loop.pps_enrichment import (
     _digest,
     build_attachment_manifest,
     build_notice_metadata,
+    current_retryable_pps_attachment_ids,
     download_public_attachment,
     department_keyword_coverage_count,
     extract_document_text,
@@ -1683,7 +1684,7 @@ def test_retryable_review_creates_fresh_attempt_after_cooldown_then_reuses() -> 
     with factory() as session:
         first_version = session.get(NoticeVersion, first.version_id)
         assert first_version is not None
-        first_version.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        first_version.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
         session.commit()
     with factory() as session:
         second = enrich_notice_from_pps(
@@ -1710,6 +1711,92 @@ def test_retryable_review_creates_fresh_attempt_after_cooldown_then_reuses() -> 
     assert first.openai_calls == second.openai_calls == 1
     assert third.openai_calls == 0
     assert _RetryableReviewClient.calls == 2
+    engine.dispose()
+
+
+def test_targeted_manual_retry_bypasses_review_cooldown_once() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-TARGETED-REVIEW-RETRY",
+    )
+    _RetryableReviewClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+        )
+    with factory() as session:
+        first_version = session.get(NoticeVersion, first.version_id)
+        assert first_version is not None
+        attachment_id = first_version.source_payload["attachment_id"]
+        assert current_retryable_pps_attachment_ids(session, notice_id) == [
+            attachment_id
+        ]
+    with factory() as session:
+        targeted = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+            retry_review_attachment_ids=[attachment_id],
+        )
+    with factory() as session:
+        continuation = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+        )
+
+    assert first.status == targeted.status == continuation.status == "REVIEW"
+    assert first.openai_calls == targeted.openai_calls == 1
+    assert continuation.openai_calls == 0
+    assert _RetryableReviewClient.calls == 2
+    engine.dispose()
+
+
+def test_targeted_manual_retry_never_reopens_accepted_attachment() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-TARGETED-ACCEPTED-REUSE",
+    )
+    _CountingExtractionClient.calls = 0
+    with factory() as session:
+        accepted = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+    with factory() as session:
+        accepted_version = session.get(NoticeVersion, accepted.version_id)
+        assert accepted_version is not None
+        attachment_id = accepted_version.source_payload["attachment_id"]
+        assert current_retryable_pps_attachment_ids(session, notice_id) == []
+    with factory() as session:
+        repeated = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+            retry_review_attachment_ids=[attachment_id],
+        )
+
+    assert accepted.status == "COMPLETED"
+    assert repeated.status == "REUSED"
+    assert repeated.openai_calls == 0
+    assert repeated.version_id == accepted.version_id
+    assert _CountingExtractionClient.calls == 1
     engine.dispose()
 
 

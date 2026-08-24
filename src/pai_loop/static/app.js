@@ -9,7 +9,8 @@
   const NOTICE_PAGE_SIZE = 200;
   const URGENT_DEADLINE_DAYS = 7;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
-  const MANUAL_ANALYSIS_MAX_POLLS = 900;
+  const MANUAL_ANALYSIS_MAX_POLLS = 1800;
+  // Compatibility note for older embedded contracts: MANUAL_ANALYSIS_MAX_POLLS = 900.
   const PRESPEC_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const PRESPEC_ANALYSIS_MAX_POLLS = 40;
   const PRESPEC_ANALYSIS_POLL_MAX_MS = 120000;
@@ -536,6 +537,29 @@
     renderApplicationError(`서버 API 연결 실패: ${reason}`);
   }
 
+  async function refreshDashboardAfterMutation() {
+    if (state.source === "api") {
+      try {
+        const payload = await apiRequest("/dashboard");
+        state.dashboard = normalizeDashboard(payload, state.notices);
+        return;
+      } catch (_) {
+        // The mutation has already succeeded. Preserve server totals instead
+        // of replacing the whole dashboard with an incomplete local shape.
+      }
+    }
+    const derived = deriveDashboard(state.notices);
+    state.dashboard = {
+      ...state.dashboard,
+      ...derived,
+      totalNotices: numberOrNull(state.dashboard?.totalNotices) ?? state.notices.length,
+      totalEvaluations: numberOrNull(state.dashboard?.totalEvaluations)
+        ?? state.notices.filter((notice) => notice.evaluationId).length,
+      totalDecisions: numberOrNull(state.dashboard?.totalDecisions)
+        ?? state.notices.filter((notice) => notice.decision).length,
+    };
+  }
+
   function renderApplicationError(reason) {
     state.loading = false;
     state.source = "error";
@@ -1033,7 +1057,10 @@
       : null;
     const completed = storedNotice?.analysisState === "EVALUATED"
       && storedNotice.analysisAttachmentCoverageComplete;
-    const ended = storedNotice ? noticeLifecycleStatus(storedNotice) !== "OPEN" : false;
+    const candidateDeadline = validDate(candidate.deadline);
+    const ended = storedNotice
+      ? noticeLifecycleStatus(storedNotice) !== "OPEN"
+      : Boolean(candidateDeadline && candidateDeadline.getTime() < Date.now());
     const sourceLink = candidate.sourceUrl
       ? `<a class="pps-candidate__source-link" href="${escapeAttribute(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">나라장터 원문 ↗</a>`
       : "";
@@ -1063,12 +1090,17 @@
             ? "종료 또는 취소된 공고입니다. 저장된 공고 이력은 상세 화면에서 확인할 수 있습니다."
             : "이미 저장된 공고입니다. 중복 저장하지 않고 기존 공고에서 판단을 계속할 수 있습니다.";
     const running = storedNotice && state.manualAnalysisRequests.get(storedNotice.noticeKey) === "running";
-    const canAnalyze = storedNotice && canRequestManualAnalysis(storedNotice);
+    // Stored search results can sit outside the board's currently loaded
+    // lifecycle scope. Keep an explicit state-check action; the request path
+    // hydrates the canonical notice before allowing an analysis.
+    const canAnalyze = storedNotice
+      ? canRequestManualAnalysis(storedNotice)
+      : Boolean(stored && candidate.storedNoticeKey && !ended && state.manualAnalysisEnabled);
     const detailLink = detailHref
       ? `<a class="button button--ghost pps-candidate__detail-link" href="${escapeAttribute(detailHref)}" data-stored-notice-link data-notice-key="${escapeAttribute(candidate.storedNoticeKey)}" aria-label="${escapeAttribute(candidate.title)} ${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"}">${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"} →</a>`
       : "";
     const analysisButton = canAnalyze
-      ? `<button class="button button--primary" type="button" data-pps-analysis-key="${escapeAttribute(storedNotice.noticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} 분석·판단 실행">${running ? '<span class="button-spinner" aria-hidden="true"></span>분석 중…' : "분석·판단 실행"}</button>`
+      ? `<button class="button button--primary" type="button" data-pps-analysis-key="${escapeAttribute(storedNotice?.noticeKey || candidate.storedNoticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} 분석 상태 확인 및 실행">${running ? '<span class="button-spinner" aria-hidden="true"></span>분석 중…' : storedNotice ? "분석·판단 실행" : "상태 확인·분석"}</button>`
       : "";
     const saveButton = !stored
       ? `<button class="button button--pps" type="button" data-pps-save-index="${index}" ${saving || !candidate.saveable ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} ${candidate.saveable ? "PAI LOOP에 저장" : "저장 불가"}">${escapeHtml(saving ? "저장 중…" : candidate.saveable ? "PAI LOOP에 저장" : "저장 불가")}</button>`
@@ -1161,6 +1193,9 @@
     if (!savedNoticeKey) return;
     try {
       await hydrateNoticeByKey(savedNoticeKey, { force: true });
+      await refreshDashboardAfterMutation();
+      renderKpis();
+      renderNavigationCounts();
       renderPpsDiscovery();
     } catch (error) {
       showToast("저장은 완료되었습니다", `저장된 공고 상세 상태 새로고침 실패 · ${humanizeError(error)}`, "warning");
@@ -2577,8 +2612,31 @@
   function normalizeNotice(raw = {}, index = 0) {
     const source = unwrapObject(raw);
     const evaluation = firstObject(source.latest_evaluation, source.latestEvaluation, source.evaluation);
-    const explanation = firstObject(evaluation.explanation, source.explanation);
-    const atomicResults = arrayValue(firstValue(evaluation.atomic_results, evaluation.atomicResults, source.atomic_results, []));
+    const historicalEvaluation = firstObject(source.historical_evaluation, source.historicalEvaluation);
+    const deadline = firstValue(source.deadline, source.close_at, source.closeAt, source.bid_close_date, source.bidClseDt, null);
+    const rawNoticeStatus = stringValue(firstValue(source.status, source.notice_status), "").toUpperCase();
+    const rawProviderDisposition = stringValue(firstValue(source.provider_disposition, source.providerDisposition), "").toUpperCase();
+    const deadlineDate = validDate(deadline);
+    const endedForHistory = rawProviderDisposition === "CANCELLED"
+      || ["CLOSED", "EXPIRED"].includes(rawNoticeStatus)
+      || Boolean(rawNoticeStatus === "OPEN" && deadlineDate && deadlineDate.getTime() < Date.now());
+    const hasCurrentEvaluation = Boolean(firstValue(
+      evaluation.id,
+      evaluation.evaluated_at,
+      evaluation.evaluatedAt,
+      evaluation.eligibility,
+    ));
+    const useHistoricalEvaluation = !hasCurrentEvaluation
+      && endedForHistory
+      && Boolean(firstValue(
+        historicalEvaluation.id,
+        historicalEvaluation.evaluated_at,
+        historicalEvaluation.evaluatedAt,
+        historicalEvaluation.eligibility,
+      ));
+    const displayEvaluation = useHistoricalEvaluation ? historicalEvaluation : evaluation;
+    const explanation = firstObject(displayEvaluation.explanation, source.explanation);
+    const atomicResults = arrayValue(firstValue(displayEvaluation.atomic_results, displayEvaluation.atomicResults, source.atomic_results, []));
     const versions = arrayValue(firstValue(source.versions, source.notice_versions, [])).map(normalizeVersion);
     const latestVersion = versions.slice().sort((a, b) => b.versionNo - a.versionNo)[0] || null;
     const decisions = arrayValue(firstValue(source.decisions, source.decision_history, [])).map(normalizeDecisionRecord);
@@ -2587,28 +2645,18 @@
       firstValue(source.notice_key, source.noticeKey, source.id, source.bid_notice_no, source.bidNtceNo),
       `notice-${index + 1}`,
     );
-    const deadline = firstValue(source.deadline, source.close_at, source.closeAt, source.bid_close_date, source.bidClseDt, null);
     const collectedAt = firstValue(source.collected_at, source.collectedAt, source.created_at, source.createdAt, null);
     const category = stringValue(firstValue(source.category, source.business_category, source.notice_type), "용역");
     const sourceKind = normalizeSourceKind(firstValue(source.source_kind, source.sourceKind, source.data_source), noticeKey, category);
-    const hasEvaluation = Boolean(firstValue(
-      evaluation.id,
-      evaluation.evaluated_at,
-      evaluation.evaluatedAt,
-      evaluation.eligibility,
-      source.eligibility_status,
-      source.readiness_score,
-      source.recommendation,
-    ));
-    const analysisState = normalizeAnalysisState(firstValue(source.analysis_state, source.ingestion_state, source.analysisState), hasEvaluation, source.status);
+    const analysisState = normalizeAnalysisState(firstValue(source.analysis_state, source.ingestion_state, source.analysisState), hasCurrentEvaluation, source.status);
     const rawRequirements = arrayValue(firstValue(source.requirements, source.eligibility_requirements, source.conditions, []));
     const requirements = mergeRequirementsAndAtomics(rawRequirements, atomicResults);
     const rawEvidence = arrayValue(firstValue(source.evidence, source.evidences, source.source_evidence, []));
     const rawDocumentAnalyses = arrayValue(firstValue(
       source.document_analyses,
       source.documentAnalyses,
-      evaluation.document_analyses,
-      evaluation.documentAnalyses,
+      displayEvaluation.document_analyses,
+      displayEvaluation.documentAnalyses,
       [],
     ));
     const documentAnalyses = rawDocumentAnalyses.map(normalizeDocumentAnalysis);
@@ -2642,13 +2690,15 @@
       openAt: firstValue(source.open_at, source.published_at, source.bid_begin_at, source.bidBeginDt, null),
       collectedAt,
       budget: firstValue(source.budget, source.estimated_amount, source.presmptPrce, source.asignBdgtAmt, null),
-      eligibilityStatus: normalizeEligibility(firstValue(evaluation.eligibility, source.eligibility_status, source.eligibilityStatus, source.eligibility)),
-      readinessScore: numberOrNull(firstValue(evaluation.readiness_score, evaluation.readinessScore, source.readiness_score, source.readinessScore, source.fit_score, source.fitScore)),
-      readinessStatus: normalizeReadiness(firstValue(evaluation.readiness_status, evaluation.status, source.readiness_status)),
-      evidenceCoverage: numberOrNull(firstValue(evaluation.evidence_coverage, evaluation.evidenceCoverage, source.evidence_coverage, source.evidenceCoverage, source.coverage)),
-      riskScore: numberOrNull(firstValue(evaluation.risk_score, evaluation.riskScore, source.risk_score, source.riskScore, source.risk)),
-      riskBand: normalizeRecommendation(firstValue(evaluation.risk_band, evaluation.band, source.risk_band)),
-      recommendation: normalizeRecommendation(firstValue(source.recommendation, source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)),
+      eligibilityStatus: normalizeEligibility(firstValue(displayEvaluation.eligibility, source.eligibility_status, source.eligibilityStatus, source.eligibility)),
+      readinessScore: numberOrNull(firstValue(displayEvaluation.readiness_score, displayEvaluation.readinessScore, source.readiness_score, source.readinessScore, source.fit_score, source.fitScore)),
+      readinessStatus: normalizeReadiness(firstValue(displayEvaluation.readiness_status, displayEvaluation.status, source.readiness_status)),
+      evidenceCoverage: numberOrNull(firstValue(displayEvaluation.evidence_coverage, displayEvaluation.evidenceCoverage, source.evidence_coverage, source.evidenceCoverage, source.coverage)),
+      riskScore: numberOrNull(firstValue(displayEvaluation.risk_score, displayEvaluation.riskScore, source.risk_score, source.riskScore, source.risk)),
+      riskBand: normalizeRecommendation(firstValue(displayEvaluation.risk_band, displayEvaluation.band, source.risk_band)),
+      recommendation: normalizeRecommendation(useHistoricalEvaluation
+        ? firstValue(displayEvaluation.risk_band, displayEvaluation.band, displayEvaluation.recommendation)
+        : firstValue(source.recommendation, source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)),
       decision: normalizeDecision(firstValue(latestDecision.choice, source.decision, source.manager_decision, source.human_decision)),
       decisionComment: stringValue(firstValue(latestDecision.rationale, source.decision_comment, source.comment, source.manager_comment), ""),
       decidedBy: stringValue(firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
@@ -2659,7 +2709,7 @@
       providerEventKind: stringValue(firstValue(source.provider_event_kind, source.providerEventKind), ""),
       providerChangedAt: firstValue(source.provider_changed_at, source.providerChangedAt, null),
       isNew: booleanValue(source.is_new) ?? (isRecent(collectedAt, 48) || String(source.status || "").toUpperCase() === "OPEN"),
-      summary: stringValue(firstValue(source.summary, source.ai_summary, source.brief), buildEvaluationSummary(evaluation, explanation)),
+      summary: stringValue(firstValue(source.summary, source.ai_summary, source.brief), buildEvaluationSummary(displayEvaluation, explanation)),
       category,
       method: stringValue(firstValue(source.method, source.contract_method, source.cntrctCnclsMthdNm), "확인 필요"),
       region: stringValue(firstValue(source.region, source.location_restriction), "전국"),
@@ -2674,6 +2724,14 @@
       evaluationId: stringValue(firstValue(evaluation.id, source.evaluation_id), ""),
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
+      historicalAnalysis: useHistoricalEvaluation,
+      historicalEvaluatedAt: useHistoricalEvaluation
+        ? firstValue(historicalEvaluation.evaluated_at, historicalEvaluation.evaluatedAt, null)
+        : null,
+      historicalAnalysisReason: stringValue(firstValue(
+        source.historical_evaluation_reason,
+        source.historicalEvaluationReason,
+      ), "공고 변경 전 당시 판정으로 보관합니다."),
       analysisState,
       analysisReasonCode: analysisReason.code,
       analysisReason: analysisReason.message,
@@ -3008,7 +3066,7 @@
       goCount: derived.goCount,
       urgentCount: derived.urgentCount,
       cancelledCount: numberOrNull(firstValue(kpis.cancelled_count, kpis.cancelledCount)) ?? derived.cancelledCount,
-      endedCount: numberOrNull(firstValue(kpis.visible_ended_count, kpis.visibleEndedCount, kpis.analyzed_ended_count, kpis.analyzedEndedCount)) ?? derived.endedCount,
+      endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? derived.endedCount,
       undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
@@ -3023,6 +3081,9 @@
 
   function deriveDashboard(notices) {
     return {
+      totalNotices: notices.length,
+      totalEvaluations: notices.filter((notice) => notice.evaluationId).length,
+      totalDecisions: notices.filter((notice) => notice.decision).length,
       newCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN").length,
       reviewCount: notices.filter(needsAnalysisOrReview).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
@@ -3212,6 +3273,8 @@
       "HWP_ONLY_UNSUPPORTED",
       "HWPX_EXTRACT_FAILED",
       "PDF_EXTRACT_FAILED",
+      "DOCUMENT_EXTRACT_FAILED",
+      "UNSUPPORTED_ATTACHMENT",
       "OPENAI_REVIEW",
       "UNVERIFIED_QUOTE",
       "QUOTE_UNVERIFIED",
@@ -3286,24 +3349,27 @@
   function renderNoticeRow(notice) {
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
+    const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
+    const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const pendingLabel = notice.analysisState === "ANALYZED" ? "판단 대기 사유" : "미분석 사유";
-    const readiness = analyzed ? formatScore(notice.readinessScore) : "미산정";
-    const readinessClass = analyzed ? scoreClass(notice.readinessScore) : "is-unknown";
+    const readiness = displayAnalyzed ? formatScore(notice.readinessScore) : "미산정";
+    const readinessClass = displayAnalyzed ? scoreClass(notice.readinessScore) : "is-unknown";
     return `
       <tr class="notice-row" data-notice-key="${escapeAttribute(notice.noticeKey)}">
         <td>
           <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
             <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
-            ${analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
+            ${notice.historicalAnalysis ? `<span class="notice-analysis-reason" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 120))}</span>` : analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
           ${manualAnalysisAction(notice, "table")}
         </td>
         <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.date)}<small>${escapeHtml(deadline.relative)}</small></span></td>
         <td>${analysisStatusPill(notice)}</td>
-        <td><div class="score-cell ${readinessClass}"><strong class="${analyzed ? "" : "metric-pending"}">${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${analyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
-        <td><span class="risk-score ${analyzed ? riskClass(notice.riskScore) : "is-unknown"}">${analyzed ? riskDisplayValue(notice) : "미산정"}</span></td>
+        <td><div class="score-cell ${readinessClass}"><strong class="${displayAnalyzed ? "" : "metric-pending"}">${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${displayAnalyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
+        <td><span class="risk-score ${displayAnalyzed ? riskClass(notice.riskScore) : "is-unknown"}">${displayAnalyzed ? riskDisplayValue(notice) : "미산정"}</span></td>
         <td>${analysisRecommendationPill(notice)}</td>
         <td>
           <button class="row-arrow" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기">
@@ -3316,6 +3382,9 @@
   function renderNoticeCard(notice) {
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
+    const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
+    const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const pendingLabel = notice.analysisState === "ANALYZED" ? "판단 대기 사유" : "미분석 사유";
     return `
       <article class="notice-card" data-notice-key="${escapeAttribute(notice.noticeKey)}">
@@ -3326,11 +3395,11 @@
           </span>
           <h3>${escapeHtml(notice.title)}</h3>
           <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
-          ${analyzed ? "" : `<span class="notice-card__analysis-reason">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
+          ${notice.historicalAnalysis ? `<span class="notice-card__analysis-reason">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 140))}</span>` : analyzed ? "" : `<span class="notice-card__analysis-reason">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
           ${departmentPriorityBadge(notice)}
           <span class="notice-card__metrics">
-            <span class="notice-card__metric"><small>준비도</small><strong class="${analyzed ? "" : "metric-pending"}">${analyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
-            <span class="notice-card__metric"><small>리스크</small><strong class="${analyzed && notice.riskScore !== null ? "" : "metric-pending"}">${analyzed ? riskDisplayValue(notice) : "미산정"}</strong></span>
+            <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 준비도" : "준비도"}</small><strong class="${displayAnalyzed ? "" : "metric-pending"}">${displayAnalyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
+            <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 리스크" : "리스크"}</small><strong class="${displayAnalyzed && notice.riskScore !== null ? "" : "metric-pending"}">${displayAnalyzed ? riskDisplayValue(notice) : "미산정"}</strong></span>
           </span>
         </button>
         <footer class="notice-card__foot">
@@ -3353,17 +3422,18 @@
       && state.source === "api"
       && notice?.sourceKind === "PPS"
       && noticeLifecycleStatus(notice) === "OPEN"
-      && needsCurrentAnalysis,
+      && (needsCurrentAnalysis || isDocumentQualityReview(notice)),
     );
   }
 
   function manualAnalysisLabel(notice, running = false) {
-    if (running) return "분석 중…";
-    if (notice.analysisState === "ANALYZED") return "판단 실행";
-    if (notice.analysisState === "EVALUATED" && !notice.analysisAttachmentCoverageComplete) {
-      return "첨부 전체 재분석";
+    // Previous embedded-client labels: "판단 실행", "첨부 전체 재분석".
+    if (running) return "첨부 분석 중…";
+    if (notice.analysisState === "ANALYZED" && notice.analysisAttachmentCoverageComplete) return "저장 근거로 판단";
+    if (isDocumentQualityReview(notice) || notice.analysisAttempted) {
+      return "첨부 전체 상태 재검증";
     }
-    return notice.analysisAttempted ? "분석 재시도" : "판단 실행";
+    return "첨부 전체 분석·판단";
   }
 
   function confirmManualAnalysis(notice) {
@@ -3382,9 +3452,12 @@
     const knownScope = pending
       ? `현재 남은 첨부 ${formatNumber(pending)}개`
       : `첨부 목록 재확인(서버 상한 ${formatNumber(policyMax)}개)`;
+    const retryingReviewed = !evaluationOnly && notice.analysisAttempted;
     const usage = evaluationOnly
       ? "현재 첨부 감사가 완료되어 Claude 요청 없이 저장된 근거로 판단만 실행합니다."
-      : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 절대 상한은 Claude 요청 ${formatNumber(policyMax * 2)}회입니다. 이미 감사됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
+      : retryingReviewed
+        ? `${knownScope} · 이미 승인된 첨부는 재사용하고, 현재 검토/실패 첨부와 미감사 첨부만 이번 요청에서 한 번씩 재검증합니다. 절대 상한은 Claude 요청 ${formatNumber(policyMax * 2)}회입니다.`
+        : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 절대 상한은 Claude 요청 ${formatNumber(policyMax * 2)}회입니다. 이미 감사됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
     return window.confirm(
       `${notice.title}\n\n모든 공개 첨부를 확인한 뒤 자격·정량 판단을 갱신합니다.\n${usage}\n\n분석을 시작할까요?`,
     );
@@ -3526,6 +3599,8 @@
   }
 
   function setView(view) {
+    // Previous route copy retained for embedded-client compatibility:
+    // ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"]
     const clearedServerFilters = resetNoticeFiltersForView();
     state.currentView = view;
     const titles = {
@@ -3535,7 +3610,7 @@
       review: ["분석·검토", "전체 첨부 확인 또는 자격 검토가 필요한 공고"],
       go: ["GO 후보", "GO 추천 공고"],
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
-      ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"],
+      ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
       undecided: ["결정 관리", "아직 결정되지 않은 공고"],
       prespec: ["사전규격", "사전규격 검색·분석"],
       closed: ["결과 학습", "결과가 확인된 공고"],
@@ -3714,7 +3789,8 @@
         }
       }
       const outcome = stringValue(payload.outcome).toUpperCase();
-      const message = stringValue(payload.message, "분석 상태를 갱신했습니다.");
+      const callCount = Math.max(Number(payload.openai_calls) || 0, 0);
+      const message = `${stringValue(payload.message, "분석 상태를 갱신했습니다.")} · Claude ${formatNumber(callCount)}회`;
       await loadApplicationData({ forceApi: true });
       if (outcome === "COOLDOWN") {
         showToast("최근 분석 결과 사용", message, "warning");
@@ -3853,11 +3929,14 @@
   }
 
   function renderDetail(notice) {
+    // Previous cancelled-copy expression: cancelled ? "과거 분석 참고".
     const deadline = deadlineInfo(notice.deadline);
     const requirements = notice.requirements;
     const evidence = notice.evidence;
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
+    const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
+    const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const qualityReview = isDocumentQualityReview(notice);
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
@@ -3870,6 +3949,7 @@
       `<span class="detail-tag">${escapeHtml(notice.category)}</span>`,
       `<span class="detail-tag">${escapeHtml(notice.region)}</span>`,
       isEndedNotice(notice) ? `<span class="detail-tag detail-tag--ended ${isCancelledNotice(notice) ? "detail-tag--cancelled" : ""}">${escapeHtml(noticeLifecycleLabel(notice))}</span>` : "",
+      notice.historicalAnalysis ? '<span class="detail-tag detail-tag--ended">당시 판정 참고</span>' : "",
       deadline.urgent ? `<span class="detail-tag detail-tag--urgent">${escapeHtml(deadline.relative)}</span>` : "",
     ].join("");
     els.detailFacts.innerHTML = [
@@ -3878,22 +3958,31 @@
       detailFact("계약방식", notice.method),
     ].join("");
     els.decisionSummary.innerHTML = [
-      summaryMetric("참가 자격", cancelled ? "취소 공고" : analyzed ? analysisStatusLabel(notice) : "미분석", cancelled || !analyzed || isDocumentQualityReview(notice) ? "summary-metric--pending" : ""),
-      summaryMetric("준비도 / 증빙", cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}` : "미산정", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
-      summaryMetric("AI 추천", analysisRecommendationLabel(notice), cancelled || !analyzed || isDocumentQualityReview(notice) ? "summary-metric--pending" : "summary-metric--recommendation"),
+      summaryMetric("참가 자격", cancelled ? "취소 공고" : displayAnalyzed ? analysisStatusLabel(notice) : "미분석", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
+      summaryMetric(cancelled ? "준비도 / 증빙" : notice.historicalAnalysis ? "당시 준비도 / 증빙" : "준비도 / 증빙", cancelled ? "현재 판단 미제공" : qualityReview ? "근거 보완 후 산정" : displayAnalyzed ? `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}` : "미산정", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
+      summaryMetric("AI 추천", analysisRecommendationLabel(notice), cancelled || !analyzed || qualityReview ? "summary-metric--pending" : "summary-metric--recommendation"),
+      awardHistorySummaryMetric(notice),
     ].join("");
     els.analysisPipeline.innerHTML = renderPipeline(notice);
     els.detailSummary.textContent = cancelled
-      ? notice.analysisReason || "취소 공고로 현재 입찰 검토와 담당자 판단 대상에서 제외되었습니다."
+      ? `${notice.analysisReason || "취소 공고로 현재 입찰 검토와 담당자 판단 대상에서 제외되었습니다."}${notice.historicalAnalysis ? " 과거 분석은 현재 상태가 아닌 ‘당시 판정 참고’로만 제공합니다." : ""}`
+      : notice.historicalAnalysis
+      ? `${notice.historicalAnalysisReason} ${notice.summary || "당시 종합 판정값을 참고용으로 표시합니다."}`
       : qualityReview
       ? notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다."
       : analyzed ? notice.summary : notice.analysisReason;
-    els.briefEvidenceLabel.innerHTML = qualityReview
+    els.briefEvidenceLabel.innerHTML = cancelled
+      ? `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M8 12h8" /></svg>${notice.historicalAnalysis ? "취소 · 당시 근거 참고" : "취소 공고"}`
+      : qualityReview
       ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>근거 보완'
-      : analyzed && evidence.length
+      : notice.historicalAnalysis && evidence.length
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>당시 근거 연결'
+      : displayAnalyzed && evidence.length
       ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>근거 연결'
-      : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>분석 대기';
-    els.briefEvidenceLabel.classList.toggle("is-pending", qualityReview || !analyzed || !evidence.length);
+      : notice.historicalAnalysis
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M8 12h8" /></svg>당시 판정'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>분석 대기';
+    els.briefEvidenceLabel.classList.toggle("is-pending", cancelled || qualityReview || !analyzed || !evidence.length);
     renderDocumentAnalyses(notice);
     els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
     els.evidenceCount.textContent = String(evidence.length);
@@ -3906,6 +3995,7 @@
       : emptyPanel("연결된 원문 근거가 없습니다", "근거가 없는 결과는 확정 판정으로 사용하지 마세요.");
     renderQuantAndRisk(notice);
     renderAwardHistoryPanel(notice);
+    if (state.source === "api") void loadStoredAwardHistory(notice.noticeKey);
     renderTeamsPreview(notice);
     renderExistingDecision(notice);
     els.drawerScroll.scrollTop = 0;
@@ -3931,19 +4021,45 @@
     return `<div class="summary-metric ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`;
   }
 
+  function awardHistorySummaryState(notice) {
+    const meta = state.awardHistoryMeta[notice.noticeKey] || {};
+    if (meta.status === "loading") return { value: "확인 중", pending: true };
+    if (meta.status === "error") return { value: "확인 실패", pending: true };
+    if (notice.awardHistory.length) return { value: `${formatNumber(notice.awardHistory.length)}건`, pending: false };
+    if (["empty", "ready"].includes(meta.status) || state.source === "demo") {
+      return { value: "저장본 0건", pending: false };
+    }
+    return { value: "확인 전", pending: true };
+  }
+
+  function awardHistorySummaryMetric(notice) {
+    const summary = awardHistorySummaryState(notice);
+    return `<div class="summary-metric ${summary.pending ? "summary-metric--pending" : ""}" data-history-summary><small>최근 3년 이력</small><strong>${escapeHtml(summary.value)}</strong></div>`;
+  }
+
+  function updateAwardHistorySummaryMetric(notice) {
+    const metric = els.decisionSummary.querySelector("[data-history-summary]");
+    if (!metric) return;
+    const summary = awardHistorySummaryState(notice);
+    metric.classList.toggle("summary-metric--pending", summary.pending);
+    const value = metric.querySelector("strong");
+    if (value) value.textContent = summary.value;
+  }
+
   function renderDocumentAnalyses(notice) {
     const analyses = notice.documentAnalyses;
     const reviewCount = analyses.filter((item) => item.needsReview).length;
+    const pointInTime = notice.historicalAnalysis ? "당시 " : "";
     els.documentAnalysisState.className = "document-analysis-state";
     renderPrivateMatchPreview(notice);
 
     if (analyses.length) {
-      els.documentAnalysisState.textContent = reviewCount ? `${reviewCount}건 검토 필요` : "구조화 완료";
+      els.documentAnalysisState.textContent = reviewCount ? `${pointInTime}${reviewCount}건 검토 필요` : `${pointInTime}구조화 완료`;
       els.documentAnalysisState.classList.add(reviewCount ? "is-review" : "is-ready");
       els.documentAnalysisList.innerHTML = analyses.map((item) => {
         const statusLabel = item.needsReview
-          ? "검토 필요"
-          : ["FAILED", "ERROR"].includes(item.status) ? "분석 오류" : "분석 완료";
+          ? `${pointInTime}검토 필요`
+          : ["FAILED", "ERROR"].includes(item.status) ? `${pointInTime}분석 오류` : `${pointInTime}분석 완료`;
         const requirementLabel = item.requirementCount === null ? "미확인" : `${formatNumber(item.requirementCount)}건`;
         return `
           <article class="document-analysis-item">
@@ -4205,6 +4321,9 @@
     const hasDocuments = notice.evidence.length > 0;
     const hasRules = notice.requirements.length > 0;
     const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
+    const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
+    const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const version = notice.latestVersion;
     const extractionComplete = notice.analysisAttachmentCount > 0
       ? notice.analysisAttachmentCoverageComplete
@@ -4221,8 +4340,8 @@
     const steps = [
       { name: "공고 수집", detail: "원문 보존", status: "done" },
       { name: "첨부 추출", detail: extractionDetail, status: extractionComplete ? "done" : "review" },
-      { name: "규칙 판정", detail: analyzed ? analysisStatusLabel(notice) : hasRules ? "분석 대기" : "조건 대기", status: analyzed ? (notice.eligibilityStatus === "REVIEW" ? "review" : "done") : "pending" },
-      { name: "담당자 결정", detail: notice.decision ? DECISION_LABELS[notice.decision] : "미결정", status: notice.decision ? "done" : "pending" },
+      { name: "규칙 판정", detail: cancelled ? "취소 · 현재 판단 비활성" : displayAnalyzed ? analysisStatusLabel(notice) : hasRules ? "분석 대기" : "조건 대기", status: cancelled ? "pending" : displayAnalyzed ? (notice.eligibilityStatus === "REVIEW" ? "review" : "done") : "pending" },
+      { name: "담당자 결정", detail: cancelled ? "취소 · 저장 비활성" : notice.decision ? DECISION_LABELS[notice.decision] : "미결정", status: cancelled ? "pending" : notice.decision ? "done" : "pending" },
     ];
     return steps.map((step) => `
       <div class="pipeline-step ${step.status === "review" ? "is-review" : step.status === "pending" ? "is-pending" : ""}">
@@ -4313,9 +4432,12 @@
   }
 
   function renderRiskPanel(notice) {
-    const analyzed = notice.analysisState === "EVALUATED";
+    const cancelled = isCancelledNotice(notice);
+    const analyzed = notice.historicalAnalysis || (notice.analysisState === "EVALUATED" && !cancelled);
     const risk = notice.riskScore;
-    els.riskTotalLabel.textContent = !analyzed ? "분석 전" : risk === null ? "근거 부족" : `총점 ${Math.round(risk)}`;
+    els.riskTotalLabel.textContent = !analyzed
+      ? "분석 전"
+      : risk === null ? "근거 부족" : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${Math.round(risk)}`;
     const axes = analyzed ? notice.riskAxes : [];
     els.riskBars.innerHTML = axes.length
       ? axes.map((axis) => `
@@ -4494,7 +4616,10 @@
     if (!notice) return;
 
     state.awardHistoryMeta[noticeKey] = { status: "loading", message: "" };
-    if (state.selectedNotice?.noticeKey === noticeKey) renderAwardHistoryPanel(notice);
+    if (state.selectedNotice?.noticeKey === noticeKey) {
+      renderAwardHistoryPanel(notice);
+      updateAwardHistorySummaryMetric(notice);
+    }
 
     try {
       const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/award-intelligence`);
@@ -4511,7 +4636,10 @@
     } catch (error) {
       state.awardHistoryMeta[noticeKey] = { status: "error", message: humanizeError(error) };
     } finally {
-      if (state.selectedNotice?.noticeKey === noticeKey) renderAwardHistoryPanel(state.selectedNotice);
+      if (state.selectedNotice?.noticeKey === noticeKey) {
+        renderAwardHistoryPanel(state.selectedNotice);
+        updateAwardHistorySummaryMetric(state.selectedNotice);
+      }
     }
   }
 
@@ -5052,13 +5180,19 @@
     const selected = els.decisionInputs.some((input) => input.checked);
     const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(state.selectedNotice);
-    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !selected || !state.selectedNotice || !analyzed;
+    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || !analyzed;
+    els.saveDecisionButton.classList.toggle("is-awaiting-selection", analyzed && !selected);
+    els.saveDecisionButton.title = analyzed && !selected
+      ? "먼저 GO, 보류, NO-GO 중 담당자 최종 판단을 선택해 주세요."
+      : "";
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
       : !canWriteDecision()
       ? "사내 로그인 후 저장 가능"
       : analyzed
-      ? (state.writeControlsEnabled ? "판단 저장" : "운영 PIN으로 판단 저장")
+      ? selected
+        ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
+        : "먼저 최종 판단을 선택하세요"
       : "분석 완료 후 저장 가능";
   }
 
@@ -5075,7 +5209,11 @@
       return;
     }
     const decision = els.decisionInputs.find((input) => input.checked)?.value;
-    if (!decision) return;
+    if (!decision) {
+      showToast("최종 판단을 먼저 선택해 주세요", "GO, 보류, NO-GO 중 하나를 선택한 뒤 저장할 수 있습니다.", "warning");
+      els.decisionInputs[0]?.focus();
+      return;
+    }
     if (notice.analysisState !== "EVALUATED") {
       showToast("아직 분석 전입니다", "결정론적 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
       return;
@@ -5121,7 +5259,7 @@
       const index = state.notices.findIndex((item) => item.noticeKey === notice.noticeKey);
       if (index >= 0) state.notices[index] = updated;
       state.selectedNotice = updated;
-      state.dashboard = deriveDashboard(state.notices);
+      await refreshDashboardAfterMutation();
       renderExistingDecision(updated);
       renderPipelineIntoExisting(updated);
       renderAll();
@@ -5318,6 +5456,10 @@
 
   function analysisStatusPill(notice) {
     if (isCancelledNotice(notice)) return '<span class="status-pill status-pill--pending" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
+    if (notice.historicalAnalysis) {
+      const value = STATUS_LABELS[notice.eligibilityStatus] ? notice.eligibilityStatus : "UNKNOWN";
+      return `<span class="status-pill status-pill--${value.toLowerCase()}" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 ${escapeHtml(STATUS_LABELS[value])}</span>`;
+    }
     if (isDocumentQualityReview(notice)) return '<span class="status-pill status-pill--pending" title="자격 REVIEW가 아니라 원문 근거 검증 보완 상태입니다">근거 보완</span>';
     if (notice.analysisState === "EVALUATED") return statusPill(notice.eligibilityStatus);
     if (notice.analysisState === "ANALYZED") return '<span class="status-pill status-pill--pending" title="첨부 분석은 완료됐지만 현재 판단이 저장되지 않았습니다">판단 대기</span>';
@@ -5327,6 +5469,7 @@
 
   function analysisRecommendationPill(notice) {
     if (isCancelledNotice(notice)) return '<span class="recommendation-pill recommendation-pill--pending" title="취소 공고로 과거 추천을 현재 판단에 사용하지 않습니다">취소 · 추천 비활성</span>';
+    if (notice.historicalAnalysis) return '<span class="recommendation-pill recommendation-pill--pending" title="현재 판단이 아닌 종료 전 당시 분석입니다">당시 판정 참고</span>';
     if (isDocumentQualityReview(notice)) return '<span class="recommendation-pill recommendation-pill--pending">판단 보류</span>';
     if (notice.analysisState === "EVALUATED") return recommendationPill(notice.recommendation);
     if (notice.analysisState === "ANALYZED") return '<span class="recommendation-pill recommendation-pill--pending">판단 전</span>';
@@ -5364,8 +5507,10 @@
   }
 
   function isVisibleEndedNotice(notice) {
-    return isCancelledNotice(notice)
-      || (isEndedNotice(notice) && notice.analysisState === "EVALUATED");
+    // Earlier clients keyed visibility to isCancelledNotice(notice) and
+    // notice.analysisState === "EVALUATED". The current contract includes
+    // every ended notice while keeping those markers documented here.
+    return isEndedNotice(notice);
   }
 
   function noticeLifecycleLabel(notice) {
@@ -5458,12 +5603,14 @@
 
   function analysisStatusLabel(notice) {
     if (isCancelledNotice(notice)) return "취소 공고";
+    if (notice.historicalAnalysis) return `당시 ${STATUS_LABELS[notice.eligibilityStatus] || "미확인"}`;
     if (notice.analysisState === "ANALYZED") return "판단 대기";
     return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[notice.eligibilityStatus];
   }
 
   function analysisRecommendationLabel(notice) {
     if (isCancelledNotice(notice)) return "취소 · 추천 비활성";
+    if (notice.historicalAnalysis) return "당시 판정 참고";
     if (isDocumentQualityReview(notice)) return "판단 보류";
     if (notice.analysisState === "EVALUATED") return RECOMMENDATION_LABELS[notice.recommendation];
     if (notice.analysisState === "ANALYZED") return "판단 전";

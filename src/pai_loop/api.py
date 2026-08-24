@@ -117,6 +117,44 @@ def _latest_evaluation(notice: Notice) -> Evaluation | None:
     return latest_current_evaluation(notice)
 
 
+def _latest_stored_evaluation(notice: Notice) -> Evaluation | None:
+    """Return the newest immutable evaluation regardless of currentness."""
+
+    return max(
+        notice.evaluations,
+        key=lambda item: _comparable_utc(item.evaluated_at),
+        default=None,
+    )
+
+
+def _evaluation_projection(
+    evaluation: Evaluation | None,
+    *,
+    public_view: bool,
+    historical: bool = False,
+) -> EvaluationOut | None:
+    if evaluation is None:
+        return None
+    projected = EvaluationOut.model_validate(evaluation)
+    if not public_view:
+        return projected
+    note = (
+        "공고 변경 전 당시 판정 요약입니다. 회사 사실값과 내부 증빙 식별자는 공개 화면에서 제외됩니다."
+        if historical
+        else "회사 사실값과 내부 증빙 식별자는 공개 화면에서 제외됩니다."
+    )
+    return projected.model_copy(
+        update={
+            "atomic_results": [],
+            "explanation": {
+                "public_view": True,
+                "historical": historical,
+                "note": note,
+            },
+        }
+    )
+
+
 def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime | None]:
     """Return only the immutable advisory stored by the latest analysis run.
 
@@ -279,7 +317,9 @@ def _summary(
         authority=provider_authority,
     )
     authoritative_cancelled = provider_disposition == "CANCELLED"
+    latest_stored = _latest_stored_evaluation(notice)
     latest = None if authoritative_cancelled else _latest_evaluation(notice)
+    historical = latest_stored if latest is None else None
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     analysis_reason = public_analysis_reason(
         notice.versions,
@@ -292,22 +332,28 @@ def _summary(
         else None
     )
     ingestion_state = "EVALUATED" if latest else "VERSIONED" if latest_version else "COLLECTED"
-    evaluation = EvaluationOut.model_validate(latest) if latest else None
+    evaluation = _evaluation_projection(latest, public_view=public_view)
+    historical_evaluation = _evaluation_projection(
+        historical,
+        public_view=public_view,
+        historical=True,
+    )
     recommendation, recommendation_updated_at = (
         (None, None)
         if authoritative_cancelled
         else _latest_system_recommendation(notice)
     )
-    if evaluation is not None and public_view:
-        evaluation = evaluation.model_copy(
-            update={
-                "atomic_results": [],
-                "explanation": {
-                    "public_view": True,
-                    "note": "회사 사실값과 내부 증빙 식별자는 공개 화면에서 제외됩니다.",
-                },
-            }
-        )
+    historical_reason_code = None
+    historical_reason = None
+    if historical_evaluation is not None:
+        if authoritative_cancelled:
+            historical_reason_code = "PROVIDER_CANCELLED"
+            historical_reason = "취소 전 당시 판정으로 보관하며 현재 입찰 판단에는 사용하지 않습니다."
+        else:
+            historical_reason_code = "NOTICE_CHANGED_AFTER_ANALYSIS"
+            historical_reason = (
+                "공고 버전 또는 마감일이 변경된 뒤 재판정되지 않아 당시 분석값으로 보관합니다."
+            )
     return NoticeSummary(
         notice_key=notice.notice_key,
         bid_notice_no=notice.bid_notice_no,
@@ -340,6 +386,9 @@ def _summary(
         recommendation=recommendation,
         recommendation_updated_at=recommendation_updated_at,
         latest_evaluation=evaluation,
+        historical_evaluation=historical_evaluation,
+        historical_evaluation_reason_code=historical_reason_code,
+        historical_evaluation_reason=historical_reason,
     )
 
 

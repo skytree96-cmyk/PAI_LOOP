@@ -79,7 +79,7 @@ PPS_PROCESSING_VERSION = "pps-document-processing-0.3.1"
 MAX_PDF_PAGES = 120
 MAX_HWPX_ENTRIES = 240
 MAX_HWPX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
-REVIEW_RETRY_COOLDOWN = timedelta(hours=24)
+REVIEW_RETRY_COOLDOWN = timedelta(hours=1)
 DETERMINISTIC_REVIEW_CODES = {
     "HWP_ONLY_UNSUPPORTED_R07",
     "HWP_BINARY_UNSUPPORTED",
@@ -735,6 +735,43 @@ def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> boo
         ):
             return False
     return True
+
+
+def current_retryable_pps_attachment_ids(
+    session: Session,
+    notice_id: str,
+) -> list[str]:
+    """Return current, manifest-bound REVIEW attachments worth one manual retry.
+
+    Accepted extraction rows are deliberately excluded even when a caller
+    supplies their attachment ID later. Deterministic format limitations are
+    also terminal: retrying those rows cannot improve coverage and would only
+    consume a bounded continuation slot.
+    """
+
+    versions = list(
+        session.scalars(
+            select(NoticeVersion)
+            .where(NoticeVersion.notice_id == notice_id)
+            .order_by(NoticeVersion.version_no.desc())
+        ).all()
+    )
+    attachments, _invalid_count, attempts = _current_manifest_attempts(versions)
+    retryable: list[str] = []
+    for attachment in attachments:
+        attachment_id = attachment["attachment_id"]
+        attempt = attempts.get(attachment_id)
+        payload = (
+            attempt.source_payload
+            if attempt is not None and isinstance(attempt.source_payload, dict)
+            else {}
+        )
+        if not payload or payload.get("status") == "ACCEPTED":
+            continue
+        if str(payload.get("error_code") or "") in DETERMINISTIC_REVIEW_CODES:
+            continue
+        retryable.append(attachment_id)
+    return retryable
 
 
 def current_pps_attachment_coverage(
@@ -1632,8 +1669,9 @@ def _matching_extraction_version(
     manifest_sha256: str,
     current_manifest_sha256: str,
     document_sha256: str,
+    reuse_review_attempts: bool = True,
 ) -> NoticeVersion | None:
-    """Reuse deterministic output; REVIEW retries are capped to once per day."""
+    """Reuse deterministic output; REVIEW retries observe the shared cooldown."""
 
     now = datetime.now(timezone.utc)
     for item in versions:
@@ -1658,6 +1696,8 @@ def _matching_extraction_version(
             ):
                 continue
             return item
+        if not reuse_review_attempts:
+            continue
         error_code = str(payload.get("error_code") or "")
         if error_code in DETERMINISTIC_REVIEW_CODES:
             return item
@@ -2507,6 +2547,7 @@ def _enrich_selected_pps_attachment(
     download_timeout_seconds: float,
     openai_timeout_seconds: float,
     openai_max_retries: int,
+    reuse_review_attempts: bool = True,
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
@@ -2531,6 +2572,7 @@ def _enrich_selected_pps_attachment(
             manifest_sha256=manifest_sha256,
             current_manifest_sha256=current_manifest_sha256,
             document_sha256=document_sha256,
+            reuse_review_attempts=reuse_review_attempts,
         )
         if prior is not None:
             return PpsEnrichmentResult(
@@ -2612,6 +2654,7 @@ def _enrich_selected_pps_attachment(
         manifest_sha256=manifest_sha256,
         current_manifest_sha256=current_manifest_sha256,
         document_sha256=document_sha256,
+        reuse_review_attempts=reuse_review_attempts,
     )
     if prior is not None:
         stored = _stored_attachment_result(
@@ -2915,6 +2958,7 @@ def enrich_notice_from_pps(
     openai_timeout_seconds: float = DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
     openai_max_retries: int = 0,
     deadline_monotonic: float | None = None,
+    retry_review_attachment_ids: Iterable[str] = (),
 ) -> PpsEnrichmentResult:
     """Audit and analyse every valid attachment in the current PPS manifest."""
 
@@ -2924,6 +2968,7 @@ def enrich_notice_from_pps(
         raise ValueError(
             f"max_attachments must equal the PPS manifest bound ({MAX_ATTACHMENTS_IN_MANIFEST})"
         )
+    targeted_review_ids = frozenset(retry_review_attachment_ids)
     with session.begin():
         notice = session.get(Notice, notice_id)
         if notice is None:
@@ -3008,12 +3053,25 @@ def enrich_notice_from_pps(
     last_version_id: str | None = None
     for attachment in attachments:
         stored_version = current_attempts.get(attachment["attachment_id"])
+        stored_payload = (
+            stored_version.source_payload
+            if stored_version is not None
+            and isinstance(stored_version.source_payload, dict)
+            else {}
+        )
+        targeted_review_retry = bool(
+            stored_version is not None
+            and attachment["attachment_id"] in targeted_review_ids
+            and stored_payload.get("status") != "ACCEPTED"
+            and str(stored_payload.get("error_code") or "")
+            not in DETERMINISTIC_REVIEW_CODES
+        )
         stored_result = (
             _stored_attachment_result(
                 stored_version,
                 attachments_discovered=discovered,
             )
-            if stored_version is not None
+            if stored_version is not None and not targeted_review_retry
             else None
         )
         if stored_result is not None:
@@ -3099,6 +3157,7 @@ def enrich_notice_from_pps(
                     download_timeout_seconds=download_timeout_seconds,
                     openai_timeout_seconds=openai_timeout_seconds,
                     openai_max_retries=openai_max_retries,
+                    reuse_review_attempts=not targeted_review_retry,
                 )
             except PpsPostOpenAIProcessingError as exc:
                 # The provider already processed a paid request.  Even if a

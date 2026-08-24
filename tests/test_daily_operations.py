@@ -517,6 +517,15 @@ def test_completed_analyzed_snapshot_stays_out_of_retry_queue(
     with client.app.state.session_factory() as session:
         imported = import_public_notice_seed(session)
         assert imported.requirement_count == 23
+        # The batch boundary now rejects every closed/expired notice, even
+        # for a direct caller.  Make this historical fixture an active notice
+        # before analysing it so the test exercises the completed-snapshot
+        # retry contract without bypassing the production lifecycle gate.
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        notice.published_at = datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
+        notice.deadline = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
+        notice.status = "OPEN"
+        session.commit()
 
     analysed = client.post(
         "/api/v1/notices/analysis/batch",
@@ -530,9 +539,6 @@ def test_completed_analyzed_snapshot_stays_out_of_retry_queue(
         # This assertion targets the daily queue's terminal snapshot boundary,
         # independent of the historical fixture's partial-document warning.
         run.status = "COMPLETED"
-        notice.published_at = datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
-        notice.deadline = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
-        notice.status = "OPEN"
         session.commit()
 
     briefing = client.get(

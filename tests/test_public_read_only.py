@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from pai_loop.api import _publication_safe_source_url
 from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop.main import create_app
+from pai_loop.models import Evaluation, Notice, NoticeVersion
 from pai_loop.pps_enrichment import PPS_PROCESSING_VERSION
 from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
 
@@ -93,6 +96,105 @@ def test_public_notice_response_removes_company_values_and_internal_decisions(mo
             f"/api/v1/notices/{notice_key}/decisions",
             json={"choice": "GO", "rationale": "must remain protected"},
         ).status_code == 401
+
+
+def test_public_historical_evaluation_keeps_aggregate_result_but_redacts_atomics(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PAI_LOOP_ENV", "development")
+    monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
+    monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    deadline = datetime.now(timezone.utc) - timedelta(days=1)
+
+    with TestClient(app) as client:
+        with app.state.session_factory() as session:
+            notice = Notice(
+                notice_key="PPS-PUBLIC-HISTORICAL-001",
+                bid_notice_no="R26BK-PUBLIC-HISTORICAL-001",
+                revision_no="00",
+                title="종료 공고 당시 판정",
+                agency="공개 발주기관",
+                published_at=deadline - timedelta(days=7),
+                deadline=deadline,
+                status="CLOSED",
+                category="용역",
+                estimated_amount=100_000_000,
+                source_url=None,
+                risk_dimensions=None,
+            )
+            evaluated_basis = NoticeVersion(
+                version_no=1,
+                file_sha256="a" * 64,
+                document_complete=True,
+                extraction_status="COMPLETE",
+                extraction_confidence=1.0,
+                source_payload={"kind": "PPS_NOTICE_METADATA"},
+            )
+            newer_material = NoticeVersion(
+                version_no=2,
+                file_sha256="b" * 64,
+                document_complete=True,
+                extraction_status="COMPLETE",
+                extraction_confidence=1.0,
+                source_payload={"kind": "PPS_NOTICE_METADATA"},
+            )
+            notice.versions.extend([evaluated_basis, newer_material])
+            session.add(notice)
+            session.flush()
+            notice.evaluations.append(
+                Evaluation(
+                    notice_version_id=evaluated_basis.id,
+                    evaluated_at=deadline - timedelta(days=2),
+                    deadline_snapshot_at=deadline,
+                    eligibility="PASS",
+                    reason_code="PASS",
+                    readiness_score=90,
+                    readiness_status="GREEN",
+                    evidence_coverage=80,
+                    risk_score=20,
+                    risk_band="GO",
+                    ruleset_version="public-history-test",
+                    atomic_results=[
+                        {
+                            "fact_key": "SECRET_COMPANY_FACT",
+                            "company_value": "never-public",
+                        }
+                    ],
+                    explanation={"internal_note": "never-public"},
+                )
+            )
+            session.commit()
+
+        private_detail = client.get(
+            "/api/v1/notices/PPS-PUBLIC-HISTORICAL-001",
+            headers=SERVER_HEADERS,
+        )
+        assert private_detail.status_code == 200
+        private_payload = private_detail.json()
+        assert private_payload["latest_evaluation"] is None
+        assert private_payload["historical_evaluation"]["atomic_results"][0][
+            "company_value"
+        ] == "never-public"
+
+        public_detail = client.get("/api/v1/notices/PPS-PUBLIC-HISTORICAL-001")
+        assert public_detail.status_code == 200
+        payload = public_detail.json()
+        assert payload["latest_evaluation"] is None
+        assert payload["historical_evaluation"]["eligibility"] == "PASS"
+        assert payload["historical_evaluation"]["readiness_score"] == 90
+        assert payload["historical_evaluation"]["atomic_results"] == []
+        assert payload["historical_evaluation"]["explanation"] == {
+            "public_view": True,
+            "historical": True,
+            "note": "공고 변경 전 당시 판정 요약입니다. 회사 사실값과 내부 증빙 식별자는 공개 화면에서 제외됩니다.",
+        }
+        assert (
+            payload["historical_evaluation_reason_code"]
+            == "NOTICE_CHANGED_AFTER_ANALYSIS"
+        )
+        assert "never-public" not in public_detail.text
+        assert "SECRET_COMPANY_FACT" not in public_detail.text
 
 
 def test_public_document_analysis_is_digest_bound_and_metadata_allowlisted(monkeypatch) -> None:

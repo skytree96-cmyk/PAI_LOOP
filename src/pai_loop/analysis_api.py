@@ -90,6 +90,13 @@ class AnalysisBatchRequest(ApiModel):
     # This is an exact provider-manifest contract, not an operator sampling
     # knob. A smaller value would silently restore the former one-file bug.
     max_attachments_per_notice: Literal[10] = MAX_ATTACHMENTS_IN_MANIFEST
+    # Narrow server-generated escape hatch for a public manual request. It
+    # names only current REVIEW attachments; ACCEPTED attachments remain
+    # reusable and ``force`` stays permanently false.
+    retry_review_attachment_ids: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_ATTACHMENTS_IN_MANIFEST,
+    )
     # Optional parent operation identity used by n8n backfill/daily chunk
     # orchestration. It never changes analysis semantics; it only links the
     # sanitised child audit to a resumable parent run.
@@ -107,6 +114,22 @@ class AnalysisBatchRequest(ApiModel):
             raise ValueError("notice_keys must be unique")
         return cleaned
 
+    @field_validator("retry_review_attachment_ids")
+    @classmethod
+    def validate_retry_review_attachment_ids(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("retry_review_attachment_ids must be unique")
+        for attachment_id in value:
+            suffix = attachment_id.removeprefix("PPS-ATT-")
+            if (
+                len(attachment_id) != 32
+                or not attachment_id.startswith("PPS-ATT-")
+                or len(suffix) != 24
+                or any(character not in "0123456789abcdef" for character in suffix)
+            ):
+                raise ValueError("retry_review_attachment_ids contains an invalid id")
+        return value
+
     @model_validator(mode="after")
     def validate_operation_claim(self) -> "AnalysisBatchRequest":
         operation_fields = (self.operation_id, self.segment_id, self.chunk_index)
@@ -119,6 +142,16 @@ class AnalysisBatchRequest(ApiModel):
         if self.operation_id is not None:
             if len(self.notice_keys) != 1 or self.max_notices != 1:
                 raise ValueError("operation chunks must contain exactly one notice")
+        if self.retry_review_attachment_ids and (
+            self.dry_run
+            or not self.enrich_missing
+            or len(self.notice_keys) != 1
+            or self.max_notices != 1
+            or self.operation_id is not None
+        ):
+            raise ValueError(
+                "targeted REVIEW retry requires one live, non-operation enrichment notice"
+            )
         return self
 
 
@@ -393,6 +426,13 @@ router = APIRouter(
 # contract. 0x5041494C is the stable ASCII namespace "PAIL".
 _PLANNER_ADVISORY_LOCK_KEY = 0x5041494C
 _PLANNER_PROCESS_LOCK = threading.RLock()
+# Batch claims use a separate namespace from planner arbitration. The durable
+# RUNNING-child overlap check below must be atomic with child creation, or a
+# manual request and a scheduled W11 chunk can both pass the check and start
+# the same paid attachment unit. PostgreSQL coordinates every web process;
+# SQLite (and other local/test dialects) use the process lock.
+_ANALYSIS_CLAIM_ADVISORY_LOCK_KEY = 0x50414942
+_ANALYSIS_CLAIM_PROCESS_LOCK = threading.RLock()
 
 
 def _serialize_analysis_planner(function):
@@ -449,13 +489,19 @@ def get_session(request: Request):
 DbSession = Annotated[Session, Depends(get_session)]
 
 
-def _create_batch_job(
+def _create_batch_job_locked(
     request: Request,
     payload: AnalysisBatchRequest,
 ) -> tuple[str, AnalysisBatchResponse | None]:
     job_id = str(uuid.uuid4())
     claim_generations: dict[str, int] = {}
+    reopen_child: IngestionJob | None = None
     with request.app.state.session_factory() as session:
+        if session.get_bind().dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": _ANALYSIS_CLAIM_ADVISORY_LOCK_KEY},
+            )
         if payload.operation_id is not None:
             parent = session.scalar(
                 select(IngestionJob)
@@ -573,15 +619,11 @@ def _create_batch_job(
                     ):
                         # The previous request failed between durable
                         # per-attachment persistence and atomic response
-                        # finalisation. Re-open this exact claim; replay reuses
-                        # every prior attachment outcome and safely continues.
-                        child_config.pop("requeue_notice_keys", None)
-                        child.request_json = child_config
-                        child.status = "RUNNING"
-                        child.error_code = None
-                        child.completed_at = None
-                        session.commit()
-                        return child.id, None
+                        # finalisation. Defer re-opening until the global
+                        # RUNNING-child check below; another manual/scheduled
+                        # claim may have started while this child was failed.
+                        reopen_child = child
+                        continue
                     raise HTTPException(
                         status_code=409,
                         detail="analysis chunk was already processed",
@@ -606,6 +648,47 @@ def _create_batch_job(
                         status_code=409,
                         detail="notice key was already claimed by another chunk",
                     )
+        # Operation-specific replay handling above deliberately runs first:
+        # exact retries still return their stored response (or their existing
+        # in-flight error). Only a genuinely new claim reaches this global
+        # arbitration boundary. Ignore orphan-age rows so an abandoned child
+        # cannot suppress work indefinitely; planner recovery may retain those
+        # rows for audit without making them effective claims.
+        claim_now = datetime.now(timezone.utc)
+        recent_cutoff = claim_now - timedelta(
+            seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS
+        )
+        requested_keys = set(payload.notice_keys)
+        recent_running_children = list(
+            session.scalars(
+                select(IngestionJob)
+                .where(
+                    IngestionJob.source == "ANALYSIS",
+                    IngestionJob.status == "RUNNING",
+                    IngestionJob.created_at >= recent_cutoff,
+                )
+                .with_for_update()
+            ).all()
+        )
+        if any(
+            requested_keys.intersection(child.notice_keys or [])
+            for child in recent_running_children
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="notice analysis is already in flight",
+            )
+        if reopen_child is not None:
+            # This exact claim can now resume without competing with a newer
+            # paid unit. Every durable attachment outcome remains reusable.
+            child_config = dict(reopen_child.request_json or {})
+            child_config.pop("requeue_notice_keys", None)
+            reopen_child.request_json = child_config
+            reopen_child.status = "RUNNING"
+            reopen_child.error_code = None
+            reopen_child.completed_at = None
+            session.commit()
+            return reopen_child.id, None
         request_json: dict[str, Any] = {
             "notice_count": len(payload.notice_keys),
             "dry_run": payload.dry_run,
@@ -614,6 +697,10 @@ def _create_batch_job(
             "max_notices": payload.max_notices,
             "max_attachments_per_notice": payload.max_attachments_per_notice,
         }
+        if payload.retry_review_attachment_ids:
+            request_json["retry_review_attachment_ids"] = list(
+                payload.retry_review_attachment_ids
+            )
         if payload.operation_id is not None:
             request_json["parent_job_id"] = payload.operation_id
             request_json["segment_id"] = payload.segment_id
@@ -633,6 +720,16 @@ def _create_batch_job(
         )
         session.commit()
     return job_id, None
+
+
+def _create_batch_job(
+    request: Request,
+    payload: AnalysisBatchRequest,
+) -> tuple[str, AnalysisBatchResponse | None]:
+    # Keep the fallback lock scoped only to claim arbitration and its commit;
+    # the potentially long enrichment/LLM execution happens after it releases.
+    with _ANALYSIS_CLAIM_PROCESS_LOCK:
+        return _create_batch_job_locked(request, payload)
 
 
 def _store_batch_response(
@@ -2502,6 +2599,7 @@ def _enrich_one_notice(
             openai_timeout_seconds=DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
             openai_max_retries=0,
             deadline_monotonic=deadline_monotonic,
+            retry_review_attachment_ids=payload.retry_review_attachment_ids,
         )
 
 
@@ -2524,8 +2622,7 @@ def run_notice_analysis_batch(
         inactive_automatic_keys = {
             notice.notice_key
             for notice in requested_notices
-            if payload.operation_id is not None
-            and (
+            if (
                 notice.status != "OPEN"
                 or _utc(notice.deadline) < datetime.now(timezone.utc)
             )

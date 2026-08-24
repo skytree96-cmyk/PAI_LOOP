@@ -81,6 +81,11 @@ def test_analysis_timeout_contract_fits_one_complete_unit_below_n8n_boundary() -
 def _seed_public_notice(client: TestClient) -> None:
     with client.app.state.session_factory() as session:
         result = import_public_notice_seed(session)
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        assert notice is not None
+        notice.status = "OPEN"
+        notice.deadline = datetime.now(timezone.utc) + timedelta(days=14)
+        session.commit()
     assert result.requirement_count == 23
 
 
@@ -271,6 +276,65 @@ def test_automatic_lease_rechecks_expiration_before_any_paid_work(
             and job.request_json.get("parent_job_id") == plan["job_id"]
         ]
         assert children == []
+
+
+@pytest.mark.parametrize("inactive_kind", ["closed", "expired"])
+def test_direct_batch_rechecks_inactive_notice_before_any_paid_work(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    inactive_kind: str,
+) -> None:
+    notice_key = f"MANUAL-DIRECT-INACTIVE-{inactive_kind.upper()}"
+    now = datetime.now(timezone.utc)
+    response = client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": notice_key,
+            "title": "직접 분석 마감 경계 검증",
+            "agency": "가상 기관",
+            "published_at": (now - timedelta(days=1)).isoformat(),
+            "deadline": (
+                now - timedelta(minutes=1)
+                if inactive_kind == "expired"
+                else now + timedelta(days=1)
+            ).isoformat(),
+            "status": "CLOSED" if inactive_kind == "closed" else "OPEN",
+        },
+    )
+    assert response.status_code == 201, response.text
+    monkeypatch.setattr(
+        analysis_api,
+        "_enrich_one_notice",
+        lambda *_args, **_kwargs: pytest.fail("inactive direct batch must not enrich"),
+    )
+    monkeypatch.setattr(
+        analysis_api,
+        "run_analysis_pipeline",
+        lambda *_args, **_kwargs: pytest.fail("inactive direct batch must not analyse"),
+    )
+
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["notice_keys"] == [notice_key]
+    with client.app.state.session_factory() as session:
+        children = list(
+            session.scalars(
+                select(IngestionJob).where(
+                    IngestionJob.source == "ANALYSIS",
+                    IngestionJob.notice_keys == [notice_key],
+                )
+            ).all()
+        )
+    assert children == []
 
 
 def test_batch_cancellation_after_job_reservation_stops_before_enrichment(
@@ -683,6 +747,48 @@ def test_analysis_batch_rejects_duplicates_and_force(client: TestClient) -> None
         json={"notice_keys": ["ONE"], "force": True},
     )
     assert force.status_code == 422
+    valid_attachment_id = f"PPS-ATT-{'a' * 24}"
+    duplicate_retry_target = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": ["ONE"],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "retry_review_attachment_ids": [
+                valid_attachment_id,
+                valid_attachment_id,
+            ],
+        },
+    )
+    assert duplicate_retry_target.status_code == 422
+    invalid_retry_target = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": ["ONE"],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "retry_review_attachment_ids": ["not-an-attachment"],
+        },
+    )
+    assert invalid_retry_target.status_code == 422
+    unbounded_retry_target = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": ["ONE"],
+            "retry_review_attachment_ids": [valid_attachment_id],
+        },
+    )
+    assert unbounded_retry_target.status_code == 422
+    multi_notice_retry_target = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": ["ONE", "TWO"],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "retry_review_attachment_ids": [valid_attachment_id],
+        },
+    )
+    assert multi_notice_retry_target.status_code == 422
     oversized_segment = client.post(
         "/api/v1/operations/analysis-backfills/plan",
         json={"execution_limit": 31},
@@ -2883,6 +2989,201 @@ def test_concurrent_planners_share_one_parent_and_one_segment(
         ).all()
     assert len(parents) == 1
     assert parents[0].notice_keys == [key]
+
+
+def test_concurrent_manual_and_scheduled_batch_claims_allow_one_running_child(
+    client: TestClient,
+) -> None:
+    key = "MANUAL-CONCURRENT-BATCH-CLAIM"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": key,
+            "bid_notice_no": key,
+            "title": "수동 자동 동시 분석 claim 방지",
+            "agency": "가상 기관",
+            "published_at": "2026-08-17T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    plan_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": [key],
+            "dry_run": True,
+            "execution_limit": 1,
+        },
+    )
+    assert plan_response.status_code == 200, plan_response.text
+    plan = plan_response.json()
+    manual_payload = analysis_api.AnalysisBatchRequest(
+        notice_keys=[key],
+        dry_run=True,
+        enrich_missing=True,
+        max_notices=1,
+    )
+    scheduled_payload = analysis_api.AnalysisBatchRequest(
+        notice_keys=[key],
+        dry_run=True,
+        enrich_missing=True,
+        max_notices=1,
+        operation_id=plan["job_id"],
+        segment_id=plan["segment_id"],
+        chunk_index=plan["chunk_indices"][0],
+    )
+    barrier = Barrier(2)
+    request = SimpleNamespace(app=client.app)
+
+    def claim(payload: analysis_api.AnalysisBatchRequest) -> tuple[int, str]:
+        barrier.wait(timeout=5)
+        try:
+            job_id, stored = analysis_api._create_batch_job(request, payload)
+        except analysis_api.HTTPException as exc:
+            return exc.status_code, str(exc.detail)
+        assert stored is None
+        return 200, job_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        manual_future = executor.submit(claim, manual_payload)
+        scheduled_future = executor.submit(claim, scheduled_payload)
+        outcomes = [manual_future.result(), scheduled_future.result()]
+
+    assert sorted(status for status, _detail in outcomes) == [200, 409]
+    assert [detail for status, detail in outcomes if status == 409] == [
+        "notice analysis is already in flight"
+    ]
+    with client.app.state.session_factory() as session:
+        children = list(
+            session.scalars(
+                select(IngestionJob).where(IngestionJob.source == "ANALYSIS")
+            ).all()
+        )
+    assert len(children) == 1
+    assert children[0].notice_keys == [key]
+    assert children[0].status == "RUNNING"
+
+
+def test_stale_running_batch_child_does_not_block_a_new_claim(
+    client: TestClient,
+) -> None:
+    key = "MANUAL-STALE-BATCH-CLAIM"
+    stale_at = datetime.now(timezone.utc) - timedelta(
+        seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS + 1
+    )
+    with client.app.state.session_factory() as session:
+        stale = IngestionJob(
+            source="ANALYSIS",
+            mode="LIVE",
+            status="RUNNING",
+            window_json={"scope": "NOTICE_KEYS"},
+            request_json={"notice_count": 1},
+            matched=1,
+            notice_keys=[key],
+            created_at=stale_at,
+        )
+        session.add(stale)
+        session.commit()
+        stale_id = stale.id
+
+    job_id, stored = analysis_api._create_batch_job(
+        SimpleNamespace(app=client.app),
+        analysis_api.AnalysisBatchRequest(
+            notice_keys=[key],
+            enrich_missing=True,
+            max_notices=1,
+        ),
+    )
+
+    assert stored is None
+    assert job_id != stale_id
+    with client.app.state.session_factory() as session:
+        children = list(
+            session.scalars(
+                select(IngestionJob).where(IngestionJob.source == "ANALYSIS")
+            ).all()
+        )
+    assert len(children) == 2
+    assert {child.status for child in children} == {"RUNNING"}
+
+
+def test_exact_requeue_waits_for_an_unrelated_running_claim(
+    client: TestClient,
+) -> None:
+    key = "MANUAL-REQUEUE-CROSS-CLAIM"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": key,
+            "bid_notice_no": key,
+            "title": "재개 claim 중복 실행 방지",
+            "agency": "가상 기관",
+            "published_at": "2026-08-17T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    plan = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": [key],
+            "dry_run": True,
+            "execution_limit": 1,
+        },
+    ).json()
+    with client.app.state.session_factory() as session:
+        failed = IngestionJob(
+            source="ANALYSIS",
+            mode="DRY_RUN",
+            status="FAILED",
+            window_json={"scope": "NOTICE_KEYS"},
+            request_json={
+                "parent_job_id": plan["job_id"],
+                "segment_id": plan["segment_id"],
+                "chunk_index": plan["chunk_indices"][0],
+                "work_generations": {key: 0},
+                "requeue_notice_keys": [key],
+            },
+            matched=1,
+            notice_keys=[key],
+            completed_at=datetime.now(timezone.utc),
+        )
+        competing = IngestionJob(
+            source="ANALYSIS",
+            mode="LIVE",
+            status="RUNNING",
+            window_json={"scope": "NOTICE_KEYS"},
+            request_json={"notice_count": 1},
+            matched=1,
+            notice_keys=[key],
+        )
+        session.add_all([failed, competing])
+        session.commit()
+        failed_id = failed.id
+
+    with pytest.raises(analysis_api.HTTPException) as raised:
+        analysis_api._create_batch_job(
+            SimpleNamespace(app=client.app),
+            analysis_api.AnalysisBatchRequest(
+                notice_keys=[key],
+                dry_run=True,
+                enrich_missing=True,
+                max_notices=1,
+                operation_id=plan["job_id"],
+                segment_id=plan["segment_id"],
+                chunk_index=plan["chunk_indices"][0],
+            ),
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "notice analysis is already in flight"
+    with client.app.state.session_factory() as session:
+        failed = session.get(IngestionJob, failed_id)
+        assert failed is not None
+        assert failed.status == "FAILED"
+        assert failed.request_json["requeue_notice_keys"] == [key]
 
 
 def test_concurrent_complete_and_daily_plan_never_append_to_terminal_parent(
