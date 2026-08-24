@@ -384,6 +384,108 @@ def test_notice_search_covers_all_stored_statuses_and_public_identifiers(
     assert client.get("/api/v1/notices", params={"q": "x" * 201}).status_code == 422
 
 
+def test_notice_search_matches_all_tokens_and_safe_korean_compound_variants(
+    client: TestClient,
+) -> None:
+    deadline = datetime.now(timezone.utc) + timedelta(days=30)
+    rows = (
+        {
+            "notice_key": "PPS-MANAGER-COMPETENCY-TARGET",
+            "bid_notice_no": "R26BK-MANAGER-001",
+            "title": "[긴급]5급 이상 일반직공무원 관리자 역량 강화 2기 교육훈련 운영 위탁 용역",
+            "agency": "서울특별시교육연수원",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+        {
+            "notice_key": "PPS-MANAGER-NO-COMPETENCY",
+            "bid_notice_no": "R26BK-MANAGER-002",
+            "title": "5급 이상 관리자 직무교육 운영 용역",
+            "agency": "가상기관",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+        {
+            "notice_key": "PPS-COMPETENCY-NO-GRADE",
+            "bid_notice_no": "R26BK-MANAGER-003",
+            "title": "관리자 역량교육 운영 용역",
+            "agency": "가상기관",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+        {
+            "notice_key": "PPS-MANAGER-WRONG-GRADE",
+            "bid_notice_no": "R26BK-MANAGER-004",
+            "title": "15급 이상 관리자 역량교육 운영 용역",
+            "agency": "가상기관",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+        {
+            "notice_key": "PPS-AI-TARGET",
+            "bid_notice_no": "R26BK-AI-001",
+            "title": "AI 교육 운영 용역",
+            "agency": "가상기관",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+        {
+            "notice_key": "PPS-LATIN-SUBSTRING-DISTRACTOR",
+            "bid_notice_no": "R26BK-LATIN-002",
+            "title": "PAID 교육 운영 용역",
+            "agency": "가상기관",
+            "deadline": deadline.isoformat(),
+            "status": "OPEN",
+        },
+    )
+    for row in rows:
+        created = client.post("/api/v1/notices", json=row)
+        assert created.status_code == 201, created.text
+
+    response = client.get(
+        "/api/v1/notices",
+        params={"q": "5급 이상 관리자 역량교육", "limit": 1},
+    )
+
+    assert response.status_code == 200
+    assert [item["notice_key"] for item in response.json()] == [
+        "PPS-MANAGER-COMPETENCY-TARGET"
+    ]
+
+    ranked_response = client.get(
+        "/api/v1/notices",
+        params={
+            "q": "5급 이상 관리자 역량교육",
+            "search_keywords": "ESG",
+            "limit": 1,
+        },
+    )
+    assert ranked_response.status_code == 200
+    assert [item["notice_key"] for item in ranked_response.json()] == [
+        "PPS-MANAGER-COMPETENCY-TARGET"
+    ]
+    assert ranked_response.json()[0]["department_ranking"]["matched_user_keywords"] == []
+
+    latin_token_response = client.get("/api/v1/notices", params={"q": "AI"})
+    assert latin_token_response.status_code == 200
+    assert [item["notice_key"] for item in latin_token_response.json()] == [
+        "PPS-AI-TARGET"
+    ]
+
+
+def test_eligibility_filter_is_applied_before_pagination(client: TestClient) -> None:
+    assert client.post("/api/v1/ingestion/replay").status_code == 200
+
+    response = client.get(
+        "/api/v1/notices",
+        params={"eligibility": "FAIL", "limit": 1, "offset": 0},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["latest_evaluation"]["eligibility"] == "FAIL"
+
+
 def test_notice_detail_manual_evaluation_and_user_decision(client: TestClient) -> None:
     client.post("/api/v1/ingestion/replay")
     detail = client.get("/api/v1/notices/SYN-REVIEW-001")

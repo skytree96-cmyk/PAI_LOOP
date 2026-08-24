@@ -1006,6 +1006,14 @@ svg {
   white-space: nowrap;
 }
 
+.priority-search__help {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
 .filters {
   display: flex;
   gap: 8px;

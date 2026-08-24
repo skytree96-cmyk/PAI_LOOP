@@ -11,7 +11,7 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260824-operations1" />
+    <link rel="stylesheet" href="./styles.css?v=20260824-searchfix1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -217,10 +217,10 @@
               </div>
             </div>
 
-            <div class="priority-search" id="prioritySearch" role="search" aria-label="부서별 공고 우선순위 검색">
+            <div class="priority-search" id="prioritySearch" role="group" aria-label="부서별 공고 우선순위 설정">
               <div class="priority-search__intro">
-                <strong>검색 주체별 우선순위</strong>
-                <span id="rankingProfileVersion">교육·컨설팅 전사 기본값</span>
+                <strong>부서·관심 키워드 우선순위</strong>
+                <span id="rankingProfileVersion">목록을 제외하지 않고 판정 상태 안에서 관련 공고를 위로 정렬합니다</span>
               </div>
               <label class="priority-search__select">
                 <span class="sr-only">검색 주체 부서</span>
@@ -229,10 +229,11 @@
                 </select>
               </label>
               <label class="priority-search__keywords">
-                <span class="sr-only">우선 검색 키워드</span>
-                <input id="priorityKeywordInput" type="search" maxlength="500" placeholder="추가 검색어 (쉼표 구분, 예: 역량평가, ESG)" autocomplete="off" />
+                <span class="sr-only">관심 키워드 우선순위</span>
+                <input id="priorityKeywordInput" type="search" maxlength="500" placeholder="관심 키워드 (쉼표 구분 · 결과 제외 없음)" autocomplete="off" aria-describedby="prioritySearchHelp" />
               </label>
               <button class="button button--primary priority-search__apply" type="button" id="priorityApplyButton">우선순위 적용</button>
+              <p class="priority-search__help" id="prioritySearchHelp">공고 검색이 아닙니다. 같은 판정 우선순위 안에서 입력한 키워드와 가까운 공고를 위로 올리며, 다른 공고도 목록에 그대로 남습니다.</p>
             </div>
 
             <div class="notice-search-toolbar">
@@ -1118,6 +1119,6 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260824-pin4" defer></script>
+    <script src="./app.js?v=20260824-searchfix1" defer></script>
   </body>
 </html>

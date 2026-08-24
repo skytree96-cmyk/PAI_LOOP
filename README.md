@@ -12,7 +12,7 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
-## 현재 구현 범위: v0.10.4 운영 데이터 편집 · 결과 자동 환류 · 사전규격 분석
+## 현재 구현 범위: v0.10.5 다중 키워드 저장 공고 검색 · 순위 전용 관심 키워드
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계
 - 누락 방지용 공통 검색어 `교육·컨설팅·연수·포럼·위탁 운영`과 24개 부서/센터 전문 키워드를 결합한 검색 우선순위

@@ -60,10 +60,13 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     scope_body = _function_body(source, "noticeStatusScopeForView", "renderNoticeSearchScope")
     explanation_body = _function_body(source, "renderNoticeSearchScope", "scheduleNoticeSearch")
     filter_body = _function_body(source, "applyFilters", "compareNotices")
+    reset_priority_body = _function_body(source, "resetPrioritySearch", "loadPerformance")
+    bind_body = _function_body(source, "bindEvents", "refreshCurrentView")
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'params.set("q", query)' in request_body
-    assert "searchKeywords && !globalSearch" in request_body
+    assert 'if (searchKeywords) params.set("search_keywords", searchKeywords)' in request_body
+    assert "searchKeywords && !globalSearch" not in request_body
     assert 'params.set("status", statusScope)' in request_body
     assert '"ENDED"].includes(statusScope)' in request_body
     assert "ANALYZED_ENDED" not in request_body
@@ -87,13 +90,24 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert "globalNoticeSearchActive()" in scope_body
     assert 'return "ALL"' in scope_body
     assert "if (!globalSearch)" in filter_body
+    assert 'serverBackedSearch = globalSearch && state.source === "api"' in filter_body
+    assert "query && !serverBackedSearch" in filter_body
     assert "notice.noticeKey" in filter_body
+    assert 'els.departmentSelect.value = "organization"' in reset_priority_body
+    assert 'els.priorityKeywordInput.value = ""' in reset_priority_body
+    assert "loadApplicationData({ forceApi: true })" in reset_priority_body
+    assert 'els.filterForm.addEventListener("reset"' in bind_body
     assert "저장된 전체 공고 검색" in explanation_body
+    assert "공고를 숨기지 않고 표시 순서에만 반영합니다" in explanation_body
     assert "검색만으로 AI 비용은 발생하지 않습니다" in explanation_body
     assert "나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다" in explanation_body
     assert 'id="noticeSearchHelp"' in html
     assert 'id="noticeSearchScope"' in html
     assert "공고번호 검색" in html
+    assert "공고 검색이 아닙니다" in html
+    assert "같은 판정 우선순위 안에서" in html
+    assert "다른 공고도 목록에 그대로 남습니다" in html
+    assert "목록 제외 없음" in source
 
 
 def test_api_failure_is_explicit_and_demo_data_requires_demo_query() -> None:
@@ -164,8 +178,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-operations1"' in html
-    assert 'src="./app.js?v=20260824-pin4"' in html
+    assert 'href="./styles.css?v=20260824-searchfix1"' in html
+    assert 'src="./app.js?v=20260824-searchfix1"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:

@@ -410,7 +410,7 @@ def test_keyword_profile_and_ranked_notice_api(client: TestClient) -> None:
     ).json()
     assert global_owner[0]["notice_key"] == "RANK-GLOBAL"
 
-    filtered = client.get(
+    prioritized = client.get(
         "/api/v1/notices",
         params={
             "department_id": "organization",
@@ -418,9 +418,41 @@ def test_keyword_profile_and_ranked_notice_api(client: TestClient) -> None:
             "limit": 20,
         },
     )
-    assert filtered.status_code == 200
-    assert [item["notice_key"] for item in filtered.json()] == ["RANK-COMPETENCY"]
-    assert filtered.json()[0]["department_ranking"]["matched_user_keywords"] == ["승진후보자"]
+    assert prioritized.status_code == 200
+    assert [item["notice_key"] for item in prioritized.json()] == [
+        "RANK-COMPETENCY",
+        "RANK-GLOBAL",
+    ]
+    assert prioritized.json()[0]["department_ranking"]["matched_user_keywords"] == ["승진후보자"]
+    assert prioritized.json()[1]["department_ranking"]["matched_user_keywords"] == []
+
+
+def test_ranked_notice_api_uses_notice_key_as_deterministic_final_tie_break(
+    client: TestClient,
+) -> None:
+    for notice_key in ("RANK-TIE-B", "RANK-TIE-A"):
+        assert client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": notice_key,
+                "bid_notice_no": notice_key,
+                "title": "동일한 교육 운영 용역",
+                "agency": "가상기관",
+                "deadline": "2027-09-01T09:00:00Z",
+                "category": "교육용역",
+            },
+        ).status_code == 201
+
+    response = client.get(
+        "/api/v1/notices",
+        params={"department_id": "organization", "limit": 20},
+    )
+
+    assert response.status_code == 200
+    assert [item["notice_key"] for item in response.json()] == [
+        "RANK-TIE-A",
+        "RANK-TIE-B",
+    ]
 
 
 def test_organization_notice_api_scores_each_department_once_per_notice(
