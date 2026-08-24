@@ -112,8 +112,8 @@ const executeNormalizer = new Function(
   "$",
   normalizer.parameters.jsCode,
 );
-const normalised = executeNormalizer(
-  { text: "{\"summary\":\"ok\"}" },
+const executeNormaliserText = (text) => executeNormalizer(
+  { text },
   { id: "fixture-123" },
   () => ({
     all: () => [{
@@ -123,6 +123,7 @@ const normalised = executeNormalizer(
     }],
   }),
 );
+const normalised = executeNormaliserText(' { "summary" : "ok" } ');
 assert.deepEqual(normalised[0].json, {
   id: "pai_claude_fixture-123",
   status: "completed",
@@ -130,5 +131,35 @@ assert.deepEqual(normalised[0].json, {
   output_text: "{\"summary\":\"ok\"}",
   usage: { input_tokens: 12, output_tokens: 7, total_tokens: 19 },
 });
+
+for (const fenced of [
+  '```json\n{ "summary": "fenced" }\n```',
+  '```\r\n{ "summary": "fenced" }\r\n```',
+]) {
+  assert.equal(
+    executeNormaliserText(fenced)[0].json.output_text,
+    '{"summary":"fenced"}',
+  );
+}
+assert.throws(
+  () => executeNormaliserText('Here is the JSON:\n```json\n{"summary":"no"}\n```'),
+  /without prose/,
+);
+assert.throws(
+  () => executeNormaliserText('```json\n{"summary":"one"}\n```\n```json\n{"summary":"two"}\n```'),
+  /multiple Markdown fences/,
+);
+assert.throws(
+  () => executeNormaliserText('```json\n{"summary":}\n```'),
+  /not valid JSON/,
+);
+assert.throws(
+  () => executeNormaliserText('[{"summary":"array"}]'),
+  /plain JSON object/,
+);
+assert.throws(
+  () => executeNormaliserText(" ".repeat(500001)),
+  /empty or oversized/,
+);
 
 console.log("Claude extraction gateway workflow tests passed");
