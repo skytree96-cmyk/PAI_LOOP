@@ -110,6 +110,39 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert "목록 제외 없음" in source
 
 
+def test_pin_decision_reload_and_current_evaluation_frontend_contract() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    normalize_body = _function_body(source, "normalizeNotice", "mergeRequirementsAndAtomics")
+    auth_body = _function_body(
+        source, "manualAnalysisAuthHeaders", "clearManualAnalysisToken"
+    )
+    clear_body = _function_body(
+        source, "clearManualAnalysisToken", "requestManualAnalysisToken"
+    )
+    hydrate_body = _function_body(
+        source, "hydrateOperatorDecisions", "openDetail"
+    )
+    detail_body = _function_body(source, "openDetail", "renderDetail")
+    save_body = _function_body(source, "saveDecision", "renderPipelineIntoExisting")
+
+    assert 'evaluationId: stringValue(firstValue(evaluation.id' in normalize_body
+    assert 'window.sessionStorage.getItem("pai-loop-operator-pin")' in auth_body
+    assert 'window.sessionStorage.setItem("pai-loop-operator-pin"' in auth_body
+    assert 'window.sessionStorage.removeItem("pai-loop-operator-pin")' in clear_body
+    assert 'state.manualAnalysisToken || ""' in hydrate_body
+    assert '/operator-decisions/notices/${encodeURIComponent(notice.noticeKey)}' in hydrate_body
+    assert "{ ...notice.raw, decisions }" in hydrate_body
+    assert "state.notices[index] = merged" in hydrate_body
+    assert "merged = await hydrateOperatorDecisions(merged)" in detail_body
+    assert "evaluation_id: notice.evaluationId" in save_body
+    assert 'error?.status === 409' in save_body
+    assert 'includes("평가가 갱신")' in save_body
+    assert "hydrateNoticeByKey(notice.noticeKey, { force: true })" in save_body
+    assert "현재 브라우저 탭에서만 유지되며 탭을 닫으면 지워집니다" in html
+    assert "새로고침하면 입력값은 지워집니다" not in html
+
+
 def test_api_failure_is_explicit_and_demo_data_requires_demo_query() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     load_body = _function_body(source, "loadApplicationData", "applyRuntimeProfile")
@@ -178,8 +211,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-claude2"' in html
-    assert 'src="./app.js?v=20260824-claude2"' in html
+    assert 'href="./styles.css?v=20260824-decision1"' in html
+    assert 'src="./app.js?v=20260824-decision1"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -191,6 +224,11 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     render_body = _function_body(source, "renderPpsDiscovery", "renderPpsCandidate")
     save_body = _function_body(source, "savePpsCandidate", "populateDepartmentProfiles")
     awards_body = _function_body(source, "searchCompanyAwards", "setCompanyAwardsLoading")
+    awards_render_body = _function_body(
+        source,
+        "renderCompanyAwardsView",
+        "renderCompanyAwardCard",
+    )
     view_body = _function_body(source, "setView", "setLayout")
 
     assert 'id="ppsDiscoverySection"' in html
@@ -227,6 +265,8 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert 'apiRequest("/company-awards/search"' in awards_body
     assert "manualAnalysisAuthHeaders()" in awards_body
     assert "Math.ceil((span + 1) / 28)" in awards_body
+    assert 'showToast("낙찰 결과 검색 실패"' in awards_body
+    assert "awardResultsErrorMessage.textContent = humanizeError(data.error)" in awards_render_body
     assert "/analysis/request" not in awards_body
     assert "awards: [\"낙찰 결과\", \"회사별 낙찰 결과\"]" in view_body
     assert "els.awardResultsSection.hidden = !awardsView" in view_body

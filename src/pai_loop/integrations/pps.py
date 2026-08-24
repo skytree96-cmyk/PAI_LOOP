@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -220,12 +221,20 @@ class PpsClient:
     ) -> None:
         if not service_key.strip():
             raise ValueError("service_key is required")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         # data.go.kr exposes both decoded and percent-encoded key variants.
         # Normalise exactly once so httpx performs the only query encoding.
         self._service_key = unquote(service_key)
+        self._timeout_seconds = float(timeout_seconds)
         self._max_retries = max_retries
         self._sleep = sleep
         self.request_count = 0
+        # ``httpx.Client`` is safe to share between threads, and a small
+        # number of bounded PPS lookups use that support to keep multi-year
+        # searches inside the browser request budget.  Protect the telemetry
+        # counter so concurrent windows cannot lose increments.
+        self._request_count_lock = threading.Lock()
         self.hit_page_limit = False
         self.hit_time_limit = False
         self._client = httpx.Client(
@@ -243,12 +252,28 @@ class PpsClient:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def _request(self, operation_path: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self,
+        operation_path: str,
+        params: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         request_params = {**params, "serviceKey": self._service_key, "type": "json"}
+        request_timeout = (
+            self._timeout_seconds
+            if timeout_seconds is None
+            else min(self._timeout_seconds, max(float(timeout_seconds), 0.1))
+        )
         for attempt in range(self._max_retries + 1):
             try:
-                self.request_count += 1
-                response = self._client.get(operation_path.lstrip("/"), params=request_params)
+                with self._request_count_lock:
+                    self.request_count += 1
+                response = self._client.get(
+                    operation_path.lstrip("/"),
+                    params=request_params,
+                    timeout=request_timeout,
+                )
             except httpx.RequestError as exc:
                 if attempt >= self._max_retries:
                     raise PpsApiError("PPS API 네트워크 요청이 실패했습니다.") from exc

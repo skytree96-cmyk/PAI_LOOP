@@ -270,6 +270,10 @@ workflow export에 저장하지 않는다. n8n UI에서 Teams credential을 연�
 Data Table에 승인된 Team/Channel ID를 저장한다. Schedule Trigger 기반 live 1건 및
 영속 중복 억제까지 검증한 v1.3 계약만 활성 상태를 유지한다. 자세한 절차는
 [Teams 실제 전송 운영 가이드](docs/TEAMS_DELIVERY_RUNBOOK_v0.9.0.md)를 따른다.
+Sonnet 5로 바뀌는 W13은 live E2E 전까지 `publish:false`인 2단계 전환 대상이다.
+기존 Anthropic credential을 보존하는 일회성 배포는 W10/W11/W13을 먼저 끈 뒤 W13만
+갱신해야 하며, 전체 절차는
+[Claude Sonnet 5 W13 migration runbook](docs/CLAUDE_SONNET5_MIGRATION_RUNBOOK_v0.11.1.md)을 따른다.
 나머지 00~04와 deployment smoke는 계속 비활성이다.
 
 웹 전체 화면은 `teams-app/PAI-LOOP-Teams-App.zip`을 업로드하면 기존 Render URL을

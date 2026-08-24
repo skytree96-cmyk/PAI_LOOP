@@ -53,7 +53,7 @@ class Settings:
     openai_model: str = "gpt-5.6-luna"
     llm_provider: str = "openai"
     llm_gateway_base_url: str | None = None
-    claude_model: str = "claude-sonnet-4-6"
+    claude_model: str = "claude-sonnet-5"
     pps_api_key: str | None = None
     pps_base_url: str = "https://apis.data.go.kr/1230000"
     pps_notice_operation: str = "ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch"
@@ -127,7 +127,7 @@ class Settings:
                 os.getenv("PAI_LOOP_LLM_GATEWAY_BASE_URL", "").strip().rstrip("/")
                 or None
             ),
-            claude_model=os.getenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-4-6"),
+            claude_model=os.getenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-5"),
             pps_api_key=os.getenv("PPS_API_KEY") or None,
             pps_base_url=os.getenv("PAI_LOOP_PPS_BASE_URL", "https://apis.data.go.kr/1230000"),
             pps_notice_operation=os.getenv(
@@ -144,7 +144,7 @@ class Settings:
         if self.llm_provider not in {"openai", "n8n_claude"}:
             raise RuntimeError("PAI_LOOP_LLM_PROVIDER must be openai or n8n_claude")
         if self.llm_provider == "n8n_claude":
-            if self.claude_model != "claude-sonnet-4-6":
+            if self.claude_model != "claude-sonnet-5":
                 raise RuntimeError(
                     "PAI_LOOP_CLAUDE_MODEL must match the deployed Claude gateway contract"
                 )

@@ -31,6 +31,7 @@ jobs:
         run: |
           node -e "const fs=require('fs'); JSON.parse(fs.readFileSync('manifest.json')); for(const f of fs.readdirSync('workflows').filter(x=>x.endsWith('.json'))) JSON.parse(fs.readFileSync('workflows/'+f));"
           node scripts/deploy-workflows.mjs --validate-only
+          node scripts/bind-claude-gateway-credentials.mjs --self-test
           node scripts/test-teams-delivery-workflow.mjs
 
       - name: Deploy workflows

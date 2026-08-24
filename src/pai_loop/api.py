@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .daily_analysis_scope import material_scope_fields
+from .decision_persistence import persist_current_evaluation_decision
 from .demo import FIXTURE_VERSION, seed_synthetic_replay
 from .auth import public_read_allowed, require_api_key
 from .enums import Eligibility
@@ -1141,6 +1142,10 @@ def run_evaluation(notice_key: str, payload: EvaluateRequest, session: DbSession
     evaluation = Evaluation(
         notice_id=notice.id,
         notice_version_id=version.id,
+        # SQLite's CURRENT_TIMESTAMP has only second precision. Explicit UTC
+        # microseconds keep two rapid evaluations in a deterministic order,
+        # matching PostgreSQL and the stale-decision contract.
+        evaluated_at=datetime.now(timezone.utc),
         deadline_snapshot_at=notice.deadline,
         eligibility=result.eligibility.value,
         reason_code=result.reason_code,
@@ -1171,30 +1176,12 @@ def list_decisions(notice_key: str, session: DbSession) -> list[UserDecision]:
     status_code=status.HTTP_201_CREATED,
 )
 def create_decision(notice_key: str, payload: DecisionCreate, session: DbSession) -> UserDecision:
-    notice = _load_notice(session, notice_key)
-    if authoritative_pps_notice_is_cancelled(session, notice):
-        raise HTTPException(
-            status_code=409,
-            detail="조달청에서 취소된 공고이므로 새 담당자 결정을 기록할 수 없습니다.",
-        )
-    evaluation = None
-    if payload.evaluation_id:
-        evaluation = session.get(Evaluation, payload.evaluation_id)
-        if evaluation is None or evaluation.notice_id != notice.id:
-            raise HTTPException(status_code=422, detail="이 공고의 evaluation_id가 아닙니다.")
-    else:
-        evaluation = _latest_evaluation(notice)
-    if evaluation is None:
-        raise HTTPException(status_code=422, detail="먼저 공고 평가를 실행해야 합니다.")
-    decision = UserDecision(
-        notice_id=notice.id,
-        evaluation_id=evaluation.id,
-        **payload.model_dump(exclude={"evaluation_id"}),
+    return persist_current_evaluation_decision(
+        session,
+        notice_key=notice_key,
+        payload=payload,
+        require_explicit_evaluation_id=False,
     )
-    session.add(decision)
-    session.commit()
-    session.refresh(decision)
-    return decision
 
 
 @router.post("/ingestion/replay", response_model=ReplayResponse)
