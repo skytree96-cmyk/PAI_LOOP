@@ -52,6 +52,15 @@ from .pps_enrichment import (
 # HTTP/DB overhead and a resumable PARTIAL response.
 ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 450
 N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS = 600
+# A disconnected n8n request can leave its durable child audit in RUNNING
+# after the application process is replaced. Never reclaim that child within
+# the original request's normal 600-second paid-work boundary. The extra
+# two minutes cover response persistence and process-drain jitter; the next
+# 15-minute continuation poll can then recover the abandoned segment instead
+# of waiting for the parent reservation's multi-hour TTL.
+ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS = (
+    N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS + 120
+)
 ATTACHMENT_UNIT_WORST_CASE_SECONDS = (
     DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS * 3
     + DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS * MAX_OPENAI_CALLS_PER_ATTACHMENT
@@ -486,17 +495,21 @@ def _create_batch_job(
                 lease_started = _utc(datetime.fromisoformat(str(lease_started_raw)))
             except (TypeError, ValueError):
                 lease_started = None
-            stale_cutoff = datetime.now(timezone.utc) - timedelta(
+            claim_now = datetime.now(timezone.utc)
+            lease_stale_cutoff = claim_now - timedelta(
                 hours=max(
                     1,
                     min(24, int(parent_config.get("reservation_ttl_hours", 6))),
                 )
             )
-            if lease_started is None or lease_started < stale_cutoff:
+            if lease_started is None or lease_started < lease_stale_cutoff:
                 raise HTTPException(
                     status_code=409,
                     detail="analysis segment lease expired; request a continuation plan",
                 )
+            child_stale_cutoff = claim_now - timedelta(
+                seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS
+            )
             leased_chunks = parent_config.get("leased_chunks")
             if not isinstance(leased_chunks, list):
                 raise HTTPException(status_code=409, detail="analysis segment has no chunk map")
@@ -515,7 +528,7 @@ def _create_batch_job(
                     detail="chunk_index and notice_keys do not match the active segment",
                 )
             requested_keys = set(payload.notice_keys)
-            for child in _backfill_children(session, parent.id):
+            for child in _backfill_children(session, parent.id, for_update=True):
                 child_config = dict(child.request_json or {})
                 child_keys = set(child.notice_keys or [])
                 same_index = child_config.get("chunk_index") == payload.chunk_index
@@ -531,8 +544,8 @@ def _create_batch_job(
                 if _terminalize_stale_analysis_child(
                     child,
                     parent_generations=parent_generations,
-                    stale_cutoff=stale_cutoff,
-                    now=datetime.now(timezone.utc),
+                    stale_cutoff=child_stale_cutoff,
+                    now=claim_now,
                 ):
                     continue
                 # Exact HTTP replay must win over continuation requeue. A
@@ -679,7 +692,12 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _backfill_children(session: Session, job_id: str) -> list[IngestionJob]:
+def _backfill_children(
+    session: Session,
+    job_id: str,
+    *,
+    for_update: bool = False,
+) -> list[IngestionJob]:
     children = list(
         session.scalars(
             select(IngestionJob)
@@ -687,12 +705,28 @@ def _backfill_children(session: Session, job_id: str) -> list[IngestionJob]:
             .order_by(IngestionJob.created_at)
         ).all()
     )
-    return [
+    matched = [
         child
         for child in children
         if isinstance(child.request_json, dict)
         and child.request_json.get("parent_job_id") == job_id
     ]
+    if not for_update or not matched:
+        return matched
+    # The parent row is already locked by every mutating caller, so no new
+    # child claim can appear between the discovery query and this targeted
+    # lock. Re-read only this parent's children under row locks to arbitrate
+    # safely with a response finalisation that may be committing concurrently.
+    child_ids = [child.id for child in matched]
+    return list(
+        session.scalars(
+            select(IngestionJob)
+            .where(IngestionJob.id.in_(child_ids))
+            .order_by(IngestionJob.created_at)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
 
 
 def _parent_work_generations(parent: IngestionJob) -> dict[str, int]:
@@ -1915,14 +1949,80 @@ def plan_analysis_backfill(
                 detail="DAILY parent analysis scope audit is invalid",
             )
     parent_generations = _parent_work_generations(parent)
+    child_stale_cutoff = now - timedelta(
+        seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS
+    )
     stale_children_cleaned = False
-    for child in _backfill_children(session, parent.id):
-        stale_children_cleaned = _terminalize_stale_analysis_child(
+    current_segment_stale_cleaned = False
+    current_segment_orphan_keys: set[str] = set()
+    children = _backfill_children(session, parent.id, for_update=True)
+    for child in children:
+        child_config = child.request_json if isinstance(child.request_json, dict) else {}
+        belongs_to_current_segment = bool(
+            isinstance(lease_id, str)
+            and child_config.get("segment_id") == lease_id
+        )
+        effective_child_keys = {
+            key
+            for key in (child.notice_keys or [])
+            if _child_key_is_effective(
+                child,
+                key,
+                parent_generations.get(key, 0),
+            )
+        }
+        cleaned = _terminalize_stale_analysis_child(
             child,
             parent_generations=parent_generations,
-            stale_cutoff=stale_cutoff,
+            stale_cutoff=child_stale_cutoff,
             now=now,
-        ) or stale_children_cleaned
+        )
+        stale_children_cleaned = cleaned or stale_children_cleaned
+        if cleaned and belongs_to_current_segment:
+            current_segment_stale_cleaned = True
+            current_segment_orphan_keys.update(effective_child_keys)
+
+    # A process replacement can sever n8n's HTTP request after the child row
+    # was created. Once the 600-second client boundary plus grace has
+    # elapsed, a current-segment RUNNING child is operationally stale. Fence its
+    # generation so a pathological late response cannot become authoritative,
+    # release only the abandoned segment lease, and let this same planner poll
+    # re-lease all requeued and never-started chunks.  Recent RUNNING children
+    # still retain the lease and continue to block duplicate paid work.
+    current_segment_has_running_child = any(
+        child.status == "RUNNING"
+        and isinstance(child.request_json, dict)
+        and child.request_json.get("segment_id") == lease_id
+        for child in children
+    )
+    orphaned_current_segment = bool(
+        lease_active
+        and current_segment_stale_cleaned
+        and lease_started is not None
+        and lease_started < child_stale_cutoff
+        and not current_segment_has_running_child
+    )
+    if orphaned_current_segment:
+        work_generations = dict(parent_generations)
+        for key in sorted(current_segment_orphan_keys):
+            work_generations[key] = work_generations.get(key, 0) + 1
+        config["work_generations"] = work_generations
+        config["last_orphan_recovered_at"] = now.isoformat()
+        config["last_orphan_recovered_notice_keys"] = sorted(
+            current_segment_orphan_keys
+        )
+        parent.request_json = config
+        parent.warnings = sorted(
+            set(
+                [
+                    *(parent.warnings or []),
+                    "ORPHANED_ANALYSIS_SEGMENT_RECOVERED",
+                ]
+            )
+        )
+        parent_generations = work_generations
+        lease_active = False
+        planner_mutated = True
     if lease_active:
         active_status = _backfill_status(
             session,

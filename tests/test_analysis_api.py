@@ -19,6 +19,7 @@ from pai_loop.analysis_pipeline import (
     run_analysis_pipeline,
 )
 from pai_loop.analysis_api import (
+    ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS,
     ANALYSIS_ENRICHMENT_BUDGET_SECONDS,
     ATTACHMENT_UNIT_WORST_CASE_SECONDS,
     N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS,
@@ -59,6 +60,7 @@ def test_analysis_timeout_contract_fits_one_complete_unit_below_n8n_boundary() -
     assert ATTACHMENT_UNIT_WORST_CASE_SECONDS * 2 > ANALYSIS_ENRICHMENT_BUDGET_SECONDS
     assert ANALYSIS_ENRICHMENT_BUDGET_SECONDS == 450
     assert N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS == 600
+    assert ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS == 720
 
     root = Path(__file__).parents[1]
     for filename in (
@@ -2081,6 +2083,204 @@ def test_running_child_is_in_flight_and_prevents_parent_completion(
     assert retained["segment_id"] == plan["segment_id"]
     assert retained["remaining"] == 2
     assert retained["in_flight"] == 1
+
+
+def test_orphaned_running_child_releases_current_segment_before_parent_ttl(
+    client: TestClient,
+) -> None:
+    keys = [
+        "MANUAL-TERMINAL-BEFORE-ORPHAN",
+        "MANUAL-ORPHANED-CHILD",
+        "MANUAL-UNSTARTED-AFTER-ORPHAN",
+    ]
+    for key in keys:
+        assert client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": key,
+                "bid_notice_no": key,
+                "title": f"orphan recovery {key}",
+                "agency": "가상 기관",
+                "published_at": "2026-08-17T08:00:00+09:00",
+                "deadline": "2026-08-31T18:00:00+09:00",
+                "status": "OPEN",
+            },
+        ).status_code == 201
+
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": keys,
+            "dry_run": True,
+            "execution_limit": 3,
+            "reservation_ttl_hours": 6,
+            "include_retryable": True,
+            "request_token": "w11:orphaned-first-segment",
+        },
+    ).json()
+    _run_segment(
+        client,
+        {
+            **first,
+            "chunks": [first["chunks"][0]],
+            "chunk_indices": [first["chunk_indices"][0]],
+        },
+    )
+    orphaned_at = datetime.now(timezone.utc) - timedelta(
+        seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS + 30
+    )
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["lease_started_at"] = orphaned_at.isoformat()
+        parent.request_json = config
+        child = IngestionJob(
+            source="ANALYSIS",
+            mode="DRY_RUN",
+            status="RUNNING",
+            window_json={"scope": "NOTICE_KEYS"},
+            request_json={
+                "parent_job_id": first["job_id"],
+                "segment_id": first["segment_id"],
+                "chunk_index": first["chunk_indices"][1],
+                "work_generations": {keys[1]: 0},
+            },
+            matched=1,
+            notice_keys=[keys[1]],
+            created_at=orphaned_at,
+        )
+        session.add(child)
+        session.commit()
+        child_id = child.id
+
+    resumed_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "dry_run": True,
+            # Scheduled W11 sends its default while inheriting the parent.
+            "include_retryable": False,
+            "request_token": "w11:scheduled-orphan-recovery",
+        },
+    )
+    assert resumed_response.status_code == 200, resumed_response.text
+    resumed = resumed_response.json()
+    assert resumed["job_id"] == first["job_id"]
+    assert resumed["segment_id"] != first["segment_id"]
+    assert resumed["attempted"] == 1
+    assert resumed["remaining"] == 2
+    assert resumed["notice_keys"] == keys[1:]
+    assert resumed["chunk_indices"] == [3, 4]
+    assert resumed["continuation_round"] == 2
+    assert "ORPHANED_ANALYSIS_SEGMENT_RECOVERED" in resumed["warnings"]
+    assert "STALE_LEASE_RECOVERED" in resumed["warnings"]
+
+    with client.app.state.session_factory() as session:
+        old_child = session.get(IngestionJob, child_id)
+        parent = session.get(IngestionJob, first["job_id"])
+        assert old_child is not None
+        assert parent is not None
+        assert old_child.status == "FAILED"
+        assert old_child.error_code == "STALE_ANALYSIS_CLAIM"
+        assert old_child.request_json["requeue_notice_keys"] == [keys[1]]
+        config = dict(parent.request_json)
+        assert config["work_generations"][keys[1]] == 1
+        assert config["last_orphan_recovered_notice_keys"] == [keys[1]]
+
+    old_claim = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [keys[1]],
+            "dry_run": True,
+            "max_notices": 1,
+            "operation_id": first["job_id"],
+            "segment_id": first["segment_id"],
+            "chunk_index": first["chunk_indices"][1],
+        },
+    )
+    assert old_claim.status_code == 409
+
+    _run_segment(client, resumed)
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{first['job_id']}/complete",
+        json={"segment_id": resumed["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["attempted"] == 3
+    assert completed.json()["remaining"] == 0
+
+
+def test_recent_running_child_retains_old_active_segment(
+    client: TestClient,
+) -> None:
+    key = "MANUAL-RECENT-CHILD-OLD-LEASE"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": key,
+            "bid_notice_no": key,
+            "title": "recent child must retain lease",
+            "agency": "가상 기관",
+            "published_at": "2026-08-17T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": [key],
+            "dry_run": True,
+            "reservation_ttl_hours": 6,
+        },
+    ).json()
+    old_lease_at = datetime.now(timezone.utc) - timedelta(
+        seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS + 30
+    )
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["lease_started_at"] = old_lease_at.isoformat()
+        parent.request_json = config
+        child = IngestionJob(
+            source="ANALYSIS",
+            mode="DRY_RUN",
+            status="RUNNING",
+            window_json={"scope": "NOTICE_KEYS"},
+            request_json={
+                "parent_job_id": first["job_id"],
+                "segment_id": first["segment_id"],
+                "chunk_index": first["chunk_indices"][0],
+                "work_generations": {key: 0},
+            },
+            matched=1,
+            notice_keys=[key],
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(child)
+        session.commit()
+        child_id = child.id
+
+    polled = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={"queue_name": "ANY", "resume_only": True, "dry_run": True},
+    )
+    assert polled.status_code == 200, polled.text
+    body = polled.json()
+    assert body["job_id"] == first["job_id"]
+    assert body["segment_id"] == first["segment_id"]
+    assert body["offered"] == 0
+    assert body["in_flight"] == 1
+    assert "ORPHANED_ANALYSIS_SEGMENT_RECOVERED" not in body["warnings"]
+    with client.app.state.session_factory() as session:
+        child = session.get(IngestionJob, child_id)
+        assert child is not None
+        assert child.status == "RUNNING"
 
 
 def test_any_continuation_poll_prioritises_daily_over_backfill(client: TestClient) -> None:
