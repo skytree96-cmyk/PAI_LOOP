@@ -999,7 +999,14 @@ def _matching_active_backfill(
             and
             bool(config.get("dry_run")) == payload.dry_run
             and int(config.get("chunk_size", 0)) == payload.chunk_size
-            and bool(config.get("include_retryable")) == payload.include_retryable
+            and (
+                # ANY is a continuation-only poll. It must inherit the
+                # matched parent's stored retry policy instead of treating
+                # the poll's default as a request to change that policy.
+                payload.queue_name == "ANY"
+                or bool(config.get("include_retryable"))
+                == payload.include_retryable
+            )
             and int(config.get("retry_cooldown_hours", 0))
             == payload.retry_cooldown_hours
         ):
