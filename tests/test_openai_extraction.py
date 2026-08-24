@@ -164,7 +164,7 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert outcome.data.requirements[0].category == "REGION"
     assert captured["store"] is False
     assert captured["service_tier"] == "default"
-    assert captured["max_output_tokens"] == 24_000
+    assert captured["max_output_tokens"] == 20_000
     assert captured["text"]["format"]["type"] == "json_schema"
     assert captured["text"]["format"]["strict"] is True
     payload_schema = captured["text"]["format"]["schema"]
@@ -291,6 +291,18 @@ def test_production_client_refuses_direct_or_unapproved_model_egress(monkeypatch
             provider="n8n_claude",
             model="claude-sonnet-4-6",
             base_url="https://n8n.kma.or.kr/webhook/pai-loop-claude",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+        )
+
+
+def test_client_rejects_output_limit_above_non_streaming_gateway_boundary() -> None:
+    with pytest.raises(ValueError, match="between 256 and 20000"):
+        OpenAIExtractionClient(
+            api_key="unused",
+            provider="n8n_claude",
+            model="claude-sonnet-5",
+            base_url="https://n8n.example/webhook/pai-loop-claude",
+            max_output_tokens=20_001,
             transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
         )
 

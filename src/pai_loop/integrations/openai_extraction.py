@@ -387,16 +387,18 @@ class OpenAIExtractionClient:
         model: str = "gpt-5.6-luna",
         base_url: str | None = None,
         provider: str | None = None,
-        # Large Korean procurement documents can legitimately take longer
-        # than the former 45-second read boundary.  This remains finite and
-        # the caller still enforces the two-call attachment budget.
-        timeout_seconds: float = 90,
+        # Production Claude calls cross the n8n webhook and observed valid
+        # attachments can exceed the former 90-second response boundary. This
+        # remains finite; the caller still enforces the two-call attachment
+        # unit budget and n8n keeps a 600-second outer HTTP boundary.
+        timeout_seconds: float = 180,
         max_retries: int = 2,
         max_input_chars: int = 120_000,
-        # Sonnet 5 counts adaptive-thinking tokens against max_tokens and its
-        # tokenizer can produce roughly 30% more tokens for the same workload.
-        # Keep a bounded 24k ceiling so the final strict JSON has headroom.
-        max_output_tokens: int = 24_000,
+        # The current n8n Anthropic sub-node uses the non-streaming SDK path.
+        # Its ten-minute duration guard requires max_tokens <= 21,333, so 20k
+        # leaves a safe margin while retaining room for adaptive thinking and
+        # the final strict JSON object.
+        max_output_tokens: int = 20_000,
         max_total_api_calls: int = 2,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -442,6 +444,8 @@ class OpenAIExtractionClient:
         # caller may still perform the one evidence-correction attempt.
         self.max_retries = 0 if selected_provider == "n8n_claude" else max_retries
         self.max_input_chars = max_input_chars
+        if not 256 <= max_output_tokens <= 20_000:
+            raise ValueError("max_output_tokens must be between 256 and 20000")
         self.max_output_tokens = max_output_tokens
         if not 1 <= max_total_api_calls <= 2:
             raise ValueError("max_total_api_calls must be between 1 and 2")

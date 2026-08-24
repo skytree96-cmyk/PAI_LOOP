@@ -52,10 +52,11 @@ from pai_loop.public_notice_seed import import_public_notice_seed
 NOTICE_KEY = "MANUAL-INCHON-2025-17"
 
 
-def test_analysis_timeout_contract_fits_two_units_below_n8n_boundary() -> None:
-    assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 90
-    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 221
-    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS * 2 <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
+def test_analysis_timeout_contract_fits_one_complete_unit_below_n8n_boundary() -> None:
+    assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 180
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 401
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS * 2 > ANALYSIS_ENRICHMENT_BUDGET_SECONDS
     assert ANALYSIS_ENRICHMENT_BUDGET_SECONDS == 450
     assert N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS == 600
 

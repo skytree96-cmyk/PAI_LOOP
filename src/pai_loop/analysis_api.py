@@ -44,9 +44,12 @@ from .pps_enrichment import (
 )
 
 
-# W10/W11 bound each analysis HTTP node at 600 seconds.  A request may start
-# at most two new durable attachment units, so 450 seconds fits two complete
-# 221-second worst-case units and still leaves 150 seconds for HTTP/DB overhead.
+# W10/W11 bound each analysis HTTP node at 600 seconds. One complete durable
+# attachment unit is now 401 seconds (three download hops, two 180-second Claude
+# responses, and guard time), so it fits inside the 450-second enrichment
+# boundary. A second unit starts only when the first returned quickly enough
+# that another full 401 seconds remain. The outer 150 seconds stay reserved for
+# HTTP/DB overhead and a resumable PARTIAL response.
 ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 450
 N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS = 600
 ATTACHMENT_UNIT_WORST_CASE_SECONDS = (
@@ -55,9 +58,13 @@ ATTACHMENT_UNIT_WORST_CASE_SECONDS = (
     + ATTACHMENT_TIMEOUT_GUARD_SECONDS
 )
 assert (
-    ATTACHMENT_UNIT_WORST_CASE_SECONDS * MAX_NEW_ATTACHMENTS_PER_REQUEST
+    ATTACHMENT_UNIT_WORST_CASE_SECONDS
     <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
     < N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS
+)
+assert (
+    ATTACHMENT_UNIT_WORST_CASE_SECONDS * MAX_NEW_ATTACHMENTS_PER_REQUEST
+    > ANALYSIS_ENRICHMENT_BUDGET_SECONDS
 )
 
 
@@ -2484,9 +2491,11 @@ def _execute_notice_analysis_batch(
     enrichment_openai_telemetry = OpenAITelemetry()
     enrichment_warnings: list[str] = []
     enrichment_attachment_results: list[AnalysisAttachmentEnrichmentOut] = []
-    # At most two worst-case attachment units fit below this request boundary:
-    # 3 redirect hops * 12s + 2 Responses calls * 90s + 5s = 221s per unit.
-    # n8n's HTTP timeout is 600s; a continuation never starts a third unit.
+    # One worst-case attachment unit fits below this request boundary:
+    # 3 redirect hops * 12s + 2 Claude calls * 180s + 5s = 401s per unit.
+    # The shared deadline may admit a second fast-path unit only if its full
+    # 401-second budget remains; the hard cap prevents a third unit. n8n keeps
+    # the enclosing HTTP request bounded at 600 seconds.
     enrichment_deadline = time.monotonic() + ANALYSIS_ENRICHMENT_BUDGET_SECONDS
 
     for index, notice_key in enumerate(payload.notice_keys):
