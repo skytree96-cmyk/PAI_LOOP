@@ -393,7 +393,10 @@ class OpenAIExtractionClient:
         timeout_seconds: float = 90,
         max_retries: int = 2,
         max_input_chars: int = 120_000,
-        max_output_tokens: int = 12_000,
+        # Sonnet 5 counts adaptive-thinking tokens against max_tokens and its
+        # tokenizer can produce roughly 30% more tokens for the same workload.
+        # Keep a bounded 24k ceiling so the final strict JSON has headroom.
+        max_output_tokens: int = 24_000,
         max_total_api_calls: int = 2,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -418,6 +421,8 @@ class OpenAIExtractionClient:
             parsed_gateway = urlsplit(base_url)
             if selected_provider != "n8n_claude":
                 raise ValueError("direct OpenAI extraction is disabled in production")
+            if model != "claude-sonnet-5":
+                raise ValueError("production extraction must use claude-sonnet-5")
             if (
                 parsed_gateway.scheme != "https"
                 or parsed_gateway.hostname != "n8n.kma.or.kr"
@@ -465,7 +470,7 @@ class OpenAIExtractionClient:
                 else os.environ.get("OPENAI_API_KEY", "")
             ),
             model=(
-                os.environ.get("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-4-6")
+                os.environ.get("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-5")
                 if provider == "n8n_claude"
                 else os.environ.get("PAI_LOOP_OPENAI_MODEL", "gpt-5.6-luna")
             ),

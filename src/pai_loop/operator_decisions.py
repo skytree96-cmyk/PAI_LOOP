@@ -7,16 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
+from .decision_persistence import persist_current_evaluation_decision
 from .manual_analysis import (
     _manual_feature_enabled,
     _require_manual_operator,
     _same_origin_request,
 )
-from .models import Evaluation, Notice, UserDecision
-from .notice_freshness import (
-    authoritative_pps_notice_is_cancelled,
-    latest_current_evaluation,
-)
+from .models import Notice, UserDecision
 from .schemas import DecisionCreate, DecisionOut
 
 
@@ -72,10 +69,6 @@ def _load_notice(session: Session, notice_key: str) -> Notice:
     return notice
 
 
-def _latest_evaluation(notice: Notice) -> Evaluation | None:
-    return latest_current_evaluation(notice)
-
-
 @router.get("/notices/{notice_key}", response_model=list[DecisionOut])
 def list_operator_decisions(
     notice_key: str,
@@ -99,34 +92,9 @@ def create_operator_decision(
     session: DbSession,
 ) -> UserDecision:
     _operator_access(request, mutation=True)
-    notice = _load_notice(session, notice_key)
-    if authoritative_pps_notice_is_cancelled(session, notice):
-        raise HTTPException(
-            status_code=409,
-            detail="조달청에서 취소된 공고이므로 새 담당자 결정을 기록할 수 없습니다.",
-        )
-    latest_evaluation = _latest_evaluation(notice)
-    if latest_evaluation is None:
-        raise HTTPException(status_code=422, detail="먼저 공고 평가를 실행해야 합니다.")
-    if not payload.evaluation_id:
-        raise HTTPException(
-            status_code=422,
-            detail="화면에서 확인한 evaluation_id가 필요합니다.",
-        )
-    evaluation = session.get(Evaluation, payload.evaluation_id)
-    if evaluation is None or evaluation.notice_id != notice.id:
-        raise HTTPException(status_code=422, detail="이 공고의 evaluation_id가 아닙니다.")
-    if evaluation.id != latest_evaluation.id:
-        raise HTTPException(
-            status_code=409,
-            detail="공고 평가가 갱신되었습니다. 최신 분석을 다시 확인한 뒤 판단해 주세요.",
-        )
-    decision = UserDecision(
-        notice_id=notice.id,
-        evaluation_id=evaluation.id,
-        **payload.model_dump(exclude={"evaluation_id"}),
+    return persist_current_evaluation_decision(
+        session,
+        notice_key=notice_key,
+        payload=payload,
+        require_explicit_evaluation_id=True,
     )
-    session.add(decision)
-    session.commit()
-    session.refresh(decision)
-    return decision

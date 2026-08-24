@@ -632,7 +632,7 @@ def analyse_pre_specification_documents(
         timeout_seconds=90,
         max_retries=0,
         max_input_chars=120_000,
-        max_output_tokens=12_000,
+        max_output_tokens=24_000,
         max_total_api_calls=2,
     ) as openai_client:
         for document in sorted(documents, key=lambda item: item.slot):

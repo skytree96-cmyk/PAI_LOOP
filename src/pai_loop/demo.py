@@ -162,6 +162,7 @@ def seed_synthetic_replay(session: Session) -> tuple[int, int, list[str]]:
         notice.evaluations.append(
             Evaluation(
                 notice_version_id=version.id,
+                evaluated_at=now,
                 deadline_snapshot_at=notice.deadline,
                 eligibility=result.eligibility.value,
                 reason_code=result.reason_code,

@@ -3782,7 +3782,7 @@
     ) return notice;
     let storedToken = "";
     try {
-      storedToken = window.sessionStorage.getItem("pai-loop-operator-pin") || "";
+      storedToken = window.sessionStorage.getItem("pai-loop-operator-pin") || state.manualAnalysisToken || "";
     } catch (_) {
       storedToken = state.manualAnalysisToken;
     }
@@ -5132,6 +5132,16 @@
       );
     } catch (error) {
       if (error?.status === 401) state.manualAnalysisToken = "";
+      if (error?.status === 409 && String(error?.message || "").includes("평가가 갱신")) {
+        try {
+          const refreshed = await hydrateNoticeByKey(notice.noticeKey, { force: true });
+          state.selectedNotice = refreshed;
+          renderDetail(refreshed);
+          applyFilters();
+        } catch (_) {
+          // Keep the explicit stale-evaluation error when the refresh also fails.
+        }
+      }
       showToast("판단 저장 실패", humanizeError(error), "error");
     } finally {
       els.saveDecisionButton.textContent = originalText;

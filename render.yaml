@@ -34,7 +34,7 @@ services:
       - key: PAI_LOOP_LLM_GATEWAY_BASE_URL
         value: https://n8n.kma.or.kr/webhook/pai-loop-claude
       - key: PAI_LOOP_CLAUDE_MODEL
-        value: claude-sonnet-4-6
+        value: claude-sonnet-5
       - key: PPS_API_KEY
         sync: false
 

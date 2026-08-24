@@ -35,12 +35,12 @@ def test_n8n_claude_selection_reuses_server_boundary_without_openai_key() -> Non
         openai_api_key=None,
         llm_provider="n8n_claude",
         llm_gateway_base_url="https://n8n.example/webhook/pai-loop-claude",
-        claude_model="claude-sonnet-4-6",
+        claude_model="claude-sonnet-5",
     )
 
     assert settings.extraction_configured is True
     assert settings.extraction_api_key == "server-boundary-key"
-    assert settings.extraction_model == "claude-sonnet-4-6"
+    assert settings.extraction_model == "claude-sonnet-5"
     settings.validate_security()
 
 
@@ -73,7 +73,7 @@ def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
     }
     assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "0"
     assert env_vars["PAI_LOOP_LLM_PROVIDER"]["value"] == "n8n_claude"
-    assert env_vars["PAI_LOOP_CLAUDE_MODEL"]["value"] == "claude-sonnet-4-6"
+    assert env_vars["PAI_LOOP_CLAUDE_MODEL"]["value"] == "claude-sonnet-5"
     assert "OPENAI_API_KEY" not in env_vars
     assert "PAI_LOOP_OPENAI_MODEL" not in env_vars
 
@@ -85,7 +85,7 @@ def test_production_allows_only_the_pinned_n8n_claude_boundary() -> None:
         "api_key": "configured-server-key",
         "llm_provider": "n8n_claude",
         "llm_gateway_base_url": "https://n8n.kma.or.kr/webhook/pai-loop-claude",
-        "claude_model": "claude-sonnet-4-6",
+        "claude_model": "claude-sonnet-5",
     }
 
     Settings(**base).validate_security()
@@ -106,7 +106,7 @@ def test_production_security_rejects_synthetic_and_unguarded_manual_analysis() -
         "api_key": "configured-server-key",
         "llm_provider": "n8n_claude",
         "llm_gateway_base_url": "https://n8n.kma.or.kr/webhook/pai-loop-claude",
-        "claude_model": "claude-sonnet-4-6",
+        "claude_model": "claude-sonnet-5",
     }
     with pytest.raises(RuntimeError, match="SEED_SYNTHETIC"):
         Settings(**base, seed_synthetic=True).validate_security()

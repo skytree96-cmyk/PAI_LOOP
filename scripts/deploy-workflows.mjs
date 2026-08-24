@@ -5,6 +5,19 @@ const validateOnly = process.argv.includes("--validate-only");
 const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
 const onlyKey = onlyArgument?.slice("--only=".length) || undefined;
 const rootDirectory = process.cwd();
+const claudeGatewayKey = "pai-loop-13-claude-extraction-gateway";
+const claudeGatewayWorkflowName = "PAI_LOOP 13 - Claude Extraction Gateway";
+const claudeWebhookNodeName = "Claude Extraction Webhook";
+const claudeOldModelNodeName = "Claude Sonnet 4.6";
+const claudeNewModelNodeName = "Claude Sonnet 5";
+const claudeModelNodeType = "@n8n/n8n-nodes-langchain.lmChatAnthropic";
+const claudeOldModelId = "claude-sonnet-4-6";
+const claudeNewModelId = "claude-sonnet-5";
+const claudeMigrationUpstreamKeys = [
+  "pai-loop-10-daily-opportunity-briefing",
+  "pai-loop-11-analysis-backfill",
+  claudeGatewayKey,
+];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -134,7 +147,7 @@ function validateRepositorySafetyContracts(definitions) {
   const claudeWebhook = claudeNodes.get("Claude Extraction Webhook");
   const claudeValidation = claudeNodes.get("Validate Gateway Request");
   const claudeChain = claudeNodes.get("Claude JSON Extraction");
-  const claudeModel = claudeNodes.get("Claude Sonnet 4.6");
+  const claudeModel = claudeNodes.get("Claude Sonnet 5");
   const claudeResponse = claudeNodes.get("Normalize Gateway Response");
   assert(
     claudeGateway.workflow.nodes.length === 5
@@ -154,15 +167,20 @@ function validateRepositorySafetyContracts(definitions) {
     "workflow 13 webhook must be the authenticated bounded response endpoint",
   );
   assert(
-    claudeModel.parameters?.model?.value === "claude-sonnet-4-6"
+    claudeModel.parameters?.model?.value === "claude-sonnet-5"
       && claudeModel.parameters?.options?.maxTokensToSample === "={{ $json.max_output_tokens }}"
-      && claudeModel.parameters?.options?.temperature === 0,
-    "workflow 13 must pin Claude Sonnet 4.6 with bounded deterministic output",
+      && claudeModel.parameters?.options?.thinkingMode === "adaptive"
+      && claudeModel.parameters?.options?.effort === "medium"
+      && !("temperature" in claudeModel.parameters.options)
+      && !("topP" in claudeModel.parameters.options)
+      && !("topK" in claudeModel.parameters.options)
+      && !("thinkingBudget" in claudeModel.parameters.options),
+    "workflow 13 must pin Claude Sonnet 5 with bounded adaptive thinking and default sampling",
   );
   const claudeSerialised = JSON.stringify(claudeGateway.workflow);
   assert(
     claudeSerialised.includes("request fields do not match the extraction gateway contract")
-      && claudeSerialised.includes("body.max_output_tokens > 12000")
+      && claudeSerialised.includes("body.max_output_tokens > 24000")
       && claudeSerialised.includes("body.input.length !== 2")
       && claudeSerialised.includes("format.type !== 'json_schema'")
       && claudeSerialised.includes("format.strict !== true")
@@ -637,6 +655,7 @@ function validateRepositorySafetyContracts(definitions) {
   );
 
   const preservationProbe = preserveRemoteNodeCredentials(
+    "credential-preservation-probe",
     {
       nodes: [
         { name: "same", type: "n8n-nodes-base.httpRequest" },
@@ -678,6 +697,54 @@ function validateRepositorySafetyContracts(definitions) {
   assert(
     !preservationProbe.nodes[2].credentials && !preservationProbe.nodes[3].credentials,
     "credential preservation must reject type changes and new nodes",
+  );
+  const approvedMigrationProbe = preserveRemoteNodeCredentials(
+    claudeGatewayKey,
+    {
+      name: claudeGatewayWorkflowName,
+      nodes: [{
+        name: claudeNewModelNodeName,
+        type: claudeModelNodeType,
+        parameters: { model: { value: claudeNewModelId } },
+      }],
+    },
+    {
+      name: claudeGatewayWorkflowName,
+      nodes: [{
+        name: claudeOldModelNodeName,
+        type: claudeModelNodeType,
+        parameters: { model: { value: claudeOldModelId } },
+        credentials: { anthropicApi: { id: "opaque-anthropic-probe", name: "approved" } },
+      }],
+    },
+  );
+  assert(
+    approvedMigrationProbe.nodes[0].credentials?.anthropicApi?.id === "opaque-anthropic-probe",
+    "the exact W13 Sonnet 4.6 to Sonnet 5 credential migration failed",
+  );
+  const rejectedMigrationProbe = preserveRemoteNodeCredentials(
+    "unapproved-workflow",
+    {
+      name: "Unapproved workflow",
+      nodes: [{
+        name: claudeNewModelNodeName,
+        type: claudeModelNodeType,
+        parameters: { model: { value: claudeNewModelId } },
+      }],
+    },
+    {
+      name: "Unapproved workflow",
+      nodes: [{
+        name: claudeOldModelNodeName,
+        type: claudeModelNodeType,
+        parameters: { model: { value: claudeOldModelId } },
+        credentials: { anthropicApi: { id: "must-not-migrate", name: "unapproved" } },
+      }],
+    },
+  );
+  assert(
+    !rejectedMigrationProbe.nodes[0].credentials,
+    "Claude credential migration must remain restricted to the exact W13 contract",
   );
 }
 
@@ -788,9 +855,56 @@ function deploymentPayload(workflow) {
   };
 }
 
-function preserveRemoteNodeCredentials(payload, remote) {
-  const remoteByName = new Map((remote?.nodes ?? []).map((node) => [node.name, node]));
+function exactNamedNode(workflow, nodeName) {
+  const matches = (workflow?.nodes ?? []).filter((node) => node.name === nodeName);
+  assert(matches.length <= 1, `${workflow?.name ?? "workflow"}: duplicate node name ${nodeName}`);
+  return matches[0];
+}
+
+function validCredentialReference(credential) {
+  return Boolean(
+    credential
+      && typeof credential === "object"
+      && String(credential.id ?? "").trim()
+      && String(credential.name ?? "").trim(),
+  );
+}
+
+function approvedClaudeModelMigrationRequired(payload, remote) {
+  const source = exactNamedNode(remote, claudeOldModelNodeName);
+  const target = exactNamedNode(payload, claudeNewModelNodeName);
+  const alreadyMigrated = exactNamedNode(remote, claudeNewModelNodeName);
+  return Boolean(
+    source
+      && !alreadyMigrated
+      && source.type === claudeModelNodeType
+      && source.parameters?.model?.value === claudeOldModelId
+      && target?.type === claudeModelNodeType
+      && target.parameters?.model?.value === claudeNewModelId
+      && !exactNamedNode(payload, claudeOldModelNodeName),
+  );
+}
+
+function migrateApprovedClaudeModelCredential(key, payload, remote) {
+  if (key !== claudeGatewayKey || !approvedClaudeModelMigrationRequired(payload, remote)) {
+    return payload;
+  }
+  const source = exactNamedNode(remote, claudeOldModelNodeName);
+  const credential = source?.credentials?.anthropicApi;
+  if (!validCredentialReference(credential)) return payload;
   return {
+    ...payload,
+    nodes: payload.nodes.map((node) => (
+      node.name === claudeNewModelNodeName
+        ? { ...node, credentials: { anthropicApi: credential } }
+        : node
+    )),
+  };
+}
+
+function preserveRemoteNodeCredentials(key, payload, remote) {
+  const remoteByName = new Map((remote?.nodes ?? []).map((node) => [node.name, node]));
+  const exactPreserved = {
     ...payload,
     nodes: payload.nodes.map((node) => {
       const prior = remoteByName.get(node.name);
@@ -800,6 +914,40 @@ function preserveRemoteNodeCredentials(payload, remote) {
       return { ...node, credentials: prior.credentials };
     }),
   };
+  // Model upgrades normally must keep a stable node name.  This is the only
+  // approved exception: the exact W13 Sonnet 4.6 node may transfer only its
+  // Anthropic credential reference to the exact Sonnet 5 replacement.  No
+  // type-, position-, or fuzzy-name matching is permitted.
+  return migrateApprovedClaudeModelCredential(key, exactPreserved, remote);
+}
+
+function assertClaudeGatewayCredentialBindings(workflow, expectedWorkflow = undefined) {
+  assert(workflow?.name === claudeGatewayWorkflowName, "workflow 13 remote name is invalid");
+  const webhook = exactNamedNode(workflow, claudeWebhookNodeName);
+  const model = exactNamedNode(workflow, claudeNewModelNodeName);
+  assert(
+    webhook?.type === "n8n-nodes-base.webhook"
+      && webhook.parameters?.authentication === "headerAuth"
+      && validCredentialReference(webhook.credentials?.httpHeaderAuth),
+    "workflow 13 webhook must retain one Generic Header credential",
+  );
+  assert(
+    model?.type === claudeModelNodeType
+      && model.parameters?.model?.value === claudeNewModelId
+      && validCredentialReference(model.credentials?.anthropicApi),
+    "workflow 13 Sonnet 5 node must retain one Anthropic credential",
+  );
+  if (!expectedWorkflow) return;
+  const expectedWebhook = exactNamedNode(expectedWorkflow, claudeWebhookNodeName);
+  const expectedModel = exactNamedNode(expectedWorkflow, claudeNewModelNodeName);
+  assert(
+    webhook.credentials.httpHeaderAuth.id === expectedWebhook?.credentials?.httpHeaderAuth?.id,
+    "workflow 13 webhook credential changed during PUT",
+  );
+  assert(
+    model.credentials.anthropicApi.id === expectedModel?.credentials?.anthropicApi?.id,
+    "workflow 13 Anthropic credential changed during PUT",
+  );
 }
 
 function extractSingleBackendCredential(workflow) {
@@ -852,6 +1000,79 @@ for (const workflow of remoteWorkflows) {
   remoteByName.set(workflow.name, matches);
 }
 
+const selectedDefinitions = definitions.filter(
+  (definition) => !onlyKey || definition.key === onlyKey,
+);
+const unpublishedClaudeGateway = definitions.find(
+  ({ key }) => key === claudeGatewayKey,
+)?.config.publish === false;
+const wouldPublishClaudeProducer = selectedDefinitions.some(({ key, config }) => (
+  (
+    key === "pai-loop-10-daily-opportunity-briefing"
+    || key === "pai-loop-11-analysis-backfill"
+  )
+  && config.publish === true
+));
+assert(
+  !(unpublishedClaudeGateway && wouldPublishClaudeProducer),
+  "cannot deploy active W10/W11 while workflow 13 remains publish=false; stage W13 alone, verify live Sonnet 5 E2E, then promote W13 first",
+);
+
+async function loadRemoteDefinitionForPreflight(definition, required = false) {
+  const { key, config, workflow } = definition;
+  if (config.n8nWorkflowId) {
+    const result = await request(
+      `/workflows/${encodeURIComponent(config.n8nWorkflowId)}`,
+      {},
+      [404],
+    );
+    if (result.status !== 404) {
+      assert(
+        result.body.name === workflow.name,
+        `${key}: manifest workflow ID belongs to an unexpected remote workflow`,
+      );
+      return result.body;
+    }
+  }
+  const matches = remoteByName.get(workflow.name) ?? [];
+  assert(matches.length <= 1, `${key}: preflight found duplicate exact-name remote workflows`);
+  if (!matches.length) {
+    assert(!required, `${key}: required remote workflow is missing during Claude migration`);
+    return undefined;
+  }
+  return (await request(`/workflows/${encodeURIComponent(matches[0].id)}`)).body;
+}
+
+const claudeGatewayDefinition = definitions.find(({ key }) => key === claudeGatewayKey);
+assert(claudeGatewayDefinition, "Claude gateway definition is missing");
+const remoteClaudeGateway = await loadRemoteDefinitionForPreflight(claudeGatewayDefinition);
+if (
+  remoteClaudeGateway
+  && approvedClaudeModelMigrationRequired(
+    deploymentPayload(claudeGatewayDefinition.workflow),
+    remoteClaudeGateway,
+  )
+) {
+  // This model/credential migration is deliberately a two-stage outage-safe
+  // operation.  A normal all-workflow deploy would reactivate W10/W11 before
+  // W13 is rebound and verified, so reject it before making any PUT request.
+  assert(
+    onlyKey === claudeGatewayKey,
+    `Sonnet 5 migration requires --only=${claudeGatewayKey}`,
+  );
+  for (const upstreamKey of claudeMigrationUpstreamKeys) {
+    const definition = definitions.find(({ key }) => key === upstreamKey);
+    assert(definition, `${upstreamKey}: migration preflight definition is missing`);
+    const remote = upstreamKey === claudeGatewayKey
+      ? remoteClaudeGateway
+      : await loadRemoteDefinitionForPreflight(definition, true);
+    assert(
+      remote.active === false,
+      `${upstreamKey} must be inactive before the Sonnet 5 credential migration`,
+    );
+  }
+}
+
 let sharedBackendCredential;
 if (
   onlyKey
@@ -886,9 +1107,7 @@ if (
   );
 }
 
-for (const { key, config, workflow } of definitions.filter(
-  (definition) => !onlyKey || definition.key === onlyKey,
-)) {
+for (const { key, config, workflow } of selectedDefinitions) {
   let payload = deploymentPayload(workflow);
   let workflowId = config.n8nWorkflowId;
   let remote;
@@ -935,17 +1154,28 @@ for (const { key, config, workflow } of definitions.filter(
       console.log(`Skipped archived ${key} (${workflowId})`);
       continue;
     }
-    payload = preserveRemoteNodeCredentials(payload, remote);
+    payload = preserveRemoteNodeCredentials(key, payload, remote);
     payload = inheritApprovedBackendCredential(
       payload,
       sharedBackendCredential ?? extractSingleBackendCredential(remote),
       approvedCredentialInheritance.get(key) ?? new Set(),
     );
+    if (key === claudeGatewayKey) {
+      // Fail before mutating the remote workflow if either environment-owned
+      // credential cannot be deterministically preserved.
+      assertClaudeGatewayCredentialBindings(payload);
+    }
     const updated = await request(`/workflows/${encodeURIComponent(workflowId)}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     });
     remote = updated.body;
+    if (key === claudeGatewayKey) {
+      // n8n PUT responses can be compact.  Re-read the stored definition and
+      // prove both credential references survived before changing activation.
+      remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
+      assertClaudeGatewayCredentialBindings(remote, payload);
+    }
     console.log(`Updated ${key} (${workflowId})`);
   } else {
     payload = inheritApprovedBackendCredential(

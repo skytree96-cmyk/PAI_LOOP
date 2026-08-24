@@ -1,4 +1,5 @@
 const dryRun = process.argv.includes("--dry-run");
+const selfTest = process.argv.includes("--self-test");
 const baseUrl = process.env.N8N_BASE_URL?.trim().replace(/\/$/, "");
 const apiKey = process.env.N8N_API_KEY?.trim();
 const anthropicCredentialName = process.env.PAI_LOOP_N8N_CLAUDE_CREDENTIAL_NAME?.trim();
@@ -6,11 +7,103 @@ const anthropicCredentialName = process.env.PAI_LOOP_N8N_CLAUDE_CREDENTIAL_NAME?
 const gatewayWorkflowName = "PAI_LOOP 13 - Claude Extraction Gateway";
 const dailyWorkflowName = "PAI_LOOP 10 - Daily Opportunity Briefing";
 const webhookNodeName = "Claude Extraction Webhook";
-const modelNodeName = "Claude Sonnet 4.6";
+const modelNodeName = "Claude Sonnet 5";
 const anthropicNodeType = "@n8n/n8n-nodes-langchain.lmChatAnthropic";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function exactNamedNode(workflow, nodeName) {
+  const matches = (workflow?.nodes ?? []).filter((node) => node.name === nodeName);
+  assert(matches.length === 1, `expected exactly one ${nodeName} node`);
+  return matches[0];
+}
+
+function validCredentialReference(credential) {
+  return Boolean(
+    credential
+      && typeof credential === "object"
+      && String(credential.id ?? "").trim()
+      && String(credential.name ?? "").trim(),
+  );
+}
+
+function bindGatewayNodes(gateway, backendCredential, anthropicCredential) {
+  return gateway.nodes.map((node) => {
+    if (node.name === webhookNodeName) {
+      return { ...node, credentials: { httpHeaderAuth: backendCredential } };
+    }
+    if (node.name === modelNodeName) {
+      return { ...node, credentials: { anthropicApi: anthropicCredential } };
+    }
+    return node;
+  });
+}
+
+function assertGatewayCredentialBindings(
+  gateway,
+  expectedBackendCredential,
+  expectedAnthropicCredential,
+) {
+  assert(gateway.active === false, "gateway must remain inactive while credentials are bound");
+  const webhook = exactNamedNode(gateway, webhookNodeName);
+  const model = exactNamedNode(gateway, modelNodeName);
+  assert(
+    webhook.type === "n8n-nodes-base.webhook"
+      && webhook.parameters?.authentication === "headerAuth"
+      && webhook.parameters?.path === "pai-loop-claude/responses"
+      && validCredentialReference(webhook.credentials?.httpHeaderAuth),
+    "gateway webhook credential binding is invalid",
+  );
+  assert(
+    model.type === anthropicNodeType
+      && model.parameters?.model?.value === "claude-sonnet-5"
+      && validCredentialReference(model.credentials?.anthropicApi),
+    "gateway Anthropic credential binding is invalid",
+  );
+  assert(
+    webhook.credentials.httpHeaderAuth.id === expectedBackendCredential.id,
+    "gateway webhook credential changed while binding",
+  );
+  assert(
+    model.credentials.anthropicApi.id === expectedAnthropicCredential.id,
+    "gateway Anthropic credential changed while binding",
+  );
+}
+
+function runSelfTest() {
+  const backend = { id: "opaque-backend", name: "approved backend" };
+  const anthropic = { id: "opaque-anthropic", name: "approved anthropic" };
+  const gateway = {
+    name: gatewayWorkflowName,
+    active: false,
+    nodes: [
+      {
+        name: webhookNodeName,
+        type: "n8n-nodes-base.webhook",
+        parameters: {
+          authentication: "headerAuth",
+          path: "pai-loop-claude/responses",
+        },
+      },
+      {
+        name: modelNodeName,
+        type: anthropicNodeType,
+        parameters: { model: { value: "claude-sonnet-5" } },
+      },
+      { name: "Unrelated", type: "n8n-nodes-base.code", parameters: {} },
+    ],
+  };
+  const bound = { ...gateway, nodes: bindGatewayNodes(gateway, backend, anthropic) };
+  assertGatewayCredentialBindings(bound, backend, anthropic);
+  assert(!bound.nodes[2].credentials, "binding must not attach credentials to unrelated nodes");
+  console.log("Claude gateway credential binder self-test passed");
+}
+
+if (selfTest) {
+  runSelfTest();
+  process.exit(0);
 }
 
 assert(baseUrl && /^https:\/\/[^\s/@]+(?:\/[^\s]*)?$/i.test(baseUrl), "N8N_BASE_URL must be a safe HTTPS URL");
@@ -81,8 +174,8 @@ const gateway = await request(`/workflows/${encodeURIComponent(gatewaySummary.id
 const daily = await request(`/workflows/${encodeURIComponent(dailySummary.id)}`);
 
 assert(gateway.active === false, "gateway must remain inactive while credentials are first bound");
-const webhookNode = gateway.nodes?.find((node) => node.name === webhookNodeName);
-const modelNode = gateway.nodes?.find((node) => node.name === modelNodeName);
+const webhookNode = exactNamedNode(gateway, webhookNodeName);
+const modelNode = exactNamedNode(gateway, modelNodeName);
 assert(
   webhookNode?.type === "n8n-nodes-base.webhook"
     && webhookNode.parameters?.authentication === "headerAuth"
@@ -91,7 +184,7 @@ assert(
 );
 assert(
   modelNode?.type === anthropicNodeType
-    && modelNode.parameters?.model?.value === "claude-sonnet-4-6",
+    && modelNode.parameters?.model?.value === "claude-sonnet-5",
   "remote gateway Claude model contract is invalid",
 );
 assert(
@@ -138,16 +231,13 @@ const anthropicCredential = [...anthropicCredentialsById.values()][0];
 
 const payload = deploymentPayload({
   ...gateway,
-  nodes: gateway.nodes.map((node) => {
-    if (node.name === webhookNodeName) {
-      return { ...node, credentials: { httpHeaderAuth: backendCredential } };
-    }
-    if (node.name === modelNodeName) {
-      return { ...node, credentials: { anthropicApi: anthropicCredential } };
-    }
-    return node;
-  }),
+  nodes: bindGatewayNodes(gateway, backendCredential, anthropicCredential),
 });
+assertGatewayCredentialBindings(
+  { ...gateway, nodes: payload.nodes },
+  backendCredential,
+  anthropicCredential,
+);
 
 if (dryRun) {
   console.log(`Validated credential binding for ${gatewayWorkflowName}; no remote changes made`);
@@ -158,6 +248,12 @@ await request(`/workflows/${encodeURIComponent(gateway.id)}`, {
   method: "PUT",
   body: JSON.stringify(payload),
 });
+const verifiedGateway = await request(`/workflows/${encodeURIComponent(gateway.id)}`);
+assertGatewayCredentialBindings(
+  verifiedGateway,
+  backendCredential,
+  anthropicCredential,
+);
 console.log(
   `Bound the approved backend Header Auth and Anthropic credential "${anthropicCredentialName}" to ${gatewayWorkflowName}; workflow remains inactive`,
 );

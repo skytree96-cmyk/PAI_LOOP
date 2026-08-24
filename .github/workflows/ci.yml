@@ -165,6 +165,7 @@ jobs:
           node --check scripts/deploy-workflows.mjs
           node --check scripts/bind-claude-gateway-credentials.mjs
           node scripts/deploy-workflows.mjs --validate-only
+          node scripts/bind-claude-gateway-credentials.mjs --self-test
           node scripts/test-daily-workflow.mjs
           node scripts/test-teams-delivery-workflow.mjs
           node scripts/test-claude-gateway-workflow.mjs

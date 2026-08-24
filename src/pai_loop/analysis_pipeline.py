@@ -7,7 +7,7 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from pydantic import ValidationError
@@ -1622,6 +1622,7 @@ def run_analysis_pipeline(
             evaluation = Evaluation(
                 notice_id=notice.id,
                 notice_version_id=materialized_version.id,
+                evaluated_at=datetime.now(timezone.utc),
                 deadline_snapshot_at=notice.deadline,
                 eligibility=evaluation_result.eligibility.value,
                 reason_code=reason_code,

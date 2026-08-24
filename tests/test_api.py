@@ -616,7 +616,7 @@ def test_production_fails_closed_without_server_api_key(monkeypatch: pytest.Monk
         "PAI_LOOP_LLM_GATEWAY_BASE_URL",
         "https://n8n.kma.or.kr/webhook/pai-loop-claude",
     )
-    monkeypatch.setenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-5")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("PAI_LOOP_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="PAI_LOOP_API_KEY"):
@@ -650,7 +650,7 @@ def test_production_rejects_local_sqlite_even_with_server_key(
         "PAI_LOOP_LLM_GATEWAY_BASE_URL",
         "https://n8n.kma.or.kr/webhook/pai-loop-claude",
     )
-    monkeypatch.setenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("PAI_LOOP_CLAUDE_MODEL", "claude-sonnet-5")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
     with pytest.raises(RuntimeError, match="managed PostgreSQL"):

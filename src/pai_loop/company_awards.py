@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -41,10 +42,30 @@ _ROWS_PER_PAGE = 100
 # OpenAI execution slot.  Replace this with a distributed/advisory lock before
 # scaling the web service to multiple workers or instances.
 _SEARCH_LOCK = threading.Lock()
-_SEARCH_WALL_SECONDS = 70.0
-_SEARCH_HTTP_TIMEOUT_SECONDS = 12.0
-_SEARCH_MAX_RETRIES = 1
+_SEARCH_WALL_SECONDS = 55.0
+_SEARCH_HTTP_TIMEOUT_SECONDS = 30.0
+_SEARCH_CLIENT_BUDGET_SECONDS = 90.0
+_SEARCH_RESPONSE_MARGIN_SECONDS = 5.0
+# A 30-second response boundary covers the observed PPS latency while keeping
+# one bounded worker batch below the browser's 90-second request timeout.
+# Failed 28-day windows are retained as partial warnings instead of retrying
+# every slow request and multiplying the wall time.
+_SEARCH_MAX_RETRIES = 0
+_SEARCH_MAX_WORKERS = 8
 _MAX_RESPONSE_RECORDS = 500
+logger = logging.getLogger(__name__)
+
+# The browser aborts this external lookup at 90 seconds.  A provider request
+# starts only before the 55-second server wall and is additionally clamped to
+# the remaining wall time by ``PpsCompanyAwardClient``.  Keep a configuration
+# guard as a release-time invariant in case either boundary is changed later.
+if (
+    _SEARCH_WALL_SECONDS
+    + _SEARCH_HTTP_TIMEOUT_SECONDS
+    + _SEARCH_RESPONSE_MARGIN_SECONDS
+    > _SEARCH_CLIENT_BUDGET_SECONDS
+):
+    raise RuntimeError("company award search may exceed the browser timeout budget")
 
 
 class CompanyAwardScope(str, Enum):
@@ -227,6 +248,7 @@ def search_company_awards(
     truncated = False
     stopped_early = False
     result_capped = False
+    failed_window_total = 0
     deadline_monotonic = time.monotonic() + _SEARCH_WALL_SECONDS
     try:
         with PpsCompanyAwardClient(
@@ -246,6 +268,7 @@ def search_company_awards(
                         rows=_ROWS_PER_PAGE,
                         max_window_days=_WINDOW_DAYS,
                         max_pages_per_window=payload.max_pages_per_window,
+                        max_workers=_SEARCH_MAX_WORKERS,
                         deadline_monotonic=deadline_monotonic,
                     )
                     for record in iterator:
@@ -261,7 +284,46 @@ def search_company_awards(
                             iterator.close()
                             break
                         records_by_key[key] = record
-                    successful_scopes += 1
+                    total_windows = math.ceil(
+                        ((payload.end_date - payload.start_date).days + 1)
+                        / _WINDOW_DAYS
+                    )
+                    planned_windows = int(
+                        getattr(client, "planned_window_count", total_windows)
+                    )
+                    attempted_windows = int(
+                        getattr(client, "attempted_window_count", planned_windows)
+                    )
+                    successful_windows = int(
+                        getattr(
+                            client,
+                            "successful_window_count",
+                            planned_windows
+                            - int(getattr(client, "failed_window_count", 0)),
+                        )
+                    )
+                    failed_windows = int(getattr(client, "failed_window_count", 0))
+                    # A scope counts as successful only after at least one
+                    # provider window returned normally.  Unattempted windows
+                    # at the wall-time boundary must not turn an empty lookup
+                    # into a false HTTP 200 success.
+                    if successful_windows > 0:
+                        successful_scopes += 1
+                    if failed_windows:
+                        failed_window_total += failed_windows
+                        truncated = True
+                        warnings.append(
+                            f"{scope}: {failed_windows}개 조회 기간이 실패해 나머지 결과만 표시합니다."
+                        )
+                        new_errors = list(getattr(client, "window_errors", []))
+                        logger.warning(
+                            "PPS company-award window failure scope=%s failed_windows=%s "
+                            "total_windows=%s errors=%s",
+                            scope,
+                            failed_windows,
+                            total_windows,
+                            sorted(set(new_errors))[:3],
+                        )
                     truncated = truncated or client.hit_page_limit
                     if client.provider_mismatch_count:
                         warnings.append(
@@ -276,8 +338,13 @@ def search_company_awards(
                         warnings.append(
                             "전체 조회시간 제한에 도달하여 일부 기간 또는 업무 범위를 조회하지 못했습니다."
                         )
-                except PpsApiError:
+                except PpsApiError as exc:
                     warnings.append(f"{scope}: 조달청 조회에 실패했습니다.")
+                    logger.warning(
+                        "PPS company-award scope failure scope=%s error_type=%s",
+                        scope,
+                        type(exc).__name__,
+                    )
                 finally:
                     api_calls += client.request_count - before
                 if (
@@ -297,7 +364,10 @@ def search_company_awards(
     if not successful_scopes:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="조달청 낙찰 결과를 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            detail=(
+                "조달청 낙찰 API 응답이 지연되거나 일시적으로 실패했습니다. "
+                "잠시 후 다시 시도해 주세요."
+            ),
         )
 
     if result_capped:
@@ -325,6 +395,10 @@ def search_company_awards(
         count=len(response_records),
         api_calls=api_calls,
         truncated=truncated,
-        partial=stopped_early or successful_scopes != len(scopes),
+        partial=(
+            stopped_early
+            or failed_window_total > 0
+            or successful_scopes != len(scopes)
+        ),
         warnings=warnings,
     )

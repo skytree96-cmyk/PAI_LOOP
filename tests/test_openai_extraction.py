@@ -164,7 +164,7 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert outcome.data.requirements[0].category == "REGION"
     assert captured["store"] is False
     assert captured["service_tier"] == "default"
-    assert captured["max_output_tokens"] == 12_000
+    assert captured["max_output_tokens"] == 24_000
     assert captured["text"]["format"]["type"] == "json_schema"
     assert captured["text"]["format"]["strict"] is True
     payload_schema = captured["text"]["format"]["schema"]
@@ -211,7 +211,7 @@ def test_n8n_claude_gateway_uses_scoped_header_and_compatible_response() -> None
             json={
                 "id": "n8n-execution-test",
                 "status": "completed",
-                "model": "claude-sonnet-4-6",
+                "model": "claude-sonnet-5",
                 "output_text": json.dumps(valid_output(), ensure_ascii=False),
                 "usage": {
                     "input_tokens": 100,
@@ -223,7 +223,7 @@ def test_n8n_claude_gateway_uses_scoped_header_and_compatible_response() -> None
 
     with OpenAIExtractionClient(
         api_key="server-boundary-key",
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5",
         provider="n8n_claude",
         base_url="https://n8n.example/webhook/pai-loop-claude",
         transport=httpx.MockTransport(handler),
@@ -234,7 +234,7 @@ def test_n8n_claude_gateway_uses_scoped_header_and_compatible_response() -> None
         )
 
     assert outcome.status == "ACCEPTED"
-    assert outcome.model == "claude-sonnet-4-6"
+    assert outcome.model == "claude-sonnet-5"
     assert captured == {
         "url": "https://n8n.example/webhook/pai-loop-claude/responses",
         "auth": "server-boundary-key",
@@ -252,7 +252,7 @@ def test_n8n_claude_gateway_does_not_repeat_ambiguous_http_failures() -> None:
 
     with OpenAIExtractionClient(
         api_key="server-boundary-key",
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5",
         provider="n8n_claude",
         base_url="https://n8n.example/webhook/pai-loop-claude",
         transport=httpx.MockTransport(handler),
@@ -281,8 +281,16 @@ def test_production_client_refuses_direct_or_unapproved_model_egress(monkeypatch
         OpenAIExtractionClient(
             api_key="unused",
             provider="n8n_claude",
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5",
             base_url="https://other.example/webhook/pai-loop-claude",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+        )
+    with pytest.raises(ValueError, match="must use claude-sonnet-5"):
+        OpenAIExtractionClient(
+            api_key="unused",
+            provider="n8n_claude",
+            model="claude-sonnet-4-6",
+            base_url="https://n8n.kma.or.kr/webhook/pai-loop-claude",
             transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
         )
 
