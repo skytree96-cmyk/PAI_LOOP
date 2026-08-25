@@ -1120,6 +1120,20 @@
       {"paiBotTeamsUrl":"https://teams.microsoft.com/"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
+    <script>
+      // Render free-tier dashboard aggregation can exceed the generic request
+      // timeout while notice pages are loading. Keep only that public summary
+      // request alive; every other request retains the application's timeout.
+      (() => {
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+          const requestUrl = typeof input === "string" ? input : String(input?.url || "");
+          if (!/\/api\/v1\/dashboard(?:[?#]|$)/.test(requestUrl)) return nativeFetch(input, init);
+          const { signal: _ignoredDashboardAbort, ...dashboardInit } = init;
+          return nativeFetch(input, dashboardInit);
+        };
+      })();
+    </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->\n    <script src="./app.js?v=20260825-open-visibility1" defer></script>
   </body>
 </html>
