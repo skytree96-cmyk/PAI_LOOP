@@ -631,7 +631,7 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     continuation.config.contractVersion === "analysis-backfill-1.2"
-      && continuationSerialised.includes("executionLimit: 30")
+      && continuationSerialised.includes("executionLimit: 5")
       && continuationSerialised.includes("maxTotal: 3000")
       && continuationSerialised.includes("includeRetryable: true")
       && continuationSerialised.includes("maxContinuations: 128")

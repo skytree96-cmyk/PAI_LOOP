@@ -320,7 +320,7 @@ assert.deepEqual(targets(continuation, "Backfill Has Remaining Chunks?", 1), ["N
 const continuationRuntime = one(continuationNodes, "Build Scheduled Continuation Runtime", {}, { env: {} }).runtime;
 const recoveryRuntime = one(continuationNodes, "Build Fail-Closed Backfill Runtime", {}, { env: {} }).runtime;
 assert.equal(recoveryRuntime.includeRetryable, true);
-assert.equal(recoveryRuntime.executionLimit, 30);
+assert.equal(recoveryRuntime.executionLimit, 5);
 assert.equal(recoveryRuntime.maxTotal, 3000);
 const continuationPlan = one(continuationNodes, "Validate Backfill Plan", {
   ...operationResponse, queue_name: "DAILY", offered: 3,

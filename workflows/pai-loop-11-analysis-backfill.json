@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "# 11 · Resumable Analysis Backfill · v0.8\n\n수동 최초 실행은 현재 OPEN 미시도 공고와 24시간 cooldown을 지난 retryable 공고를 최대 3,000건까지 durable parent로 예약합니다. 한 n8n 실행은 최대 30건만, batch HTTP 호출당 1건을 직렬 처리합니다. `QUOTE_UNVERIFIED` 교정 재시도를 포함해 첨부당 OpenAI API 요청은 최대 2회(공고당 최대 20회)입니다. 15분 schedule은 DAILY를 먼저, 그다음 BACKFILL을 재개하며 활성 작업이 없으면 audit를 만들지 않습니다.\n\n각 segment는 서버에 lease와 exact chunk map을 저장합니다. 겹친 실행은 zero-offer, 동일 chunk retry는 저장 응답 재사용, stale lease는 bounded recovery, 128회 초과는 DEAD_LETTER입니다.",
+        "content": "# 11 · Resumable Analysis Backfill · v0.8\n\n수동 최초 실행은 현재 OPEN 미시도 공고와 24시간 cooldown을 지난 retryable 공고를 최대 3,000건까지 durable parent로 예약합니다. 한 n8n 실행은 최대 5건만, batch HTTP 호출당 1건을 직렬 처리합니다. `QUOTE_UNVERIFIED` 교정 재시도를 포함해 첨부당 OpenAI API 요청은 최대 2회(공고당 최대 20회)입니다. 15분 schedule은 DAILY를 먼저, 그다음 BACKFILL을 재개하며 활성 작업이 없으면 audit를 만들지 않습니다.\n\n각 segment는 서버에 lease와 exact chunk map을 저장합니다. 겹친 실행은 zero-offer, 동일 chunk retry는 저장 응답 재사용, stale lease는 bounded recovery, 128회 초과는 DEAD_LETTER입니다.",
         "height": 250,
         "width": 760
       },
@@ -29,7 +29,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst rawOrigin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\nif (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(rawOrigin) || rawOrigin.includes('@') || rawOrigin.includes('\\\\')) throw new Error('PAI_LOOP_API_BASE_URL is unsafe');\nconst emergencyDisabled = String(read('PAI_LOOP_EMERGENCY_DISABLE')).toLowerCase() === 'true';\nreturn [{ json: { runtime: { apiBaseUrl: rawOrigin.replace(/\\/+$/, ''), enabled: !emergencyDisabled, emergencyDisabled, triggerSource: 'manual', queueName: 'BACKFILL', resumeOnly: false, dryRun: false, chunkSize: 1, maxTotal: 3000, executionLimit: 30, includeRetryable: true, retryCooldownHours: 24, reservationTtlHours: 6, maxContinuations: 128 } } }];"
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst rawOrigin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\nif (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(rawOrigin) || rawOrigin.includes('@') || rawOrigin.includes('\\\\')) throw new Error('PAI_LOOP_API_BASE_URL is unsafe');\nconst emergencyDisabled = String(read('PAI_LOOP_EMERGENCY_DISABLE')).toLowerCase() === 'true';\nreturn [{ json: { runtime: { apiBaseUrl: rawOrigin.replace(/\\/+$/, ''), enabled: !emergencyDisabled, emergencyDisabled, triggerSource: 'manual', queueName: 'BACKFILL', resumeOnly: false, dryRun: false, chunkSize: 1, maxTotal: 3000, executionLimit: 5, includeRetryable: true, retryCooldownHours: 24, reservationTtlHours: 6, maxContinuations: 128 } } }];"
       },
       "id": "backfill-runtime",
       "name": "Build Fail-Closed Backfill Runtime",
@@ -343,7 +343,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst rawOrigin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\nif (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(rawOrigin) || rawOrigin.includes('@') || rawOrigin.includes('\\\\')) throw new Error('PAI_LOOP_API_BASE_URL is unsafe');\nconst emergencyDisabled = String(read('PAI_LOOP_EMERGENCY_DISABLE')).toLowerCase() === 'true';\nreturn [{ json: { runtime: { apiBaseUrl: rawOrigin.replace(/\\/+$/, ''), enabled: !emergencyDisabled, emergencyDisabled, triggerSource: 'schedule', queueName: 'ANY', resumeOnly: true, dryRun: false, chunkSize: 1, maxTotal: 3000, executionLimit: 30, includeRetryable: false, retryCooldownHours: 24, reservationTtlHours: 6, maxContinuations: 128 } } }];"
+        "jsCode": "const read = (name) => { try { return String($env[name] ?? '').trim(); } catch { return ''; } };\nconst rawOrigin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\nif (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?(?:\\/[^\\s]*)?$/i.test(rawOrigin) || rawOrigin.includes('@') || rawOrigin.includes('\\\\')) throw new Error('PAI_LOOP_API_BASE_URL is unsafe');\nconst emergencyDisabled = String(read('PAI_LOOP_EMERGENCY_DISABLE')).toLowerCase() === 'true';\nreturn [{ json: { runtime: { apiBaseUrl: rawOrigin.replace(/\\/+$/, ''), enabled: !emergencyDisabled, emergencyDisabled, triggerSource: 'schedule', queueName: 'ANY', resumeOnly: true, dryRun: false, chunkSize: 1, maxTotal: 3000, executionLimit: 5, includeRetryable: false, retryCooldownHours: 24, reservationTtlHours: 6, maxContinuations: 128 } } }];"
       },
       "id": "analysis-continuation-runtime",
       "name": "Build Scheduled Continuation Runtime",

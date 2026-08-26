@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 import time
 import threading
@@ -393,6 +394,26 @@ router = APIRouter(
 # contract. 0x5041494C is the stable ASCII namespace "PAIL".
 _PLANNER_ADVISORY_LOCK_KEY = 0x5041494C
 _PLANNER_PROCESS_LOCK = threading.RLock()
+_ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY = 0x50414945
+_ANALYSIS_EXECUTION_PROCESS_LOCK = threading.Lock()
+_ANALYSIS_RUNTIME_SAFETY_ENABLED = bool(
+    os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID")
+)
+ANALYSIS_STARTUP_GRACE_SECONDS = (
+    10 * 60 if _ANALYSIS_RUNTIME_SAFETY_ENABLED else 0
+)
+_ANALYSIS_PROCESS_STARTED_MONOTONIC = time.monotonic()
+
+
+def _analysis_startup_retry_after_seconds() -> int:
+    if not _ANALYSIS_RUNTIME_SAFETY_ENABLED:
+        return 0
+    remaining = ANALYSIS_STARTUP_GRACE_SECONDS - (
+        time.monotonic() - _ANALYSIS_PROCESS_STARTED_MONOTONIC
+    )
+    if remaining <= 0:
+        return 0
+    return int(remaining) + 1
 
 
 def _serialize_analysis_planner(function):
@@ -1575,6 +1596,39 @@ def plan_analysis_backfill(
     retried workflow cannot create a second concurrent sweep of the same keys.
     """
 
+    startup_retry_after = _analysis_startup_retry_after_seconds()
+    if payload.queue_name == "ANY" and payload.resume_only and startup_retry_after > 0:
+        return AnalysisBackfillPlanResponse(
+            job_id=None,
+            segment_id=None,
+            status="NO_ACTIVE",
+            queue_name=payload.queue_name,
+            dry_run=payload.dry_run,
+            policy="OPEN_NOT_SELECTED_THEN_COOLED_RETRY",
+            chunk_size=payload.chunk_size,
+            planned=0,
+            attempted=0,
+            remaining=0,
+            in_flight=0,
+            offered=0,
+            continuation_required=False,
+            continuation_round=0,
+            max_continuations=payload.max_continuations,
+            completed=0,
+            partial=0,
+            failed=0,
+            child_jobs=0,
+            openai_calls=0,
+            notice_keys=[],
+            chunks=[],
+            chunk_indices=[],
+            warnings=["ANALYSIS_DEPLOYMENT_GRACE"],
+            note=(
+                "Analysis is paused during deployment stabilization; "
+                f"the next scheduled run may resume in about {startup_retry_after} seconds."
+            ),
+        )
+
     now = datetime.now(timezone.utc)
     source_binding = _daily_source_binding(session, payload, now=now)
     parent: IngestionJob | None = None
@@ -2505,7 +2559,39 @@ def _enrich_one_notice(
         )
 
 
+def _serialize_analysis_execution(function):
+    @wraps(function)
+    def wrapped(
+        payload: AnalysisBatchRequest,
+        request: Request,
+    ) -> AnalysisBatchResponse:
+        if not _ANALYSIS_RUNTIME_SAFETY_ENABLED:
+            return function(payload, request)
+
+        with request.app.state.session_factory() as lock_session:
+            bind = lock_session.get_bind()
+            if bind.dialect.name == "postgresql":
+                connection = lock_session.connection()
+                connection.execute(
+                    text("SELECT pg_advisory_lock(:lock_key)"),
+                    {"lock_key": _ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY},
+                )
+                try:
+                    return function(payload, request)
+                finally:
+                    connection.execute(
+                        text("SELECT pg_advisory_unlock(:lock_key)"),
+                        {"lock_key": _ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY},
+                    )
+
+        with _ANALYSIS_EXECUTION_PROCESS_LOCK:
+            return function(payload, request)
+
+    return wrapped
+
+
 @router.post("/notices/analysis/batch", response_model=AnalysisBatchResponse)
+@_serialize_analysis_execution
 def run_notice_analysis_batch(
     payload: AnalysisBatchRequest,
     request: Request,
