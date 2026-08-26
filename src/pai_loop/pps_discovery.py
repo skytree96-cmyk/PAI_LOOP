@@ -16,7 +16,6 @@ from .api import (
     _pps_notice_key,
     _publication_safe_source_url,
 )
-from .analysis_selection import MANUAL_ONLY_POLICY
 from .integrations.pps import PpsApiError, PpsClient
 from .manual_analysis import (
     _manual_execution_slot,
@@ -380,24 +379,13 @@ def save_pps_notice(
             dry_run=False,
         )
         with request.app.state.session_factory() as session:
-            # Persist the opt-in policy before making a new OPEN Notice
-            # visible. The policy is intentionally outside seven-day
-            # operational-log retention; an orphaned fail-closed marker is
-            # safer than a notice briefly entering an automatic OpenAI queue.
+            # Discovery-saved notices now participate in automatic analysis.
+            # Re-saving also clears a marker left by the legacy MANUAL_ONLY
+            # behavior so the notice can enter the next daily/backfill plan.
             policy = session.get(NoticeAnalysisPolicy, payload.selection_key)
-            if policy is None:
-                policy = NoticeAnalysisPolicy(
-                    notice_key=payload.selection_key,
-                    bid_notice_no=payload.bid_notice_no,
-                    analysis_policy=MANUAL_ONLY_POLICY,
-                    policy_source="USER_PPS_DISCOVERY",
-                )
-                session.add(policy)
-            else:
-                policy.bid_notice_no = payload.bid_notice_no
-                policy.analysis_policy = MANUAL_ONLY_POLICY
-                policy.policy_source = "USER_PPS_DISCOVERY"
-            session.commit()
+            if policy is not None:
+                session.delete(policy)
+                session.commit()
 
             job = IngestionJob(
                 source="PPS_MANUAL_SAVE",
