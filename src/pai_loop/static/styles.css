@@ -5819,3 +5819,72 @@ body.teams-context .performance-explorer {
   .performance-filters,
   .performance-pagination nav { display: none !important; }
 }
+
+/* Keep decision-detail copy readable without changing the dashboard layout. */
+@media screen {
+  .detail-drawer :is(
+    .drawer-header__meta,
+    .source-badge,
+    .detail-tag,
+    .detail-fact small,
+    .summary-metric small,
+    .pipeline-step small,
+    .detail-tabs button span,
+    .verified-label,
+    .document-analysis-state,
+    .document-analysis-item__head span,
+    .document-analysis-item dt,
+    .document-analysis-item dd,
+    .document-privacy-note,
+    .private-match-badge,
+    .private-match-metric small,
+    .private-match-category,
+    .private-match-state,
+    .private-match-message,
+    .private-match-details li,
+    .private-fact-key,
+    .private-match-note,
+    .evidence-jump,
+    .decision-dock__head small,
+    .comment-field label,
+    .comment-field > span,
+    .decision-disclaimer
+  ) {
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .detail-drawer :is(
+    .detail-agency,
+    .detail-fact strong,
+    .pipeline-step strong,
+    .detail-tabs button,
+    .summary-copy,
+    .document-analysis-item__head strong,
+    .document-analysis-item p,
+    .document-analysis-waiting,
+    .private-match-preview__head h4,
+    .private-match-condition,
+    .private-match-waiting,
+    .requirement-copy small,
+    .action-list li,
+    .decision-option span,
+    .decision-selection-guide,
+    .comment-field textarea
+  ) {
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .detail-drawer :is(
+    .requirement-copy strong,
+    .decision-dock__head span
+  ) {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+}
+
+@media screen and (max-width: 390px) {
+  .detail-drawer .detail-tabs button { font-size: 10px; }
+}
