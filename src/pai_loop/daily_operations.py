@@ -310,23 +310,27 @@ def daily_briefing(
         item
         for item in items
         if item["notice_key"] not in manual_only_keys
-        if item["analysis_coverage"]["reason_code"] == "NOT_SELECTED"
+        if not item["analysis_coverage"]["attempted"]
     ]
     retryable = [
         item
         for item in items
         if item["notice_key"] not in manual_only_keys
-        if item["analysis_coverage"]["reason_code"]
-        in {
-            "HWPX_EXTRACT_FAILED",
-            "PDF_EXTRACT_FAILED",
-            "DOCUMENT_EXTRACT_FAILED",
-            "OPENAI_REVIEW",
-            "QUOTE_UNVERIFIED",
-        }
-        or (
-            item["analysis_coverage"]["reason_code"] == "ANALYZED"
-            and item["analysis_snapshot"] is None
+        if item["analysis_coverage"]["attempted"]
+        if (
+            item["analysis_coverage"]["reason_code"]
+            in {
+                "ATTACHMENT_COVERAGE_INCOMPLETE",
+                "HWPX_EXTRACT_FAILED",
+                "PDF_EXTRACT_FAILED",
+                "DOCUMENT_EXTRACT_FAILED",
+                "OPENAI_REVIEW",
+                "QUOTE_UNVERIFIED",
+            }
+            or (
+                item["analysis_coverage"]["reason_code"] == "ANALYZED"
+                and item["analysis_snapshot"] is None
+            )
         )
     ]
     retryable.sort(
@@ -349,7 +353,8 @@ def daily_briefing(
         if item["notice_key"] not in never_attempted_keys
     ]
     deferred_terminal_total = sum(
-        item["analysis_coverage"]["reason_code"]
+        item["analysis_coverage"]["attempted"]
+        and item["analysis_coverage"]["reason_code"]
         in {"ATTACHMENT_NONE", "HWP_ONLY_UNSUPPORTED", "UNSUPPORTED_ATTACHMENT"}
         for item in items
     )

@@ -979,7 +979,11 @@ def _eligible_retry_notice_keys(
             (_utc(version.created_at) for version in notice.versions),
             default=_utc(notice.published_at or notice.created_at),
         )
-        if reason.reason_code in _RETRYABLE_ANALYSIS_CODES and attempt_at <= cutoff:
+        if (
+            reason.attempted
+            and reason.reason_code in _RETRYABLE_ANALYSIS_CODES
+            and attempt_at <= cutoff
+        ):
             eligible.add(notice.notice_key)
     return eligible
 
@@ -988,13 +992,15 @@ def _never_attempted_notice_keys(
     session: Session,
     keys: list[str],
 ) -> set[str]:
-    """Return mislabeled queue keys that are ordinary first-attempt work.
+    """Return queue keys that are ordinary first-attempt work.
 
     The daily briefing exposes an explicitly partitioned queue, but this
     defensive classification keeps older workflow payloads from dropping a
-    ``NOT_SELECTED`` key merely because they labeled every backlog item as a
-    retry.  Such keys remain generation-zero work and never receive a retry
-    epoch token.
+    never-attempted key merely because they labeled every backlog item as a
+    retry. A legacy PPS metadata row can report attachment coverage incomplete
+    before any extraction was attempted, so the explicit ``attempted`` flag is
+    authoritative rather than the display-oriented reason code. Such keys
+    remain generation-zero work and never receive a retry epoch token.
     """
 
     if not keys:
@@ -1025,7 +1031,7 @@ def _never_attempted_notice_keys(
             evaluated=bool(notice.evaluations),
             source_kind=source_kind,
         )
-        if reason.reason_code == "NOT_SELECTED":
+        if not reason.attempted:
             never_attempted.add(notice.notice_key)
     return never_attempted
 
@@ -1479,7 +1485,7 @@ def _select_backfill_notice_keys(
             (_utc(version.created_at) for version in notice.versions),
             default=observed_at,
         )
-        if reason.reason_code == "NOT_SELECTED":
+        if not reason.attempted:
             never_attempted.append((observed_at, notice.notice_key))
         elif (
             payload.include_retryable

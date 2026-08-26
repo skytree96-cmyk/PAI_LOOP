@@ -351,6 +351,58 @@ def test_daily_analysis_queue_does_not_let_failed_or_terminal_items_starve_new_w
     assert queue["deferred_terminal_total"] == 1
 
 
+def test_daily_analysis_queue_treats_stale_pps_metadata_as_never_attempted(
+    client: TestClient,
+) -> None:
+    notice_key = "PPS-STALE-METADATA-NEVER-ATTEMPTED"
+    _create_notice(
+        client,
+        notice_key=notice_key,
+        published_at="2026-08-16T08:30:00+09:00",
+    )
+    attachment = {
+        "attachment_id": "PPS-ATT-ffffffffffffffffffffffff",
+        "file_name": "제안요청서.pdf",
+        "media_type": "application/pdf",
+        "url": (
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+            "?bidPbancNo=R26BKSTALE&fileSeq=1"
+        ),
+        "slot": 1,
+    }
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        session.add(
+            NoticeVersion(
+                notice_id=notice.id,
+                version_no=1,
+                file_sha256="f" * 64,
+                document_complete=False,
+                extraction_status="METADATA",
+                extraction_confidence=1.0,
+                source_payload={
+                    "kind": PPS_METADATA_KIND,
+                    "schema_version": "legacy-before-current-manifest-schema",
+                    "attachment_manifest": [attachment],
+                },
+            )
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={"days": 7, "as_of": "2026-08-17T09:00:00+09:00"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
+    assert item["analysis_coverage"]["reason_code"] == "ATTACHMENT_COVERAGE_INCOMPLETE"
+    assert item["analysis_coverage"]["attempted"] is False
+    assert body["analysis_queue"]["never_attempted_notice_keys"] == [notice_key]
+    assert body["analysis_queue"]["retryable_notice_keys"] == []
+
+
 def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
     client: TestClient,
 ) -> None:

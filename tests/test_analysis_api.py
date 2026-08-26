@@ -42,6 +42,7 @@ from pai_loop.models import (
     ScoreSnapshot,
 )
 from pai_loop.pps_enrichment import (
+    PPS_METADATA_KIND,
     PPS_METADATA_SCHEMA,
     PpsEnrichmentResult,
     build_attachment_manifest,
@@ -1969,6 +1970,7 @@ def test_cooled_retry_key_reopens_once_inside_active_daily_parent(
             state="REVIEW",
             reason_code="OPENAI_REVIEW",
             reason="cooldown retry test",
+            attempted=True,
         ),
     )
     retry_payload = {
@@ -2026,10 +2028,10 @@ def test_cooled_retry_key_reopens_once_inside_active_daily_parent(
     ] == [0, 1]
 
 
-def test_new_daily_parent_keeps_mislabeled_not_selected_backlog_as_generation_zero(
+def test_new_daily_parent_keeps_never_attempted_coverage_backlog_as_generation_zero(
     client: TestClient,
 ) -> None:
-    target = "MANUAL-NEVER-ATTEMPTED-BACKLOG"
+    target = "PPS-NEVER-ATTEMPTED-COVERAGE-BACKLOG"
     assert client.post(
         "/api/v1/notices",
         json={
@@ -2042,6 +2044,36 @@ def test_new_daily_parent_keeps_mislabeled_not_selected_backlog_as_generation_ze
             "status": "OPEN",
         },
     ).status_code == 201
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == target))
+        assert notice is not None
+        session.add(
+            NoticeVersion(
+                notice_id=notice.id,
+                version_no=1,
+                file_sha256="f" * 64,
+                document_complete=False,
+                extraction_status="METADATA",
+                extraction_confidence=1.0,
+                source_payload={
+                    "kind": PPS_METADATA_KIND,
+                    "schema_version": "legacy-before-current-manifest-schema",
+                    "attachment_manifest": [
+                        {
+                            "attachment_id": "PPS-ATT-ffffffffffffffffffffffff",
+                            "file_name": "제안요청서.pdf",
+                            "media_type": "application/pdf",
+                            "url": (
+                                "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/"
+                                "downloadFile.do?bidPbancNo=R26BKLEGACY&fileSeq=1"
+                            ),
+                            "slot": 1,
+                        }
+                    ],
+                },
+            )
+        )
+        session.commit()
 
     response = client.post(
         "/api/v1/operations/analysis-backfills/plan",
@@ -2049,7 +2081,7 @@ def test_new_daily_parent_keeps_mislabeled_not_selected_backlog_as_generation_ze
             "queue_name": "DAILY",
             "notice_keys": [target],
             # Compatibility check for the pre-partition W10 payload: a
-            # NOT_SELECTED key must remain ordinary gen-0 work, not disappear.
+            # never-attempted coverage key must remain ordinary gen-0 work.
             "retry_notice_keys": [target],
             "retry_epoch": "2026-08-17",
             "dry_run": True,
@@ -2072,6 +2104,71 @@ def test_new_daily_parent_keeps_mislabeled_not_selected_backlog_as_generation_ze
         assert parent is not None
         assert parent.request_json["work_generations"][target] == 0
         assert target not in parent.request_json["retry_tokens"]
+
+
+def test_backfill_selects_never_attempted_coverage_before_retry_cooldown(
+    client: TestClient,
+) -> None:
+    target = "PPS-BACKFILL-NEVER-ATTEMPTED-COVERAGE"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": target,
+            "bid_notice_no": target,
+            "title": "미시도 stale metadata 자동선정 검증",
+            "agency": "가상 기관",
+            "published_at": "2026-08-17T08:00:00+09:00",
+            "deadline": "2099-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == target))
+        assert notice is not None
+        session.add(
+            NoticeVersion(
+                notice_id=notice.id,
+                version_no=1,
+                file_sha256="e" * 64,
+                document_complete=False,
+                extraction_status="METADATA",
+                extraction_confidence=1.0,
+                source_payload={
+                    "kind": PPS_METADATA_KIND,
+                    "schema_version": "legacy-before-current-manifest-schema",
+                    "attachment_manifest": [
+                        {
+                            "attachment_id": "PPS-ATT-eeeeeeeeeeeeeeeeeeeeeeee",
+                            "file_name": "제안요청서.pdf",
+                            "media_type": "application/pdf",
+                            "url": (
+                                "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/"
+                                "downloadFile.do?bidPbancNo=R26BKSTALE&fileSeq=1"
+                            ),
+                            "slot": 1,
+                        }
+                    ],
+                },
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "dry_run": True,
+            "include_retryable": False,
+            "retry_cooldown_hours": 168,
+            "max_total": 1,
+            "execution_limit": 1,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert plan["planned"] == 1
+    assert plan["notice_keys"] == [target]
 
 
 def test_legacy_analyzed_without_snapshot_is_retried_once_with_zero_openai_calls(
@@ -2184,6 +2281,7 @@ def test_completed_daily_parent_dedupes_same_epoch_retry_after_pipeline_failure(
             state="REVIEW",
             reason_code="OPENAI_REVIEW",
             reason="persistent synthetic retry failure",
+            attempted=True,
         ),
     )
     pipeline_calls = 0
