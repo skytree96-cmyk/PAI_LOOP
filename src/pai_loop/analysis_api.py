@@ -28,7 +28,10 @@ from .daily_analysis_scope import (
 )
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
-from .notice_freshness import authoritative_pps_cancelled_notice_keys
+from .notice_freshness import (
+    authoritative_pps_cancelled_notice_keys,
+    latest_current_analysis_run,
+)
 from .pps_enrichment import (
     ATTACHMENT_TIMEOUT_GUARD_SECONDS,
     DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
@@ -769,10 +772,6 @@ def _store_batch_response(
 
 
 _RETRYABLE_ANALYSIS_CODES = {
-    # Legacy/manual records can have a valid Evaluation but no AnalysisRun
-    # snapshot.  Re-running the pipeline reuses their accepted extraction and
-    # materialises the missing snapshot without an OpenAI call.
-    "ANALYZED",
     "HWPX_EXTRACT_FAILED",
     "PDF_EXTRACT_FAILED",
     "DOCUMENT_EXTRACT_FAILED",
@@ -782,6 +781,19 @@ _RETRYABLE_ANALYSIS_CODES = {
     "OPENAI_REVIEW",
     "QUOTE_UNVERIFIED",
 }
+
+
+def _analysis_reason_is_retryable(notice: Notice, reason_code: str) -> bool:
+    if reason_code in _RETRYABLE_ANALYSIS_CODES:
+        return True
+    if reason_code != "ANALYZED":
+        return False
+    # Legacy/manual records can have a valid Evaluation but no AnalysisRun
+    # snapshot. Re-running those records materialises the missing snapshot
+    # without an OpenAI call. A current partial/failed snapshot remains retry
+    # work, but a completed snapshot is terminal until its PPS basis changes.
+    current_run = latest_current_analysis_run(notice)
+    return current_run is None or current_run.status != "COMPLETED"
 
 
 def _utc(value: datetime) -> datetime:
@@ -955,6 +967,7 @@ def _eligible_retry_notice_keys(
             .options(
                 selectinload(Notice.versions),
                 selectinload(Notice.evaluations),
+                selectinload(Notice.analysis_runs),
             )
         ).all()
     )
@@ -981,7 +994,7 @@ def _eligible_retry_notice_keys(
         )
         if (
             reason.attempted
-            and reason.reason_code in _RETRYABLE_ANALYSIS_CODES
+            and _analysis_reason_is_retryable(notice, reason.reason_code)
             and attempt_at <= cutoff
         ):
             eligible.add(notice.notice_key)
@@ -1455,6 +1468,7 @@ def _select_backfill_notice_keys(
             .options(
                 selectinload(Notice.versions),
                 selectinload(Notice.evaluations),
+                selectinload(Notice.analysis_runs),
             )
         ).all()
     )
@@ -1489,7 +1503,7 @@ def _select_backfill_notice_keys(
             never_attempted.append((observed_at, notice.notice_key))
         elif (
             payload.include_retryable
-            and reason.reason_code in _RETRYABLE_ANALYSIS_CODES
+            and _analysis_reason_is_retryable(notice, reason.reason_code)
             and attempt_at <= retry_cutoff
         ):
             retryable.append((attempt_at, notice.notice_key))

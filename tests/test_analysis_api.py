@@ -2171,6 +2171,91 @@ def test_backfill_selects_never_attempted_coverage_before_retry_cooldown(
     assert plan["notice_keys"] == [target]
 
 
+def _materialize_cooled_completed_analysis(client: TestClient) -> None:
+    _seed_public_notice(client)
+    analysed = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={"notice_keys": [NOTICE_KEY], "dry_run": False},
+    )
+    assert analysed.status_code == 200, analysed.text
+    assert analysed.json()["results"][0]["analysis_reason_code"] == "ANALYZED"
+
+    cooled_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == NOTICE_KEY)
+        )
+        assert notice is not None
+        run = session.scalar(
+            select(AnalysisRun).where(AnalysisRun.notice_id == notice.id)
+        )
+        assert run is not None
+        run.status = "COMPLETED"
+        for version in notice.versions:
+            version.created_at = cooled_at
+        session.commit()
+
+
+def test_explicit_retry_rejects_analyzed_notice_with_current_completed_snapshot(
+    client: TestClient,
+) -> None:
+    _materialize_cooled_completed_analysis(client)
+
+    response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": [NOTICE_KEY],
+            "retry_notice_keys": [NOTICE_KEY],
+            "retry_epoch": "2026-08-26",
+            "dry_run": True,
+            "retry_cooldown_hours": 24,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert plan["planned"] == 0
+    assert plan["notice_keys"] == []
+    assert "RETRY_KEYS_NOT_ELIGIBLE:1" in plan["warnings"]
+
+
+def test_automatic_backfill_excludes_completed_snapshot_but_keeps_partial_retry(
+    client: TestClient,
+) -> None:
+    _materialize_cooled_completed_analysis(client)
+
+    completed = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "dry_run": True,
+            "include_retryable": True,
+            "retry_cooldown_hours": 24,
+        },
+    )
+    assert completed.status_code == 200, completed.text
+    assert NOTICE_KEY not in completed.json()["notice_keys"]
+
+    with client.app.state.session_factory() as session:
+        run = session.scalar(select(AnalysisRun))
+        assert run is not None
+        run.status = "PARTIAL"
+        session.commit()
+
+    partial = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "dry_run": True,
+            "include_retryable": True,
+            "retry_cooldown_hours": 24,
+        },
+    )
+    assert partial.status_code == 200, partial.text
+    assert partial.json()["notice_keys"] == [NOTICE_KEY]
+
+
 def test_legacy_analyzed_without_snapshot_is_retried_once_with_zero_openai_calls(
     client: TestClient,
 ) -> None:

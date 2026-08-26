@@ -3,10 +3,10 @@
 
   const API_BASE = (document.documentElement.dataset.apiBase || "/api/v1").replace(/\/$/, "");
   const REQUEST_TIMEOUT_MS = 12000;
-  const NOTICE_REQUEST_TIMEOUT_MS = 30000;
+  const NOTICE_REQUEST_TIMEOUT_MS = 60000;
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
-  const NOTICE_PAGE_SIZE = 200;
+  const NOTICE_PAGE_SIZE = 500;
   const URGENT_DEADLINE_DAYS = 7;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const MANUAL_ANALYSIS_MAX_POLLS = 1800;

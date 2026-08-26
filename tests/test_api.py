@@ -157,6 +157,33 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     assert dashboard.json()["analysis_review_backlog_count"] == 0
 
 
+def test_notice_list_accepts_bounded_dashboard_page_size(client: TestClient) -> None:
+    deadline = datetime.now(timezone.utc) + timedelta(days=7)
+    with client.app.state.session_factory() as session:
+        session.add_all(
+            Notice(
+                notice_key=f"LOAD-PAGE-{index:03d}",
+                bid_notice_no=f"LOAD-PAGE-{index:03d}",
+                title=f"초기 로딩 공고 {index:03d}",
+                agency="테스트 기관",
+                deadline=deadline + timedelta(minutes=index),
+                status="OPEN",
+            )
+            for index in range(208)
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/v1/notices",
+        params={"department_id": "organization", "limit": 500},
+    )
+
+    assert response.status_code == 200
+    notice_keys = [item["notice_key"] for item in response.json()]
+    assert len(notice_keys) == len(set(notice_keys)) == 208
+    assert client.get("/api/v1/notices", params={"limit": 501}).status_code == 422
+
+
 def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClient) -> None:
     first = client.post("/api/v1/ingestion/replay")
     assert first.status_code == 200
