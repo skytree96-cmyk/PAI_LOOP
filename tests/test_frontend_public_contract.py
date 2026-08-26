@@ -110,6 +110,43 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert "목록 제외 없음" in source
 
 
+def test_initial_notice_board_renders_before_supplemental_aggregates() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(
+        source,
+        "loadApplicationData",
+        "hydrateApplicationMetadata",
+    )
+    metadata_body = _function_body(
+        source,
+        "hydrateApplicationMetadata",
+        "refreshDashboardAfterMutation",
+    )
+
+    assert 'fetchNoticePages({ statusScope: requestedStatusScope })' in load_body
+    assert 'apiRequest("/runtime-profile")' in load_body
+    assert 'apiRequest("/dashboard")' not in load_body
+    assert 'apiRequest("/departments/keyword-profiles")' not in load_body
+    assert "state.dashboard = deriveDashboard(state.notices)" in load_body
+    assert load_body.index("finishLoading()") < load_body.index(
+        "hydrateApplicationMetadata({ sequence, requestedStatusScope })"
+    )
+
+    assert 'apiRequest("/dashboard",' in metadata_body
+    assert 'apiRequest("/departments/keyword-profiles")' in metadata_body
+    assert "DASHBOARD_REQUEST_TIMEOUT_MS" in metadata_body
+    assert "sequence !== state.requestSequence" in metadata_body
+    assert "requestedStatusScope !== noticeStatusScopeForView(state.currentView)" in metadata_body
+    assert 'state.source !== "api"' in metadata_body
+    assert "normalizeDashboard(dashboardResult.value, state.notices)" in metadata_body
+    assert "renderApplicationError" not in metadata_body
+    assert "_ignoredDashboardAbort" not in source
+
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "window.fetch =" not in html
+    assert "_ignoredDashboardAbort" not in html
+
+
 def test_pin_decision_reload_and_current_evaluation_frontend_contract() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
@@ -212,7 +249,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260826-detail-readable1"' in html
-    assert 'src="./app.js?v=20260826-open-data-refresh1"' in html
+    assert 'src="./app.js?v=20260826-initial-render2"' in html
 
 
 def test_unanalysed_detail_shows_collected_metadata_without_claiming_ai_judgement() -> None:
@@ -651,6 +688,50 @@ def test_private_match_uses_public_text_lines_instead_of_a_dangling_label() -> N
     assert "NOTREQUIRED" in fact_key_body
     assert 'endsWith(":__NONE__")' in fact_key_body
     assert ".private-match-details" in styles
+
+
+def test_public_requirement_policy_hydrates_eligibility_and_actions_safely() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    adapter_body = _function_body(
+        source,
+        "eligibilityRequirementsForDisplay",
+        "publicEligibilityPolicyPending",
+    )
+    pending_body = _function_body(
+        source,
+        "publicEligibilityPolicyPending",
+        "renderEligibilityPanel",
+    )
+    panel_body = _function_body(
+        source,
+        "renderEligibilityPanel",
+        "normalizeCompanyFactKey",
+    )
+    loader_body = _function_body(
+        source,
+        "loadPrivateMatchPreview",
+        "normalizePrivateMatchPreview",
+    )
+    detail_body = _function_body(source, "renderDetail", "collectedNoticeSummary")
+    actions_body = _function_body(source, "renderActions", "renderEvidence")
+
+    assert "state.privateMatchPreviews[notice?.noticeKey]" in adapter_body
+    assert '.filter((item) => item?.category === "ELIGIBILITY")' in adapter_body
+    assert '["PASS_CURRENT", "PASS_EXCEPTION"]' in adapter_body
+    assert 'outcome === "REVIEW"' in adapter_body
+    assert ': "UNKNOWN"' in adapter_body
+    assert "documentAnalyses.flatMap" not in adapter_body
+    assert "rawDocumentAnalyses" not in adapter_body
+    assert 'state.source !== "api"' in pending_body
+    assert '["idle", "loading"]' in pending_body
+    assert "공개 자격 판정을 불러오는 중입니다" in panel_body
+    assert "참가 자격으로 분류된 조건이 없습니다" in panel_body
+    assert "renderEligibilityPanel(notice);" in loader_body
+    assert "renderActions(notice);" in loader_body
+    assert "eligibilityRequirementsForDisplay(notice)" in detail_body
+    assert "const requirements = eligibilityRequirementsForDisplay(notice);" in actions_body
+    assert "notice.requirements" not in actions_body
+    assert "공개 자격 판정을 불러온 뒤" in actions_body
 
 
 def test_unanalysed_reason_adapter_maps_document_failure_codes_to_korean() -> None:

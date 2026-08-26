@@ -3,6 +3,7 @@
 
   const API_BASE = (document.documentElement.dataset.apiBase || "/api/v1").replace(/\/$/, "");
   const REQUEST_TIMEOUT_MS = 12000;
+  const DASHBOARD_REQUEST_TIMEOUT_MS = 60000;
   const NOTICE_REQUEST_TIMEOUT_MS = 60000;
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
@@ -498,10 +499,12 @@
       return;
     }
 
-    const [dashboardResult, noticesResult, profilesResult, runtimeResult] = await Promise.allSettled([
-      apiRequest("/dashboard"),
+    // Only the notice projection and the access policy are required before
+    // the board can be used. The dashboard endpoint scans every stored notice
+    // (including ended history), so running it beside the ranked OPEN query
+    // made both expensive reads compete and kept the first render blocked.
+    const [noticesResult, runtimeResult] = await Promise.allSettled([
       fetchNoticePages({ statusScope: requestedStatusScope }),
-      apiRequest("/departments/keyword-profiles"),
       apiRequest("/runtime-profile"),
     ]);
 
@@ -513,24 +516,18 @@
 
     if (noticesResult.status === "fulfilled") {
       if (runtimeResult.status === "fulfilled") applyRuntimeProfile(runtimeResult.value);
-      if (profilesResult.status === "fulfilled") {
-        state.departmentCatalog = unwrapObject(profilesResult.value);
-        populateDepartmentProfiles(state.departmentCatalog);
-      }
       state.quantitativeEstimates = {};
       const list = extractList(noticesResult.value);
       state.notices = list.map(normalizeNotice).filter((notice) => notice.noticeKey);
-      state.dashboard = dashboardResult.status === "fulfilled"
-        ? normalizeDashboard(dashboardResult.value, state.notices)
-        : deriveDashboard(state.notices);
+      state.dashboard = deriveDashboard(state.notices);
       state.source = "api";
-      state.sourceReason = dashboardResult.status === "rejected" ? "일부 운영 지표는 공고 데이터에서 계산했습니다." : "";
+      state.sourceReason = "";
       setSystemStatus("online");
       if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) showDemoBanner(state.dashboard.syntheticWarning);
       else hideDemoBanner();
-      renderAll();
       finishLoading();
       openNoticeFromRoute();
+      void hydrateApplicationMetadata({ sequence, requestedStatusScope });
       return;
     }
 
@@ -538,10 +535,36 @@
     renderApplicationError(`서버 API 연결 실패: ${reason}`);
   }
 
+  async function hydrateApplicationMetadata({ sequence, requestedStatusScope }) {
+    const [dashboardResult, profilesResult] = await Promise.allSettled([
+      apiRequest("/dashboard", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
+      apiRequest("/departments/keyword-profiles"),
+    ]);
+    if (sequence !== state.requestSequence) return;
+    if (requestedStatusScope !== noticeStatusScopeForView(state.currentView)) return;
+    if (state.source !== "api") return;
+
+    if (profilesResult.status === "fulfilled") {
+      state.departmentCatalog = unwrapObject(profilesResult.value);
+      populateDepartmentProfiles(state.departmentCatalog);
+    }
+    if (dashboardResult.status === "fulfilled") {
+      state.dashboard = normalizeDashboard(dashboardResult.value, state.notices);
+      state.sourceReason = "";
+    } else {
+      // The notice board is already usable. Keep its locally derived KPIs and
+      // surface only the missing all-history aggregate instead of replacing
+      // the successful board with a connection error.
+      state.sourceReason = "일부 운영 지표는 공고 데이터에서 계산했습니다.";
+    }
+    setSystemStatus("online");
+    renderAll();
+  }
+
   async function refreshDashboardAfterMutation() {
     if (state.source === "api") {
       try {
-        const payload = await apiRequest("/dashboard");
+        const payload = await apiRequest("/dashboard", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
         state.dashboard = normalizeDashboard(payload, state.notices);
         return;
       } catch (_) {
@@ -3977,7 +4000,7 @@
   function renderDetail(notice) {
     // Previous cancelled-copy expression: cancelled ? "과거 분석 참고".
     const deadline = deadlineInfo(notice.deadline);
-    const requirements = notice.requirements;
+    const requirements = eligibilityRequirementsForDisplay(notice);
     const evidence = notice.evidence;
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
@@ -4043,11 +4066,8 @@
         : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>분석 대기';
     els.briefEvidenceLabel.classList.toggle("is-pending", collectedOnly || cancelled || qualityReview || !analyzed || !evidence.length);
     renderDocumentAnalyses(notice);
-    els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
     els.evidenceCount.textContent = String(evidence.length);
-    els.requirementList.innerHTML = requirements.length
-      ? requirements.map(renderRequirement).join("")
-      : emptyPanel("구조화된 자격 조건이 없습니다", "첨부파일 분석이 완료되면 조건별 판정이 표시됩니다.");
+    renderEligibilityPanel(notice, requirements);
     renderActions(notice);
     els.evidenceList.innerHTML = evidence.length
       ? evidence.map(renderEvidence).join("")
@@ -4226,7 +4246,11 @@
       };
       if (!waiting && force) showToast("회사 데이터 매칭 조회 오류", humanizeError(error), "warning");
     } finally {
-      if (state.selectedNotice?.noticeKey === noticeKey) renderPrivateMatchPreview(notice);
+      if (state.selectedNotice?.noticeKey === noticeKey) {
+        renderPrivateMatchPreview(notice);
+        renderEligibilityPanel(notice);
+        renderActions(notice);
+      }
     }
   }
 
@@ -4279,6 +4303,70 @@
         validUntil: firstValue(evidence.valid_until, evidence.validUntil, null),
       } : null,
     };
+  }
+
+  function eligibilityRequirementsForDisplay(notice) {
+    const storedRequirements = arrayValue(notice?.requirements);
+    if (storedRequirements.length) return storedRequirements;
+
+    // Anonymous detail responses deliberately omit materialised requirements
+    // and evaluation atomics because they can contain company values and
+    // internal evidence identifiers. Reuse only the separately validated
+    // public requirement-policy projection; never promote raw document
+    // extraction rows directly into an eligibility judgement.
+    const preview = state.privateMatchPreviews[notice?.noticeKey];
+    if (preview?.status !== "ready") return [];
+    return arrayValue(preview.data?.matches)
+      .filter((item) => item?.category === "ELIGIBILITY")
+      .map((item, index) => {
+        const outcome = stringValue(item.outcome).toUpperCase();
+        const status = ["PASS_CURRENT", "PASS_EXCEPTION"].includes(outcome)
+          ? "PASS"
+          : outcome === "REVIEW"
+            ? "REVIEW"
+            : "UNKNOWN";
+        return {
+          id: stringValue(item.requirementId, `public-eligibility-${index + 1}`),
+          title: stringValue(item.condition, `자격 조건 ${index + 1}`),
+          description: stringValue(item.message, "공고 마감일 기준으로 최신 증빙을 확인하세요."),
+          status,
+          evidenceId: "",
+          reasonCode: outcome,
+        };
+      });
+  }
+
+  function publicEligibilityPolicyPending(notice) {
+    if (state.source !== "api" || !notice?.documentAnalyses?.length) return false;
+    const status = state.privateMatchPreviews[notice.noticeKey]?.status || "idle";
+    return ["idle", "loading"].includes(status);
+  }
+
+  function renderEligibilityPanel(notice, requirements = eligibilityRequirementsForDisplay(notice)) {
+    els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
+    if (requirements.length) {
+      els.requirementList.innerHTML = requirements.map(renderRequirement).join("");
+      return;
+    }
+    if (publicEligibilityPolicyPending(notice)) {
+      els.requirementList.innerHTML = emptyPanel(
+        "공개 자격 판정을 불러오는 중입니다",
+        "검증된 공고 조건과 공개 회사 프로필을 안전하게 연결하고 있습니다.",
+      );
+      return;
+    }
+    const preview = state.privateMatchPreviews[notice.noticeKey];
+    if (preview?.status === "ready") {
+      els.requirementList.innerHTML = emptyPanel(
+        "참가 자격으로 분류된 조건이 없습니다",
+        "행동 필요·체크리스트·정보 항목은 위 판단 기준 4분류에서 확인하세요.",
+      );
+      return;
+    }
+    els.requirementList.innerHTML = emptyPanel(
+      "구조화된 자격 조건이 없습니다",
+      "공개 검증된 첨부파일 분석이 준비되면 조건별 판정이 표시됩니다.",
+    );
   }
 
   function normalizeCompanyFactKey(value) {
@@ -4460,12 +4548,16 @@
       return;
     }
     let actions = notice.actions.slice();
+    const requirements = eligibilityRequirementsForDisplay(notice);
     if (!actions.length) {
-      actions = notice.requirements
+      actions = requirements
         .filter((requirement) => ["REVIEW", "UNKNOWN", "FAIL"].includes(requirement.status))
         .map((requirement) => requirement.status === "FAIL"
           ? `${requirement.title}의 불일치 사유와 적용 가능한 예외 경로가 있는지 확인하세요.`
           : `${requirement.title}의 충족 여부와 최신 증빙을 확인하세요.`);
+    }
+    if (!actions.length && publicEligibilityPolicyPending(notice)) {
+      actions = ["공개 자격 판정을 불러온 뒤 담당자 확인 사항을 표시합니다."];
     }
     if (
       !actions.length
