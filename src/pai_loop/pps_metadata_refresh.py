@@ -230,10 +230,17 @@ def refresh_pps_metadata_for_analysis(
                     operation_path=settings.pps_notice_operation,
                     start=notice_snapshot.query_start,
                     end=notice_snapshot.query_end,
-                    rows=100,
+                    # The PPS date search applies the posting-day window before
+                    # it considers bidNtceNo. Busy posting days can exceed the
+                    # former 100-row first page even for an exact notice lookup.
+                    # Keep the window to one day, but request the provider's
+                    # supported maximum page size and allow a small bounded
+                    # continuation so the exact row is not falsely reported as
+                    # incomplete.
+                    rows=999,
                     max_window_days=30,
                     inquiry_division="1",
-                    max_pages=1,
+                    max_pages=5,
                     extra_params={"bidNtceNo": notice_snapshot.bid_notice_no},
                     deadline_monotonic=deadline_monotonic,
                 )
@@ -296,8 +303,8 @@ def refresh_pps_metadata_for_analysis(
     ingestion_payload = PpsIngestionRequest(
         from_date=notice_snapshot.query_start,
         to_date=notice_snapshot.query_end,
-        page_size=100,
-        max_pages=1,
+        page_size=999,
+        max_pages=5,
         dry_run=False,
     )
     try:

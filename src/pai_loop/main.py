@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from . import __version__
 from .analysis_api import router as analysis_persistence_router
+from .analysis_policy_maintenance import router as analysis_policy_maintenance_router
 from .api import router
 from .company_awards import router as company_awards_router
 from .config import Settings
@@ -133,6 +134,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(prespec_router)
     application.include_router(company_awards_router)
     application.include_router(analysis_persistence_router)
+    application.include_router(analysis_policy_maintenance_router)
     application.include_router(teams_readiness_router)
 
     @application.get("/healthz", response_model=HealthResponse, tags=["operations"])
