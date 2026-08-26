@@ -2323,6 +2323,230 @@ def test_orphaned_running_child_releases_current_segment_before_parent_ttl(
     assert completed.json()["remaining"] == 0
 
 
+def test_unstarted_segment_recovers_after_child_timeout_but_owner_retry_replays(
+    client: TestClient,
+) -> None:
+    keys = ["MANUAL-ORPHAN-NO-CHILD-1", "MANUAL-ORPHAN-NO-CHILD-2"]
+    for key in keys:
+        assert client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": key,
+                "bid_notice_no": key,
+                "title": f"unstarted segment recovery {key}",
+                "agency": "가상 기관",
+                "published_at": "2026-08-17T08:00:00+09:00",
+                "deadline": "2026-08-31T18:00:00+09:00",
+                "status": "OPEN",
+            },
+        ).status_code == 201
+
+    owner_token = "w11:unstarted-segment-owner"
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": keys,
+            "dry_run": True,
+            "execution_limit": 2,
+            "reservation_ttl_hours": 6,
+            "request_token": owner_token,
+        },
+    ).json()
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["lease_started_at"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS + 30)
+        ).isoformat()
+        parent.request_json = config
+        session.commit()
+
+    exact_retry = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "dry_run": True,
+            "request_token": owner_token,
+        },
+    )
+    assert exact_retry.status_code == 200, exact_retry.text
+    exact = exact_retry.json()
+    assert exact["segment_id"] == first["segment_id"]
+    assert exact["notice_keys"] == keys
+    assert exact["chunks"] == first["chunks"]
+    assert exact["chunk_indices"] == first["chunk_indices"]
+
+    resumed_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "dry_run": True,
+            "request_token": "w11:unstarted-segment-recovery",
+        },
+    )
+    assert resumed_response.status_code == 200, resumed_response.text
+    resumed = resumed_response.json()
+    assert resumed["job_id"] == first["job_id"]
+    assert resumed["segment_id"] != first["segment_id"]
+    assert resumed["remaining"] == 2
+    assert resumed["notice_keys"] == keys
+    assert resumed["chunk_indices"] == [2, 3]
+    assert resumed["continuation_round"] == 2
+    assert "ORPHANED_ANALYSIS_SEGMENT_RECOVERED" in resumed["warnings"]
+    assert "STALE_LEASE_RECOVERED" in resumed["warnings"]
+
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        assert parent.request_json["last_orphan_recovered_notice_keys"] == []
+        assert (
+            parent.request_json["last_orphan_recovered_unstarted_notice_keys"]
+            == keys
+        )
+
+    old_claim = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [keys[0]],
+            "dry_run": True,
+            "max_notices": 1,
+            "operation_id": first["job_id"],
+            "segment_id": first["segment_id"],
+            "chunk_index": first["chunk_indices"][0],
+        },
+    )
+    assert old_claim.status_code == 409
+
+
+def test_recent_unstarted_segment_retains_old_active_lease(
+    client: TestClient,
+) -> None:
+    key = "MANUAL-RECENT-UNSTARTED-LEASE"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": key,
+            "bid_notice_no": key,
+            "title": "recent unstarted segment must retain lease",
+            "agency": "가상 기관",
+            "published_at": "2026-08-17T08:00:00+09:00",
+            "deadline": "2026-08-31T18:00:00+09:00",
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": [key],
+            "dry_run": True,
+            "reservation_ttl_hours": 6,
+            "request_token": "w11:recent-unstarted-owner",
+        },
+    ).json()
+
+    polled = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "dry_run": True,
+            "request_token": "w11:recent-unstarted-poll",
+        },
+    )
+    assert polled.status_code == 200, polled.text
+    body = polled.json()
+    assert body["job_id"] == first["job_id"]
+    assert body["segment_id"] == first["segment_id"]
+    assert body["offered"] == 0
+    assert body["remaining"] == 1
+    assert body["in_flight"] == 0
+    assert "ORPHANED_ANALYSIS_SEGMENT_RECOVERED" not in body["warnings"]
+
+
+def test_orphan_recovery_reoffers_only_missing_chunks_after_terminal_child(
+    client: TestClient,
+) -> None:
+    keys = [
+        "MANUAL-ORPHAN-TERMINAL-1",
+        "MANUAL-ORPHAN-MISSING-2",
+        "MANUAL-ORPHAN-NOT-YET-LEASED-3",
+    ]
+    for key in keys:
+        assert client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": key,
+                "bid_notice_no": key,
+                "title": f"partial orphan recovery {key}",
+                "agency": "가상 기관",
+                "published_at": "2026-08-17T08:00:00+09:00",
+                "deadline": "2026-08-31T18:00:00+09:00",
+                "status": "OPEN",
+            },
+        ).status_code == 201
+
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": keys,
+            "dry_run": True,
+            "execution_limit": 2,
+            "reservation_ttl_hours": 6,
+            "request_token": "w11:partial-orphan-owner",
+        },
+    ).json()
+    _run_segment(
+        client,
+        {
+            **first,
+            "chunks": [first["chunks"][0]],
+            "chunk_indices": [first["chunk_indices"][0]],
+        },
+    )
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        config = dict(parent.request_json)
+        config["lease_started_at"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS + 30)
+        ).isoformat()
+        parent.request_json = config
+        session.commit()
+
+    resumed_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "dry_run": True,
+            "request_token": "w11:partial-orphan-recovery",
+        },
+    )
+    assert resumed_response.status_code == 200, resumed_response.text
+    resumed = resumed_response.json()
+    assert resumed["attempted"] == 1
+    assert resumed["remaining"] == 2
+    assert resumed["offered"] == 2
+    assert resumed["notice_keys"] == keys[1:]
+    assert resumed["chunk_indices"] == [2, 3]
+
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        config = dict(parent.request_json)
+        assert config["last_orphan_recovered_notice_keys"] == []
+        assert config["last_orphan_recovered_unstarted_notice_keys"] == [keys[1]]
+        assert config["work_generations"] == {key: 0 for key in keys}
+
+
 def test_recent_running_child_retains_old_active_segment(
     client: TestClient,
 ) -> None:

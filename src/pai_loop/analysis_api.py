@@ -2005,6 +2005,10 @@ def plan_analysis_backfill(
         and lease_started is not None
         and lease_started >= now - timedelta(hours=stale_after_hours)
     )
+    same_request_retry = bool(
+        payload.request_token is not None
+        and config.get("lease_request_token") == payload.request_token
+    )
     stale_cutoff = now - timedelta(hours=stale_after_hours)
     if not lease_active and _refresh_and_prune_daily_parent(
         session,
@@ -2032,7 +2036,6 @@ def plan_analysis_backfill(
         seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS
     )
     stale_children_cleaned = False
-    current_segment_stale_cleaned = False
     current_segment_orphan_keys: set[str] = set()
     children = _backfill_children(session, parent.id, for_update=True)
     for child in children:
@@ -2058,28 +2061,41 @@ def plan_analysis_backfill(
         )
         stale_children_cleaned = cleaned or stale_children_cleaned
         if cleaned and belongs_to_current_segment:
-            current_segment_stale_cleaned = True
             current_segment_orphan_keys.update(effective_child_keys)
 
-    # A process replacement can sever n8n's HTTP request after the child row
-    # was created. Once the 600-second client boundary plus grace has
-    # elapsed, a current-segment RUNNING child is operationally stale. Fence its
-    # generation so a pathological late response cannot become authoritative,
-    # release only the abandoned segment lease, and let this same planner poll
-    # re-lease all requeued and never-started chunks.  Recent RUNNING children
-    # still retain the lease and continue to block duplicate paid work.
-    current_segment_has_running_child = any(
-        child.status == "RUNNING"
-        and isinstance(child.request_json, dict)
-        and child.request_json.get("segment_id") == lease_id
+    # A process replacement can sever n8n either before the first child row is
+    # created or while a child is RUNNING. Once the 600-second client boundary
+    # plus grace has elapsed, a different continuation request may recover a
+    # segment with no live child. The original request token retains exact
+    # replay ownership, and every late batch request is fenced by lease_id
+    # before its durable child audit (and any paid work) can begin.
+    current_segment_children = [
+        child
         for child in children
+        if isinstance(child.request_json, dict)
+        and child.request_json.get("segment_id") == lease_id
+    ]
+    current_segment_has_running_child = any(
+        child.status == "RUNNING" for child in current_segment_children
     )
+    leased_keys_raw = config.get("leased_keys")
+    leased_keys = (
+        {key for key in leased_keys_raw if isinstance(key, str)}
+        if isinstance(leased_keys_raw, list)
+        else set()
+    )
+    current_segment_recorded_keys = {
+        key
+        for child in current_segment_children
+        for key in (child.notice_keys or [])
+    }
+    current_segment_unstarted_keys = leased_keys - current_segment_recorded_keys
     orphaned_current_segment = bool(
         lease_active
-        and current_segment_stale_cleaned
         and lease_started is not None
         and lease_started < child_stale_cutoff
         and not current_segment_has_running_child
+        and not same_request_retry
     )
     if orphaned_current_segment:
         work_generations = dict(parent_generations)
@@ -2089,6 +2105,9 @@ def plan_analysis_backfill(
         config["last_orphan_recovered_at"] = now.isoformat()
         config["last_orphan_recovered_notice_keys"] = sorted(
             current_segment_orphan_keys
+        )
+        config["last_orphan_recovered_unstarted_notice_keys"] = sorted(
+            current_segment_unstarted_keys
         )
         parent.request_json = config
         parent.warnings = sorted(
@@ -2112,10 +2131,6 @@ def plan_analysis_backfill(
             max_continuations=max_continuations,
             offer_next=False,
             segment_id=lease_id,
-        )
-        same_request_retry = bool(
-            payload.request_token is not None
-            and config.get("lease_request_token") == payload.request_token
         )
         if same_request_retry:
             leased_chunks_raw = config.get("leased_chunks")
