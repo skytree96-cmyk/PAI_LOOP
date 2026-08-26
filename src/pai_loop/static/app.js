@@ -517,6 +517,7 @@
         state.departmentCatalog = unwrapObject(profilesResult.value);
         populateDepartmentProfiles(state.departmentCatalog);
       }
+      state.quantitativeEstimates = {};
       const list = extractList(noticesResult.value);
       state.notices = list.map(normalizeNotice).filter((notice) => notice.noticeKey);
       state.dashboard = dashboardResult.status === "fulfilled"
@@ -1058,53 +1059,65 @@
     const completed = storedNotice?.analysisState === "EVALUATED"
       && storedNotice.analysisAttachmentCoverageComplete;
     const candidateDeadline = validDate(candidate.deadline);
-    const ended = storedNotice
+    const cancelledCandidate = candidate.noticeKind === "취소공고"
+      || candidate.saveBlockReason.includes("취소공고");
+    const ended = cancelledCandidate || (storedNotice
       ? noticeLifecycleStatus(storedNotice) !== "OPEN"
-      : Boolean(candidateDeadline && candidateDeadline.getTime() < Date.now());
+      : Boolean(candidateDeadline && candidateDeadline.getTime() < Date.now()));
     const sourceLink = candidate.sourceUrl
       ? `<a class="pps-candidate__source-link" href="${escapeAttribute(candidate.sourceUrl)}" target="_blank" rel="noopener noreferrer">나라장터 원문 ↗</a>`
       : "";
     const detailHref = stored && candidate.storedNoticeKey
       ? noticeDetailHref(candidate.storedNoticeKey)
       : "";
-    const stateLabel = !stored
-      ? "현재 수집 공고 아님"
-      : !storedNotice
-        ? "저장 상태 확인"
-        : completed
-          ? "판단 완료"
-          : ended
-            ? "종료 · 판단 비활성"
+    const stateLabel = ended
+      ? "종료 · 판단 비활성"
+      : !stored
+        ? "현재 수집 공고 아님"
+        : !storedNotice
+          ? "저장 상태 확인"
+          : completed
+            ? "판단 완료"
             : "판단 필요";
-    const stateClass = completed ? "is-complete" : ended ? "is-ended" : storedNotice ? "is-pending" : stored ? "is-stored-unknown" : "is-external";
+    const stateClass = ended ? "is-ended" : completed ? "is-complete" : storedNotice ? "is-pending" : stored ? "is-stored-unknown" : "is-external";
     const title = detailHref
       ? `<a class="pps-candidate__title-link" href="${escapeAttribute(detailHref)}" data-stored-notice-link data-notice-key="${escapeAttribute(candidate.storedNoticeKey)}" aria-label="${escapeAttribute(candidate.title)} 저장된 공고 상세 보기">${escapeHtml(candidate.title)}</a>`
       : escapeHtml(candidate.title);
-    const guidance = !stored
-      ? "PAI LOOP에 저장하기 전에는 자격 판단과 정량 점수가 없습니다."
-      : !storedNotice
-        ? "정확히 저장된 공고입니다. 저장된 공고로 이동해 현재 판단 상태를 확인할 수 있습니다."
-        : completed
-          ? "저장된 공고의 자격·정량 판단 결과를 확인할 수 있습니다."
-          : ended
-            ? "종료 또는 취소된 공고입니다. 저장된 공고 이력은 상세 화면에서 확인할 수 있습니다."
-            : "이미 저장된 공고입니다. 중복 저장하지 않고 기존 공고에서 판단을 계속할 수 있습니다.";
+    const guidance = ended
+      ? "종료 또는 취소된 공고입니다. 저장된 공고 이력은 상세 화면에서 확인할 수 있습니다."
+      : !stored
+        ? "PAI LOOP에 저장하기 전에는 자격 판단과 정량 점수가 없습니다."
+        : !storedNotice
+          ? "정확히 저장된 공고입니다. 저장된 공고로 이동해 현재 판단 상태를 확인할 수 있습니다."
+          : completed
+            ? "저장된 공고의 자격·정량 판단 결과를 확인할 수 있습니다."
+            : "이미 저장된 공고입니다. 최신 공고·첨부 정보를 다시 확인한 뒤 판단을 실행할 수 있습니다.";
     const running = storedNotice && state.manualAnalysisRequests.get(storedNotice.noticeKey) === "running";
     // Stored search results can sit outside the board's currently loaded
     // lifecycle scope. Keep an explicit state-check action; the request path
     // hydrates the canonical notice before allowing an analysis.
-    const canAnalyze = storedNotice
+    const canAnalyze = !ended && (storedNotice
       ? canRequestManualAnalysis(storedNotice)
-      : Boolean(stored && candidate.storedNoticeKey && !ended && state.manualAnalysisEnabled);
+      : Boolean(stored && candidate.storedNoticeKey && state.manualAnalysisEnabled));
     const detailLink = detailHref
       ? `<a class="button button--ghost pps-candidate__detail-link" href="${escapeAttribute(detailHref)}" data-stored-notice-link data-notice-key="${escapeAttribute(candidate.storedNoticeKey)}" aria-label="${escapeAttribute(candidate.title)} ${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"}">${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"} →</a>`
       : "";
     const analysisButton = canAnalyze
       ? `<button class="button button--primary" type="button" data-pps-analysis-key="${escapeAttribute(storedNotice?.noticeKey || candidate.storedNoticeKey)}" ${running ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} 분석 상태 확인 및 실행">${running ? '<span class="button-spinner" aria-hidden="true"></span>분석 중…' : storedNotice ? "분석·판단 실행" : "상태 확인·분석"}</button>`
       : "";
-    const saveButton = !stored
-      ? `<button class="button button--pps" type="button" data-pps-save-index="${index}" ${saving || !candidate.saveable ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} ${candidate.saveable ? "PAI LOOP에 저장" : "저장 불가"}">${escapeHtml(saving ? "저장 중…" : candidate.saveable ? "PAI LOOP에 저장" : "저장 불가")}</button>`
-      : "";
+    const canRefresh = Boolean(stored && !ended && candidate.saveable && candidate.selectionKey);
+    const saveButton = ended
+      ? ""
+      : !stored
+        ? `<button class="button button--pps" type="button" data-pps-save-index="${index}" ${saving || !candidate.saveable ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} ${candidate.saveable ? "PAI LOOP에 저장" : "저장 불가"}">${escapeHtml(saving ? "저장 중…" : candidate.saveable ? "PAI LOOP에 저장" : "저장 불가")}</button>`
+        : canRefresh
+          ? `<button class="button button--secondary" type="button" data-pps-save-index="${index}" ${saving ? "disabled" : ""} aria-label="${escapeAttribute(candidate.title)} 최신 첨부 다시 확인">${saving ? '<span class="button-spinner" aria-hidden="true"></span>최신 정보 확인 중…' : "최신 첨부 다시 확인"}</button>`
+          : "";
+    const costText = ended
+      ? "종료 공고 · 저장·갱신·분석 비활성"
+      : stored
+        ? "최신 첨부 확인은 AI 모델 0회 · 분석·판단은 별도 실행"
+        : "저장만으로 AI 모델 0회";
     return `<article class="pps-candidate ${stored ? "is-stored" : ""} ${stateClass}" role="listitem" ${saving ? 'aria-busy="true"' : ""}>
       <div class="pps-candidate__head">
         <span class="pps-candidate__badges"><span class="pps-candidate__source-state">${stored ? "PAI LOOP 저장됨" : "나라장터 LIVE"}</span><span class="pps-candidate__state">${escapeHtml(stateLabel)}</span></span>
@@ -1121,7 +1134,7 @@
       ${candidate.directContractSignal ? '<p class="pps-candidate__warning">수의계약 신호가 있어 저장 전 원문 확인이 필요합니다.</p>' : ""}
       ${candidate.saveBlockReason ? `<p class="pps-candidate__warning">${escapeHtml(candidate.saveBlockReason)}</p>` : ""}
       <footer>${sourceLink}<span class="pps-candidate__actions">${detailLink}${analysisButton}${saveButton}</span></footer>
-      <small class="pps-candidate__cost">${stored ? (canAnalyze ? "분석·판단 실행 시 공개 첨부를 Claude로 분석" : "저장된 공고 상세 링크") : "저장만으로 AI 모델 0회"}</small>
+      <small class="pps-candidate__cost">${costText}</small>
     </article>`;
   }
 
@@ -1151,10 +1164,33 @@
   }
 
   async function savePpsCandidate(candidate, index) {
-    if (!candidate.saveable || candidate.alreadyStored || !candidate.selectionKey) return;
+    const refreshing = candidate.alreadyStored || Boolean(candidate.storedNoticeKey);
+    const storedNotice = refreshing
+      ? state.notices.find((notice) => notice.noticeKey === candidate.storedNoticeKey) || null
+      : null;
+    const candidateDeadline = validDate(candidate.deadline);
+    const cancelledCandidate = candidate.noticeKind === "취소공고"
+      || candidate.saveBlockReason.includes("취소공고");
+    const ended = cancelledCandidate || (storedNotice
+      ? noticeLifecycleStatus(storedNotice) !== "OPEN"
+      : Boolean(candidateDeadline && candidateDeadline.getTime() < Date.now()));
+    if (!candidate.selectionKey) return;
+    if (ended || !candidate.saveable) {
+      showToast(
+        ended ? "종료 공고" : "저장 정보 갱신 불가",
+        stringValue(candidate.saveBlockReason, ended
+          ? "종료 또는 취소된 공고는 저장 정보와 첨부 목록을 갱신하지 않습니다."
+          : "이 공고는 현재 저장하거나 갱신할 수 없습니다."),
+        "warning",
+      );
+      return;
+    }
     const savingKey = candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`;
     if (state.ppsDiscovery.saving.has(savingKey)) return;
-    const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다.\n\n저장할까요?`);
+    const actionDescription = refreshing
+      ? "나라장터의 최신 공고 정보와 첨부 목록을 다시 확인해 저장합니다. 최신 첨부 확인만으로 분석이나 AI 모델 호출은 시작되지 않습니다."
+      : "이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다.";
+    const confirmed = window.confirm(`${candidate.title}\n\n${actionDescription}\n\n${refreshing ? "최신 첨부를 다시 확인할까요?" : "저장할까요?"}`);
     if (!confirmed) return;
     state.ppsDiscovery.saving.add(savingKey);
     renderPpsDiscovery();
@@ -1182,7 +1218,13 @@
       if (!savedNoticeKey) throw new Error("저장된 공고 식별자가 응답에 없습니다.");
       candidate.alreadyStored = true;
       candidate.storedNoticeKey = savedNoticeKey;
-      showToast("공고 저장 완료", stringValue(result.message, "저장만 완료했습니다. 저장된 공고 링크에서 분석·판단을 별도로 실행할 수 있습니다."), "success");
+      showToast(
+        refreshing ? "최신 첨부 확인 완료" : "공고 저장 완료",
+        stringValue(result.message, refreshing
+          ? "최신 공고 정보와 첨부 목록을 저장했습니다. 분석·판단은 별도로 실행할 수 있습니다."
+          : "저장만 완료했습니다. 저장된 공고 링크에서 분석·판단을 별도로 실행할 수 있습니다."),
+        "success",
+      );
     } catch (error) {
       if (error?.status === 401) state.manualAnalysisToken = "";
       showToast("공고 저장 실패", humanizeError(error), "error");
@@ -1191,6 +1233,8 @@
       renderPpsDiscovery();
     }
     if (!savedNoticeKey) return;
+    const reloadQuantitative = quantitativeEstimateIsVisible(savedNoticeKey);
+    invalidateQuantitativeEstimate(savedNoticeKey, { forceReload: reloadQuantitative });
     try {
       await hydrateNoticeByKey(savedNoticeKey, { force: true });
       await refreshDashboardAfterMutation();
@@ -3791,7 +3835,9 @@
       const outcome = stringValue(payload.outcome).toUpperCase();
       const callCount = Math.max(Number(payload.openai_calls) || 0, 0);
       const message = `${stringValue(payload.message, "분석 상태를 갱신했습니다.")} · Claude ${formatNumber(callCount)}회`;
+      const reloadQuantitative = quantitativeEstimateIsVisible(noticeKey);
       await loadApplicationData({ forceApi: true });
+      invalidateQuantitativeEstimate(noticeKey, { forceReload: reloadQuantitative });
       if (outcome === "COOLDOWN") {
         showToast("최근 분석 결과 사용", message, "warning");
       } else if (outcome === "REVIEW") {
@@ -4459,18 +4505,35 @@
       </article>`;
   }
 
+  function quantitativeEstimateIsVisible(noticeKey) {
+    return state.selectedNotice?.noticeKey === noticeKey
+      && els.tabButtons.some((button) => button.dataset.tab === "quant" && button.getAttribute("aria-selected") === "true");
+  }
+
+  function invalidateQuantitativeEstimate(noticeKey, { forceReload = false } = {}) {
+    if (!noticeKey) return;
+    delete state.quantitativeEstimates[noticeKey];
+    if (forceReload && state.source === "api") {
+      void loadQuantitativeEstimate(noticeKey, { force: true });
+    }
+  }
+
   async function loadQuantitativeEstimate(noticeKey, { force = false } = {}) {
     if (state.source !== "api") return;
     const current = state.quantitativeEstimates[noticeKey];
     if (!force && ["loading", "ready"].includes(current?.status)) return;
-    state.quantitativeEstimates[noticeKey] = { status: "loading", data: null, message: "" };
+    const requestToken = Symbol(noticeKey);
+    state.quantitativeEstimates[noticeKey] = { status: "loading", data: null, message: "", requestToken };
     if (state.selectedNotice?.noticeKey === noticeKey) renderQuantAndRisk(state.selectedNotice);
     try {
       const data = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/quantitative-estimate`);
-      state.quantitativeEstimates[noticeKey] = { status: "ready", data, message: "" };
+      if (state.quantitativeEstimates[noticeKey]?.requestToken !== requestToken) return;
+      state.quantitativeEstimates[noticeKey] = { status: "ready", data, message: "", requestToken };
     } catch (error) {
-      state.quantitativeEstimates[noticeKey] = { status: "error", data: null, message: humanizeError(error) };
+      if (state.quantitativeEstimates[noticeKey]?.requestToken !== requestToken) return;
+      state.quantitativeEstimates[noticeKey] = { status: "error", data: null, message: humanizeError(error), requestToken };
     } finally {
+      if (state.quantitativeEstimates[noticeKey]?.requestToken !== requestToken) return;
       if (state.selectedNotice?.noticeKey === noticeKey) renderQuantAndRisk(state.selectedNotice);
     }
   }

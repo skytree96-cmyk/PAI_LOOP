@@ -212,7 +212,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260826-detail-readable1"' in html
-    assert 'src="./app.js?v=20260826-collected-summary1"' in html
+    assert 'src="./app.js?v=20260826-open-data-refresh1"' in html
 
 
 def test_unanalysed_detail_shows_collected_metadata_without_claiming_ai_judgement() -> None:
@@ -278,6 +278,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     search_body = _function_body(source, "searchPpsNotices", "renderPpsDiscovery")
     date_invalidation_body = _function_body(source, "invalidatePpsDiscoveryDates", "normalizePpsCandidate")
     render_body = _function_body(source, "renderPpsDiscovery", "renderPpsCandidate")
+    card_body = _function_body(source, "renderPpsCandidate", "handlePpsDiscoveryAction")
     save_body = _function_body(source, "savePpsCandidate", "populateDepartmentProfiles")
     awards_body = _function_body(source, "searchCompanyAwards", "setCompanyAwardsLoading")
     awards_render_body = _function_body(
@@ -306,6 +307,18 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert "state.filteredNotices.length === 0" not in source
     assert 'apiRequest("/pps-discovery/save"' in save_body
     assert "저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다" in save_body
+    assert "candidate.alreadyStored || !candidate.selectionKey" not in save_body
+    assert "const refreshing = candidate.alreadyStored || Boolean(candidate.storedNoticeKey)" in save_body
+    assert 'noticeLifecycleStatus(storedNotice) !== "OPEN"' in save_body
+    assert "최신 첨부를 다시 확인할까요" in save_body
+    assert "최신 첨부 확인 완료" in save_body
+    assert "const canRefresh = Boolean(stored && !ended" in card_body
+    assert 'const saveButton = ended\n      ? ""' in card_body
+    assert "최신 첨부 다시 확인" in card_body
+    assert 'candidate.noticeKind === "취소공고"' in card_body
+    assert 'candidate.saveBlockReason.includes("취소공고")' in card_body
+    assert 'candidate.noticeKind === "취소공고"' in save_body
+    assert "const canAnalyze = !ended &&" in card_body
     assert "/analysis/request" not in search_body
     assert "/analysis/request" not in save_body
     assert "allow_openai" not in search_body
@@ -358,6 +371,8 @@ def test_two_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert "저장된 판단 결과 보기" in card_body
     assert "data-pps-analysis-key" in card_body
     assert "canRequestManualAnalysis(storedNotice)" in card_body
+    assert "최신 첨부 다시 확인" in card_body
+    assert "const canRefresh = Boolean(stored && !ended" in card_body
 
     assert 'url.searchParams.set("notice", noticeKey)' in route_body
     assert "new URL(window.location.href)" in route_body
@@ -390,6 +405,30 @@ def test_quantitative_ui_separates_source_validation_from_activation() -> None:
     ).read_text(encoding="utf-8")
     assert "사람 승인 후에만 규칙 버전으로 승격" not in mentor_brief
     assert "반복 사람 승인 없이 `AUTO_ACTIVE`" in mentor_brief
+
+
+def test_quantitative_cache_is_invalidated_after_fresh_notice_data() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(source, "loadApplicationData", "applyRuntimeProfile")
+    save_body = _function_body(source, "savePpsCandidate", "populateDepartmentProfiles")
+    manual_body = _function_body(source, "requestManualAnalysis", "handleNoticeKeydown")
+    invalidation_body = _function_body(
+        source,
+        "invalidateQuantitativeEstimate",
+        "loadQuantitativeEstimate",
+    )
+    loader_body = _function_body(source, "loadQuantitativeEstimate", "renderQuantAndRisk")
+
+    assert "state.quantitativeEstimates = {};" in load_body
+    assert "const reloadQuantitative = quantitativeEstimateIsVisible(savedNoticeKey)" in save_body
+    assert "invalidateQuantitativeEstimate(savedNoticeKey, { forceReload: reloadQuantitative })" in save_body
+    assert "const reloadQuantitative = quantitativeEstimateIsVisible(noticeKey)" in manual_body
+    assert "invalidateQuantitativeEstimate(noticeKey, { forceReload: reloadQuantitative })" in manual_body
+    assert "delete state.quantitativeEstimates[noticeKey]" in invalidation_body
+    assert "loadQuantitativeEstimate(noticeKey, { force: true })" in invalidation_body
+    assert "const requestToken = Symbol(noticeKey)" in loader_body
+    assert loader_body.count("requestToken !== requestToken") == 3
+    assert loader_body.count("requestToken }") >= 2
 
 
 def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:

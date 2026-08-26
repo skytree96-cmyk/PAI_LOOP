@@ -572,6 +572,13 @@ def test_batch_cancellation_after_enrichment_stops_before_pipeline_writes(
         pipeline_calls += 1
         raise AssertionError("post-enrichment cancellation must not analyse")
 
+    monkeypatch.setattr(
+        analysis_api,
+        "refresh_pps_metadata_for_analysis",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="CURRENT", warnings=(), ready=True
+        ),
+    )
     monkeypatch.setattr(analysis_api, "_enrich_one_notice", _enrich_then_cancel)
     monkeypatch.setattr(analysis_api, "run_analysis_pipeline", _forbidden_pipeline)
     response = client.post(
@@ -714,6 +721,13 @@ def test_attachment_continuation_exact_retry_replays_stored_child(
             ],
         )
 
+    monkeypatch.setattr(
+        analysis_api,
+        "refresh_pps_metadata_for_analysis",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="CURRENT", warnings=(), ready=True
+        ),
+    )
     monkeypatch.setattr("pai_loop.analysis_api._has_accepted_pps_extraction", lambda *_: False)
     monkeypatch.setattr("pai_loop.analysis_api._enrich_one_notice", continuation)
     plan = client.post(
@@ -797,6 +811,13 @@ def test_batch_finalization_failure_requeues_and_reuses_durable_attachment(
             attachments_processed=3,
         )
 
+    monkeypatch.setattr(
+        analysis_api,
+        "refresh_pps_metadata_for_analysis",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="CURRENT", warnings=(), ready=True
+        ),
+    )
     monkeypatch.setattr("pai_loop.analysis_api._has_accepted_pps_extraction", lambda *_: False)
     monkeypatch.setattr("pai_loop.analysis_api._enrich_one_notice", resumable)
     plan = client.post(
@@ -817,8 +838,6 @@ def test_batch_finalization_failure_requeues_and_reuses_durable_attachment(
         "segment_id": plan["segment_id"],
         "chunk_index": plan["chunk_indices"][0],
     }
-    from pai_loop import analysis_api
-
     original_store = analysis_api._store_batch_response
     store_calls = 0
 
@@ -1052,6 +1071,13 @@ def test_protected_batch_aggregates_and_persists_sanitised_openai_telemetry(
                 ),
             )
         ]
+    )
+    monkeypatch.setattr(
+        analysis_api,
+        "refresh_pps_metadata_for_analysis",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="CURRENT", warnings=(), ready=True
+        ),
     )
     monkeypatch.setattr(
         "pai_loop.analysis_api._has_accepted_pps_extraction",
