@@ -3943,10 +3943,8 @@
       || notice.analysisAttachmentsAccepted > 0;
     const collectedOnly = !cancelled
       && !notice.historicalAnalysis
-      && (
-        !analyzed
-        || (qualityReview && !hasGroundedAnalysisContent)
-      );
+      && (!analyzed || qualityReview)
+      && !hasGroundedAnalysisContent;
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
@@ -4111,14 +4109,21 @@
     let title = "공고 메타데이터가 저장되었습니다";
     let description = notice.analysisReason;
 
-    if (notice.analysisAttachmentCount > 0 && !notice.analysisAttachmentCoverageComplete) {
+    if (
+      notice.analysisAttachmentCount > 0
+      && (
+        !notice.analysisAttachmentCoverageComplete
+        || notice.analysisAttachmentsAccepted < notice.analysisAttachmentCount
+      )
+    ) {
       const total = Math.max(Number(notice.analysisAttachmentCount) || 0, 0);
       const audited = Math.max(Number(notice.analysisAttachmentsAudited) || 0, 0);
       const accepted = Math.max(Number(notice.analysisAttachmentsAccepted) || 0, 0);
-      const remaining = Math.max(total - audited, 0);
+      const remainingAudit = Math.max(total - audited, 0);
+      const remainingAnalysis = Math.max(total - accepted, 0);
       stateLabel = `감사 ${formatNumber(audited)}/${formatNumber(total)}`;
       title = `첨부 목록 ${formatNumber(total)}건 · 감사 ${formatNumber(audited)}건 · 분석 승인 ${formatNumber(accepted)}건`;
-      description = `남은 감사 ${formatNumber(remaining)}건. ${notice.analysisReason}`;
+      description = `남은 감사 ${formatNumber(remainingAudit)}건 · 분석 보완 ${formatNumber(remainingAnalysis)}건. ${notice.analysisReason}`;
       els.documentAnalysisState.classList.add("is-review");
     } else if (notice.analysisState === "VERSIONED") {
       stateLabel = "문서 버전 수집됨";
