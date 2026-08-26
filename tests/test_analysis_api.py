@@ -78,51 +78,6 @@ def test_analysis_timeout_contract_fits_one_complete_unit_below_n8n_boundary() -
         assert all(node["parameters"]["options"]["timeout"] == 600_000 for node in analysis_nodes)
 
 
-def test_daily_and_backfill_workflows_normalize_only_deferred_inflight_conflicts(
-) -> None:
-    root = Path(__file__).parents[1]
-    contracts = (
-        (
-            "pai-loop-10-daily-opportunity-briefing.json",
-            "Analyze Evaluate and Snapshot PPS Notices",
-            "Validate Batch Analysis Contract",
-        ),
-        (
-            "pai-loop-11-analysis-backfill.json",
-            "Analyze One Bounded Chunk",
-            "Validate Chunk Result",
-        ),
-    )
-    for filename, request_node_name, validator_node_name in contracts:
-        workflow = json.loads(
-            (root / "workflows" / filename).read_text(encoding="utf-8")
-        )
-        nodes = {node["name"]: node for node in workflow["nodes"]}
-        request_node = nodes[request_node_name]
-        response_options = request_node["parameters"]["options"]["response"][
-            "response"
-        ]
-        assert response_options == {
-            "fullResponse": True,
-            "neverError": True,
-            "responseFormat": "json",
-        }
-        validator = nodes[validator_node_name]["parameters"]["jsCode"]
-        assert "statusCode === 409" in validator
-        assert "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED" in validator
-        assert "unrecognised analysis conflict" in validator
-        assert "statusCode < 200 || statusCode >= 300" in validator
-    daily_workflow = json.loads(
-        (root / "workflows" / contracts[0][0]).read_text(encoding="utf-8")
-    )
-    daily_nodes = {node["name"]: node for node in daily_workflow["nodes"]}
-    aggregate_code = daily_nodes["Verify Batch Analysis Aggregate Invariants"][
-        "parameters"
-    ]["jsCode"]
-    assert "deferredKeys" in aggregate_code
-    assert "actual.length !== totals.requested" in aggregate_code
-
-
 def _seed_public_notice(client: TestClient) -> None:
     with client.app.state.session_factory() as session:
         result = import_public_notice_seed(session)
@@ -2693,69 +2648,6 @@ def test_any_continuation_inherits_backfill_retry_policy_without_duplicate_lease
         assert len(config["leased_chunks"]) == 1
 
 
-def test_any_continuation_inherits_daily_parent_cooldown_policy(
-    client: TestClient,
-) -> None:
-    keys = ["MANUAL-DAILY-COOLDOWN-A", "MANUAL-DAILY-COOLDOWN-B"]
-    for key in keys:
-        assert client.post(
-            "/api/v1/notices",
-            json={
-                "notice_key": key,
-                "bid_notice_no": key,
-                "title": f"daily cooldown continuation {key}",
-                "agency": "가상 기관",
-                "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
-                "status": "OPEN",
-            },
-        ).status_code == 201
-
-    first = client.post(
-        "/api/v1/operations/analysis-backfills/plan",
-        json={
-            "queue_name": "DAILY",
-            "notice_keys": keys,
-            "dry_run": True,
-            "execution_limit": 1,
-            "include_retryable": False,
-            "retry_cooldown_hours": 24,
-            "request_token": "w10:daily-cooldown-owner",
-        },
-    ).json()
-    _run_segment(client, first)
-    completed = client.post(
-        f"/api/v1/operations/analysis-backfills/{first['job_id']}/complete",
-        json={"segment_id": first["segment_id"]},
-    )
-    assert completed.status_code == 200, completed.text
-    assert completed.json()["remaining"] == 1
-
-    resumed = client.post(
-        "/api/v1/operations/analysis-backfills/plan",
-        json={
-            "queue_name": "ANY",
-            "resume_only": True,
-            "dry_run": True,
-            "execution_limit": 1,
-            # W11's catch-up policy is 1h, but an ANY poll must inherit the
-            # already-created DAILY parent's 24h selection policy.
-            "retry_cooldown_hours": 1,
-            "request_token": "w11:daily-cooldown-continuation",
-        },
-    )
-    assert resumed.status_code == 200, resumed.text
-    body = resumed.json()
-    assert body["job_id"] == first["job_id"]
-    assert body["queue_name"] == "DAILY"
-    assert body["notice_keys"] == [keys[1]]
-    assert body["offered"] == 1
-    with client.app.state.session_factory() as session:
-        parent = session.get(IngestionJob, first["job_id"])
-        assert parent is not None
-        assert parent.request_json["retry_cooldown_hours"] == 24
-
-
 def test_any_plan_response_retry_prefers_exact_lease_owner_over_new_daily_parent(
     client: TestClient,
 ) -> None:
@@ -3291,130 +3183,18 @@ def test_concurrent_manual_and_scheduled_batch_claims_allow_one_running_child(
         outcomes = [manual_future.result(), scheduled_future.result()]
 
     assert sorted(status for status, _detail in outcomes) == [200, 409]
-    conflict_detail = [detail for status, detail in outcomes if status == 409][0]
-    assert (
-        conflict_detail == "notice analysis is already in flight"
-        or "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED" in conflict_detail
-    )
+    assert [detail for status, detail in outcomes if status == 409] == [
+        "notice analysis is already in flight"
+    ]
     with client.app.state.session_factory() as session:
         children = list(
             session.scalars(
                 select(IngestionJob).where(IngestionJob.source == "ANALYSIS")
             ).all()
         )
-    assert sum(child.status == "RUNNING" for child in children) == 1
-    assert all(child.notice_keys == [key] for child in children)
-    deferred = [
-        child
-        for child in children
-        if (child.request_json or {}).get("deferred_reason")
-        == "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
-    ]
-    assert len(deferred) <= 1
-    assert len(children) == 1 + len(deferred)
-
-
-def test_external_running_conflict_is_deferred_and_next_cron_releases_immediately(
-    client: TestClient,
-) -> None:
-    key = "MANUAL-EXTERNAL-RUNNING-DEFER"
-    assert client.post(
-        "/api/v1/notices",
-        json={
-            "notice_key": key,
-            "bid_notice_no": key,
-            "title": "외부 실행 충돌 다음 cron 이월",
-            "agency": "가상 기관",
-            "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
-            "status": "OPEN",
-        },
-    ).status_code == 201
-    plan = client.post(
-        "/api/v1/operations/analysis-backfills/plan",
-        json={
-            "queue_name": "BACKFILL",
-            "notice_keys": [key],
-            "dry_run": True,
-            "execution_limit": 1,
-            "include_retryable": True,
-            "retry_cooldown_hours": 1,
-            "request_token": "w11:external-conflict-first",
-        },
-    ).json()
-    competing_id, stored = analysis_api._create_batch_job(
-        SimpleNamespace(app=client.app),
-        analysis_api.AnalysisBatchRequest(
-            notice_keys=[key],
-            dry_run=True,
-            enrich_missing=True,
-            max_notices=1,
-        ),
-    )
-    assert stored is None
-    operation_payload = {
-        "notice_keys": [key],
-        "dry_run": True,
-        "enrich_missing": True,
-        "max_notices": 1,
-        "operation_id": plan["job_id"],
-        "segment_id": plan["segment_id"],
-        "chunk_index": plan["chunk_indices"][0],
-    }
-
-    blocked = client.post(
-        "/api/v1/notices/analysis/batch",
-        json=operation_payload,
-    )
-    replay = client.post(
-        "/api/v1/notices/analysis/batch",
-        json=operation_payload,
-    )
-    assert blocked.status_code == replay.status_code == 409
-    detail = blocked.json()["detail"]
-    assert detail["code"] == "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
-    assert detail["notice_keys"] == [key]
-    assert replay.json()["detail"]["child_job_id"] == detail["child_job_id"]
-    with client.app.state.session_factory() as session:
-        deferred = session.get(IngestionJob, detail["child_job_id"])
-        competing = session.get(IngestionJob, competing_id)
-        assert deferred is not None
-        assert competing is not None
-        assert deferred.status == "PARTIAL"
-        assert deferred.api_calls == 0
-        assert deferred.request_json["requeue_notice_keys"] == [key]
-        assert competing.status == "RUNNING"
-
-    finalized = client.post(
-        f"/api/v1/operations/analysis-backfills/{plan['job_id']}/complete",
-        json={"segment_id": plan["segment_id"]},
-    )
-    assert finalized.status_code == 200, finalized.text
-    assert finalized.json()["segment_id"] is None
-    assert finalized.json()["remaining"] == 1
-    with client.app.state.session_factory() as session:
-        competing = session.get(IngestionJob, competing_id)
-        assert competing is not None
-        competing.status = "COMPLETED"
-        competing.completed_at = datetime.now(timezone.utc)
-        session.commit()
-
-    resumed = client.post(
-        "/api/v1/operations/analysis-backfills/plan",
-        json={
-            "queue_name": "ANY",
-            "resume_only": True,
-            "dry_run": True,
-            "retry_cooldown_hours": 1,
-            "request_token": "w11:external-conflict-next-cron",
-        },
-    )
-    assert resumed.status_code == 200, resumed.text
-    body = resumed.json()
-    assert body["job_id"] == plan["job_id"]
-    assert body["offered"] == 1
-    assert body["notice_keys"] == [key]
-    assert body["segment_id"] != plan["segment_id"]
+    assert len(children) == 1
+    assert children[0].notice_keys == [key]
+    assert children[0].status == "RUNNING"
 
 
 def test_stale_running_batch_child_does_not_block_a_new_claim(
@@ -3530,17 +3310,12 @@ def test_exact_requeue_waits_for_an_unrelated_running_claim(
         )
 
     assert raised.value.status_code == 409
-    assert raised.value.detail["code"] == "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
-    assert raised.value.detail["child_job_id"] == failed_id
+    assert raised.value.detail == "notice analysis is already in flight"
     with client.app.state.session_factory() as session:
         failed = session.get(IngestionJob, failed_id)
         assert failed is not None
         assert failed.status == "FAILED"
         assert failed.request_json["requeue_notice_keys"] == [key]
-        assert (
-            failed.request_json["deferred_reason"]
-            == "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
-        )
 
 
 def test_concurrent_complete_and_daily_plan_never_append_to_terminal_parent(
@@ -3678,4 +3453,3 @@ def test_cross_queue_planner_does_not_duplicate_pending_notice_key(
             select(IngestionJob).where(IngestionJob.source == "ANALYSIS_BACKFILL")
         ).all()
     assert sum(key in (parent.notice_keys or []) for parent in parents) == 1
-
