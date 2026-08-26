@@ -42,6 +42,7 @@ from .pps_enrichment import (
     has_current_accepted_pps_extraction,
     public_analysis_reason,
 )
+from .pps_metadata_refresh import refresh_pps_metadata_for_analysis
 
 
 # W10/W11 bound each analysis HTTP node at 600 seconds. One complete durable
@@ -2783,13 +2784,86 @@ def _execute_notice_analysis_batch(
             enrichment_targeted
             and not _has_accepted_pps_extraction(request, notice_id)
         )
-        if enrichment_targeted and not should_enrich:
+        metadata_refresh_failed = False
+        metadata_refresh_warnings: list[str] = []
+        if should_enrich:
+            try:
+                metadata_refresh = refresh_pps_metadata_for_analysis(
+                    request,
+                    notice_id=notice_id,
+                    dry_run=payload.dry_run,
+                    deadline_monotonic=enrichment_deadline,
+                )
+            except Exception:  # pragma: no cover - database fail-closed boundary
+                metadata_refresh_failed = True
+                metadata_refresh_warnings = [
+                    "PPS_METADATA_REFRESH_REQUIRED",
+                    "INTERNAL_PPS_METADATA_REFRESH_ERROR",
+                ]
+            else:
+                metadata_refresh_warnings = list(metadata_refresh.warnings)
+                if metadata_refresh.status == "CANCELLED":
+                    warnings = sorted(
+                        set(["PPS_NOTICE_CANCELLED", *metadata_refresh_warnings])
+                    )
+                    rows.append(
+                        AnalysisBatchItemOut(
+                            notice_key=notice_key,
+                            status="FAILED",
+                            document_status="NOTICE_CANCELLED",
+                            evaluation_status="NOT_CREATED",
+                            snapshot_status="NOT_CREATED",
+                            warnings=warnings,
+                        )
+                    )
+                    failed += 1
+                    enrichment_failed += 1
+                    enrichment_warnings.extend(warnings)
+                    continue
+                if metadata_refresh.status == "INACTIVE":
+                    warnings = sorted(
+                        set(
+                            [
+                                "AUTOMATIC_NOTICE_NOT_ACTIVE",
+                                *metadata_refresh_warnings,
+                            ]
+                        )
+                    )
+                    rows.append(
+                        AnalysisBatchItemOut(
+                            notice_key=notice_key,
+                            status="SKIPPED",
+                            document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                            evaluation_status="NOT_RUN",
+                            snapshot_status="NOT_RUN",
+                            warnings=warnings,
+                        )
+                    )
+                    skipped += 1
+                    enrichment_skipped += 1
+                    enrichment_warnings.extend(warnings)
+                    continue
+                metadata_refresh_failed = not metadata_refresh.ready
+
+        if metadata_refresh_failed:
+            enrichment_result = PpsEnrichmentResult(
+                status="PLANNED" if payload.dry_run else "REVIEW",
+                warnings=metadata_refresh_warnings,
+            )
+            # These warnings are carried by the synthetic result below. Do not
+            # append them twice when aggregating the item.
+            metadata_refresh_warnings = []
+        elif enrichment_targeted and not should_enrich:
             enrichment_completed += 1
         elif should_enrich and time.monotonic() >= enrichment_deadline:
             enrichment_result = PpsEnrichmentResult(
                 status="SKIPPED",
-                warnings=["ENRICHMENT_TOTAL_TIMEOUT"],
+                warnings=[
+                    *metadata_refresh_warnings,
+                    "ENRICHMENT_TOTAL_TIMEOUT",
+                ],
             )
+            metadata_refresh_warnings = []
         elif should_enrich:
             # The provider may publish a cancellation after the batch job was
             # reserved or after the first per-item lookup. Refresh immediately
@@ -2860,7 +2934,8 @@ def _execute_notice_analysis_batch(
                     ],
                 )
 
-        item_enrichment_warnings: list[str] = []
+        item_enrichment_warnings: list[str] = list(metadata_refresh_warnings)
+        enrichment_warnings.extend(metadata_refresh_warnings)
         if enrichment_result is not None:
             enrichment_discovered += enrichment_result.attachments_discovered
             enrichment_attachments_attempted += enrichment_result.attachments_attempted
@@ -2907,6 +2982,23 @@ def _execute_notice_analysis_batch(
                 failed += 1
             else:
                 skipped += 1
+            continue
+
+        if "PPS_METADATA_REFRESH_REQUIRED" in item_enrichment_warnings:
+            # Stale/missing metadata must never fall through into attachment
+            # extraction or the deterministic pipeline. A later backfill can
+            # retry the exact PPS refresh without spending a Claude call here.
+            rows.append(
+                AnalysisBatchItemOut(
+                    notice_key=notice_key,
+                    status="FAILED",
+                    document_status="PPS_METADATA_REFRESH_REQUIRED",
+                    evaluation_status="NOT_RUN",
+                    snapshot_status="NOT_RUN",
+                    warnings=sorted(set(item_enrichment_warnings)),
+                )
+            )
+            failed += 1
             continue
 
         if (

@@ -223,11 +223,20 @@ def _candidate_selection_key(item: dict[str, Any]) -> str | None:
     return _pps_notice_key(item)
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _candidate_block_reason(item: dict[str, Any]) -> str | None:
     if str(item.get("notice_kind") or "").strip() == "취소공고":
         return "취소공고는 새 분석 대상으로 저장할 수 없습니다."
-    if not item.get("title") or item.get("deadline") is None:
+    deadline = item.get("deadline")
+    if not item.get("title") or not isinstance(deadline, datetime):
         return "공고명 또는 마감일시가 없어 저장할 수 없습니다."
+    if _as_utc(deadline) < datetime.now(timezone.utc):
+        return "입찰 마감일시가 지난 공고는 저장할 수 없습니다."
     return None
 
 

@@ -195,6 +195,54 @@ def test_search_requires_same_origin_operator_token_and_writes_nothing(
         assert session.scalar(select(func.count(IngestionJob.id))) == 0
 
 
+@pytest.mark.parametrize(
+    "deadline_timezone",
+    [timezone.utc, timezone(timedelta(hours=9))],
+    ids=["utc", "kst"],
+)
+def test_ended_notice_is_not_saveable_and_save_recheck_writes_nothing(
+    discovery_client: TestClient,
+    deadline_timezone: timezone,
+) -> None:
+    ended = _candidate(
+        "20260820003",
+        day=28,
+        title="마감된 공공기관 교육 용역",
+    )
+    deadline = (datetime.now(timezone.utc) - timedelta(minutes=1)).astimezone(
+        deadline_timezone
+    )
+    ended["deadline"] = deadline
+    ended["identity"] = f"{ended['bid_notice_no']}|00|{deadline.isoformat()}"
+    _FakeDiscoveryClient.yielded = [ended]
+
+    search = _search(discovery_client)
+    assert search.status_code == 200, search.text
+    candidate = search.json()["candidates"][0]
+    assert candidate["saveable"] is False
+    assert "마감" in candidate["save_block_reason"]
+
+    saved = discovery_client.post(
+        "/api/v1/pps-discovery/save",
+        headers=_HEADERS,
+        json={
+            "query": "교육 용역",
+            "from_date": "2026-08-01",
+            "to_date": "2026-08-23",
+            "bid_notice_no": candidate["bid_notice_no"],
+            "selection_key": candidate["selection_key"],
+        },
+    )
+    assert saved.status_code == 409, saved.text
+    assert "마감" in saved.json()["detail"]
+
+    factory = discovery_client.app.state.session_factory
+    with factory() as session:
+        assert session.scalar(select(func.count(Notice.id))) == 0
+        assert session.scalar(select(func.count(NoticeVersion.id))) == 0
+        assert session.scalar(select(func.count(IngestionJob.id))) == 0
+
+
 def test_save_persists_only_selected_notice_manifest_and_is_idempotent(
     discovery_client: TestClient,
 ) -> None:
