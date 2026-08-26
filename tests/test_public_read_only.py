@@ -5,11 +5,23 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from pai_loop.api import _publication_safe_source_url
-from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
+from pai_loop.integrations.openai_extraction import (
+    PROMPT_VERSION,
+    SCHEMA_VERSION,
+    ExtractionPayload,
+)
 from pai_loop.main import create_app
 from pai_loop.models import Evaluation, Notice, NoticeVersion
-from pai_loop.pps_enrichment import PPS_PROCESSING_VERSION
+from pai_loop.pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
+    PPS_METADATA_KIND,
+    PPS_METADATA_SCHEMA,
+    PPS_PROCESSING_VERSION,
+    _digest,
+    build_attachment_manifest,
+)
 from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
+from pai_loop.quantitative_rule_extraction import validate_quantitative_attachment_extraction
 
 
 SERVER_HEADERS = {"X-PAI-LOOP-API-KEY": "server-only-secret"}
@@ -303,22 +315,89 @@ def test_public_live_pps_extraction_is_redacted_and_usable_by_policy(monkeypatch
             },
         )
         assert created.status_code == 201
-        attachment_id = "PPS-ATT-0123456789abcdef01234567"
-        version = client.post(
+        manifest = build_attachment_manifest(
+            {
+                "bidNtceNo": "R26BK-LIVE-001",
+                "bidNtceOrd": "000",
+                "ntceSpecFileNm1": "입찰공고문.pdf",
+                "ntceSpecDocUrl1": (
+                    "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+                    "?bidPbancNo=R26BK-LIVE-001&bidPbancOrd=000&fileSeq=1"
+                    "&fileType=1&prcmBsneSeCd=01"
+                ),
+            }
+        )
+        attachment = manifest[0]
+        attachment_id = attachment["attachment_id"]
+        current_manifest_sha256 = _digest(manifest)
+        metadata = client.post(
             "/api/v1/notices/PPS-LIVE-PUBLIC-001/versions",
             headers=SERVER_HEADERS,
             json={
                 "version_no": 1,
+                "file_sha256": "a" * 64,
+                "document_complete": False,
+                "extraction_status": "METADATA",
+                "extraction_confidence": 1.0,
+                "source_payload": {
+                    "kind": PPS_METADATA_KIND,
+                    "schema_version": PPS_METADATA_SCHEMA,
+                    "attachment_manifest": manifest,
+                },
+            },
+        )
+        assert metadata.status_code == 201, metadata.text
+        result = {
+            "document_type": "NOTICE",
+            "requirements": [
+                {
+                    "requirement_id": "REQ-LIVE-1",
+                    "category": "SUBMISSION",
+                    "logic": "SINGLE",
+                    "normalized_condition": "담당 합성가 주무관 " + email,
+                    "mandatory": True,
+                    "deadline_basis": "입찰 마감일",
+                    "evidence": [
+                        {
+                            "attachment_id": attachment_id,
+                            "page": 1,
+                            "section": "문의 합성나",
+                            "quote": "문의 연락처 " + phone,
+                            "confidence": 0.97,
+                        }
+                    ],
+                    "ambiguity_reason": None,
+                }
+            ],
+            "missing_or_unreadable": [],
+            "summary": "제출 절차 1건, 담당자 합성다",
+            "quantitative_tables": [],
+            "quantitative_table_not_applicable": None,
+        }
+        quantitative_record = validate_quantitative_attachment_extraction(
+            ExtractionPayload.model_validate(result),
+            source_text="문의 연락처 " + phone,
+            attachment_id=attachment_id,
+            document_sha256="c" * 64,
+            manifest_sha256=current_manifest_sha256,
+        )
+        version = client.post(
+            "/api/v1/notices/PPS-LIVE-PUBLIC-001/versions",
+            headers=SERVER_HEADERS,
+            json={
+                "version_no": 2,
                 "file_sha256": "c" * 64,
                 "document_complete": True,
                 "extraction_status": "ACCEPTED",
                 "extraction_confidence": 0.97,
                 "source_payload": {
                     "kind": "OPENAI_REQUIREMENT_EXTRACTION",
-                    "source_kind": "PPS_PUBLIC_ATTACHMENT",
+                    "source_kind": PPS_ATTACHMENT_SOURCE,
                     "attachment_id": attachment_id,
-                    "source_label": "입찰공고문.pdf",
+                    "source_label": attachment["file_name"],
                     "document_sha256": "c" * 64,
+                    "manifest_sha256": _digest(attachment),
+                    "current_manifest_sha256": current_manifest_sha256,
                     "status": "ACCEPTED",
                     "prompt_version": PROMPT_VERSION,
                     "processing_version": PPS_PROCESSING_VERSION,
@@ -327,37 +406,32 @@ def test_public_live_pps_extraction_is_redacted_and_usable_by_policy(monkeypatch
                         "source_read_complete": True,
                         "analysis_input_complete": True,
                     },
-                    "result": {
-                        "document_type": "NOTICE",
-                        "requirements": [
-                            {
-                                "requirement_id": "REQ-LIVE-1",
-                                "category": "SUBMISSION",
-                                "logic": "SINGLE",
-                                "normalized_condition": "담당 합성가 주무관 " + email,
-                                "mandatory": True,
-                                "deadline_basis": "입찰 마감일",
-                                "evidence": [
-                                    {
-                                        "attachment_id": attachment_id,
-                                        "page": 1,
-                                        "section": "문의 합성나",
-                                        "quote": "문의 연락처 " + phone,
-                                        "confidence": 0.97,
-                                    }
-                                ],
-                                "ambiguity_reason": None,
-                            }
-                        ],
-                        "missing_or_unreadable": [],
-                        "summary": "제출 절차 1건, 담당자 합성다",
-                        "quantitative_tables": [],
-                        "quantitative_table_not_applicable": None,
-                    },
+                    "result": result,
+                    "quantitative_validation_record": quantitative_record.model_dump(
+                        mode="json"
+                    ),
                 },
             },
         )
         assert version.status_code == 201, version.text
+        shadow = client.post(
+            "/api/v1/notices/PPS-LIVE-PUBLIC-001/versions",
+            headers=SERVER_HEADERS,
+            json={
+                "version_no": 3,
+                "file_sha256": "d" * 64,
+                "document_complete": False,
+                "extraction_status": "REVIEW",
+                "extraction_confidence": 0.0,
+                "source_payload": {
+                    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                    "source_kind": "UNTRUSTED",
+                    "attachment_id": attachment_id,
+                    "status": "REVIEW",
+                },
+            },
+        )
+        assert shadow.status_code == 201, shadow.text
 
         detail = client.get("/api/v1/notices/PPS-LIVE-PUBLIC-001")
         assert detail.status_code == 200

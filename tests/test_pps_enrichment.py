@@ -31,6 +31,7 @@ from pai_loop.pps_enrichment import (
     pps_attachment_coverage,
     public_analysis_reason,
     resolve_ingestion_keywords,
+    safe_public_current_pps_extractions,
     safe_public_live_extraction,
     select_preferred_attachments,
 )
@@ -572,15 +573,16 @@ def _analysis_versions(
         return [metadata]
     attachment = manifest[0]
     current_manifest_sha256 = _digest(manifest)
+    extraction_payload = ExtractionPayload(
+        document_type="RFP",
+        summary="공개 첨부 원문",
+        requirements=[],
+        missing_or_unreadable=[],
+        quantitative_tables=[],
+        quantitative_table_not_applicable=None,
+    )
     quantitative_record = validate_quantitative_attachment_extraction(
-        ExtractionPayload(
-            document_type="RFP",
-            summary="공개 첨부 원문",
-            requirements=[],
-            missing_or_unreadable=[],
-            quantitative_tables=[],
-            quantitative_table_not_applicable=None,
-        ),
+        extraction_payload,
         source_text="공개 첨부 원문",
         attachment_id=attachment["attachment_id"],
         document_sha256="2" * 64,
@@ -597,6 +599,8 @@ def _analysis_versions(
             "kind": "OPENAI_REQUIREMENT_EXTRACTION",
             "source_kind": PPS_ATTACHMENT_SOURCE,
             "attachment_id": attachment["attachment_id"],
+            "source_label": attachment["file_name"],
+            "document_sha256": "2" * 64,
             "manifest_sha256": _digest(attachment),
             "current_manifest_sha256": current_manifest_sha256,
             "prompt_version": PROMPT_VERSION,
@@ -604,6 +608,11 @@ def _analysis_versions(
             "schema_version": SCHEMA_VERSION,
             "status": status,
             "error_code": error_code,
+            "document_processing": {
+                "source_read_complete": status == "ACCEPTED",
+                "analysis_input_complete": status == "ACCEPTED",
+            },
+            "result": extraction_payload.model_dump(mode="json"),
             "quantitative_validation_record": quantitative_record.model_dump(mode="json"),
         },
     )
@@ -642,6 +651,54 @@ def test_public_analysis_reason_is_current_manifest_bound_and_public_safe(
     )
     assert "http" not in reason.reason.casefold()
     assert "PPS-ATT" not in reason.reason
+
+
+def test_public_current_pps_extraction_ignores_newer_unbound_shadow() -> None:
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    current_payload = dict(versions[1].source_payload)
+    versions.append(
+        NoticeVersion(
+            notice_id="notice",
+            version_no=3,
+            file_sha256="3" * 64,
+            document_complete=False,
+            extraction_status="REVIEW",
+            extraction_confidence=0.0,
+            source_payload={
+                **current_payload,
+                "source_kind": "UNTRUSTED",
+                "status": "REVIEW",
+            },
+        )
+    )
+
+    public = safe_public_current_pps_extractions(versions)
+
+    assert len(public) == 1
+    assert public[0]["document_name"] == "제안요청서.pdf"
+
+
+def test_newest_invalid_current_attempt_never_falls_back_to_older_valid_attempt() -> None:
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    invalid_payload = dict(versions[1].source_payload)
+    invalid_payload.pop("quantitative_validation_record")
+    versions.append(
+        NoticeVersion(
+            notice_id="notice",
+            version_no=3,
+            file_sha256="2" * 64,
+            document_complete=True,
+            extraction_status="ACCEPTED",
+            extraction_confidence=1.0,
+            source_payload=invalid_payload,
+        )
+    )
+
+    coverage = pps_attachment_coverage(versions)
+
+    assert coverage.accepted == 0
+    assert safe_public_current_pps_extractions(versions) == []
+    assert public_analysis_reason(versions).reason_code == "NOT_SELECTED"
 
 
 def test_newest_stale_metadata_never_falls_back_to_prior_current_manifest() -> None:
