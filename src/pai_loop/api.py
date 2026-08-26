@@ -69,6 +69,7 @@ from .pps_enrichment import (
     pps_attachment_coverage,
     public_analysis_reason,
     resolve_ingestion_keywords,
+    safe_public_current_pps_extractions,
     safe_public_live_extraction,
 )
 from .pricing_profiles import pricing_profile_for_document
@@ -539,10 +540,7 @@ def _public_document_analyses(versions: list[NoticeVersion]) -> list[dict[str, A
         curated = _curated_public_extraction(payload)
         if curated is not None:
             analyses.append(curated)
-            continue
-        live = safe_public_live_extraction(payload)
-        if live is not None:
-            analyses.append(live)
+    analyses.extend(safe_public_current_pps_extractions(versions))
     return analyses
 
 

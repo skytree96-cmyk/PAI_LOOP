@@ -616,6 +616,10 @@ def _current_manifest_attempts(
             attachment_id=attachment_id,
             current_manifest_sha256=current_manifest_sha256,
         ):
+            # The newest current-bound attempt is authoritative even when its
+            # validation envelope is invalid.  Do not let an older valid row
+            # remain selected behind it.
+            attempts.pop(attachment_id, None)
             continue
         attempts[attachment_id] = version
     return attachments, invalid_count, attempts
@@ -1654,6 +1658,44 @@ def safe_public_live_extraction(payload: Any) -> dict[str, Any] | None:
         "requirements": data["requirements"],
         "missing_or_unreadable": data["missing_or_unreadable"],
     }
+
+
+def safe_public_current_pps_extractions(
+    versions: list[NoticeVersion],
+) -> list[dict[str, Any]]:
+    """Publish only current-manifest PPS attempts with a valid DB envelope.
+
+    Public detail must use the same current attachment selector as coverage.
+    Selecting merely by ``attachment_id`` allows a later stale or untrusted
+    extraction row to hide an otherwise valid current result.
+    """
+
+    attachments, invalid_count, attempts = _current_manifest_attempts(versions)
+    if invalid_count:
+        return []
+    analyses: list[dict[str, Any]] = []
+    for attachment in attachments:
+        attempt = attempts.get(attachment["attachment_id"])
+        payload = (
+            attempt.source_payload
+            if attempt is not None and isinstance(attempt.source_payload, dict)
+            else {}
+        )
+        document_sha256 = str(payload.get("document_sha256") or "").casefold()
+        if (
+            attempt is None
+            or payload.get("status") != "ACCEPTED"
+            or attempt.extraction_status not in {"ACCEPTED", "COMPLETE"}
+            or attempt.document_complete is not True
+            or document_sha256 != attempt.file_sha256.casefold()
+            or payload.get("source_label") != attachment["file_name"]
+            or not _accepted_source_is_technically_complete(attempt)
+        ):
+            continue
+        public = safe_public_live_extraction(payload)
+        if public is not None:
+            analyses.append(public)
+    return analyses
 
 
 def _as_utc(value: datetime) -> datetime:
