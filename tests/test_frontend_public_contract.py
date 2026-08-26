@@ -234,7 +234,7 @@ def test_unanalysed_detail_shows_collected_metadata_without_claiming_ai_judgemen
     assert 'collectedOnly ? "수집 정보 요약" : "공고 핵심 요약"' in detail_body
     assert "공고 메타데이터 · AI 분석 아님" in detail_body
     assert "notice.analysisAttachmentsAccepted > 0" in detail_body
-    assert "qualityReview && !hasGroundedAnalysisContent" in detail_body
+    assert "&& !hasGroundedAnalysisContent;" in detail_body
     for field in (
         "notice.title",
         "notice.agency",
@@ -247,6 +247,8 @@ def test_unanalysed_detail_shows_collected_metadata_without_claiming_ai_judgemen
     assert "참가 자격·준비도·AI 추천은 첨부 분석 완료 전까지 확정값이 아닙니다" in summary_body
     assert "첨부 목록" in documents_body
     assert "남은 감사" in documents_body
+    assert "analysisAttachmentsAccepted < notice.analysisAttachmentCount" in documents_body
+    assert "분석 보완" in documents_body
     assert "공고 메타데이터 저장" in pipeline_body
     assert "원문 보존" not in pipeline_body
     assert "상단 ‘${manualAnalysisLabel(notice)}’" in actions_body
