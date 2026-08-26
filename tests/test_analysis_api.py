@@ -260,12 +260,22 @@ def test_automatic_lease_rechecks_expiration_before_any_paid_work(
         },
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"] == {
-        "code": "AUTOMATIC_NOTICE_NOT_ACTIVE",
-        "message": "종료되었거나 비활성인 공고는 자동 분석하지 않습니다.",
-        "notice_keys": [notice_key],
-    }
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["requested"] == body["processed"] == body["skipped"] == 1
+    assert body["completed"] == body["failed"] == body["openai_calls"] == 0
+    assert body["warnings"] == ["AUTOMATIC_NOTICE_NOT_ACTIVE"]
+    assert len(body["results"]) == 1
+    item = body["results"][0]
+    assert item["notice_key"] == notice_key
+    assert item["status"] == "SKIPPED"
+    assert item["document_status"] == "AUTOMATIC_NOTICE_NOT_ACTIVE"
+    assert item["evaluation_status"] == item["snapshot_status"] == "NOT_RUN"
+    assert item["analysis_run_id"] is None
+    assert item["evaluation_id"] is None
+    assert item["notice_version_id"] is None
+    assert item["warnings"] == ["AUTOMATIC_NOTICE_NOT_ACTIVE"]
     with client.app.state.session_factory() as session:
         children = [
             job
@@ -275,7 +285,129 @@ def test_automatic_lease_rechecks_expiration_before_any_paid_work(
             if isinstance(job.request_json, dict)
             and job.request_json.get("parent_job_id") == plan["job_id"]
         ]
-        assert children == []
+        assert len(children) == 1
+        child = children[0]
+        assert child.status == "PARTIAL"
+        assert child.fetched == child.duplicate_count == 1
+        assert child.created_count == child.quarantined_count == child.api_calls == 0
+        assert child.warnings == ["AUTOMATIC_NOTICE_NOT_ACTIVE"]
+        assert child.request_json["result_json"] == body
+        assert "requeue_notice_keys" not in child.request_json
+
+    replay = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "operation_id": plan["job_id"],
+            "segment_id": plan["segment_id"],
+            "chunk_index": plan["chunk_indices"][0],
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.json() == body
+    with client.app.state.session_factory() as session:
+        child_count = len(
+            [
+                job
+                for job in session.scalars(
+                    select(IngestionJob).where(IngestionJob.source == "ANALYSIS")
+                ).all()
+                if isinstance(job.request_json, dict)
+                and job.request_json.get("parent_job_id") == plan["job_id"]
+            ]
+        )
+        assert child_count == 1
+
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{plan['job_id']}/complete",
+        json={"segment_id": plan["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+    progress = completed.json()
+    assert progress["status"] == "PARTIAL"
+    assert progress["attempted"] == progress["partial"] == 1
+    assert progress["remaining"] == progress["in_flight"] == progress["offered"] == 0
+    assert progress["segment_id"] is None
+
+
+def test_automatic_lease_consumes_notice_cancelled_after_plan_without_paid_work(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice_key = "PPS-CANCELLED-AFTER-LEASE"
+    bid_notice_no = "R26BK-CANCELLED-AFTER-LEASE"
+    _create_pps_notice_with_authority(
+        client,
+        notice_key=notice_key,
+        bid_notice_no=bid_notice_no,
+        disposition="VALID",
+    )
+    plan_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "notice_keys": [notice_key],
+            "dry_run": False,
+            "chunk_size": 1,
+            "max_total": 1,
+            "execution_limit": 1,
+            "include_retryable": False,
+        },
+    )
+    assert plan_response.status_code == 200, plan_response.text
+    plan = plan_response.json()
+    with client.app.state.session_factory() as session:
+        authority = session.get(PpsNoticeAuthority, bid_notice_no)
+        assert authority is not None
+        authority.event_kind = "취소공고"
+        authority.disposition = "CANCELLED"
+        authority.deadline = None
+        authority.authority_sha256 = "d" * 64
+        session.commit()
+
+    monkeypatch.setattr(
+        analysis_api,
+        "_enrich_one_notice",
+        lambda *_args, **_kwargs: pytest.fail("cancelled lease must not enrich"),
+    )
+    monkeypatch.setattr(
+        analysis_api,
+        "run_analysis_pipeline",
+        lambda *_args, **_kwargs: pytest.fail("cancelled lease must not analyse"),
+    )
+    response = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={
+            "notice_keys": [notice_key],
+            "enrich_missing": True,
+            "max_notices": 1,
+            "operation_id": plan["job_id"],
+            "segment_id": plan["segment_id"],
+            "chunk_index": plan["chunk_indices"][0],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "PARTIAL"
+    assert body["requested"] == body["processed"] == body["failed"] == 1
+    assert body["completed"] == body["skipped"] == body["openai_calls"] == 0
+    assert body["warnings"] == ["PPS_NOTICE_CANCELLED"]
+    assert body["results"][0]["status"] == "FAILED"
+    assert body["results"][0]["document_status"] == "NOTICE_CANCELLED"
+    assert body["results"][0]["warnings"] == ["PPS_NOTICE_CANCELLED"]
+
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{plan['job_id']}/complete",
+        json={"segment_id": plan["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+    progress = completed.json()
+    assert progress["status"] == "PARTIAL"
+    assert progress["attempted"] == progress["failed"] == 1
+    assert progress["remaining"] == progress["in_flight"] == progress["offered"] == 0
 
 
 @pytest.mark.parametrize("inactive_kind", ["closed", "expired"])
