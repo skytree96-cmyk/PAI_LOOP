@@ -8,10 +8,10 @@ const nodes = new Map(daily.nodes.map((item) => [item.name, item]));
 const continuationNodes = new Map(continuation.nodes.map((item) => [item.name, item]));
 assert.equal(manifest.workflows["pai-loop-10-daily-opportunity-briefing"].contractVersion, "daily-briefing-1.6");
 
-const dailySchedule = nodes.get("Every Day 08:00 KST");
+const dailySchedule = nodes.get("Every Day 07:30 KST");
 assert.equal(daily.settings.timezone, "Asia/Seoul");
 assert.equal(dailySchedule.type, "n8n-nodes-base.scheduleTrigger");
-assert.equal(dailySchedule.parameters.rule.interval[0].expression, "0 8 * * *");
+assert.equal(dailySchedule.parameters.rule.interval[0].expression, "30 7 * * *");
 
 function executeCode(map, name, input = {}, globals = {}) {
   const target = map.get(name);
@@ -35,7 +35,7 @@ const runtime = one(nodes, "Scheduled Runtime Gates", {}, { env: {} }).runtime;
 assert.equal(runtime.executionMode, "scheduled-live");
 assert.equal(runtime.maxAnalysisBatchNotices, 1);
 assert.equal(runtime.maxDailyNewNotices, 3000);
-assert.equal(runtime.maxBacklogRetryNotices, 12);
+assert.equal(runtime.maxBacklogRetryNotices, 50);
 assert.equal(runtime.maxAttachmentsPerNotice, 10);
 assert.equal(runtime.ppsPageSize, 999);
 assert.equal(runtime.ppsMaxPages, 3);
@@ -85,7 +85,8 @@ assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /source_ingestion_job_id: \$json\.ingestion\.jobId/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /source_material_notice_keys: \$json\.analysisBatch\.newNoticeKeys/);
 assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_total: 3012/);
-assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_continuations: 128/);
+assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /execution_limit: 5/);
+assert.match(nodes.get("Reserve or Resume Daily Analysis Operation").parameters.body, /max_continuations: 768/);
 assert.match(continuationNodes.get("Analyze One Bounded Chunk").parameters.body, /segment_id:/);
 assert.match(continuationNodes.get("Reserve or Resume Backfill Plan").parameters.body, /request_token: 'w11:' \+ \$execution\.id/);
 assert.match(continuationNodes.get("Finalize Backfill Audit").parameters.body, /segment_id:/);
@@ -164,13 +165,13 @@ const rootPlan = one(nodes, "Build Bounded Batch Analysis Plan", { awardRefresh:
 assert.deepEqual(rootPlan.analysisBatch.newNoticeKeys, ["new-a", "shared", "updated-a"]);
 assert.deepEqual(rootPlan.analysisBatch.createdNoticeKeys, ["new-a", "shared"]);
 assert.deepEqual(rootPlan.analysisBatch.updatedNoticeKeys, ["updated-a", "shared"]);
-assert.deepEqual(rootPlan.analysisBatch.backlogKeys, backlogNoticeKeys.slice(0, 12));
+assert.deepEqual(rootPlan.analysisBatch.backlogKeys, backlogNoticeKeys);
 assert.deepEqual(rootPlan.analysisBatch.neverAttemptedBacklogKeys, neverAttemptedNoticeKeys);
-assert.deepEqual(rootPlan.analysisBatch.retryableBacklogKeys, retryableNoticeKeys.slice(0, 5));
+assert.deepEqual(rootPlan.analysisBatch.retryableBacklogKeys, retryableNoticeKeys);
 assert.equal(rootPlan.analysisBatch.retryEpoch, "2026-08-19");
 assert.equal(rootPlan.analysisBatch.noticeKeys.includes("unchanged-duplicate"), false);
 assert.deepEqual(rootPlan.analysisBatch.noticeKeys.slice(0, 3), ["new-a", "shared", "updated-a"]);
-assert.deepEqual(rootPlan.analysisBatch.noticeKeys.slice(-12), backlogNoticeKeys.slice(0, 12));
+assert.deepEqual(rootPlan.analysisBatch.noticeKeys.slice(-14), backlogNoticeKeys);
 
 assert.throws(() => one(nodes, "Build Bounded Batch Analysis Plan", {}, {
   node: {
@@ -193,7 +194,7 @@ const operationResponse = {
   segment_id: "33333333-3333-4333-8333-333333333333",
   dry_run: false, policy: "OPEN_NOT_SELECTED_THEN_COOLED_RETRY", chunk_size: 1,
   planned: 35, attempted: 0, remaining: 35, in_flight: 0, offered: 4,
-  continuation_required: true, continuation_round: 1, max_continuations: 128,
+  continuation_required: true, continuation_round: 1, max_continuations: 768,
   completed: 0, partial: 0, failed: 0, child_jobs: 0,
   notice_keys: ["new-a", "shared", "updated-a", "backlog-1"],
   chunks: [["new-a"], ["shared"], ["updated-a"], ["backlog-1"]], chunk_indices: [7, 9, 10, 11], warnings: [], note: "bounded",
@@ -321,6 +322,9 @@ const continuationRuntime = one(continuationNodes, "Build Scheduled Continuation
 const recoveryRuntime = one(continuationNodes, "Build Fail-Closed Backfill Runtime", {}, { env: {} }).runtime;
 assert.equal(recoveryRuntime.includeRetryable, true);
 assert.equal(recoveryRuntime.executionLimit, 5);
+assert.equal(recoveryRuntime.maxContinuations, 768);
+assert.equal(continuationRuntime.executionLimit, 5);
+assert.equal(continuationRuntime.maxContinuations, 768);
 assert.equal(recoveryRuntime.maxTotal, 3000);
 const continuationPlan = one(continuationNodes, "Validate Backfill Plan", {
   ...operationResponse, queue_name: "DAILY", offered: 3,

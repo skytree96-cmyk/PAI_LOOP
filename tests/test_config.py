@@ -71,7 +71,7 @@ def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
         "key": "PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN",
         "sync": False,
     }
-    assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "0"
+    assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "5"
     assert env_vars["PAI_LOOP_LLM_PROVIDER"]["value"] == "n8n_claude"
     assert env_vars["PAI_LOOP_CLAUDE_MODEL"]["value"] == "claude-sonnet-5"
     assert "OPENAI_API_KEY" not in env_vars

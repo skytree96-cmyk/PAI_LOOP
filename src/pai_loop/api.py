@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, load_only, selectinload
 
 from .daily_analysis_scope import material_scope_fields
 from .decision_persistence import persist_current_evaluation_decision
@@ -144,6 +144,34 @@ def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime 
 _PPS_AUTHORITY_PROJECTION_CHUNK_SIZE = 400
 
 
+def _pps_authority_notice_projection(statement):
+    """Load only the compact metadata version needed for lifecycle authority."""
+
+    return statement.options(
+        load_only(
+            Notice.id,
+            Notice.notice_key,
+            Notice.bid_notice_no,
+            Notice.revision_no,
+            Notice.title,
+            Notice.status,
+            Notice.published_at,
+            Notice.deadline,
+            Notice.created_at,
+        ),
+        selectinload(
+            Notice.versions.and_(
+                NoticeVersion.source_payload["kind"].as_string()
+                == PPS_METADATA_KIND
+            )
+        ).load_only(
+            NoticeVersion.notice_id,
+            NoticeVersion.version_no,
+            NoticeVersion.source_payload,
+        ),
+    )
+
+
 def _pps_authorities_by_notice_id(
     session: Session,
     notices: list[Notice],
@@ -184,9 +212,9 @@ def _pps_authorities_by_notice_id(
         ).all():
             authorities[authority.bid_notice_no] = authority
         for related in session.scalars(
-            select(Notice)
-            .options(selectinload(Notice.versions))
-            .where(Notice.bid_notice_no.in_(batch))
+            _pps_authority_notice_projection(
+                select(Notice).where(Notice.bid_notice_no.in_(batch))
+            )
         ).all():
             if _source_kind(related) == "PPS":
                 related_by_notice_no[related.bid_notice_no].append(related)
@@ -569,6 +597,67 @@ def _load_notice(session: Session, notice_key: str) -> Notice:
     return notice
 
 
+_NOTICE_SUMMARY_BATCH_SIZE = 25
+
+
+def _notice_summary_relationships(statement):
+    """Attach only the relationships required by the public summary contract.
+
+    NoticeVersion payloads can contain full document extractions.  Callers must
+    apply this helper only after pagination (or to one bounded dashboard batch)
+    so an ordinary board load cannot materialise every extraction in memory.
+    """
+
+    return statement.options(
+        selectinload(Notice.evaluations),
+        selectinload(Notice.versions),
+        selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
+    )
+
+
+def _load_notice_summary_batch(
+    session: Session,
+    notice_ids: list[str],
+) -> list[Notice]:
+    if not notice_ids:
+        return []
+    loaded = list(
+        session.scalars(
+            _notice_summary_relationships(
+                select(Notice).where(Notice.id.in_(notice_ids))
+            )
+        ).all()
+    )
+    by_id = {notice.id: notice for notice in loaded}
+    return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
+
+
+def _notice_summaries_for_ids(
+    session: Session,
+    notice_ids: list[str],
+    *,
+    public_view: bool,
+) -> list[NoticeSummary]:
+    """Serialize a requested page without retaining every extraction graph."""
+
+    summaries: list[NoticeSummary] = []
+    for offset in range(0, len(notice_ids), _NOTICE_SUMMARY_BATCH_SIZE):
+        batch_ids = notice_ids[offset : offset + _NOTICE_SUMMARY_BATCH_SIZE]
+        notices = _load_notice_summary_batch(session, batch_ids)
+        authorities = _pps_authorities_by_notice_id(session, notices)
+        summaries.extend(
+            _summary(
+                notice,
+                public_view=public_view,
+                provider_authority=authorities.get(notice.id),
+            )
+            for notice in notices
+        )
+        session.expunge_all()
+        del authorities, notices
+    return summaries
+
+
 def _make_notice_key(payload: NoticeCreate) -> str:
     safe_no = re.sub(r"[^A-Za-z0-9_-]+", "-", payload.bid_notice_no).strip("-") or "notice"
     identity = f"{payload.bid_notice_no}|{payload.revision_no}|{payload.deadline.isoformat()}"
@@ -585,20 +674,17 @@ def _comparable_utc(value: datetime) -> datetime:
 @router.get("/dashboard")
 def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    notices = list(
+    notice_ids = list(
         session.scalars(
-            select(Notice)
-            .options(
-                selectinload(Notice.evaluations),
-                selectinload(Notice.versions),
-                selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
+            select(Notice.id).order_by(
+                (Notice.deadline < now).asc(),
+                Notice.deadline.asc(),
+                Notice.notice_key.asc(),
             )
-            .order_by((Notice.deadline < now).asc(), Notice.deadline.asc())
         ).all()
     )
     decisions_total = session.scalar(select(func.count(UserDecision.id))) or 0
     evaluation_total = session.scalar(select(func.count(Evaluation.id))) or 0
-    authorities = _pps_authorities_by_notice_id(session, notices)
     eligibility_counts = {item.value: 0 for item in Eligibility}
     readiness_counts = {item: 0 for item in ("GREEN", "YELLOW", "RED", "GRAY")}
     active_recommendation_counts = {item: 0 for item in ("GO", "HOLD", "NO_GO")}
@@ -607,41 +693,78 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     cancelled_count = 0
     visible_ended_count = 0
     analysis_review_backlog_count = 0
-    for notice in notices:
-        effective_status = _effective_notice_status(notice)
-        authority = authorities.get(notice.id)
-        provider_disposition, _event_kind, _changed_at = (
-            _safe_provider_authority_projection(
-                source_kind=_source_kind(notice),
-                authority=authority,
-            )
-        )
-        is_cancelled = provider_disposition == "CANCELLED"
-        if effective_status in lifecycle_counts:
-            lifecycle_counts[effective_status] += 1
-        latest = None if is_cancelled else _latest_evaluation(notice)
-        if latest and effective_status in lifecycle_counts:
-            analyzed_ended_count += 1
-        if is_cancelled:
-            cancelled_count += 1
-            visible_ended_count += 1
-        elif latest and effective_status in lifecycle_counts:
-            visible_ended_count += 1
-        if latest:
-            eligibility_counts[latest.eligibility] = eligibility_counts.get(latest.eligibility, 0) + 1
-            readiness_counts[latest.readiness_status] = readiness_counts.get(latest.readiness_status, 0) + 1
-        if effective_status == "OPEN":
-            if not is_cancelled and _needs_analysis_or_review(notice, latest):
-                analysis_review_backlog_count += 1
-            recommendation, _updated_at = _latest_system_recommendation(notice)
-            if recommendation is not None:
-                active_recommendation_counts[recommendation] += 1
     soon = now + timedelta(days=7)
+    active_count = 0
+    deadline_soon = 0
+    recent_notices: list[dict[str, Any]] = []
+
+    # Keep the dashboard exact while bounding peak memory.  A version payload
+    # can contain a complete extracted document, so loading every relationship
+    # for the whole history in one ORM identity map can exceed a 512 MB worker.
+    for batch_offset in range(0, len(notice_ids), _NOTICE_SUMMARY_BATCH_SIZE):
+        batch_ids = notice_ids[
+            batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
+        ]
+        notices = _load_notice_summary_batch(session, batch_ids)
+        authorities = _pps_authorities_by_notice_id(session, notices)
+        for notice in notices:
+            effective_status = _effective_notice_status(notice)
+            authority = authorities.get(notice.id)
+            provider_disposition, _event_kind, _changed_at = (
+                _safe_provider_authority_projection(
+                    source_kind=_source_kind(notice),
+                    authority=authority,
+                )
+            )
+            is_cancelled = provider_disposition == "CANCELLED"
+            if effective_status in lifecycle_counts:
+                lifecycle_counts[effective_status] += 1
+            latest = None if is_cancelled else _latest_evaluation(notice)
+            if latest and effective_status in lifecycle_counts:
+                analyzed_ended_count += 1
+            if is_cancelled:
+                cancelled_count += 1
+                visible_ended_count += 1
+            elif latest and effective_status in lifecycle_counts:
+                visible_ended_count += 1
+            if latest:
+                eligibility_counts[latest.eligibility] = (
+                    eligibility_counts.get(latest.eligibility, 0) + 1
+                )
+                readiness_counts[latest.readiness_status] = (
+                    readiness_counts.get(latest.readiness_status, 0) + 1
+                )
+            if effective_status == "OPEN":
+                active_count += 1
+                if not is_cancelled and _needs_analysis_or_review(notice, latest):
+                    analysis_review_backlog_count += 1
+                recommendation, _updated_at = _latest_system_recommendation(notice)
+                if recommendation is not None:
+                    active_recommendation_counts[recommendation] += 1
+                if (
+                    not is_cancelled
+                    and now <= _comparable_utc(notice.deadline) <= soon
+                ):
+                    deadline_soon += 1
+            if len(recent_notices) < 10:
+                recent_notices.append(
+                    _summary(
+                        notice,
+                        public_view=public_read_allowed(request),
+                        provider_authority=authority,
+                    ).model_dump(mode="json")
+                )
+
+        # The session is read-only here.  Detaching each bounded page releases
+        # large JSON extraction payloads before the next page is materialised.
+        session.expunge_all()
+        del authorities, notices
+
     return {
         "generated_at": now,
         "totals": {
-            "notices": len(notices),
-            "active": sum(_effective_notice_status(item) == "OPEN" for item in notices),
+            "notices": len(notice_ids),
+            "active": active_count,
             "evaluations": evaluation_total,
             "decisions": decisions_total,
         },
@@ -657,24 +780,8 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "expired_count": lifecycle_counts["EXPIRED"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],
         "analysis_review_backlog_count": analysis_review_backlog_count,
-        "deadline_soon": sum(
-            1
-            for item in notices
-            if _effective_notice_status(item) == "OPEN"
-            and not _projected_authority_is_cancelled(
-                item,
-                authorities.get(item.id),
-            )
-            and now <= _comparable_utc(item.deadline) <= soon
-        ),
-        "recent_notices": [
-            _summary(
-                item,
-                public_view=public_read_allowed(request),
-                provider_authority=authorities.get(item.id),
-            ).model_dump(mode="json")
-            for item in notices[:10]
-        ],
+        "deadline_soon": deadline_soon,
+        "recent_notices": recent_notices,
         "synthetic_data_warning": "SYN- 접두 데이터는 데모용이며 실제 성과 지표가 아닙니다.",
     }
 
@@ -867,18 +974,10 @@ def list_notices(
 
     ranking_requested = bool(department_id or parsed_keywords)
     now = datetime.now(timezone.utc)
-    statement = (
-        select(Notice)
-        .options(
-            selectinload(Notice.evaluations),
-            selectinload(Notice.versions),
-            selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
-        )
-        .order_by(
+    statement = select(Notice).order_by(
             (Notice.deadline < now).asc(),
             Notice.deadline.asc(),
             Notice.notice_key.asc(),
-        )
     )
     query_terms: list[str] = []
     if q and (query := " ".join(q.split())):
@@ -910,64 +1009,98 @@ def list_notices(
     if analysis_state == "EVALUATED":
         statement = statement.where(Notice.evaluations.any())
     requires_current_evaluation_filter = analysis_state == "EVALUATED"
-    if (
+    candidate_scan_required = bool(
         ranking_requested
         or requires_current_evaluation_filter
         or eligibility is not None
         or query_terms
-    ):
-        notices = list(session.scalars(statement).all())
-    else:
-        notices = list(session.scalars(statement.offset(offset).limit(limit)).all())
+    )
+    if not candidate_scan_required:
+        page_ids = list(
+            session.scalars(
+                statement.with_only_columns(
+                    Notice.id,
+                    maintain_column_froms=True,
+                )
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        )
+        return _notice_summaries_for_ids(
+            session,
+            page_ids,
+            public_view=public_read_allowed(request),
+        )
 
+    # Ranking and exact text matching only need small Notice columns.  Loading
+    # full extraction JSON for every candidate before slicing made a normal
+    # board request scale with the whole database rather than the requested
+    # page.  Project candidates first and hydrate relationships only for the
+    # bounded page (or a bounded filter batch).
+    candidate_statement = statement.with_only_columns(
+        Notice.id,
+        Notice.notice_key,
+        Notice.bid_notice_no,
+        Notice.title,
+        Notice.agency,
+        Notice.category,
+        Notice.deadline,
+        maintain_column_froms=True,
+    )
+    candidate_rows = list(session.execute(candidate_statement).all())
     if query_terms:
-        notices = [
-            notice
-            for notice in notices
-            if _stored_notice_matches_query_terms(notice, query_terms)
+        candidate_rows = [
+            row
+            for row in candidate_rows
+            if _stored_notice_matches_query_terms(row, query_terms)
         ]
 
-    # ``search_keywords`` belongs to the priority control above the board.  It
-    # contributes explainable match scores and ordering below, but must never
-    # hide a stored notice.  Text filtering is exclusively the ``q`` contract.
-    authorities = _pps_authorities_by_notice_id(session, notices)
-
-    if eligibility:
-        notices = [
-            notice
-            for notice in notices
-            if not _projected_authority_is_cancelled(
-                notice,
-                authorities.get(notice.id),
+    if requires_current_evaluation_filter or eligibility is not None:
+        allowed_ids: set[str] = set()
+        for batch_offset in range(
+            0,
+            len(candidate_rows),
+            _NOTICE_SUMMARY_BATCH_SIZE,
+        ):
+            batch_rows = candidate_rows[
+                batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
+            ]
+            batch_notices = _load_notice_summary_batch(
+                session,
+                [row.id for row in batch_rows],
             )
-            and (latest := _latest_evaluation(notice))
-            and latest.eligibility == eligibility
-        ]
-    if requires_current_evaluation_filter:
-        notices = [
-            notice
-            for notice in notices
-            if not _projected_authority_is_cancelled(
-                notice,
-                authorities.get(notice.id),
+            batch_authorities = _pps_authorities_by_notice_id(
+                session,
+                batch_notices,
             )
-            and _latest_evaluation(notice) is not None
-        ]
+            for notice in batch_notices:
+                if _projected_authority_is_cancelled(
+                    notice,
+                    batch_authorities.get(notice.id),
+                ):
+                    continue
+                latest = _latest_evaluation(notice)
+                if latest is None:
+                    continue
+                if eligibility is not None and latest.eligibility != eligibility:
+                    continue
+                allowed_ids.add(notice.id)
+            session.expunge_all()
+            del batch_authorities, batch_notices
+        candidate_rows = [row for row in candidate_rows if row.id in allowed_ids]
 
     if not ranking_requested:
-        if requires_current_evaluation_filter or eligibility is not None or query_terms:
-            notices = notices[offset : offset + limit]
-        return [
-            _summary(
-                notice,
-                public_view=public_read_allowed(request),
-                provider_authority=authorities.get(notice.id),
-            )
-            for notice in notices
-        ]
+        page_rows = candidate_rows[offset : offset + limit]
+        return _notice_summaries_for_ids(
+            session,
+            [row.id for row in page_rows],
+            public_view=public_read_allowed(request),
+        )
 
-    ranked: list[NoticeSummary] = []
-    for notice in notices:
+    # ``search_keywords`` contributes explainable ordering but never hides a
+    # stored notice.  Compute it from the lean candidate projection, then load
+    # only the selected page's versions/evaluations/recommendations.
+    def ranking_projection(notice) -> tuple[dict[str, Any], dict[str, Any], tuple[int, float, float]]:
         department_views = rank_notice_department_views(
             title=notice.title,
             agency=notice.agency,
@@ -988,56 +1121,102 @@ def list_notices(
                 user_keywords=parsed_keywords,
             )
         )
-        ranked.append(
-            NoticeSummary.model_validate(
-                {
-                    **_summary(
-                        notice,
-                        public_view=public_read_allowed(request),
-                        provider_authority=authorities.get(notice.id),
-                    ).model_dump(),
-                    "department_ranking": selected_ranking,
-                    "top_department_rankings": department_views[
-                        "top_department_rankings"
-                    ],
-                    "department_review_candidates": department_views[
-                        "department_review_candidates"
-                    ],
-                    "region_routing": department_views["region_routing"],
-                }
+        department_id_value = str(selected_ranking.get("department_id") or "")
+        if department_id_value == "organization":
+            if department_views["top_department_rankings"]:
+                best = department_views["top_department_rankings"][0]
+                order = (
+                    3,
+                    float(best.get("business_score") or 0),
+                    float(selected_ranking.get("score") or 0),
+                )
+            elif department_views["department_review_candidates"]:
+                candidate = department_views["department_review_candidates"][0]
+                order = (
+                    2,
+                    float(candidate.get("business_score") or 0),
+                    float(selected_ranking.get("score") or 0),
+                )
+            else:
+                order = (0, 0.0, float(selected_ranking.get("score") or 0))
+        elif not selected_ranking:
+            order = (0, 0.0, 0.0)
+        else:
+            tier_order = {"TOP": 3, "ROUTING": 3, "REVIEW": 2, "NONE": 0}
+            fit_score = (
+                selected_ranking.get("routing_score")
+                if selected_ranking.get("ranking_scope") == "REGION"
+                else selected_ranking.get("business_score")
             )
+            order = (
+                tier_order.get(str(selected_ranking.get("recommendation_tier")), 0),
+                float(fit_score or 0),
+                float(selected_ranking.get("score") or 0),
+            )
+        return department_views, selected_ranking, order
+
+    ranked_candidates: list[dict[str, Any]] = []
+    for notice in candidate_rows:
+        views, selected_ranking, order = ranking_projection(notice)
+        ranked_candidates.append(
+            {
+                "notice": notice,
+                "selected": selected_ranking,
+                "views": views,
+                "order": order,
+            }
         )
 
-    def selected_department_order(item: NoticeSummary) -> tuple[int, float, float]:
-        selected = item.department_ranking
-        if selected is None:
-            return 0, 0.0, 0.0
-        if selected.department_id == "organization":
-            if item.top_department_rankings:
-                best = item.top_department_rankings[0]
-                return 3, best.business_score, selected.score
-            if item.department_review_candidates:
-                candidate = item.department_review_candidates[0]
-                return 2, candidate.business_score, selected.score
-            return 0, 0.0, selected.score
-        tier_order = {"TOP": 3, "ROUTING": 3, "REVIEW": 2, "NONE": 0}
-        fit_score = (
-            selected.routing_score
-            if selected.ranking_scope == "REGION"
-            else selected.business_score
-        )
-        return tier_order[selected.recommendation_tier], fit_score, selected.score
-
-    ranked.sort(
+    ranked_candidates.sort(
         key=lambda item: (
-            -selected_department_order(item)[0],
-            -selected_department_order(item)[1],
-            -selected_department_order(item)[2],
-            _comparable_utc(item.deadline),
-            item.notice_key.casefold(),
+            -item["order"][0],
+            -item["order"][1],
+            -item["order"][2],
+            _comparable_utc(item["notice"].deadline),
+            item["notice"].notice_key.casefold(),
         )
     )
-    return ranked[offset : offset + limit]
+    page_candidates = ranked_candidates[offset : offset + limit]
+    ranked: list[NoticeSummary] = []
+    public_view = public_read_allowed(request)
+    for batch_offset in range(0, len(page_candidates), _NOTICE_SUMMARY_BATCH_SIZE):
+        batch_candidates = page_candidates[
+            batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
+        ]
+        notices = _load_notice_summary_batch(
+            session,
+            [item["notice"].id for item in batch_candidates],
+        )
+        authorities = _pps_authorities_by_notice_id(session, notices)
+        loaded_by_id = {notice.id: notice for notice in notices}
+        for item in batch_candidates:
+            notice = loaded_by_id.get(item["notice"].id)
+            if notice is None:
+                continue
+            views = item["views"]
+            selected_ranking = item["selected"]
+            ranked.append(
+                NoticeSummary.model_validate(
+                    {
+                        **_summary(
+                            notice,
+                            public_view=public_view,
+                            provider_authority=authorities.get(notice.id),
+                        ).model_dump(),
+                        "department_ranking": selected_ranking,
+                        "top_department_rankings": views[
+                            "top_department_rankings"
+                        ],
+                        "department_review_candidates": views[
+                            "department_review_candidates"
+                        ],
+                        "region_routing": views["region_routing"],
+                    }
+                )
+            )
+        session.expunge_all()
+        del authorities, loaded_by_id, notices
+    return ranked
 
 
 @router.post("/notices", response_model=NoticeDetail, status_code=status.HTTP_201_CREATED)
@@ -1463,9 +1642,9 @@ def _historical_pps_authorities(
         notice_no: [] for notice_no in notice_nos
     }
     notices = session.scalars(
-        select(Notice)
-        .options(selectinload(Notice.versions))
-        .where(Notice.bid_notice_no.in_(notice_nos))
+        _pps_authority_notice_projection(
+            select(Notice).where(Notice.bid_notice_no.in_(notice_nos))
+        )
     ).all()
     for notice in notices:
         candidates[notice.bid_notice_no].append(_stored_notice_authority_row(notice))

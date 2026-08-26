@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -550,6 +551,42 @@ def test_completed_analyzed_snapshot_stays_out_of_retry_queue(
     assert item["analysis_coverage"]["reason_code"] == "ANALYZED"
     assert notice_key not in body["analysis_queue"]["notice_keys"]
     assert notice_key not in body["analysis_queue"]["retryable_notice_keys"]
+
+
+def test_incomplete_attachment_coverage_is_exposed_as_retryable(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    notice_key = "PPS-INCOMPLETE-COVERAGE-RETRY"
+    _create_notice(
+        client,
+        notice_key=notice_key,
+        published_at="2026-08-18T08:00:00+09:00",
+    )
+    monkeypatch.setattr(
+        daily_operations,
+        "public_analysis_reason",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state="REVIEW",
+            reason_code="ATTACHMENT_COVERAGE_INCOMPLETE",
+            reason="one manifest attachment is not covered",
+            attempted=True,
+        ),
+    )
+
+    response = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={
+            "days": 7,
+            "limit": 50,
+            "as_of": "2026-08-19T12:00:00+09:00",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    queue = response.json()["analysis_queue"]
+    assert notice_key in queue["notice_keys"]
+    assert notice_key in queue["retryable_notice_keys"]
 
 
 def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(

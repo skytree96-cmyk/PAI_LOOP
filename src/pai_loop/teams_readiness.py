@@ -124,7 +124,7 @@ def _analysis_counts(
     ttl_hours, ttl_ok = _bounded(config.get("reservation_ttl_hours", 6), upper=24)
     execution_limit, execution_ok = _bounded(config.get("execution_limit", 30), upper=30)
     max_continuations, continuation_ok = _bounded(
-        config.get("max_continuations", 128), upper=128
+        config.get("max_continuations", 128), upper=768
     )
     bounds_ok = all(
         (

@@ -157,6 +157,57 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     assert dashboard.json()["analysis_review_backlog_count"] == 0
 
 
+def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large public pages keep the existing API contract but hydrate in chunks."""
+
+    deadline = datetime.now(timezone.utc) + timedelta(days=30)
+    with client.app.state.session_factory() as session:
+        for index in range(55):
+            notice = Notice(
+                notice_key=f"MANUAL-MEMORY-{index:03d}",
+                bid_notice_no=f"MEMORY-{index:03d}",
+                revision_no="00",
+                title=f"메모리 경계 공고 {index:03d}",
+                agency="공공기관",
+                deadline=deadline + timedelta(minutes=index),
+                status="OPEN",
+            )
+            notice.versions.append(
+                NoticeVersion(
+                    version_no=1,
+                    file_sha256=f"{index:064x}",
+                    source_payload={"kind": "TEST", "blob": "x" * 65_536},
+                )
+            )
+            session.add(notice)
+        session.commit()
+
+    import pai_loop.api as api_module
+
+    batch_sizes: list[int] = []
+    original_loader = api_module._load_notice_summary_batch
+
+    def recording_loader(session, notice_ids):
+        batch_sizes.append(len(notice_ids))
+        return original_loader(session, notice_ids)
+
+    monkeypatch.setattr(api_module, "_load_notice_summary_batch", recording_loader)
+
+    page = client.get("/api/v1/notices", params={"limit": 200})
+    assert page.status_code == 200, page.text
+    assert len(page.json()) == 55
+    assert batch_sizes and max(batch_sizes) <= 25
+
+    batch_sizes.clear()
+    dashboard = client.get("/api/v1/dashboard")
+    assert dashboard.status_code == 200, dashboard.text
+    assert dashboard.json()["totals"]["notices"] == 55
+    assert batch_sizes and max(batch_sizes) <= 25
+
+
 def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClient) -> None:
     first = client.post("/api/v1/ingestion/replay")
     assert first.status_code == 200

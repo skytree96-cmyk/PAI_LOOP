@@ -24,7 +24,7 @@ services:
       - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN
         sync: false
       - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT
-        value: "0"
+        value: "5"
       - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_COOLDOWN_HOURS
         value: "24"
       - key: PAI_LOOP_SEED_SYNTHETIC

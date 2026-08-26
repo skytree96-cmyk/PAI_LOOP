@@ -688,6 +688,46 @@ def test_analysis_batch_rejects_duplicates_and_force(client: TestClient) -> None
         json={"execution_limit": 31},
     )
     assert oversized_segment.status_code == 422
+    maximum_continuations = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "max_continuations": 768,
+        },
+    )
+    assert maximum_continuations.status_code == 200
+    oversized_continuations = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "max_continuations": 769,
+        },
+    )
+    assert oversized_continuations.status_code == 422
+    fifty_retry_keys = [f"RETRY-{index:02d}" for index in range(50)]
+    maximum_retry_keys = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": fifty_retry_keys,
+            "retry_notice_keys": fifty_retry_keys,
+            "retry_epoch": "2026-08-27",
+        },
+    )
+    assert maximum_retry_keys.status_code == 200
+    oversized_retry_keys = [*fifty_retry_keys, "RETRY-50"]
+    rejected_retry_keys = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": oversized_retry_keys,
+            "retry_notice_keys": oversized_retry_keys,
+            "retry_epoch": "2026-08-27",
+        },
+    )
+    assert rejected_retry_keys.status_code == 422
     refresh_not_subset = client.post(
         "/api/v1/operations/analysis-backfills/plan",
         json={
@@ -1762,6 +1802,76 @@ def test_cooled_retry_key_reopens_once_inside_active_daily_parent(
     ] == [0, 1]
 
 
+def test_daily_incomplete_coverage_retry_bypasses_cooldown_once_per_epoch(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    target = "PPS-INCOMPLETE-COVERAGE-FRESH"
+    now = datetime.now(timezone.utc)
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": target,
+            "bid_notice_no": target,
+            "title": "첨부 범위 보완 즉시 재시도",
+            "agency": "가상 기관",
+            "published_at": now.isoformat(),
+            "deadline": (now + timedelta(days=14)).isoformat(),
+            "status": "OPEN",
+        },
+    ).status_code == 201
+    version = client.post(
+        f"/api/v1/notices/{target}/versions",
+        json={"version_no": 1, "file_sha256": "f" * 64},
+    )
+    assert version.status_code == 201, version.text
+    monkeypatch.setattr(
+        "pai_loop.analysis_api.public_analysis_reason",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state="REVIEW",
+            reason_code="ATTACHMENT_COVERAGE_INCOMPLETE",
+            reason="synthetic fresh incomplete manifest",
+        ),
+    )
+    payload = {
+        "queue_name": "DAILY",
+        "notice_keys": [target],
+        "retry_notice_keys": [target],
+        "retry_epoch": "2026-08-27",
+        "dry_run": True,
+        "execution_limit": 1,
+        "retry_cooldown_hours": 24,
+    }
+
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=payload,
+    )
+    assert first.status_code == 200, first.text
+    plan = first.json()
+    assert plan["offered"] == 1
+    assert plan["notice_keys"] == [target]
+    assert not any(
+        warning.startswith("RETRY_KEYS_NOT_ELIGIBLE")
+        for warning in plan["warnings"]
+    )
+    _run_segment(client, plan)
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{plan['job_id']}/complete",
+        json={"segment_id": plan["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+
+    repeated = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=payload,
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["planned"] == 0
+    assert repeated.json()["offered"] == 0
+    assert "RETRY_EPOCH_ALREADY_CONSUMED:1" in repeated.json()["warnings"]
+
+
 def test_new_daily_parent_keeps_mislabeled_not_selected_backlog_as_generation_zero(
     client: TestClient,
 ) -> None:
@@ -2408,6 +2518,65 @@ def test_any_continuation_inherits_backfill_retry_policy_without_duplicate_lease
         assert config["include_retryable"] is True
         assert config["lease_id"] == resumed_plan["segment_id"]
         assert len(config["leased_chunks"]) == 1
+
+
+def test_any_resume_lowers_and_persists_parent_execution_limit(
+    client: TestClient,
+) -> None:
+    keys = [f"MANUAL-ANY-LIMIT-{index:02d}" for index in range(12)]
+    for key in keys:
+        assert client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": key,
+                "bid_notice_no": key,
+                "title": "ANY continuation execution limit",
+                "agency": "가상 기관",
+                "published_at": "2026-08-17T08:00:00+09:00",
+                "deadline": "2026-08-31T18:00:00+09:00",
+                "status": "OPEN",
+            },
+        ).status_code == 201
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "DAILY",
+            "notice_keys": keys,
+            "dry_run": True,
+            "execution_limit": 6,
+            "max_continuations": 128,
+        },
+    ).json()
+    assert first["offered"] == 6
+    _run_segment(client, first)
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{first['job_id']}/complete",
+        json={"segment_id": first["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["remaining"] == 6
+
+    resumed = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "ANY",
+            "resume_only": True,
+            "dry_run": True,
+            "execution_limit": 5,
+            "max_continuations": 768,
+        },
+    )
+
+    assert resumed.status_code == 200, resumed.text
+    body = resumed.json()
+    assert body["job_id"] == first["job_id"]
+    assert body["offered"] == 5
+    assert body["max_continuations"] == 768
+    with client.app.state.session_factory() as session:
+        parent = session.get(IngestionJob, first["job_id"])
+        assert parent is not None
+        assert parent.request_json["execution_limit"] == 5
+        assert parent.request_json["max_continuations"] == 768
 
 
 def test_any_plan_response_retry_prefers_exact_lease_owner_over_new_daily_parent(

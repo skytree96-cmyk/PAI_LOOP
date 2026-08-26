@@ -373,6 +373,111 @@ def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
         assert response.json()["request_id"] is None
 
 
+def test_current_analysis_can_be_recomputed_from_stored_evidence(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch, openai_configured=False)
+    calls = []
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="ANALYZED",
+            reason_code="ANALYZED",
+            reason="현재 공고 버전의 분석이 완료되었습니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: object(),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._has_complete_current_attachment_audit",
+        lambda _request, _notice: True,
+    )
+
+    def fake_batch(payload, request):
+        calls.append((payload, request))
+        return _review_batch("batch-job-recompute-current")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        invalid = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": True, "recompute_current": True},
+        )
+        assert invalid.status_code == 422
+
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": False, "recompute_current": True},
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["outcome"] == "QUEUED"
+        assert len(calls) == 1
+        assert calls[0][0].enrich_missing is False
+
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, queued.json()["request_id"])
+            assert job is not None
+            assert job.request_json["evaluation_only"] is True
+            assert job.request_json["recompute_current"] is True
+            assert job.request_json["retry_reviewed"] is False
+
+
+def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
+    app = _app(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="REVIEW",
+            reason_code="OPENAI_REVIEW",
+            reason="첨부 재검증이 필요합니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._manual_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fake_batch(payload, request):
+        calls.append((payload, request))
+        return _review_batch("batch-job-explicit-reviewed-retry")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        cooled = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": True},
+        )
+        assert cooled.status_code == 200, cooled.text
+        assert cooled.json()["outcome"] == "COOLDOWN"
+
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": True, "retry_reviewed": True},
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["outcome"] == "QUEUED"
+        assert len(calls) == 1
+        assert calls[0][0].enrich_missing is True
+
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, queued.json()["request_id"])
+            assert job is not None
+            assert job.request_json["retry_reviewed"] is True
+
+
 def test_accepted_attachment_without_current_evaluation_continues_pipeline(
     monkeypatch,
 ) -> None:

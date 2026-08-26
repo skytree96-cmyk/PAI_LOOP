@@ -221,8 +221,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(schedules.length === 1, "daily workflow must have exactly one schedule trigger");
   assert(
-    schedules[0].parameters?.rule?.interval?.[0]?.expression === "0 8 * * *",
-    "daily workflow schedule must be 08:00 every day",
+    schedules[0].parameters?.rule?.interval?.[0]?.expression === "30 7 * * *",
+    "daily workflow schedule must be 07:30 every day",
   );
 
   const manualName = "Run Complete Offline Dry-Run";
@@ -294,7 +294,7 @@ function validateRepositorySafetyContracts(definitions) {
   assert(
     serialised.includes("maxAnalysisBatchNotices: 1")
       && serialised.includes("maxAttachmentsPerNotice: 10")
-      && serialised.includes("maxBacklogRetryNotices: 12")
+      && serialised.includes("maxBacklogRetryNotices: 50")
       && serialised.includes("max_total: 3012")
       && serialised.includes("enrichment.attachments_discovered * 2"),
     "daily analysis must use one-notice chunks, all ten provider slots, and two OpenAI calls per discovered attachment",
@@ -309,8 +309,8 @@ function validateRepositorySafetyContracts(definitions) {
       && serialised.includes("source_ingestion_job_id")
       && serialised.includes("source_material_notice_keys")
       && serialised.includes("$execution.id")
-      && serialised.includes("execution_limit: 30")
-      && serialised.includes("max_continuations: 128")
+      && serialised.includes("execution_limit: 5")
+      && serialised.includes("max_continuations: 768")
       && serialised.includes("segment_id")
       && serialised.includes("chunk_indices")
       && serialised.includes("refusing silent truncation")
@@ -427,8 +427,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     teamsSchedules.length === 1
-      && teamsSchedules[0].parameters?.rule?.interval?.[0]?.expression === "0,15,30,45 9-10 * * *",
-    "Teams delivery must first attempt at 09:00 and retry every 15 minutes through 10:45 Asia/Seoul",
+      && JSON.stringify((teamsSchedules[0].parameters?.rule?.interval ?? []).map((item) => item.expression)) === JSON.stringify(["30,45 8 * * *", "*/15 9 * * *", "0,15 10 * * *"]),
+    "Teams delivery must first attempt at 08:30 and retry every 15 minutes through 10:15 Asia/Seoul",
   );
   const teamsByName = new Map(
     teamsDelivery.workflow.nodes.map((node) => [node.name, node]),
@@ -515,7 +515,7 @@ function validateRepositorySafetyContracts(definitions) {
       && !teamsSerialised.includes("$execution.mode")
       && !teamsSerialised.includes("schedule-manual-test")
       && JSON.stringify(teamsTargets("Run Live Teams Test")) === JSON.stringify(["Mark Manual Live Test Mode"])
-      && JSON.stringify(teamsTargets("Every Day 09:00 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
+      && JSON.stringify(teamsTargets("Every Day 08:30 KST")) === JSON.stringify(["Mark Scheduled Live Mode"])
       && JSON.stringify(teamsTargets("Mark Manual Live Test Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"])
       && JSON.stringify(teamsTargets("Mark Scheduled Live Mode")) === JSON.stringify(["Mark Config-Gated Delivery Mode"]),
     "workflow 12 must derive manual-test and scheduled modes from separate constant trigger branches",
@@ -634,7 +634,7 @@ function validateRepositorySafetyContracts(definitions) {
       && continuationSerialised.includes("executionLimit: 5")
       && continuationSerialised.includes("maxTotal: 3000")
       && continuationSerialised.includes("includeRetryable: true")
-      && continuationSerialised.includes("maxContinuations: 128")
+      && continuationSerialised.includes("maxContinuations: 768")
       && continuationSerialised.includes("queueName: 'ANY'")
       && continuationSerialised.includes("resumeOnly: true")
       && continuationSerialised.includes("response.openai_calls > enrichment.attachments_discovered * 2")

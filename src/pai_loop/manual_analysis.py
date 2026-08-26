@@ -10,7 +10,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
@@ -52,6 +52,16 @@ class ManualAnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_extraction: bool = False
+    recompute_current: bool = False
+    retry_reviewed: bool = False
+
+    @model_validator(mode="after")
+    def validate_intent(self) -> "ManualAnalysisRequest":
+        if self.recompute_current and (self.run_extraction or self.retry_reviewed):
+            raise ValueError("recompute_current is a zero-provider-call operation")
+        if self.retry_reviewed and not self.run_extraction:
+            raise ValueError("retry_reviewed requires run_extraction")
+        return self
 
 
 router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
@@ -294,6 +304,8 @@ def _reserve_manual_job(
     notice_key: str,
     *,
     evaluation_only: bool,
+    recompute_current: bool,
+    retry_reviewed: bool,
 ) -> str:
     request_id = str(uuid.uuid4())
     with request.app.state.session_factory() as session:
@@ -308,6 +320,8 @@ def _reserve_manual_job(
                     "trigger": "PUBLIC_SAME_ORIGIN",
                     "force": False,
                     "evaluation_only": evaluation_only,
+                    "recompute_current": recompute_current,
+                    "retry_reviewed": retry_reviewed,
                     "enrich_missing": not evaluation_only,
                     "max_notices": 1,
                     "max_attachments_per_notice": MAX_ATTACHMENTS_IN_MANIFEST,
@@ -417,12 +431,33 @@ def request_manual_notice_analysis(
         # zero new model calls), while a genuinely current completed result
         # is reused idempotently.
         current_evaluation = latest_current_evaluation(notice)
-        if reason.state == "ANALYZED" and current_evaluation is not None:
-            return _already_analysed(notice, reason)
-        evaluation_only = bool(
+        if (
             reason.state == "ANALYZED"
-            and current_evaluation is None
+            and current_evaluation is not None
+            and not caller_intent.recompute_current
+        ):
+            return _already_analysed(notice, reason)
+        complete_current_audit = bool(
+            reason.state == "ANALYZED"
             and _has_complete_current_attachment_audit(request, notice)
+        )
+        if caller_intent.recompute_current and (
+            current_evaluation is None or not complete_current_audit
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "저장 근거 재판단 조건이 바뀌었습니다. 최신 공고 상태를 "
+                    "새로고침한 뒤 필요한 첨부 분석부터 실행해 주세요."
+                ),
+            )
+        evaluation_only = bool(
+            caller_intent.recompute_current
+            or (
+                reason.state == "ANALYZED"
+                and current_evaluation is None
+                and complete_current_audit
+            )
         )
         if not evaluation_only and not caller_intent.run_extraction:
             raise HTTPException(
@@ -452,7 +487,7 @@ def request_manual_notice_analysis(
             retry_at = attempt_at + timedelta(
                 hours=settings.public_manual_analysis_cooldown_hours
             )
-            if retry_at > now:
+            if retry_at > now and not caller_intent.retry_reviewed:
                 return _cooldown_response(
                     notice,
                     reason,
@@ -479,6 +514,8 @@ def request_manual_notice_analysis(
             request,
             notice.notice_key,
             evaluation_only=evaluation_only,
+            recompute_current=caller_intent.recompute_current,
+            retry_reviewed=caller_intent.retry_reviewed,
         )
         background_tasks.add_task(
             _execute_reserved_manual_job,

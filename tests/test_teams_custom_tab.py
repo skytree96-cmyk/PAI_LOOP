@@ -109,7 +109,10 @@ def test_manual_analysis_actions_are_functional() -> None:
     assert "manualAnalysisRequests: new Map()" in source
     assert 'state.manualAnalysisRequests.get(noticeKey) === "running"' in source
     assert "/analysis/request`" in source
-    assert 'body: JSON.stringify({ run_extraction: !evaluationOnly })' in source
+    assert 'const requestBody = { run_extraction: !evaluationOnly };' in source
+    assert "requestBody.recompute_current = true" in source
+    assert "requestBody.retry_reviewed = true" in source
+    assert "body: JSON.stringify(requestBody)" in source
     assert '"X-PAI-Manual-Token": state.manualAnalysisToken' in source
     assert 'id="manualAnalysisTokenInput" type="password"' in html
     assert 'inputmode="numeric"' in html

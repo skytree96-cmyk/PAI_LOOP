@@ -318,6 +318,7 @@ def daily_briefing(
         if item["notice_key"] not in manual_only_keys
         if item["analysis_coverage"]["reason_code"]
         in {
+            "ATTACHMENT_COVERAGE_INCOMPLETE",
             "HWPX_EXTRACT_FAILED",
             "PDF_EXTRACT_FAILED",
             "DOCUMENT_EXTRACT_FAILED",

@@ -224,14 +224,14 @@ class AnalysisBatchResponse(ApiModel):
 class AnalysisBackfillPlanRequest(ApiModel):
     queue_name: Literal["BACKFILL", "DAILY", "ANY"] = "BACKFILL"
     # 3,000 is the upstream daily ingestion hard bound. A daily operation may
-    # append up to twelve cooled backlog keys behind that exact created+updated
-    # union, so the durable parent bound is intentionally 3,012.
+    # append a bounded backlog behind that exact created+updated union while the
+    # combined durable parent remains capped at 3,012 keys.
     notice_keys: list[str] = Field(default_factory=list, max_length=3012)
     # DAILY callers identify the exact updated/attachment-changed partition.
     # A stable notice_key can then be reopened only when its persisted work
     # token changed, while a retried 08:00 request remains idempotent.
     refresh_notice_keys: list[str] = Field(default_factory=list, max_length=3000)
-    retry_notice_keys: list[str] = Field(default_factory=list, max_length=12)
+    retry_notice_keys: list[str] = Field(default_factory=list, max_length=50)
     retry_epoch: str | None = Field(
         default=None,
         min_length=10,
@@ -268,9 +268,9 @@ class AnalysisBackfillPlanRequest(ApiModel):
     chunk_size: Literal[1] = 1
     max_total: int = Field(default=300, ge=1, le=3012)
     execution_limit: int = Field(default=30, ge=1, le=30)
-    # 3,012 keys / 30 per execution requires 101 segments. 128 leaves bounded
-    # recovery headroom without permitting an unbounded continuation loop.
-    max_continuations: int = Field(default=128, ge=1, le=128)
+    # W10/W11 use five notices per execution, so 3,012 keys require 603
+    # segments. 768 leaves bounded recovery headroom without an unbounded loop.
+    max_continuations: int = Field(default=128, ge=1, le=768)
     include_retryable: bool = False
     retry_cooldown_hours: int = Field(default=24, ge=1, le=168)
     reservation_ttl_hours: int = Field(default=6, ge=1, le=24)
@@ -868,6 +868,7 @@ def _eligible_retry_notice_keys(
     *,
     now: datetime,
     cooldown_hours: int,
+    allow_incomplete_coverage_without_cooldown: bool = False,
 ) -> set[str]:
     if not keys:
         return set()
@@ -902,7 +903,11 @@ def _eligible_retry_notice_keys(
             (_utc(version.created_at) for version in notice.versions),
             default=_utc(notice.published_at or notice.created_at),
         )
-        if reason.reason_code in _RETRYABLE_ANALYSIS_CODES and attempt_at <= cutoff:
+        cooldown_satisfied = attempt_at <= cutoff or (
+            allow_incomplete_coverage_without_cooldown
+            and reason.reason_code == "ATTACHMENT_COVERAGE_INCOMPLETE"
+        )
+        if reason.reason_code in _RETRYABLE_ANALYSIS_CODES and cooldown_satisfied:
             eligible.add(notice.notice_key)
     return eligible
 
@@ -1718,6 +1723,9 @@ def plan_analysis_backfill(
                 retry_candidates,
                 now=now,
                 cooldown_hours=payload.retry_cooldown_hours,
+                allow_incomplete_coverage_without_cooldown=(
+                    payload.queue_name == "DAILY"
+                ),
             )
             initial_never_attempted = _never_attempted_notice_keys(
                 session,
@@ -1847,6 +1855,9 @@ def plan_analysis_backfill(
             payload.retry_notice_keys,
             now=now,
             cooldown_hours=payload.retry_cooldown_hours,
+            allow_incomplete_coverage_without_cooldown=(
+                payload.queue_name == "DAILY"
+            ),
         )
         retry_labeled_never_attempted = _never_attempted_notice_keys(
             session,
@@ -1954,19 +1965,33 @@ def plan_analysis_backfill(
     stale_after_hours = int(
         config.get("reservation_ttl_hours", payload.reservation_ttl_hours)
     )
-    execution_limit = max(
-        1, min(30, int(config.get("execution_limit", payload.execution_limit)))
+    stored_execution_limit = int(
+        config.get("execution_limit", payload.execution_limit)
     )
-    config["execution_limit"] = execution_limit
+    effective_execution_limit = (
+        min(stored_execution_limit, payload.execution_limit)
+        if payload.queue_name == "ANY"
+        else stored_execution_limit
+    )
+    execution_limit = max(1, min(30, effective_execution_limit))
+    if config.get("execution_limit") != execution_limit:
+        config["execution_limit"] = execution_limit
+        parent.request_json = config
+        planner_mutated = True
     configured_continuations = int(
         config.get("max_continuations", payload.max_continuations)
     )
-    # Upgrade only the shipped v0.8 pre-release bound. Explicit smaller bounds
-    # remain meaningful for fail-closed tests and operator-created jobs.
-    if configured_continuations == 96 and payload.max_continuations >= 128:
+    # Upgrade only shipped workflow bounds. Explicit smaller bounds remain
+    # meaningful for fail-closed tests and operator-created jobs.
+    if configured_continuations in {96, 128} and payload.max_continuations >= 768:
+        configured_continuations = 768
+    elif configured_continuations == 96 and payload.max_continuations >= 128:
         configured_continuations = 128
-    max_continuations = max(1, min(128, configured_continuations))
-    config["max_continuations"] = max_continuations
+    max_continuations = max(1, min(768, configured_continuations))
+    if config.get("max_continuations") != max_continuations:
+        config["max_continuations"] = max_continuations
+        parent.request_json = config
+        planner_mutated = True
     lease_id = config.get("lease_id")
     lease_started_raw = config.get("lease_started_at")
     lease_started: datetime | None = None
@@ -2231,7 +2256,7 @@ def get_analysis_backfill(
         ),
         execution_limit=max(1, min(30, int(config.get("execution_limit", 30)))),
         max_continuations=max(
-            1, min(128, int(config.get("max_continuations", 128)))
+            1, min(768, int(config.get("max_continuations", 128)))
         ),
         segment_id=(
             str(config["lease_id"])
@@ -2285,7 +2310,7 @@ def complete_analysis_backfill(
                     1, min(30, int(config.get("execution_limit", 30)))
                 ),
                 max_continuations=max(
-                    1, min(128, int(config.get("max_continuations", 128)))
+                    1, min(768, int(config.get("max_continuations", 128)))
                 ),
             )
         raise HTTPException(
@@ -2354,7 +2379,7 @@ def complete_analysis_backfill(
     ttl_hours = max(1, min(24, int(config.get("reservation_ttl_hours", 6))))
     execution_limit = max(1, min(30, int(config.get("execution_limit", 30))))
     max_continuations = max(
-        1, min(128, int(config.get("max_continuations", 128)))
+        1, min(768, int(config.get("max_continuations", 128)))
     )
     before = _backfill_status(
         session,

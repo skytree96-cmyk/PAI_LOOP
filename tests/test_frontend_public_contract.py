@@ -75,10 +75,10 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert "requestedStatusScope !== noticeStatusScopeForView(state.currentView)" in load_body
     assert "noticeStatusScopeForView(state.currentView)" in request_body
     assert '["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView)' in filter_body
-    assert "noticeStatusScopeForView(view)" in view_body
+    assert "noticeStatusScopeForView(nextView)" in view_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
-    assert "NOTICE_PAGE_SIZE = 200" in source
+    assert "NOTICE_PAGE_SIZE = 50" in source
     assert "offset += NOTICE_PAGE_SIZE" in fetch_body
     assert 'params.set("offset", String(offset))' in request_body
     assert 'params.set("department_id", departmentId)' in request_body
@@ -195,7 +195,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
-    assert 'ended: ["종료·취소 공고", "분석된 마감·종료 및 전체 취소 공고"]' in view_body
+    assert 'ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
@@ -268,7 +268,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert 'showToast("낙찰 결과 검색 실패"' in awards_body
     assert "awardResultsErrorMessage.textContent = humanizeError(data.error)" in awards_render_body
     assert "/analysis/request" not in awards_body
-    assert "awards: [\"낙찰 결과\", \"회사별 낙찰 결과\"]" in view_body
+    assert "awards: [\"낙찰 분석\", \"회사별 낙찰 결과\"]" in view_body
     assert "els.awardResultsSection.hidden = !awardsView" in view_body
 
 
@@ -301,7 +301,8 @@ def test_two_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert "저장된 공고로 이동" in card_body
     assert "저장된 판단 결과 보기" in card_body
     assert "data-pps-analysis-key" in card_body
-    assert "canRequestManualAnalysis(storedNotice)" in card_body
+    assert "manualAnalysisAvailability(availabilityNotice" in card_body
+    assert "canonicalStateKnown: Boolean(storedNotice)" in card_body
 
     assert 'url.searchParams.set("notice", noticeKey)' in route_body
     assert "new URL(window.location.href)" in route_body
@@ -334,6 +335,30 @@ def test_quantitative_ui_separates_source_validation_from_activation() -> None:
     ).read_text(encoding="utf-8")
     assert "사람 승인 후에만 규칙 버전으로 승격" not in mentor_brief
     assert "반복 사람 승인 없이 `AUTO_ACTIVE`" in mentor_brief
+
+
+def test_quantitative_cache_refreshes_without_allowing_stale_responses_to_win() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(source, "loadApplicationData", "hydrateApplicationMetadata")
+    save_body = _function_body(source, "savePpsCandidate", "populateDepartmentProfiles")
+    manual_body = _function_body(source, "requestManualAnalysis", "handleNoticeKeydown")
+    invalidation_body = _function_body(
+        source,
+        "invalidateQuantitativeEstimate",
+        "loadQuantitativeEstimate",
+    )
+    loader_body = _function_body(source, "loadQuantitativeEstimate", "renderQuantAndRisk")
+
+    assert "state.quantitativeEstimates = {};" in load_body
+    assert "const reloadQuantitative = quantitativeEstimateIsVisible(savedNoticeKey)" in save_body
+    assert "invalidateQuantitativeEstimate(savedNoticeKey, { forceReload: reloadQuantitative })" in save_body
+    assert "const reloadQuantitative = quantitativeEstimateIsVisible(noticeKey)" in manual_body
+    assert "invalidateQuantitativeEstimate(noticeKey, { forceReload: reloadQuantitative })" in manual_body
+    assert "delete state.quantitativeEstimates[noticeKey]" in invalidation_body
+    assert "loadQuantitativeEstimate(noticeKey, { force: true })" in invalidation_body
+    assert "const requestToken = Symbol(noticeKey)" in loader_body
+    assert loader_body.count("?.requestToken !== requestToken") == 3
+    assert loader_body.count("requestToken }") >= 2
 
 
 def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
@@ -465,7 +490,7 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     normalize_reason_body = _function_body(source, "normalizeAnalysisReason", "normalizeRecommendation")
     eligibility_body = _function_body(source, "isActionableEligibilityReview", "needsAnalysisOrReview")
     backlog_body = _function_body(source, "needsAnalysisOrReview", "nullableNumberSort")
-    action_body = _function_body(source, "canRequestManualAnalysis", "manualAnalysisLabel")
+    action_body = _function_body(source, "manualAnalysisAvailability", "manualAnalysisLabel")
     label_body = _function_body(source, "manualAnalysisLabel", "confirmManualAnalysis")
     confirm_body = _function_body(source, "confirmManualAnalysis", "manualAnalysisAction")
     request_body = _function_body(source, "requestManualAnalysis", "handleNoticeKeydown")
@@ -477,7 +502,9 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     assert "isDocumentQualityReview(notice)" in eligibility_body
     assert "!notice.analysisAttachmentCoverageComplete" in backlog_body
     assert 'notice.analysisState !== "EVALUATED"' in backlog_body
-    assert "!notice?.analysisAttachmentCoverageComplete" in action_body
+    assert 'notice.analysisState === "EVALUATED"' in action_body
+    assert "notice.analysisAttachmentCoverageComplete" in action_body
+    assert 'code: "RECOMPUTE_CURRENT"' in action_body
     assert 'notice.analysisState === "ANALYZED"' in label_body
     assert "판단 실행" in label_body
     assert "첨부 전체 재분석" in label_body
@@ -487,8 +514,8 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     assert "Claude 요청 없이" in confirm_body
     assert "절대 상한" in confirm_body
     assert "검색" not in confirm_body
-    assert "if (!confirmManualAnalysis(notice)) return" in request_body
-    assert request_body.index("if (!confirmManualAnalysis(notice)) return") < request_body.index(
+    assert "if (!confirmManualAnalysis(notice, availability)) return" in request_body
+    assert request_body.index("if (!confirmManualAnalysis(notice, availability)) return") < request_body.index(
         'state.manualAnalysisRequests.set(noticeKey, "running")'
     )
 
@@ -540,7 +567,7 @@ def test_department_recommendation_and_region_routing_are_rendered_separately() 
 
 def test_private_match_uses_public_text_lines_instead_of_a_dangling_label() -> None:
     source = APP_JS.read_text(encoding="utf-8")
-    normalize_body = _function_body(source, "normalizePrivateMatchItem", "collectPrivateMatchDetails")
+    normalize_body = _function_body(source, "normalizePrivateMatchItem", "eligibilityRequirementsForDisplay")
     fact_key_body = _function_body(source, "normalizeCompanyFactKey", "collectPrivateMatchDetails")
     details_body = _function_body(source, "collectPrivateMatchDetails", "renderPrivateMatchPreview")
     render_body = _function_body(source, "renderPrivateMatchItem", "privateMatchCategoryLabel")
@@ -556,6 +583,61 @@ def test_private_match_uses_public_text_lines_instead_of_a_dangling_label() -> N
     assert "NOTREQUIRED" in fact_key_body
     assert 'endsWith(":__NONE__")' in fact_key_body
     assert ".private-match-details" in styles
+
+
+def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(
+        source,
+        "loadPrivateMatchPreview",
+        "normalizePrivateMatchPreview",
+    )
+    adapter_body = _function_body(
+        source,
+        "eligibilityRequirementsForDisplay",
+        "publicEligibilityPolicyPending",
+    )
+    panel_body = _function_body(
+        source,
+        "renderEligibilityPanel",
+        "normalizeCompanyFactKey",
+    )
+    preview_body = _function_body(
+        source,
+        "renderPrivateMatchPreview",
+        "privateMatchMetric",
+    )
+    actions_body = _function_body(source, "renderActions", "renderEvidence")
+    detail_body = _function_body(source, "renderDetail", "renderManualAnalysisDetailAction")
+
+    assert "error?.status === 422" in load_body
+    assert 'status: noVerifiedPolicy ? "unavailable" : "error"' in load_body
+    assert "종합 판단을 임의로 보완하지 않습니다" in load_body
+    assert "renderEligibilityPanel(notice)" in load_body
+    assert "renderActions(notice)" in load_body
+
+    assert '.filter((item) => item?.category === "ELIGIBILITY")' in adapter_body
+    assert 'source: "PUBLIC_POLICY_SUPPLEMENT"' in adapter_body
+    assert 'notice.analysisState === "EVALUATED"' in adapter_body
+    assert 'notice.eligibilityStatus === "PASS"' in adapter_body
+    assert 'aggregateAllowsPass ? "PASS" : "REVIEW"' in adapter_body
+    assert "현재 일치하지만 종합 판단은 확정되지 않았습니다" in adapter_body
+    assert "공고 마감일 기준" in adapter_body
+
+    assert "analysisStatusPill(notice)" in panel_body
+    assert "검증된 공개 자격정책이 없습니다" in panel_body
+    assert "종합 판단을 PASS로 보완하지 않습니다" in panel_body
+    assert "eligibilityRequirementsForDisplay(notice)" in actions_body
+    assert 'requirement.status))' in actions_body
+    assert "eligibilityRequirementsForDisplay(notice)" in detail_body
+    assert "renderEligibilityPanel(notice, requirements)" in detail_body
+
+    # The complete four-class preview stays independent from the supplemental
+    # eligibility cards and keeps all server-provided policy items.
+    for label in ("적격성", "행동 필요", "체크리스트", "정보"):
+        assert label in preview_body
+    assert "data.matches.map(renderPrivateMatchItem)" in preview_body
+    assert "unavailable:" in preview_body
 
 
 def test_unanalysed_reason_adapter_maps_document_failure_codes_to_korean() -> None:
