@@ -8,10 +8,10 @@ const nodes = new Map(daily.nodes.map((item) => [item.name, item]));
 const continuationNodes = new Map(continuation.nodes.map((item) => [item.name, item]));
 assert.equal(manifest.workflows["pai-loop-10-daily-opportunity-briefing"].contractVersion, "daily-briefing-1.6");
 
-const dailySchedule = nodes.get("Every Day 08:00 KST");
+const dailySchedule = nodes.get("Every Day 07:30 KST");
 assert.equal(daily.settings.timezone, "Asia/Seoul");
 assert.equal(dailySchedule.type, "n8n-nodes-base.scheduleTrigger");
-assert.equal(dailySchedule.parameters.rule.interval[0].expression, "0 8 * * *");
+assert.equal(dailySchedule.parameters.rule.interval[0].expression, "30 7 * * *");
 
 function executeCode(map, name, input = {}, globals = {}) {
   const target = map.get(name);

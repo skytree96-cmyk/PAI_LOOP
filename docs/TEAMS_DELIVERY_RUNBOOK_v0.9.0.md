@@ -3,12 +3,12 @@
 ## 목적과 경계
 
 `PAI_LOOP 12 - Teams Daily Delivery`는 W10 수집·분석 및 W11 continuation과
-분리된 전송 전용 워크플로다. 매일 09:00 Asia/Seoul에 첫 시도하고 10:45까지
+분리된 전송 전용 워크플로다. 매일 08:30 Asia/Seoul에 첫 시도하고 10:15까지
 15분 간격으로 최대 8회 readiness를 확인한다. `READY`인 실행만 저장된 7일
 브리핑을 읽고 Teams 채널 메시지를 만든다. Teams 장애로 W12를 다시 실행해도
 PPS 수집, 첨부 추출, OpenAI 분석, 평가 snapshot은 다시 실행되지 않는다.
 
-W10의 08:00 시작과 W12 첫 시도 사이 간격은 60분이다. scheduled 분기는 protected
+W10의 07:30 시작과 W12 첫 시도 사이 간격은 60분이다. scheduled 분기는 protected
 read-only endpoint에서 오늘 LIVE PPS와 DAILY parent를 확인한다. parent가 비terminal,
 `remaining>0`, `in_flight>0`, 부분·실패 결과가 있으면 briefing·reservation·Teams를
 모두 건너뛴다. terminal parent도 오늘 PPS ingestion job ID와 그 실행이 영속한
@@ -121,7 +121,7 @@ bounded schedule로 재확인하지만, reservation 이후 Teams 실패 건은 �
    `sourceCalls.configTable/backend/teams=0/0/0`을 확인한다.
 5. `Run Live Teams Test`를 실행하여 설정표 조회 1회 뒤 `DELIVERY_SKIPPED`로 닫히는지
    확인한다. 이 분기는 `manual-live-test` 상수를 사용하며 n8n 실행 엔진 mode를 판별하지
-   않는다. `Every Day 09:00 KST` Schedule Trigger는 수동 live test에 사용하지 않는다.
+   않는다. `Every Day 08:30 KST` Schedule Trigger는 수동 live test에 사용하지 않는다.
 6. credential과 대상을 검토한 운영자가 설정표를 `push_enabled=true`,
    `approval_state=APPROVED`, `live_test_enabled=true`로 바꾸고 `Run Live Teams Test`를
    시작점으로 수동 live test를 정확히 1회 실행한다.

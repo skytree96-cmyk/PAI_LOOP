@@ -15,21 +15,21 @@ Teams webhook URL을 넣지 않는다.
 | 02 | `PAI_LOOP 02 - Live PPS Ingestion` | 제한된 실수집 window를 보호된 backend에 전달 | backend live-ingestion 호출 |
 | 03 | `PAI_LOOP 03 - Teams Mock Notification` | Adaptive Card 생성과 mock delivery 기록 | backend mock-log만 호출; Teams 호출 없음 |
 | 04 | `PAI_LOOP 04 - Award History Refresh` | 공고별 최근 1~3년 낙찰 유사 후보 갱신 | backend award-history 호출; 응답은 집계만 보존 |
-| **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **08:00 KST 최근 8일 수집·신규/변경 key durable plan·7일 순위·3년 낙찰 refresh·backend Teams mock 기록** | **active; `publish=true`, `daily-briefing-1.5`; 수동 offline preview는 외부 호출 0회** |
+| **10** | **`PAI_LOOP 10 - Daily Opportunity Briefing`** | **07:30 KST 최근 8일 수집·신규/변경 key durable plan·7일 순위·3년 낙찰 refresh·backend Teams mock 기록** | **active; `publish=true`, `daily-briefing-1.5`; 수동 offline preview는 외부 호출 0회** |
 | **11** | **`PAI_LOOP 11 - Analysis Backfill and Continuation`** | **15분마다 W10의 남은 DAILY lease를 우선 재개하고 수동 BACKFILL을 같은 bounded 계약으로 처리** | **active; `publish=true`, `analysis-backfill-1.2`, `verified-live-e2e`** |
-| **12** | **`PAI_LOOP 12 - Teams Daily Delivery`** | **09:00 KST 저장 브리핑을 별도로 읽어 공개 allowlist HTML을 PAI 봇 채널에 전송** | **active; `publish=true`, `teams-delivery-1.3`, `verified-live-e2e`; fail-closed·at-most-once** |
+| **12** | **`PAI_LOOP 12 - Teams Daily Delivery`** | **08:30 KST 저장 브리핑을 별도로 읽어 공개 allowlist HTML을 PAI 봇 채널에 전송** | **active; `publish=true`, `teams-delivery-1.3`, `verified-live-e2e`; fail-closed·at-most-once** |
 
 ## 통합 운영 결정
 
-운영자는 08:00 수집·초기 분석의 W10, 15분 continuation의 W11, 09:00 전달 전용
+운영자는 07:30 수집·초기 분석의 W10, 15분 continuation의 W11, 08:30 전달 전용
 W12를 각각 모니터링한다. W12 장애는 W10/W11을 재실행하거나 중단시키지 않는다.
 `00~04`는 삭제하지 않고 비활성 회귀 fixture, 계약 설명, 장애 시 롤백 자료로
 남긴다. n8n에서 모든 구현을 한 JSON에 중복 복사하면 공고·낙찰 계약이 서로
 달라지기 쉬우므로, backend가 데이터·평가 로직을 소유하고 세 운영 workflow는
 수집·continuation·전달 책임만 분리해 가진다.
 
-W12의 첫 시도는 W10보다 60분 늦은 09:00이다. W11의 `*/15` schedule은 그대로이며,
-W12도 09:00부터 10:45까지 15분 간격으로 최대 8회 protected read-only readiness를
+W12의 첫 시도는 W10보다 60분 늦은 08:30이다. W11의 `*/15` schedule은 그대로이며,
+W12도 08:30부터 10:15까지 15분 간격으로 최대 8회 protected read-only readiness를
 확인한다. 오늘 KST LIVE PPS가 완료되고 DAILY parent가 terminal이며
 `remaining=0`, `in_flight=0`, 실패·부분 결과가 0인 경우에만 briefing으로 진행한다.
 DAILY parent에는 W10이 PPS ingestion job ID와 exact 신규·변경 key의 canonical
@@ -48,7 +48,7 @@ ACCEPTED extraction의 materialize·평가·snapshot 집계가 끝난 뒤 낙찰
 최종 briefing으로 진행하며, 필요한 원격 첨부 보강만 bounded OpenAI 경계를 사용할
 수 있다. 입찰/개찰/낙찰/계약 결과의 완전 자동 환류는 계속 확장 경계다.
 
-- 08:00 수집·초기 lease·7일 피드·카드 조립은 `10`, continuation은 `11`, 실제
+- 07:30 수집·초기 lease·7일 피드·카드 조립은 `10`, continuation은 `11`, 실제
   Teams 전송은 `12` 한 곳에서 각각 본다.
 - 자격·정량·가격 계산은 API의 테스트 가능한 결정론적 모듈이 소유한다.
 - 기존 workflow를 삭제하지 않아 현재 검증 결과와 원격 rollback 경로가 남는다.
@@ -177,7 +177,7 @@ Safety gates:
 
 ## 10 · Daily Opportunity Briefing
 
-운영 시간은 workflow `settings.timezone=Asia/Seoul`, cron `0 8 * * *`이다.
+운영 시간은 workflow `settings.timezone=Asia/Seoul`, cron `30 7 * * *`이다.
 `manifest.json`은 `contractVersion=daily-briefing-1.5`, `publish:true`이며 현재 원격
 배포도 active다. `PAI_LOOP_EMERGENCY_DISABLE=true`이면 scheduled 경로가 외부 호출
 전에 닫힌다.
@@ -191,7 +191,7 @@ Safety gates:
   → 부서·적합성·정량/가격/리스크 필드 정규화
   → 통합 Adaptive Card 1.5 한 장
   → 로컬 push mock
-  → 08:00/7일/bounded 분석·낙찰 skip/0-call/28KB 계약 검증
+  → 07:30/7일/bounded 분석·낙찰 skip/0-call/28KB 계약 검증
 ```
 
 이 경로에서 HTTP Request 노드는 그래프상 도달 불가능하다. repository validator와
@@ -202,7 +202,7 @@ Safety gates:
 - `actualTeamsRequestSent=false`, `actualPushSent=false`;
 - 정량·가격·리스크 필드가 없으면 숫자를 만들지 않고 `분석 대기`/`UNKNOWN`;
 - 카드 최대 28KB, Adaptive Card 1.5;
-- 7일 창과 매일 08:00 KST schedule.
+- 7일 창과 매일 07:30 KST schedule.
 
 ### 예약 실행의 닫힌 Gate
 
@@ -269,7 +269,7 @@ W11은 공고 수집이나 Teams 전송을 수행하지 않는다.
 
 ## 12 · Teams Daily Delivery
 
-W12는 `settings.timezone=Asia/Seoul`, 09:00 첫 시도·10:45 마지막 시도의 bounded
+W12는 `settings.timezone=Asia/Seoul`, 08:30 첫 시도·10:15 마지막 시도의 bounded
 15분 schedule, `teams-delivery-1.3` 계약으로 `publish:true`,
 `promotionState=verified-live-e2e`다. scheduled 경로는
 `GET /api/v1/operations/teams-daily-readiness`가 `READY`인 경우에만 저장된 7일 브리핑을
@@ -315,5 +315,5 @@ node scripts/test-teams-delivery-workflow.mjs
 - Adaptive Card 1.5 및 Teams message attachment wrapper;
 - W10/W11/00~04의 실제 Teams 호출 0개와 W12의 native Microsoft Teams v2 sink 정확히 1개;
 - W12 offline preview 외부 호출 0개, Data Table 6-key Gate, protected readiness,
-  09:00~10:45 bounded retry, 24KB payload, 일자 고정 persistent reservation과 중복 억제;
+  08:30~10:15 bounded retry, 24KB payload, 일자 고정 persistent reservation과 중복 억제;
 - secret value와 credential ID 0개.

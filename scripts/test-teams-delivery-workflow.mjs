@@ -55,9 +55,12 @@ const targets = (name, lane = 0) => (
   workflow.connections?.[name]?.main?.[lane] ?? []
 ).map((item) => item.node);
 
-const scheduled = nodes.get("Every Day 09:00 KST");
+const scheduled = nodes.get("Every Day 08:30 KST");
 assert.equal(scheduled.type, "n8n-nodes-base.scheduleTrigger");
-assert.equal(scheduled.parameters.rule.interval[0].expression, "0,15,30,45 9-10 * * *");
+assert.deepEqual(
+  scheduled.parameters.rule.interval.map((item) => item.expression),
+  ["30,45 8 * * *", "0,15,30,45 9 * * *", "0,15 10 * * *"],
+);
 assert.equal(workflow.settings.timezone, "Asia/Seoul");
 
 const configTable = nodes.get("Read Teams Delivery Config");
@@ -79,7 +82,7 @@ assert.deepEqual(targets("Run Offline Teams Preview"), ["Build Offline Delivery 
 const liveTestTrigger = nodes.get("Run Live Teams Test");
 assert.equal(liveTestTrigger.type, "n8n-nodes-base.manualTrigger");
 assert.deepEqual(targets("Run Live Teams Test"), ["Mark Manual Live Test Mode"]);
-assert.deepEqual(targets("Every Day 09:00 KST"), ["Mark Scheduled Live Mode"]);
+assert.deepEqual(targets("Every Day 08:30 KST"), ["Mark Scheduled Live Mode"]);
 assert.deepEqual(targets("Mark Manual Live Test Mode"), ["Mark Config-Gated Delivery Mode"]);
 assert.deepEqual(targets("Mark Scheduled Live Mode"), ["Mark Config-Gated Delivery Mode"]);
 assert.deepEqual(targets("Mark Config-Gated Delivery Mode"), ["Read Teams Delivery Config"]);
@@ -335,8 +338,8 @@ const runningTerminal = one("Validate Scheduled Readiness Skip", runningSkip);
 assert.equal(runningTerminal.status, "DELIVERY_DEFERRED");
 assert.deepEqual(runningTerminal.sourceCalls, { configTable: 1, backend: 1, teams: 0 });
 assert.equal(runningTerminal.delivery.actualTeamsRequestAttempted, false);
-assert.equal(runningTerminal.schedule.firstAttempt, "09:00");
-assert.equal(runningTerminal.schedule.lastAttempt, "10:45");
+assert.equal(runningTerminal.schedule.firstAttempt, "08:30");
+assert.equal(runningTerminal.schedule.lastAttempt, "10:15");
 assert.equal(runningTerminal.schedule.maxAttempts, 8);
 
 const malformedReadiness = one(
@@ -635,7 +638,7 @@ const scheduledFinal = one("Normalize Teams Delivery Schedule Contract", success
   node: { "Validate Today's Daily Analysis Readiness": { json: validatedReady } },
 });
 assert.equal(scheduledFinal.schemaVersion, "1.3");
-assert.equal(scheduledFinal.schedule.cron, "0,15,30,45 9-10 * * *");
+assert.equal(scheduledFinal.schedule.cron, "30,45 8 * * * | 0,15,30,45 9 * * * | 0,15 10 * * *");
 assert.equal(scheduledFinal.schedule.maxAttempts, 8);
 
 const failed = one(
@@ -703,4 +706,4 @@ assert.deepEqual(
   { publish: true, contractVersion: "teams-delivery-1.3", promotionState: "verified-live-e2e" },
 );
 
-console.log("Teams 09:00 readiness gate, bounded 15-minute retries, stable daily correlation, manual-live separation, sanitizer, persistent reservation, and native sink contracts passed.");
+console.log("Teams 08:30 readiness gate, bounded 15-minute retries, stable daily correlation, manual-live separation, sanitizer, persistent reservation, and native sink contracts passed.");
