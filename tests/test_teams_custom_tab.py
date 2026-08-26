@@ -99,7 +99,7 @@ def test_table_and_card_detail_arrows_are_functional() -> None:
     assert ".row-arrow:focus-visible" in styles
     assert ".recommendation-arrow" in styles
     assert "styles.css?v=20260826-detail-readable1" in html
-    assert "app.js?v=20260825-open-visibility1" in html
+    assert "app.js?v=20260826-collected-summary1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:
