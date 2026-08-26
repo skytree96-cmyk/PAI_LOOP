@@ -103,7 +103,7 @@ def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260826-detail-readable1"' in html
-    assert 'src="./app.js?v=20260825-open-visibility1"' in html
+    assert 'src="./app.js?v=20260826-collected-summary1"' in html
 
 
 def test_pre_specification_search_forms_use_card_safe_responsive_columns() -> None:

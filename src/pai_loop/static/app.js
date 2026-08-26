@@ -175,7 +175,7 @@
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "manualAnalysisTokenDialog", "manualAnalysisTokenInput",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "analysisPipeline", "evidenceCount",
-      "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
+      "detailSummary", "briefKicker", "briefHeading", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
       "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyConcentration", "historyPrediction", "historyCoverage", "historyWarnings", "decisionForm", "decisionExisting", "toggleCommentButton",
       "commentField", "decisionComment", "commentCount", "saveDecisionButton", "toastRegion", "skeletonRowTemplate",
       "teamsMockSource", "teamsMockTitle", "teamsMockAgency", "teamsMockStatus", "teamsMockDeadline", "teamsMockReason",
@@ -3938,6 +3938,13 @@
     const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
     const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const qualityReview = isDocumentQualityReview(notice);
+    const hasGroundedAnalysisContent = notice.documentAnalyses.length > 0
+      || evidence.length > 0
+      || notice.analysisAttachmentsAccepted > 0;
+    const collectedOnly = !cancelled
+      && !notice.historicalAnalysis
+      && (!analyzed || qualityReview)
+      && !hasGroundedAnalysisContent;
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
@@ -3964,14 +3971,20 @@
       awardHistorySummaryMetric(notice),
     ].join("");
     els.analysisPipeline.innerHTML = renderPipeline(notice);
-    els.detailSummary.textContent = cancelled
+    els.briefKicker.textContent = collectedOnly ? "COLLECTED NOTICE" : "AI BRIEF";
+    els.briefHeading.textContent = collectedOnly ? "수집 정보 요약" : "공고 핵심 요약";
+    els.detailSummary.textContent = collectedOnly
+      ? collectedNoticeSummary(notice, deadline)
+      : cancelled
       ? `${notice.analysisReason || "취소 공고로 현재 입찰 검토와 담당자 판단 대상에서 제외되었습니다."}${notice.historicalAnalysis ? " 과거 분석은 현재 상태가 아닌 ‘당시 판정 참고’로만 제공합니다." : ""}`
       : notice.historicalAnalysis
       ? `${notice.historicalAnalysisReason} ${notice.summary || "당시 종합 판정값을 참고용으로 표시합니다."}`
       : qualityReview
       ? notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다."
       : analyzed ? notice.summary : notice.analysisReason;
-    els.briefEvidenceLabel.innerHTML = cancelled
+    els.briefEvidenceLabel.innerHTML = collectedOnly
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>공고 메타데이터 · AI 분석 아님'
+      : cancelled
       ? `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M8 12h8" /></svg>${notice.historicalAnalysis ? "취소 · 당시 근거 참고" : "취소 공고"}`
       : qualityReview
       ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>근거 보완'
@@ -3982,7 +3995,7 @@
       : notice.historicalAnalysis
         ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M8 12h8" /></svg>당시 판정'
         : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 8v4M12 16h.01" /></svg>분석 대기';
-    els.briefEvidenceLabel.classList.toggle("is-pending", cancelled || qualityReview || !analyzed || !evidence.length);
+    els.briefEvidenceLabel.classList.toggle("is-pending", collectedOnly || cancelled || qualityReview || !analyzed || !evidence.length);
     renderDocumentAnalyses(notice);
     els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
     els.evidenceCount.textContent = String(evidence.length);
@@ -3999,6 +4012,19 @@
     renderTeamsPreview(notice);
     renderExistingDecision(notice);
     els.drawerScroll.scrollTop = 0;
+  }
+
+  function collectedNoticeSummary(notice, deadline) {
+    const title = stringValue(notice.title, "공고명 미확인");
+    const agency = stringValue(notice.agency, "발주기관 미확인");
+    const deadlineLabel = `${deadline.date} ${deadline.time}`.trim();
+    const total = Math.max(Number(notice.analysisAttachmentCount) || 0, 0);
+    const audited = Math.max(Number(notice.analysisAttachmentsAudited) || 0, 0);
+    const accepted = Math.max(Number(notice.analysisAttachmentsAccepted) || 0, 0);
+    const attachmentProgress = total
+      ? `첨부 목록 ${formatNumber(total)}건 중 현재 ${formatNumber(audited)}건이 감사됐고 ${formatNumber(accepted)}건이 분석 승인됐습니다.`
+      : "분석 가능한 첨부 목록은 아직 확인되지 않았습니다.";
+    return `공고명 ‘${title}’, 발주기관 ${agency}, 사업예산 ${formatBudget(notice.budget)}, 마감 ${deadlineLabel}입니다. ${attachmentProgress} 참가 자격·준비도·AI 추천은 첨부 분석 완료 전까지 확정값이 아닙니다.`;
   }
 
   function renderManualAnalysisDetailAction(notice) {
@@ -4079,11 +4105,27 @@
     }
 
     const versionCount = notice.versions.length;
-    let stateLabel = "수집 완료";
-    let title = "공고 원문 수집 완료";
+    let stateLabel = "메타데이터 저장";
+    let title = "공고 메타데이터가 저장되었습니다";
     let description = notice.analysisReason;
 
-    if (notice.analysisState === "VERSIONED") {
+    if (
+      notice.analysisAttachmentCount > 0
+      && (
+        !notice.analysisAttachmentCoverageComplete
+        || notice.analysisAttachmentsAccepted < notice.analysisAttachmentCount
+      )
+    ) {
+      const total = Math.max(Number(notice.analysisAttachmentCount) || 0, 0);
+      const audited = Math.max(Number(notice.analysisAttachmentsAudited) || 0, 0);
+      const accepted = Math.max(Number(notice.analysisAttachmentsAccepted) || 0, 0);
+      const remainingAudit = Math.max(total - audited, 0);
+      const remainingAnalysis = Math.max(total - accepted, 0);
+      stateLabel = `감사 ${formatNumber(audited)}/${formatNumber(total)}`;
+      title = `첨부 목록 ${formatNumber(total)}건 · 감사 ${formatNumber(audited)}건 · 분석 승인 ${formatNumber(accepted)}건`;
+      description = `남은 감사 ${formatNumber(remainingAudit)}건 · 분석 보완 ${formatNumber(remainingAnalysis)}건. ${notice.analysisReason}`;
+      els.documentAnalysisState.classList.add("is-review");
+    } else if (notice.analysisState === "VERSIONED") {
       stateLabel = "문서 버전 수집됨";
       title = `첨부문서 버전 ${versionCount || 1}건 수집 완료`;
       description = notice.analysisReason;
@@ -4338,7 +4380,7 @@
         ? `v${version.versionNo} · ${version.extractionConfidence === null ? version.extractionStatus : `${Math.round(version.extractionConfidence)}%`}`
         : hasDocuments ? `${notice.evidence.length}개 근거` : "확인 필요";
     const steps = [
-      { name: "공고 수집", detail: "원문 보존", status: "done" },
+      { name: "공고 수집", detail: "공고 메타데이터 저장", status: "done" },
       { name: "첨부 추출", detail: extractionDetail, status: extractionComplete ? "done" : "review" },
       { name: "규칙 판정", detail: cancelled ? "취소 · 현재 판단 비활성" : displayAnalyzed ? analysisStatusLabel(notice) : hasRules ? "분석 대기" : "조건 대기", status: cancelled ? "pending" : displayAnalyzed ? (notice.eligibilityStatus === "REVIEW" ? "review" : "done") : "pending" },
       { name: "담당자 결정", detail: cancelled ? "취소 · 저장 비활성" : notice.decision ? DECISION_LABELS[notice.decision] : "미결정", status: cancelled ? "pending" : notice.decision ? "done" : "pending" },
@@ -4378,6 +4420,22 @@
         .map((requirement) => requirement.status === "FAIL"
           ? `${requirement.title}의 불일치 사유와 적용 가능한 예외 경로가 있는지 확인하세요.`
           : `${requirement.title}의 충족 여부와 최신 증빙을 확인하세요.`);
+    }
+    if (
+      !actions.length
+      && notice.sourceKind === "PPS"
+      && (
+        notice.analysisState !== "EVALUATED"
+        || !notice.analysisAttachmentCoverageComplete
+        || isDocumentQualityReview(notice)
+      )
+    ) {
+      actions = [
+        canRequestManualAnalysis(notice)
+          ? `상단 ‘${manualAnalysisLabel(notice)}’을 실행하거나 자동 분석 완료를 기다리세요.`
+          : "공고 원문에서 첨부를 직접 확인하고 자동 분석 완료를 기다리세요.",
+        "분석 완료 전에는 참가 자격·준비도·AI 추천을 확정값으로 사용하지 마세요.",
+      ];
     }
     els.actionCard.hidden = actions.length === 0;
     els.actionList.innerHTML = actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");

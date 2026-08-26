@@ -212,7 +212,48 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260826-detail-readable1"' in html
-    assert 'src="./app.js?v=20260825-open-visibility1"' in html
+    assert 'src="./app.js?v=20260826-collected-summary1"' in html
+
+
+def test_unanalysed_detail_shows_collected_metadata_without_claiming_ai_judgement() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    detail_body = _function_body(source, "renderDetail", "collectedNoticeSummary")
+    summary_body = _function_body(
+        source, "collectedNoticeSummary", "renderManualAnalysisDetailAction"
+    )
+    documents_body = _function_body(
+        source, "renderDocumentAnalyses", "loadPrivateMatchPreview"
+    )
+    pipeline_body = _function_body(source, "renderPipeline", "renderRequirement")
+    actions_body = _function_body(source, "renderActions", "renderEvidence")
+
+    assert 'id="briefKicker"' in html
+    assert 'id="briefHeading"' in html
+    assert 'collectedOnly ? "COLLECTED NOTICE" : "AI BRIEF"' in detail_body
+    assert 'collectedOnly ? "수집 정보 요약" : "공고 핵심 요약"' in detail_body
+    assert "공고 메타데이터 · AI 분석 아님" in detail_body
+    assert "notice.analysisAttachmentsAccepted > 0" in detail_body
+    assert "&& !hasGroundedAnalysisContent;" in detail_body
+    for field in (
+        "notice.title",
+        "notice.agency",
+        "notice.budget",
+        "notice.analysisAttachmentCount",
+        "notice.analysisAttachmentsAudited",
+        "notice.analysisAttachmentsAccepted",
+    ):
+        assert field in summary_body
+    assert "참가 자격·준비도·AI 추천은 첨부 분석 완료 전까지 확정값이 아닙니다" in summary_body
+    assert "첨부 목록" in documents_body
+    assert "남은 감사" in documents_body
+    assert "analysisAttachmentsAccepted < notice.analysisAttachmentCount" in documents_body
+    assert "분석 보완" in documents_body
+    assert "공고 메타데이터 저장" in pipeline_body
+    assert "원문 보존" not in pipeline_body
+    assert "상단 ‘${manualAnalysisLabel(notice)}’" in actions_body
+    assert '&& notice.sourceKind === "PPS"' in actions_body
+    assert "분석 완료 전에는 참가 자격·준비도·AI 추천을 확정값으로 사용하지 마세요" in actions_body
 
 
 def test_detail_drawer_has_a_scoped_readable_type_scale() -> None:
