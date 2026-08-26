@@ -670,10 +670,80 @@ def _create_batch_job_locked(
                 .with_for_update()
             ).all()
         )
-        if any(
-            requested_keys.intersection(child.notice_keys or [])
+        overlapping_running_children = [
+            child
             for child in recent_running_children
-        ):
+            if requested_keys.intersection(child.notice_keys or [])
+        ]
+        if overlapping_running_children:
+            if payload.operation_id is not None:
+                # A manual/direct batch won the paid-unit claim after this
+                # operation leased its chunk. Persist a terminal, zero-call
+                # child for the exact chunk before returning 409. n8n can
+                # safely normalise this one conflict, finalise the segment,
+                # and let the next cron re-lease the still-unattempted key.
+                # ``requeue_notice_keys`` keeps the child out of aggregate
+                # attempted counts while its terminal status proves that the
+                # current lease may be cleared without waiting six hours.
+                deferred_child = reopen_child
+                if deferred_child is None:
+                    deferred_child = IngestionJob(
+                        id=job_id,
+                        source="ANALYSIS",
+                        mode="DRY_RUN" if payload.dry_run else "LIVE",
+                        status="PARTIAL",
+                        window_json={"scope": "NOTICE_KEYS"},
+                        request_json={
+                            "notice_count": len(payload.notice_keys),
+                            "dry_run": payload.dry_run,
+                            "force": False,
+                            "enrich_missing": payload.enrich_missing,
+                            "max_notices": payload.max_notices,
+                            "max_attachments_per_notice": (
+                                payload.max_attachments_per_notice
+                            ),
+                            "parent_job_id": payload.operation_id,
+                            "segment_id": payload.segment_id,
+                            "chunk_index": payload.chunk_index,
+                            "work_generations": claim_generations,
+                        },
+                        matched=len(payload.notice_keys),
+                        notice_keys=list(payload.notice_keys),
+                        completed_at=claim_now,
+                    )
+                    session.add(deferred_child)
+                deferred_config = dict(deferred_child.request_json or {})
+                deferred_config["deferred_reason"] = (
+                    "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
+                )
+                deferred_config["requeue_notice_keys"] = list(payload.notice_keys)
+                deferred_child.request_json = deferred_config
+                deferred_child.error_code = "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
+                deferred_child.warnings = sorted(
+                    set(
+                        [
+                            *(deferred_child.warnings or []),
+                            "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED",
+                        ]
+                    )
+                )
+                deferred_child.completed_at = (
+                    deferred_child.completed_at or claim_now
+                )
+                session.commit()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED",
+                        "message": (
+                            "다른 분석이 진행 중이어서 이 operation chunk를 "
+                            "다음 실행으로 이월했습니다."
+                        ),
+                        "child_job_id": deferred_child.id,
+                        "notice_keys": list(payload.notice_keys),
+                        "retry_after_seconds": 900,
+                    },
+                )
             raise HTTPException(
                 status_code=409,
                 detail="notice analysis is already in flight",
@@ -683,9 +753,15 @@ def _create_batch_job_locked(
             # paid unit. Every durable attachment outcome remains reusable.
             child_config = dict(reopen_child.request_json or {})
             child_config.pop("requeue_notice_keys", None)
+            child_config.pop("deferred_reason", None)
             reopen_child.request_json = child_config
             reopen_child.status = "RUNNING"
             reopen_child.error_code = None
+            reopen_child.warnings = [
+                warning
+                for warning in (reopen_child.warnings or [])
+                if warning != "ANALYSIS_NOTICE_IN_FLIGHT_DEFERRED"
+            ]
             reopen_child.completed_at = None
             session.commit()
             return reopen_child.id, None
@@ -1138,8 +1214,16 @@ def _matching_active_backfill(
                 or bool(config.get("include_retryable"))
                 == payload.include_retryable
             )
-            and int(config.get("retry_cooldown_hours", 0))
-            == payload.retry_cooldown_hours
+            and (
+                # ANY is a pure continuation lookup. Like include_retryable,
+                # retry cooldown is a creation-time selection policy owned by
+                # the matched parent, not a property the 15-minute poll may
+                # override. This lets W11 resume both W10 DAILY (24h) and W11
+                # BACKFILL (1h) parents safely.
+                payload.queue_name == "ANY"
+                or int(config.get("retry_cooldown_hours", 0))
+                == payload.retry_cooldown_hours
+            )
         ):
             compatible.append(candidate)
     compatible.sort(
@@ -2627,7 +2711,13 @@ def run_notice_analysis_batch(
                 or _utc(notice.deadline) < datetime.now(timezone.utc)
             )
         }
-    if cancelled_keys:
+    # Direct/operator batches keep the strict 409 boundary. A durable
+    # operation lease is different: its exact key can legitimately become
+    # inactive after planning. Let the child audit consume that stale key as a
+    # zero-cost SKIPPED item so one deadline rollover cannot poison the parent
+    # queue forever.
+    leased_operation = payload.operation_id is not None
+    if cancelled_keys and not leased_operation:
         ordered_cancelled_keys = [
             notice_key
             for notice_key in payload.notice_keys
@@ -2641,7 +2731,7 @@ def run_notice_analysis_batch(
                 "notice_keys": ordered_cancelled_keys,
             },
         )
-    if inactive_automatic_keys:
+    if inactive_automatic_keys and not leased_operation:
         raise HTTPException(
             status_code=409,
             detail={
@@ -2714,6 +2804,11 @@ def _execute_notice_analysis_batch(
                 select(Notice).where(Notice.notice_key == notice_key)
             )
             notice_id = notice.id if notice is not None else None
+            notice_active = bool(
+                notice is not None
+                and notice.status == "OPEN"
+                and _utc(notice.deadline) >= datetime.now(timezone.utc)
+            )
             notice_cancelled = bool(
                 notice is not None
                 and authoritative_pps_cancelled_notice_keys(session, [notice])
@@ -2750,6 +2845,22 @@ def _execute_notice_analysis_batch(
                 enrichment_failed += 1
                 enrichment_warnings.append("PPS_NOTICE_CANCELLED")
             continue
+        if not notice_active:
+            rows.append(
+                AnalysisBatchItemOut(
+                    notice_key=notice_key,
+                    status="SKIPPED",
+                    document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                    evaluation_status="NOT_RUN",
+                    snapshot_status="NOT_RUN",
+                    warnings=["AUTOMATIC_NOTICE_NOT_ACTIVE"],
+                )
+            )
+            skipped += 1
+            if enrichment_targeted:
+                enrichment_skipped += 1
+                enrichment_warnings.append("AUTOMATIC_NOTICE_NOT_ACTIVE")
+            continue
 
         enrichment_result: PpsEnrichmentResult | None = None
         should_enrich = (
@@ -2769,6 +2880,12 @@ def _execute_notice_analysis_batch(
             # before the potentially billable enrichment boundary.
             with request.app.state.session_factory() as session:
                 notice_before_enrichment = session.get(Notice, notice_id)
+                active_before_enrichment = bool(
+                    notice_before_enrichment is not None
+                    and notice_before_enrichment.status == "OPEN"
+                    and _utc(notice_before_enrichment.deadline)
+                    >= datetime.now(timezone.utc)
+                )
                 cancelled_before_enrichment = bool(
                     notice_before_enrichment is not None
                     and authoritative_pps_cancelled_notice_keys(
@@ -2790,6 +2907,21 @@ def _execute_notice_analysis_batch(
                 failed += 1
                 enrichment_failed += 1
                 enrichment_warnings.append("PPS_NOTICE_CANCELLED")
+                continue
+            if not active_before_enrichment:
+                rows.append(
+                    AnalysisBatchItemOut(
+                        notice_key=notice_key,
+                        status="SKIPPED",
+                        document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                        evaluation_status="NOT_RUN",
+                        snapshot_status="NOT_RUN",
+                        warnings=["AUTOMATIC_NOTICE_NOT_ACTIVE"],
+                    )
+                )
+                skipped += 1
+                enrichment_skipped += 1
+                enrichment_warnings.append("AUTOMATIC_NOTICE_NOT_ACTIVE")
                 continue
             try:
                 enrichment_result = _enrich_one_notice(
@@ -2884,6 +3016,11 @@ def _execute_notice_analysis_batch(
 
         with request.app.state.session_factory() as session:
             notice_for_analysis = session.get(Notice, notice_id)
+            active_before_analysis = bool(
+                notice_for_analysis is not None
+                and notice_for_analysis.status == "OPEN"
+                and _utc(notice_for_analysis.deadline) >= datetime.now(timezone.utc)
+            )
             cancelled_before_analysis = bool(
                 notice_for_analysis is not None
                 and authoritative_pps_cancelled_notice_keys(
@@ -2908,6 +3045,26 @@ def _execute_notice_analysis_batch(
                     )
                 )
                 failed += 1
+                continue
+            if not active_before_analysis:
+                rows.append(
+                    AnalysisBatchItemOut(
+                        notice_key=notice_key,
+                        status="SKIPPED",
+                        document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                        evaluation_status="NOT_RUN",
+                        snapshot_status="NOT_RUN",
+                        warnings=sorted(
+                            set(
+                                [
+                                    "AUTOMATIC_NOTICE_NOT_ACTIVE",
+                                    *item_enrichment_warnings,
+                                ]
+                            )
+                        ),
+                    )
+                )
+                skipped += 1
                 continue
             try:
                 result = run_analysis_pipeline(session, notice_id=notice_id)
@@ -3100,3 +3257,4 @@ def list_notice_analysis_runs(
             for run in runs
         ],
     }
+
