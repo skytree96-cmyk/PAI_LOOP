@@ -5,10 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-import uuid
-
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -16,8 +14,6 @@ from pai_loop.config import Settings
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.analysis_api import (
     AnalysisBackfillPlanRequest,
-    AnalysisBatchRequest,
-    _create_batch_job,
     _select_backfill_notice_keys,
 )
 from pai_loop.daily_operations import (
@@ -244,6 +240,18 @@ def test_save_persists_only_selected_notice_manifest_and_is_idempotent(
             )
         ) == 0
 
+        # Simulate a row left behind by the legacy discovery-save behavior.
+        # Re-saving the same notice must remove it immediately.
+        session.add(
+            NoticeAnalysisPolicy(
+                notice_key=payload["selection_key"],
+                bid_notice_no=payload["bid_notice_no"],
+                analysis_policy="MANUAL_ONLY",
+                policy_source="USER_PPS_DISCOVERY",
+            )
+        )
+        session.commit()
+
     repeated = discovery_client.post(
         "/api/v1/pps-discovery/save",
         headers=_HEADERS,
@@ -255,7 +263,7 @@ def test_save_persists_only_selected_notice_manifest_and_is_idempotent(
     with factory() as session:
         assert session.scalar(select(func.count(Notice.id))) == 1
         assert session.scalar(select(func.count(NoticeVersion.id))) == 1
-        assert session.scalar(select(func.count(NoticeAnalysisPolicy.notice_key))) == 1
+        assert session.scalar(select(func.count(NoticeAnalysisPolicy.notice_key))) == 0
 
 
 def test_save_rejects_changed_provider_identity_before_persisting(
@@ -290,7 +298,7 @@ def test_save_rejects_changed_provider_identity_before_persisting(
         assert session.scalar(select(func.count(IngestionJob.id))) == 0
 
 
-def test_manually_saved_notice_is_visible_but_excluded_from_automatic_queues(
+def test_manually_saved_notice_is_visible_and_included_in_automatic_queues(
     discovery_client: TestClient,
 ) -> None:
     search = _search(discovery_client)
@@ -333,52 +341,20 @@ def test_manually_saved_notice_is_visible_but_excluded_from_automatic_queues(
                 IngestionJob.source == "PPS_MANUAL_SAVE"
             )
         ) == 0
-        assert session.get(NoticeAnalysisPolicy, notice_key) is not None
+        assert session.get(NoticeAnalysisPolicy, notice_key) is None
 
         briefing = daily_briefing(session, days=7, limit=20, as_of=now)
         assert notice_key in {
             item["notice_key"] for item in briefing["notices"]
         }
-        assert notice_key not in briefing["analysis_queue"]["notice_keys"]
-        assert _select_backfill_notice_keys(
+        assert notice_key in briefing["analysis_queue"]["notice_keys"]
+        assert notice_key in _select_backfill_notice_keys(
             session,
             AnalysisBackfillPlanRequest(include_retryable=True),
             now=now,
-        ) == []
-
-        # Even an automatic parent planned before the marker was observed is
-        # stopped again at the child execution boundary.
-        operation_id = str(uuid.uuid4())
-        session.add(
-            IngestionJob(
-                id=operation_id,
-                source="ANALYSIS_BACKFILL",
-                mode="LIVE",
-                status="RUNNING",
-                window_json={"scope": "OPEN_NOT_SELECTED"},
-                request_json={},
-                notice_keys=[notice_key],
-                warnings=[],
-            )
         )
-        session.commit()
 
-    with pytest.raises(HTTPException) as blocked:
-        _create_batch_job(
-            SimpleNamespace(app=discovery_client.app),
-            AnalysisBatchRequest(
-                notice_keys=[notice_key],
-                enrich_missing=True,
-                max_notices=1,
-                operation_id=operation_id,
-                segment_id=str(uuid.uuid4()),
-                chunk_index=0,
-            ),
-        )
-    assert blocked.value.status_code == 409
-
-    # The durable marker filters only schedulers. The explicit user action is
-    # still accepted through the existing same-origin manual-analysis route.
+    # The explicit user action remains available in addition to automation.
     manual = discovery_client.post(
         f"/api/v1/notices/{notice_key}/analysis/request",
         headers=_HEADERS,
