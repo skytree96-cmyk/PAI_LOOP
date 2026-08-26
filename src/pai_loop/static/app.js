@@ -4421,16 +4421,15 @@
           ? `${requirement.title}의 불일치 사유와 적용 가능한 예외 경로가 있는지 확인하세요.`
           : `${requirement.title}의 충족 여부와 최신 증빙을 확인하세요.`);
     }
-    if (!actions.length && (
-      notice.analysisState !== "EVALUATED"
-      || (
-        notice.sourceKind === "PPS"
-        && (
-          !notice.analysisAttachmentCoverageComplete
-          || isDocumentQualityReview(notice)
-        )
+    if (
+      !actions.length
+      && notice.sourceKind === "PPS"
+      && (
+        notice.analysisState !== "EVALUATED"
+        || !notice.analysisAttachmentCoverageComplete
+        || isDocumentQualityReview(notice)
       )
-    )) {
+    ) {
       actions = [
         canRequestManualAnalysis(notice)
           ? `상단 ‘${manualAnalysisLabel(notice)}’을 실행하거나 자동 분석 완료를 기다리세요.`
