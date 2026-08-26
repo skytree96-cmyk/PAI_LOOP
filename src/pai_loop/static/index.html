@@ -11,14 +11,15 @@
     />
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260824-decision1" />
+    <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
+    <link rel="stylesheet" href="./styles.css?v=20260827-nav-route1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
 
     <div class="app-shell">
       <aside class="sidebar" aria-label="주요 탐색">
-        <a class="brand" href="#" aria-label="PAI LOOP 홈">
+        <a class="brand" href="/" aria-label="PAI LOOP 홈">
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 44 44" role="img">
               <path d="M11.3 9.7a16 16 0 0 1 22.8 4.7" />
@@ -41,45 +42,54 @@
             </span>
             <span>통합 대시보드</span>
           </button>
-          <button class="nav-item" type="button" data-view="new">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18" /></svg>
-            </span>
-            <span>진행 공고</span>
-            <span class="nav-count" id="navNewCount" aria-label="진행 공고 수">—</span>
-          </button>
           <button class="nav-item" type="button" data-view="prespec">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M7 3h8l4 4v14H7z" /><path d="M15 3v5h5M10 12h6M10 16h6" /><circle cx="5" cy="8" r="2.5" /></svg>
             </span>
             <span>사전규격</span>
           </button>
-          <button class="nav-item" type="button" data-view="review">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" /><path d="M12 7v6M12 17h.01" /></svg>
-            </span>
-            <span>분석·검토</span>
-            <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="분석 및 자격 검토 대기 수">—</span>
-          </button>
-          <button class="nav-item" type="button" data-view="undecided">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
-            </span>
-            <span>결정 관리</span>
-            <span class="nav-count" id="navDecisionCount" aria-label="미결정 수">—</span>
-          </button>
-          <button class="nav-item" type="button" data-view="closed">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M3 3v18h18" /><path d="m7 15 4-4 3 3 6-7" /></svg>
-            </span>
-            <span>결과 학습</span>
-          </button>
-          <button class="nav-item" type="button" data-view="awards">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M8 4h8v4a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4M16 6h3v1a4 4 0 0 1-4 4M12 12v5M8 20h8M9 17h6" /></svg>
-            </span>
-            <span>낙찰 결과</span>
-          </button>
+          <div class="nav-group" aria-label="검색">
+            <p class="nav-group-title">검색</p>
+            <button class="nav-item nav-item--sub" type="button" data-view="new">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18" /></svg>
+              </span>
+              <span>공고 탐색</span>
+              <span class="nav-count" id="navNewCount" aria-label="진행 공고 수">—</span>
+            </button>
+          </div>
+          <div class="nav-group" aria-label="판단">
+            <p class="nav-group-title">판단</p>
+            <button class="nav-item nav-item--sub" type="button" data-view="review">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" /><path d="M12 7v6M12 17h.01" /></svg>
+              </span>
+              <span>분석·검토 큐</span>
+              <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="분석 및 자격 검토 대기 수">—</span>
+            </button>
+            <button class="nav-item nav-item--sub" type="button" data-view="undecided">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+              </span>
+              <span>결정 관리</span>
+              <span class="nav-count" id="navDecisionCount" aria-label="미결정 수">—</span>
+            </button>
+          </div>
+          <div class="nav-group" aria-label="학습">
+            <p class="nav-group-title">학습</p>
+            <button class="nav-item nav-item--sub" type="button" data-view="closed">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M7 9h10v5.5H7z" /><path d="M7 16.5h10" /><path d="m8 5 2 2 2-2" /></svg>
+              </span>
+              <span>결과 기록</span>
+            </button>
+            <button class="nav-item nav-item--sub" type="button" data-view="awards">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M8 4h8v4a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4M16 6h3v1a4 4 0 0 1-4 4M12 12v5M8 20h8M9 17h6" /></svg>
+              </span>
+              <span>낙찰 분석</span>
+            </button>
+          </div>
           <button class="nav-item" type="button" data-view="performance">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M3 20h18" /><path d="m4 7 5-4 6 5 5-5" /></svg>
@@ -196,7 +206,7 @@
               <button class="kpi-card__action" type="button" data-kpi-view="ended" aria-label="종료 및 취소 공고 보기" aria-pressed="false"><span class="sr-only">종료 및 취소 공고 보기</span></button>
               <div class="kpi-card__head"><span>종료 공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m8.5 12 2.2 2.2 4.8-5" /></svg></span></div>
               <strong class="kpi-value" id="kpiEnded">—</strong>
-              <p><span class="trend trend--slate">보관</span> 분석된 종료 · 전체 취소 공고</p>
+              <p title="이전 화면 명칭: 분석된 종료 · 전체 취소 공고"><span class="trend trend--slate">보관</span> 전체 마감 · 종료 · 취소 공고</p>
             </article>
           </section>
 
@@ -924,12 +934,13 @@
           <label class="decision-option decision-option--hold"><input type="radio" name="decision" value="HOLD" /><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" /></svg>보류</span></label>
           <label class="decision-option decision-option--no"><input type="radio" name="decision" value="NO_GO" /><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>NO-GO</span></label>
         </div>
+        <p class="decision-selection-guide" id="decisionSelectionGuide">1. 최종 판단 선택 → 2. 근거 입력(선택) → 3. 판단 저장</p>
         <div class="comment-field" id="commentField" hidden>
           <label for="decisionComment">판단 근거 또는 후속 조치</label>
           <textarea id="decisionComment" rows="3" maxlength="500" placeholder="예: 직접생산확인증명서 대체 가능 여부를 발주처에 문의"></textarea>
           <span><span id="commentCount">0</span>/500</span>
         </div>
-        <button class="button button--primary button--wide" type="submit" id="saveDecisionButton" disabled>판단 저장</button>
+        <button class="button button--primary button--wide" type="submit" id="saveDecisionButton" aria-describedby="decisionSelectionGuide" disabled>판단 저장</button>
         <p class="decision-disclaimer">AI 추천은 참고 정보이며, 최종 입찰 여부는 담당자가 결정합니다.</p>
       </form>
     </aside>
@@ -1116,9 +1127,24 @@
     </template>
 
     <script id="paiLoopRuntimeConfig" type="application/json">
-      {"paiBotTeamsUrl":"https://teams.microsoft.com/l/channel/19%3AOpCbprgASzOv_yJ8ZUPfuWXX0cAIN_uwWDVERqCfSoM1%40thread.tacv2/PAI%20%EB%B4%87?groupId=7ba0367b-9f7a-45de-85d6-8b315638328e&tenantId=5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"}
+      {"paiBotTeamsUrl":"https://teams.microsoft.com/"}
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
-    <script src="./app.js?v=20260824-decision1" defer></script>
+    <script>
+      // Render free-tier dashboard aggregation can exceed the generic request
+      // timeout while notice pages are loading. Keep only that public summary
+      // request alive; every other request retains the application's timeout.
+      (() => {
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+          const requestUrl = typeof input === "string" ? input : String(input?.url || "");
+          if (!/\/api\/v1\/dashboard(?:[?#]|$)/.test(requestUrl)) return nativeFetch(input, init);
+          const { signal: _ignoredDashboardAbort, ...dashboardInit } = init;
+          return nativeFetch(input, dashboardInit);
+        };
+      })();
+    </script>
+    <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
+    <script src="./app.js?v=20260827-nav-route1" defer></script>
   </body>
 </html>

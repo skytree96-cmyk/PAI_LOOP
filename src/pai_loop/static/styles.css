@@ -202,6 +202,34 @@ svg {
   gap: 5px;
 }
 
+.nav-group {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.nav-group-title {
+  margin: 0 12px 3px;
+  color: #789894;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  letter-spacing: 0.12em;
+}
+
+.nav-item--sub {
+  min-height: 44px;
+  margin-left: 8px;
+  padding-left: 14px;
+  color: #bfd1ce;
+}
+
+.nav-item--sub.is-active {
+  box-shadow: inset 3px 0 0 var(--orange);
+}
+
 .nav-item {
   display: grid;
   min-height: 48px;
@@ -2382,7 +2410,7 @@ svg {
 
 .decision-summary {
   display: grid;
-  grid-template-columns: 0.85fr 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 9px;
   margin-top: 12px;
 }
@@ -4066,6 +4094,28 @@ svg {
   background: var(--red-pale);
 }
 
+.decision-selection-guide {
+  margin: -2px 0 9px;
+  color: #667976;
+  font-size: 10px;
+  line-height: 1.45;
+  font-weight: 650;
+  text-align: center;
+}
+
+#saveDecisionButton.is-awaiting-selection {
+  border-color: #b8c6c3;
+  color: #526864;
+  background: #eef2f1;
+  box-shadow: none;
+}
+
+#saveDecisionButton.is-awaiting-selection:hover {
+  border-color: #819d97;
+  color: #284b45;
+  background: #e4ece9;
+}
+
 .comment-field {
   position: relative;
   margin-bottom: 9px;
@@ -5689,7 +5739,7 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .detail-hero h2 { font-size: 20px; }
   .detail-facts { grid-template-columns: 1fr 1fr; }
   .detail-fact:last-child { grid-column: 1 / -1; }
-  .decision-summary { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .decision-summary { grid-template-columns: repeat(2, 1fr); gap: 6px; }
   .summary-metric { padding: 10px 9px; }
   .summary-metric strong { font-size: 11px; }
   .analysis-pipeline { grid-template-columns: repeat(2, 1fr); }
@@ -5760,6 +5810,64 @@ body.teams-context .sidebar {
 body.teams-context .performance-hero,
 body.teams-context .performance-explorer {
   scroll-margin-top: 78px;
+}
+
+/* UX readability baseline: key navigation and work surfaces stay legible at a glance. */
+body {
+  font-size: 15px;
+}
+
+.nav-item {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.nav-count,
+.trend,
+.eyebrow,
+.section-kicker {
+  font-size: 11px;
+}
+
+.topbar__context p,
+.kpi-card p,
+.section-heading > div:first-child > p:last-child,
+.priority-search__intro span,
+.priority-search__help,
+.notice-search-scope {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.hero p {
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.kpi-card__head,
+.button,
+.text-button,
+.priority-search__intro,
+.priority-search select,
+.priority-search input,
+.notice-search-mode {
+  font-size: 13px;
+}
+
+.notice-table th,
+.notice-table td,
+.notice-card p,
+.notice-card small,
+.detail-card p,
+.detail-card li,
+.performance-card p,
+.performance-card small,
+.award-result-card p,
+.award-result-card small,
+.prespec-card > p,
+.prespec-card dd {
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 @media (prefers-reduced-motion: reduce) {

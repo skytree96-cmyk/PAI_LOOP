@@ -7,7 +7,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -162,6 +162,31 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
 
     static_dir = Path(__file__).parent / "static"
     if (static_dir / "index.html").exists():
+        index_file = static_dir / "index.html"
+
+        def frontend_index() -> FileResponse:
+            return FileResponse(index_file)
+
+        frontend_routes = (
+            "/",
+            "/notices",
+            "/reviews",
+            "/decisions",
+            "/results",
+            "/awards",
+            "/prespec",
+            "/performance",
+        )
+        for frontend_route in frontend_routes:
+            route_name = frontend_route.strip("/").replace("/", "-") or "dashboard"
+            application.add_api_route(
+                frontend_route,
+                frontend_index,
+                methods=["GET"],
+                include_in_schema=False,
+                name=f"frontend-{route_name}",
+            )
+
         application.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     else:
         @application.get("/", include_in_schema=False)
