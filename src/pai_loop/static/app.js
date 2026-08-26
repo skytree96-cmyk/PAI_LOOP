@@ -3943,8 +3943,10 @@
       || notice.analysisAttachmentsAccepted > 0;
     const collectedOnly = !cancelled
       && !notice.historicalAnalysis
-      && (!analyzed || qualityReview)
-      && !hasGroundedAnalysisContent;
+      && (
+        !analyzed
+        || (qualityReview && !hasGroundedAnalysisContent)
+      );
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
@@ -4416,8 +4418,13 @@
     }
     if (!actions.length && (
       notice.analysisState !== "EVALUATED"
-      || !notice.analysisAttachmentCoverageComplete
-      || isDocumentQualityReview(notice)
+      || (
+        notice.sourceKind === "PPS"
+        && (
+          !notice.analysisAttachmentCoverageComplete
+          || isDocumentQualityReview(notice)
+        )
+      )
     )) {
       actions = [
         canRequestManualAnalysis(notice)
