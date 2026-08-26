@@ -211,8 +211,23 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-decision1"' in html
-    assert 'src="./app.js?v=20260824-decision1"' in html
+    assert 'href="./styles.css?v=20260826-detail-readable1"' in html
+    assert 'src="./app.js?v=20260825-open-visibility1"' in html
+
+
+def test_detail_drawer_has_a_scoped_readable_type_scale() -> None:
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "/* Keep decision-detail copy readable" in styles
+    assert ".detail-drawer :is(" in styles
+    assert ".drawer-header__meta" in styles
+    assert ".document-analysis-item p" in styles
+    assert ".decision-dock__head span" in styles
+    assert "font-size: 11px" in styles
+    assert "font-size: 12px" in styles
+    assert "font-size: 13px" in styles
+    assert "@media screen and (max-width: 390px)" in styles
+    assert ".detail-drawer .detail-tabs button { font-size: 10px; }" in styles
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
