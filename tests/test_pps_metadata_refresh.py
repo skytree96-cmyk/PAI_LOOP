@@ -195,7 +195,7 @@ def test_stale_metadata_exactly_refreshes_and_persists_current_schema(
     assert call["inquiry_division"] == "1"
     assert call["extra_params"] == {"bidNtceNo": item["bid_notice_no"]}
     assert call["start"] == item["published_at"].astimezone(KST).date()
-    assert call["end"] == datetime.now(KST).date()
+    assert call["end"] == item["published_at"].astimezone(KST).date()
     assert call["max_pages"] == 1
     with client.app.state.session_factory() as session:
         versions = list(

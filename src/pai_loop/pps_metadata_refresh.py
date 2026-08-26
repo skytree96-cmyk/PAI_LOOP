@@ -170,22 +170,28 @@ def refresh_pps_metadata_for_analysis(
             and metadata.source_payload.get("schema_version") == PPS_METADATA_SCHEMA
         ):
             return PpsMetadataRefreshResult("CURRENT")
-        query_end = datetime.now(KST).date()
+        today = datetime.now(KST).date()
         if notice.published_at is not None:
             query_start = _utc(notice.published_at).astimezone(KST).date()
         else:
             # PPS rows normally include the posting timestamp. Retain a bounded
             # recovery window for legacy rows that predate that field.
             query_start = max(
-                query_end - timedelta(days=90),
+                today - timedelta(days=90),
                 _utc(notice.deadline).astimezone(KST).date()
                 - timedelta(days=90),
             )
+        # The PPS posted-time search applies the date window before the exact
+        # notice-number filter. Querying every day from publication to today
+        # can exhaust the per-item analysis deadline for older active notices.
+        # The original posting date is the authoritative lookup key for this
+        # stored revision, so keep the recovery call to one bounded day.
+        query_date = min(query_start, today)
         notice_snapshot = _NoticeRefreshSnapshot(
             notice_key=notice.notice_key,
             bid_notice_no=notice.bid_notice_no,
-            query_start=min(query_start, query_end),
-            query_end=query_end,
+            query_start=query_date,
+            query_end=query_date,
         )
 
     if dry_run:
