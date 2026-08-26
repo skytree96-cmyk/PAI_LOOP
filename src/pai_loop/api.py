@@ -1121,6 +1121,11 @@ def list_notices(
                 user_keywords=parsed_keywords,
             )
         )
+        # The full per-department map is only an intermediate used to select
+        # one ranking. It is not part of NoticeSummary, so release it before
+        # the candidate is retained for sorting. This keeps the public board
+        # from holding 24 unused ranking payloads for every OPEN notice.
+        department_views.pop("by_department_id", None)
         department_id_value = str(selected_ranking.get("department_id") or "")
         if department_id_value == "organization":
             if department_views["top_department_rankings"]:

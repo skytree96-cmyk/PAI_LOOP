@@ -78,12 +78,12 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert "noticeStatusScopeForView(nextView)" in view_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
-    assert "NOTICE_PAGE_SIZE = 50" in source
+    assert "NOTICE_PAGE_SIZE = 200" in source
     assert "offset += NOTICE_PAGE_SIZE" in fetch_body
     assert 'params.set("offset", String(offset))' in request_body
     assert 'params.set("department_id", departmentId)' in request_body
     assert "explicitRanking" not in request_body
-    assert "NOTICE_REQUEST_TIMEOUT_MS = 30000" in source
+    assert "NOTICE_REQUEST_TIMEOUT_MS = 60000" in source
     assert "RANKING_REQUEST_TIMEOUT_MS = 60000" in source
     assert "RANKING_REQUEST_TIMEOUT_MS" in timeout_body
     assert "NOTICE_REQUEST_TIMEOUT_MS" in timeout_body
