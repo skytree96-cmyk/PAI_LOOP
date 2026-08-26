@@ -252,7 +252,7 @@ def test_unanalysed_detail_shows_collected_metadata_without_claiming_ai_judgemen
     assert "공고 메타데이터 저장" in pipeline_body
     assert "원문 보존" not in pipeline_body
     assert "상단 ‘${manualAnalysisLabel(notice)}’" in actions_body
-    assert 'notice.sourceKind === "PPS"' in actions_body
+    assert '&& notice.sourceKind === "PPS"' in actions_body
     assert "분석 완료 전에는 참가 자격·준비도·AI 추천을 확정값으로 사용하지 마세요" in actions_body
 
 
