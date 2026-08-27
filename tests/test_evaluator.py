@@ -211,6 +211,128 @@ def test_document_incomplete_or_low_confidence_is_r07_and_gray() -> None:
     assert result.explanation["risk"]["status"] == "WITHHELD_R07"
 
 
+@pytest.mark.parametrize(
+    (
+        "parse_confidence",
+        "expected_eligibility",
+        "expected_reason_code",
+        "expected_atomic_reason_code",
+        "expected_risk_score",
+        "expected_risk_band",
+        "expected_risk_status",
+    ),
+    [
+        (0.79, Eligibility.REVIEW, "R07", "R07", None, RiskBand.UNKNOWN, "WITHHELD_R07"),
+        (
+            0.80,
+            Eligibility.REVIEW,
+            "REVIEW_MATCH",
+            "R07_LOW_CONFIDENCE",
+            20.0,
+            RiskBand.GO,
+            "AVAILABLE",
+        ),
+        (
+            0.89,
+            Eligibility.REVIEW,
+            "REVIEW_MATCH",
+            "R07_LOW_CONFIDENCE",
+            20.0,
+            RiskBand.GO,
+            "AVAILABLE",
+        ),
+        (0.90, Eligibility.PASS, "PASS_MATCH", "P-ENTITY", 20.0, RiskBand.GO, "AVAILABLE"),
+    ],
+)
+def test_parse_confidence_boundaries_are_tiered_without_spreading_r07(
+    parse_confidence: float,
+    expected_eligibility: Eligibility,
+    expected_reason_code: str,
+    expected_atomic_reason_code: str,
+    expected_risk_score: float | None,
+    expected_risk_band: RiskBand,
+    expected_risk_status: str,
+) -> None:
+    notice, version = notice_and_version()
+    req = requirement(
+        "Q-CONFIDENCE",
+        "entity",
+        "active",
+        confidence=parse_confidence,
+    )
+    result = evaluate_notice(
+        notice,
+        version,
+        [req],
+        [fact("entity", "active", linked_evidence=evidence())],
+    )
+
+    assert result.eligibility == expected_eligibility
+    assert result.reason_code == expected_reason_code
+    assert result.atomic_results[0]["reason_code"] == expected_atomic_reason_code
+    assert result.risk_score == expected_risk_score
+    assert result.risk_band == expected_risk_band
+    assert result.explanation["risk"]["status"] == expected_risk_status
+
+
+def test_empty_requirements_stay_r07_without_verified_no_blocking_signal() -> None:
+    notice, version = notice_and_version()
+
+    result = evaluate_notice(notice, version, [], [])
+
+    assert result.eligibility == Eligibility.REVIEW
+    assert result.reason_code == "R07"
+    assert result.atomic_results == []
+    assert result.readiness_status == ReadinessStatus.GRAY
+    assert result.explanation["readiness_components"]["fact_coverage"] == 0.0
+    assert result.risk_score is None
+    assert result.risk_band == RiskBand.UNKNOWN
+    assert result.explanation["risk"]["status"] == "WITHHELD_R07"
+
+
+def test_verified_no_blocking_requirements_pass_with_complete_document() -> None:
+    notice, version = notice_and_version()
+
+    result = evaluate_notice(
+        notice,
+        version,
+        [],
+        [],
+        no_blocking_requirements_verified=True,
+    )
+
+    assert result.eligibility == Eligibility.PASS
+    assert result.reason_code == "NO_BLOCKING_REQUIREMENTS"
+    assert result.atomic_results == []
+    assert result.evidence_coverage == 100.0
+    assert result.readiness_score == 100.0
+    assert result.readiness_status == ReadinessStatus.GREEN
+    assert result.explanation["readiness_components"]["fact_coverage"] == 100.0
+    assert result.risk_score == 20.0
+    assert result.risk_band == RiskBand.GO
+    assert result.explanation["risk"]["status"] == "AVAILABLE"
+    assert result.explanation["document_gate"]["no_blocking_requirements_accepted"] is True
+
+
+def test_verified_no_blocking_signal_stays_r07_when_document_quality_fails() -> None:
+    notice, version = notice_and_version(complete=False)
+
+    result = evaluate_notice(
+        notice,
+        version,
+        [],
+        [],
+        no_blocking_requirements_verified=True,
+    )
+
+    assert result.eligibility == Eligibility.REVIEW
+    assert result.reason_code == "R07"
+    assert result.readiness_status == ReadinessStatus.GRAY
+    assert result.explanation["readiness_components"]["fact_coverage"] == 0.0
+    assert result.explanation["document_gate"]["no_blocking_requirements_accepted"] is False
+    assert result.explanation["risk"]["status"] == "WITHHELD_R07"
+
+
 def test_risk_requires_four_approved_evidence_axes() -> None:
     notice, version = notice_and_version()
     notice.risk_dimensions = {

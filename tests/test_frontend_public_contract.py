@@ -212,7 +212,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260827-sidebar-icons1"' in html
-    assert 'src="./app.js?v=20260827-sidebar-icons1"' in html
+    assert 'src="./app.js?v=20260827-r07-policy1"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -733,6 +733,9 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
     source = APP_JS.read_text(encoding="utf-8")
     dashboard_body = _function_body(source, "deriveDashboard", "renderAll")
     filter_body = _function_body(source, "applyFilters", "compareNotices")
+    quality_body = _function_body(
+        source, "isDocumentQualityReview", "isActionableEligibilityReview"
+    )
     status_body = _function_body(source, "analysisStatusPill", "analysisRecommendationPill")
     reason_body = _function_body(source, "normalizeAnalysisReason", "normalizeRecommendation")
     pipeline_body = _function_body(source, "renderPipeline", "renderRequirement")
@@ -745,6 +748,10 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
     assert "needsAnalysisOrReview" in dashboard_body
     assert "isDocumentQualityReview" in dashboard_body
     assert "needsAnalysisOrReview(notice)" in filter_body
+    assert 'String(notice.analysisReasonCode || "")' in quality_body
+    assert "notice.reasonCode" not in quality_body
+    assert "ATTACHMENT_COVERAGE_INCOMPLETE" in quality_body
+    assert "DOCUMENT_EXTRACT_FAILED" in quality_body
     assert "근거 보완" in status_body
     assert "자격 REVIEW가 아니라 원문 근거 검증 보완 상태" in status_body
     assert 'analysisState === "EVALUATED"' in reason_body
@@ -756,6 +763,7 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
     assert "근거 보완 · 판단 보류" in teams_body
     assert "근거 보완 후 산정" in teams_body
     assert 'if (isDocumentQualityReview(notice)) return "판단 보류"' in recommendation_body
+    assert "체크리스트와 정보는 그 자체로 참가자격 REVIEW를 만들지 않습니다." in source
     assert "자격 검토" in html
 
 

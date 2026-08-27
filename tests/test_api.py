@@ -379,6 +379,56 @@ def test_dashboard_deadline_soon_counts_only_open_notices(client: TestClient) ->
     assert dashboard["analysis_review_backlog_count"] == 1
 
 
+def test_r07_evaluation_with_analyzed_documents_stays_in_review_backlog(
+    client: TestClient,
+) -> None:
+    deadline = datetime.now(timezone.utc) + timedelta(days=30)
+    with client.app.state.session_factory() as session:
+        notice = Notice(
+            notice_key="MANUAL-R07-REVIEW",
+            bid_notice_no="MANUAL-R07-REVIEW",
+            revision_no="00",
+            title="문서 분석 완료 후 자격 검토 공고",
+            agency="공공기관",
+            deadline=deadline,
+            status="OPEN",
+        )
+        version = NoticeVersion(
+            version_no=1,
+            file_sha256="7" * 64,
+            source_payload={"kind": "TEST"},
+        )
+        notice.versions.append(version)
+        session.add(notice)
+        session.flush()
+        notice.evaluations.append(
+            Evaluation(
+                notice_version_id=version.id,
+                deadline_snapshot_at=deadline,
+                eligibility="REVIEW",
+                reason_code="R07",
+                readiness_score=70,
+                readiness_status="YELLOW",
+                evidence_coverage=100,
+                risk_score=30,
+                risk_band="CONDITIONAL_GO",
+                ruleset_version="r07-public-reason-regression",
+                atomic_results=[],
+                explanation={},
+            )
+        )
+        session.commit()
+
+    summary = client.get("/api/v1/notices").json()[0]
+    assert summary["analysis_state"] == "ANALYZED"
+    assert summary["analysis_reason_code"] == "ANALYZED"
+    assert summary["latest_evaluation"]["eligibility"] == "REVIEW"
+    assert summary["latest_evaluation"]["reason_code"] == "R07"
+    assert client.get("/api/v1/dashboard").json()[
+        "analysis_review_backlog_count"
+    ] == 1
+
+
 def test_notice_search_covers_all_stored_statuses_and_public_identifiers(
     client: TestClient,
 ) -> None:

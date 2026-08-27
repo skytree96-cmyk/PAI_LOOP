@@ -3431,8 +3431,8 @@
 
   function isDocumentQualityReview(notice) {
     if (notice.analysisState !== "EVALUATED" || notice.eligibilityStatus !== "REVIEW") return false;
-    const code = String(notice.analysisReasonCode || notice.reasonCode || "").toUpperCase();
-    return notice.reasonCode === "R07" || [
+    const code = String(notice.analysisReasonCode || "").toUpperCase();
+    return [
       "ATTACHMENT_MANIFEST_MISSING",
       "ATTACHMENT_NONE",
       "ATTACHMENT_COVERAGE_INCOMPLETE",
