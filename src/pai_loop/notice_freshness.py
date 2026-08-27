@@ -128,3 +128,46 @@ def latest_current_analysis_run(notice: Notice) -> AnalysisRun | None:
         if analysis_basis_is_current(notice, run.notice_version_id):
             return run
     return None
+
+
+def analysis_run_versions_are_current(
+    run: AnalysisRun,
+    *,
+    pipeline_version: str,
+    policy_version: str,
+) -> bool:
+    """Return whether a stored snapshot used the active calculation policy.
+
+    Source-material freshness and calculation-policy freshness are separate
+    axes.  A PPS notice can still point at the current metadata/attachments
+    while its immutable snapshot was produced by an older pipeline or
+    requirement policy.  Keep the expected versions explicit at the caller so
+    this module does not import ``analysis_pipeline`` and create a cycle.
+    """
+
+    basis = run.basis_versions if isinstance(run.basis_versions, dict) else {}
+    return (
+        basis.get("pipeline") == pipeline_version
+        and basis.get("requirement_policy") == policy_version
+    )
+
+
+def analysis_version_refresh_required(
+    notice: Notice,
+    *,
+    pipeline_version: str,
+    policy_version: str,
+) -> bool:
+    """Return true only for a current-source snapshot using stale policy code.
+
+    A notice with no current run remains ordinary never-attempted/retry work;
+    this predicate is deliberately limited to an existing current-source run
+    so queue partitions stay disjoint.
+    """
+
+    run = latest_current_analysis_run(notice)
+    return run is not None and not analysis_run_versions_are_current(
+        run,
+        pipeline_version=pipeline_version,
+        policy_version=policy_version,
+    )

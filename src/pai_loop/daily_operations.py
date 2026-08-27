@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
+from .analysis_pipeline import PIPELINE_VERSION
 from .auth import require_api_key
 from .analysis_selection import manual_only_notice_keys
 from .award_intelligence import build_award_intelligence
@@ -28,7 +29,12 @@ from .models import (
     MockNotification,
     Notice,
 )
-from .notice_freshness import latest_current_analysis_run, latest_current_evaluation
+from .eligibility_policy import POLICY_VERSION
+from .notice_freshness import (
+    analysis_run_versions_are_current,
+    latest_current_analysis_run,
+    latest_current_evaluation,
+)
 from .quantitative_scoring import estimate_for_notice
 from .pps_enrichment import public_analysis_reason
 
@@ -85,12 +91,22 @@ def _latest_analysis_snapshot(notice: Notice) -> dict[str, Any] | None:
     run = latest_current_analysis_run(notice)
     if run is None:
         return None
+    basis_versions = (
+        run.basis_versions if isinstance(run.basis_versions, dict) else {}
+    )
     return {
         "analysis_run_id": run.id,
         "status": run.status,
         "generated_at": run.generated_at,
         "input_sha256": run.input_sha256,
-        "basis_versions": run.basis_versions,
+        "basis_versions": basis_versions,
+        "pipeline_version": basis_versions.get("pipeline"),
+        "policy_version": basis_versions.get("requirement_policy"),
+        "version_current": analysis_run_versions_are_current(
+            run,
+            pipeline_version=PIPELINE_VERSION,
+            policy_version=POLICY_VERSION,
+        ),
         "output_summary": run.output_summary,
         "scores": [
             {
@@ -329,6 +345,10 @@ def daily_briefing(
             item["analysis_coverage"]["reason_code"] == "ANALYZED"
             and item["analysis_snapshot"] is None
         )
+        or (
+            item["analysis_snapshot"] is not None
+            and not item["analysis_snapshot"]["version_current"]
+        )
     ]
     retryable.sort(
         key=lambda item: item["analysis_coverage"]["updated_at"]
@@ -386,7 +406,11 @@ def daily_briefing(
             "never_attempted_notice_keys": bounded_never_attempted_notice_keys,
             "retryable_notice_keys": bounded_retryable_notice_keys,
             "limit": 50,
-            "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·미지원 형식은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
+            "note": (
+                "미시도 공고를 먼저 처리하고 구버전 분석은 현재 정책으로 점진 갱신하며, "
+                "실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·미지원 형식은 "
+                "manifest가 바뀔 때까지 자동 재시도하지 않습니다."
+            ),
         },
         "delivery": {
             "channel": "teams",

@@ -5,8 +5,13 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
+from pai_loop.analysis_api import (
+    AnalysisBackfillPlanRequest,
+    _select_backfill_notice_keys,
+)
 from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop import daily_operations
 from pai_loop.models import (
@@ -109,7 +114,7 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         "never_attempted_notice_keys": ["DAILY-RECENT"],
         "retryable_notice_keys": [],
         "limit": 50,
-        "note": "미시도 공고를 먼저 처리하고 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·미지원 형식은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
+        "note": "미시도 공고를 먼저 처리하고 구버전 분석은 현재 정책으로 점진 갱신하며, 실패 건은 가장 오래된 시도부터 재검토합니다. 첨부 없음·미지원 형식은 manifest가 바뀔 때까지 자동 재시도하지 않습니다.",
     }
     assert body["source_calls"] == {"pps": 0, "openai": 0, "teams": 0}
     assert body["delivery"] == {
@@ -548,9 +553,226 @@ def test_completed_analyzed_snapshot_stays_out_of_retry_queue(
     body = briefing.json()
     item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
     assert item["analysis_snapshot"]["status"] == "COMPLETED"
+    assert item["analysis_snapshot"]["version_current"] is True
     assert item["analysis_coverage"]["reason_code"] == "ANALYZED"
     assert notice_key not in body["analysis_queue"]["notice_keys"]
     assert notice_key not in body["analysis_queue"]["retryable_notice_keys"]
+    with client.app.state.session_factory() as session:
+        assert notice_key not in _select_backfill_notice_keys(
+            session,
+            AnalysisBackfillPlanRequest(include_retryable=True),
+            now=datetime(2026, 8, 19, 3, 0, tzinfo=timezone.utc),
+        )
+
+
+def _seed_stale_analysis_snapshot(
+    client: TestClient,
+    *,
+    status: str = "OPEN",
+    deadline: datetime | None = None,
+) -> str:
+    notice_key = "MANUAL-INCHON-2025-17"
+    with client.app.state.session_factory() as session:
+        imported = import_public_notice_seed(session)
+        assert imported.requirement_count == 23
+
+    analysed = client.post(
+        "/api/v1/notices/analysis/batch",
+        json={"notice_keys": [notice_key], "dry_run": False},
+    )
+    assert analysed.status_code == 200, analysed.text
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        run = session.query(AnalysisRun).filter_by(notice_id=notice.id).one()
+        stale_basis = dict(run.basis_versions or {})
+        stale_basis["pipeline"] = "analysis-pipeline-previous"
+        stale_basis["requirement_policy"] = "requirement-policy-previous"
+        run.basis_versions = stale_basis
+        run.status = "COMPLETED"
+        notice.published_at = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
+        notice.deadline = deadline or datetime(2026, 9, 30, 9, 0, tzinfo=timezone.utc)
+        notice.status = status
+        session.commit()
+    return notice_key
+
+
+def test_version_stale_open_snapshot_enters_daily_and_backfill_once(
+    client: TestClient,
+) -> None:
+    notice_key = _seed_stale_analysis_snapshot(client)
+
+    briefing = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={
+            "days": 7,
+            "limit": 50,
+            "as_of": "2026-08-27T16:30:00+09:00",
+        },
+    )
+    assert briefing.status_code == 200, briefing.text
+    body = briefing.json()
+    item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
+    assert item["analysis_snapshot"]["version_current"] is False
+    assert item["analysis_snapshot"]["pipeline_version"] == (
+        "analysis-pipeline-previous"
+    )
+    assert item["analysis_snapshot"]["policy_version"] == (
+        "requirement-policy-previous"
+    )
+    assert body["analysis_queue"]["retryable_notice_keys"] == [notice_key]
+    with client.app.state.session_factory() as session:
+        assert _select_backfill_notice_keys(
+            session,
+            AnalysisBackfillPlanRequest(include_retryable=False),
+            now=datetime(2026, 8, 27, 7, 30, tzinfo=timezone.utc),
+        ) == [notice_key]
+
+    payload = {
+        "queue_name": "DAILY",
+        "notice_keys": [notice_key],
+        "retry_notice_keys": [notice_key],
+        "retry_epoch": "2026-08-27",
+        "request_token": "w10:version-refresh-regression",
+        "dry_run": True,
+        "chunk_size": 1,
+        "execution_limit": 5,
+        "include_retryable": False,
+        "retry_cooldown_hours": 24,
+    }
+    first = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=payload,
+    )
+    assert first.status_code == 200, first.text
+    planned = first.json()
+    assert planned["planned"] == 1
+    assert planned["offered"] == 1
+    assert planned["chunks"] == [[notice_key]]
+    assert planned["offered"] <= payload["execution_limit"]
+    assert all(len(chunk) == 1 for chunk in planned["chunks"])
+
+    exact_replay = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json=payload,
+    )
+    assert exact_replay.status_code == 200, exact_replay.text
+    replayed = exact_replay.json()
+    assert replayed["job_id"] == planned["job_id"]
+    assert replayed["segment_id"] == planned["segment_id"]
+    assert replayed["chunks"] == planned["chunks"]
+
+
+def test_failed_version_refresh_observes_backfill_retry_cooldown(
+    client: TestClient,
+) -> None:
+    notice_key = _seed_stale_analysis_snapshot(client)
+    with client.app.state.session_factory() as session:
+        notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+        stale_run = session.query(AnalysisRun).filter_by(notice_id=notice.id).one()
+        attempt_at = max(
+            datetime(2026, 8, 27, 8, 0, tzinfo=timezone.utc),
+            stale_run.generated_at.replace(tzinfo=timezone.utc)
+            if stale_run.generated_at.tzinfo is None
+            else stale_run.generated_at.astimezone(timezone.utc),
+        ) + timedelta(minutes=1)
+        parent = IngestionJob(
+            source="ANALYSIS_BACKFILL",
+            mode="LIVE",
+            status="FAILED",
+            window_json={"scope": "OPEN_NOT_SELECTED"},
+            request_json={"queue_name": "BACKFILL"},
+            matched=1,
+            notice_keys=[notice_key],
+            warnings=["SYNTHETIC_REFRESH_FAILURE"],
+            completed_at=attempt_at,
+            created_at=attempt_at - timedelta(seconds=1),
+        )
+        session.add(parent)
+        session.flush()
+        session.add(
+            IngestionJob(
+                source="ANALYSIS",
+                mode="LIVE",
+                status="FAILED",
+                window_json={"scope": "NOTICE_KEYS"},
+                request_json={
+                    "parent_job_id": parent.id,
+                    "chunk_index": 0,
+                    "work_generations": {notice_key: 0},
+                },
+                matched=1,
+                notice_keys=[notice_key],
+                warnings=["SYNTHETIC_REFRESH_FAILURE"],
+                completed_at=attempt_at,
+                created_at=attempt_at,
+            )
+        )
+        session.commit()
+
+    payload = AnalysisBackfillPlanRequest(
+        include_retryable=True,
+        retry_cooldown_hours=24,
+    )
+    with client.app.state.session_factory() as session:
+        assert _select_backfill_notice_keys(
+            session,
+            payload,
+            now=attempt_at + timedelta(hours=1),
+        ) == []
+        assert _select_backfill_notice_keys(
+            session,
+            AnalysisBackfillPlanRequest(
+                include_retryable=False,
+                retry_cooldown_hours=24,
+            ),
+            now=attempt_at + timedelta(hours=25),
+        ) == []
+        assert _select_backfill_notice_keys(
+            session,
+            payload,
+            now=attempt_at + timedelta(hours=25),
+        ) == [notice_key]
+
+
+@pytest.mark.parametrize(
+    ("status", "deadline"),
+    [
+        ("CLOSED", datetime(2026, 9, 30, 9, 0, tzinfo=timezone.utc)),
+        ("OPEN", datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)),
+    ],
+)
+def test_version_stale_closed_or_expired_snapshot_is_not_queued(
+    client: TestClient,
+    status: str,
+    deadline: datetime,
+) -> None:
+    notice_key = _seed_stale_analysis_snapshot(
+        client,
+        status=status,
+        deadline=deadline,
+    )
+
+    briefing = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={"days": 7, "as_of": "2026-08-27T16:30:00+09:00"},
+    )
+    assert briefing.status_code == 200, briefing.text
+    assert notice_key not in briefing.json()["analysis_queue"]["notice_keys"]
+
+    backfill = client.post(
+        "/api/v1/operations/analysis-backfills/plan",
+        json={
+            "queue_name": "BACKFILL",
+            "dry_run": True,
+            "chunk_size": 1,
+            "execution_limit": 5,
+            "include_retryable": True,
+            "retry_cooldown_hours": 24,
+        },
+    )
+    assert backfill.status_code == 200, backfill.text
+    assert backfill.json()["planned"] == 0
+    assert backfill.json()["offered"] == 0
 
 
 def test_incomplete_attachment_coverage_is_exposed_as_retryable(
