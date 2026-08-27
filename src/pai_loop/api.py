@@ -423,7 +423,6 @@ def _needs_analysis_or_review(
         return True
     return bool(
         current_evaluation.eligibility == Eligibility.REVIEW.value
-        and current_evaluation.reason_code != "R07"
         and reason.reason_code not in _DOCUMENT_QUALITY_REVIEW_CODES
     )
 

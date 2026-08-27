@@ -12,6 +12,7 @@ from .models import AtomicRequirement, CompanyFact, Notice, NoticeVersion
 
 RULESET_VERSION = "2026.08-v2"
 MIN_EXTRACTION_CONFIDENCE = 0.90
+MIN_REVIEWABLE_EXTRACTION_CONFIDENCE = 0.80
 DOCUMENT_QUALITY_ACCEPTED_STATUSES = frozenset({"COMPLETE", "ACCEPTED"})
 RISK_METHOD_VERSION = "business-risk-2.0.0"
 RISK_MIN_EVIDENCED_AXES = 4
@@ -153,7 +154,10 @@ def _evaluate_atomic(
         "source_location": requirement.source_location,
     }
 
-    if not document_quality_ok or requirement.parse_confidence < MIN_EXTRACTION_CONFIDENCE:
+    if (
+        not document_quality_ok
+        or requirement.parse_confidence < MIN_REVIEWABLE_EXTRACTION_CONFIDENCE
+    ):
         return {
             **base,
             "result": Eligibility.REVIEW.value,
@@ -162,6 +166,17 @@ def _evaluate_atomic(
             "evidence_key": None,
             "evidence_valid": False,
             "message": "문서 추출 품질 Gate를 통과하지 못해 원문 확인이 필요합니다.",
+        }
+
+    if requirement.parse_confidence < MIN_EXTRACTION_CONFIDENCE:
+        return {
+            **base,
+            "result": Eligibility.REVIEW.value,
+            "reason_code": "R07_LOW_CONFIDENCE",
+            "actual_value": None,
+            "evidence_key": None,
+            "evidence_valid": False,
+            "message": "조건 추출 신뢰도가 자동 판정 기준 미만이어서 이 조건의 원문 확인이 필요합니다.",
         }
 
     fact = facts.get(requirement.fact_key)
@@ -333,6 +348,7 @@ def evaluate_notice(
     company_facts: Iterable[CompanyFact],
     *,
     verified_document_requirement_keys: frozenset[str] | None = None,
+    no_blocking_requirements_verified: bool = False,
     risk_dimensions: dict[str, float] | None = None,
     risk_axis_basis: dict[str, Any] | None = None,
 ) -> EvaluationResult:
@@ -346,6 +362,11 @@ def evaluate_notice(
         # the document; PARTIAL/REVIEW/failed attempts remain fail-closed R07.
         and version.extraction_status in DOCUMENT_QUALITY_ACCEPTED_STATUSES
         and version.extraction_confidence >= MIN_EXTRACTION_CONFIDENCE
+    )
+    no_blocking_requirements_accepted = (
+        no_blocking_requirements_verified
+        and not active_requirements
+        and document_quality_ok
     )
     verified_keys = verified_document_requirement_keys or frozenset()
     atomics = [
@@ -382,7 +403,9 @@ def evaluate_notice(
             {"group_key": group_key, "result": group_result.value, "paths": path_summaries}
         )
 
-    if not active_requirements:
+    if no_blocking_requirements_accepted:
+        eligibility, reason_code = Eligibility.PASS, "NO_BLOCKING_REQUIREMENTS"
+    elif not active_requirements:
         eligibility, reason_code = Eligibility.REVIEW, "R07"
     elif Eligibility.FAIL in overall_groups:
         eligibility, reason_code = Eligibility.FAIL, "DF-000"
@@ -400,9 +423,16 @@ def evaluate_notice(
         100 * sum(bool(item["evidence_valid"]) for item in evidence_items) / len(evidence_items), 1
     ) if evidence_items else 100.0
 
-    fact_coverage = round(
-        100 * sum(item["actual_value"] is not None for item in atomics) / len(atomics), 1
-    ) if atomics else 0.0
+    fact_coverage = (
+        round(
+            100 * sum(item["actual_value"] is not None for item in atomics) / len(atomics),
+            1,
+        )
+        if atomics
+        else 100.0
+        if no_blocking_requirements_accepted
+        else 0.0
+    )
     document_quality_score = (
         round(version.extraction_confidence * 100, 1) if document_quality_ok else 0.0
     )
@@ -413,7 +443,9 @@ def evaluate_notice(
         1,
     )
 
-    if not atomics or not document_quality_ok:
+    if no_blocking_requirements_accepted:
+        readiness_status = ReadinessStatus.GREEN
+    elif not atomics or not document_quality_ok:
         readiness_status = ReadinessStatus.GRAY
     elif readiness_score >= 80 and evidence_coverage >= 80:
         readiness_status = ReadinessStatus.GREEN
@@ -489,6 +521,8 @@ def evaluate_notice(
         "document_gate": {
             "strict_document_quality_ok": document_quality_ok,
             "verified_requirement_keys_applied": sorted(verified_keys),
+            "no_blocking_requirements_verified": no_blocking_requirements_verified,
+            "no_blocking_requirements_accepted": no_blocking_requirements_accepted,
         },
         "risk": risk_basis,
         "separation_notice": "참가자격, 정량 준비도, 증빙 커버리지, 사업 리스크는 서로 독립된 지표입니다.",

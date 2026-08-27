@@ -12,7 +12,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.08.17-v1"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.08.27-v2"
 
 _FORBIDDEN_KEYS = {
     "address",
@@ -121,6 +121,79 @@ def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
             and _contains(text, "기재되어", "로 기재", "이라고 기재")
         )
     )
+
+
+def _is_bid_bond_clause(text: str) -> bool:
+    """Keep bid-bond consequences out of the bidder-sanction fact.
+
+    Notices often mention a future 부정당업자 제재 in the same sentence as
+    bid-bond forfeiture or payment. That is a conditional bid rule, not proof
+    that the bidder is currently free of sanctions.
+    """
+
+    return bool(re.search(r"입찰\s*보증금", text))
+
+
+def _is_bidder_registration_eligibility(text: str) -> bool:
+    """Match registration and narrow statutory bidder-qualification clauses."""
+
+    # A restriction clause is evidence about sanctions, not registration.
+    if re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text):
+        return False
+
+    # Allow particles and spacing used in live notices.
+    if re.search(
+        r"입찰\s*참가\s*자격\s*(?:을|를)?[^.!?]{0,24}?등록",
+        text,
+    ):
+        return True
+
+    if re.search(r"입찰\s*참가\s*자격\s*요건", text):
+        return True
+    if "경쟁입찰참가자격" in text:
+        return True
+
+    # A general State Contracts Act clause is mapped only when it also says
+    # that the bidder must possess the relevant qualifications. Merely citing
+    # the Act (for a bond, contract term, etc.) is intentionally insufficient.
+    national_contract_law = bool(
+        re.search(
+            r"(?:국가\s*를\s*당사자로\s*하는\s*계약"
+            r"(?:\s*에\s*관한\s*법률)?|국가\s*계약\s*법)",
+            text,
+        )
+    )
+    qualification_possession = bool(
+        re.search(
+            r"(?:입찰\s*참가\s*)?자격(?:\s*요건)?\s*(?:을|를)?\s*"
+            r"(?:갖춘|갖추어야|구비한|충족한|보유한)",
+            text,
+        )
+    )
+    return national_contract_law and qualification_possession
+
+
+def _is_current_sanction_clearance(text: str) -> bool:
+    """Match a present no-restriction condition, not a future penalty."""
+
+    if _is_bid_bond_clause(text):
+        return False
+    sanction_context = "부정당" in text or bool(
+        re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text)
+    )
+    clear_condition = _contains(
+        text,
+        "받고 있지 않",
+        "받지 않",
+        "해당되지 않",
+        "해당하지 않",
+        "지정되지 않",
+        "제한되지 않",
+        "제재 중이지 않",
+        "부정당업자가 아닌",
+        "부정당업자가 아니어야",
+    )
+    return sanction_context and clear_condition
 
 
 def _as_date(value: Any) -> date | None:
@@ -301,7 +374,17 @@ def classify_requirements(
                     "message": "제안설명회 참석 기록이 확인되기 전에는 행동 필요·BLOCK이며 불참이면 입찰 진행을 중단합니다.",
                 }
             )
-        elif _contains(text, "입찰참가자격 등록", "입찰참가 자격요건", "경쟁입찰참가자격"):
+        elif _is_bid_bond_clause(text):
+            item = _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message=(
+                    "입찰보증금 면제·납부·귀속 및 조건부 제재에 관한 안내입니다. "
+                    "현재 부정당 제재 여부의 PASS 근거로 사용하지 않습니다."
+                ),
+            )
+        elif _is_bidder_registration_eligibility(text):
             item = _eligibility_item(
                 requirement,
                 profile=profile,
@@ -309,7 +392,7 @@ def classify_requirements(
                 deadline=as_of,
                 message="경쟁입찰참가자격 등록 보유 근거가 연결되었습니다. 마감일에는 나라장터 상태를 다시 확인합니다.",
             )
-        elif _contains(text, "부정당", "입찰참가자격 제한"):
+        elif _is_current_sanction_clearance(text):
             item = _eligibility_item(
                 requirement,
                 profile=profile,

@@ -31,6 +31,7 @@ from .eligibility_policy import (
 )
 from .evaluator import (
     MIN_EXTRACTION_CONFIDENCE,
+    MIN_REVIEWABLE_EXTRACTION_CONFIDENCE,
     RISK_METHOD_VERSION,
     RISK_WEIGHTS,
     RULESET_VERSION,
@@ -75,8 +76,8 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.5.0"
-MATERIALIZATION_VERSION = "atomic-materializer-0.2.0"
+PIPELINE_VERSION = "analysis-pipeline-0.6.0"
+MATERIALIZATION_VERSION = "atomic-materializer-0.3.0"
 SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
 MATERIALIZED_KIND = "ANALYSIS_PIPELINE_MATERIALIZATION"
@@ -595,21 +596,39 @@ def _parse_confidence(item: _MergedRequirement) -> float:
     return min(values) if values else 0.0
 
 
-def _has_verified_anchor(item: _MergedRequirement) -> bool:
+def _has_anchor_at_confidence(
+    item: _MergedRequirement,
+    *,
+    minimum_confidence: float,
+) -> bool:
     """Trust only exact anchors already accepted by the extraction boundary."""
 
     if (
         not item.anchors
         or not item.attachment_ids
         or not item.source_document_sha256s
-        or _parse_confidence(item) < MIN_EXTRACTION_CONFIDENCE
+        or _parse_confidence(item) < minimum_confidence
     ):
         return False
     return all(
         bool(anchor.quote.strip())
         and anchor.attachment_id in item.attachment_ids
-        and anchor.confidence >= MIN_EXTRACTION_CONFIDENCE
+        and anchor.confidence >= minimum_confidence
         for anchor in item.anchors
+    )
+
+
+def _has_verified_anchor(item: _MergedRequirement) -> bool:
+    return _has_anchor_at_confidence(
+        item,
+        minimum_confidence=MIN_EXTRACTION_CONFIDENCE,
+    )
+
+
+def _has_reviewable_anchor(item: _MergedRequirement) -> bool:
+    return _has_anchor_at_confidence(
+        item,
+        minimum_confidence=MIN_REVIEWABLE_EXTRACTION_CONFIDENCE,
     )
 
 
@@ -648,39 +667,17 @@ def _partial_gate_candidate_keys(
         for item, policy in policy_items
         if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
     ]
-    if not eligibility_items or not all(_has_verified_anchor(item) for item in eligibility_items):
+    if not eligibility_items or not all(_has_reviewable_anchor(item) for item in eligibility_items):
         return frozenset(), frozenset()
 
     verified_materialized_keys = frozenset(
         item.requirement_key
         for item, policy in policy_items
-        if _is_materialized_policy_item(item, policy) and _has_verified_anchor(item)
+        if _is_materialized_policy_item(item, policy) and _has_reviewable_anchor(item)
     )
     return verified_materialized_keys, frozenset(
         item.requirement_key for item in eligibility_items
     )
-
-
-def _company_eligibility_verdict_complete(
-    evaluation: EvaluationResult,
-    *,
-    requirements: Sequence[AtomicRequirement],
-    eligibility_keys: frozenset[str],
-) -> bool:
-    if not eligibility_keys:
-        return False
-    by_key = {str(item.get("requirement_key")): item for item in evaluation.atomic_results}
-    requirement_by_key = {item.requirement_key: item for item in requirements}
-    for key in eligibility_keys:
-        requirement = requirement_by_key.get(key)
-        result = by_key.get(key)
-        if requirement is None or result is None:
-            return False
-        if result.get("result") not in {"PASS", "FAIL"} or result.get("actual_value") is None:
-            return False
-        if requirement.evidence_required and not result.get("evidence_valid"):
-            return False
-    return True
 
 
 def _bounded_axis(value: Any) -> float | None:
@@ -714,7 +711,10 @@ def _derive_risk_dimensions(
         for item, policy in policy_items
         if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
     ]
-    if eligibility_items:
+    no_blocking_requirements_verified = (
+        evaluation.reason_code == "NO_BLOCKING_REQUIREMENTS"
+    )
+    if eligibility_items or no_blocking_requirements_verified:
         qualification = {"PASS": 10.0, "REVIEW": 60.0, "FAIL": 100.0}[
             evaluation.eligibility.value
         ]
@@ -724,6 +724,7 @@ def _derive_risk_dimensions(
             "method": "PASS=10; REVIEW=60; FAIL=100",
             "requirement_count": len(eligibility_items),
             "outcome": evaluation.eligibility.value,
+            "no_blocking_requirements_verified": no_blocking_requirements_verified,
         }
 
         execution = round(max(0.0, min(100.0, 100.0 - evaluation.readiness_score)), 2)
@@ -1194,7 +1195,11 @@ def _system_bid_recommendation(
     quantitative_band: str,
     competition_band: str | None,
 ) -> str:
-    if eligibility == "FAIL" or business_risk_band == "NO_GO":
+    if eligibility == "FAIL":
+        return "NO_GO"
+    if eligibility == "REVIEW":
+        return "HOLD"
+    if business_risk_band == "NO_GO":
         return "NO_GO"
     if (
         eligibility == "PASS"
@@ -1437,8 +1442,30 @@ def run_analysis_pipeline(
             if pps_manifest_basis is not None and not pps_manifest_basis["coverage_complete"]:
                 warnings.append("ATTACHMENT_COVERAGE_INCOMPLETE")
             accepted_source_count = sum(source.materializable for source in sources)
+            no_blocking_requirements_verified = bool(
+                policy_items
+                and not materialized_policy_items
+                and sources
+                and accepted_source_count == len(sources)
+                and all(
+                    _source_effectively_complete(
+                        source,
+                        unresolved_gaps=unresolved_gap_set,
+                    )
+                    for source in sources
+                )
+                and (
+                    pps_manifest_basis is None
+                    or pps_manifest_basis["coverage_complete"]
+                )
+                and all(_has_verified_anchor(item) for item, _policy in policy_items)
+            )
             if not materialized_policy_items:
-                warnings.append("NO_ELIGIBILITY_OR_ACTION_REQUIREMENTS")
+                warnings.append(
+                    "NO_BLOCKING_REQUIREMENTS_VERIFIED"
+                    if no_blocking_requirements_verified
+                    else "NO_ELIGIBILITY_OR_ACTION_REQUIREMENTS"
+                )
             if not sources:
                 run_status = "FAILED"
             elif accepted_source_count == 0:
@@ -1453,7 +1480,10 @@ def run_analysis_pipeline(
                     )
                     for source in sources
                 )
-                or not materialized_policy_items
+                or (
+                    not materialized_policy_items
+                    and not no_blocking_requirements_verified
+                )
                 or (
                     pps_manifest_basis is not None
                     and not pps_manifest_basis["coverage_complete"]
@@ -1463,7 +1493,7 @@ def run_analysis_pipeline(
             else:
                 run_status = "COMPLETED"
             warnings = sorted(set(warnings))
-            gate_candidate_keys, eligibility_gate_keys = _partial_gate_candidate_keys(
+            gate_candidate_keys, _eligibility_gate_keys = _partial_gate_candidate_keys(
                 run_status=run_status,
                 sources=sources,
                 policy_items=policy_items,
@@ -1544,27 +1574,19 @@ def run_analysis_pipeline(
                 prospective_atomics,
                 company_facts,
                 verified_document_requirement_keys=gate_candidate_keys,
+                no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions={},
             )
-            eligibility_gate_applied = bool(
-                gate_candidate_keys
-                and _company_eligibility_verdict_complete(
-                    provisional_evaluation,
-                    requirements=prospective_atomics,
-                    eligibility_keys=eligibility_gate_keys,
-                )
-            )
+            # A known non-eligibility gap (for example a missing score table) must
+            # not erase a separately verified eligibility clause.  Once every
+            # mandatory eligibility anchor is verified, evaluate those clauses
+            # against the company profile even when the result is REVIEW because
+            # a company fact is missing.  Unknown gaps and unverified anchors stay
+            # fail-closed in ``_partial_gate_candidate_keys``.
+            eligibility_gate_applied = bool(gate_candidate_keys)
             verified_requirement_keys = (
                 gate_candidate_keys if eligibility_gate_applied else frozenset()
             )
-            if gate_candidate_keys and not eligibility_gate_applied:
-                provisional_evaluation = evaluate_notice(
-                    notice,
-                    materialized_version,
-                    prospective_atomics,
-                    company_facts,
-                    risk_dimensions={},
-                )
             if eligibility_gate_applied:
                 warnings = sorted(
                     set(warnings) | {"NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"}
@@ -1574,7 +1596,7 @@ def run_analysis_pipeline(
                     "review_code": None,
                     "eligibility_gate_applied": True,
                     "eligibility_gate_basis": (
-                        "ALL_MANDATORY_ELIGIBILITY_ANCHORS_VERIFIED_AND_COMPANY_VERDICT_COMPLETE"
+                        "ALL_MANDATORY_ELIGIBILITY_ANCHORS_VERIFIED"
                     ),
                     "warnings": warnings,
                 }
@@ -1594,6 +1616,7 @@ def run_analysis_pipeline(
                 prospective_atomics,
                 company_facts,
                 verified_document_requirement_keys=verified_requirement_keys,
+                no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions=derived_risk_dimensions,
                 risk_axis_basis=risk_axis_basis,
             )

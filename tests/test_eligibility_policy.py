@@ -141,6 +141,113 @@ def test_future_conviction_check_does_not_overextend_current_declaration() -> No
     assert result["blocking_items"] == 1
 
 
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "나라장터에 입찰서 제출 마감일 전일까지 입찰참가자격을 등록해야 함",
+        "나라장터에 입찰 참가 자격을 등록하여야 함",
+        "나라장터 경쟁입찰 참가자격 등록을 완료해야 함",
+    ],
+)
+def test_live_bidder_registration_wording_allows_particles_and_spacing(
+    condition: str,
+) -> None:
+    result = classify_requirements(
+        [requirement("LIVE-REGISTRATION", "SUBMISSION", condition)],
+        profile=load_public_company_profile(),
+        deadline="2026-08-27",
+    )
+
+    item = result["items"][0]
+    assert item["policy_class"] == "ELIGIBILITY"
+    assert item["company_fact_key"] == "bidder_registration"
+    assert item["outcome"] == "PASS_CURRENT"
+    assert item["blocking"] is False
+    assert item["evidence"]["display_name"] == "경쟁입찰참가자격등록증"
+
+
+def test_live_state_contract_qualification_and_restriction_map_to_distinct_facts() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "LIVE-STATE-CONTRACT-QUALIFICATION",
+                "ENTITY",
+                (
+                    "국가를 당사자로 하는 계약에 관한 법률 시행령 및 "
+                    "시행규칙에 따른 자격 요건을 갖춘 자"
+                ),
+            ),
+            requirement(
+                "LIVE-STATE-CONTRACT-RESTRICTION",
+                "SANCTION",
+                (
+                    "국가를 당사자로 하는 계약에 관한 법률 시행령 상 "
+                    "입찰참가 제한 각호에 해당되지 않는 업체여야 함"
+                ),
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-08-27",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    qualification = by_id["LIVE-STATE-CONTRACT-QUALIFICATION"]
+    assert qualification["company_fact_key"] == "bidder_registration"
+    assert qualification["outcome"] == "PASS_CURRENT"
+    restriction = by_id["LIVE-STATE-CONTRACT-RESTRICTION"]
+    assert restriction["company_fact_key"] == "sanction_clear"
+    assert restriction["outcome"] == "PASS_CURRENT"
+
+
+def test_live_bid_bond_penalty_clause_is_not_sanction_clearance_pass() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "LIVE-BID-BOND",
+                "SANCTION",
+                (
+                    "입찰보증금은 원칙적으로 면제되나, 특정 사유(국고귀속 미수납, "
+                    "채무불이행, 부정당업자 제재 등) 해당 시 입찰금액의 일정 "
+                    "비율을 납부해야 함"
+                ),
+            )
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-08-27",
+    )
+
+    item = result["items"][0]
+    assert item["policy_class"] == "INFORMATION"
+    assert item["company_fact_key"] is None
+    assert item["outcome"] != "PASS_CURRENT"
+    assert item["blocking"] is False
+
+
+def test_checklist_and_information_items_remain_nonblocking() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "NONBLOCKING-CHECKLIST",
+                "SUBMISSION",
+                "계약 체결 시 청렴계약이행서약서를 제출해야 함.",
+            ),
+            requirement(
+                "NONBLOCKING-INFORMATION",
+                "PERFORMANCE",
+                "입찰가격은 부가가치세를 포함한 총액으로 제출해야 함.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-08-27",
+    )
+
+    assert [item["policy_class"] for item in result["items"]] == [
+        "CHECKLIST",
+        "INFORMATION",
+    ]
+    assert all(item["blocking"] is False for item in result["items"])
+
+
 def test_vehicle_seat_count_is_not_misread_as_two_person_attendee_limit() -> None:
     result = classify_requirements(
         [

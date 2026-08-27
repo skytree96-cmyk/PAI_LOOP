@@ -14,6 +14,7 @@ from pai_loop.analysis_pipeline import (
     PIPELINE_VERSION,
     SNAPSHOT_VERSION,
     _digest,
+    _system_bid_recommendation,
     run_analysis_pipeline,
 )
 from pai_loop.database import Base, build_engine, build_session_factory
@@ -434,8 +435,8 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.5.0"
-    assert MATERIALIZATION_VERSION == "atomic-materializer-0.2.0"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.0"
+    assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.0"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.2.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
     notice.risk_dimensions = None
@@ -515,6 +516,66 @@ def test_action_is_reviewed_but_checklist_is_snapshot_only(db_session: Session) 
     assert action.reason_code == "R04"
     assert action.blocking is True
     assert checklist.blocking is False
+
+
+def test_complete_nonblocking_requirements_do_not_become_r07(db_session: Session) -> None:
+    notice = _notice(db_session, notice_key="NONBLOCKING", title="일반 운영 안내 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-NONBLOCKING",
+        digest_char="6",
+        requirements=[
+            _requirement(
+                "REQ-INFO",
+                "용역기간은 계약체결일부터 12개월",
+                attachment_id="ATT-NONBLOCKING",
+                category="OTHER",
+            ),
+            _requirement(
+                "REQ-CHECK",
+                "제안서는 직접 방문 접수",
+                attachment_id="ATT-NONBLOCKING",
+                category="SUBMISSION",
+            ),
+        ],
+    )
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "COMPLETED"
+    assert result.eligibility == "PASS"
+    assert result.reason_code == "NO_BLOCKING_REQUIREMENTS"
+    assert result.materialized_requirement_count == 0
+    assert "NO_BLOCKING_REQUIREMENTS_VERIFIED" in result.warnings
+    assert "NO_ELIGIBILITY_OR_ACTION_REQUIREMENTS" not in result.warnings
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert evaluation is not None
+    assert evaluation.readiness_status == "GREEN"
+    assert evaluation.risk_score is not None
+    assert evaluation.risk_band == "GO"
+    snapshots = list(
+        db_session.scalars(
+            select(RequirementResultSnapshot).where(
+                RequirementResultSnapshot.analysis_run_id == result.analysis_run_id
+            )
+        ).all()
+    )
+    assert {item.policy_class for item in snapshots} == {"CHECKLIST", "INFORMATION"}
+    assert all(item.blocking is False for item in snapshots)
+
+
+def test_review_never_becomes_system_no_go_from_uncertainty_risk() -> None:
+    assert _system_bid_recommendation(
+        eligibility="REVIEW",
+        readiness_status="GRAY",
+        business_risk_band="NO_GO",
+        quantitative_status="REVIEW",
+        quantitative_band="GRAY",
+        competition_band=None,
+    ) == "HOLD"
 
 
 def test_partial_extraction_merges_accepted_content_but_forces_r07(db_session: Session) -> None:
@@ -607,6 +668,51 @@ def test_known_non_eligibility_gap_can_release_r07_after_strict_eligibility_chec
     assert business_risk.basis_json["axis_basis"]["document"]["run_status"] == "PARTIAL"
 
 
+def test_known_non_eligibility_gap_keeps_medium_confidence_as_review_only(
+    db_session: Session,
+) -> None:
+    notice = _notice(db_session, notice_key="PARTIAL-MEDIUM", title="배점표 일부 누락 교육 용역")
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-MEDIUM",
+        digest_char="3",
+        requirements=[
+            _requirement(
+                "REQ-MEDIUM",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-MEDIUM",
+                confidence=0.85,
+            )
+        ],
+        missing=["가격산정 세부표 일부"],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == "REVIEW"
+    assert result.reason_code == "REVIEW_MATCH"
+    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" in result.warnings
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert evaluation is not None
+    assert {item["reason_code"] for item in evaluation.atomic_results} == {
+        "R07_LOW_CONFIDENCE"
+    }
+    assert evaluation.explanation["risk"]["status"] == "AVAILABLE"
+    system_opinion = db_session.scalar(
+        select(RecommendationSnapshot).where(
+            RecommendationSnapshot.analysis_run_id == result.analysis_run_id,
+            RecommendationSnapshot.recommendation_key == "bid:system",
+        )
+    )
+    assert system_opinion is not None
+    assert system_opinion.recommendation == "HOLD"
+
+
 def test_partial_gate_stays_fail_closed_when_an_eligibility_anchor_is_unverified(
     db_session: Session,
 ) -> None:
@@ -679,7 +785,7 @@ def test_partial_gate_stays_fail_closed_for_a_missing_blocking_action(
     assert "operation" in evaluation.explanation["risk"]["missing_axes"]
 
 
-def test_partial_gate_stays_fail_closed_until_company_evidence_is_complete(
+def test_known_non_eligibility_gap_preserves_company_evidence_review(
     db_session: Session,
 ) -> None:
     notice = _notice(db_session, notice_key="PARTIAL-EVIDENCE", title="회사 증빙 미완료 용역")
@@ -704,12 +810,15 @@ def test_partial_gate_stays_fail_closed_until_company_evidence_is_complete(
 
     assert result.status == "PARTIAL"
     assert result.eligibility == "REVIEW"
-    assert result.reason_code == "R07"
-    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" not in result.warnings
+    assert result.reason_code == "REVIEW_MATCH"
+    assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" in result.warnings
     evaluation = db_session.get(Evaluation, result.evaluation_id)
     assert evaluation is not None
-    assert evaluation.risk_score is None
-    assert evaluation.risk_band == "UNKNOWN"
+    assert {item["reason_code"] for item in evaluation.atomic_results} == {"R04"}
+    assert len(
+        evaluation.explanation["document_gate"]["verified_requirement_keys_applied"]
+    ) == 1
+    assert evaluation.explanation["risk"]["status"] == "AVAILABLE"
 
 
 def test_no_extraction_source_is_a_persisted_fail_closed_r07(db_session: Session) -> None:
