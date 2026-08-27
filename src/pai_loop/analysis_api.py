@@ -2647,16 +2647,7 @@ def run_notice_analysis_batch(
             session,
             requested_notices,
         )
-        inactive_automatic_keys = {
-            notice.notice_key
-            for notice in requested_notices
-            if payload.operation_id is not None
-            and (
-                notice.status != "OPEN"
-                or _utc(notice.deadline) < datetime.now(timezone.utc)
-            )
-        }
-    if cancelled_keys:
+    if cancelled_keys and payload.operation_id is None:
         ordered_cancelled_keys = [
             notice_key
             for notice_key in payload.notice_keys
@@ -2668,19 +2659,6 @@ def run_notice_analysis_batch(
                 "code": "PPS_NOTICE_CANCELLED",
                 "message": "조달청에서 취소된 공고가 포함되어 분석 배치를 시작하지 않았습니다.",
                 "notice_keys": ordered_cancelled_keys,
-            },
-        )
-    if inactive_automatic_keys:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "AUTOMATIC_NOTICE_NOT_ACTIVE",
-                "message": "종료되었거나 비활성인 공고는 자동 분석하지 않습니다.",
-                "notice_keys": [
-                    notice_key
-                    for notice_key in payload.notice_keys
-                    if notice_key in inactive_automatic_keys
-                ],
             },
         )
     job_id, stored_response = _create_batch_job(request, payload)
@@ -2747,6 +2725,11 @@ def _execute_notice_analysis_batch(
                 notice is not None
                 and authoritative_pps_cancelled_notice_keys(session, [notice])
             )
+            notice_active = bool(
+                notice is not None
+                and notice.status == "OPEN"
+                and _utc(notice.deadline) >= datetime.now(timezone.utc)
+            )
         if notice_id is None:
             rows.append(
                 AnalysisBatchItemOut(
@@ -2779,6 +2762,22 @@ def _execute_notice_analysis_batch(
                 enrichment_failed += 1
                 enrichment_warnings.append("PPS_NOTICE_CANCELLED")
             continue
+        if payload.operation_id is not None and not notice_active:
+            rows.append(
+                AnalysisBatchItemOut(
+                    notice_key=notice_key,
+                    status="SKIPPED",
+                    document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                    evaluation_status="NOT_RUN",
+                    snapshot_status="NOT_RUN",
+                    warnings=["AUTOMATIC_NOTICE_NOT_ACTIVE"],
+                )
+            )
+            skipped += 1
+            if enrichment_targeted:
+                enrichment_skipped += 1
+                enrichment_warnings.append("AUTOMATIC_NOTICE_NOT_ACTIVE")
+            continue
 
         enrichment_result: PpsEnrichmentResult | None = None
         should_enrich = (
@@ -2798,6 +2797,12 @@ def _execute_notice_analysis_batch(
             # before the potentially billable enrichment boundary.
             with request.app.state.session_factory() as session:
                 notice_before_enrichment = session.get(Notice, notice_id)
+                active_before_enrichment = bool(
+                    notice_before_enrichment is not None
+                    and notice_before_enrichment.status == "OPEN"
+                    and _utc(notice_before_enrichment.deadline)
+                    >= datetime.now(timezone.utc)
+                )
                 cancelled_before_enrichment = bool(
                     notice_before_enrichment is not None
                     and authoritative_pps_cancelled_notice_keys(
@@ -2819,6 +2824,21 @@ def _execute_notice_analysis_batch(
                 failed += 1
                 enrichment_failed += 1
                 enrichment_warnings.append("PPS_NOTICE_CANCELLED")
+                continue
+            if payload.operation_id is not None and not active_before_enrichment:
+                rows.append(
+                    AnalysisBatchItemOut(
+                        notice_key=notice_key,
+                        status="SKIPPED",
+                        document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                        evaluation_status="NOT_RUN",
+                        snapshot_status="NOT_RUN",
+                        warnings=["AUTOMATIC_NOTICE_NOT_ACTIVE"],
+                    )
+                )
+                skipped += 1
+                enrichment_skipped += 1
+                enrichment_warnings.append("AUTOMATIC_NOTICE_NOT_ACTIVE")
                 continue
             try:
                 enrichment_result = _enrich_one_notice(
@@ -2913,6 +2933,11 @@ def _execute_notice_analysis_batch(
 
         with request.app.state.session_factory() as session:
             notice_for_analysis = session.get(Notice, notice_id)
+            active_before_analysis = bool(
+                notice_for_analysis is not None
+                and notice_for_analysis.status == "OPEN"
+                and _utc(notice_for_analysis.deadline) >= datetime.now(timezone.utc)
+            )
             cancelled_before_analysis = bool(
                 notice_for_analysis is not None
                 and authoritative_pps_cancelled_notice_keys(
@@ -2937,6 +2962,26 @@ def _execute_notice_analysis_batch(
                     )
                 )
                 failed += 1
+                continue
+            if payload.operation_id is not None and not active_before_analysis:
+                rows.append(
+                    AnalysisBatchItemOut(
+                        notice_key=notice_key,
+                        status="SKIPPED",
+                        document_status="AUTOMATIC_NOTICE_NOT_ACTIVE",
+                        evaluation_status="NOT_RUN",
+                        snapshot_status="NOT_RUN",
+                        warnings=sorted(
+                            set(
+                                [
+                                    "AUTOMATIC_NOTICE_NOT_ACTIVE",
+                                    *item_enrichment_warnings,
+                                ]
+                            )
+                        ),
+                    )
+                )
+                skipped += 1
                 continue
             try:
                 result = run_analysis_pipeline(session, notice_id=notice_id)
