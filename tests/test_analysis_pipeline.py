@@ -698,7 +698,7 @@ def test_attachment_local_absence_is_resolved_only_by_an_accepted_sibling(
         document_complete=False,
         document_type="NOTICE",
         missing=[
-            "제안요청서의 세부 요구사항과 정량 평가표는 본문에 포함되지 않음."
+            "입찰공고 본문에는 제안요청서의 세부 요구사항과 정량 평가표가 포함되지 않음."
         ],
     )
     _source_version(

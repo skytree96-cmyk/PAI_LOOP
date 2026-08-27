@@ -433,6 +433,11 @@ def test_known_information_guards_do_not_override_embedded_eligibility() -> None
                 "세부품명 등록을 완료한 계약업체로 참여해야 함.",
             ),
             requirement(
+                "BIDDER-CONTRACT",
+                "ENTITY",
+                "경쟁입찰참가자격 등록을 완료한 계약업체로 참여해야 함.",
+            ),
+            requirement(
                 "COLLUSION-EXCLUSION",
                 "SANCTION",
                 "담합 사실이 있는 업체는 입찰에 참가할 수 없음.",
@@ -452,6 +457,9 @@ def test_known_information_guards_do_not_override_embedded_eligibility() -> None
     assert by_id["PRODUCT-CONTRACT"]["company_fact_key"] == (
         "notice_specific_product_registration"
     )
+    assert by_id["BIDDER-CONTRACT"]["policy_class"] == "ELIGIBILITY"
+    assert by_id["BIDDER-CONTRACT"]["company_fact_key"] == "bidder_registration"
+    assert by_id["BIDDER-CONTRACT"]["outcome"] == "PASS_CURRENT"
     assert by_id["COLLUSION-EXCLUSION"]["policy_class"] == "ELIGIBILITY"
     assert by_id["ORIGIN-CAPABILITY"]["policy_class"] == "ELIGIBILITY"
 

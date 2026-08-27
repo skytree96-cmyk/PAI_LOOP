@@ -517,13 +517,6 @@ def classify_requirements(
                 deadline=as_of,
                 message="공고 지정 품목의 유효한 직접생산확인증명서를 연결해야 합니다.",
             )
-        elif _is_descriptive_entity_clause(text, category=category):
-            item = _information_item(
-                requirement,
-                profile=profile,
-                capability_key=None,
-                message="입찰 대상 또는 기재된 계약업체에 대한 설명이며 회사 참가자격 조건으로 사용하지 않습니다.",
-            )
         elif _contains(text, "제안설명회") and _contains(text, "참여", "불참"):
             item = _base_item(requirement, "ACTION_REQUIRED")
             item.update(
@@ -555,6 +548,13 @@ def classify_requirements(
                 fact_key="bidder_registration",
                 deadline=as_of,
                 message="경쟁입찰참가자격 등록 보유 근거가 연결되었습니다. 마감일에는 나라장터 상태를 다시 확인합니다.",
+            )
+        elif _is_descriptive_entity_clause(text, category=category):
+            item = _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message="입찰 대상 또는 기재된 계약업체에 대한 설명이며 회사 참가자격 조건으로 사용하지 않습니다.",
             )
         elif _is_current_sanction_clearance(text):
             item = _eligibility_item(

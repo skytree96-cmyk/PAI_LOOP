@@ -1124,6 +1124,7 @@ _SIBLING_DOCUMENT_GAP_MARKERS: tuple[tuple[tuple[str, ...], frozenset[str]], ...
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "본문에 포함되지",
+    "포함되지",
     "본문에 없음",
     "정보가 없음",
     "내용이 없음",
@@ -1143,6 +1144,7 @@ _UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐�
 def _gap_is_covered_by_aggregate_sources(
     gap: str,
     *,
+    current_document_type: str,
     available_types: set[str],
     quantitative_table_available: bool,
 ) -> bool:
@@ -1158,6 +1160,7 @@ def _gap_is_covered_by_aggregate_sources(
         allowed_types
         for markers, allowed_types in _SIBLING_DOCUMENT_GAP_MARKERS
         if any(marker in gap for marker in markers)
+        and current_document_type not in allowed_types
     ]
     if referenced_type_options and all(
         bool(available_types & allowed_types)
@@ -1215,6 +1218,7 @@ def _aggregate_source_gaps(
                 and matched_type in available_types
             ) or _gap_is_covered_by_aggregate_sources(
                 gap,
+                current_document_type=source.data.document_type,
                 available_types=available_types,
                 quantitative_table_available=quantitative_table_available,
             ):
