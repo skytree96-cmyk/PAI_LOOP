@@ -464,6 +464,108 @@ def test_known_information_guards_do_not_override_embedded_eligibility() -> None
     assert by_id["ORIGIN-CAPABILITY"]["policy_class"] == "ELIGIBILITY"
 
 
+def test_live_descriptions_and_post_award_duties_do_not_block_eligibility() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "SERVICE-NAME",
+                "ENTITY",
+                "용역명은 캄보디아 교육 기자재 공급 용역이다.",
+            ),
+            requirement(
+                "TARGET-BUSINESS",
+                "ENTITY",
+                "용역 입찰의 대상 사업은 캄보디아 교육 기자재 공급 용역임.",
+            ),
+            requirement(
+                "CONTRACT-SCOPE",
+                "ENTITY",
+                "캄보디아 교육 기자재 공급 용역에 관한 계약이어야 한다.",
+            ),
+            requirement(
+                "DELIVERY-PLACE",
+                "REGION",
+                "최종 납품 장소는 캄보디아 프놈펜 National Employment Agency이다.",
+            ),
+            requirement(
+                "DOMESTIC-BID",
+                "REGION",
+                "국내입찰로 진행됨.",
+            ),
+            requirement(
+                "STRATEGIC-GOODS",
+                "CERTIFICATION",
+                "계약업체는 납품 전 무역안보관리원에 전략물자 전문판정을 의뢰하여 받아야 한다.",
+            ),
+            requirement(
+                "OFFICE-LICENSE",
+                "CERTIFICATION",
+                "MS 오피스 라이센스는 정품 구매·활성화를 포함하고 Windows 11과 호환되어야 함.",
+            ),
+            requirement(
+                "INTEGRITY-ACK",
+                "SANCTION",
+                "입찰참여자는 청렴계약서 제출에 동의한 것으로 간주되며 조건을 준수해야 함.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    for key in (
+        "SERVICE-NAME",
+        "TARGET-BUSINESS",
+        "CONTRACT-SCOPE",
+        "DELIVERY-PLACE",
+        "DOMESTIC-BID",
+    ):
+        assert by_id[key]["policy_class"] == "INFORMATION"
+        assert by_id[key]["blocking"] is False
+    assert by_id["STRATEGIC-GOODS"]["policy_class"] == "CHECKLIST"
+    assert by_id["OFFICE-LICENSE"]["policy_class"] == "CHECKLIST"
+    assert by_id["INTEGRITY-ACK"]["policy_class"] == "CHECKLIST"
+    assert result["blocking_items"] == 0
+
+
+def test_description_guards_keep_embedded_bidder_gates_fail_closed() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "NAMED-ENTITY-GATE",
+                "ENTITY",
+                "사업명은 교육 기자재 공급이며 법인 또는 개인사업자 업체에 한함.",
+            ),
+            requirement(
+                "DELIVERY-REGION-GATE",
+                "REGION",
+                "최종 납품장소는 서울이며 서울시에 소재한 업체에 한함.",
+            ),
+            requirement(
+                "LICENSE-GATE",
+                "CERTIFICATION",
+                "정품 소프트웨어 라이선스를 보유한 업체에 한함.",
+            ),
+            requirement(
+                "PRE-BID-CERTIFICATE",
+                "CERTIFICATION",
+                "입찰마감일까지 전략물자 판정서를 보유한 업체여야 함.",
+            ),
+            requirement(
+                "INTEGRITY-EXCLUSION",
+                "SANCTION",
+                "청렴계약 위반 업체는 입찰에 참가할 수 없음.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+
+    assert {item["policy_class"] for item in result["items"]} == {"ELIGIBILITY"}
+    assert {item["outcome"] for item in result["items"]} == {"REVIEW"}
+    assert result["blocking_items"] == 5
+
+
 def test_profile_and_policy_api_use_repository_data(client: TestClient) -> None:
     profile_response = client.get("/api/v1/company-profile")
     assert profile_response.status_code == 200
