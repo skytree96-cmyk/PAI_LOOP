@@ -12,7 +12,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.08.27-v3"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.08.27-v4"
 
 _FORBIDDEN_KEYS = {
     "address",
@@ -109,13 +109,76 @@ def _is_small_business_eligibility(text: str, *, category: str) -> bool:
     )
 
 
+def _has_explicit_bidder_gate(text: str) -> bool:
+    exact_terms = _contains(
+        text,
+        "입찰참가자격",
+        "참가자격",
+        "자격요건",
+        "업체에 한함",
+        "업체로 한정",
+        "업체이어야",
+        "업체여야",
+        "참가할 수 없음",
+        "입찰할 수 없음",
+        "참가 불가",
+        "입찰 불가",
+        "공고일 현재",
+        "마감일 현재",
+        "제출마감일 현재",
+        "보유한 업체",
+        "등록한 업체",
+        "인증 업체",
+        "판정받은 업체",
+        "국내 소재 업체",
+        "국내 사업자",
+        "국내 법인",
+        "국내에 본점",
+        "내국인만",
+        "참가대상",
+    )
+    actor_gate = bool(
+        re.search(
+            r"(?:업체|사업자|법인|보유자|입찰자|참가자).{0,20}"
+            r"(?:만\s*(?:참가|입찰|참여)?\s*가능|제한|제외|결격|참가\s*가능|참여\s*가능)",
+            text,
+        )
+    )
+    participation_gate = bool(
+        re.search(
+            r"(?:참가|입찰|참여).{0,16}(?:가능|제한|제외|결격|불가|금지)",
+            text,
+        )
+    )
+    capability_gate = bool(
+        re.search(
+            r"(?:공급|제조|납품|수행)\s*가능한\s*(?:업체|사업자|법인)",
+            text,
+        )
+    )
+    return exact_terms or actor_gate or participation_gate or capability_gate
+
+
 def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
     """Return true for subject/contractor descriptions, not bidder criteria."""
 
     if category != "ENTITY":
         return False
+    if _is_explicit_entity_eligibility(text) or _has_explicit_bidder_gate(text):
+        return False
+    named_subject = bool(
+        re.fullmatch(
+            r"(?:(?:용역\s*입찰의\s*)?대상\s*사업|용역명|사업명|과업명|"
+            r"계약\s*범위|사업\s*범위)\s*(?:은|는|:)\s*.+"
+            r"(?:이다|입니다|임)\.?",
+            text,
+        )
+    )
+    contract_scope = _contains(text, "에 관한 계약이어야", "을 위한 계약이어야")
     return (
-        "대상으로 하는 입찰" in text
+        named_subject
+        or contract_scope
+        or "대상으로 하는 입찰" in text
         or bool(
             re.search(
                 r"계약\s*업체(?:로|로서)\s*(?:참여|선정|수행)",
@@ -159,7 +222,7 @@ def _is_direct_production_certificate_eligibility(text: str) -> bool:
 def _is_integrity_conduct_clause(text: str) -> bool:
     """Match bid-conduct obligations, not a bidder's current sanction state."""
 
-    if _contains(
+    if _has_explicit_bidder_gate(text) or _contains(
         text,
         "참가할 수 없",
         "입찰할 수 없",
@@ -170,7 +233,7 @@ def _is_integrity_conduct_clause(text: str) -> bool:
         "자격 제한",
     ):
         return False
-    return _contains(
+    integrity_terms = _contains(
         text,
         "금품·향응",
         "금품 향응",
@@ -182,6 +245,15 @@ def _is_integrity_conduct_clause(text: str) -> bool:
         "공정한 경쟁을 방해",
         "공정경쟁을 방해",
     )
+    integrity_acknowledgement = "청렴계약" in text and _contains(
+        text,
+        "동의",
+        "승낙",
+        "숙지",
+        "준수",
+        "서약",
+    )
+    return integrity_terms or integrity_acknowledgement
 
 
 def _is_origin_marking_clause(text: str) -> bool:
@@ -211,6 +283,80 @@ def _is_region_eligibility(text: str) -> bool:
         "법인등기부상 본점",
         "본점 소재지",
         "사업장 소재지",
+    )
+
+
+def _is_execution_region_information(text: str, *, category: str) -> bool:
+    if (
+        category != "REGION"
+        or _is_region_eligibility(text)
+        or _has_explicit_bidder_gate(text)
+    ):
+        return False
+    delivery_location = _contains(
+        text,
+        "납품 장소",
+        "납품장소",
+        "설치 장소",
+        "설치장소",
+        "인도 장소",
+        "인도장소",
+        "과업 장소",
+        "과업장소",
+        "수행 장소",
+        "수행장소",
+    )
+    domestic_bid = "국내입찰" in text and _contains(text, "진행", "방식", "해당")
+    return delivery_location or domestic_bid
+
+
+def _is_post_award_certification_action(text: str, *, category: str) -> bool:
+    if category != "CERTIFICATION" or _has_explicit_bidder_gate(text):
+        return False
+    post_award_subject = _contains(text, "계약업체", "계약 업체", "계약상대자", "낙찰자")
+    post_award_timing = _contains(
+        text,
+        "납품 전",
+        "계약 후",
+        "계약 체결 후",
+        "계약체결 후",
+    )
+    strategic_review = "전략물자" in text and _contains(
+        text,
+        "전문판정",
+        "자가판정",
+        "판정서",
+    )
+    action = _contains(text, "의뢰", "제출", "신청", "받아야", "발급")
+    return post_award_subject and post_award_timing and strategic_review and action
+
+
+def _is_product_specification_clause(text: str, *, category: str) -> bool:
+    if category != "CERTIFICATION" or _has_explicit_bidder_gate(text):
+        return False
+    if _contains(
+        text,
+        "참가자격",
+        "자격요건",
+        "업체에 한함",
+        "업체여야",
+        "업체로 한정",
+        "보유한 업체",
+    ):
+        return False
+    office_product = _contains(
+        text,
+        "ms 오피스",
+        "microsoft office",
+        "오피스 소프트웨어",
+    )
+    return office_product and _contains(text, "라이센스", "라이선스") and _contains(
+        text,
+        "정품",
+        "활성화",
+        "호환",
+        "설치",
+        "구매",
     )
 
 
@@ -556,6 +702,13 @@ def classify_requirements(
                 capability_key=None,
                 message="입찰 대상 또는 기재된 계약업체에 대한 설명이며 회사 참가자격 조건으로 사용하지 않습니다.",
             )
+        elif _is_execution_region_information(text, category=category):
+            item = _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message="납품·설치 장소 또는 입찰 범위 정보이며 업체 소재지 참가제한으로 사용하지 않습니다.",
+            )
         elif _is_current_sanction_clearance(text):
             item = _eligibility_item(
                 requirement,
@@ -588,6 +741,20 @@ def classify_requirements(
                 profile=profile,
                 capability_key=None,
                 message="제품 원산지 표시 의무이며 업체 소재지 참가제한으로 사용하지 않습니다.",
+            )
+        elif _is_post_award_certification_action(text, category=category):
+            item = _checklist_item(
+                requirement,
+                profile=profile,
+                capability_key="proposal_submission",
+                message="계약 후 전문판정·증명 신청 절차이며 입찰 전 보유 자격과 분리해 일정 체크리스트로 관리합니다.",
+            )
+        elif _is_product_specification_clause(text, category=category):
+            item = _checklist_item(
+                requirement,
+                profile=profile,
+                capability_key="proposal_submission",
+                message="납품할 소프트웨어의 정품·활성화·호환 사양이며 회사 보유 자격으로 사용하지 않습니다.",
             )
         elif small_business:
             if nonprofit_exception_present:
