@@ -308,7 +308,7 @@ svg {
   stroke-linejoin: round;
 }
 
-.nav-item:first-child .nav-icon svg {
+.nav-item[data-view="all"] .nav-icon svg {
   fill: currentcolor;
   stroke: none;
 }

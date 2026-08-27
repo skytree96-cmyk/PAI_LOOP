@@ -211,8 +211,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260827-search-tabs2"' in html
-    assert 'src="./app.js?v=20260827-search-tabs2"' in html
+    assert 'href="./styles.css?v=20260827-sidebar-icons1"' in html
+    assert 'src="./app.js?v=20260827-sidebar-icons1"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -349,6 +349,8 @@ def test_sidebar_work_groups_are_clickable_persistent_disclosures() -> None:
     assert ".nav-group-toggle" in styles
     assert '.nav-group-toggle[aria-expanded="false"] svg' in styles
     assert ".nav-group-items[hidden]" in styles
+    assert '.nav-item[data-view="all"] .nav-icon svg' in styles
+    assert ".nav-item:first-child .nav-icon svg" not in styles
 
 
 def test_quantitative_ui_separates_source_validation_from_activation() -> None:
