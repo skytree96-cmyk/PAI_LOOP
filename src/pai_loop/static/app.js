@@ -15,6 +15,7 @@
   const PRESPEC_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const PRESPEC_ANALYSIS_MAX_POLLS = 40;
   const PRESPEC_ANALYSIS_POLL_MAX_MS = 120000;
+  const NAV_GROUP_STORAGE_KEY = "pai-loop-nav-groups-v1";
   const DECIDER_NAME = "KMA 입찰팀";
   const RUNTIME_CONFIG = readRuntimeConfig();
   const PAI_BOT_TEAMS_URL = String(RUNTIME_CONFIG.paiBotTeamsUrl || "").trim();
@@ -187,7 +188,11 @@
     bindEvents();
     const initialView = routeViewFromLocation();
     setView(initialView, { syncRoute: true, replaceRoute: true });
-    setNoticeSearchMode("stored", { announce: false });
+    restoreNavigationGroups();
+    setNoticeSearchMode(initialView === "prespec" ? "prespec" : "stored", {
+      announce: false,
+      syncView: false,
+    });
     setLayout(state.layout);
     loadApplicationData();
   }
@@ -197,7 +202,7 @@
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
-      "noticeHeading", "noticeSummary", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
+      "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "ppsSearchSuggestion", "ppsSearchSuggestionButton", "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
@@ -234,6 +239,7 @@
     });
     els.sidebar = document.querySelector(".sidebar");
     els.navItems = [...document.querySelectorAll(".nav-item[data-view]")];
+    els.navGroupToggles = [...document.querySelectorAll(".nav-group-toggle[aria-controls]")];
     els.kpiViewButtons = [...document.querySelectorAll("[data-kpi-view]")];
     els.layoutButtons = [...document.querySelectorAll("[data-layout]")];
     els.noticeSearchModeButtons = [...document.querySelectorAll("[data-notice-search-mode]")];
@@ -242,6 +248,61 @@
     els.tabPanels = [...document.querySelectorAll("[role='tabpanel'][data-panel]")];
     els.decisionInputs = [...document.querySelectorAll("input[name='decision']")];
     els.awardScopeInputs = [...document.querySelectorAll("input[name='awardScope']")];
+  }
+
+  function restoreNavigationGroups() {
+    let preferences = {};
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(NAV_GROUP_STORAGE_KEY) || "{}");
+      preferences = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (_error) {
+      preferences = {};
+    }
+    els.navGroupToggles.forEach((button) => {
+      const group = button.closest("[data-nav-group]");
+      const groupKey = group?.dataset.navGroup;
+      const expanded = groupKey && typeof preferences[groupKey] === "boolean"
+        ? preferences[groupKey]
+        : true;
+      setNavigationGroupExpanded(button, expanded);
+    });
+  }
+
+  function setNavigationGroupExpanded(button, expanded) {
+    const controlsId = button?.getAttribute("aria-controls");
+    const items = controlsId ? document.getElementById(controlsId) : null;
+    if (!items) return;
+    button.setAttribute("aria-expanded", String(Boolean(expanded)));
+    items.hidden = !expanded;
+    button.closest("[data-nav-group]")?.classList.toggle("is-collapsed", !expanded);
+  }
+
+  function persistNavigationGroups() {
+    const preferences = {};
+    els.navGroupToggles.forEach((button) => {
+      const groupKey = button.closest("[data-nav-group]")?.dataset.navGroup;
+      if (groupKey) preferences[groupKey] = button.getAttribute("aria-expanded") === "true";
+    });
+    try {
+      window.localStorage.setItem(NAV_GROUP_STORAGE_KEY, JSON.stringify(preferences));
+    } catch (_error) {
+      // Menu disclosure still works when storage is unavailable.
+    }
+  }
+
+  function toggleNavigationGroup(button) {
+    const expanded = button.getAttribute("aria-expanded") === "true";
+    setNavigationGroupExpanded(button, !expanded);
+    persistNavigationGroups();
+  }
+
+  function revealActiveNavigationGroup(view) {
+    const activeItem = els.navItems.find((item) => item.dataset.view === view);
+    const group = activeItem?.closest("[data-nav-group]");
+    const button = group?.querySelector(".nav-group-toggle[aria-controls]");
+    if (!button || button.getAttribute("aria-expanded") === "true") return;
+    setNavigationGroupExpanded(button, true);
+    persistNavigationGroups();
   }
 
   function readRuntimeConfig() {
@@ -423,6 +484,9 @@
     els.resultLearningCancelButton.addEventListener("click", closeResultLearningDialog);
 
     els.navItems.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+    els.navGroupToggles.forEach((button) => {
+      button.addEventListener("click", () => toggleNavigationGroup(button));
+    });
     els.kpiViewButtons.forEach((button) => button.addEventListener("click", () => {
       setView(button.dataset.kpiView);
       window.requestAnimationFrame(() => els.noticeSection.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -489,7 +553,7 @@
   }
 
   function refreshCurrentView() {
-    if (state.currentView === "prespec") {
+    if (state.noticeSearchMode === "prespec") {
       void loadStoredPreSpecifications({ force: true });
       return;
     }
@@ -800,6 +864,11 @@
 
   function renderNoticeSearchScope() {
     if (!els.noticeSearchScope) return;
+    if (state.noticeSearchMode === "prespec") {
+      els.noticeSearchScope.classList.remove("is-global", "is-pps");
+      els.noticeSearchScope.textContent = "사전규격은 입찰공고 전 단계의 요구조건 검토용이며, 입찰 참여 GO/NO-GO를 결정하지 않습니다.";
+      return;
+    }
     if (state.noticeSearchMode === "pps") {
       els.noticeSearchScope.classList.remove("is-global");
       els.noticeSearchScope.classList.add("is-pps");
@@ -815,25 +884,25 @@
       : `현재 화면 범위에서 공고를 표시합니다. ${priorityNote} 나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다.`;
   }
 
-  function setNoticeSearchMode(mode, { announce = true, showGuide = false } = {}) {
-    const nextMode = mode === "pps" ? "pps" : "stored";
-    const changed = state.noticeSearchMode !== nextMode;
-    state.noticeSearchMode = nextMode;
-    window.clearTimeout(state.noticeSearchTimer);
-    state.noticeSearchTimer = null;
+  function renderNoticeSearchMode() {
+    const ppsMode = state.noticeSearchMode === "pps";
+    const prespecMode = state.noticeSearchMode === "prespec";
+    const bidNoticeMode = !prespecMode;
 
-    const ppsMode = nextMode === "pps";
     els.noticeSearchModeButtons.forEach((button) => {
-      const active = button.dataset.noticeSearchMode === nextMode;
+      const active = button.dataset.noticeSearchMode === state.noticeSearchMode;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-pressed", String(active));
     });
+    els.filterForm.hidden = prespecMode;
     els.filterForm.classList.toggle("is-pps-mode", ppsMode);
-    els.filterForm.setAttribute("aria-label", ppsMode ? "나라장터 용역 공고 검색" : "수집된 공고 검색");
-    els.prioritySearch.hidden = ppsMode;
+    els.filterForm.setAttribute("aria-label", ppsMode ? "나라장터 용역 공고 검색" : "AI 수집 공고 검색");
+    els.prioritySearch.hidden = ppsMode || prespecMode;
+    els.noticeSearchScope.hidden = prespecMode;
+    els.noticeViewToggle.hidden = prespecMode;
     els.storedSearchControls.forEach((control) => {
       const field = control.matches("select, button, input") ? control : control.querySelector("select, button, input");
-      if (field) field.disabled = ppsMode;
+      if (field) field.disabled = !bidNoticeMode || ppsMode;
     });
     els.searchInput.placeholder = ppsMode
       ? "나라장터 용역 공고명 검색 (2자 이상)"
@@ -843,30 +912,54 @@
       : "공고명, 발주기관 또는 공고번호 검색";
     els.noticeSearchHelp.textContent = ppsMode
       ? "검색어와 게시일을 입력한 뒤 조회 버튼을 눌러야 나라장터 API를 호출합니다."
-      : "검색어를 입력하면 이미 수집된 전체 공고에서 찾습니다.";
-    els.noticePanel.hidden = ppsMode;
+      : "검색어를 입력하면 AI가 수집해 저장한 전체 공고에서 찾습니다.";
+    els.noticePanel.hidden = ppsMode || prespecMode;
+    els.prespecSection.hidden = !prespecMode;
     if (ppsMode) {
-      els.noticeSummary.textContent = "수집 DB와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다.";
+      els.noticeSummary.textContent = "AI 수집 DB와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다.";
+    } else if (prespecMode) {
+      els.noticeSummary.textContent = "입찰공고 전 공개되는 사전규격을 저장 DB와 나라장터에서 함께 탐색합니다.";
+      renderPreSpecificationView();
     }
     renderNoticeSearchScope();
     renderPpsDiscovery();
-    if (!ppsMode && changed) {
-      if (state.source === "api") void loadApplicationData({ forceApi: true });
-      else applyFilters();
+  }
+
+  function setNoticeSearchMode(mode, { announce = true, showGuide = false, syncView = true } = {}) {
+    const nextMode = ["pps", "prespec"].includes(mode) ? mode : "stored";
+    const changed = state.noticeSearchMode !== nextMode;
+    state.noticeSearchMode = nextMode;
+    window.clearTimeout(state.noticeSearchTimer);
+    state.noticeSearchTimer = null;
+
+    const ppsMode = nextMode === "pps";
+    const prespecMode = nextMode === "prespec";
+    const targetView = prespecMode ? "prespec" : "new";
+    const viewChanged = syncView && state.currentView !== targetView;
+    if (viewChanged) {
+      setView(targetView, { noticeSearchMode: nextMode, focusMain: false });
+    }
+    renderNoticeSearchMode();
+    if (prespecMode && !state.prespec.stored.loaded && !state.prespec.stored.loading) {
+      void loadStoredPreSpecifications();
+    }
+    if (nextMode === "stored" && changed) {
+      if (state.source === "api" && !state.loading) void loadApplicationData({ forceApi: true });
+      else if (!state.loading) applyFilters();
     }
 
-    if (ppsMode && showGuide && !state.noticeSearchGuideOpened) {
+    if ((ppsMode || prespecMode) && showGuide && !state.noticeSearchGuideOpened) {
       state.noticeSearchGuideOpened = true;
       openNoticeSearchHelpDialog();
     }
     if (announce && changed) {
-      showToast(
-        ppsMode ? "나라장터 용역 공고 조회" : "수집된 공고 검색",
-        ppsMode
-          ? "외부 조회는 버튼을 눌렀을 때만 실행되며, 저장 전에는 판단과 점수가 없습니다."
-          : "PAI LOOP에 저장된 공고와 기존 판단 결과를 검색합니다.",
-        "success",
-      );
+      const title = ppsMode ? "나라장터 용역 공고 조회" : prespecMode ? "사전규격 탐색" : "AI 수집 공고 검색";
+      const message = ppsMode
+        ? "외부 조회는 버튼을 눌렀을 때만 실행되며, 저장 전에는 판단과 점수가 없습니다."
+        : prespecMode
+          ? "저장된 사전규격과 나라장터 사전규격을 한 화면에서 확인합니다."
+          : "AI가 수집해 PAI LOOP에 저장한 공고와 기존 판단 결과를 검색합니다.";
+      showToast(title, message, "success");
     }
   }
 
@@ -3202,7 +3295,7 @@
   }
 
   function renderDataSource() {
-    if (state.currentView === "prespec") {
+    if (state.noticeSearchMode === "prespec") {
       const stored = state.prespec.stored.records.length;
       const live = state.prespec.live;
       els.dataSourceLabel.textContent = live.searched
@@ -3385,6 +3478,11 @@
   }
 
   function renderNoticeList() {
+    if (state.noticeSearchMode === "prespec") {
+      els.noticePanel.hidden = true;
+      renderPpsDiscovery();
+      return;
+    }
     const count = state.filteredNotices.length;
     const total = state.notices.length;
     const globalSearch = globalNoticeSearchActive();
@@ -3401,7 +3499,7 @@
           ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
           : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
 
-    els.noticePanel.hidden = state.noticeSearchMode === "pps";
+    els.noticePanel.hidden = state.noticeSearchMode !== "stored";
     els.loadingState.hidden = true;
     els.errorState.hidden = true;
     els.emptyState.hidden = count !== 0;
@@ -3724,7 +3822,7 @@
     els.refreshButton.disabled = isLoading;
     if (isLoading) {
       els.ppsDiscoverySection.hidden = state.noticeSearchMode !== "pps";
-      els.noticePanel.hidden = state.noticeSearchMode === "pps";
+      els.noticePanel.hidden = state.noticeSearchMode !== "stored";
       els.loadingState.hidden = false;
       els.errorState.hidden = true;
       els.emptyState.hidden = true;
@@ -3808,13 +3906,25 @@
     return listViews.includes(view);
   }
 
-  function setView(view, { syncRoute = true, replaceRoute = false } = {}) {
+  function setView(view, {
+    syncRoute = true,
+    replaceRoute = false,
+    noticeSearchMode = null,
+    focusMain = true,
+  } = {}) {
     const nextView = normalizeFrontendView(view);
     const clearedServerFilters = resetNoticeFiltersForView();
     const previousView = state.currentView;
     if (previousView !== nextView) {
       if (state.selectedNotice) clearNoticeRoute();
       closeDetail({ updateRoute: false });
+    }
+    if (["stored", "pps", "prespec"].includes(noticeSearchMode)) {
+      state.noticeSearchMode = noticeSearchMode;
+    } else if (nextView === "prespec") {
+      state.noticeSearchMode = "prespec";
+    } else if (nextView !== "new" || previousView === "prespec") {
+      state.noticeSearchMode = "stored";
     }
     state.currentView = nextView;
     const titles = {
@@ -3826,14 +3936,16 @@
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
       undecided: ["결정 관리", "승인·담당자 지정 대상"],
-      prespec: ["사전규격", "사전규격 검색·분석"],
+      prespec: ["공고 탐색", "사전규격 탐색"],
       closed: ["결과 기록", "결과가 확인된 공고"],
       awards: ["낙찰 분석", "회사별 낙찰 결과"],
       performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[nextView]?.[0] || titles.all[0];
     els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];
-    const navigationView = ["collected", "go", "urgent", "ended"].includes(nextView) ? "all" : nextView;
+    const navigationView = nextView === "prespec"
+      ? "new"
+      : ["collected", "go", "urgent", "ended"].includes(nextView) ? "all" : nextView;
     const showDashboardCards = nextView === "all";
     els.navItems.forEach((item) => {
       const active = item.dataset.view === navigationView;
@@ -3841,6 +3953,7 @@
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     });
+    revealActiveNavigationGroup(navigationView);
     els.kpiViewButtons.forEach((button) => {
       const active = button.dataset.kpiView === view;
       button.setAttribute("aria-pressed", String(active));
@@ -3850,15 +3963,15 @@
     const resultLearningView = nextView === "closed";
     const performanceView = nextView === "performance";
     const awardsView = nextView === "awards";
-    const customView = prespecView || resultLearningView || performanceView || awardsView;
+    const customView = resultLearningView || performanceView || awardsView;
     els.opportunityHero.hidden = !showDashboardCards;
     els.opportunityKpis.hidden = !showDashboardCards;
     els.noticeSection.hidden = customView;
-    els.prespecSection.hidden = !prespecView;
     els.resultLearningSection.hidden = !resultLearningView;
     els.awardResultsSection.hidden = !awardsView;
     els.performanceSection.hidden = !performanceView;
-    els.replayButton.hidden = customView;
+    els.replayButton.hidden = customView || prespecView;
+    renderNoticeSearchMode();
     els.footerDisclaimer.textContent = prespecView
       ? "사전규격 분석은 요구조건 사전 검토용이며 입찰 참여 GO/NO-GO 판정을 실행하지 않습니다."
       : resultLearningView
@@ -3894,7 +4007,7 @@
       syncRouteForView(nextView, { replace: replaceRoute });
     }
     closeMobileMenu();
-    if (!customView) {
+    if (!customView && !prespecView) {
       const desiredStatusScope = noticeStatusScopeForView(nextView);
       const requestNeedsReload = state.noticeStatusScope !== desiredStatusScope || clearedServerFilters;
       if ((state.source === "api" || state.loading) && requestNeedsReload) {
@@ -3906,7 +4019,7 @@
       }
     }
     renderDataSource();
-    els.mainContent.focus({ preventScroll: true });
+    if (focusMain) els.mainContent.focus({ preventScroll: true });
   }
 
   function resetNoticeFiltersForView() {
@@ -5689,6 +5802,7 @@
       event.preventDefault();
       if (state.currentView === "closed") els.resultLearningSearchInput.focus();
       else if (state.currentView === "performance") els.performanceSearchInput.focus();
+      else if (state.noticeSearchMode === "prespec") els.prespecStoredSearchInput.focus();
       else els.searchInput.focus();
     }
   }

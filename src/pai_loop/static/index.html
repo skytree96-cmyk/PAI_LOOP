@@ -12,7 +12,7 @@
     <title>PAI LOOP · 입찰 의사결정 대시보드</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260827-memory-judgement1" />
+    <link rel="stylesheet" href="./styles.css?v=20260827-search-tabs2" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -42,53 +42,62 @@
             </span>
             <span>통합 대시보드</span>
           </button>
-          <button class="nav-item" type="button" data-view="prespec">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M7 3h8l4 4v14H7z" /><path d="M15 3v5h5M10 12h6M10 16h6" /><circle cx="5" cy="8" r="2.5" /></svg>
-            </span>
-            <span>사전규격</span>
-          </button>
-          <div class="nav-group" aria-label="검색">
-            <p class="nav-group-title">검색</p>
-            <button class="nav-item nav-item--sub" type="button" data-view="new">
-              <span class="nav-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18" /></svg>
-              </span>
-              <span>공고 탐색</span>
-              <span class="nav-count" id="navNewCount" aria-label="진행 공고 수">—</span>
+          <div class="nav-group" data-nav-group="search" aria-label="검색">
+            <button class="nav-group-toggle" type="button" aria-expanded="true" aria-controls="navGroupSearchItems">
+              <span>검색</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
+            <div class="nav-group-items" id="navGroupSearchItems">
+              <button class="nav-item nav-item--sub" type="button" data-view="new">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18" /></svg>
+                </span>
+                <span>공고 탐색</span>
+                <span class="nav-count" id="navNewCount" aria-label="진행 공고 수">—</span>
+              </button>
+            </div>
           </div>
-          <div class="nav-group" aria-label="판단">
-            <p class="nav-group-title">판단</p>
-            <button class="nav-item nav-item--sub" type="button" data-view="review">
-              <span class="nav-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" /><path d="M12 7v6M12 17h.01" /></svg>
-              </span>
-              <span>분석·검토 큐</span>
-              <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="분석 및 자격 검토 대기 수">—</span>
+          <div class="nav-group" data-nav-group="decision" aria-label="판단">
+            <button class="nav-group-toggle" type="button" aria-expanded="true" aria-controls="navGroupDecisionItems">
+              <span>판단</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
-            <button class="nav-item nav-item--sub" type="button" data-view="undecided">
-              <span class="nav-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
-              </span>
-              <span>결정 관리</span>
-              <span class="nav-count" id="navDecisionCount" aria-label="미결정 수">—</span>
-            </button>
+            <div class="nav-group-items" id="navGroupDecisionItems">
+              <button class="nav-item nav-item--sub" type="button" data-view="review">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" /><path d="M12 7v6M12 17h.01" /></svg>
+                </span>
+                <span>분석·검토 큐</span>
+                <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="분석 및 자격 검토 대기 수">—</span>
+              </button>
+              <button class="nav-item nav-item--sub" type="button" data-view="undecided">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+                </span>
+                <span>결정 관리</span>
+                <span class="nav-count" id="navDecisionCount" aria-label="미결정 수">—</span>
+              </button>
+            </div>
           </div>
-          <div class="nav-group" aria-label="학습">
-            <p class="nav-group-title">학습</p>
-            <button class="nav-item nav-item--sub" type="button" data-view="closed">
-              <span class="nav-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M7 9h10v5.5H7z" /><path d="M7 16.5h10" /><path d="m8 5 2 2 2-2" /></svg>
-              </span>
-              <span>결과 기록</span>
+          <div class="nav-group" data-nav-group="learning" aria-label="학습">
+            <button class="nav-group-toggle" type="button" aria-expanded="true" aria-controls="navGroupLearningItems">
+              <span>학습</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
-            <button class="nav-item nav-item--sub" type="button" data-view="awards">
-              <span class="nav-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M8 4h8v4a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4M16 6h3v1a4 4 0 0 1-4 4M12 12v5M8 20h8M9 17h6" /></svg>
-              </span>
-              <span>낙찰 분석</span>
-            </button>
+            <div class="nav-group-items" id="navGroupLearningItems">
+              <button class="nav-item nav-item--sub" type="button" data-view="closed">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M7 9h10v5.5H7z" /><path d="M7 16.5h10" /><path d="m8 5 2 2 2-2" /></svg>
+                </span>
+                <span>결과 기록</span>
+              </button>
+              <button class="nav-item nav-item--sub" type="button" data-view="awards">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M8 4h8v4a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4M16 6h3v1a4 4 0 0 1-4 4M12 12v5M8 20h8M9 17h6" /></svg>
+                </span>
+                <span>낙찰 분석</span>
+              </button>
+            </div>
           </div>
           <button class="nav-item" type="button" data-view="performance">
             <span class="nav-icon" aria-hidden="true">
@@ -217,7 +226,7 @@
                 <h2 id="noticeHeading">검토할 공고</h2>
                 <p id="noticeSummary" aria-live="polite">공고를 불러오는 중입니다.</p>
               </div>
-              <div class="view-toggle" role="group" aria-label="보기 방식">
+              <div class="view-toggle" id="noticeViewToggle" role="group" aria-label="보기 방식">
                 <button type="button" class="is-active" data-layout="table" aria-pressed="true" aria-label="표로 보기">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 10h16M9 5v14" /></svg>
                 </button>
@@ -247,25 +256,29 @@
             </div>
 
             <div class="notice-search-toolbar">
-              <div class="notice-search-modes" role="group" aria-label="공고 검색 범위 선택">
-                <button class="notice-search-mode is-active" type="button" data-notice-search-mode="stored" aria-pressed="true">
+              <div class="notice-search-modes" role="group" aria-label="공고 탐색 방식 선택">
+                <button class="notice-search-mode is-active" type="button" data-notice-search-mode="stored" aria-pressed="true" aria-controls="noticePanel">
                   <span class="notice-search-mode__dot notice-search-mode__dot--stored" aria-hidden="true"></span>
-                  수집된 공고
+                  AI 수집 공고
                 </button>
-                <button class="notice-search-mode" type="button" data-notice-search-mode="pps" aria-pressed="false">
+                <button class="notice-search-mode" type="button" data-notice-search-mode="pps" aria-pressed="false" aria-controls="ppsDiscoverySection">
                   <span class="notice-search-mode__dot notice-search-mode__dot--pps" aria-hidden="true"></span>
                   나라장터 용역 공고
                 </button>
+                <button class="notice-search-mode" type="button" data-notice-search-mode="prespec" aria-pressed="false" aria-controls="prespecSection">
+                  <span class="notice-search-mode__dot notice-search-mode__dot--prespec" aria-hidden="true"></span>
+                  사전규격
+                </button>
               </div>
-              <button class="notice-search-help-button" type="button" id="noticeSearchHelpButton" aria-label="두 검색 방식의 차이 안내" aria-haspopup="dialog" aria-controls="noticeSearchHelpDialog" aria-expanded="false">?</button>
+              <button class="notice-search-help-button" type="button" id="noticeSearchHelpButton" aria-label="세 가지 탐색 방식의 차이 안내" aria-haspopup="dialog" aria-controls="noticeSearchHelpDialog" aria-expanded="false">?</button>
             </div>
 
-            <form class="filters" id="filterForm" role="search" aria-label="수집된 공고 검색">
+            <form class="filters" id="filterForm" role="search" aria-label="AI 수집 공고 검색">
               <label class="search-field">
                 <span class="sr-only" id="noticeSearchInputLabel">공고명, 발주기관 또는 공고번호 검색</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
                 <input id="searchInput" type="search" maxlength="200" placeholder="공고명 · 발주기관 · 공고번호 검색" autocomplete="off" aria-describedby="noticeSearchHelp noticeSearchScope" />
-                <span class="sr-only" id="noticeSearchHelp">검색어를 입력하면 이미 수집된 전체 공고에서 찾습니다.</span>
+                <span class="sr-only" id="noticeSearchHelp">검색어를 입력하면 AI가 수집해 저장한 전체 공고에서 찾습니다.</span>
                 <kbd aria-hidden="true">/</kbd>
               </label>
               <label class="select-field stored-search-only">
@@ -381,9 +394,7 @@
                 <button class="button button--ghost" type="button" id="emptyResetButton">필터 초기화</button>
               </div>
             </div>
-          </section>
-
-          <section class="performance-section prespec-section" id="prespecSection" aria-labelledby="prespecHeading" hidden>
+            <section class="performance-section prespec-section" id="prespecSection" aria-labelledby="prespecHeading" hidden>
             <header class="performance-hero prespec-hero">
               <div class="performance-hero__copy">
                 <span class="data-classification prespec-classification"><span aria-hidden="true">●</span> BEFORE BID NOTICE</span>
@@ -441,6 +452,7 @@
                 <div class="state-view prespec-state" id="prespecLiveState"><strong>검색 조건을 입력하세요</strong><p>조회·저장 단계에서는 AI 모델이 호출되지 않습니다.</p></div>
               </section>
             </div>
+            </section>
           </section>
 
           <section class="performance-section operator-workspace" id="resultLearningSection" aria-labelledby="resultLearningHeading" hidden>
@@ -1077,17 +1089,17 @@
       <form class="source-link-dialog__panel" method="dialog">
         <header class="source-link-dialog__header">
           <div>
-            <p class="section-kicker">TWO-TRACK SEARCH</p>
-            <h2 id="noticeSearchHelpDialogTitle">두 검색은 결과와 비용이 다릅니다</h2>
+            <p class="section-kicker">THREE-TRACK SEARCH</p>
+            <h2 id="noticeSearchHelpDialogTitle">세 가지 탐색은 목적과 비용이 다릅니다</h2>
           </div>
           <button class="icon-button" type="submit" value="close" aria-label="검색 방식 안내 닫기">×</button>
         </header>
         <div class="source-link-dialog__body notice-search-help-dialog__body">
-          <p id="noticeSearchHelpDialogSummary">나라장터에서 찾은 공고는 바로 판단되지 않습니다. 먼저 저장한 뒤, 필요한 공고만 별도로 판단합니다.</p>
+          <p id="noticeSearchHelpDialogSummary">AI 수집 공고는 바로 검토하고, 나라장터 공고와 사전규격은 필요한 건을 선택해 저장한 뒤 분석합니다.</p>
           <div class="notice-search-help-compare">
             <section class="notice-search-help-compare__stored">
               <span>PAI LOOP DB</span>
-              <h3>수집된 공고</h3>
+              <h3>AI 수집 공고</h3>
               <ul>
                 <li>저장된 전체 공고에서 즉시 검색</li>
                 <li>기존 자격·정량 점수와 판단 상태 확인</li>
@@ -1103,8 +1115,17 @@
                 <li>저장된 OPEN 공고에서 필요할 때 분석·판단 실행</li>
               </ul>
             </section>
+            <section class="notice-search-help-compare__prespec">
+              <span>입찰공고 전 단계</span>
+              <h3>사전규격</h3>
+              <ul>
+                <li>저장 DB와 나라장터 사전규격을 한곳에서 검색</li>
+                <li>필요한 건만 선택 저장하고 문서 분석은 별도 실행</li>
+                <li>입찰 GO/NO-GO가 아닌 요구조건 사전 검토</li>
+              </ul>
+            </section>
           </div>
-          <p class="notice-search-help-cost"><strong>검색 → 저장 → 분석·판단 실행</strong><span>검색·저장은 AI 모델을 호출하지 않습니다. 분석·판단 실행에서만 n8n의 Claude를 사용합니다.</span></p>
+          <p class="notice-search-help-cost"><strong>공고는 분석·판단 · 사전규격은 문서 분석</strong><span>검색·저장은 AI 모델을 호출하지 않습니다. 공고의 분석·판단과 사전규격 문서 분석을 실행할 때만 n8n의 Claude를 사용합니다.</span></p>
         </div>
         <footer class="source-link-dialog__actions">
           <button class="button button--primary" type="submit" value="close">확인했습니다</button>
@@ -1145,6 +1166,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260827-memory-judgement1" defer></script>
+    <script src="./app.js?v=20260827-search-tabs2" defer></script>
   </body>
 </html>

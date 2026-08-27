@@ -211,8 +211,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-decision1"' in html
-    assert 'src="./app.js?v=20260824-decision1"' in html
+    assert 'href="./styles.css?v=20260827-search-tabs2"' in html
+    assert 'src="./app.js?v=20260827-search-tabs2"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -234,6 +234,8 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert 'id="ppsDiscoverySection"' in html
     assert 'data-notice-search-mode="stored"' in html
     assert 'data-notice-search-mode="pps"' in html
+    assert 'data-notice-search-mode="prespec"' in html
+    assert "AI 수집 공고" in html
     assert "나라장터 용역 공고 실시간 조회" in html
     assert "검색·저장: AI 모델 0회" in html
     assert 'apiRequest("/pps-discovery/search"' in search_body
@@ -272,11 +274,12 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert "els.awardResultsSection.hidden = !awardsView" in view_body
 
 
-def test_two_track_search_help_cards_and_deep_links_are_explicit() -> None:
+def test_three_track_search_help_cards_and_deep_links_are_explicit() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     request_path_body = _function_body(source, "buildNoticeRequestPath", "noticeRequestTimeoutMs")
+    mode_render_body = _function_body(source, "renderNoticeSearchMode", "setNoticeSearchMode")
     mode_body = _function_body(source, "setNoticeSearchMode", "openNoticeSearchHelpDialog")
     schedule_body = _function_body(source, "scheduleNoticeSearch", "submitNoticeSearch")
     card_body = _function_body(source, "renderPpsCandidate", "handlePpsDiscoveryAction")
@@ -288,8 +291,13 @@ def test_two_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert 'aria-haspopup="dialog"' in html
     assert 'aria-controls="noticeSearchHelpDialog"' in html
     assert 'id="noticeSearchHelpDialog"' in html
-    assert "두 검색은 결과와 비용이 다릅니다" in html
+    assert "세 가지 탐색은 목적과 비용이 다릅니다" in html
+    assert "공고는 분석·판단 · 사전규격은 문서 분석" in html
+    assert 'data-notice-search-mode="prespec"' in html
     assert 'state.noticeSearchMode = nextMode' in mode_body
+    assert 'const targetView = prespecMode ? "prespec" : "new"' in mode_body
+    assert 'setView(targetView, { noticeSearchMode: nextMode, focusMain: false })' in mode_body
+    assert 'els.prespecSection.hidden = !prespecMode' in mode_render_body
     assert 'const storedMode = state.noticeSearchMode === "stored"' in request_path_body
     assert 'const query = storedMode ? els.searchInput?.value.trim() || "" : ""' in request_path_body
     assert 'if (state.noticeSearchMode === "pps")' in schedule_body
@@ -313,6 +321,34 @@ def test_two_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert ".notice-search-modes" in styles
     assert ".notice-search-help-dialog" in styles
     assert ".pps-candidate__detail-link" in styles
+
+
+def test_sidebar_work_groups_are_clickable_persistent_disclosures() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    for group, controls_id in (
+        ("search", "navGroupSearchItems"),
+        ("decision", "navGroupDecisionItems"),
+        ("learning", "navGroupLearningItems"),
+    ):
+        assert f'data-nav-group="{group}"' in html
+        assert f'aria-controls="{controls_id}"' in html
+        assert f'id="{controls_id}"' in html
+    assert html.count('class="nav-group-toggle"') == 3
+    assert html.count('aria-expanded="true"') >= 3
+    assert 'document.querySelectorAll(".nav-group-toggle[aria-controls]")' in source
+    assert 'button.addEventListener("click", () => toggleNavigationGroup(button))' in source
+    assert "items.hidden = !expanded" in source
+    assert "window.localStorage.getItem(NAV_GROUP_STORAGE_KEY)" in source
+    assert "window.localStorage.setItem(NAV_GROUP_STORAGE_KEY" in source
+    assert 'parsed && typeof parsed === "object" && !Array.isArray(parsed)' in source
+    assert source.index("setView(initialView") < source.index("restoreNavigationGroups();")
+    assert "revealActiveNavigationGroup(navigationView)" in source
+    assert ".nav-group-toggle" in styles
+    assert '.nav-group-toggle[aria-expanded="false"] svg' in styles
+    assert ".nav-group-items[hidden]" in styles
 
 
 def test_quantitative_ui_separates_source_validation_from_activation() -> None:

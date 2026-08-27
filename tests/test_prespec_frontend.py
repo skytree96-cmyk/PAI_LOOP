@@ -9,11 +9,19 @@ INDEX_HTML = STATIC_DIR / "index.html"
 STYLES_CSS = STATIC_DIR / "styles.css"
 
 
-def test_pre_specification_has_a_separate_navigation_view_and_two_search_tracks() -> None:
+def test_pre_specification_is_the_third_notice_discovery_tab_with_two_search_tracks() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'data-view="prespec"' in html
+    assert 'data-view="prespec"' not in html
+    assert 'data-view="new"' in html
+    assert 'data-notice-search-mode="stored"' in html
+    assert 'data-notice-search-mode="pps"' in html
+    assert 'data-notice-search-mode="prespec"' in html
+    assert 'data-notice-search-mode="stored" aria-pressed="true" aria-controls="noticePanel"' in html
+    assert 'data-notice-search-mode="pps" aria-pressed="false" aria-controls="ppsDiscoverySection"' in html
+    assert 'data-notice-search-mode="prespec" aria-pressed="false" aria-controls="prespecSection"' in html
+    assert "AI 수집 공고" in html
     assert 'id="prespecSection"' in html
     assert 'id="prespecStoredForm"' in html
     assert 'id="prespecStoredStatusFilter"' in html
@@ -25,7 +33,16 @@ def test_pre_specification_has_a_separate_navigation_view_and_two_search_tracks(
     assert 'apiRequest("/prespec-discovery/search"' in source
     assert 'apiRequest("/prespec-discovery/save"' in source
     assert 'span > 30' in source
-    assert 'els.prespecSection.hidden = !prespecView' in source
+    assert 'const nextMode = ["pps", "prespec"].includes(mode) ? mode : "stored"' in source
+    assert 'const targetView = prespecMode ? "prespec" : "new"' in source
+    assert 'setView(targetView, { noticeSearchMode: nextMode, focusMain: false })' in source
+    assert '["stored", "pps", "prespec"].includes(noticeSearchMode)' in source
+    assert 'els.prespecSection.hidden = !prespecMode' in source
+    assert 'prespec: ["공고 탐색", "사전규격 탐색"]' in source
+    assert 'nextView === "prespec"\n      ? "new"' in source
+    assert 'if (initialView !== "prespec") loadApplicationData()' not in source
+    assert 'setLayout(state.layout);\n    loadApplicationData();' in source
+    assert html.index('id="noticeSection"') < html.index('id="prespecSection"') < html.index('id="resultLearningSection"')
 
 
 def test_pre_specification_help_explains_boundaries_and_zero_openai_search() -> None:
@@ -43,6 +60,7 @@ def test_pre_specification_help_explains_boundaries_and_zero_openai_search() -> 
         assert phrase in html
     assert "나라장터 API 0회 · AI 모델 0회" in html
     assert "검색 결과는 저장되지 않으며" in html
+    assert "공고는 분석·판단 · 사전규격은 문서 분석" in html
 
 
 def test_pre_specification_cards_and_saved_detail_expose_required_facts_safely() -> None:
@@ -102,8 +120,8 @@ def test_pre_specification_styles_distinguish_sources_and_cover_teams_mobile() -
 def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260824-decision1"' in html
-    assert 'src="./app.js?v=20260824-decision1"' in html
+    assert 'href="./styles.css?v=20260827-search-tabs2"' in html
+    assert 'src="./app.js?v=20260827-search-tabs2"' in html
 
 
 def test_pre_specification_search_forms_use_card_safe_responsive_columns() -> None:
