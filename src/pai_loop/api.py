@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, selectinload
 
 from .daily_analysis_scope import material_scope_fields
+from .analysis_pipeline import _select_source_versions
 from .decision_persistence import persist_current_evaluation_decision
 from .demo import FIXTURE_VERSION, seed_synthetic_replay
 from .auth import public_read_allowed, require_api_key
@@ -62,6 +63,7 @@ from .notice_freshness import (
     latest_current_evaluation,
 )
 from .pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
     build_attachment_manifest,
     department_keyword_coverage_count,
@@ -2653,48 +2655,132 @@ def requirement_policy(
 
     notice = _load_notice(session, notice_key)
     public_view = public_read_allowed(request)
-    analysis_version = next(
-        (
-            item
-            for item in sorted(notice.versions, key=lambda value: value.version_no, reverse=True)
-            if isinstance(item.source_payload, dict)
-            and item.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
-            and item.source_payload.get("status") == "ACCEPTED"
-            and isinstance(item.source_payload.get("result"), dict)
-            and (
-                not public_view
-                or _curated_public_extraction(item.source_payload) is not None
-                or safe_public_live_extraction(item.source_payload) is not None
-            )
-        ),
-        None,
+    source_versions = _select_source_versions(
+        session,
+        notice_id=notice.id,
+        prompt_version=PROMPT_VERSION,
+        source_version_ids=None,
     )
-    if analysis_version is None:
+    if not source_versions and not public_view:
+        # Keep the authenticated manual/API fixture contract for historical
+        # extraction rows that predate prompt/attachment identity fields.
+        latest_legacy_by_attachment: dict[str, NoticeVersion] = {}
+        for version in sorted(notice.versions, key=lambda value: value.version_no):
+            payload = version.source_payload
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+                or payload.get("status") != "ACCEPTED"
+                or not isinstance(payload.get("result"), dict)
+                or payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+                or any(
+                    key in payload
+                    for key in (
+                        "prompt_version",
+                        "processing_version",
+                        "manifest_sha256",
+                        "current_manifest_sha256",
+                    )
+                )
+            ):
+                continue
+            attachment_key = str(
+                payload.get("attachment_id")
+                or payload.get("source_label")
+                or f"document:{version.file_sha256}"
+            )
+            latest_legacy_by_attachment[attachment_key] = version
+        source_versions = list(latest_legacy_by_attachment.values())
+    selected: list[tuple[NoticeVersion, list[dict[str, Any]]]] = []
+    for version in source_versions:
+        payload = version.source_payload
+        if (
+            not isinstance(payload, dict)
+            or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+            or payload.get("status") != "ACCEPTED"
+            or not isinstance(payload.get("result"), dict)
+        ):
+            continue
+        if public_view:
+            public_extraction = (
+                _curated_public_extraction(payload)
+                or safe_public_live_extraction(payload)
+            )
+            if public_extraction is None:
+                continue
+            requirements = list(public_extraction.get("requirements") or [])
+        else:
+            requirements = list(payload["result"].get("requirements") or [])
+        selected.append((version, requirements))
+
+    if not selected:
         detail = (
             "공개 검증이 완료된 공고 분석이 없습니다."
             if public_view
             else "먼저 공고문 근거 추출을 실행해야 합니다."
         )
         raise HTTPException(status_code=422, detail=detail)
-    if public_view:
-        public_extraction = (
-            _curated_public_extraction(analysis_version.source_payload)
-            or safe_public_live_extraction(analysis_version.source_payload)
-        )
-        if public_extraction is None:  # pragma: no cover - selection invariant
-            raise HTTPException(status_code=422, detail="공개 검증이 완료된 공고 분석이 없습니다.")
-        requirements = list(public_extraction.get("requirements") or [])
-    else:
-        result_payload = analysis_version.source_payload["result"]
-        requirements = list(result_payload.get("requirements") or [])
+
+    requirements_by_fingerprint: dict[str, dict[str, Any]] = {}
+    requirement_id_fingerprints: dict[str, str] = {}
+    for _version, source_requirements in selected:
+        for raw_requirement in source_requirements:
+            if not isinstance(raw_requirement, dict):
+                continue
+            requirement = dict(raw_requirement)
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "category": str(requirement.get("category") or "OTHER").upper(),
+                        "logic": str(requirement.get("logic") or "SINGLE").upper(),
+                        "condition": " ".join(
+                            str(requirement.get("normalized_condition") or "")
+                            .casefold()
+                            .split()
+                        ),
+                        "mandatory": bool(requirement.get("mandatory", True)),
+                        "deadline_basis": " ".join(
+                            str(requirement.get("deadline_basis") or "")
+                            .casefold()
+                            .split()
+                        ),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if fingerprint in requirements_by_fingerprint:
+                continue
+            requirement_id = str(requirement.get("requirement_id") or "").strip()
+            if (
+                not requirement_id
+                or (
+                    requirement_id in requirement_id_fingerprints
+                    and requirement_id_fingerprints[requirement_id] != fingerprint
+                )
+            ):
+                requirement_id = f"REQ-{fingerprint[:12].upper()}"
+            requirement["requirement_id"] = requirement_id
+            requirement_id_fingerprints[requirement_id] = fingerprint
+            requirements_by_fingerprint[fingerprint] = requirement
+
+    requirements = list(requirements_by_fingerprint.values())
     classified = classify_requirements(
         requirements,
         profile=load_public_company_profile(),
         deadline=notice.deadline,
     )
+    analysis_version_ids = [version.id for version, _requirements in selected]
+    latest_analysis_version = max(
+        (version for version, _requirements in selected),
+        key=lambda value: value.version_no,
+    )
     return {
         "notice_key": notice.notice_key,
-        "analysis_version_id": analysis_version.id,
+        "analysis_version_id": latest_analysis_version.id,
+        "analysis_version_ids": analysis_version_ids,
+        "analysis_source_count": len(analysis_version_ids),
         **classified,
     }
 

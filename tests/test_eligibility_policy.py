@@ -317,6 +317,145 @@ def test_descriptive_entity_and_sme_performance_lookback_do_not_block_eligibilit
     assert by_id["SME-CERTIFICATE"]["blocking"] is True
 
 
+def test_notice_specific_goods_qualifications_and_contract_conduct_are_separated() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "PRODUCT-REGISTRATION",
+                "INDUSTRY_CODE",
+                "나라장터 세부품명번호 5종을 제조물품으로 등록한 업체여야 함.",
+            ),
+            requirement(
+                "DIRECT-PRODUCTION",
+                "DIRECT_PRODUCTION",
+                "공고 지정 품목의 직접생산확인증명서를 보유해야 함.",
+            ),
+            requirement(
+                "CONTRACT-SUBJECT",
+                "ENTITY",
+                "전국기능경기대회 경기용 재료 구매 계약업체로 참여해야 함.",
+            ),
+            requirement(
+                "ANTI-BRIBERY",
+                "SANCTION",
+                "입찰·계약 과정에서 금품·향응·취업 제공을 요구하거나 수수하지 않아야 함.",
+            ),
+            requirement(
+                "ANTI-COLLUSION",
+                "SANCTION",
+                "입찰가격 사전 협의 또는 특정인 낙찰을 위한 담합을 하지 않아야 함.",
+            ),
+            requirement(
+                "ORIGIN-MARKING",
+                "REGION",
+                "대한민국 외에서 제조된 계약물품은 원산지를 표시해야 함.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["PRODUCT-REGISTRATION"]["policy_class"] == "ELIGIBILITY"
+    assert by_id["PRODUCT-REGISTRATION"]["outcome"] == "REVIEW"
+    assert by_id["PRODUCT-REGISTRATION"]["company_fact_key"] == (
+        "notice_specific_product_registration"
+    )
+    assert by_id["DIRECT-PRODUCTION"]["policy_class"] == "ELIGIBILITY"
+    assert by_id["DIRECT-PRODUCTION"]["outcome"] == "REVIEW"
+    assert by_id["DIRECT-PRODUCTION"]["company_fact_key"] == (
+        "direct_production_certificate"
+    )
+    assert by_id["CONTRACT-SUBJECT"]["policy_class"] == "INFORMATION"
+    assert by_id["ANTI-BRIBERY"]["policy_class"] == "CHECKLIST"
+    assert by_id["ANTI-COLLUSION"]["policy_class"] == "CHECKLIST"
+    assert by_id["ORIGIN-MARKING"]["policy_class"] == "INFORMATION"
+    assert result["blocking_items"] == 2
+
+
+def test_compound_goods_qualification_never_uses_generic_registration_pass() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "COMPOUND-GOODS",
+                "INDUSTRY_CODE",
+                (
+                    "나라장터 세부품명번호를 제조물품으로 등록하고 "
+                    "직접생산확인증명서와 소기업·소상공인 확인서를 보유해야 함."
+                ),
+            )
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+
+    item = result["items"][0]
+    assert item["policy_class"] == "ELIGIBILITY"
+    assert item["outcome"] == "REVIEW"
+    assert item["blocking"] is True
+    assert item["company_fact_key"] == "compound_notice_specific_qualification"
+
+
+def test_unknown_entity_region_and_sanction_clauses_remain_fail_closed() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "UNKNOWN-ENTITY",
+                "ENTITY",
+                "법인 또는 개인사업자만 참여할 수 있음.",
+            ),
+            requirement(
+                "UNKNOWN-REGION",
+                "REGION",
+                "서울시에 소재한 업체에 한함.",
+            ),
+            requirement(
+                "UNKNOWN-SANCTION",
+                "SANCTION",
+                "최근 영업정지 이력이 없는 업체여야 함.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+
+    assert {item["policy_class"] for item in result["items"]} == {"ELIGIBILITY"}
+    assert {item["outcome"] for item in result["items"]} == {"REVIEW"}
+    assert result["blocking_items"] == 3
+
+
+def test_known_information_guards_do_not_override_embedded_eligibility() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "PRODUCT-CONTRACT",
+                "ENTITY",
+                "세부품명 등록을 완료한 계약업체로 참여해야 함.",
+            ),
+            requirement(
+                "COLLUSION-EXCLUSION",
+                "SANCTION",
+                "담합 사실이 있는 업체는 입찰에 참가할 수 없음.",
+            ),
+            requirement(
+                "ORIGIN-CAPABILITY",
+                "REGION",
+                "원산지를 표시할 수 있는 업체에 한함.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["PRODUCT-CONTRACT"]["policy_class"] == "ELIGIBILITY"
+    assert by_id["PRODUCT-CONTRACT"]["company_fact_key"] == (
+        "notice_specific_product_registration"
+    )
+    assert by_id["COLLUSION-EXCLUSION"]["policy_class"] == "ELIGIBILITY"
+    assert by_id["ORIGIN-CAPABILITY"]["policy_class"] == "ELIGIBILITY"
+
+
 def test_profile_and_policy_api_use_repository_data(client: TestClient) -> None:
     profile_response = client.get("/api/v1/company-profile")
     assert profile_response.status_code == 200
@@ -355,6 +494,120 @@ def test_profile_and_policy_api_use_repository_data(client: TestClient) -> None:
     assert payload["counts"]["ACTION_REQUIRED"] == 1
     assert payload["blocking_actions"] == 1
     assert payload["groups"]["ELIGIBILITY"][0]["evidence"]["sha256"]
+
+
+def test_policy_api_combines_latest_requirements_from_every_attachment(
+    client: TestClient,
+) -> None:
+    notice_key = "PUBLIC-POLICY-MULTI-001"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": notice_key,
+            "title": "다중 첨부 정책 결합 시험",
+            "deadline": "2026-09-01T09:00:00Z",
+        },
+    ).status_code == 201
+    for version_no, label, digest, extracted_requirement in (
+        (
+            1,
+            "입찰공고문.pdf",
+            "b" * 64,
+            requirement(
+                "REQ-001",
+                "ENTITY",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함.",
+            ),
+        ),
+        (
+            2,
+            "계약예규.zip",
+            "c" * 64,
+            requirement(
+                "REQ-001",
+                "SANCTION",
+                "입찰가격 사전 협의 또는 특정인 낙찰을 위한 담합을 하지 않아야 함.",
+            ),
+        ),
+    ):
+        response = client.post(
+            f"/api/v1/notices/{notice_key}/versions",
+            json={
+                "version_no": version_no,
+                "file_sha256": digest,
+                "source_payload": {
+                    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                    "status": "ACCEPTED",
+                    "source_label": label,
+                    "result": {"requirements": [extracted_requirement]},
+                },
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    response = client.get(
+        f"/api/v1/notices/{notice_key}/analysis/requirement-policy"
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["analysis_source_count"] == 2
+    assert len(payload["analysis_version_ids"]) == 2
+    assert payload["counts"] == {
+        "ELIGIBILITY": 1,
+        "ACTION_REQUIRED": 0,
+        "CHECKLIST": 1,
+        "INFORMATION": 0,
+    }
+    assert len({item["requirement_id"] for item in payload["items"]}) == 2
+
+
+def test_policy_api_does_not_revive_stale_pps_source_as_legacy(
+    client: TestClient,
+) -> None:
+    notice_key = "STALE-PPS-POLICY-001"
+    assert client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": notice_key,
+            "bid_notice_no": notice_key,
+            "title": "교체된 과거 첨부 정책 시험",
+            "deadline": "2026-09-01T09:00:00Z",
+        },
+    ).status_code == 201
+    assert client.post(
+        f"/api/v1/notices/{notice_key}/versions",
+        json={
+            "version_no": 1,
+            "file_sha256": "d" * 64,
+            "document_complete": True,
+            "extraction_status": "ACCEPTED",
+            "extraction_confidence": 0.99,
+            "source_payload": {
+                "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                "source_kind": "PPS_PUBLIC_ATTACHMENT",
+                "status": "ACCEPTED",
+                "prompt_version": "stale-prompt-version",
+                "processing_version": "stale-processing-version",
+                "attachment_id": "PPS-ATT-stale",
+                "result": {
+                    "document_type": "NOTICE",
+                    "requirements": [
+                        requirement(
+                            "STALE-REQ",
+                            "ENTITY",
+                            "경쟁입찰참가자격 등록을 완료한 업체여야 함.",
+                        )
+                    ],
+                },
+            },
+        },
+    ).status_code == 201
+
+    response = client.get(
+        f"/api/v1/notices/{notice_key}/analysis/requirement-policy"
+    )
+    assert response.status_code == 422
 
 
 def test_policy_api_requires_accepted_extraction(client: TestClient) -> None:

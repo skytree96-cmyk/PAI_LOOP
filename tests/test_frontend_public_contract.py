@@ -212,7 +212,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260827-sidebar-icons1"' in html
-    assert 'src="./app.js?v=20260827-r07-policy1"' in html
+    assert 'src="./app.js?v=20260827-policy3"' in html
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -364,6 +364,11 @@ def test_quantitative_ui_separates_source_validation_from_activation() -> None:
     assert 'REVIEW_REQUIRED: "자동 산정 보류"' in app
     assert "FACT_DIMENSIONS_UNMODELED" in app
     assert "점수 산출조건이 아직 구조화되지 않았습니다" in app
+    assert '"배점표 발견 · 검증 보류"' in app
+    assert '"원문 앵커 검증 완료 · 공개 화면 비공개"' in app
+    assert '"자동 산정 가능한 항목 없음"' in app
+    assert "수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다" in app
+    assert 'UNKNOWN_METRIC: "제안서·제품·수기평가 항목' in app
     assert 'AVAILABLE: "배점표 연결"' not in app
 
     mentor_brief = (

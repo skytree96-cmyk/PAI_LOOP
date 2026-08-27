@@ -129,12 +129,14 @@ def _source_version(
     prompt_version: str = PROMPT_VERSION,
     include_missing_field: bool = True,
     missing: list[str] | None = None,
+    document_type: str = "NOTICE",
+    extraction_confidence: float | None = None,
 ) -> NoticeVersion:
     digest = digest_char * 64
     result = None
     if requirements is not None:
         result = {
-            "document_type": "NOTICE",
+            "document_type": document_type,
             "requirements": requirements,
             "summary": "공개 테스트 추출",
         }
@@ -146,7 +148,11 @@ def _source_version(
         file_sha256=digest,
         document_complete=document_complete,
         extraction_status=status,
-        extraction_confidence=0.98 if status == "ACCEPTED" else 0.0,
+        extraction_confidence=(
+            extraction_confidence
+            if extraction_confidence is not None
+            else 0.98 if status == "ACCEPTED" else 0.0
+        ),
         source_payload={
             "kind": "OPENAI_REQUIREMENT_EXTRACTION",
             "attachment_id": attachment_id,
@@ -435,7 +441,7 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.0"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.1"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.0"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.2.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -666,6 +672,172 @@ def test_known_non_eligibility_gap_can_release_r07_after_strict_eligibility_chec
         "document",
     ]
     assert business_risk.basis_json["axis_basis"]["document"]["run_status"] == "PARTIAL"
+
+
+def test_attachment_local_absence_is_resolved_only_by_an_accepted_sibling(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="SIBLING-COVERAGE",
+        title="공고문과 제안요청서가 분리된 공급 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-NOTICE",
+        digest_char="a",
+        requirements=[
+            _requirement(
+                "REQ-SIBLING",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-NOTICE",
+            )
+        ],
+        document_complete=False,
+        document_type="NOTICE",
+        missing=[
+            "제안요청서의 세부 요구사항과 정량 평가표는 본문에 포함되지 않음."
+        ],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-RFP",
+        digest_char="b",
+        requirements=[],
+        document_type="RFP",
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "COMPLETED"
+    assert result.eligibility == "PASS"
+    assert result.reason_code == "PASS_MATCH"
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" in result.warnings
+    assert "AGGREGATE_GAPS_UNRESOLVED" not in result.warnings
+
+
+def test_attachment_does_not_satisfy_its_own_missing_document_gap(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="SELF-COVERAGE",
+        title="제안요청서 단일 첨부 공급 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-ONLY-RFP",
+        digest_char="c",
+        requirements=[
+            _requirement(
+                "REQ-SELF",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-ONLY-RFP",
+            )
+        ],
+        document_complete=False,
+        document_type="RFP",
+        missing=["제안요청서의 평가 세부항목 일부가 본문에 포함되지 않음."],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.reason_code == "R07"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_incomplete_sibling_does_not_clear_an_attachment_local_gap(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="INCOMPLETE-SIBLING",
+        title="불완전한 제안요청서가 있는 공급 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-NOTICE-INCOMPLETE",
+        digest_char="e",
+        requirements=[
+            _requirement(
+                "REQ-INCOMPLETE-SIBLING",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-NOTICE-INCOMPLETE",
+            )
+        ],
+        document_complete=False,
+        document_type="NOTICE",
+        missing=["제안요청서의 세부 요구사항은 본문에 포함되지 않음."],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-RFP-INCOMPLETE",
+        digest_char="f",
+        requirements=[],
+        document_complete=False,
+        document_type="RFP",
+        missing=["평가표 일부가 흐려 판독 불가"],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.reason_code == "R07"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_requirement_anchor_confidence_is_not_lowered_by_document_average(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="ANCHOR-CONFIDENCE",
+        title="요건 근거와 문서 평균을 분리하는 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-CONFIDENCE",
+        digest_char="d",
+        requirements=[
+            _requirement(
+                "REQ-HIGH-ANCHOR",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-CONFIDENCE",
+                confidence=0.98,
+            )
+        ],
+        extraction_confidence=0.85,
+        document_complete=False,
+        missing=["가격산정 세부표 일부"],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == "PASS"
+    assert result.reason_code == "PASS_MATCH"
+    evaluation = db_session.get(Evaluation, result.evaluation_id)
+    assert evaluation is not None
+    assert {item["reason_code"] for item in evaluation.atomic_results} == {"P-ENTITY"}
 
 
 def test_known_non_eligibility_gap_keeps_medium_confidence_as_review_only(

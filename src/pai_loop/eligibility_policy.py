@@ -12,7 +12,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.08.27-v2"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.08.27-v3"
 
 _FORBIDDEN_KEYS = {
     "address",
@@ -116,10 +116,116 @@ def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
         return False
     return (
         "대상으로 하는 입찰" in text
+        or bool(
+            re.search(
+                r"계약\s*업체(?:로|로서)\s*(?:참여|선정|수행)",
+                text,
+            )
+        )
         or (
             "계약업체" in text
             and _contains(text, "기재되어", "로 기재", "이라고 기재")
         )
+    )
+
+
+def _is_product_registration_eligibility(text: str) -> bool:
+    """Keep notice-specific item registration separate from generic bidder registration."""
+
+    return "등록" in text and (
+        _contains(
+            text,
+            "제조물품",
+            "공급물품",
+            "세부품명",
+            "세부 품명",
+            "물품분류번호",
+            "물품 분류번호",
+        )
+        or ("나라장터" in text and "제조" in text)
+    )
+
+
+def _is_direct_production_certificate_eligibility(text: str) -> bool:
+    return _contains(
+        text,
+        "직접생산확인증명서",
+        "직접생산 확인증명서",
+        "직접생산확인서",
+        "직접생산 확인서",
+    )
+
+
+def _is_integrity_conduct_clause(text: str) -> bool:
+    """Match bid-conduct obligations, not a bidder's current sanction state."""
+
+    if _contains(
+        text,
+        "참가할 수 없",
+        "입찰할 수 없",
+        "참가 불가",
+        "입찰 불가",
+        "업체에 한함",
+        "업체여야",
+        "자격 제한",
+    ):
+        return False
+    return _contains(
+        text,
+        "금품·향응",
+        "금품 향응",
+        "금품수수",
+        "취업 제공",
+        "취업제공",
+        "입찰가격 사전 협의",
+        "담합",
+        "공정한 경쟁을 방해",
+        "공정경쟁을 방해",
+    )
+
+
+def _is_origin_marking_clause(text: str) -> bool:
+    if _contains(
+        text,
+        "참가자격",
+        "자격요건",
+        "참가할 수 있",
+        "업체에 한함",
+        "업체여야",
+    ):
+        return False
+    return _contains(text, "원산지", "제조국") and _contains(
+        text,
+        "표시",
+        "표기",
+        "기재",
+    )
+
+
+def _is_region_eligibility(text: str) -> bool:
+    return _contains(
+        text,
+        "지역제한",
+        "지역 제한",
+        "주된 영업소",
+        "법인등기부상 본점",
+        "본점 소재지",
+        "사업장 소재지",
+    )
+
+
+def _is_explicit_entity_eligibility(text: str) -> bool:
+    return _contains(
+        text,
+        "참가자격",
+        "자격요건",
+        "사업자등록",
+        "법인사업자",
+        "비영리법인",
+        "업체에 한함",
+        "업체로 한정",
+        "업체이어야",
+        "업체여야",
     )
 
 
@@ -280,6 +386,31 @@ def _eligibility_item(
     return item
 
 
+def _unmapped_eligibility_item(
+    requirement: dict[str, Any],
+    *,
+    fact_key: str,
+    deadline: date | None,
+    message: str,
+) -> dict[str, Any]:
+    """Represent a real bidder gate without inventing a company PASS fact."""
+
+    item = _base_item(requirement, "ELIGIBILITY")
+    item.update(
+        {
+            "outcome": "REVIEW",
+            "blocking": True,
+            "company_fact_key": fact_key,
+            "evidence_state": "MISSING_OR_UNMAPPED",
+            "evidence": None,
+            "deadline_as_of": deadline.isoformat() if deadline else None,
+            "deadline_check_required": True,
+            "message": message,
+        }
+    )
+    return item
+
+
 def _checklist_item(
     requirement: dict[str, Any],
     *,
@@ -352,8 +483,41 @@ def classify_requirements(
 
     for requirement, text in zip(requirements, normalized, strict=True):
         category = str(requirement.get("category") or "OTHER").upper()
+        product_registration = _is_product_registration_eligibility(text)
+        direct_production_certificate = _is_direct_production_certificate_eligibility(text)
+        small_business = _is_small_business_eligibility(text, category=category)
+        notice_specific_families = sum(
+            (product_registration, direct_production_certificate, small_business)
+        )
 
-        if _is_descriptive_entity_clause(text, category=category):
+        if notice_specific_families > 1:
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="compound_notice_specific_qualification",
+                deadline=as_of,
+                message=(
+                    "물품 등록·직접생산·기업 확인이 한 조건에 함께 있어 각각의 최신 증빙을 "
+                    "분리 확인해야 합니다. 일반 입찰자격등록 사실로 대신 PASS하지 않습니다."
+                ),
+            )
+        elif product_registration:
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="notice_specific_product_registration",
+                deadline=as_of,
+                message=(
+                    "공고가 지정한 세부품명·제조물품 등록 여부를 별도 확인해야 합니다. "
+                    "일반 경쟁입찰참가자격등록증만으로 충족 처리하지 않습니다."
+                ),
+            )
+        elif direct_production_certificate:
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="direct_production_certificate",
+                deadline=as_of,
+                message="공고 지정 품목의 유효한 직접생산확인증명서를 연결해야 합니다.",
+            )
+        elif _is_descriptive_entity_clause(text, category=category):
             item = _information_item(
                 requirement,
                 profile=profile,
@@ -408,7 +572,24 @@ def classify_requirements(
                 deadline=as_of,
                 message="현재 확인된 유죄판결 사례가 없어 PASS 상태이며 제출 전 재확인합니다.",
             )
-        elif _is_small_business_eligibility(text, category=category):
+        elif _is_integrity_conduct_clause(text):
+            item = _checklist_item(
+                requirement,
+                profile=profile,
+                capability_key="integrity_pledge",
+                message=(
+                    "금품수수·담합 금지 등 입찰 행동규범입니다. 현재 참가자격 증빙과 "
+                    "분리하고 청렴 준수 체크리스트로 관리합니다."
+                ),
+            )
+        elif _is_origin_marking_clause(text):
+            item = _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message="제품 원산지 표시 의무이며 업체 소재지 참가제한으로 사용하지 않습니다.",
+            )
+        elif small_business:
             if nonprofit_exception_present:
                 item = _eligibility_item(
                     requirement,
@@ -530,19 +711,47 @@ def classify_requirements(
                 capability_key="contract_schedule_review",
                 message="계약일과 용역 종료일을 일정 정보로 표시합니다.",
             )
-        elif category in {"ENTITY", "CERTIFICATION", "SANCTION", "INDUSTRY_CODE", "REGION"}:
-            item = _base_item(requirement, "ELIGIBILITY")
-            item.update(
-                {
-                    "outcome": "REVIEW",
-                    "blocking": True,
-                    "company_fact_key": None,
-                    "evidence_state": "UNMAPPED",
-                    "evidence": None,
-                    "deadline_as_of": as_of.isoformat() if as_of else None,
-                    "deadline_check_required": True,
-                    "message": "적격성 조건에 대응하는 공개 프로필 근거를 추가로 연결해야 합니다.",
-                }
+        elif category == "REGION" and _is_region_eligibility(text):
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="notice_region_eligibility",
+                deadline=as_of,
+                message="본점·사업장 소재지 등 공고별 지역제한 근거를 추가로 연결해야 합니다.",
+            )
+        elif category == "ENTITY" and _is_explicit_entity_eligibility(text):
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="notice_entity_eligibility",
+                deadline=as_of,
+                message="공고가 요구한 법인·사업자 유형에 대응하는 공개 프로필 근거를 연결해야 합니다.",
+            )
+        elif category in {"CERTIFICATION", "INDUSTRY_CODE"}:
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key=f"notice_{category.casefold()}_eligibility",
+                deadline=as_of,
+                message="공고별 자격 조건에 대응하는 공개 프로필 근거를 추가로 연결해야 합니다.",
+            )
+        elif category == "SANCTION":
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="notice_sanction_eligibility",
+                deadline=as_of,
+                message="제재·결격 조건의 현재 충족 여부를 추가 확인해야 합니다.",
+            )
+        elif category == "REGION":
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="notice_region_eligibility",
+                deadline=as_of,
+                message="지역 관련 문구가 참가제한인지 추가 확인해야 합니다.",
+            )
+        elif category == "ENTITY":
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="notice_entity_eligibility",
+                deadline=as_of,
+                message="법인·사업자 유형 등 참가자격 여부를 추가 확인해야 합니다.",
             )
         elif category in {"SUBMISSION", "PERSONNEL", "CONSORTIUM"}:
             item = _checklist_item(
