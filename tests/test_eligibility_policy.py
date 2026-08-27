@@ -556,6 +556,31 @@ def test_description_guards_keep_embedded_bidder_gates_fail_closed() -> None:
                 "SANCTION",
                 "청렴계약 위반 업체는 입찰에 참가할 수 없음.",
             ),
+            requirement(
+                "NAMED-PARTICIPANT-GATE",
+                "ENTITY",
+                "사업명은 교육 기자재 공급이며 참가대상은 관련 실적 보유자임.",
+            ),
+            requirement(
+                "REGION-PARTICIPATION-GATE",
+                "REGION",
+                "납품장소는 제주이며 제주 소재 업체만 참여 가능.",
+            ),
+            requirement(
+                "OFFICE-SUPPLIER-GATE",
+                "CERTIFICATION",
+                "정품 MS Office를 공급 가능한 업체만 참여 가능.",
+            ),
+            requirement(
+                "STRATEGIC-REGISTRATION-GATE",
+                "CERTIFICATION",
+                "계약 후 납품 전 전략물자 전문판정을 받아야 하며 판정기관으로 등록한 업체만 가능.",
+            ),
+            requirement(
+                "INTEGRITY-TARGET-EXCLUSION",
+                "SANCTION",
+                "청렴계약 준수 의무 위반 업체는 참가대상에서 제외한다.",
+            ),
         ],
         profile=load_public_company_profile(),
         deadline="2026-09-01",
@@ -563,7 +588,7 @@ def test_description_guards_keep_embedded_bidder_gates_fail_closed() -> None:
 
     assert {item["policy_class"] for item in result["items"]} == {"ELIGIBILITY"}
     assert {item["outcome"] for item in result["items"]} == {"REVIEW"}
-    assert result["blocking_items"] == 5
+    assert result["blocking_items"] == 10
 
 
 def test_profile_and_policy_api_use_repository_data(client: TestClient) -> None:

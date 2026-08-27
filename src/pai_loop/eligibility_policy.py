@@ -110,7 +110,7 @@ def _is_small_business_eligibility(text: str, *, category: str) -> bool:
 
 
 def _has_explicit_bidder_gate(text: str) -> bool:
-    return _contains(
+    exact_terms = _contains(
         text,
         "입찰참가자격",
         "참가자격",
@@ -135,7 +135,28 @@ def _has_explicit_bidder_gate(text: str) -> bool:
         "국내 법인",
         "국내에 본점",
         "내국인만",
+        "참가대상",
     )
+    actor_gate = bool(
+        re.search(
+            r"(?:업체|사업자|법인|보유자|입찰자|참가자).{0,20}"
+            r"(?:만\s*(?:참가|입찰|참여)?\s*가능|제한|제외|결격|참가\s*가능|참여\s*가능)",
+            text,
+        )
+    )
+    participation_gate = bool(
+        re.search(
+            r"(?:참가|입찰|참여).{0,16}(?:가능|제한|제외|결격|불가|금지)",
+            text,
+        )
+    )
+    capability_gate = bool(
+        re.search(
+            r"(?:공급|제조|납품|수행)\s*가능한\s*(?:업체|사업자|법인)",
+            text,
+        )
+    )
+    return exact_terms or actor_gate or participation_gate or capability_gate
 
 
 def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
@@ -145,16 +166,14 @@ def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
         return False
     if _is_explicit_entity_eligibility(text) or _has_explicit_bidder_gate(text):
         return False
-    named_subject = _contains(
-        text,
-        "용역명은",
-        "사업명은",
-        "과업명은",
-        "대상 사업은",
-        "대상사업은",
-        "계약 범위는",
-        "사업 범위는",
-    ) and _contains(text, "이다", "입니다", "임", "에 관한")
+    named_subject = bool(
+        re.fullmatch(
+            r"(?:(?:용역\s*입찰의\s*)?대상\s*사업|용역명|사업명|과업명|"
+            r"계약\s*범위|사업\s*범위)\s*(?:은|는|:)\s*.+"
+            r"(?:이다|입니다|임)\.?",
+            text,
+        )
+    )
     contract_scope = _contains(text, "에 관한 계약이어야", "을 위한 계약이어야")
     return (
         named_subject
@@ -203,7 +222,7 @@ def _is_direct_production_certificate_eligibility(text: str) -> bool:
 def _is_integrity_conduct_clause(text: str) -> bool:
     """Match bid-conduct obligations, not a bidder's current sanction state."""
 
-    if _contains(
+    if _has_explicit_bidder_gate(text) or _contains(
         text,
         "참가할 수 없",
         "입찰할 수 없",
