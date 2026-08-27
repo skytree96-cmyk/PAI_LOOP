@@ -4958,23 +4958,33 @@
     const upper = numberOrNull(data.upper_points);
     const coverage = numberOrNull(data.evidence_coverage_pct) ?? 0;
     const readiness = numberOrNull(data.readiness_pct);
-    const range = lower === null || upper === null || total === null
-      ? "미산정"
-      : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
-    els.scoreOverview.innerHTML = [
-      quantSummaryCard("예상 점수 범위", range, total === null ? "배점표 미확보" : "원문상 조건부 하한~상한", "score-card--readiness"),
-      quantSummaryCard("검증 커버리지", `${formatNumber(coverage, 1)}%`, "CONFIRMED 항목 배점 기준", "score-card--coverage"),
-      quantSummaryCard("정량 준비도", data.readiness_band || "GRAY", readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
-    ].join("");
-
+    const ruleSource = String(data.rule_source_status || "").toUpperCase();
     const legacySourceMap = {
       AVAILABLE: "SOURCE_VALIDATED",
       INCOMPLETE: "INCOMPLETE",
       MISSING: "MISSING",
       NOT_APPLICABLE: "NOT_APPLICABLE",
     };
-    const sourceValidation = data.source_validation_status || legacySourceMap[data.rule_source_status] || "REVIEW_REQUIRED";
+    const sourceValidation = data.source_validation_status || legacySourceMap[ruleSource] || "REVIEW_REQUIRED";
     const activation = data.activation_status || "REVIEW_REQUIRED";
+    const sourceMissing = sourceValidation === "MISSING" || ruleSource === "MISSING";
+    const notApplicable = sourceValidation === "NOT_APPLICABLE" || activation === "NOT_APPLICABLE" || ruleSource === "NOT_APPLICABLE";
+    const sourceDetail = sourceMissing
+      ? "배점표 미확보"
+      : notApplicable
+        ? "정량평가 비적용"
+        : total === null
+          ? "배점표 발견 · 검증 보류"
+          : "원문상 조건부 하한~상한";
+    const range = lower === null || upper === null || total === null
+      ? "미산정"
+      : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
+    els.scoreOverview.innerHTML = [
+      quantSummaryCard("예상 점수 범위", range, sourceDetail, "score-card--readiness"),
+      quantSummaryCard("검증 커버리지", `${formatNumber(coverage, 1)}%`, "CONFIRMED 항목 배점 기준", "score-card--coverage"),
+      quantSummaryCard("정량 준비도", data.readiness_band || "GRAY", readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
+    ].join("");
+
     const sourceLabels = {
       SOURCE_VALIDATED: "원문 기계검증",
       REVIEW_REQUIRED: "원문 추가 확인",
@@ -4993,7 +5003,13 @@
     const anchor = data.source_anchor;
     els.quantSourceAnchor.textContent = anchor
       ? `${anchor.document_label} · ${anchor.page ? `PDF ${anchor.page}쪽 · ` : ""}${anchor.section} · SHA-256 ${anchor.document_sha256 ? `${anchor.document_sha256.slice(0, 12)}…` : "미확인"}`
-      : "연결된 정량평가표 원문 앵커 없음";
+      : sourceMissing
+        ? "연결된 정량평가표 원문 앵커 없음"
+        : sourceValidation === "SOURCE_VALIDATED"
+          ? "원문 앵커 검증 완료 · 공개 화면 비공개"
+          : notApplicable
+            ? "정량평가 비적용 확인"
+            : "배점표 후보 확인 · 원문 검증 보류";
     const activationReasonLabels = {
       FACT_DIMENSIONS_UNMODELED: "인정기간·유사사업·VAT·역할 등 점수 산출조건이 아직 구조화되지 않았습니다.",
       FACT_KEY_AMBIGUOUS: "여러 평가항목이 같은 회사 사실 키를 사용해 값의 적용 대상을 구분할 수 없습니다.",
@@ -5004,6 +5020,18 @@
       BOUND_UNIT_INCONSISTENT: "배점 구간별 단위가 누락되었거나 서로 다른 환산 단위를 사용합니다.",
       UNSUPPORTED_UNIT: "현재 결정론적 엔진이 지원하지 않는 단위입니다.",
       UNSUPPORTED_SCORING_DSL: "현재 결정론적 엔진이 지원하지 않는 산식입니다.",
+      AMBIGUOUS_RULE: "평가기준 문구가 여러 방식으로 해석되어 자동 계산을 보류했습니다.",
+      BRACKET_COMPARATOR_MISMATCH: "배점 구간의 비교기호가 서로 일치하지 않습니다.",
+      BRACKET_LITERAL_MISMATCH: "배점 구간의 기준 문구를 원문과 일치시킬 수 없습니다.",
+      BRACKET_NUMBER_MISMATCH: "배점 구간의 숫자를 원문과 일치시킬 수 없습니다.",
+      COMPARATOR_GRAMMAR_UNSUPPORTED: "현재 엔진이 지원하지 않는 비교식입니다.",
+      CRITERION_LITERAL_MISMATCH: "평가항목 명칭을 원문과 일치시킬 수 없습니다.",
+      EXTRACTION_DECLARED_INCOMPLETE: "첨부 추출 결과가 일부 불완전하다고 표시되었습니다.",
+      MAX_POINTS_LITERAL_MISMATCH: "최대 배점을 원문과 일치시킬 수 없습니다.",
+      OVERLAPPING_BRACKETS: "배점 구간이 서로 겹칩니다.",
+      REQUIRED_EVIDENCE_INCOMPLETE: "점수 계산에 필요한 회사 증빙이 아직 충분하지 않습니다.",
+      TABLE_TOTAL_INCOMPLETE: "평가표 총점을 완전하게 확인하지 못했습니다.",
+      UNKNOWN_METRIC: "제안서·제품·수기평가 항목이라 회사 사실만으로 자동 계산할 수 없습니다.",
     };
     const activationReasons = Array.isArray(data.activation_reasons)
       ? data.activation_reasons.map((item) => `자동 산정 보류: ${activationReasonLabels[item] || item}`)
@@ -5012,12 +5040,22 @@
     els.quantAssumptionList.innerHTML = quantitativeAssumptions.length
       ? quantitativeAssumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
       : "<li>추가 가정 없음</li>";
+    const emptyCriteria = sourceMissing
+      ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 REVIEW로 유지합니다.")
+      : notApplicable
+        ? emptyPanel("정량평가 비적용", "이 공고에는 회사 정량점수를 적용하지 않습니다.")
+        : emptyPanel("자동 산정 가능한 항목 없음", "배점표는 확인했지만 수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다.");
     els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
       ? data.criteria.map(renderQuantitativeEstimateRow).join("")
-      : `<tr><td colspan="4">${emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 REVIEW로 유지합니다.")}</td></tr>`;
+      : `<tr><td colspan="4">${emptyCriteria}</td></tr>`;
+    const publicEvidenceHidden = !sourceMissing && (Array.isArray(data.assumptions)
+      ? data.assumptions.some((item) => String(item).includes("공개 화면"))
+      : false);
     els.quantObservationList.innerHTML = Array.isArray(data.evidence_observations) && data.evidence_observations.length
       ? data.evidence_observations.map(renderQuantObservation).join("")
-      : emptyPanel("적용 전 공개 근거 없음", "공고별 배점 산식과 연결된 공개 근거가 없습니다.");
+      : publicEvidenceHidden
+        ? emptyPanel("내부 검증 근거 보존", "회사 사실값과 원문·내부 증빙은 공개 화면에서 숨깁니다.")
+        : emptyPanel("적용 전 공개 근거 없음", "공고별 배점 산식과 연결된 공개 근거가 없습니다.");
     els.quantSeparationNote.textContent = data.separation_notice || "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않습니다.";
   }
 

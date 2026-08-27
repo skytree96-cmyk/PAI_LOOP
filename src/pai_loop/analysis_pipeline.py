@@ -76,7 +76,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.0"
+PIPELINE_VERSION = "analysis-pipeline-0.6.1"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.0"
 SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -117,25 +117,23 @@ _PASS_RULE_BY_CATEGORY = {
 }
 
 _ELIGIBILITY_GAP_TERMS = (
-    "자격",
-    "참가",
+    "참가자격",
+    "입찰참가",
+    "자격요건",
     "면허",
-    "등록",
-    "인증",
+    "사업자등록",
+    "제조물품 등록",
+    "공급물품 등록",
+    "세부품명 등록",
     "직접생산",
-    "지역",
-    "소재",
-    "실적",
-    "인력",
-    "시설",
+    "지역제한",
+    "주된 영업소",
+    "본점 소재지",
     "공동수급",
     "컨소시엄",
     "부정당",
     "제재",
     "업종",
-    "업체",
-    "사업자",
-    "법인",
     "중소",
     "소기업",
     "결격",
@@ -156,6 +154,22 @@ _KNOWN_NON_ELIGIBILITY_GAP_TERMS = (
     "도면",
     "이미지",
     "목차",
+    "정량",
+    "평가표",
+    "배점표",
+    "평가항목",
+    "평가 항목",
+    "공고번호",
+    "품명",
+    "수량",
+    "납품",
+    "설치",
+    "규격",
+    "사양",
+    "시방",
+    "페이지",
+    "해상도",
+    "운영체제",
 )
 _BLOCKING_ACTION_GAP_TERMS = (
     "제안설명회",
@@ -592,7 +606,13 @@ def _source_excerpt(item: _MergedRequirement) -> str | None:
 
 
 def _parse_confidence(item: _MergedRequirement) -> float:
-    values = [anchor.confidence for anchor in item.anchors] + item.source_confidences
+    # A document-level mean describes the attachment, not every extracted
+    # condition.  Using it in the per-requirement minimum allowed one unrelated
+    # low-confidence clause to turn otherwise exact anchors into R07.  Prefer
+    # the requirement's own anchors and retain the source value only as a
+    # legacy fallback for an unanchored curated record.
+    anchor_values = [anchor.confidence for anchor in item.anchors]
+    values = anchor_values or item.source_confidences
     return min(values) if values else 0.0
 
 
@@ -1092,22 +1112,97 @@ _TYPED_SIBLING_GAP_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
+_SIBLING_DOCUMENT_GAP_MARKERS: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
+    (("제안요청서",), frozenset({"RFP"})),
+    (("과업지시서", "과업 지시서", "과업내용서", "과업 내용서"), frozenset({"SCOPE"})),
+    (("입찰공고", "공고문", "입찰 제출서류"), frozenset({"NOTICE"})),
+    (
+        ("규격서", "사양서", "세부사양", "시방서", "내역서"),
+        frozenset({"RFP", "SCOPE"}),
+    ),
+)
+
+_ATTACHMENT_LOCAL_ABSENCE_TERMS = (
+    "본문에 포함되지",
+    "포함되지",
+    "본문에 없음",
+    "정보가 없음",
+    "내용이 없음",
+    "별도 첨부",
+    "별도 문서",
+    "별도 제공",
+    "첨부되지",
+    "제공되지",
+    "제시되지",
+    "기재되지",
+    "미포함",
+    "누락",
+)
+_UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐림")
+
+
+def _gap_is_covered_by_aggregate_sources(
+    gap: str,
+    *,
+    current_document_type: str,
+    available_types: set[str],
+    quantitative_table_available: bool,
+) -> bool:
+    """Resolve an attachment-local absence only when a sibling supplies it."""
+
+    if not _contains_any(gap, _ATTACHMENT_LOCAL_ABSENCE_TERMS) or _contains_any(
+        gap,
+        _UNREADABLE_GAP_TERMS,
+    ):
+        return False
+
+    referenced_type_options = [
+        allowed_types
+        for markers, allowed_types in _SIBLING_DOCUMENT_GAP_MARKERS
+        if any(marker in gap for marker in markers)
+        and current_document_type not in allowed_types
+    ]
+    if referenced_type_options and all(
+        bool(available_types & allowed_types)
+        for allowed_types in referenced_type_options
+    ):
+        return True
+    return bool(
+        quantitative_table_available
+        and _contains_any(gap, ("정량", "평가표", "배점표", "평가배점", "평점산식"))
+    )
+
+
+def _contains_any(text: str, terms: Sequence[str]) -> bool:
+    return any(term in text for term in terms)
+
 
 def _aggregate_source_gaps(
     sources: Sequence[_SourceDocument],
 ) -> tuple[list[str], list[str]]:
     """Resolve only exact document-presence gaps using accepted typed siblings."""
-
-    available_types = {
-        source.data.document_type
-        for source in sources
-        if source.materializable and source.data is not None
-    }
     unresolved: list[str] = []
     resolved: list[str] = []
     for source in sources:
         if source.data is None:
             continue
+        sibling_sources = [
+            candidate
+            for candidate in sources
+            if candidate is not source
+            and candidate.materializable
+            and candidate.complete
+            and candidate.data is not None
+        ]
+        available_types = {
+            candidate.data.document_type
+            for candidate in sibling_sources
+            if candidate.data is not None
+        }
+        quantitative_table_available = any(
+            candidate.data is not None and bool(candidate.data.quantitative_tables)
+            for candidate in sibling_sources
+        )
         for raw_gap in source.data.missing_or_unreadable:
             gap = _normalise_text(raw_gap)
             matched_type = next(
@@ -1118,7 +1213,15 @@ def _aggregate_source_gaps(
                 ),
                 None,
             )
-            if matched_type is not None and matched_type in available_types:
+            if (
+                matched_type is not None
+                and matched_type in available_types
+            ) or _gap_is_covered_by_aggregate_sources(
+                gap,
+                current_document_type=source.data.document_type,
+                available_types=available_types,
+                quantitative_table_available=quantitative_table_available,
+            ):
                 resolved.append(gap)
             else:
                 unresolved.append(gap)
