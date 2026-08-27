@@ -13,7 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
-from .analysis_pipeline import AnalysisPipelineError, run_analysis_pipeline
+from .analysis_pipeline import (
+    PIPELINE_VERSION,
+    AnalysisPipelineError,
+    run_analysis_pipeline,
+)
 from .analysis_selection import manual_only_notice_keys
 from .auth import require_api_key
 from .daily_analysis_scope import (
@@ -27,9 +31,14 @@ from .daily_analysis_scope import (
     validated_source_analysis_scope,
     validated_source_material_scope,
 )
+from .eligibility_policy import POLICY_VERSION
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
-from .notice_freshness import authoritative_pps_cancelled_notice_keys
+from .notice_freshness import (
+    analysis_version_refresh_required,
+    authoritative_pps_cancelled_notice_keys,
+    latest_current_analysis_run,
+)
 from .pps_enrichment import (
     ATTACHMENT_TIMEOUT_GUARD_SECONDS,
     DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
@@ -713,6 +722,60 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _latest_terminal_analysis_child_attempts(
+    session: Session,
+    refresh_runs: dict[str, AnalysisRun],
+) -> dict[str, datetime]:
+    """Return the latest effective live child after each stale snapshot.
+
+    A policy-version refresh is initially new deterministic work, so it does
+    not wait behind a failure cooldown. If that refresh child terminates
+    without producing a current-version AnalysisRun, however, the next plan
+    must treat it as retry work. Parent/child audit rows are the durable proof
+    of that attempt; dry-runs and explicitly requeued continuation children do
+    not consume the retry window.
+    """
+
+    if not refresh_runs:
+        return {}
+    oldest_run_at = min(_utc(run.generated_at) for run in refresh_runs.values())
+    children = list(
+        session.scalars(
+            select(IngestionJob).where(
+                IngestionJob.source == "ANALYSIS",
+                IngestionJob.mode == "LIVE",
+                IngestionJob.status != "RUNNING",
+                IngestionJob.completed_at.is_not(None),
+                IngestionJob.created_at > oldest_run_at,
+            )
+        ).all()
+    )
+    attempts: dict[str, datetime] = {}
+    for child in children:
+        config = child.request_json if isinstance(child.request_json, dict) else {}
+        if not isinstance(config.get("parent_job_id"), str):
+            continue
+        requeued = (
+            set(config.get("requeue_notice_keys") or [])
+            if isinstance(config.get("requeue_notice_keys"), list)
+            else set()
+        )
+        attempt_at = _utc(child.completed_at or child.created_at)
+        child_created_at = _utc(child.created_at)
+        for key in child.notice_keys or []:
+            run = refresh_runs.get(key)
+            if (
+                run is None
+                or key in requeued
+                or child_created_at <= _utc(run.generated_at)
+            ):
+                continue
+            previous = attempts.get(key)
+            if previous is None or attempt_at > previous:
+                attempts[key] = attempt_at
+    return attempts
+
+
 def _backfill_children(
     session: Session,
     job_id: str,
@@ -879,6 +942,7 @@ def _eligible_retry_notice_keys(
             .options(
                 selectinload(Notice.versions),
                 selectinload(Notice.evaluations),
+                selectinload(Notice.analysis_runs),
             )
         ).all()
     )
@@ -887,9 +951,34 @@ def _eligible_retry_notice_keys(
         session,
         (notice.notice_key for notice in notices),
     )
+    refresh_runs = {
+        notice.notice_key: run
+        for notice in notices
+        if (
+            (run := latest_current_analysis_run(notice)) is not None
+            and analysis_version_refresh_required(
+                notice,
+                pipeline_version=PIPELINE_VERSION,
+                policy_version=POLICY_VERSION,
+            )
+        )
+    }
+    refresh_attempts = _latest_terminal_analysis_child_attempts(
+        session,
+        refresh_runs,
+    )
     eligible: set[str] = set()
     for notice in notices:
         if notice.notice_key in manual_only:
+            continue
+        if notice.notice_key in refresh_runs:
+            # A version change is a new deterministic calculation input, not
+            # a retry of the previous document/provider failure. The pipeline
+            # input hash remains idempotent. Once a live refresh child has
+            # terminated without a new run, the ordinary cooldown applies.
+            refresh_attempt = refresh_attempts.get(notice.notice_key)
+            if refresh_attempt is None or refresh_attempt <= cutoff:
+                eligible.add(notice.notice_key)
             continue
         source_kind = (
             "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
@@ -1377,6 +1466,7 @@ def _select_backfill_notice_keys(
             .options(
                 selectinload(Notice.versions),
                 selectinload(Notice.evaluations),
+                selectinload(Notice.analysis_runs),
             )
         ).all()
     )
@@ -1390,7 +1480,24 @@ def _select_backfill_notice_keys(
         notices,
         now=now,
     )
+    refresh_runs = {
+        notice.notice_key: run
+        for notice in notices
+        if (
+            (run := latest_current_analysis_run(notice)) is not None
+            and analysis_version_refresh_required(
+                notice,
+                pipeline_version=PIPELINE_VERSION,
+                policy_version=POLICY_VERSION,
+            )
+        )
+    }
+    refresh_attempts = _latest_terminal_analysis_child_attempts(
+        session,
+        refresh_runs,
+    )
     never_attempted: list[tuple[datetime, str]] = []
+    version_refresh: list[tuple[datetime, str]] = []
     retryable: list[tuple[datetime, str]] = []
     retry_cutoff = now - timedelta(hours=payload.retry_cooldown_hours)
     for notice in notices:
@@ -1409,6 +1516,17 @@ def _select_backfill_notice_keys(
         )
         if reason.reason_code == "NOT_SELECTED":
             never_attempted.append((observed_at, notice.notice_key))
+        elif notice.notice_key in refresh_runs:
+            refresh_attempt = refresh_attempts.get(notice.notice_key)
+            if refresh_attempt is None:
+                version_refresh.append(
+                    (
+                        _utc(refresh_runs[notice.notice_key].generated_at),
+                        notice.notice_key,
+                    )
+                )
+            elif payload.include_retryable and refresh_attempt <= retry_cutoff:
+                retryable.append((refresh_attempt, notice.notice_key))
         elif (
             payload.include_retryable
             and reason.reason_code in _RETRYABLE_ANALYSIS_CODES
@@ -1419,8 +1537,9 @@ def _select_backfill_notice_keys(
     # guarantees that a persistent provider/document failure cannot starve a
     # notice that has never received an analysis attempt.
     never_attempted.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    version_refresh.sort(key=lambda row: (row[0], row[1]))
     retryable.sort(key=lambda row: (row[0], row[1]))
-    return [key for _, key in [*never_attempted, *retryable]]
+    return [key for _, key in [*never_attempted, *version_refresh, *retryable]]
 
 
 def _backfill_status(

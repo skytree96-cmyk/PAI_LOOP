@@ -131,6 +131,7 @@ def _source_version(
     missing: list[str] | None = None,
     document_type: str = "NOTICE",
     extraction_confidence: float | None = None,
+    source_label: str | None = None,
 ) -> NoticeVersion:
     digest = digest_char * 64
     result = None
@@ -156,6 +157,7 @@ def _source_version(
         source_payload={
             "kind": "OPENAI_REQUIREMENT_EXTRACTION",
             "attachment_id": attachment_id,
+            "source_label": source_label,
             "document_sha256": digest,
             "status": status,
             "review_code": None if status == "ACCEPTED" else "R07",
@@ -441,7 +443,7 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.1"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.2"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.0"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.2.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -799,6 +801,115 @@ def test_incomplete_sibling_does_not_clear_an_attachment_local_gap(
     assert result.status == "PARTIAL"
     assert result.reason_code == "R07"
     assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_combined_scope_and_rfp_sibling_covers_each_named_missing_document(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="COMBINED-SIBLING-COVERAGE",
+        title="과업지시서와 제안요청서가 결합된 공급 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-COMBINED-NOTICE",
+        digest_char="7",
+        requirements=[
+            _requirement(
+                "REQ-COMBINED-SIBLING",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-COMBINED-NOTICE",
+            )
+        ],
+        document_complete=False,
+        document_type="NOTICE",
+        source_label="입찰공고서.pdf",
+        missing=[
+            "과업내용서, 내역서 및 제안요청서의 세부 규격·평가항목은 "
+            "입찰공고 본문에 포함되지 않아 확인할 수 없음"
+        ],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-COMBINED-RFP",
+        digest_char="8",
+        requirements=[],
+        document_type="RFP",
+        source_label="과업지시서 및 제안요청서.hwp",
+    )
+    _source_version(
+        notice,
+        version_no=3,
+        attachment_id="ATT-COMBINED-SPEC",
+        digest_char="6",
+        requirements=[],
+        document_complete=False,
+        document_type="OTHER",
+        source_label="세부사양서.hwp",
+        missing=["입찰 제출서류, 계약기간, 납품기한 등 절차 정보가 없음."],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "COMPLETED"
+    assert result.eligibility == "PASS"
+    assert result.reason_code == "PASS_MATCH"
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" in result.warnings
+    assert "AGGREGATE_GAPS_UNRESOLVED" not in result.warnings
+
+
+def test_generic_rfp_sibling_does_not_claim_a_missing_scope_document(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="GENERIC-RFP-NO-SCOPE-COVERAGE",
+        title="과업내용서가 별도로 누락된 공급 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-NO-SCOPE-NOTICE",
+        digest_char="9",
+        requirements=[
+            _requirement(
+                "REQ-NO-SCOPE-SIBLING",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-NO-SCOPE-NOTICE",
+            )
+        ],
+        document_complete=False,
+        document_type="NOTICE",
+        source_label="입찰공고서.pdf",
+        missing=[
+            "과업내용서 및 제안요청서의 세부 규격은 입찰공고 본문에 "
+            "포함되지 않아 확인할 수 없음"
+        ],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-GENERIC-RFP",
+        digest_char="0",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" not in result.warnings
 
 
 def test_requirement_anchor_confidence_is_not_lowered_by_document_average(

@@ -76,7 +76,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.1"
+PIPELINE_VERSION = "analysis-pipeline-0.6.2"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.0"
 SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -1146,6 +1146,7 @@ def _gap_is_covered_by_aggregate_sources(
     *,
     current_document_type: str,
     available_types: set[str],
+    sibling_document_labels: set[str],
     quantitative_table_available: bool,
 ) -> bool:
     """Resolve an attachment-local absence only when a sibling supplies it."""
@@ -1156,15 +1157,19 @@ def _gap_is_covered_by_aggregate_sources(
     ):
         return False
 
-    referenced_type_options = [
-        allowed_types
+    referenced_document_groups = [
+        (markers, allowed_types)
         for markers, allowed_types in _SIBLING_DOCUMENT_GAP_MARKERS
         if any(marker in gap for marker in markers)
         and current_document_type not in allowed_types
     ]
-    if referenced_type_options and all(
+    if referenced_document_groups and all(
         bool(available_types & allowed_types)
-        for allowed_types in referenced_type_options
+        or any(
+            any(marker in label for marker in markers)
+            for label in sibling_document_labels
+        )
+        for markers, allowed_types in referenced_document_groups
     ):
         return True
     return bool(
@@ -1177,10 +1182,100 @@ def _contains_any(text: str, terms: Sequence[str]) -> bool:
     return any(term in text for term in terms)
 
 
+def _gap_is_covered_by_siblings(
+    gap: str,
+    *,
+    source: _SourceDocument,
+    sibling_sources: Sequence[_SourceDocument],
+) -> bool:
+    available_types = {
+        candidate.data.document_type
+        for candidate in sibling_sources
+        if candidate.data is not None
+    }
+    sibling_document_labels = {
+        _normalise_text(candidate.version.source_payload.get("source_label"))
+        for candidate in sibling_sources
+        if isinstance(candidate.version.source_payload, dict)
+        and candidate.version.source_payload.get("source_label")
+    }
+    quantitative_table_available = any(
+        candidate.data is not None and bool(candidate.data.quantitative_tables)
+        for candidate in sibling_sources
+    )
+    matched_type = next(
+        (
+            document_type
+            for pattern, document_type in _TYPED_SIBLING_GAP_RULES
+            if pattern.fullmatch(gap)
+        ),
+        None,
+    )
+    return bool(
+        (matched_type is not None and matched_type in available_types)
+        or _gap_is_covered_by_aggregate_sources(
+            gap,
+            current_document_type=source.data.document_type,
+            available_types=available_types,
+            sibling_document_labels=sibling_document_labels,
+            quantitative_table_available=quantitative_table_available,
+        )
+    )
+
+
+def _source_can_join_effective_closure(
+    source: _SourceDocument,
+    *,
+    sibling_sources: Sequence[_SourceDocument],
+) -> bool:
+    if not source.materializable or source.data is None:
+        return False
+    source_gaps = [
+        _normalise_text(item) for item in source.data.missing_or_unreadable
+    ]
+    if not source_gaps:
+        return False
+    remaining_warnings = set(source.warnings) - {
+        "SOURCE_MISSING_OR_UNREADABLE",
+        "DOCUMENT_INCOMPLETE",
+    }
+    return not remaining_warnings and all(
+        _gap_is_covered_by_siblings(
+            gap,
+            source=source,
+            sibling_sources=sibling_sources,
+        )
+        for gap in source_gaps
+    )
+
+
 def _aggregate_source_gaps(
     sources: Sequence[_SourceDocument],
 ) -> tuple[list[str], list[str]]:
     """Resolve only exact document-presence gaps using accepted typed siblings."""
+    effective_source_ids = {
+        source.version.id for source in sources if source.complete
+    }
+    while True:
+        newly_effective: set[str] = set()
+        for source in sources:
+            if source.version.id in effective_source_ids:
+                continue
+            sibling_sources = [
+                candidate
+                for candidate in sources
+                if candidate is not source
+                and candidate.version.id in effective_source_ids
+            ]
+            if _source_can_join_effective_closure(
+                source,
+                sibling_sources=sibling_sources,
+            ):
+                newly_effective.add(source.version.id)
+        if not newly_effective:
+            break
+        effective_source_ids.update(newly_effective)
+
     unresolved: list[str] = []
     resolved: list[str] = []
     for source in sources:
@@ -1190,37 +1285,14 @@ def _aggregate_source_gaps(
             candidate
             for candidate in sources
             if candidate is not source
-            and candidate.materializable
-            and candidate.complete
-            and candidate.data is not None
+            and candidate.version.id in effective_source_ids
         ]
-        available_types = {
-            candidate.data.document_type
-            for candidate in sibling_sources
-            if candidate.data is not None
-        }
-        quantitative_table_available = any(
-            candidate.data is not None and bool(candidate.data.quantitative_tables)
-            for candidate in sibling_sources
-        )
         for raw_gap in source.data.missing_or_unreadable:
             gap = _normalise_text(raw_gap)
-            matched_type = next(
-                (
-                    document_type
-                    for pattern, document_type in _TYPED_SIBLING_GAP_RULES
-                    if pattern.fullmatch(gap)
-                ),
-                None,
-            )
-            if (
-                matched_type is not None
-                and matched_type in available_types
-            ) or _gap_is_covered_by_aggregate_sources(
+            if _gap_is_covered_by_siblings(
                 gap,
-                current_document_type=source.data.document_type,
-                available_types=available_types,
-                quantitative_table_available=quantitative_table_available,
+                source=source,
+                sibling_sources=sibling_sources,
             ):
                 resolved.append(gap)
             else:
@@ -1238,6 +1310,8 @@ def _source_effectively_complete(
     if not source.materializable or source.data is None:
         return False
     source_gaps = {_normalise_text(item) for item in source.data.missing_or_unreadable}
+    if not source_gaps:
+        return False
     if source_gaps & unresolved_gaps:
         return False
     remaining_warnings = set(source.warnings) - {
