@@ -377,6 +377,17 @@ def test_manually_saved_notice_is_visible_but_excluded_from_automatic_queues(
         )
     assert blocked.value.status_code == 409
 
+    # Keep the explicit-action assertion independent of the wall clock. The
+    # discovery fixture is intentionally dated, so its original deadline will
+    # eventually pass even though this test is not exercising expiry behavior.
+    with factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == notice_key)
+        )
+        assert notice is not None
+        notice.deadline = datetime.now(timezone.utc) + timedelta(days=1)
+        session.commit()
+
     # The durable marker filters only schedulers. The explicit user action is
     # still accepted through the existing same-origin manual-analysis route.
     manual = discovery_client.post(
