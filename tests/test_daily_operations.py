@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from pai_loop.analysis_api import (
     AnalysisBackfillPlanRequest,
@@ -19,10 +20,13 @@ from pai_loop.models import (
     AwardHistoryItem,
     CompanyFact,
     Evidence,
+    Evaluation,
     IngestionJob,
     MockNotification,
     Notice,
     NoticeVersion,
+    RecommendationSnapshot,
+    ScoreSnapshot,
 )
 from pai_loop.pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
@@ -122,6 +126,169 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         "mode": "mock",
         "actual_push_sent": False,
     }
+
+
+def test_daily_briefing_batches_notice_history_and_loads_only_latest_snapshot(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    published_at = "2026-08-16T08:30:00+09:00"
+    notice_keys = ("DAILY-BATCH-A", "DAILY-BATCH-B")
+    for notice_key in notice_keys:
+        _create_notice(
+            client,
+            notice_key=notice_key,
+            published_at=published_at,
+        )
+
+    with client.app.state.session_factory() as session:
+        for index, notice_key in enumerate(notice_keys):
+            notice = session.query(Notice).filter_by(notice_key=notice_key).one()
+            version = NoticeVersion(
+                notice_id=notice.id,
+                version_no=1,
+                file_sha256=hashlib.sha256(notice_key.encode()).hexdigest(),
+                document_complete=True,
+                extraction_status="COMPLETE",
+                extraction_confidence=1.0,
+                source_payload={"kind": "PUBLIC_DOCUMENT_REFERENCE"},
+            )
+            session.add(version)
+            session.flush()
+            old_evaluation = Evaluation(
+                notice_id=notice.id,
+                notice_version_id=version.id,
+                evaluated_at=datetime(2026, 8, 15, tzinfo=timezone.utc),
+                deadline_snapshot_at=notice.deadline,
+                eligibility="FAIL",
+                reason_code="OLD",
+                readiness_score=1,
+                readiness_status="RED",
+                evidence_coverage=1,
+                risk_score=99,
+                risk_band="NO_GO",
+                atomic_results=[{"discarded": "x" * 20_000}],
+                explanation={"discarded": "x" * 20_000},
+            )
+            latest_evaluation = Evaluation(
+                notice_id=notice.id,
+                notice_version_id=version.id,
+                evaluated_at=datetime(2026, 8, 16, tzinfo=timezone.utc),
+                deadline_snapshot_at=notice.deadline,
+                eligibility="PASS",
+                reason_code="CURRENT",
+                readiness_score=88,
+                readiness_status="GREEN",
+                evidence_coverage=92,
+                risk_score=12,
+                risk_band="GO",
+                atomic_results=[{"discarded": "y" * 20_000}],
+                explanation={"discarded": "y" * 20_000},
+            )
+            session.add_all([old_evaluation, latest_evaluation])
+            session.flush()
+            old_run = AnalysisRun(
+                notice_id=notice.id,
+                notice_version_id=version.id,
+                evaluation_id=old_evaluation.id,
+                idempotency_key=f"daily-old-{index}",
+                input_sha256=hashlib.sha256(f"old-{index}".encode()).hexdigest(),
+                basis_versions={
+                    "pipeline": daily_operations.PIPELINE_VERSION,
+                    "requirement_policy": daily_operations.POLICY_VERSION,
+                },
+                input_manifest={"discarded": "x" * 40_000},
+                output_summary={"marker": f"old-{index}"},
+                generated_at=datetime(2026, 8, 15, tzinfo=timezone.utc),
+            )
+            latest_run = AnalysisRun(
+                notice_id=notice.id,
+                notice_version_id=version.id,
+                evaluation_id=latest_evaluation.id,
+                idempotency_key=f"daily-latest-{index}",
+                input_sha256=hashlib.sha256(f"latest-{index}".encode()).hexdigest(),
+                basis_versions={
+                    "pipeline": daily_operations.PIPELINE_VERSION,
+                    "requirement_policy": daily_operations.POLICY_VERSION,
+                },
+                input_manifest={"discarded": "y" * 40_000},
+                output_summary={"marker": f"latest-{index}"},
+                generated_at=datetime(2026, 8, 16, tzinfo=timezone.utc),
+            )
+            session.add_all([old_run, latest_run])
+            session.flush()
+            session.add(
+                ScoreSnapshot(
+                    analysis_run_id=latest_run.id,
+                    score_key="readiness",
+                    score_type="READINESS",
+                    value=88,
+                    status="AVAILABLE",
+                )
+            )
+            session.add(
+                RecommendationSnapshot(
+                    analysis_run_id=latest_run.id,
+                    recommendation_key=f"department-{index}",
+                    department_id="ai_future_education",
+                    rank=1,
+                    priority_score=90,
+                    recommendation="GO",
+                    risk_band="GO",
+                )
+            )
+        session.commit()
+
+    monkeypatch.setattr(daily_operations, "_DAILY_BRIEFING_BATCH_SIZE", 1)
+    statements: list[str] = []
+
+    def capture_sql(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(" ".join(statement.casefold().split()))
+
+    event.listen(client.app.state.engine, "before_cursor_execute", capture_sql)
+    try:
+        response = client.get(
+            "/api/v1/operations/daily-briefing",
+            params={
+                "days": 7,
+                "limit": 50,
+                "as_of": "2026-08-17T09:00:00+09:00",
+            },
+        )
+    finally:
+        event.remove(client.app.state.engine, "before_cursor_execute", capture_sql)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["totals"]["observed"] == 2
+    notices = {item["notice_key"]: item for item in body["notices"]}
+    for index, notice_key in enumerate(notice_keys):
+        item = notices[notice_key]
+        assert item["fit"]["eligibility"] == "PASS"
+        assert item["analysis_snapshot"]["output_summary"] == {
+            "marker": f"latest-{index}"
+        }
+        assert item["analysis_snapshot"]["scores"][0]["value"] == 88
+        assert item["analysis_snapshot"]["recommendations"][0][
+            "recommendation"
+        ] == "GO"
+
+    candidate_queries = [
+        statement
+        for statement in statements
+        if " from notices " in statement and "coalesce(" in statement
+    ]
+    assert len(candidate_queries) == 1
+    assert "notices.title" not in candidate_queries[0]
+    notice_batch_queries = [
+        statement
+        for statement in statements
+        if " from notices " in statement and "notices.id in" in statement
+    ]
+    assert len(notice_batch_queries) == 2
+    assert not any("evaluations.atomic_results" in statement for statement in statements)
+    assert not any("evaluations.explanation" in statement for statement in statements)
+    assert not any("analysis_runs.input_manifest" in statement for statement in statements)
 
 
 def test_daily_briefing_passes_evidence_loaded_company_facts_to_quantitative_bridge(
