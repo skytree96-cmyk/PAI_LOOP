@@ -1,3 +1,4 @@
+# Blueprint sync retrigger for quantitative scoring deployment.
 services:
   - type: web
     name: pai-loop-demo
