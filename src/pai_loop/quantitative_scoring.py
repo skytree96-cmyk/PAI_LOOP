@@ -24,7 +24,7 @@ from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
 )
-from .models import CompanyFact, CompanyPerformanceRecord, Notice
+from .models import AnalysisRun, CompanyFact, CompanyPerformanceRecord, Notice, ScoreSnapshot
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
@@ -58,7 +58,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.3.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.4.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -70,7 +70,9 @@ SourceValidationStatus = Literal[
     "MISSING",
     "NOT_APPLICABLE",
 ]
-ActivationStatus = Literal["AUTO_ACTIVE", "REVIEW_REQUIRED", "NOT_APPLICABLE"]
+ActivationStatus = Literal[
+    "AUTO_ACTIVE", "PARTIAL_ACTIVE", "REVIEW_REQUIRED", "NOT_APPLICABLE"
+]
 
 
 class QuantModel(BaseModel):
@@ -168,6 +170,20 @@ class QuantitativeFact(QuantModel):
         return self
 
 
+class QuantitativeReviewCriterion(QuantModel):
+    """One source-table row excluded from automatic calculation.
+
+    The row's label and maximum are retained only so a partial result keeps the
+    full table denominator. No value or formula is invented for the row.
+    """
+
+    criterion_id: str = Field(min_length=1, max_length=100)
+    category: str = Field(min_length=1, max_length=100)
+    label: str = Field(min_length=1, max_length=300)
+    max_points: float = Field(gt=0)
+    issue_codes: list[str] = Field(min_length=1, max_length=30)
+
+
 class QuantitativeEstimateRequest(QuantModel):
     ruleset_version: str = Field(min_length=1, max_length=160)
     rule_source_status: Literal[
@@ -178,6 +194,9 @@ class QuantitativeEstimateRequest(QuantModel):
     activation_reasons: list[str] = Field(default_factory=list, max_length=100)
     minimum_score: float | None = Field(default=None, ge=0)
     criteria: list[QuantitativeCriterion] = Field(default_factory=list, max_length=100)
+    review_criteria: list[QuantitativeReviewCriterion] = Field(
+        default_factory=list, max_length=100
+    )
     facts: list[QuantitativeFact] = Field(default_factory=list, max_length=200)
     assumptions: list[str] = Field(default_factory=list, max_length=50)
     missing_reason: str | None = Field(default=None, max_length=2_000)
@@ -189,10 +208,23 @@ class QuantitativeEstimateRequest(QuantModel):
             self.rule_source_status != "AVAILABLE"
             or self.source_validation_status != "SOURCE_VALIDATED"
             or self.activation_reasons
+            or self.review_criteria
         ):
             raise ValueError(
                 "AUTO_ACTIVE requires source-validated AVAILABLE rules without activation reasons"
             )
+        if self.activation_status == "PARTIAL_ACTIVE" and (
+            self.rule_source_status != "AVAILABLE"
+            or self.source_validation_status != "REVIEW_REQUIRED"
+            or not self.activation_reasons
+            or not self.criteria
+            or not self.review_criteria
+        ):
+            raise ValueError(
+                "PARTIAL_ACTIVE requires verified criteria plus explicitly reviewed rows"
+            )
+        if self.activation_status != "PARTIAL_ACTIVE" and self.review_criteria:
+            raise ValueError("review_criteria are allowed only for PARTIAL_ACTIVE")
         return self
 
 
@@ -719,8 +751,19 @@ def estimate_quantitative_score(
         request.rule_source_status == "AVAILABLE"
         and request.source_validation_status == "SOURCE_VALIDATED"
     )
-    activation_is_safe = request.activation_status == "AUTO_ACTIVE"
-    if not source_is_validated or not activation_is_safe or not request.criteria:
+    full_activation_is_safe = request.activation_status == "AUTO_ACTIVE"
+    partial_activation_is_safe = (
+        request.activation_status == "PARTIAL_ACTIVE"
+        and request.rule_source_status == "AVAILABLE"
+        and request.source_validation_status == "REVIEW_REQUIRED"
+        and bool(request.criteria)
+        and bool(request.review_criteria)
+    )
+    if (
+        not request.criteria
+        or not (full_activation_is_safe or partial_activation_is_safe)
+        or (full_activation_is_safe and not source_is_validated)
+    ):
         if request.rule_source_status == "AVAILABLE" and not activation_reasons:
             activation_reasons.append("AUTO_ACTIVATION_NOT_ESTABLISHED")
         return QuantitativeEstimateResult(
@@ -774,6 +817,38 @@ def estimate_quantitative_score(
         else:
             estimates.append(_estimate_criterion(criterion, facts.get(criterion.metric_key)))
 
+    for criterion in request.review_criteria:
+        estimates.append(
+            CriterionEstimate(
+                criterion_id=criterion.criterion_id,
+                category=criterion.category,
+                label=criterion.label,
+                max_points=_round_points(criterion.max_points),
+                formula="원문 산식 검토 필요",
+                rule_floor_points=0,
+                floor_condition=None,
+                rule_base_points=None,
+                base_condition=None,
+                source_anchor=None,
+                evidence_key=None,
+                evidence_reference=None,
+                evidence_sha256=None,
+                fact_binding_sha256=None,
+                estimated_points=None,
+                lower_points=0,
+                upper_points=_round_points(criterion.max_points),
+                confidence=0,
+                status="REVIEW",
+                rationale=(
+                    "이 항목은 원문 검증이 끝나지 않아 점수를 넣지 않았습니다: "
+                    + ", ".join(criterion.issue_codes)
+                ),
+                assumptions=[
+                    "미검증 항목은 0점으로 판정한 것이 아니며 전체 범위의 상한에만 반영합니다."
+                ],
+            )
+        )
+
     total_max = _round_points(sum(item.max_points for item in estimates))
     confirmed = _round_points(
         sum(item.lower_points for item in estimates if item.status == "CONFIRMED")
@@ -822,7 +897,12 @@ def estimate_quantitative_score(
     confidence = _round_points(weighted_confidence / total_max) if total_max else 0
     estimated_points = lower if lower == upper and overall in {"CONFIRMED", "ESTIMATED"} else None
 
-    if band == "GREEN":
+    if partial_activation_is_safe:
+        opinion = (
+            "원문 검증이 끝난 항목만 부분 산정했습니다. 검토 항목에는 임의 점수를 "
+            "넣지 않았으며 해당 배점은 0점부터 만점까지의 미확정 범위로 남겼습니다."
+        )
+    elif band == "GREEN":
         opinion = "현재 하한과 검증 커버리지가 기본 GREEN 기준을 충족합니다. 공고별 최소점수와 최종 제출 증빙을 다시 확인하세요."
     elif band == "YELLOW":
         opinion = "점수 하한 또는 검증 커버리지가 보완 구간입니다. 잠정 항목의 증빙을 확정한 뒤 다시 계산하세요."
@@ -1787,6 +1867,132 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
     return sorted(reasons)
 
 
+def _partial_profile_review_criteria(
+    profile: QuantitativeCandidateProfile,
+) -> list[QuantitativeReviewCriterion] | None:
+    """Return review-only rows when every other table invariant is safe.
+
+    Partial activation is deliberately narrower than the extractor's REVIEW
+    status. It is allowed only when every issue belongs to a row that is
+    wholly excluded from calculation, while the manifest, table total and all
+    remaining rows satisfy the ordinary AUTO_ACTIVE contract.
+    """
+
+    if profile.status != "REVIEW" or len(profile.tables) != 1:
+        return None
+    table = profile.tables[0]
+    expected = set(profile.expected_attachment_ids)
+    processed = set(profile.processed_attachment_ids)
+    bound = {item.attachment_id for item in profile.document_bindings}
+    if (
+        not profile.manifest_sha256
+        or not expected
+        or len(expected) != len(profile.expected_attachment_ids)
+        or expected != processed
+        or expected != bound
+        or table.status != "REVIEW"
+        or table.total_points is None
+        or table.total_evidence is None
+        or not table.total_evidence.quote.strip()
+        or table.total_evidence.attachment_id != table.source_attachment_id
+        or not profile.available_candidates
+        or not profile.review_candidates
+    ):
+        return None
+
+    available = tuple(profile.available_candidates)
+    review = tuple(profile.review_candidates)
+    available_ids = [item.criterion_id for item in available]
+    review_ids = [item.criterion_id for item in review]
+    all_ids = available_ids + review_ids
+    if (
+        len(all_ids) != len(set(all_ids))
+        or set(table.criterion_ids) != set(all_ids)
+        or set(table.available_criterion_ids) != set(available_ids)
+        or set(table.review_criterion_ids) != set(review_ids)
+        or any(
+            item.source_attachment_id != table.source_attachment_id
+            or item.table_id != table.table_id
+            for item in (*available, *review)
+        )
+        or any(
+            item.status != "REVIEW"
+            or not math.isfinite(item.max_points)
+            or item.max_points <= 0
+            or not item.issue_codes
+            for item in review
+        )
+    ):
+        return None
+
+    review_id_set = set(review_ids)
+    issue_codes_by_criterion: dict[str, set[str]] = {
+        criterion_id: set() for criterion_id in review_ids
+    }
+    for issue in profile.issues:
+        if (
+            issue.disposition != "REVIEW"
+            or issue.criterion_id not in review_id_set
+            or issue.attachment_id != table.source_attachment_id
+            or issue.table_id != table.table_id
+        ):
+            return None
+        issue_codes_by_criterion[issue.criterion_id].add(issue.code)
+    for candidate in review:
+        if set(candidate.issue_codes) != issue_codes_by_criterion[candidate.criterion_id]:
+            return None
+
+    candidate_total = sum(
+        (Decimal(str(item.max_points)) for item in (*available, *review)),
+        Decimal("0"),
+    )
+    if candidate_total != Decimal(str(table.total_points)):
+        return None
+
+    available_total = sum(
+        (Decimal(str(item.max_points)) for item in available), Decimal("0")
+    )
+    machine_table = table.model_copy(
+        update={
+            "status": "AVAILABLE",
+            "total_points": float(available_total),
+            "criterion_ids": tuple(available_ids),
+            "available_criterion_ids": tuple(available_ids),
+            "review_criterion_ids": (),
+        }
+    )
+    machine_profile = profile.model_copy(
+        update={
+            "status": "AVAILABLE",
+            "tables": (machine_table,),
+            "review_candidates": (),
+            "issues": (),
+        }
+    )
+    if _profile_activation_reasons(machine_profile):
+        return None
+
+    return [
+        QuantitativeReviewCriterion(
+            criterion_id=(
+                "review-"
+                + _canonical_digest(
+                    {
+                        "attachment_id": item.source_attachment_id,
+                        "table_id": item.table_id,
+                        "criterion_id": item.criterion_id,
+                    }
+                )[:28]
+            ),
+            category=item.metric,
+            label=item.label,
+            max_points=item.max_points,
+            issue_codes=sorted(set(item.issue_codes)),
+        )
+        for item in review
+    ]
+
+
 def quantitative_request_from_candidate_profile(
     profile: QuantitativeCandidateProfile,
     *,
@@ -1798,7 +2004,8 @@ def quantitative_request_from_candidate_profile(
         "dynamic-quantitative-rules-"
         f"{_canonical_digest(profile.model_dump(mode='json'))[:24]}"
     )
-    if profile.status != "AVAILABLE":
+    partial_review_criteria = _partial_profile_review_criteria(profile)
+    if profile.status != "AVAILABLE" and partial_review_criteria is None:
         issue_codes = sorted({item.code for item in profile.issues})
         not_applicable = profile.status == "NOT_APPLICABLE"
         return QuantitativeEstimateRequest(
@@ -1823,8 +2030,12 @@ def quantitative_request_from_candidate_profile(
             ),
         )
 
-    activation_reasons = _profile_activation_reasons(profile)
-    if activation_reasons:
+    activation_reasons = (
+        sorted({item.code for item in profile.issues})
+        if partial_review_criteria is not None
+        else _profile_activation_reasons(profile)
+    )
+    if activation_reasons and partial_review_criteria is None:
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
             rule_source_status="AVAILABLE",
@@ -1982,14 +2193,27 @@ def quantitative_request_from_candidate_profile(
     return QuantitativeEstimateRequest(
         ruleset_version=ruleset_version,
         rule_source_status="AVAILABLE",
-        source_validation_status="SOURCE_VALIDATED",
-        activation_status="AUTO_ACTIVE",
-        activation_reasons=[],
+        source_validation_status=(
+            "REVIEW_REQUIRED"
+            if partial_review_criteria is not None
+            else "SOURCE_VALIDATED"
+        ),
+        activation_status=(
+            "PARTIAL_ACTIVE"
+            if partial_review_criteria is not None
+            else "AUTO_ACTIVE"
+        ),
+        activation_reasons=(activation_reasons if partial_review_criteria else []),
         minimum_score=next(iter(minimums), None),
         criteria=criteria,
+        review_criteria=list(partial_review_criteria or []),
         facts=list(facts or []),
         assumptions=[
-            "현재 PPS manifest의 모든 첨부에서 원문 규칙을 검증했습니다.",
+            (
+                "현재 PPS manifest의 모든 첨부를 확인했고, 원문 검증이 끝난 항목만 부분 산정합니다."
+                if partial_review_criteria is not None
+                else "현재 PPS manifest의 모든 첨부에서 원문 규칙을 검증했습니다."
+            ),
             "회사 증빙값이 없는 항목은 0점이나 만점으로 가정하지 않습니다.",
         ],
     )
@@ -2262,7 +2486,7 @@ def estimate_for_notice(
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
         request = quantitative_request_from_candidate_profile(dynamic_profile)
-        if request.activation_status == "AUTO_ACTIVE":
+        if request.activation_status in {"AUTO_ACTIVE", "PARTIAL_ACTIVE"}:
             verified_facts = resolve_verified_quantitative_facts(
                 request.criteria,
                 company_facts,
@@ -2405,6 +2629,245 @@ def _public_quantitative_projection(
     )
 
 
+def _stored_public_quantitative_projection(
+    session: Session,
+    notice: Notice,
+) -> QuantitativeEstimateResult | None:
+    """Return the latest current aggregate snapshot without private bindings.
+
+    The latest current analysis run is selected first. We never search back
+    through older successful runs when that run lacks a quantitative snapshot,
+    and a newer PPS metadata version invalidates every older basis.
+    """
+
+    run_query = select(AnalysisRun).where(AnalysisRun.notice_id == notice.id)
+    pps_metadata = [
+        version
+        for version in notice.versions
+        if isinstance(version.source_payload, dict)
+        and version.source_payload.get("kind") == PPS_METADATA_KIND
+    ]
+    if pps_metadata:
+        current_version_no = max(item.version_no for item in pps_metadata)
+        current_basis_ids = [
+            item.id
+            for item in notice.versions
+            if item.version_no >= current_version_no
+        ]
+        if not current_basis_ids:
+            return None
+        run_query = run_query.where(
+            AnalysisRun.notice_version_id.in_(current_basis_ids)
+        )
+    analysis_run = session.scalar(
+        run_query.order_by(
+            AnalysisRun.generated_at.desc(),
+            AnalysisRun.created_at.desc(),
+            AnalysisRun.id.desc(),
+        ).limit(1)
+    )
+    if analysis_run is None:
+        return None
+    scores = list(
+        session.scalars(
+            select(ScoreSnapshot).where(
+                ScoreSnapshot.analysis_run_id == analysis_run.id,
+                ScoreSnapshot.score_key == "quantitative.total",
+            )
+        ).all()
+    )
+    if len(scores) != 1:
+        return None
+    score = scores[0]
+    basis_versions = analysis_run.basis_versions
+    basis = score.basis_json
+    if (
+        score.score_type != "QUANTITATIVE_ESTIMATE"
+        or score.unit != "POINTS"
+        or score.method_version != QUANTITATIVE_ENGINE_VERSION
+        or not isinstance(basis_versions, dict)
+        or basis_versions.get("quantitative_engine")
+        != QUANTITATIVE_ENGINE_VERSION
+        or not isinstance(basis, dict)
+        or basis.get("input_sha256") != analysis_run.input_sha256
+        or re.fullmatch(r"[a-f0-9]{64}", analysis_run.input_sha256 or "") is None
+        or re.fullmatch(
+            r"[a-f0-9]{64}", str(basis.get("profile_output_sha256") or "")
+        )
+        is None
+    ):
+        return None
+
+    def public_number(
+        value: object,
+        *,
+        minimum: float | None = None,
+        maximum: float | None = None,
+    ) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("snapshot aggregate must be numeric")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("snapshot aggregate must be finite")
+        if minimum is not None and number < minimum:
+            raise ValueError("snapshot aggregate is below its public bound")
+        if maximum is not None and number > maximum:
+            raise ValueError("snapshot aggregate is above its public bound")
+        return number
+
+    try:
+        estimated = public_number(score.value, minimum=0)
+        lower = public_number(score.lower_value, minimum=0)
+        upper = public_number(score.upper_value, minimum=0)
+        total_max = public_number(basis.get("total_max_points"), minimum=0)
+        confirmed = public_number(basis.get("confirmed_points"), minimum=0)
+        coverage = public_number(
+            basis.get("evidence_coverage_pct"), minimum=0, maximum=100
+        )
+        confidence = public_number(score.confidence, minimum=0, maximum=1)
+    except ValueError:
+        return None
+
+    if coverage is None or confidence is None:
+        return None
+    if (lower is None) != (upper is None):
+        return None
+    if lower is not None and upper is not None:
+        if total_max is None or lower > upper or upper > total_max:
+            return None
+    elif estimated is not None:
+        return None
+    if estimated is not None and (
+        lower is None
+        or upper is None
+        or estimated != lower
+        or estimated != upper
+        or score.status not in {"CONFIRMED", "ESTIMATED"}
+    ):
+        return None
+    if estimated is None and lower is not None and lower == upper and score.status in {
+        "CONFIRMED",
+        "ESTIMATED",
+    }:
+        return None
+    if confirmed is not None and (
+        total_max is None
+        or confirmed > total_max
+        or (lower is not None and confirmed > lower)
+    ):
+        return None
+
+    rule_source_status = basis.get("rule_source_status")
+    source_validation_status = basis.get("source_validation_status")
+    activation_status = basis.get("activation_status")
+    if rule_source_status not in {
+        "AVAILABLE",
+        "MISSING",
+        "INCOMPLETE",
+        "NOT_APPLICABLE",
+    }:
+        return None
+    if source_validation_status not in {
+        "SOURCE_VALIDATED",
+        "REVIEW_REQUIRED",
+        "INCOMPLETE",
+        "MISSING",
+        "NOT_APPLICABLE",
+    }:
+        return None
+    if activation_status not in {
+        "AUTO_ACTIVE",
+        "PARTIAL_ACTIVE",
+        "REVIEW_REQUIRED",
+        "NOT_APPLICABLE",
+    }:
+        return None
+    if activation_status == "AUTO_ACTIVE" and (
+        rule_source_status != "AVAILABLE"
+        or source_validation_status != "SOURCE_VALIDATED"
+    ):
+        return None
+    if activation_status == "PARTIAL_ACTIVE" and (
+        rule_source_status != "AVAILABLE"
+        or source_validation_status != "REVIEW_REQUIRED"
+    ):
+        return None
+    if score.status not in {"CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"}:
+        return None
+    if score.band not in {"GREEN", "YELLOW", "RED", "GRAY"}:
+        return None
+
+    readiness = (
+        _round_points((lower / total_max) * 100)
+        if lower is not None and total_max not in {None, 0}
+        else None
+    )
+    expected_band: ReadinessBand
+    if readiness is None:
+        expected_band = "GRAY"
+    elif readiness < 70 or coverage < 60:
+        expected_band = "RED"
+    elif readiness < 80 or coverage < 80:
+        expected_band = "YELLOW"
+    else:
+        expected_band = "GREEN"
+    if score.band != expected_band:
+        return None
+
+    activation_reasons = (
+        []
+        if activation_status == "AUTO_ACTIVE"
+        else ["PUBLIC_ANALYSIS_REVIEW_REQUIRED"]
+    )
+    if estimated is not None:
+        opinion = "저장된 최신 분석에서 확정 가능한 정량 합계를 계산했습니다."
+    elif lower is not None:
+        opinion = (
+            "저장된 최신 분석의 정량 점수는 범위로 계산되었습니다. "
+            "미확정 항목을 보완한 뒤 다시 분석하세요."
+        )
+    else:
+        opinion = "저장된 최신 분석에서 공개 가능한 정량 점수를 확정하지 못했습니다."
+
+    try:
+        return QuantitativeEstimateResult(
+            engine_version=QUANTITATIVE_ENGINE_VERSION,
+            ruleset_version="public-quantitative-summary-v1",
+            source_anchor=None,
+            rule_source_status=rule_source_status,
+            source_validation_status=source_validation_status,
+            activation_status=activation_status,
+            activation_reasons=activation_reasons,
+            overall_status=score.status,
+            total_max_points=total_max,
+            confirmed_points=confirmed,
+            estimated_points=estimated,
+            lower_points=lower,
+            upper_points=upper,
+            unscorable_points=None,
+            evidence_coverage_pct=coverage,
+            readiness_pct=readiness,
+            readiness_band=score.band,
+            minimum_score=None,
+            meets_minimum=None,
+            confidence=confidence,
+            criteria=[],
+            assumptions=[
+                "저장된 최신 분석 스냅샷의 공개 가능한 합계와 범위만 표시합니다."
+            ],
+            evidence_observations=[],
+            opinion=opinion,
+            separation_notice=(
+                "정량 준비도는 참가자격과 GO/NO-GO 판단을 변경하지 않는 별도 "
+                "보조지표입니다. 최종 점수는 발주기관 평가 결과로만 확정됩니다."
+            ),
+        )
+    except ValidationError:
+        return None
+
+
 @quantitative_scoring_router.get(
     "/notices/{notice_key}/quantitative-estimate",
     response_model=QuantitativeEstimateResult,
@@ -2414,10 +2877,20 @@ def get_notice_quantitative_estimate(
     request: Request,
     session: DbSession,
 ) -> QuantitativeEstimateResult:
-    notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key))
+    notice = session.scalar(
+        select(Notice)
+        .options(selectinload(Notice.versions))
+        .where(Notice.notice_key == notice_key)
+    )
     if notice is None:
         raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
     public_view = public_read_allowed(request)
+    if public_view:
+        stored_public_result = _stored_public_quantitative_projection(
+            session, notice
+        )
+        if stored_public_result is not None:
+            return stored_public_result
     company_facts = (
         []
         if public_view

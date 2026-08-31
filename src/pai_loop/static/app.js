@@ -4994,6 +4994,7 @@
     };
     const activationLabels = {
       AUTO_ACTIVE: "규칙 자동 활성",
+      PARTIAL_ACTIVE: "검증 항목만 부분 산정",
       REVIEW_REQUIRED: "자동 산정 보류",
       NOT_APPLICABLE: "산정 비적용",
     };
@@ -5032,6 +5033,7 @@
       REQUIRED_EVIDENCE_INCOMPLETE: "점수 계산에 필요한 회사 증빙이 아직 충분하지 않습니다.",
       TABLE_TOTAL_INCOMPLETE: "평가표 총점을 완전하게 확인하지 못했습니다.",
       UNKNOWN_METRIC: "제안서·제품·수기평가 항목이라 회사 사실만으로 자동 계산할 수 없습니다.",
+      PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 최신 분석에 미확정 항목이 있어 점수 범위로 표시합니다.",
     };
     const activationReasons = Array.isArray(data.activation_reasons)
       ? data.activation_reasons.map((item) => `자동 산정 보류: ${activationReasonLabels[item] || item}`)
@@ -5044,6 +5046,8 @@
       ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 REVIEW로 유지합니다.")
       : notApplicable
         ? emptyPanel("정량평가 비적용", "이 공고에는 회사 정량점수를 적용하지 않습니다.")
+        : total !== null
+          ? emptyPanel("최신 정량 합계 스냅샷", "회사 사실값과 항목별 원문 근거는 공개하지 않고, 최신 분석의 합계와 범위만 표시합니다.")
         : emptyPanel("자동 산정 가능한 항목 없음", "배점표는 확인했지만 수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다.");
     els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
       ? data.criteria.map(renderQuantitativeEstimateRow).join("")
