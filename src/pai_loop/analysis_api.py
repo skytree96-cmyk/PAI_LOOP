@@ -10,7 +10,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from .analysis_pipeline import (
@@ -739,30 +739,42 @@ def _latest_terminal_analysis_child_attempts(
     if not refresh_runs:
         return {}
     oldest_run_at = min(_utc(run.generated_at) for run in refresh_runs.values())
-    children = list(
-        session.scalars(
-            select(IngestionJob).where(
-                IngestionJob.source == "ANALYSIS",
-                IngestionJob.mode == "LIVE",
-                IngestionJob.status != "RUNNING",
-                IngestionJob.completed_at.is_not(None),
-                IngestionJob.created_at > oldest_run_at,
-            )
-        ).all()
-    )
+    parent_job_id = IngestionJob.request_json["parent_job_id"].as_string()
+    requeue_notice_keys = IngestionJob.request_json["requeue_notice_keys"]
+    children = session.execute(
+        select(
+            IngestionJob.created_at,
+            IngestionJob.completed_at,
+            IngestionJob.notice_keys,
+            parent_job_id,
+            requeue_notice_keys,
+        ).where(
+            IngestionJob.source == "ANALYSIS",
+            IngestionJob.mode == "LIVE",
+            IngestionJob.status != "RUNNING",
+            IngestionJob.completed_at.is_not(None),
+            IngestionJob.created_at > oldest_run_at,
+            parent_job_id.is_not(None),
+        )
+    ).all()
     attempts: dict[str, datetime] = {}
-    for child in children:
-        config = child.request_json if isinstance(child.request_json, dict) else {}
-        if not isinstance(config.get("parent_job_id"), str):
+    for (
+        child_created_at,
+        child_completed_at,
+        child_notice_keys,
+        child_parent_job_id,
+        raw_requeue_notice_keys,
+    ) in children:
+        if not isinstance(child_parent_job_id, str):
             continue
         requeued = (
-            set(config.get("requeue_notice_keys") or [])
-            if isinstance(config.get("requeue_notice_keys"), list)
+            set(raw_requeue_notice_keys)
+            if isinstance(raw_requeue_notice_keys, list)
             else set()
         )
-        attempt_at = _utc(child.completed_at or child.created_at)
-        child_created_at = _utc(child.created_at)
-        for key in child.notice_keys or []:
+        attempt_at = _utc(child_completed_at or child_created_at)
+        child_created_at = _utc(child_created_at)
+        for key in child_notice_keys or []:
             run = refresh_runs.get(key)
             if (
                 run is None
@@ -782,19 +794,17 @@ def _backfill_children(
     *,
     for_update: bool = False,
 ) -> list[IngestionJob]:
-    children = list(
+    parent_job_id = IngestionJob.request_json["parent_job_id"].as_string()
+    matched = list(
         session.scalars(
             select(IngestionJob)
-            .where(IngestionJob.source == "ANALYSIS")
+            .where(
+                IngestionJob.source == "ANALYSIS",
+                parent_job_id == job_id,
+            )
             .order_by(IngestionJob.created_at)
         ).all()
     )
-    matched = [
-        child
-        for child in children
-        if isinstance(child.request_json, dict)
-        and child.request_json.get("parent_job_id") == job_id
-    ]
     if not for_update or not matched:
         return matched
     # The parent row is already locked by every mutating caller, so no new
@@ -1067,30 +1077,20 @@ def _completed_retry_epoch_keys(
         return set()
     requested = set(keys)
     consumed: set[str] = set()
+    retry_epoch_matches = [
+        IngestionJob.request_json["retry_tokens"][key].as_string() == retry_epoch
+        for key in requested
+    ]
     parents = list(
         session.scalars(
             select(IngestionJob).where(
                 IngestionJob.source == "ANALYSIS_BACKFILL",
                 IngestionJob.completed_at.is_not(None),
+                IngestionJob.request_json["queue_name"].as_string() == "DAILY",
+                or_(*retry_epoch_matches),
             )
         ).all()
     )
-    parent_ids = {parent.id for parent in parents}
-    children_by_parent: dict[str, list[IngestionJob]] = {
-        parent_id: [] for parent_id in parent_ids
-    }
-    if parent_ids:
-        for child in session.scalars(
-            select(IngestionJob)
-            .where(IngestionJob.source == "ANALYSIS")
-            .order_by(IngestionJob.created_at)
-        ).all():
-            child_config = (
-                child.request_json if isinstance(child.request_json, dict) else {}
-            )
-            parent_id = child_config.get("parent_job_id")
-            if parent_id in children_by_parent:
-                children_by_parent[parent_id].append(child)
     for parent in parents:
         config = parent.request_json if isinstance(parent.request_json, dict) else {}
         if config.get("queue_name") != "DAILY":
@@ -1107,7 +1107,7 @@ def _completed_retry_epoch_keys(
             continue
         terminal_keys = _effective_terminal_keys(
             parent,
-            children_by_parent[parent.id],
+            _backfill_children(session, parent.id),
         )
         consumed.update(candidate_keys & terminal_keys)
     return consumed
@@ -1194,12 +1194,19 @@ def _matching_terminal_daily_source_parent(
     if not isinstance(source_ingestion_job_id, str):
         return None
     expected_material_keys = source_binding.get("source_material_notice_keys")
+    queue_name = IngestionJob.request_json["queue_name"].as_string()
+    bound_source_ingestion_job_id = IngestionJob.request_json[
+        "source_ingestion_job_id"
+    ].as_string()
     candidates = list(
         session.scalars(
             select(IngestionJob)
             .where(
                 IngestionJob.source == "ANALYSIS_BACKFILL",
+                IngestionJob.mode == ("DRY_RUN" if dry_run else "LIVE"),
                 IngestionJob.completed_at.is_not(None),
+                queue_name == "DAILY",
+                bound_source_ingestion_job_id == source_ingestion_job_id,
             )
             .order_by(IngestionJob.created_at)
             .with_for_update()

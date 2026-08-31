@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, load_only, selectinload
 
 from .analysis_pipeline import PIPELINE_VERSION
 from .auth import require_api_key
@@ -28,15 +28,17 @@ from .models import (
     IngestionJob,
     MockNotification,
     Notice,
+    NoticeVersion,
+    RecommendationSnapshot,
+    ScoreSnapshot,
 )
 from .eligibility_policy import POLICY_VERSION
 from .notice_freshness import (
+    analysis_basis_is_current,
     analysis_run_versions_are_current,
-    latest_current_analysis_run,
-    latest_current_evaluation,
 )
 from .quantitative_scoring import estimate_for_notice
-from .pps_enrichment import public_analysis_reason
+from .pps_enrichment import PPS_METADATA_KIND, public_analysis_reason
 
 
 router = APIRouter(
@@ -83,12 +85,30 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _latest_evaluation(notice: Notice) -> Evaluation | None:
-    return latest_current_evaluation(notice)
+_DAILY_BRIEFING_BATCH_SIZE = 25
 
 
-def _latest_analysis_snapshot(notice: Notice) -> dict[str, Any] | None:
-    run = latest_current_analysis_run(notice)
+def _latest_evaluation(
+    notice: Notice,
+    evaluations: list[Evaluation],
+) -> Evaluation | None:
+    has_pps_material = any(
+        isinstance(version.source_payload, dict)
+        and version.source_payload.get("kind") == PPS_METADATA_KIND
+        for version in notice.versions
+    )
+    for evaluation in evaluations:
+        if not analysis_basis_is_current(notice, evaluation.notice_version_id):
+            continue
+        if has_pps_material and _as_utc(evaluation.deadline_snapshot_at) != _as_utc(
+            notice.deadline
+        ):
+            continue
+        return evaluation
+    return None
+
+
+def _latest_analysis_snapshot(run: AnalysisRun | None) -> dict[str, Any] | None:
     if run is None:
         return None
     basis_versions = (
@@ -172,10 +192,12 @@ def _briefing_notice(
     notice: Notice,
     *,
     as_of: datetime,
+    latest_evaluation: Evaluation | None,
+    latest_analysis_run: AnalysisRun | None,
     company_facts: tuple[CompanyFact, ...] = (),
     performance_records: tuple[CompanyPerformanceRecord, ...] = (),
 ) -> dict[str, Any]:
-    latest = _latest_evaluation(notice)
+    latest = latest_evaluation
     source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
     analysis_reason = public_analysis_reason(
         notice.versions,
@@ -245,7 +267,7 @@ def _briefing_notice(
             else estimate_for_notice(notice, company_facts)
         ).model_dump(mode="json"),
         "pricing_intelligence": pricing_intelligence,
-        "analysis_snapshot": _latest_analysis_snapshot(notice),
+        "analysis_snapshot": _latest_analysis_snapshot(latest_analysis_run),
         "analysis_coverage": {
             "state": analysis_reason.state,
             "reason_code": analysis_reason.reason_code,
@@ -268,21 +290,14 @@ def daily_briefing(
     generated_at = _as_utc(as_of or datetime.now(timezone.utc))
     window_start = generated_at - timedelta(days=days)
     observed_at = func.coalesce(Notice.published_at, Notice.created_at)
-    notices = list(
+    notice_ids = list(
         session.scalars(
-            select(Notice)
+            select(Notice.id)
             .where(
                 observed_at >= window_start,
                 observed_at <= generated_at,
                 Notice.status == "OPEN",
                 Notice.deadline >= generated_at,
-            )
-            .options(
-                selectinload(Notice.evaluations),
-                selectinload(Notice.versions),
-                selectinload(Notice.award_history),
-                selectinload(Notice.analysis_runs).selectinload(AnalysisRun.scores),
-                selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
             )
             .order_by(observed_at.desc())
         ).all()
@@ -299,15 +314,146 @@ def daily_briefing(
             )
         ).all()
     )
-    items = [
-        _briefing_notice(
-            notice,
-            as_of=generated_at,
-            company_facts=company_facts,
-            performance_records=performance_records,
+    items: list[dict[str, Any]] = []
+    for start in range(0, len(notice_ids), _DAILY_BRIEFING_BATCH_SIZE):
+        batch_ids = notice_ids[start : start + _DAILY_BRIEFING_BATCH_SIZE]
+        notices = list(
+            session.scalars(
+                select(Notice)
+                .where(Notice.id.in_(batch_ids))
+                .options(
+                    selectinload(Notice.versions).load_only(
+                        NoticeVersion.id,
+                        NoticeVersion.notice_id,
+                        NoticeVersion.version_no,
+                        NoticeVersion.file_sha256,
+                        NoticeVersion.document_complete,
+                        NoticeVersion.extraction_status,
+                        NoticeVersion.source_payload,
+                        NoticeVersion.created_at,
+                    ),
+                    selectinload(Notice.award_history),
+                )
+            ).all()
         )
-        for notice in notices
-    ]
+        notices_by_id = {notice.id: notice for notice in notices}
+
+        evaluation_rows = list(
+            session.scalars(
+                select(Evaluation)
+                .where(Evaluation.notice_id.in_(batch_ids))
+                .options(
+                    load_only(
+                        Evaluation.id,
+                        Evaluation.notice_id,
+                        Evaluation.notice_version_id,
+                        Evaluation.evaluated_at,
+                        Evaluation.deadline_snapshot_at,
+                        Evaluation.eligibility,
+                        Evaluation.reason_code,
+                        Evaluation.readiness_score,
+                        Evaluation.readiness_status,
+                        Evaluation.evidence_coverage,
+                        Evaluation.risk_score,
+                        Evaluation.risk_band,
+                    )
+                )
+                .order_by(Evaluation.evaluated_at.desc())
+            ).all()
+        )
+        evaluations_by_notice: dict[str, list[Evaluation]] = {
+            notice_id: [] for notice_id in batch_ids
+        }
+        for evaluation in evaluation_rows:
+            evaluations_by_notice[evaluation.notice_id].append(evaluation)
+        latest_evaluations = {
+            notice_id: _latest_evaluation(
+                notices_by_id[notice_id],
+                evaluations_by_notice[notice_id],
+            )
+            for notice_id in batch_ids
+        }
+
+        latest_run_ids: dict[str, str] = {}
+        run_references = session.execute(
+            select(
+                AnalysisRun.id,
+                AnalysisRun.notice_id,
+                AnalysisRun.notice_version_id,
+                AnalysisRun.generated_at,
+            )
+            .where(AnalysisRun.notice_id.in_(batch_ids))
+            .order_by(AnalysisRun.generated_at.desc())
+        ).all()
+        for run_id, notice_id, notice_version_id, _generated_at in run_references:
+            if notice_id in latest_run_ids:
+                continue
+            if analysis_basis_is_current(
+                notices_by_id[notice_id],
+                notice_version_id,
+            ):
+                latest_run_ids[notice_id] = run_id
+
+        selected_runs = (
+            list(
+                session.scalars(
+                    select(AnalysisRun)
+                    .where(AnalysisRun.id.in_(latest_run_ids.values()))
+                    .options(
+                        load_only(
+                            AnalysisRun.id,
+                            AnalysisRun.notice_id,
+                            AnalysisRun.notice_version_id,
+                            AnalysisRun.status,
+                            AnalysisRun.input_sha256,
+                            AnalysisRun.basis_versions,
+                            AnalysisRun.output_summary,
+                            AnalysisRun.generated_at,
+                        ),
+                        selectinload(AnalysisRun.scores).load_only(
+                            ScoreSnapshot.id,
+                            ScoreSnapshot.analysis_run_id,
+                            ScoreSnapshot.score_key,
+                            ScoreSnapshot.value,
+                            ScoreSnapshot.lower_value,
+                            ScoreSnapshot.upper_value,
+                            ScoreSnapshot.status,
+                            ScoreSnapshot.band,
+                            ScoreSnapshot.method_version,
+                        ),
+                        selectinload(AnalysisRun.recommendations).load_only(
+                            RecommendationSnapshot.id,
+                            RecommendationSnapshot.analysis_run_id,
+                            RecommendationSnapshot.recommendation_key,
+                            RecommendationSnapshot.department_id,
+                            RecommendationSnapshot.rank,
+                            RecommendationSnapshot.priority_score,
+                            RecommendationSnapshot.recommendation,
+                            RecommendationSnapshot.risk_band,
+                        ),
+                    )
+                ).all()
+            )
+            if latest_run_ids
+            else []
+        )
+        runs_by_id = {run.id: run for run in selected_runs}
+
+        for notice_id in batch_ids:
+            notice = notices_by_id[notice_id]
+            items.append(
+                _briefing_notice(
+                    notice,
+                    as_of=generated_at,
+                    latest_evaluation=latest_evaluations[notice_id],
+                    latest_analysis_run=runs_by_id.get(
+                        latest_run_ids.get(notice_id, "")
+                    ),
+                    company_facts=company_facts,
+                    performance_records=performance_records,
+                )
+            )
+        session.expunge_all()
     items.sort(
         key=lambda item: (
             -float(item["priority_score"]),

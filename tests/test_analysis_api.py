@@ -91,6 +91,7 @@ def _create_pps_notice_with_authority(
     bid_notice_no: str,
     disposition: str,
 ) -> str:
+    active_deadline = datetime.now(timezone.utc) + timedelta(days=30)
     created = client.post(
         "/api/v1/notices",
         json={
@@ -98,7 +99,7 @@ def _create_pps_notice_with_authority(
             "bid_notice_no": bid_notice_no,
             "title": "취소 분석 차단 회귀 공고",
             "agency": "공공기관",
-            "deadline": "2026-08-30T09:00:00Z",
+            "deadline": active_deadline.isoformat(),
             "status": "CLOSED" if disposition == "CANCELLED" else "OPEN",
         },
     )
