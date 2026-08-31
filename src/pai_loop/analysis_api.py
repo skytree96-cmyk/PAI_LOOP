@@ -1188,7 +1188,7 @@ def _matching_terminal_daily_source_parent(
     *,
     dry_run: bool,
 ) -> IngestionJob | None:
-    """Reuse a terminal parent when the same immutable PPS audit is retried."""
+    """Reuse the latest terminal generation for an immutable PPS audit."""
 
     source_ingestion_job_id = source_binding.get("source_ingestion_job_id")
     if not isinstance(source_ingestion_job_id, str):
@@ -1227,12 +1227,19 @@ def _matching_terminal_daily_source_parent(
             and validated_source_material_scope(config) == expected_material_keys
         ):
             matches.append(candidate)
-    if len(matches) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="multiple terminal DAILY parents are bound to the PPS audit",
-        )
-    return matches[0] if matches else None
+    # A terminal no-work parent can legitimately be followed by a new parent
+    # once a retry key crosses its cooldown. After that generation terminates,
+    # an exact workflow retry must reuse it instead of treating the audit
+    # history as ambiguous. ``id`` makes equal-timestamp fixtures deterministic.
+    return max(
+        matches,
+        key=lambda candidate: (
+            _utc(candidate.completed_at or candidate.created_at),
+            _utc(candidate.created_at),
+            candidate.id,
+        ),
+        default=None,
+    )
 
 
 def _reserved_backfill_keys(
@@ -1781,6 +1788,34 @@ def plan_analysis_backfill(
                 source_binding,
                 dry_run=payload.dry_run,
             )
+            if parent is not None and payload.retry_notice_keys:
+                # A source-bound terminal no-work plan is immutable, but
+                # retry eligibility is time-dependent. Reuse it only while
+                # every currently cooled key is already represented by the
+                # same retry epoch; otherwise the planner must re-evaluate.
+                current_retry_eligible = _eligible_retry_notice_keys(
+                    session,
+                    payload.retry_notice_keys,
+                    now=now,
+                    cooldown_hours=payload.retry_cooldown_hours,
+                    allow_incomplete_coverage_without_cooldown=True,
+                )
+                config = (
+                    parent.request_json
+                    if isinstance(parent.request_json, dict)
+                    else {}
+                )
+                raw_retry_tokens = config.get("retry_tokens")
+                retry_tokens = (
+                    raw_retry_tokens
+                    if isinstance(raw_retry_tokens, dict)
+                    else {}
+                )
+                if any(
+                    retry_tokens.get(key) != payload.retry_epoch
+                    for key in current_retry_eligible
+                ):
+                    parent = None
         if parent is None:
             parent = _matching_active_backfill(session, payload, now=now)
 

@@ -5,11 +5,14 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import lru_cache
 from importlib import resources
+from itertools import combinations
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -34,19 +37,25 @@ from .pps_enrichment import (
     _validated_manifest_attachments,
 )
 from .quantitative_rule_extraction import (
+    AttachmentDocumentBinding,
     ImmutableQuantitativeRuleCandidate,
+    ImmutableQuantitativeTable,
     QuantitativeCandidateProfile,
     ValidatedQuantitativeAttachmentRecord,
     merge_validated_quantitative_records,
 )
 from .public_performance import load_public_performance_seed
 from .quantitative_formula import (
+    CaseTableRowLiteral,
     CategoryScore,
+    CompiledCaseTable,
     DeterministicFormula,
     boolean_categories_complete,
     category_points,
     category_values_are_disjoint,
+    case_table_points,
     compile_arithmetic_formula,
+    compile_case_table,
     compile_category_formula,
     evaluate_formula,
     evaluate_formula_range,
@@ -58,7 +67,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.4.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.6.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -127,6 +136,7 @@ class QuantitativeCriterion(QuantModel):
         "THRESHOLD",
         "FORMULA",
         "CATEGORICAL",
+        "CASE_TABLE",
     ]
     formula: str = Field(min_length=1, max_length=1_000)
     brackets: list[ScoreBracket] = Field(default_factory=list)
@@ -136,6 +146,7 @@ class QuantitativeCriterion(QuantModel):
     threshold_points_if_met: float | None = Field(default=None, ge=0)
     threshold_points_if_not_met: float | None = Field(default=None, ge=0)
     deterministic_formula: DeterministicFormula | None = None
+    case_table: CompiledCaseTable | None = None
     performance_scope: PerformanceRecognitionScope | None = None
     rule_floor_points: float = Field(default=0, ge=0)
     floor_condition: str | None = Field(default=None, max_length=1_000)
@@ -336,10 +347,32 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
             criterion.threshold_points_if_not_met,
         )
     )
+    if criterion.formula_type == "CASE_TABLE":
+        if (
+            criterion.case_table is None
+            or criterion.brackets
+            or criterion.categories
+            or criterion.deterministic_formula is not None
+            or threshold_configured
+        ):
+            return "CASE_TABLE 산식이 완전하게 정의되지 않았습니다."
+        if (
+            criterion.case_table.maximum_points is not None
+            and criterion.case_table.maximum_points != criterion.max_points
+        ):
+            return "CASE_TABLE의 배점 상한이 평가항목 만점과 일치하지 않습니다."
+        if any(row.points > criterion.max_points for row in criterion.case_table.rows):
+            return "CASE_TABLE 배점이 항목 만점을 초과합니다."
+        return None
     if criterion.formula_type == "FORMULA":
         if criterion.deterministic_formula is None:
             return "원문 산식을 안전한 결정론 산식으로 변환하지 못했습니다."
-        if criterion.brackets or criterion.categories or threshold_configured:
+        if (
+            criterion.brackets
+            or criterion.categories
+            or criterion.case_table is not None
+            or threshold_configured
+        ):
             return "FORMULA 산식에 다른 배점 구조를 함께 사용할 수 없습니다."
         if criterion.deterministic_formula.maximum_points > criterion.max_points:
             return "산식 상한이 항목 만점을 초과합니다."
@@ -349,6 +382,7 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
             criterion.brackets
             or not criterion.categories
             or criterion.deterministic_formula is not None
+            or criterion.case_table is not None
             or threshold_configured
         ):
             return "범주형 배점표가 완전하게 정의되지 않았습니다."
@@ -366,6 +400,7 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
             criterion.brackets
             or criterion.categories
             or criterion.deterministic_formula is not None
+            or criterion.case_table is not None
             or criterion.threshold_operator is None
             or criterion.threshold_value is None
             or criterion.threshold_points_if_met is None
@@ -380,7 +415,12 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
         return None
     if not criterion.brackets:
         return "배점 구간이 정의되지 않았습니다."
-    if criterion.categories or criterion.deterministic_formula is not None or threshold_configured:
+    if (
+        criterion.categories
+        or criterion.deterministic_formula is not None
+        or criterion.case_table is not None
+        or threshold_configured
+    ):
         return "배점 구간 산식에 다른 배점 구조를 함께 사용할 수 없습니다."
     if any(bracket.points > criterion.max_points for bracket in criterion.brackets):
         return "배점 구간 점수가 항목 만점을 초과합니다."
@@ -462,6 +502,11 @@ def _points_for_value(
     criterion: QuantitativeCriterion,
     value: float | bool | str,
 ) -> float | None:
+    if criterion.formula_type == "CASE_TABLE":
+        if criterion.case_table is None:
+            return None
+        points = case_table_points(criterion.case_table, value)
+        return _round_points(points) if points is not None else None
     if criterion.formula_type == "BOOLEAN":
         if not isinstance(value, bool):
             return None
@@ -522,6 +567,27 @@ def _points_for_numeric_range(
     lower: float,
     upper: float,
 ) -> tuple[float, float] | None:
+    if criterion.formula_type == "CASE_TABLE":
+        table = criterion.case_table
+        if table is None or table.value_kind == "CATEGORICAL" or lower > upper:
+            return None
+        sample_values: set[float] = {lower, upper}
+        for row in table.rows:
+            if row.comparison_value is None:
+                continue
+            comparison = float(row.comparison_value)
+            if lower <= comparison <= upper:
+                sample_values.add(comparison)
+                if table.value_kind == "DISCRETE" and comparison - 1 >= lower:
+                    sample_values.add(comparison - 1)
+        resolved = [_points_for_value(criterion, value) for value in sample_values]
+        # The CASE DSL has no implicit ELSE. If either endpoint, a cutoff, or
+        # a representative discrete gap is undefined, the entire company
+        # value range remains unscorable rather than discarding that sample.
+        if any(points is None for points in resolved):
+            return None
+        values = [float(points) for points in resolved if points is not None]
+        return _round_points(min(values)), _round_points(max(values))
     if criterion.formula_type == "FORMULA":
         if criterion.deterministic_formula is None:
             return None
@@ -667,7 +733,7 @@ def _estimate_criterion(
             **fact_audit,
         )
 
-    if criterion.formula_type in {"BRACKET", "THRESHOLD", "FORMULA"} and fact.status == "ESTIMATED" and (
+    if criterion.formula_type in {"BRACKET", "THRESHOLD", "FORMULA", "CASE_TABLE"} and fact.status == "ESTIMATED" and (
         fact.lower_value is not None or fact.upper_value is not None
     ):
         if fact.lower_value is None or fact.upper_value is None:
@@ -708,6 +774,34 @@ def _estimate_criterion(
             )
         lower_points = upper_points = points
 
+    case_range_requires_review = (
+        criterion.formula_type == "CASE_TABLE"
+        and fact.status == "ESTIMATED"
+        and lower_points != upper_points
+    )
+    estimate_status: EstimateStatus = (
+        "REVIEW" if case_range_requires_review else fact.status
+    )
+    if case_range_requires_review:
+        rationale = (
+            "원문 CASE_TABLE의 서로 다른 배점 행을 회사 데이터 범위가 가로질러 "
+            "단일 점수를 확정할 수 없습니다."
+        )
+        estimate_assumptions = [
+            "회사 데이터 범위에서 특정 값을 임의 선택하지 않고 확인 가능한 배점 범위만 표시했습니다."
+        ]
+    else:
+        rationale = fact.rationale or (
+            "유효 증빙값을 산식에 적용했습니다."
+            if fact.status == "CONFIRMED"
+            else "잠정 증빙 범위를 산식에 적용했습니다."
+        )
+        estimate_assumptions = (
+            []
+            if fact.status == "CONFIRMED"
+            else ["증빙 확정 전 잠정 범위이며 최종점수가 아닙니다."]
+        )
+
     return CriterionEstimate(
         criterion_id=criterion.criterion_id,
         category=criterion.category,
@@ -726,11 +820,14 @@ def _estimate_criterion(
         estimated_points=lower_points if lower_points == upper_points else None,
         lower_points=lower_points,
         upper_points=upper_points,
-        confidence=1.0 if fact.status == "CONFIRMED" else min(fact.confidence, 0.8),
-        status=fact.status,
-        rationale=fact.rationale
-        or ("유효 증빙값을 산식에 적용했습니다." if fact.status == "CONFIRMED" else "잠정 증빙 범위를 산식에 적용했습니다."),
-        assumptions=[] if fact.status == "CONFIRMED" else ["증빙 확정 전 잠정 범위이며 최종점수가 아닙니다."],
+        confidence=(
+            0
+            if case_range_requires_review
+            else (1.0 if fact.status == "CONFIRMED" else min(fact.confidence, 0.8))
+        ),
+        status=estimate_status,
+        rationale=rationale,
+        assumptions=estimate_assumptions,
     )
 
 
@@ -1067,6 +1164,7 @@ def _current_dynamic_quantitative_profile(
             attempts[attachment_id] = version
 
     expected_documents: dict[str, str] = {}
+    attachment_profiles: dict[str, dict[str, object]] = {}
     records: list[ValidatedQuantitativeAttachmentRecord] = []
     incomplete: set[str] = set()
     for attachment in attachments:
@@ -1084,6 +1182,15 @@ def _current_dynamic_quantitative_profile(
             continue
         expected_documents[attachment_id] = attempt.file_sha256.casefold()
         payload = attempt.source_payload if isinstance(attempt.source_payload, dict) else {}
+        result = payload.get("result")
+        raw_document_type = (
+            result.get("document_type") if isinstance(result, dict) else None
+        )
+        raw_source_label = payload.get("source_label")
+        attachment_profiles[attachment_id] = {
+            "document_type": raw_document_type,
+            "source_label": raw_source_label,
+        }
         if (
             payload.get("status") != "ACCEPTED"
             or attempt.extraction_status not in {"ACCEPTED", "COMPLETE"}
@@ -1115,6 +1222,7 @@ def _current_dynamic_quantitative_profile(
         expected_documents=expected_documents,
         manifest_sha256=manifest_sha256,
         incomplete_attachment_ids=sorted(incomplete),
+        attachment_profiles=attachment_profiles,
     )
 
 
@@ -1241,6 +1349,8 @@ def _candidate_unit_is_source_bound(
         )
     if candidate.formula_literal:
         literals.append(candidate.formula_literal)
+    literals.extend(item.literal for item in candidate.cases)
+    literals.extend(item.evidence.quote for item in candidate.cases)
     observed = {
         _normalize_unit(match.group("unit"))
         for literal in literals
@@ -1302,6 +1412,7 @@ def _candidate_bound_unit_scales_are_consistent(
         literals.append(candidate.threshold.literal)
     if candidate.formula_literal:
         literals.append(candidate.formula_literal)
+    literals.extend(item.literal for item in candidate.cases)
     if not literals:
         return False
     for literal in literals:
@@ -1562,6 +1673,7 @@ def resolve_performance_register_facts(
     performance_records: Iterable[CompanyPerformanceRecord],
     *,
     as_of: datetime,
+    bid_notice_at: datetime | None = None,
 ) -> list[QuantitativeFact]:
     """Apply source-bound recognition scopes to operator-validated records.
 
@@ -1577,7 +1689,34 @@ def resolve_performance_register_facts(
         scope = criterion.performance_scope
         if scope is None:
             continue
-        derived = derive_performance_value(scope, records, as_of=as_of)
+        evaluation_as_of = as_of
+        evaluation_basis = "UNSPECIFIED"
+        if scope.lookback_anchor_basis == "BID_NOTICE_DATE":
+            if bid_notice_at is None:
+                resolved.append(
+                    QuantitativeFact(
+                        metric_key=criterion.metric_key,
+                        status="REVIEW",
+                        evidence_key=criterion.metric_key,
+                        fact_binding_sha256=criterion.fact_binding_sha256,
+                        confidence=0,
+                        rationale=(
+                            "원문은 입찰공고일 기준 최근 실적을 요구하지만 현재 공고일을 "
+                            "확정할 수 없어 자동 집계를 중지했습니다."
+                        ),
+                    )
+                )
+                continue
+            evaluation_as_of = bid_notice_at
+            evaluation_basis = "BID_NOTICE_DATE"
+        elif scope.lookback_anchor_basis == "SUBMISSION_DEADLINE":
+            evaluation_basis = "SUBMISSION_DEADLINE"
+        derived = derive_performance_value(
+            scope,
+            records,
+            as_of=evaluation_as_of,
+            as_of_basis=evaluation_basis,
+        )
         resolved.append(
             QuantitativeFact(
                 metric_key=criterion.metric_key,
@@ -1721,6 +1860,912 @@ def _compiled_formula_contract(
     )
 
 
+def _compiled_case_table_contract(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> CompiledCaseTable | None:
+    if candidate.scoring_method != "CASE_TABLE" or not candidate.cases:
+        return None
+    spec = _metric_spec(candidate)
+    if spec is None:
+        return None
+    if candidate.metric in {
+        "PERFORMANCE_COUNT",
+        "PERSONNEL_COUNT",
+        "CERTIFICATION_COUNT",
+        "FACILITY_EQUIPMENT_COUNT",
+        "AWARD_COUNT",
+    }:
+        value_kind: Literal["NUMERIC", "DISCRETE", "CATEGORICAL"] = "DISCRETE"
+    elif str(spec.get("value_kind", "NUMERIC")) in {"CATEGORICAL", "BOOLEAN"}:
+        value_kind = "CATEGORICAL"
+    else:
+        value_kind = "NUMERIC"
+    scale = Decimal("1")
+    if value_kind != "CATEGORICAL":
+        candidate_scale = _metric_scale(candidate)
+        if candidate_scale is None:
+            return None
+        scale = candidate_scale
+    rows = tuple(
+        CaseTableRowLiteral(
+            operator=item.operator,
+            comparison_value=(
+                _scaled_value(item.comparison_value, scale)
+                if item.comparison_value is not None
+                else None
+            ),
+            category_values=item.category_values,
+            award_kind=item.award_kind,
+            award_value=item.award_value,
+        )
+        for item in sorted(candidate.cases, key=lambda value: value.row_order)
+    )
+    return compile_case_table(
+        rows,
+        value_kind=value_kind,
+        maximum_points=candidate.max_points,
+    )
+
+
+_LogicalTableKey = tuple[str, str]
+_MAX_LOGICAL_PROGRAM_TABLES = 16
+_MAX_LOGICAL_RESOLVER_WORK = 50_000
+_LogicalDocumentRole = Literal["NOTICE", "RFP", "SCOPE"]
+
+
+@dataclass
+class _LogicalResolverBudget:
+    remaining: int = _MAX_LOGICAL_RESOLVER_WORK
+    exhausted: bool = False
+
+    def consume(self, units: int = 1) -> bool:
+        if units < 0 or self.remaining < units:
+            self.exhausted = True
+            return False
+        self.remaining -= units
+        return True
+
+
+@dataclass(frozen=True)
+class _LogicalQuantitativeProgram:
+    tables: tuple[ImmutableQuantitativeTable, ...]
+    candidates: tuple[ImmutableQuantitativeRuleCandidate, ...]
+    reasons: tuple[str, ...] = ()
+
+
+def _logical_table_key(table: ImmutableQuantitativeTable) -> _LogicalTableKey:
+    return (table.source_attachment_id, table.table_id)
+
+
+def _normalize_semantic_text(value: str | None) -> str:
+    return " ".join(
+        unicodedata.normalize("NFKC", value or "").split()
+    ).casefold()
+
+
+_SOURCE_LABEL_ROLE_PATTERNS: dict[_LogicalDocumentRole, re.Pattern[str]] = {
+    "NOTICE": re.compile(r"(?:입찰\s*공고|공고문|notice)", re.IGNORECASE),
+    "RFP": re.compile(r"(?:제안\s*요청서|제안요청서|\brfp\b)", re.IGNORECASE),
+    "SCOPE": re.compile(
+        r"(?:과업\s*(?:지시서|내용서|설명서)|\bscope\b)",
+        re.IGNORECASE,
+    ),
+}
+
+
+def _attachment_document_role(
+    binding: AttachmentDocumentBinding,
+) -> _LogicalDocumentRole | None:
+    explicit = (
+        binding.document_type
+        if binding.document_type in {"NOTICE", "RFP", "SCOPE"}
+        else None
+    )
+    label = unicodedata.normalize("NFKC", binding.source_label or "")
+    inferred = {
+        role
+        for role, pattern in _SOURCE_LABEL_ROLE_PATTERNS.items()
+        if pattern.search(label)
+    }
+    if len(inferred) > 1:
+        return None
+    inferred_role = next(iter(inferred), None)
+    if explicit is not None and inferred_role is not None and explicit != inferred_role:
+        return None
+    return explicit or inferred_role
+
+
+def _profile_attachment_roles(
+    profile: QuantitativeCandidateProfile,
+) -> dict[str, _LogicalDocumentRole]:
+    return {
+        binding.attachment_id: role
+        for binding in profile.document_bindings
+        if (role := _attachment_document_role(binding)) is not None
+    }
+
+
+def _performance_scope_literal(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> str:
+    return _normalize_semantic_text(
+        " ".join(
+            value
+            for value in (
+                candidate.criterion_literal,
+                candidate.formula_literal or "",
+                *(item.literal for item in candidate.cases),
+                *(item.literal for item in candidate.recognition_conditions),
+            )
+            if value
+        )
+    )
+
+
+@lru_cache(maxsize=4_096)
+def _performance_scope_semantic_fingerprint(
+    metric: str,
+    literal: str,
+) -> str | None:
+    spec = _CANONICAL_METRIC_REGISTRY.get(metric)
+    if metric not in _UNMODELED_FACT_DIMENSION_METRICS or spec is None:
+        return None
+    scope = parse_performance_recognition_scope(
+        literal,
+        metric_key=str(spec["fact_key"]),
+    )
+    if scope is None:
+        return "UNMODELED"
+    return _canonical_digest(
+        scope.model_dump(mode="json", exclude={"source_literal"})
+    )
+
+
+@lru_cache(maxsize=4_096)
+def _candidate_semantic_signature(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> str:
+    threshold = candidate.threshold
+    return _canonical_digest(
+        {
+            "criterion_literal": _normalize_semantic_text(
+                candidate.criterion_literal
+            ),
+            "label": _normalize_semantic_text(candidate.label),
+            "evidence_section": _normalize_semantic_text(
+                candidate.evidence.section
+            ),
+            "metric": candidate.metric,
+            "unit": _normalize_unit(candidate.unit),
+            "max_points": str(Decimal(str(candidate.max_points))),
+            "scoring_method": candidate.scoring_method,
+            "brackets": [
+                {
+                    "min_value": item.min_value,
+                    "max_value": item.max_value,
+                    "min_inclusive": item.min_inclusive,
+                    "max_inclusive": item.max_inclusive,
+                    "points": item.points,
+                }
+                for item in candidate.brackets
+            ],
+            "threshold": (
+                None
+                if threshold is None
+                else {
+                    "operator": threshold.operator,
+                    "threshold_value": threshold.threshold_value,
+                    "points_if_met": threshold.points_if_met,
+                    "points_if_not_met": threshold.points_if_not_met,
+                }
+            ),
+            "cases": [
+                {
+                    "operator": item.operator,
+                    "comparison_value": item.comparison_value,
+                    "category_values": item.category_values,
+                    "award_kind": item.award_kind,
+                    "award_value": item.award_value,
+                    "row_order": item.row_order,
+                }
+                for item in candidate.cases
+            ],
+            "formula_literal": " ".join(
+                (candidate.formula_literal or "").split()
+            ).casefold(),
+            "recognition_conditions": sorted(
+                (
+                    _normalize_semantic_text(item.literal),
+                    _normalize_semantic_text(item.evidence.section),
+                )
+                for item in candidate.recognition_conditions
+            ),
+            "performance_scope_fingerprint": (
+                _performance_scope_semantic_fingerprint(
+                    candidate.metric,
+                    _performance_scope_literal(candidate),
+                )
+            ),
+            "required_evidence": sorted(candidate.required_evidence),
+        }
+    )
+
+
+def _logical_representation_signature(
+    table_keys: Iterable[_LogicalTableKey],
+    candidates_by_table: dict[
+        _LogicalTableKey, tuple[ImmutableQuantitativeRuleCandidate, ...]
+    ],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            _candidate_semantic_signature(candidate)
+            for table_key in table_keys
+            for candidate in candidates_by_table[table_key]
+        )
+    )
+
+
+def _candidate_anchor_signature(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> tuple[str, int | None, str | None, str]:
+    anchor = candidate.evidence
+    return (anchor.attachment_id, anchor.page, anchor.section, anchor.quote.strip())
+
+
+def _table_page(table: ImmutableQuantitativeTable) -> int | None:
+    return table.total_evidence.page if table.total_evidence is not None else None
+
+
+def _table_can_refine(
+    root: ImmutableQuantitativeTable,
+    detail: ImmutableQuantitativeTable,
+    attachment_roles: dict[str, _LogicalDocumentRole],
+) -> bool:
+    if detail.source_attachment_id == root.source_attachment_id:
+        root_page = _table_page(root)
+        detail_page = _table_page(detail)
+        return root_page is None or detail_page is None or detail_page >= root_page
+    return (
+        attachment_roles.get(root.source_attachment_id) == "NOTICE"
+        and attachment_roles.get(detail.source_attachment_id) in {"RFP", "SCOPE"}
+    )
+
+
+def _refinement_order_is_valid(
+    summary: ImmutableQuantitativeTable,
+    detail_keys: Iterable[_LogicalTableKey],
+    *,
+    tables_by_key: dict[_LogicalTableKey, ImmutableQuantitativeTable],
+    attachment_roles: dict[str, _LogicalDocumentRole],
+) -> bool:
+    details = [tables_by_key[key] for key in detail_keys]
+    if not details:
+        return False
+    if all(
+        item.source_attachment_id == summary.source_attachment_id
+        for item in details
+    ):
+        summary_page = _table_page(summary)
+        detail_pages = [
+            page for item in details if (page := _table_page(item)) is not None
+        ]
+        return (
+            summary_page is None
+            or not detail_pages
+            or max(detail_pages) > summary_page
+        )
+    return (
+        attachment_roles.get(summary.source_attachment_id) == "NOTICE"
+        and all(
+            attachment_roles.get(item.source_attachment_id) in {"RFP", "SCOPE"}
+            for item in details
+        )
+    )
+
+
+def _point_partition_is_preserved(
+    summary: Sequence[ImmutableQuantitativeRuleCandidate],
+    detail: Sequence[ImmutableQuantitativeRuleCandidate],
+    *,
+    budget: _LogicalResolverBudget,
+) -> bool:
+    """Return whether detail rows form whole, positive parts of summary rows."""
+    summary_points = sorted(
+        (Decimal(str(item.max_points)) for item in summary), reverse=True
+    )
+    detail_points = sorted(
+        (Decimal(str(item.max_points)) for item in detail), reverse=True
+    )
+    if (
+        not summary_points
+        or len(detail_points) < len(summary_points)
+        or sum(summary_points, Decimal("0"))
+        != sum(detail_points, Decimal("0"))
+    ):
+        return False
+
+    # Each canonical remaining-capacity tuple is one memoized state. This
+    # avoids factorial recursion while the shared budget bounds adversarial
+    # partitions across the whole resolver invocation.
+    states: set[tuple[Decimal, ...]] = {tuple(summary_points)}
+    for point in detail_points:
+        next_states: set[tuple[Decimal, ...]] = set()
+        for remaining in states:
+            tried: set[Decimal] = set()
+            for slot, capacity in enumerate(remaining):
+                if capacity in tried or point > capacity:
+                    continue
+                if not budget.consume():
+                    return False
+                tried.add(capacity)
+                updated = list(remaining)
+                updated[slot] -= point
+                next_states.add(tuple(sorted(updated, reverse=True)))
+        if not next_states:
+            return False
+        states = next_states
+    return any(all(value == 0 for value in remaining) for remaining in states)
+
+
+def _best_strict_detail_cover(
+    root: ImmutableQuantitativeTable,
+    *,
+    tables: Sequence[ImmutableQuantitativeTable],
+    candidates_by_table: dict[
+        _LogicalTableKey, tuple[ImmutableQuantitativeRuleCandidate, ...]
+    ],
+    attachment_roles: dict[str, _LogicalDocumentRole],
+    budget: _LogicalResolverBudget,
+) -> tuple[tuple[_LogicalTableKey, ...] | None, bool, tuple[_LogicalTableKey, ...]]:
+    """Find one maximally granular, semantically unique subtotal-preserving cover."""
+    if root.total_points is None:
+        return None, False, ()
+    root_total = Decimal(str(root.total_points))
+    eligible = [
+        table
+        for table in tables
+        if table is not root
+        and table.total_points is not None
+        and Decimal("0") < Decimal(str(table.total_points)) < root_total
+        and _table_can_refine(root, table, attachment_roles)
+    ]
+    eligible.sort(key=_logical_table_key)
+    if len(eligible) > _MAX_LOGICAL_PROGRAM_TABLES:
+        return None, True, tuple(_logical_table_key(item) for item in eligible)
+
+    for size in range(len(eligible), 1, -1):
+        covers_by_signature: dict[
+            tuple[str, ...], tuple[_LogicalTableKey, ...]
+        ] = {}
+        for selected in combinations(eligible, size):
+            if not budget.consume():
+                return None, True, tuple(
+                    _logical_table_key(item) for item in eligible
+                )
+            if sum(
+                (Decimal(str(item.total_points)) for item in selected),
+                Decimal("0"),
+            ) != root_total:
+                continue
+            keys = tuple(_logical_table_key(item) for item in selected)
+            signature = _logical_representation_signature(keys, candidates_by_table)
+            covers_by_signature.setdefault(signature, keys)
+        if not covers_by_signature:
+            continue
+        conflict_keys = tuple(
+            sorted(
+                {
+                    key
+                    for cover in covers_by_signature.values()
+                    for key in cover
+                }
+            )
+        )
+        if len(covers_by_signature) != 1:
+            return None, True, conflict_keys
+        return next(iter(covers_by_signature.values())), False, conflict_keys
+    return None, False, ()
+
+
+def _logical_conflict_reason(
+    table: ImmutableQuantitativeTable,
+    code: str,
+) -> str:
+    return (
+        f"LOGICAL_TABLE_CONFLICT|{table.source_attachment_id}|"
+        f"{table.table_id}|{code}"
+    )
+
+
+def _logical_candidate_conflict_reasons(
+    candidates: Sequence[ImmutableQuantitativeRuleCandidate],
+) -> set[str]:
+    reasons: set[str] = set()
+    by_id: dict[str, ImmutableQuantitativeRuleCandidate] = {}
+    by_anchor: dict[
+        tuple[str, int | None, str | None, str],
+        ImmutableQuantitativeRuleCandidate,
+    ] = {}
+    for candidate in candidates:
+        prior_id = by_id.setdefault(candidate.criterion_id, candidate)
+        prior_anchor = by_anchor.setdefault(
+            _candidate_anchor_signature(candidate), candidate
+        )
+        conflicts = []
+        if prior_id is not candidate:
+            conflicts.extend((prior_id, candidate))
+        if prior_anchor is not candidate:
+            conflicts.extend((prior_anchor, candidate))
+        for item in conflicts:
+            reasons.add(
+                "LOGICAL_CRITERION_CONFLICT|"
+                f"{item.source_attachment_id}|{item.table_id}|"
+                f"{item.criterion_id}"
+            )
+    if reasons:
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+    return reasons
+
+
+def _logical_quantitative_program(
+    profile: QuantitativeCandidateProfile,
+) -> _LogicalQuantitativeProgram:
+    """Assemble one source-bound program from compatible physical tables."""
+    tables = tuple(profile.tables)
+    all_candidates = tuple(profile.available_candidates)
+    reasons: set[str] = set()
+    if not tables:
+        return _LogicalQuantitativeProgram(
+            tables=(),
+            candidates=all_candidates,
+            reasons=("ALTERNATIVE_TABLE_AMBIGUOUS",),
+        )
+    if len(tables) > _MAX_LOGICAL_PROGRAM_TABLES:
+        reasons.update(
+            {"ALTERNATIVE_TABLE_AMBIGUOUS", "LOGICAL_PROGRAM_TABLE_LIMIT_EXCEEDED"}
+        )
+        reasons.update(
+            _logical_conflict_reason(table, "PROGRAM_TABLE_LIMIT_EXCEEDED")
+            for table in tables
+        )
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=all_candidates,
+            reasons=tuple(sorted(reasons)),
+        )
+
+    table_keys = [_logical_table_key(table) for table in tables]
+    if len(table_keys) != len(set(table_keys)):
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+        for table in tables:
+            if table_keys.count(_logical_table_key(table)) > 1:
+                reasons.add(
+                    _logical_conflict_reason(table, "DUPLICATE_PHYSICAL_TABLE")
+                )
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=all_candidates,
+            reasons=tuple(sorted(reasons)),
+        )
+
+    tables_by_key = {_logical_table_key(table): table for table in tables}
+    candidates_by_table = {
+        key: tuple(
+            candidate
+            for candidate in all_candidates
+            if (candidate.source_attachment_id, candidate.table_id) == key
+        )
+        for key in tables_by_key
+    }
+    structure_invalid = False
+    multi_table = len(tables) > 1
+    attachment_ids = {table.source_attachment_id for table in tables}
+    cross_attachment = len(attachment_ids) > 1
+    attachment_roles = _profile_attachment_roles(profile)
+    if cross_attachment:
+        notice_attachments = {
+            attachment_id
+            for attachment_id in attachment_ids
+            if attachment_roles.get(attachment_id) == "NOTICE"
+        }
+        roles_verified = (
+            len(notice_attachments) == 1
+            and all(
+                attachment_roles.get(attachment_id) in {"RFP", "SCOPE"}
+                for attachment_id in attachment_ids - notice_attachments
+            )
+        )
+        if not roles_verified:
+            reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+            reasons.update(
+                _logical_conflict_reason(
+                    table, "CROSS_ATTACHMENT_ROLE_UNVERIFIED"
+                )
+                for table in tables
+            )
+            structure_invalid = True
+    for table in tables:
+        key = _logical_table_key(table)
+        local = candidates_by_table[key]
+        candidate_ids = [item.criterion_id for item in local]
+        if table.status != "AVAILABLE":
+            reasons.add("TABLE_NOT_SOURCE_VALIDATED")
+            if multi_table:
+                reasons.add(
+                    _logical_conflict_reason(table, "TABLE_NOT_SOURCE_VALIDATED")
+                )
+            structure_invalid = True
+        if table.total_points is None or table.total_evidence is None:
+            reasons.add("TABLE_TOTAL_INCOMPLETE")
+            if multi_table:
+                reasons.add(_logical_conflict_reason(table, "TABLE_TOTAL_INCOMPLETE"))
+            structure_invalid = True
+        elif (
+            not table.total_evidence.quote.strip()
+            or table.total_evidence.attachment_id != table.source_attachment_id
+        ):
+            reasons.add("TABLE_TOTAL_ANCHOR_INCOMPLETE")
+            if multi_table:
+                reasons.add(
+                    _logical_conflict_reason(table, "TABLE_TOTAL_ANCHOR_INCOMPLETE")
+                )
+            structure_invalid = True
+        if (
+            not local
+            or len(candidate_ids) != len(set(candidate_ids))
+            or set(candidate_ids) != set(table.criterion_ids)
+            or set(candidate_ids) != set(table.available_criterion_ids)
+            or table.review_criterion_ids
+        ):
+            reasons.add("TABLE_CRITERIA_LINKAGE_INCOMPLETE")
+            if multi_table:
+                reasons.add(
+                    _logical_conflict_reason(table, "TABLE_CRITERIA_LINKAGE_INCOMPLETE")
+                )
+            structure_invalid = True
+        if table.total_points is not None:
+            local_total = sum(
+                (Decimal(str(item.max_points)) for item in local), Decimal("0")
+            )
+            if local_total != Decimal(str(table.total_points)):
+                reasons.add("TABLE_TOTAL_MISMATCH")
+                if multi_table:
+                    reasons.add(_logical_conflict_reason(table, "TABLE_TOTAL_MISMATCH"))
+                structure_invalid = True
+
+    unlinked = [
+        candidate
+        for candidate in all_candidates
+        if (candidate.source_attachment_id, candidate.table_id) not in tables_by_key
+    ]
+    if unlinked:
+        reasons.add("TABLE_CRITERIA_LINKAGE_INCOMPLETE")
+        structure_invalid = True
+        for candidate in unlinked:
+            reasons.add(
+                "LOGICAL_CRITERION_CONFLICT|"
+                f"{candidate.source_attachment_id}|{candidate.table_id}|"
+                f"{candidate.criterion_id}"
+            )
+
+    if len(tables) == 1:
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=candidates_by_table[table_keys[0]],
+            reasons=tuple(sorted(reasons)),
+        )
+    if structure_invalid:
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=all_candidates,
+            reasons=tuple(sorted(reasons)),
+        )
+
+    budget = _LogicalResolverBudget()
+    totals = {Decimal(str(table.total_points)) for table in tables}
+    if len(totals) == 1:
+        max_rows = max(len(candidates_by_table[key]) for key in table_keys)
+        most_detailed = [
+            key for key in table_keys if len(candidates_by_table[key]) == max_rows
+        ]
+        representations = {
+            _logical_representation_signature((key,), candidates_by_table)
+            for key in most_detailed
+        }
+        if len(representations) != 1:
+            reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+            reasons.update(
+                _logical_conflict_reason(
+                    tables_by_key[key], "EQUAL_SUBTOTAL_ALTERNATIVE"
+                )
+                for key in most_detailed
+            )
+            return _LogicalQuantitativeProgram(
+                tables=tables,
+                candidates=all_candidates,
+                reasons=tuple(sorted(reasons)),
+            )
+        selected_key = sorted(
+            most_detailed,
+            key=lambda key: (
+                0
+                if attachment_roles.get(key[0]) in {"RFP", "SCOPE"}
+                else 1,
+                key,
+            ),
+        )[0]
+        selected = candidates_by_table[selected_key]
+        selected_signature = _logical_representation_signature(
+            (selected_key,), candidates_by_table
+        )
+        for key in table_keys:
+            if key == selected_key:
+                continue
+            summary = candidates_by_table[key]
+            exact = (
+                _logical_representation_signature((key,), candidates_by_table)
+                == selected_signature
+            )
+            chronology_ok = exact or _refinement_order_is_valid(
+                tables_by_key[key],
+                (selected_key,),
+                tables_by_key=tables_by_key,
+                attachment_roles=attachment_roles,
+            )
+            if not exact and (
+                not chronology_ok
+                or not _point_partition_is_preserved(
+                    summary, selected, budget=budget
+                )
+            ):
+                reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+                reasons.add(
+                    _logical_conflict_reason(
+                        tables_by_key[key], "EQUAL_SUBTOTAL_NOT_REFINED"
+                    )
+                )
+        if budget.exhausted:
+            reasons.update(
+                {"ALTERNATIVE_TABLE_AMBIGUOUS", "LOGICAL_RESOLVER_BUDGET_EXCEEDED"}
+            )
+            reasons.update(
+                _logical_conflict_reason(table, "RESOLVER_WORK_BUDGET_EXCEEDED")
+                for table in tables
+            )
+        if (
+            cross_attachment
+            and attachment_roles.get(selected_key[0]) not in {"RFP", "SCOPE"}
+        ):
+            reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+            reasons.add(
+                _logical_conflict_reason(
+                    tables_by_key[selected_key],
+                    "CROSS_ATTACHMENT_REFINEMENT_INVALID",
+                )
+            )
+        reasons.update(_logical_candidate_conflict_reasons(selected))
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=selected,
+            reasons=tuple(sorted(reasons)),
+        )
+
+    root_covers: dict[_LogicalTableKey, tuple[_LogicalTableKey, ...]] = {}
+    for root in tables:
+        cover, ambiguous, conflict_keys = _best_strict_detail_cover(
+            root,
+            tables=tables,
+            candidates_by_table=candidates_by_table,
+            attachment_roles=attachment_roles,
+            budget=budget,
+        )
+        if budget.exhausted:
+            reasons.update(
+                {"ALTERNATIVE_TABLE_AMBIGUOUS", "LOGICAL_RESOLVER_BUDGET_EXCEEDED"}
+            )
+            reasons.add(
+                _logical_conflict_reason(root, "RESOLVER_WORK_BUDGET_EXCEEDED")
+            )
+            break
+        if ambiguous:
+            reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+            reasons.add(_logical_conflict_reason(root, "SUBTOTAL_COVER_AMBIGUOUS"))
+            reasons.update(
+                _logical_conflict_reason(
+                    tables_by_key[key], "SUBTOTAL_COVER_AMBIGUOUS"
+                )
+                for key in conflict_keys
+            )
+        elif cover is not None:
+            detail_candidates = tuple(
+                candidate
+                for key in cover
+                for candidate in candidates_by_table[key]
+            )
+            if not _point_partition_is_preserved(
+                candidates_by_table[_logical_table_key(root)],
+                detail_candidates,
+                budget=budget,
+            ):
+                reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+                reasons.add(
+                    _logical_conflict_reason(
+                        root,
+                        (
+                            "RESOLVER_WORK_BUDGET_EXCEEDED"
+                            if budget.exhausted
+                            else "SUBTOTAL_PARTITION_MISMATCH"
+                        ),
+                    )
+                )
+                if budget.exhausted:
+                    reasons.add("LOGICAL_RESOLVER_BUDGET_EXCEEDED")
+                    break
+            else:
+                root_covers[_logical_table_key(root)] = cover
+    if reasons:
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=all_candidates,
+            reasons=tuple(sorted(reasons)),
+        )
+    if not root_covers:
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+        reasons.update(
+            _logical_conflict_reason(table, "SUBTOTAL_NOT_PRESERVED")
+            for table in tables
+        )
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=all_candidates,
+            reasons=tuple(sorted(reasons)),
+        )
+
+    outer_roots: list[_LogicalTableKey] = []
+    for root_key, cover in root_covers.items():
+        root_total = Decimal(str(tables_by_key[root_key].total_points))
+        leaf_keys = set(cover)
+        nested = any(
+            root_total < Decimal(str(tables_by_key[other_key].total_points))
+            and leaf_keys.issubset(set(other_cover))
+            for other_key, other_cover in root_covers.items()
+            if other_key != root_key
+        )
+        if not nested:
+            outer_roots.append(root_key)
+
+    outer_programs = {
+        (
+            Decimal(str(tables_by_key[root_key].total_points)),
+            _logical_representation_signature(
+                root_covers[root_key], candidates_by_table
+            ),
+        )
+        for root_key in outer_roots
+    }
+    if len(outer_programs) != 1:
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+        reasons.update(
+            _logical_conflict_reason(
+                tables_by_key[key], "MULTIPLE_LOGICAL_PROGRAM_ROOTS"
+            )
+            for key in outer_roots
+        )
+        return _LogicalQuantitativeProgram(
+            tables=tables,
+            candidates=all_candidates,
+            reasons=tuple(sorted(reasons)),
+        )
+
+    if cross_attachment:
+        notice_roots = [
+            key
+            for key in outer_roots
+            if attachment_roles.get(key[0]) == "NOTICE"
+        ]
+        if len(notice_roots) != 1:
+            reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+            reasons.update(
+                _logical_conflict_reason(
+                    tables_by_key[key], "CROSS_ATTACHMENT_REFINEMENT_INVALID"
+                )
+                for key in outer_roots
+            )
+            return _LogicalQuantitativeProgram(
+                tables=tables,
+                candidates=all_candidates,
+                reasons=tuple(sorted(reasons)),
+            )
+        chosen_root = notice_roots[0]
+    else:
+        chosen_root = sorted(outer_roots)[0]
+    selected_keys = set(root_covers[chosen_root])
+    selected = tuple(
+        candidate
+        for key in sorted(selected_keys)
+        for candidate in candidates_by_table[key]
+    )
+    if cross_attachment and any(
+        attachment_roles.get(key[0]) not in {"RFP", "SCOPE"}
+        for key in selected_keys
+    ):
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+        reasons.add(
+            _logical_conflict_reason(
+                tables_by_key[chosen_root], "CROSS_ATTACHMENT_REFINEMENT_INVALID"
+            )
+        )
+    target = Decimal(str(tables_by_key[chosen_root].total_points))
+    selected_total = sum(
+        (Decimal(str(item.max_points)) for item in selected), Decimal("0")
+    )
+    if selected_total != target:
+        reasons.add("TABLE_TOTAL_MISMATCH")
+        reasons.add(
+            _logical_conflict_reason(
+                tables_by_key[chosen_root], "LOGICAL_SUBTOTAL_MISMATCH"
+            )
+        )
+
+    participating = set(selected_keys)
+    participating.add(chosen_root)
+    for root_key, cover in root_covers.items():
+        if set(cover).issubset(selected_keys):
+            participating.add(root_key)
+            participating.update(cover)
+
+    selected_signature = _logical_representation_signature(
+        sorted(selected_keys), candidates_by_table
+    )
+    for key in table_keys:
+        if key in participating:
+            continue
+        table = tables_by_key[key]
+        local = candidates_by_table[key]
+        local_signature = _logical_representation_signature((key,), candidates_by_table)
+        exact = local_signature == selected_signature
+        partition_preserved = exact or _point_partition_is_preserved(
+            local,
+            selected,
+            budget=budget,
+        )
+        same_subtotal_summary = (
+            Decimal(str(table.total_points)) == target
+            and partition_preserved
+            and (
+                exact
+                or _refinement_order_is_valid(
+                    table,
+                    sorted(selected_keys),
+                    tables_by_key=tables_by_key,
+                    attachment_roles=attachment_roles,
+                )
+            )
+        )
+        if same_subtotal_summary:
+            participating.add(key)
+            continue
+        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
+        reasons.add(_logical_conflict_reason(table, "UNLINKED_PHYSICAL_TABLE"))
+
+    if budget.exhausted:
+        reasons.update(
+            {"ALTERNATIVE_TABLE_AMBIGUOUS", "LOGICAL_RESOLVER_BUDGET_EXCEEDED"}
+        )
+        reasons.update(
+            _logical_conflict_reason(table, "RESOLVER_WORK_BUDGET_EXCEEDED")
+            for table in tables
+        )
+
+    reasons.update(_logical_candidate_conflict_reasons(selected))
+    return _LogicalQuantitativeProgram(
+        tables=tables,
+        candidates=selected,
+        reasons=tuple(sorted(reasons)),
+    )
+
+
 def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[str]:
     """Return stable fail-closed codes for the machine activation contract."""
 
@@ -1738,44 +2783,9 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
         reasons.add("CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE")
     if profile.issues or profile.review_candidates:
         reasons.add("SOURCE_VALIDATION_ISSUES_PRESENT")
-    if len(profile.tables) != 1:
-        reasons.add("ALTERNATIVE_TABLE_AMBIGUOUS")
-        return sorted(reasons)
-
-    table = profile.tables[0]
-    if table.status != "AVAILABLE":
-        reasons.add("TABLE_NOT_SOURCE_VALIDATED")
-    if table.total_points is None or table.total_evidence is None:
-        reasons.add("TABLE_TOTAL_INCOMPLETE")
-    elif (
-        not table.total_evidence.quote.strip()
-        or table.total_evidence.attachment_id != table.source_attachment_id
-    ):
-        reasons.add("TABLE_TOTAL_ANCHOR_INCOMPLETE")
-
-    table_candidates = [
-        item
-        for item in profile.available_candidates
-        if item.source_attachment_id == table.source_attachment_id
-        and item.table_id == table.table_id
-    ]
-    candidate_ids = [item.criterion_id for item in table_candidates]
-    if (
-        not table_candidates
-        or len(candidate_ids) != len(set(candidate_ids))
-        or set(candidate_ids) != set(table.criterion_ids)
-        or set(candidate_ids) != set(table.available_criterion_ids)
-        or table.review_criterion_ids
-        or len(table_candidates) != len(profile.available_candidates)
-    ):
-        reasons.add("TABLE_CRITERIA_LINKAGE_INCOMPLETE")
-    if table.total_points is not None:
-        candidate_total = sum(
-            (Decimal(str(item.max_points)) for item in table_candidates),
-            Decimal("0"),
-        )
-        if candidate_total != Decimal(str(table.total_points)):
-            reasons.add("TABLE_TOTAL_MISMATCH")
+    program = _logical_quantitative_program(profile)
+    reasons.update(program.reasons)
+    table_candidates = list(program.candidates)
 
     binding_ids = {item.attachment_id for item in profile.document_bindings}
     canonical_fact_keys = [
@@ -1789,6 +2799,10 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
         scoring_anchors = [item.evidence for item in candidate.brackets]
         if candidate.threshold is not None:
             scoring_anchors.append(candidate.threshold.evidence)
+        scoring_anchors.extend(item.evidence for item in candidate.cases)
+        scoring_anchors.extend(
+            item.evidence for item in candidate.recognition_conditions
+        )
         if (
             candidate.source_attachment_id not in binding_ids
             or candidate.evidence.attachment_id != candidate.source_attachment_id
@@ -1808,6 +2822,8 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 for value in (
                     candidate.criterion_literal,
                     candidate.formula_literal or "",
+                    *(item.literal for item in candidate.cases),
+                    *(item.literal for item in candidate.recognition_conditions),
                 )
                 if value
             )
@@ -1829,7 +2845,12 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
             reasons.add("UNIT_NOT_SOURCE_BOUND")
         elif not _candidate_bound_unit_scales_are_consistent(candidate):
             reasons.add("BOUND_UNIT_INCONSISTENT")
-        if candidate.scoring_method not in {"BRACKET", "THRESHOLD", "FORMULA"}:
+        if candidate.scoring_method not in {
+            "BRACKET",
+            "THRESHOLD",
+            "FORMULA",
+            "CASE_TABLE",
+        }:
             reasons.add("UNSUPPORTED_SCORING_DSL")
         elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is None:
             reasons.add("UNSUPPORTED_SCORING_DSL")
@@ -1837,6 +2858,11 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
             compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
             if compiled_formula is None and compiled_categories is None:
                 reasons.add("UNSUPPORTED_SCORING_DSL")
+        elif (
+            candidate.scoring_method == "CASE_TABLE"
+            and _compiled_case_table_contract(candidate) is None
+        ):
+            reasons.add("UNSUPPORTED_SCORING_DSL")
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
             if not brackets:
@@ -2050,13 +3076,25 @@ def quantitative_request_from_candidate_profile(
             ),
         )
 
+    logical_program = (
+        None
+        if partial_review_criteria is not None
+        else _logical_quantitative_program(profile)
+    )
+    logical_candidates = (
+        tuple(profile.available_candidates)
+        if logical_program is None
+        else logical_program.candidates
+    )
+    logical_tables = tuple(profile.tables) if logical_program is None else logical_program.tables
+
     bindings = {
         item.attachment_id: item.document_sha256
         for item in profile.document_bindings
     }
     criteria: list[QuantitativeCriterion] = []
     conversion_errors: list[str] = []
-    for candidate in profile.available_candidates:
+    for candidate in logical_candidates:
         spec = _metric_spec(candidate)
         if spec is None:
             conversion_errors.append(
@@ -2070,6 +3108,8 @@ def quantitative_request_from_candidate_profile(
                     for value in (
                         candidate.criterion_literal,
                         candidate.formula_literal or "",
+                        *(item.literal for item in candidate.cases),
+                        *(item.literal for item in candidate.recognition_conditions),
                     )
                     if value
                 ),
@@ -2119,6 +3159,17 @@ def quantitative_request_from_candidate_profile(
                     f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
                 )
                 continue
+        elif candidate.scoring_method == "CASE_TABLE":
+            compiled_case_table = _compiled_case_table_contract(candidate)
+            if compiled_case_table is None:
+                conversion_errors.append(
+                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
+                )
+                continue
+            scoring_fields = {
+                "formula_type": "CASE_TABLE",
+                "case_table": compiled_case_table,
+            }
         else:
             conversion_errors.append(
                 f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
@@ -2160,7 +3211,7 @@ def quantitative_request_from_candidate_profile(
                 ),
             )
         )
-    if conversion_errors or len(criteria) != len(profile.available_candidates):
+    if conversion_errors or len(criteria) != len(logical_candidates):
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
             rule_source_status="AVAILABLE",
@@ -2176,7 +3227,7 @@ def quantitative_request_from_candidate_profile(
         )
     minimums = {
         table.minimum_score
-        for table in profile.tables
+        for table in logical_tables
         if table.minimum_score is not None
     }
     if len(minimums) > 1:
@@ -2496,6 +3547,7 @@ def estimate_for_notice(
                 request.criteria,
                 performance_records,
                 as_of=notice.deadline,
+                bid_notice_at=getattr(notice, "published_at", None),
             )
             register_by_key = {item.metric_key: item for item in register_facts}
             # An exact immutable CompanyFact remains authoritative.  A generic

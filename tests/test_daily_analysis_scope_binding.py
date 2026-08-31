@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -14,7 +15,7 @@ from pai_loop.daily_analysis_scope import (
     material_scope_sha256,
     validated_material_scope,
 )
-from pai_loop.models import IngestionJob, Notice
+from pai_loop.models import IngestionJob, Notice, NoticeVersion
 
 
 def _source_ingestion(
@@ -230,6 +231,133 @@ def test_daily_plan_reuses_terminal_parent_for_all_expired_retry(
             and job.request_json.get("source_ingestion_job_id") == ingestion_id
         ]
         assert len(parents) == 1
+
+
+def test_source_bound_cooled_retry_reuses_latest_terminal_parent_on_third_plan(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retry_key = "PPS-SOURCE-COOLDOWN-GENERATION"
+    now = datetime.now(timezone.utc)
+    ingestion_id = _source_ingestion(client, [])
+    created = client.post(
+        "/api/v1/notices",
+        json={
+            "notice_key": retry_key,
+            "bid_notice_no": retry_key,
+            "title": "소스 감사 쿨다운 세대 재사용",
+            "agency": "가상 공공기관",
+            "published_at": now.isoformat(),
+            "deadline": (now + timedelta(days=5)).isoformat(),
+            "status": "OPEN",
+        },
+    )
+    assert created.status_code == 201, created.text
+    version = client.post(
+        f"/api/v1/notices/{retry_key}/versions",
+        json={"version_no": 1, "file_sha256": "c" * 64},
+    )
+    assert version.status_code == 201, version.text
+    monkeypatch.setattr(
+        "pai_loop.analysis_api.public_analysis_reason",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            state="REVIEW",
+            reason_code="OPENAI_REVIEW",
+            reason="source-bound cooldown generation regression",
+        ),
+    )
+    payload = _daily_plan_payload(ingestion_id, [])
+    payload.update(
+        {
+            "notice_keys": [retry_key],
+            "retry_notice_keys": [retry_key],
+            "retry_epoch": "2026-08-31",
+        }
+    )
+
+    first_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan", json=payload
+    )
+    assert first_response.status_code == 200, first_response.text
+    first = first_response.json()
+    assert first["status"] == "COMPLETED"
+    assert first["planned"] == 0
+    assert first["offered"] == 0
+
+    with client.app.state.session_factory() as session:
+        stored_version = session.get(NoticeVersion, version.json()["id"])
+        assert stored_version is not None
+        stored_version.created_at = now - timedelta(hours=25)
+        session.commit()
+
+    second_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan", json=payload
+    )
+    assert second_response.status_code == 200, second_response.text
+    second = second_response.json()
+    assert second["job_id"] != first["job_id"]
+    assert second["planned"] == 1
+    assert second["offered"] == 1
+    assert second["notice_keys"] == [retry_key]
+
+    with client.app.state.session_factory() as session:
+        second_parent = session.get(IngestionJob, second["job_id"])
+        assert second_parent is not None
+        generation = second_parent.request_json["work_generations"][retry_key]
+        session.add(
+            IngestionJob(
+                source="ANALYSIS",
+                mode="LIVE",
+                status="COMPLETED",
+                window_json={"scope": "NOTICE_KEYS"},
+                request_json={
+                    "parent_job_id": second["job_id"],
+                    "segment_id": second["segment_id"],
+                    "chunk_index": second["chunk_indices"][0],
+                    "work_generations": {retry_key: generation},
+                },
+                fetched=1,
+                matched=1,
+                created_count=1,
+                notice_keys=[retry_key],
+                warnings=[],
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+    completed = client.post(
+        f"/api/v1/operations/analysis-backfills/{second['job_id']}/complete",
+        json={"segment_id": second["segment_id"]},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "COMPLETED"
+
+    third_response = client.post(
+        "/api/v1/operations/analysis-backfills/plan", json=payload
+    )
+    assert third_response.status_code == 200, third_response.text
+    third = third_response.json()
+    assert third["job_id"] == second["job_id"]
+    assert third["status"] == "COMPLETED"
+    assert third["planned"] == 1
+    assert third["attempted"] == 1
+    assert third["offered"] == 0
+
+    with client.app.state.session_factory() as session:
+        parents = [
+            job
+            for job in session.scalars(
+                select(IngestionJob).where(
+                    IngestionJob.source == "ANALYSIS_BACKFILL"
+                )
+            ).all()
+            if isinstance(job.request_json, dict)
+            and job.request_json.get("source_ingestion_job_id") == ingestion_id
+        ]
+        assert {parent.id for parent in parents} == {
+            first["job_id"],
+            second["job_id"],
+        }
 
 
 def test_terminal_dry_run_parent_does_not_consume_live_daily_plan(

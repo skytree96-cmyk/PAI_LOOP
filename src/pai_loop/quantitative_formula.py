@@ -4,10 +4,11 @@ import ast
 import math
 import re
 import unicodedata
+from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class FormulaModel(BaseModel):
@@ -47,6 +48,73 @@ class CategoryScore(FormulaModel):
         normalized = [_normalize_category(value) for value in self.values]
         if any(not value for value in normalized) or len(normalized) != len(set(normalized)):
             raise ValueError("category values must be non-empty and unique")
+        return self
+
+
+CaseTableOperator = Literal["GTE", "EQ", "IN"]
+CaseTableAwardKind = Literal["POINTS", "PERCENT_OF_MAX"]
+CaseTableValueKind = Literal["NUMERIC", "DISCRETE", "CATEGORICAL"]
+
+
+class CaseTableRowLiteral(FormulaModel):
+    """One source-validated condition-to-award row.
+
+    There is deliberately no fallback/else representation. The upstream
+    extraction boundary remains responsible for proving that every supplied
+    value and category is present in an exact source anchor.
+    """
+
+    operator: CaseTableOperator
+    comparison_value: float | None = None
+    category_values: tuple[str, ...] = Field(default=(), max_length=100)
+    award_kind: CaseTableAwardKind = "POINTS"
+    award_value: float = Field(ge=0)
+
+    @field_validator("comparison_value", "award_value", mode="before")
+    @classmethod
+    def reject_boolean_numbers(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("case table numeric values must not be boolean")
+        return value
+
+    @model_validator(mode="after")
+    def validate_row_shape(self) -> "CaseTableRowLiteral":
+        if self.operator in {"GTE", "EQ"}:
+            if self.comparison_value is None or self.category_values:
+                raise ValueError("numeric case rows require only comparison_value")
+        elif self.comparison_value is not None or not self.category_values:
+            raise ValueError("categorical case rows require only category_values")
+
+        normalized = [_normalize_category(value) for value in self.category_values]
+        if any(not value for value in normalized) or len(normalized) != len(set(normalized)):
+            raise ValueError("case table category values must be non-empty and unique")
+        if self.award_kind == "PERCENT_OF_MAX" and self.award_value > 100:
+            raise ValueError("case table percentage awards must not exceed 100")
+        return self
+
+
+class CompiledCaseTableRow(FormulaModel):
+    operator: CaseTableOperator
+    comparison_value: float | None = None
+    category_values: tuple[str, ...] = Field(default=(), max_length=100)
+    points: float = Field(ge=0)
+
+
+class CompiledCaseTable(FormulaModel):
+    """A deterministic, source-order-preserving CASE_TABLE execution plan."""
+
+    value_kind: CaseTableValueKind
+    rows: tuple[CompiledCaseTableRow, ...] = Field(min_length=1, max_length=100)
+    maximum_points: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_program(self) -> "CompiledCaseTable":
+        if not _case_table_rows_are_safe(
+            self.rows,
+            value_kind=self.value_kind,
+            maximum_points=self.maximum_points,
+        ):
+            raise ValueError("compiled case table rows are not deterministic")
         return self
 
 
@@ -442,3 +510,159 @@ def category_points(
         if normalized in {_normalize_category(item) for item in row.values}
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _strictly_descending(values: Sequence[Decimal]) -> bool:
+    return all(left > right for left, right in zip(values, values[1:], strict=False))
+
+
+def _case_table_rows_are_safe(
+    rows: Sequence[CompiledCaseTableRow],
+    *,
+    value_kind: CaseTableValueKind,
+    maximum_points: float | None,
+) -> bool:
+    if not rows or len(rows) > 100 or isinstance(maximum_points, bool):
+        return False
+    try:
+        maximum = _decimal(maximum_points) if maximum_points is not None else None
+        points = [_decimal(row.points) for row in rows]
+    except ValueError:
+        return False
+    if maximum is not None and maximum <= 0:
+        return False
+    if any(point < 0 or (maximum is not None and point > maximum) for point in points):
+        return False
+
+    if value_kind == "CATEGORICAL":
+        seen: set[str] = set()
+        for row in rows:
+            if (
+                row.operator != "IN"
+                or row.comparison_value is not None
+                or not row.category_values
+            ):
+                return False
+            normalized = {_normalize_category(value) for value in row.category_values}
+            if (
+                any(not value for value in normalized)
+                or len(normalized) != len(row.category_values)
+                or seen & normalized
+            ):
+                return False
+            seen.update(normalized)
+        return True
+
+    if value_kind not in {"NUMERIC", "DISCRETE"}:
+        return False
+    if any(
+        row.comparison_value is None or row.category_values or row.operator == "IN"
+        for row in rows
+    ):
+        return False
+    try:
+        comparisons = [_decimal(row.comparison_value) for row in rows]
+    except ValueError:
+        return False
+    if not _strictly_descending(comparisons):
+        return False
+    if any(right > left for left, right in zip(points, points[1:], strict=False)):
+        return False
+
+    if value_kind == "NUMERIC":
+        return all(row.operator == "GTE" for row in rows)
+
+    if any(value != value.to_integral_value() for value in comparisons):
+        return False
+    saw_equality = False
+    for row in rows:
+        if row.operator == "EQ":
+            saw_equality = True
+        elif row.operator != "GTE" or saw_equality:
+            return False
+    return True
+
+
+def compile_case_table(
+    rows: Sequence[CaseTableRowLiteral],
+    *,
+    value_kind: CaseTableValueKind,
+    maximum_points: float | None = None,
+) -> CompiledCaseTable | None:
+    """Compile source-order CASE rows without inventing a fallback case."""
+
+    source_rows = tuple(rows)
+    if (
+        not source_rows
+        or len(source_rows) > 100
+        or any(not isinstance(row, CaseTableRowLiteral) for row in source_rows)
+        or isinstance(maximum_points, bool)
+    ):
+        return None
+    try:
+        maximum = _decimal(maximum_points) if maximum_points is not None else None
+    except ValueError:
+        return None
+    if maximum is not None and maximum <= 0:
+        return None
+
+    compiled: list[CompiledCaseTableRow] = []
+    try:
+        for row in source_rows:
+            award = _decimal(row.award_value)
+            if row.award_kind == "PERCENT_OF_MAX":
+                if maximum is None:
+                    return None
+                award = maximum * award / Decimal("100")
+            if award < 0 or (maximum is not None and award > maximum):
+                return None
+            compiled.append(
+                CompiledCaseTableRow(
+                    operator=row.operator,
+                    comparison_value=row.comparison_value,
+                    category_values=row.category_values,
+                    points=round(float(award), 6),
+                )
+            )
+        return CompiledCaseTable(
+            value_kind=value_kind,
+            rows=tuple(compiled),
+            maximum_points=(float(maximum) if maximum is not None else None),
+        )
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+def case_table_points(
+    table: CompiledCaseTable,
+    value: int | float | Decimal | str | bool,
+) -> float | None:
+    """Return the first explicit matching row, or ``None`` when unscorable."""
+
+    if table.value_kind == "CATEGORICAL":
+        if not isinstance(value, str):
+            return None
+        normalized = _normalize_category(value)
+        if not normalized:
+            return None
+        for row in table.rows:
+            if normalized in {_normalize_category(item) for item in row.category_values}:
+                return row.points
+        return None
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    try:
+        actual = _decimal(value)
+    except ValueError:
+        return None
+    if table.value_kind == "DISCRETE" and actual != actual.to_integral_value():
+        return None
+    for row in table.rows:
+        assert row.comparison_value is not None
+        comparison = _decimal(row.comparison_value)
+        if row.operator == "GTE" and actual >= comparison:
+            return row.points
+        if row.operator == "EQ" and actual == comparison:
+            return row.points
+    return None

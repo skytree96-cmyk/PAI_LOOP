@@ -10,11 +10,11 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-PROMPT_VERSION = "pai-loop-extraction-0.3.0"
-SCHEMA_VERSION = "pai-loop-requirements-0.2.0"
-CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.3.0"
+PROMPT_VERSION = "pai-loop-extraction-0.5.0"
+SCHEMA_VERSION = "pai-loop-requirements-0.4.0"
+CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.5.0"
 _MAX_CORRECTIVE_FAILED_QUOTE_CHARS = 240
 
 
@@ -68,7 +68,13 @@ KnownQuantitativeMetric = Literal[
     "UNKNOWN",
 ]
 
-QuantitativeScoringMethod = Literal["BRACKET", "THRESHOLD", "FORMULA", "UNKNOWN"]
+QuantitativeScoringMethod = Literal[
+    "BRACKET",
+    "THRESHOLD",
+    "FORMULA",
+    "CASE_TABLE",
+    "UNKNOWN",
+]
 
 KNOWN_QUANTITATIVE_EVIDENCE_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
@@ -120,6 +126,41 @@ class QuantitativeThresholdLiteral(BaseModel):
     evidence: EvidenceAnchor
 
 
+class QuantitativeCaseLiteral(BaseModel):
+    """One source-ordered condition-to-award row from a scoring table."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    literal: str = Field(min_length=1, max_length=1_000)
+    operator: Literal["GTE", "EQ", "IN"]
+    comparison_value: float | None
+    category_values: list[str] = Field(max_length=100)
+    award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
+    award_value: float = Field(ge=0)
+    row_order: int = Field(ge=1, le=100)
+    evidence: EvidenceAnchor
+
+    @model_validator(mode="after")
+    def validate_case_shape(self) -> "QuantitativeCaseLiteral":
+        if self.operator in {"GTE", "EQ"}:
+            if self.comparison_value is None or self.category_values:
+                raise ValueError("numeric CASE rows require only comparison_value")
+        elif self.comparison_value is not None or not self.category_values:
+            raise ValueError("categorical CASE rows require category_values")
+        if self.award_kind == "PERCENT_OF_MAX" and self.award_value > 100:
+            raise ValueError("percentage CASE awards must not exceed 100")
+        return self
+
+
+class QuantitativeRecognitionCondition(BaseModel):
+    """A source-anchored footnote or continuation condition for one criterion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    literal: str = Field(min_length=1, max_length=1_000)
+    evidence: EvidenceAnchor
+
+
 class QuantitativeRuleCandidate(BaseModel):
     """Literal source rule candidate; never a company score or decision."""
 
@@ -135,6 +176,13 @@ class QuantitativeRuleCandidate(BaseModel):
     brackets: list[QuantitativeBracketLiteral] = Field(max_length=100)
     threshold: QuantitativeThresholdLiteral | None
     formula_literal: str | None = Field(max_length=1_000)
+    # Default preserves historical persisted payload validation. The strict
+    # provider schema below still requires the key on every new extraction.
+    cases: list[QuantitativeCaseLiteral] = Field(default_factory=list, max_length=100)
+    recognition_conditions: list[QuantitativeRecognitionCondition] = Field(
+        default_factory=list,
+        max_length=20,
+    )
     required_evidence: list[str] = Field(max_length=30)
     evidence: EvidenceAnchor
     ambiguity_reason: str | None = Field(max_length=1_000)
@@ -169,7 +217,10 @@ class ExtractionPayload(BaseModel):
     requirements: list[ExtractedRequirement]
     # Defaults preserve validation of historical persisted extraction payloads.
     # The Responses API boundary below still requires both keys explicitly.
-    quantitative_tables: list[QuantitativeTableCandidate] = Field(default_factory=list)
+    quantitative_tables: list[QuantitativeTableCandidate] = Field(
+        default_factory=list,
+        max_length=16,
+    )
     quantitative_table_not_applicable: QuantitativeTableNotApplicable | None = None
     missing_or_unreadable: list[str]
     summary: str = Field(max_length=1000)
@@ -179,6 +230,10 @@ EXTRACTION_SCHEMA: dict[str, Any] = ExtractionPayload.model_json_schema()
 EXTRACTION_SCHEMA["required"] = list(EXTRACTION_SCHEMA["properties"])
 for _strict_field in ("quantitative_tables", "quantitative_table_not_applicable"):
     EXTRACTION_SCHEMA["properties"][_strict_field].pop("default", None)
+_rule_schema = EXTRACTION_SCHEMA["$defs"]["QuantitativeRuleCandidate"]
+_rule_schema["required"] = list(_rule_schema["properties"])
+for _strict_rule_field in ("cases", "recognition_conditions"):
+    _rule_schema["properties"][_strict_rule_field].pop("default", None)
 
 
 class OpenAIProviderUsage(BaseModel):
@@ -367,6 +422,10 @@ def _iter_evidence_anchors(data: ExtractionPayload):
                 yield bracket.evidence
             if criterion.threshold is not None:
                 yield criterion.threshold.evidence
+            for case in criterion.cases:
+                yield case.evidence
+            for condition in criterion.recognition_conditions:
+                yield condition.evidence
     if data.quantitative_table_not_applicable is not None:
         yield data.quantitative_table_not_applicable.evidence
 
@@ -795,13 +854,38 @@ class OpenAIExtractionClient:
             "Before returning, verify each quote can be found verbatim in SOURCE. "
             "Transcribe quantitative scoring tables as literal source rules only: never insert or "
             "apply company facts, never calculate a company score, and never decide GO/NO-GO. "
+            "Emit one logical quantitative table for each actual objective scoring program even when "
+            "its detail rows continue across pages or physical subtables. When a summary row is fully "
+            "expanded by later detail rows with the same subtotal, emit the leaf detail criteria only; "
+            "do not duplicate both summary and detail as scored rows. Exclude qualitative/judgment rows "
+            "from quantitative criteria and bind total_points to the objective subtotal, not the whole "
+            "proposal score. "
             "Use metric UNKNOWN when the stated metric does not exactly fit a known enum. Copy every "
-            "criterion_literal, bracket.literal, and formula_literal from the source. Bind BRACKET "
+            "criterion_literal, bracket.literal, formula_literal, case.literal, and "
+            "recognition_conditions.literal from the source. "
+            "The criterion literal must retain every adjacent recognition dimension stated for the "
+            "row, including lookback period, comparable-work scope, completion, per-contract minimum, "
+            "single-versus-sum basis, and VAT basis when present. Put every applicable footnote or "
+            "continuation note that is not contiguous with the row into recognition_conditions with "
+            "its own exact evidence anchor. This includes the lookback anchor date, eligible ordering-"
+            "authority type, completion rule, certificate requirement, consortium-share rule, amount "
+            "minimum, and VAT rule. If one note applies to both performance amount and count, attach "
+            "the same independently anchored condition to both criteria. Never paraphrase a condition "
+            "or copy a note that does not apply to that criterion. Bind BRACKET "
             "min/max inclusivity and THRESHOLD operator exactly to the literal comparator; never "
             "reverse 이상/초과/이하/미만 or >=/>/<=/<. For a known metric, required_evidence must "
             "equal its canonical registry value exactly; never create a new key. Registry: "
             + json.dumps(evidence_registry, ensure_ascii=False, sort_keys=True)
-            + ". Set "
+            + ". Use CASE_TABLE when the source supplies multiple ordered cutoffs, exact discrete "
+            "rows, rating/category groups, or percentage-of-maximum rows. Preserve source row order "
+            "as consecutive row_order values. Use GTE only for an explicit 이상/>= row, EQ only for "
+            "an explicit discrete value row, and IN only for categories copied from that row. Store "
+            "a literal 배점 as POINTS and a percentage such as 배점의 95% as PERCENT_OF_MAX. Never "
+            "merge parallel columns that represent different fact types. For example, if one row has "
+            "company-bond, commercial-paper, and enterprise-credit-rating columns, a CREDIT_RATING "
+            "candidate must use only the enterprise-credit-rating column and its award; anchor the "
+            "selected column values and do not union aliases from the other instruments. Never "
+            "invent an ELSE/default row or a score below the last explicit row. Set "
             "quantitative_table_not_applicable only when SOURCE explicitly states that no quantitative "
             "table applies and anchor that statement; ordinary absence is null. Do not invent "
             "required_evidence placeholders. Always return quantitative_tables (possibly []) and "

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from decimal import Decimal, InvalidOperation
@@ -18,6 +19,7 @@ from .integrations.openai_extraction import (
     KnownQuantitativeMetric,
     PROMPT_VERSION,
     QuantitativeBracketLiteral,
+    QuantitativeCaseLiteral,
     QuantitativeRuleCandidate,
     QuantitativeScoringMethod,
     QuantitativeTableCandidate,
@@ -25,10 +27,11 @@ from .integrations.openai_extraction import (
     SCHEMA_VERSION,
     evidence_quote_matches_source,
 )
+from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.1.0"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.1.0"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.4.0"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.3.0"
 
 ProfileStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE", "NOT_APPLICABLE"]
 CandidateStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE"]
@@ -83,6 +86,22 @@ class ImmutableQuantitativeThreshold(FrozenModel):
     evidence: ImmutableEvidenceAnchor
 
 
+class ImmutableQuantitativeCase(FrozenModel):
+    literal: str
+    operator: Literal["GTE", "EQ", "IN"]
+    comparison_value: float | None
+    category_values: tuple[str, ...]
+    award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
+    award_value: float = Field(ge=0)
+    row_order: int = Field(ge=1, le=100)
+    evidence: ImmutableEvidenceAnchor
+
+
+class ImmutableQuantitativeRecognitionCondition(FrozenModel):
+    literal: str
+    evidence: ImmutableEvidenceAnchor
+
+
 class ImmutableQuantitativeRuleCandidate(FrozenModel):
     status: Literal["AVAILABLE"] = "AVAILABLE"
     source_attachment_id: str
@@ -97,6 +116,8 @@ class ImmutableQuantitativeRuleCandidate(FrozenModel):
     brackets: tuple[ImmutableQuantitativeBracket, ...]
     threshold: ImmutableQuantitativeThreshold | None
     formula_literal: str | None
+    cases: tuple[ImmutableQuantitativeCase, ...] = ()
+    recognition_conditions: tuple[ImmutableQuantitativeRecognitionCondition, ...] = ()
     required_evidence: tuple[str, ...]
     evidence: ImmutableEvidenceAnchor
 
@@ -130,6 +151,8 @@ class ImmutableQuantitativeTable(FrozenModel):
 class AttachmentDocumentBinding(FrozenModel):
     attachment_id: str
     document_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    document_type: Literal["NOTICE", "RFP", "SCOPE", "FORM", "OTHER"] | None = None
+    source_label: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class QuantitativeCandidateProfile(FrozenModel):
@@ -205,6 +228,56 @@ _ASCII_REVERSED_BOUND_RE = re.compile(
     re.IGNORECASE,
 )
 _COMPARATOR_MARKER_RE = re.compile(r"이상|초과|이하|미만|>=|<=|==|>|<|=")
+
+
+def _normalize_case_category(value: str) -> str:
+    """Match the execution DSL's NFKC/whitespace/case normalization."""
+
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
+
+
+def _case_literal_contains_exact_category(literal: str, value: str) -> bool:
+    """Require a category to occupy a source token/cell, never a substring."""
+
+    source = unicodedata.normalize("NFKC", literal).casefold()
+    target = _normalize_case_category(value)
+    if not target:
+        return False
+
+    compact: list[str] = []
+    whitespace_boundaries: set[int] = set()
+    pending_whitespace = False
+    for character in source:
+        if character.isspace():
+            pending_whitespace = True
+            continue
+        if pending_whitespace and compact:
+            whitespace_boundaries.add(len(compact))
+        compact.append(character)
+        pending_whitespace = False
+    compact_source = "".join(compact)
+
+    def token_character(character: str) -> bool:
+        return character.isalnum() or character in "+_-"
+
+    start = compact_source.find(target)
+    while start >= 0:
+        end = start + len(target)
+        left_is_boundary = (
+            start == 0
+            or start in whitespace_boundaries
+            or not token_character(compact_source[start - 1])
+        )
+        right_is_boundary = (
+            end == len(compact_source)
+            or end in whitespace_boundaries
+            or not token_character(compact_source[end])
+            or compact_source.startswith(("배점", "평점", "점수", "점", "등급"), end)
+        )
+        if left_is_boundary and right_is_boundary:
+            return True
+        start = compact_source.find(target, start + 1)
+    return False
 
 _KOREAN_OPERATOR = {
     "이상": "GTE",
@@ -454,9 +527,28 @@ def _assert_available_candidate_invariants(
         candidate.criterion_literal,
     ):
         raise ValueError("AVAILABLE candidate literal is not bound to its anchor")
+    condition_keys: set[tuple[str, str]] = set()
+    for condition in candidate.recognition_conditions:
+        if not evidence_quote_matches_source(
+            condition.literal,
+            condition.evidence.quote,
+        ):
+            raise ValueError("AVAILABLE recognition condition is not bound to its anchor")
+        key = (
+            " ".join(condition.literal.split()).casefold(),
+            condition.evidence.quote,
+        )
+        if key in condition_keys:
+            raise ValueError("AVAILABLE recognition conditions contain a duplicate")
+        condition_keys.add(key)
 
     if candidate.scoring_method == "BRACKET":
-        if not candidate.brackets or candidate.threshold is not None or candidate.formula_literal:
+        if (
+            not candidate.brackets
+            or candidate.threshold is not None
+            or candidate.formula_literal
+            or candidate.cases
+        ):
             raise ValueError("AVAILABLE BRACKET candidate shape is invalid")
         for bracket in candidate.brackets:
             if not evidence_quote_matches_source(bracket.literal, bracket.evidence.quote):
@@ -486,7 +578,12 @@ def _assert_available_candidate_invariants(
         if _brackets_overlap(candidate.brackets):
             raise ValueError("AVAILABLE bracket ranges overlap")
     elif candidate.scoring_method == "THRESHOLD":
-        if candidate.threshold is None or candidate.brackets or candidate.formula_literal:
+        if (
+            candidate.threshold is None
+            or candidate.brackets
+            or candidate.formula_literal
+            or candidate.cases
+        ):
             raise ValueError("AVAILABLE THRESHOLD candidate shape is invalid")
         threshold = candidate.threshold
         if not evidence_quote_matches_source(
@@ -517,13 +614,54 @@ def _assert_available_candidate_invariants(
         if Counter(_comparator_terms(threshold.literal)) != Counter(expected):
             raise ValueError("AVAILABLE threshold comparator binding is invalid")
     elif candidate.scoring_method == "FORMULA":
-        if candidate.brackets or candidate.threshold is not None or not candidate.formula_literal:
+        if (
+            candidate.brackets
+            or candidate.threshold is not None
+            or not candidate.formula_literal
+            or candidate.cases
+        ):
             raise ValueError("AVAILABLE FORMULA candidate shape is invalid")
         if not evidence_quote_matches_source(
             candidate.formula_literal,
             candidate.evidence.quote,
         ):
             raise ValueError("AVAILABLE formula literal is not bound to its anchor")
+    elif candidate.scoring_method == "CASE_TABLE":
+        if (
+            not candidate.cases
+            or candidate.brackets
+            or candidate.threshold is not None
+            or candidate.formula_literal
+        ):
+            raise ValueError("AVAILABLE CASE_TABLE candidate shape is invalid")
+        rows: list[CaseTableRowLiteral] = []
+        if [item.row_order for item in candidate.cases] != list(
+            range(1, len(candidate.cases) + 1)
+        ):
+            raise ValueError("AVAILABLE CASE_TABLE row order is invalid")
+        for case in candidate.cases:
+            if not evidence_quote_matches_source(case.literal, case.evidence.quote):
+                raise ValueError("AVAILABLE CASE literal is not bound to its anchor")
+            values = [case.award_value]
+            if case.comparison_value is not None:
+                values.append(case.comparison_value)
+            if any(not _literal_contains_number(value, case.literal) for value in values):
+                raise ValueError("AVAILABLE CASE numbers do not match its literal")
+            rows.append(
+                CaseTableRowLiteral(
+                    operator=case.operator,
+                    comparison_value=case.comparison_value,
+                    category_values=case.category_values,
+                    award_kind=case.award_kind,
+                    award_value=case.award_value,
+                )
+            )
+        if compile_case_table(
+            tuple(rows),
+            value_kind=_case_value_kind(candidate.metric),
+            maximum_points=candidate.max_points,
+        ) is None:
+            raise ValueError("AVAILABLE CASE_TABLE is not deterministic")
 
 
 def _record_anchors(
@@ -540,6 +678,10 @@ def _record_anchors(
             yield bracket.evidence
         if candidate.threshold is not None:
             yield candidate.threshold.evidence
+        for case in candidate.cases:
+            yield case.evidence
+        for condition in candidate.recognition_conditions:
+            yield condition.evidence
     yield from record.not_applicable_evidence
 
 
@@ -898,6 +1040,255 @@ def _validate_threshold(
     )
 
 
+def _case_value_kind(metric: KnownQuantitativeMetric) -> Literal[
+    "NUMERIC", "DISCRETE", "CATEGORICAL"
+]:
+    if metric in {"CREDIT_RATING", "LOCAL_PRESENCE"}:
+        return "CATEGORICAL"
+    if metric in {
+        "PERFORMANCE_COUNT",
+        "PERSONNEL_COUNT",
+        "CERTIFICATION_COUNT",
+        "FACILITY_EQUIPMENT_COUNT",
+        "AWARD_COUNT",
+    }:
+        return "DISCRETE"
+    return "NUMERIC"
+
+
+def _validate_cases(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    source: str,
+    sources: Mapping[str, str],
+    expected_attachment_ids: set[str],
+    payload_attachment_id: str,
+    table_id: str,
+) -> tuple[list[QuantitativeValidationIssue], tuple[ImmutableQuantitativeCase, ...]]:
+    issues: list[QuantitativeValidationIssue] = []
+    frozen: list[ImmutableQuantitativeCase] = []
+    context = {
+        "attachment_id": payload_attachment_id,
+        "table_id": table_id,
+        "criterion_id": candidate.criterion_id,
+    }
+    expected_orders = list(range(1, len(candidate.cases) + 1))
+    if [item.row_order for item in candidate.cases] != expected_orders:
+        issues.append(
+            _issue(
+                "CASE_ROW_ORDER_INVALID",
+                "INCOMPLETE",
+                "CASE_TABLE 행 순서는 원문 순서의 연속된 번호여야 합니다.",
+                **context,
+            )
+        )
+
+    compiled_rows: list[CaseTableRowLiteral] = []
+    for case in candidate.cases:
+        issues.extend(
+            _anchor_issues(
+                case.evidence,
+                sources=sources,
+                expected_attachment_ids=expected_attachment_ids,
+                payload_attachment_id=payload_attachment_id,
+                table_id=table_id,
+                criterion_id=candidate.criterion_id,
+            )
+        )
+        if not _literal_is_anchored(case.literal, case.evidence, source):
+            issues.append(
+                _issue(
+                    "CASE_LITERAL_MISMATCH",
+                    "INCOMPLETE",
+                    "CASE_TABLE 행 literal을 근거 인용문에서 확인할 수 없습니다.",
+                    **context,
+                )
+            )
+        numeric_values = [case.award_value]
+        if case.comparison_value is not None:
+            numeric_values.append(case.comparison_value)
+        if any(not _literal_contains_number(value, case.literal) for value in numeric_values):
+            issues.append(
+                _issue(
+                    "CASE_NUMBER_MISMATCH",
+                    "INCOMPLETE",
+                    "CASE_TABLE 조건값 또는 배점 숫자가 literal과 일치하지 않습니다.",
+                    **context,
+                )
+            )
+        if case.award_kind == "POINTS" and case.award_value > candidate.max_points:
+            issues.append(
+                _issue(
+                    "CASE_POINTS_EXCEED_MAX",
+                    "INCOMPLETE",
+                    "CASE_TABLE 배점이 항목 만점을 초과합니다.",
+                    **context,
+                )
+            )
+        if case.operator == "GTE" and case.comparison_value is not None:
+            comparison = _decimal(case.comparison_value)
+            comparator_issue = _comparator_binding_issue(
+                literal=case.literal,
+                expected=((comparison, "GTE"),) if comparison is not None else (),
+                mismatch_code="CASE_COMPARATOR_MISMATCH",
+                mismatch_message="CASE_TABLE 원문의 비교 연산자와 구조화한 조건이 일치하지 않습니다.",
+                context=context,
+            )
+            if comparator_issue is not None:
+                issues.append(comparator_issue)
+        elif case.operator == "EQ" and _COMPARATOR_MARKER_RE.search(case.literal):
+            issues.append(
+                _issue(
+                    "CASE_COMPARATOR_MISMATCH",
+                    "INCOMPLETE",
+                    "정확값 CASE 행에는 다른 비교 연산자를 함께 사용할 수 없습니다.",
+                    **context,
+                )
+            )
+        if case.operator == "IN":
+            normalized_values = [
+                _normalize_case_category(value) for value in case.category_values
+            ]
+            if any(
+                not value
+                or not _case_literal_contains_exact_category(case.literal, source_value)
+                for value, source_value in zip(
+                    normalized_values, case.category_values, strict=True
+                )
+            ):
+                issues.append(
+                    _issue(
+                        "CASE_CATEGORY_MISMATCH",
+                        "REVIEW",
+                        "CASE_TABLE 범주값을 해당 원문 행에서 모두 확인할 수 없습니다.",
+                        **context,
+                    )
+                )
+            if len(normalized_values) != len(set(normalized_values)):
+                issues.append(
+                    _issue(
+                        "CASE_CATEGORY_DUPLICATE",
+                        "REVIEW",
+                        "CASE_TABLE 범주값이 NFKC 정규화 후 중복됩니다.",
+                        **context,
+                    )
+                )
+        try:
+            compiled_row = CaseTableRowLiteral(
+                operator=case.operator,
+                comparison_value=case.comparison_value,
+                category_values=tuple(case.category_values),
+                award_kind=case.award_kind,
+                award_value=case.award_value,
+            )
+        except ValidationError:
+            issues.append(
+                _issue(
+                    "CASE_ROW_VALIDATION_FAILED",
+                    "REVIEW",
+                    "CASE_TABLE 행을 결정론 산식으로 검증하지 못했습니다.",
+                    **context,
+                )
+            )
+        else:
+            compiled_rows.append(compiled_row)
+        frozen.append(
+            ImmutableQuantitativeCase(
+                literal=case.literal,
+                operator=case.operator,
+                comparison_value=case.comparison_value,
+                category_values=tuple(case.category_values),
+                award_kind=case.award_kind,
+                award_value=case.award_value,
+                row_order=case.row_order,
+                evidence=_frozen_anchor(case.evidence),
+            )
+        )
+
+    if (
+        len(compiled_rows) == len(candidate.cases)
+        and candidate.cases
+        and compile_case_table(
+            tuple(compiled_rows),
+            value_kind=_case_value_kind(candidate.metric),
+            maximum_points=candidate.max_points,
+        )
+        is None
+    ):
+        issues.append(
+            _issue(
+                "CASE_TABLE_NOT_DETERMINISTIC",
+                "REVIEW",
+                "CASE_TABLE 행이 중복·역순·가림 없이 결정론적으로 실행되지 않습니다.",
+                **context,
+            )
+        )
+    return issues, tuple(frozen)
+
+
+def _validate_recognition_conditions(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    source: str,
+    sources: Mapping[str, str],
+    expected_attachment_ids: set[str],
+    payload_attachment_id: str,
+    table_id: str,
+) -> tuple[
+    list[QuantitativeValidationIssue],
+    tuple[ImmutableQuantitativeRecognitionCondition, ...],
+]:
+    issues: list[QuantitativeValidationIssue] = []
+    frozen: list[ImmutableQuantitativeRecognitionCondition] = []
+    seen: set[tuple[str, str]] = set()
+    context = {
+        "attachment_id": payload_attachment_id,
+        "table_id": table_id,
+        "criterion_id": candidate.criterion_id,
+    }
+    for condition in candidate.recognition_conditions:
+        issues.extend(
+            _anchor_issues(
+                condition.evidence,
+                sources=sources,
+                expected_attachment_ids=expected_attachment_ids,
+                payload_attachment_id=payload_attachment_id,
+                table_id=table_id,
+                criterion_id=candidate.criterion_id,
+            )
+        )
+        if not _literal_is_anchored(condition.literal, condition.evidence, source):
+            issues.append(
+                _issue(
+                    "RECOGNITION_CONDITION_LITERAL_MISMATCH",
+                    "INCOMPLETE",
+                    "실적 인정조건 literal을 해당 근거 인용문에서 확인할 수 없습니다.",
+                    **context,
+                )
+            )
+        key = (
+            " ".join(condition.literal.split()).casefold(),
+            condition.evidence.quote,
+        )
+        if key in seen:
+            issues.append(
+                _issue(
+                    "RECOGNITION_CONDITION_DUPLICATE",
+                    "REVIEW",
+                    "동일한 실적 인정조건이 한 평가항목에 중복 연결되었습니다.",
+                    **context,
+                )
+            )
+        seen.add(key)
+        frozen.append(
+            ImmutableQuantitativeRecognitionCondition(
+                literal=condition.literal,
+                evidence=_frozen_anchor(condition.evidence),
+            )
+        )
+    return issues, tuple(frozen)
+
+
 def validate_quantitative_rule_candidate(
     candidate: QuantitativeRuleCandidate,
     *,
@@ -999,8 +1390,23 @@ def validate_quantitative_rule_candidate(
     bracket_issues: list[QuantitativeValidationIssue] = []
     frozen_brackets: tuple[ImmutableQuantitativeBracket, ...] = ()
     frozen_threshold: ImmutableQuantitativeThreshold | None = None
+    frozen_cases: tuple[ImmutableQuantitativeCase, ...] = ()
+    condition_issues, frozen_conditions = _validate_recognition_conditions(
+        candidate,
+        source=source,
+        sources=source_text_by_attachment_id,
+        expected_attachment_ids=expected,
+        payload_attachment_id=source_attachment_id,
+        table_id=table_id,
+    )
+    issues.extend(condition_issues)
     if candidate.scoring_method == "BRACKET":
-        if not candidate.brackets or candidate.threshold is not None or candidate.formula_literal:
+        if (
+            not candidate.brackets
+            or candidate.threshold is not None
+            or candidate.formula_literal
+            or candidate.cases
+        ):
             issues.append(
                 _issue(
                     "SCORING_METHOD_SHAPE_MISMATCH",
@@ -1019,7 +1425,12 @@ def validate_quantitative_rule_candidate(
         )
         issues.extend(bracket_issues)
     elif candidate.scoring_method == "THRESHOLD":
-        if candidate.threshold is None or candidate.brackets or candidate.formula_literal:
+        if (
+            candidate.threshold is None
+            or candidate.brackets
+            or candidate.formula_literal
+            or candidate.cases
+        ):
             issues.append(
                 _issue(
                     "SCORING_METHOD_SHAPE_MISMATCH",
@@ -1040,7 +1451,12 @@ def validate_quantitative_rule_candidate(
             )
             issues.extend(threshold_issues)
     elif candidate.scoring_method == "FORMULA":
-        if candidate.brackets or candidate.threshold is not None or not candidate.formula_literal:
+        if (
+            candidate.brackets
+            or candidate.threshold is not None
+            or not candidate.formula_literal
+            or candidate.cases
+        ):
             issues.append(
                 _issue(
                     "SCORING_METHOD_SHAPE_MISMATCH",
@@ -1060,7 +1476,36 @@ def validate_quantitative_rule_candidate(
                     **context,
                 )
             )
-    elif candidate.brackets or candidate.threshold is not None or candidate.formula_literal:
+    elif candidate.scoring_method == "CASE_TABLE":
+        if (
+            not candidate.cases
+            or candidate.brackets
+            or candidate.threshold is not None
+            or candidate.formula_literal
+        ):
+            issues.append(
+                _issue(
+                    "SCORING_METHOD_SHAPE_MISMATCH",
+                    "INCOMPLETE",
+                    "CASE_TABLE 방식에는 원문 순서의 case 행만 있어야 합니다.",
+                    **context,
+                )
+            )
+        case_issues, frozen_cases = _validate_cases(
+            candidate,
+            source=source,
+            sources=source_text_by_attachment_id,
+            expected_attachment_ids=expected,
+            payload_attachment_id=source_attachment_id,
+            table_id=table_id,
+        )
+        issues.extend(case_issues)
+    elif (
+        candidate.brackets
+        or candidate.threshold is not None
+        or candidate.formula_literal
+        or candidate.cases
+    ):
         issues.append(
             _issue(
                 "UNKNOWN_METHOD_HAS_DERIVED_STRUCTURE",
@@ -1085,6 +1530,8 @@ def validate_quantitative_rule_candidate(
             brackets=frozen_brackets,
             threshold=frozen_threshold,
             formula_literal=candidate.formula_literal,
+            cases=frozen_cases,
+            recognition_conditions=frozen_conditions,
             required_evidence=tuple(candidate.required_evidence),
             evidence=_frozen_anchor(candidate.evidence),
         )
@@ -1624,18 +2071,39 @@ def merge_validated_quantitative_records(
     expected_documents: Mapping[str, str],
     manifest_sha256: str,
     incomplete_attachment_ids: Iterable[str] = (),
+    attachment_profiles: Mapping[str, Mapping[str, object]] | None = None,
 ) -> QuantitativeCandidateProfile:
     """Merge persisted per-file records against the exact current manifest."""
 
     if not re.fullmatch(r"[a-f0-9]{64}", manifest_sha256):
         raise ValueError("manifest_sha256 must be a lowercase SHA-256 digest")
-    bindings = tuple(
-        AttachmentDocumentBinding(
-            attachment_id=attachment_id,
-            document_sha256=document_sha256,
+    runtime_profiles = attachment_profiles or {}
+    bindings_list: list[AttachmentDocumentBinding] = []
+    for attachment_id, document_sha256 in sorted(expected_documents.items()):
+        raw_profile = runtime_profiles.get(attachment_id, {})
+        document_type = raw_profile.get("document_type")
+        source_label = raw_profile.get("source_label")
+        bindings_list.append(
+            AttachmentDocumentBinding(
+                attachment_id=attachment_id,
+                document_sha256=document_sha256,
+                document_type=(
+                    document_type
+                    if document_type in {"NOTICE", "RFP", "SCOPE", "FORM", "OTHER"}
+                    else None
+                ),
+                source_label=(
+                    source_label.strip()
+                    if (
+                        isinstance(source_label, str)
+                        and source_label.strip()
+                        and len(source_label.strip()) <= 500
+                    )
+                    else None
+                ),
+            )
         )
-        for attachment_id, document_sha256 in sorted(expected_documents.items())
-    )
+    bindings = tuple(bindings_list)
     expected = {item.attachment_id: item.document_sha256 for item in bindings}
     issues: list[QuantitativeValidationIssue] = []
     grouped: dict[str, list[ValidatedQuantitativeAttachmentRecord]] = {}

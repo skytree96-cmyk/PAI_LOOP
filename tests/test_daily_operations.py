@@ -532,6 +532,7 @@ def test_failed_snapshot_remains_retryable_and_planner_enforces_cooldown(
         client,
         notice_key=notice_key,
         published_at="2026-08-18T08:00:00+09:00",
+        deadline=(datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
     )
     attachment = {
         "attachment_id": "PPS-ATT-eeeeeeeeeeeeeeeeeeeeeeee",

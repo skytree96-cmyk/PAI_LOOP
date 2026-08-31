@@ -465,6 +465,48 @@ def test_hwp5_extracts_every_para_text_and_skips_inline_control_payload() -> Non
     assert "악성페이로드" not in result.text
 
 
+def test_hwp5_preserves_busan_case_table_and_recognition_footnotes() -> None:
+    literals = (
+        "1) 용역수행 실적(금액, 6점)",
+        "A. 2억 원 이상",
+        "6",
+        "B. 1.5억 원 이상",
+        "5.5",
+        "C. 1억 원 이상",
+        "5",
+        "2) 용역수행 실적(건수, 4점)",
+        "A. 5건 이상",
+        "4",
+        "B. 4건",
+        "3.7",
+        "C. 3건",
+        "3.4",
+        "D. 2건",
+        "3.1",
+        "E. 1건",
+        "2.8",
+        "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다.",
+        "② 증빙서류로 용역수행실적 총괄표(별지서식5호), 용역실적증명서(별지서식6호)를 첨부한다.",
+        "③ 공동계약으로 참여한 실적의 경우 공동계약 참여 비율에 따른 금액의 실적",
+    )
+    section = b"".join(
+        _hwp_record(67, literal.encode("utf-16le"), level=index % 4)
+        for index, literal in enumerate(literals)
+    )
+    module = _fake_olefile_module([_raw_deflate(section)])
+
+    with _with_fake_module("olefile", module):
+        result = extract_document_content(
+            "부산교육한마당 제안요청서.hwp", b"synthetic"
+        )
+
+    assert result.complete is True
+    assert result.warnings == ()
+    assert result.members_discovered == result.members_processed == 1
+    for literal in literals:
+        assert literal in result.text
+
+
 def test_mislabeled_hwpx_ole_content_uses_bounded_hwp5_reader() -> None:
     section = _hwp_record(
         67,

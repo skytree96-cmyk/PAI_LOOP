@@ -75,7 +75,7 @@ from .document_extraction import (
     ExtractionLimits,
     extract_document_content,
 )
-PPS_PROCESSING_VERSION = "pps-document-processing-0.3.1"
+PPS_PROCESSING_VERSION = "pps-document-processing-0.5.0"
 MAX_PDF_PAGES = 120
 MAX_HWPX_ENTRIES = 240
 MAX_HWPX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
