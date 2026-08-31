@@ -53,6 +53,10 @@ from pai_loop.public_notice_seed import import_public_notice_seed
 NOTICE_KEY = "MANUAL-INCHON-2025-17"
 
 
+def _active_deadline_iso() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+
 def test_analysis_timeout_contract_fits_one_complete_unit_below_n8n_boundary() -> None:
     assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 180
     assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 401
@@ -614,7 +618,7 @@ def test_attachment_continuation_exact_retry_replays_stored_child(
             "title": "다중 첨부 응답 재전송 검증",
             "agency": "공공기관",
             "published_at": "2026-08-20T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -687,7 +691,7 @@ def test_batch_finalization_failure_requeues_and_reuses_durable_attachment(
             "title": "첨부 커서 원자성 검증",
             "agency": "공공기관",
             "published_at": "2026-08-20T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -1032,7 +1036,7 @@ def test_internal_enrichment_failure_is_persisted_as_attempted_retryable_review(
             "title": "내부 보강 오류 재시도 계약 검증",
             "agency": "가상 기관",
             "published_at": "2026-08-19T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -1201,7 +1205,7 @@ def test_dry_run_unexpected_enrichment_error_never_persists_attempt_marker(
             "title": "dry-run 무기록 계약 검증",
             "agency": "가상 기관",
             "published_at": "2026-08-19T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -1255,7 +1259,7 @@ def test_backfill_plan_chunks_resumes_and_tracks_child_audits(client: TestClient
                 "title": f"신규 교육 컨설팅 공고 {index}",
                 "agency": "가상 공공기관",
                 "published_at": f"2026-08-{10 + index:02d}T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         )
@@ -1322,7 +1326,7 @@ def test_backfill_child_rejects_unplanned_key(client: TestClient) -> None:
             "title": "교육 공고",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     )
@@ -1360,7 +1364,7 @@ def test_daily_operation_offers_bounded_page_and_persists_continuation(
                 "title": f"당일 신규 또는 정정 공고 {index}",
                 "agency": "가상 공공기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         )
@@ -1480,7 +1484,7 @@ def test_operation_chunk_retry_returns_stored_result_and_rejects_rebinding(
                 "title": "분석 claim 테스트 공고",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         )
@@ -1542,7 +1546,7 @@ def test_daily_updated_key_reopens_only_that_key_with_version_aware_generation(
                 "title": f"version-aware refresh {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -1680,7 +1684,7 @@ def test_superseded_stale_running_generation_is_terminalized_before_requeue(
                 "title": f"superseded stale {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -1823,7 +1827,7 @@ def test_cooled_retry_key_reopens_once_inside_active_daily_parent(
                 "title": f"cooled retry {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-15T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2000,7 +2004,7 @@ def test_new_daily_parent_keeps_mislabeled_not_selected_backlog_as_generation_ze
             "title": "미시도 backlog 계약 검증",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -2245,7 +2249,7 @@ def test_running_child_is_in_flight_and_prevents_parent_completion(
                 "title": "진행 중 claim 공고",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         )
@@ -2328,7 +2332,7 @@ def test_orphaned_running_child_releases_current_segment_before_parent_ttl(
                 "title": f"orphan recovery {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2452,7 +2456,7 @@ def test_unstarted_segment_recovers_after_child_timeout_but_owner_retry_replays(
                 "title": f"unstarted segment recovery {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2551,7 +2555,7 @@ def test_recent_unstarted_segment_retains_old_active_lease(
             "title": "recent unstarted segment must retain lease",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -2602,7 +2606,7 @@ def test_orphan_recovery_reoffers_only_missing_chunks_after_terminal_child(
                 "title": f"partial orphan recovery {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2675,7 +2679,7 @@ def test_recent_running_child_retains_old_active_segment(
             "title": "recent child must retain lease",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -2743,7 +2747,7 @@ def test_any_continuation_poll_prioritises_daily_over_backfill(client: TestClien
                 "title": "우선순위 테스트 공고",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2790,7 +2794,7 @@ def test_any_continuation_inherits_backfill_retry_policy_without_duplicate_lease
                 "title": f"retry policy continuation {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2873,7 +2877,7 @@ def test_any_resume_lowers_and_persists_parent_execution_limit(
                 "title": "ANY continuation execution limit",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -2933,7 +2937,7 @@ def test_any_plan_response_retry_prefers_exact_lease_owner_over_new_daily_parent
                 "title": f"lease owner priority {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -3012,7 +3016,7 @@ def test_stale_segment_lease_is_recovered_without_accepting_old_claim(
             "title": "stale lease 복구 테스트",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -3078,7 +3082,7 @@ def test_complete_requires_exact_current_segment_and_all_terminal_chunks(
             "title": "exact finalize 테스트",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -3159,7 +3163,7 @@ def test_stale_segments_are_bounded_by_continuation_dead_letter(
             "title": "bounded stale segment 테스트",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -3218,7 +3222,7 @@ def test_stale_terminal_segment_auto_finalizes_parent_and_releases_any_poll(
             "title": "stale terminal 자동 완료 테스트",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -3358,7 +3362,7 @@ def test_concurrent_planners_share_one_parent_and_one_segment(
             "title": "동시 parent 생성 방지 테스트",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
@@ -3408,7 +3412,7 @@ def test_concurrent_complete_and_daily_plan_never_append_to_terminal_parent(
                 "title": f"complete-plan race {key}",
                 "agency": "가상 기관",
                 "published_at": "2026-08-17T08:00:00+09:00",
-                "deadline": "2026-08-31T18:00:00+09:00",
+                "deadline": _active_deadline_iso(),
                 "status": "OPEN",
             },
         ).status_code == 201
@@ -3498,7 +3502,7 @@ def test_cross_queue_planner_does_not_duplicate_pending_notice_key(
             "title": "queue 간 중복 parent key 방지 테스트",
             "agency": "가상 기관",
             "published_at": "2026-08-17T08:00:00+09:00",
-            "deadline": "2026-08-31T18:00:00+09:00",
+            "deadline": _active_deadline_iso(),
             "status": "OPEN",
         },
     ).status_code == 201
