@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.2"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.2"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.3"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.3"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -805,35 +805,115 @@ def _metric_header_matches(
     )
 
 
+def _metric_header_is_unique(
+    candidate: QuantitativeRuleCandidate,
+    window: str,
+) -> bool:
+    """Require one exact supported metric phrase, not repeated header text."""
+
+    groups = _METRIC_HEADER_TOKEN_GROUPS.get(candidate.metric, ())
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", window))
+    matching_groups = [
+        group for group in groups if all(token in compact for token in group)
+    ]
+    return bool(
+        matching_groups
+        and all(
+            compact.count(token) == 1
+            for group in matching_groups
+            for token in group
+        )
+    )
+
+
 def _candidate_metric_max_header_spans(
     lines: tuple[str, ...],
     candidate: QuantitativeRuleCandidate,
 ) -> tuple[tuple[int, int], ...]:
-    """Return exact metric+maximum headers without assuming a unique quote."""
+    """Return minimal source-wide metric+maximum HWP header slices.
 
-    if candidate.scoring_method != "CASE_TABLE" or not candidate.cases:
+    This fallback deliberately does not trust the model's criterion quote.  A
+    production extraction can anchor a summary subtotal while its CASE_TABLE
+    rows belong to a later detailed header.  Only one-to-four-line source
+    slices with the supported metric words and exactly one ``N점`` token equal
+    to the candidate maximum are eligible.  The owning rows and structural
+    boundaries are checked separately before a slice can be rebound.
+    """
+
+    if (
+        candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+        or candidate.metric not in _METRIC_HEADER_TOKEN_GROUPS
+        or [case.row_order for case in candidate.cases]
+        != list(range(1, len(candidate.cases) + 1))
+    ):
         return ()
+    expected = _decimal(candidate.max_points)
+    if expected is None:
+        return ()
+
     matches: list[tuple[int, int]] = []
-    for anchor_span in _anchor_line_spans(lines, candidate.evidence.quote):
-        window = _minimal_anchor_window(
-            lines,
-            anchor_span=anchor_span,
-            maximum_lines=_MAX_TABLE_CELL_WINDOW_LINES,
-            allow_before_anchor=False,
-            predicate=lambda value: bool(
-                _criterion_window_matches(candidate, value)
-                and _metric_header_matches(candidate, value)
-            ),
+    for start in range(len(lines)):
+        for end in range(
+            start + 1,
+            min(len(lines), start + _MAX_TABLE_CELL_WINDOW_LINES) + 1,
+        ):
+            window_lines = lines[start:end]
+            if any(not line for line in window_lines) or any(
+                _HWP_SECTION_LINE_RE.fullmatch(line) for line in window_lines
+            ):
+                break
+            window = "\n".join(window_lines)
+            if len(window) > _MAX_TABLE_CELL_WINDOW_CHARS:
+                break
+            normalized_window = unicodedata.normalize("NFKC", window)
+            point_tokens: list[Decimal] = []
+            point_matches = list(
+                re.finditer(
+                rf"(?P<num>{_NUM_PATTERN})\s*점",
+                    normalized_window,
+                )
+            )
+            for match in point_matches:
+                try:
+                    point_tokens.append(
+                        Decimal(match.group("num").replace(",", ""))
+                    )
+                except InvalidOperation:
+                    point_tokens = []
+                    break
+            metric_before_points = bool(
+                len(point_matches) == 1
+                and any(
+                    all(
+                        0 <= normalized_window.find(token) < point_matches[0].start()
+                        for token in group
+                    )
+                    for group in _METRIC_HEADER_TOKEN_GROUPS.get(
+                        candidate.metric, ()
+                    )
+                )
+            )
+            if (
+                point_tokens == [expected]
+                and metric_before_points
+                and _metric_header_is_unique(candidate, window)
+            ):
+                matches.append((start, end))
+
+    # A split header can satisfy the predicate together with an unnecessary
+    # adjacent line.  Retain only the exact minimal source slice.
+    minimal = [
+        span
+        for span in matches
+        if not any(
+            other[0] >= span[0]
+            and other[1] <= span[1]
+            and other != span
+            for other in matches
         )
-        if window is None or _anchor_occurrence_count(
-            candidate.evidence.quote,
-            window,
-        ) != 1:
-            continue
-        span = (anchor_span[0], anchor_span[0] + len(window.splitlines()))
-        if span[1] <= len(lines):
-            matches.append(span)
-    return tuple(dict.fromkeys(matches))
+    ]
+    return tuple(dict.fromkeys(minimal))
 
 
 def _bounded_header_candidate_region(
@@ -954,6 +1034,220 @@ def _header_candidate_has_ordered_cases(
             for left, right in zip(spans, spans[1:], strict=False)
         )
     )
+
+
+def _rebind_unique_sourcewide_case_table_headers(
+    payload: ExtractionPayload,
+    *,
+    source: str,
+    lines: tuple[str, ...],
+    hwp_section_starts: tuple[int, ...],
+) -> ExtractionPayload:
+    """Rebind one exact detailed header when a model anchored a subtotal.
+
+    This is intentionally a narrow pre-pass for the three deterministic
+    company metrics currently supported by production scoring.  Candidate
+    numbers, metric, rows, and row values are never changed.  Zero or multiple
+    structurally valid source headers leave the payload untouched so normal
+    validation fails closed.
+    """
+
+    tables = payload.quantitative_tables
+    header_candidates = [
+        [
+            _candidate_metric_max_header_spans(lines, candidate)
+            for candidate in table.criteria
+        ]
+        for table in tables
+    ]
+    all_header_spans = tuple(
+        dict.fromkeys(
+            span
+            for candidates in header_candidates
+            for spans in candidates
+            for span in spans
+        )
+    )
+    table_fences = [
+        _all_anchor_line_spans(
+            lines,
+            (
+                evidence.quote
+                for evidence in (table.total_evidence, table.minimum_evidence)
+                if evidence is not None
+            ),
+        )
+        for table in tables
+    ]
+    criterion_evidence_spans = [
+        [
+            _all_anchor_line_spans(lines, (candidate.evidence.quote,))
+            for candidate in table.criteria
+        ]
+        for table in tables
+    ]
+    candidate_non_criterion_spans = [
+        [
+            _all_anchor_line_spans(
+                lines,
+                (
+                    candidate.criterion_literal,
+                    *(case.evidence.quote for case in candidate.cases),
+                    *(case.literal for case in candidate.cases),
+                    *(
+                        condition.evidence.quote
+                        for condition in candidate.recognition_conditions
+                    ),
+                    *(
+                        condition.literal
+                        for condition in candidate.recognition_conditions
+                    ),
+                ),
+            )
+            for candidate in table.criteria
+        ]
+        for table in tables
+    ]
+    candidate_row_spans = [
+        [
+            _all_anchor_line_spans(
+                lines,
+                (
+                    *(case.evidence.quote for case in candidate.cases),
+                    *(case.literal for case in candidate.cases),
+                    *(
+                        condition.evidence.quote
+                        for condition in candidate.recognition_conditions
+                    ),
+                    *(
+                        condition.literal
+                        for condition in candidate.recognition_conditions
+                    ),
+                ),
+            )
+            for candidate in table.criteria
+        ]
+        for table in tables
+    ]
+
+    selected: dict[tuple[int, int], tuple[int, int]] = {}
+    for table_index, table in enumerate(tables):
+        for candidate_index, candidate in enumerate(table.criteria):
+            if (
+                _literal_is_anchored(
+                    candidate.criterion_literal,
+                    candidate.evidence,
+                    source,
+                )
+                and _literal_contains_number(
+                    candidate.max_points,
+                    candidate.criterion_literal,
+                )
+            ):
+                continue
+
+            foreign_spans: list[tuple[int, int]] = [
+                span for spans in table_fences for span in spans
+            ]
+            for other_table_index, other_table in enumerate(tables):
+                for other_candidate_index, other_candidate in enumerate(
+                    other_table.criteria
+                ):
+                    if (
+                        other_table_index == table_index
+                        and other_candidate_index == candidate_index
+                    ):
+                        continue
+                    other_non_criterion = candidate_non_criterion_spans[
+                        other_table_index
+                    ][other_candidate_index]
+                    foreign_spans.extend(other_non_criterion)
+                    shared_evidence = bool(
+                        other_table_index == table_index
+                        and _normalise_anchor_text(other_candidate.evidence.quote)
+                        == _normalise_anchor_text(candidate.evidence.quote)
+                    )
+                    foreign_spans.extend(
+                        span
+                        for span in criterion_evidence_spans[other_table_index][
+                            other_candidate_index
+                        ]
+                        if not shared_evidence
+                        or any(
+                            _spans_overlap(span, foreign_span)
+                            for foreign_span in other_non_criterion
+                        )
+                    )
+
+            foreign = tuple(dict.fromkeys(foreign_spans))
+            blocked = tuple(
+                dict.fromkeys(
+                    (
+                        *foreign,
+                        *candidate_row_spans[table_index][candidate_index],
+                    )
+                )
+            )
+            valid_headers: list[tuple[int, int]] = []
+            for header_span in header_candidates[table_index][candidate_index]:
+                if any(
+                    _spans_overlap(header_span, foreign_span)
+                    for foreign_span in blocked
+                ):
+                    continue
+                region = _bounded_header_candidate_region(
+                    lines,
+                    header_span=header_span,
+                    boundary_spans=(*all_header_spans, *foreign),
+                    table_fences=table_fences[table_index],
+                    hwp_section_starts=hwp_section_starts,
+                )
+                if region is not None and _header_candidate_has_ordered_cases(
+                    lines,
+                    candidate=candidate,
+                    criterion_region=region,
+                ):
+                    valid_headers.append(header_span)
+            unique_headers = tuple(dict.fromkeys(valid_headers))
+            if len(unique_headers) == 1:
+                selected[(table_index, candidate_index)] = unique_headers[0]
+
+    # One source slice may never become the header of two criteria.
+    ambiguous_owners = {
+        owner
+        for owner, span in selected.items()
+        if any(
+            owner != other_owner and _spans_overlap(span, other_span)
+            for other_owner, other_span in selected.items()
+        )
+    }
+    if not selected or len(ambiguous_owners) == len(selected):
+        return payload
+
+    repaired_tables: list[QuantitativeTableCandidate] = []
+    for table_index, table in enumerate(tables):
+        repaired_candidates: list[QuantitativeRuleCandidate] = []
+        for candidate_index, candidate in enumerate(table.criteria):
+            owner = (table_index, candidate_index)
+            span = selected.get(owner)
+            if span is None or owner in ambiguous_owners:
+                repaired_candidates.append(candidate)
+                continue
+            source_slice = "\n".join(lines[span[0] : span[1]])
+            repaired_candidates.append(
+                candidate.model_copy(
+                    update={
+                        "criterion_literal": source_slice,
+                        "evidence": candidate.evidence.model_copy(
+                            update={"quote": source_slice}
+                        ),
+                    }
+                )
+            )
+        repaired_tables.append(
+            table.model_copy(update={"criteria": repaired_candidates})
+        )
+    return payload.model_copy(update={"quantitative_tables": repaired_tables})
 
 
 def _unique_percent_score_line_span(
@@ -1271,6 +1565,12 @@ def _rebind_split_table_cell_literals(
         index
         for index, line in enumerate(lines)
         if _HWP_SECTION_LINE_RE.fullmatch(line)
+    )
+    payload = _rebind_unique_sourcewide_case_table_headers(
+        payload,
+        source=source,
+        lines=lines,
+        hwp_section_starts=hwp_section_starts,
     )
 
     table_fences: list[tuple[tuple[int, int], ...]] = []

@@ -3479,6 +3479,176 @@ def test_busan_hwp_duplicate_summary_headers_bind_only_detailed_criteria() -> No
     assert [len(item.cases) for item in profile.available_candidates] == [3, 2, 4]
 
 
+def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount, count, credit = table["criteria"]
+
+    # Production diagnostics showed three different partial model shapes:
+    # amount evidence had only the 6-point cell, count evidence had only the
+    # metric words, and the credit literal omitted its 10-point maximum.
+    amount.update(
+        {
+            "criterion_literal": "용역수행 실적(금액, 6점)",
+            "evidence": anchor("6점"),
+        }
+    )
+    count.update(
+        {
+            "criterion_literal": "용역수행 실적(건수, 4점)",
+            "evidence": anchor("용역수행 실적(건수)"),
+            "cases": [
+                split_case(
+                    "A. 5건 이상",
+                    operator="GTE",
+                    comparison_value=5,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                ),
+                split_case(
+                    "B. 4건",
+                    operator="EQ",
+                    comparison_value=4,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3.7,
+                    row_order=2,
+                ),
+                split_case(
+                    "C. 3건",
+                    operator="EQ",
+                    comparison_value=3,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3.4,
+                    row_order=3,
+                ),
+                split_case(
+                    "D. 2건",
+                    operator="EQ",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3.1,
+                    row_order=4,
+                ),
+                split_case(
+                    "E. 1건",
+                    operator="EQ",
+                    comparison_value=1,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=2.8,
+                    row_order=5,
+                ),
+            ],
+        }
+    )
+    credit.update(
+        {
+            "criterion_literal": "제안업체 경영상태",
+            "evidence": anchor("제안업체 경영상태 요약 (10점)"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)",
+        "1) 용역수행 실적(금액)\n(6점)",
+    ).replace(
+        "B. 4건\n3.7",
+        "B. 4건\n3.7\nC. 3건\n3.4\nD. 2건\n3.1\nE. 1건\n2.8",
+    ).replace(
+        "2) 용역수행 실적(건수, 4점)",
+        "2) 용역수행 실적(건수)\n4점",
+    ).replace(
+        "❍ 제안업체 경영상태 (10점)",
+        "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert [item.criterion_literal for item in profile.available_candidates] == [
+        "1) 용역수행 실적(금액)\n(6점)",
+        "2) 용역수행 실적(건수)\n4점",
+        "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
+    ]
+    assert [item.max_points for item in profile.available_candidates] == [6, 4, 10]
+    assert [item.metric for item in profile.available_candidates] == [
+        "PERFORMANCE_AMOUNT",
+        "PERFORMANCE_COUNT",
+        "CREDIT_RATING",
+    ]
+    assert [len(item.cases) for item in profile.available_candidates] == [3, 5, 4]
+
+
+@pytest.mark.parametrize(
+    ("replacement", "mutate_table"),
+    [
+        ("1) 용역수행 실적(건수, 6점)", None),
+        ("1) 용역수행 실적(금액, 7점)", None),
+        ("1) 용역수행 실적(금액, 6점 / 총 20점)", None),
+        (
+            "1) 용역수행 실적(금액, 6점)",
+            lambda table: table["criteria"][0]["cases"][1].update(
+                {"row_order": 3}
+            ),
+        ),
+    ],
+    ids=("metric", "maximum", "multiple-points", "row-order"),
+)
+def test_busan_hwp_sourcewide_header_mismatch_fails_closed(
+    replacement: str,
+    mutate_table,
+) -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    if mutate_table is not None:
+        mutate_table(table)
+    source = source.replace("1) 용역수행 실적(금액, 6점)", replacement)
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+def test_busan_hwp_sourcewide_header_cannot_borrow_rows_across_section() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)\nA. 2억 원 이상",
+        "1) 용역수행 실적(금액, 6점)\n[HWP SECTION 1]\nA. 2억 원 이상",
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
 def test_busan_hwp_two_complete_detailed_headers_remain_ambiguous() -> None:
     table, source = busan_hwp_duplicate_summary_fixture(
         duplicate_amount_detail=True
