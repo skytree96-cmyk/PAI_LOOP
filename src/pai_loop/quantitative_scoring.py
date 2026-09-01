@@ -67,7 +67,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.6.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.6.1"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -1319,6 +1319,13 @@ _SOURCE_UNIT_RE = re.compile(
     r"퍼센트|%|건|회|개|명|인|대|년|등급|신용등급|여부|유무|KRW)",
     re.IGNORECASE,
 )
+_SOURCE_AMOUNT_CASE_BOUND_RE = re.compile(
+    r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|"
+    r"만\s*원|천\s*원|원)\s*"
+    r"(?P<op>이상|초과|이하|미만)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_unit(value: str | None) -> str:
@@ -1342,9 +1349,67 @@ def _metric_scale(candidate: ImmutableQuantitativeRuleCandidate) -> Decimal | No
     return spec["unit_scales"][_normalize_unit(candidate.unit)]
 
 
+def _amount_case_units_are_value_equivalent(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    """Prove source currency cells equal the candidate's normalized values."""
+
+    if (
+        candidate.metric != "PERFORMANCE_AMOUNT"
+        or candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+    ):
+        return False
+    spec = _metric_spec(candidate)
+    if spec is None:
+        return False
+    candidate_scale = spec["unit_scales"].get(
+        _normalize_unit(candidate.unit)
+    )
+    if candidate_scale is None:
+        return False
+    operator_map = {
+        "이상": "GTE",
+        "초과": "GT",
+        "이하": "LTE",
+        "미만": "LT",
+    }
+    for case in candidate.cases:
+        comparison = (
+            None
+            if case.comparison_value is None
+            else Decimal(str(case.comparison_value))
+        )
+        matches = list(_SOURCE_AMOUNT_CASE_BOUND_RE.finditer(case.literal))
+        if (
+            comparison is None
+            or not comparison.is_finite()
+            or len(matches) != 1
+            or operator_map[matches[0].group("op")] != case.operator
+        ):
+            return False
+        match = matches[0]
+        try:
+            source_number = Decimal(match.group("num").replace(",", ""))
+        except InvalidOperation:
+            return False
+        source_scale = spec["unit_scales"].get(
+            _normalize_unit(match.group("unit"))
+        )
+        if (
+            source_scale is None
+            or source_number * source_scale
+            != comparison * candidate_scale
+        ):
+            return False
+    return True
+
+
 def _candidate_unit_is_source_bound(
     candidate: ImmutableQuantitativeRuleCandidate,
 ) -> bool:
+    if _amount_case_units_are_value_equivalent(candidate):
+        return True
     literals = [candidate.criterion_literal, candidate.evidence.quote]
     literals.extend(item.literal for item in candidate.brackets)
     literals.extend(item.evidence.quote for item in candidate.brackets)
@@ -1407,6 +1472,12 @@ def _candidate_bound_unit_scales_are_consistent(
     if spec is None:
         return False
     if spec.get("value_kind", "NUMERIC") != "NUMERIC":
+        return True
+    if (
+        candidate.metric == "PERFORMANCE_AMOUNT"
+        and candidate.scoring_method == "CASE_TABLE"
+        and _amount_case_units_are_value_equivalent(candidate)
+    ):
         return True
     unit_scales = spec["unit_scales"]
     expected = unit_scales.get(_normalize_unit(candidate.unit))
