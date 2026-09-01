@@ -37,7 +37,7 @@ from .notice_freshness import (
     analysis_basis_is_current,
     analysis_run_versions_are_current,
 )
-from .quantitative_scoring import estimate_for_notice
+from .quantitative_scoring import QUANTITATIVE_ENGINE_VERSION, estimate_for_notice
 from .pps_enrichment import PPS_METADATA_KIND, public_analysis_reason
 
 
@@ -122,10 +122,12 @@ def _latest_analysis_snapshot(run: AnalysisRun | None) -> dict[str, Any] | None:
         "basis_versions": basis_versions,
         "pipeline_version": basis_versions.get("pipeline"),
         "policy_version": basis_versions.get("requirement_policy"),
+        "quantitative_engine_version": basis_versions.get("quantitative_engine"),
         "version_current": analysis_run_versions_are_current(
             run,
             pipeline_version=PIPELINE_VERSION,
             policy_version=POLICY_VERSION,
+            quantitative_engine_version=QUANTITATIVE_ENGINE_VERSION,
         ),
         "output_summary": run.output_summary,
         "scores": [

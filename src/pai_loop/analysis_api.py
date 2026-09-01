@@ -39,6 +39,7 @@ from .notice_freshness import (
     authoritative_pps_cancelled_notice_keys,
     latest_current_analysis_run,
 )
+from .quantitative_scoring import QUANTITATIVE_ENGINE_VERSION
 from .pps_enrichment import (
     ATTACHMENT_TIMEOUT_GUARD_SECONDS,
     DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS,
@@ -970,6 +971,7 @@ def _eligible_retry_notice_keys(
                 notice,
                 pipeline_version=PIPELINE_VERSION,
                 policy_version=POLICY_VERSION,
+                quantitative_engine_version=QUANTITATIVE_ENGINE_VERSION,
             )
         )
     }
@@ -1503,6 +1505,7 @@ def _select_backfill_notice_keys(
                 notice,
                 pipeline_version=PIPELINE_VERSION,
                 policy_version=POLICY_VERSION,
+                quantitative_engine_version=QUANTITATIVE_ENGINE_VERSION,
             )
         )
     }
