@@ -836,6 +836,7 @@ def test_quantitative_diagnostics_requires_same_origin_pin_and_disables_cache(
             "issues": [],
             "review_candidate_issues": [],
             "activation_reasons": [],
+            "available_candidate_shapes": [],
             "review_candidate_shapes": [],
         }
         assert "2468" not in response.text
@@ -940,6 +941,8 @@ def test_quantitative_diagnostics_aggregates_and_redacts_untrusted_values(
         "SOURCE_VALIDATION_ISSUES_PRESENT",
         "UNKNOWN_VALIDATION_ISSUE",
     ]
+    assert payload["available_candidate_shapes"] == []
+    assert payload["review_candidate_shapes"] == []
     assert sensitive not in result.model_dump_json()
     assert "A" * 64 not in result.model_dump_json()
     assert "B" * 64 not in result.model_dump_json()
@@ -1097,6 +1100,7 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
 
     payload = _quantitative_diagnostics(notice).model_dump(mode="json")
 
+    assert payload["available_candidate_shapes"] == []
     assert payload["review_candidate_shapes"] == [
         {
             "source_ordinal": 1,
@@ -1121,6 +1125,7 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
             "threshold_present": False,
             "formula_present": False,
             "recognition_condition_count": 0,
+            "recognition_conditions": [],
             "case_count": 1,
             "cases": [
                 {
@@ -1143,6 +1148,186 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
     assert "TABLE-PRIVATE-ID" not in encoded
     assert "CRITERION-PRIVATE-ID" not in encoded
     assert sensitive_marker not in encoded
+
+
+def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
+    monkeypatch,
+) -> None:
+    digest = "e" * 64
+    document_digest = "f" * 64
+    attachment_id = "private-current-attachment"
+    sensitive_marker = "AVAILABLE_PRIVATE_SOURCE_SENTINEL"
+    stale_marker = "STALE_PRIVATE_SOURCE_SENTINEL"
+
+    def extraction_payload(marker: str) -> dict[str, object]:
+        anchor = {
+            "attachment_id": attachment_id,
+            "page": 33,
+            "section": marker,
+            "confidence": 0.99,
+        }
+        conditions = [
+            {
+                "literal": "4점",
+                "evidence": {
+                    **anchor,
+                    "quote": f"실적 건수 기준 4점 {marker}",
+                },
+            },
+            *[
+                {
+                    "literal": f"후속조건 {index} 5점 {marker}",
+                    "evidence": {
+                        **anchor,
+                        "quote": f"후속조건 {index} 5점 {marker}",
+                    },
+                }
+                for index in range(1, 13)
+            ],
+        ]
+        return {
+            "document_type": "RFP",
+            "requirements": [],
+            "quantitative_tables": [
+                {
+                    "table_id": "TABLE-AVAILABLE-PRIVATE",
+                    "label": marker,
+                    "criteria": [
+                        {
+                            "criterion_id": "CRITERION-AVAILABLE-PRIVATE",
+                            "label": marker,
+                            "criterion_literal": f"실적 건수 평가 6점 {marker}",
+                            "max_points": 6,
+                            "scoring_method": "CASE_TABLE",
+                            "metric": "PERFORMANCE_COUNT",
+                            "unit": "건",
+                            "brackets": [],
+                            "threshold": None,
+                            "formula_literal": None,
+                            "cases": [],
+                            "recognition_conditions": conditions,
+                            "required_evidence": [],
+                            "evidence": {
+                                **anchor,
+                                "quote": f"실적 건수 평가 6점 {marker}",
+                            },
+                            "ambiguity_reason": None,
+                        }
+                    ],
+                    "total_points": 6,
+                    "total_evidence": {
+                        **anchor,
+                        "quote": f"정량평가 6점 {marker}",
+                    },
+                    "minimum_score": None,
+                    "minimum_evidence": None,
+                    "ambiguity_reason": None,
+                }
+            ],
+            "quantitative_table_not_applicable": None,
+            "missing_or_unreadable": [],
+            "summary": marker,
+        }
+
+    current_version = SimpleNamespace(
+        version_no=2,
+        file_sha256=document_digest,
+        source_payload={
+            "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+            "source_kind": "PPS_PUBLIC_ATTACHMENT",
+            "status": "ACCEPTED",
+            "attachment_id": attachment_id,
+            "current_manifest_sha256": digest,
+            "result": extraction_payload(sensitive_marker),
+        },
+    )
+    stale_version = SimpleNamespace(
+        version_no=1,
+        file_sha256="1" * 64,
+        source_payload={
+            "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+            "source_kind": "PPS_PUBLIC_ATTACHMENT",
+            "status": "ACCEPTED",
+            "attachment_id": attachment_id,
+            "current_manifest_sha256": "2" * 64,
+            "result": extraction_payload(stale_marker),
+        },
+    )
+    profile = SimpleNamespace(
+        manifest_sha256=digest,
+        status="AVAILABLE",
+        expected_attachment_ids=(attachment_id,),
+        processed_attachment_ids=(attachment_id,),
+        document_bindings=(SimpleNamespace(attachment_id=attachment_id),),
+        tables=(SimpleNamespace(status="AVAILABLE"),),
+        available_candidates=(
+            SimpleNamespace(
+                source_attachment_id=attachment_id,
+                table_id="TABLE-AVAILABLE-PRIVATE",
+                criterion_id="CRITERION-AVAILABLE-PRIVATE",
+            ),
+        ),
+        review_candidates=(),
+        issues=(),
+    )
+    notice = SimpleNamespace(
+        notice_key="SYN-QUANT-AVAILABLE-SHAPE",
+        versions=(current_version, stale_version),
+    )
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring._current_dynamic_quantitative_profile",
+        lambda _notice: profile,
+    )
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring._profile_activation_reasons",
+        lambda _profile: [],
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._current_manifest_attempts",
+        lambda _versions: ([], 0, {attachment_id: current_version}),
+    )
+
+    payload = _quantitative_diagnostics(notice).model_dump(mode="json")
+
+    assert payload["review_candidate_shapes"] == []
+    assert len(payload["available_candidate_shapes"]) == 1
+    shape = payload["available_candidate_shapes"][0]
+    assert shape["status"] == "AVAILABLE"
+    assert shape["issue_codes"] == []
+    assert shape["source_ordinal"] == 1
+    assert shape["document_type"] == "RFP"
+    assert shape["metric"] == "PERFORMANCE_COUNT"
+    assert shape["recognition_condition_count"] == 13
+    assert len(shape["recognition_conditions"]) == 12
+    assert shape["recognition_conditions"][0] == {
+        "literal_character_count": 2,
+        "evidence_character_count": len(
+            f"실적 건수 기준 4점 {sensitive_marker}"
+        ),
+        "literal_point_values": [4.0],
+        "evidence_point_values": [4.0],
+        "literal_is_point_only": True,
+        "evidence_is_point_only": False,
+        "literal_matches_evidence": True,
+        "literal_has_metric_tokens": False,
+        "evidence_has_metric_tokens": True,
+    }
+    encoded = _quantitative_diagnostics(notice).model_dump_json()
+    assert attachment_id not in encoded
+    assert "TABLE-AVAILABLE-PRIVATE" not in encoded
+    assert "CRITERION-AVAILABLE-PRIVATE" not in encoded
+    assert sensitive_marker not in encoded
+    assert "실적 건수 기준" not in encoded
+    assert "후속조건" not in encoded
+
+    # A persisted attempt bound to another manifest cannot supply a shape.
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._current_manifest_attempts",
+        lambda _versions: ([], 0, {attachment_id: stale_version}),
+    )
+    stale_payload = _quantitative_diagnostics(notice).model_dump(mode="json")
+    assert stale_payload["available_candidate_shapes"] == []
+    assert stale_marker not in _quantitative_diagnostics(notice).model_dump_json()
 
 
 def test_quantitative_diagnostic_metric_token_check_marks_unsupported_metrics() -> None:

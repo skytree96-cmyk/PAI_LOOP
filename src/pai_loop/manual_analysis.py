@@ -95,8 +95,24 @@ class QuantitativeDiagnosticCaseShape(BaseModel):
     literal_matches_evidence: bool
 
 
+class QuantitativeDiagnosticRecognitionConditionShape(BaseModel):
+    """Non-text shape of one criterion recognition condition."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    literal_character_count: int = Field(ge=0, le=1000)
+    evidence_character_count: int = Field(ge=0, le=500)
+    literal_point_values: list[float] = Field(max_length=8)
+    evidence_point_values: list[float] = Field(max_length=8)
+    literal_is_point_only: bool
+    evidence_is_point_only: bool
+    literal_matches_evidence: bool
+    literal_has_metric_tokens: bool | None
+    evidence_has_metric_tokens: bool | None
+
+
 class QuantitativeDiagnosticCandidateShape(BaseModel):
-    """Non-text REVIEW candidate metadata without IDs, digests, or raw values."""
+    """Non-text candidate metadata without IDs, digests, or raw values."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -104,7 +120,7 @@ class QuantitativeDiagnosticCandidateShape(BaseModel):
     table_ordinal: int = Field(ge=1)
     criterion_ordinal: int = Field(ge=1)
     document_type: Literal["NOTICE", "RFP", "SCOPE", "FORM", "OTHER"]
-    status: Literal["REVIEW", "INCOMPLETE"]
+    status: Literal["AVAILABLE", "REVIEW", "INCOMPLETE"]
     issue_codes: list[str] = Field(max_length=30)
     criterion_character_count: int = Field(ge=0, le=2000)
     evidence_character_count: int = Field(ge=0, le=500)
@@ -136,12 +152,15 @@ class QuantitativeDiagnosticCandidateShape(BaseModel):
     threshold_present: bool
     formula_present: bool
     recognition_condition_count: int = Field(ge=0, le=20)
+    recognition_conditions: list[
+        QuantitativeDiagnosticRecognitionConditionShape
+    ] = Field(max_length=12)
     case_count: int = Field(ge=0, le=100)
     cases: list[QuantitativeDiagnosticCaseShape] = Field(max_length=12)
 
 
 class ManualQuantitativeDiagnosticsResponse(BaseModel):
-    """Redacted state plus bounded public-source REVIEW candidate metadata."""
+    """Redacted state plus bounded public-source candidate metadata."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -158,7 +177,12 @@ class ManualQuantitativeDiagnosticsResponse(BaseModel):
     issues: list[QuantitativeDiagnosticIssue]
     review_candidate_issues: list[QuantitativeDiagnosticIssue]
     activation_reasons: list[str]
-    review_candidate_shapes: list[QuantitativeDiagnosticCandidateShape]
+    available_candidate_shapes: list[QuantitativeDiagnosticCandidateShape] = Field(
+        max_length=12
+    )
+    review_candidate_shapes: list[QuantitativeDiagnosticCandidateShape] = Field(
+        max_length=12
+    )
 
 
 router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
@@ -177,8 +201,9 @@ _PIN_FAILURES_GLOBAL = 20
 _SAFE_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
 _SHA256_SHAPE = re.compile(r"^[A-Fa-f0-9]{64}$")
 _MAX_DIAGNOSTIC_CODES = 100
-_MAX_DIAGNOSTIC_REVIEW_CANDIDATES = 12
+_MAX_DIAGNOSTIC_CANDIDATES = 12
 _MAX_DIAGNOSTIC_CASES = 12
+_MAX_DIAGNOSTIC_RECOGNITION_CONDITIONS = 12
 _DIAGNOSTIC_POINT_VALUE = re.compile(
     r"(?<![\d.])(\d{1,3}(?:\.\d{1,2})?)\s*점(?!\s*[\d.])"
 )
@@ -513,6 +538,12 @@ def _diagnostic_point_values(value: object) -> list[float]:
     return values
 
 
+def _diagnostic_is_point_only(value: object) -> bool:
+    """Return whether a source fragment consists only of one safe point token."""
+
+    return _DIAGNOSTIC_POINT_VALUE.fullmatch(str(value or "").strip()) is not None
+
+
 def _diagnostic_has_metric_tokens(metric: str, value: object) -> bool | None:
     compact = re.sub(r"\s+", "", str(value or ""))
     groups = _DIAGNOSTIC_METRIC_TOKENS.get(metric, ())
@@ -529,11 +560,13 @@ def _safe_diagnostic_score(value: object) -> tuple[float | None, bool]:
     return (score, True) if 0 <= score <= 1000 else (None, False)
 
 
-def _quantitative_review_candidate_shapes(
+def _quantitative_candidate_shapes(
     notice: Notice,
     profile: object,
+    *,
+    candidate_status: Literal["AVAILABLE", "REVIEW"],
 ) -> list[QuantitativeDiagnosticCandidateShape]:
-    """Project only current-manifest REVIEW candidates from persisted extraction."""
+    """Project current-manifest candidates from persisted raw extraction."""
 
     from .integrations.openai_extraction import (
         ExtractionPayload,
@@ -546,15 +579,20 @@ def _quantitative_review_candidate_shapes(
     )
     if not _SHA256_SHAPE.fullmatch(manifest_sha256):
         return []
-    review_by_key = {
+    source_candidates = (
+        getattr(profile, "available_candidates", ())
+        if candidate_status == "AVAILABLE"
+        else getattr(profile, "review_candidates", ())
+    )
+    candidates_by_key = {
         (
             str(item.source_attachment_id),
             str(item.table_id),
             str(item.criterion_id),
         ): item
-        for item in getattr(profile, "review_candidates", ())
+        for item in source_candidates
     }
-    if not review_by_key:
+    if not candidates_by_key:
         return []
     source_ordinals = {
         attachment_id: index
@@ -590,8 +628,8 @@ def _quantitative_review_candidate_shapes(
         for table_ordinal, table in enumerate(extraction.quantitative_tables, start=1):
             for criterion_ordinal, candidate in enumerate(table.criteria, start=1):
                 key = (attachment_id, table.table_id, candidate.criterion_id)
-                review = review_by_key.get(key)
-                if review is None or key in seen:
+                selected = candidates_by_key.get(key)
+                if selected is None or key in seen:
                     continue
                 seen.add(key)
                 cases: list[QuantitativeDiagnosticCaseShape] = []
@@ -625,19 +663,58 @@ def _quantitative_review_candidate_shapes(
                 max_points, max_points_safe = _safe_diagnostic_score(
                     candidate.max_points
                 )
+                recognition_conditions = [
+                    QuantitativeDiagnosticRecognitionConditionShape(
+                        literal_character_count=len(item.literal),
+                        evidence_character_count=len(item.evidence.quote),
+                        literal_point_values=_diagnostic_point_values(item.literal),
+                        evidence_point_values=_diagnostic_point_values(
+                            item.evidence.quote
+                        ),
+                        literal_is_point_only=_diagnostic_is_point_only(
+                            item.literal
+                        ),
+                        evidence_is_point_only=_diagnostic_is_point_only(
+                            item.evidence.quote
+                        ),
+                        literal_matches_evidence=evidence_quote_matches_source(
+                            item.literal,
+                            item.evidence.quote,
+                        ),
+                        literal_has_metric_tokens=_diagnostic_has_metric_tokens(
+                            candidate.metric,
+                            item.literal,
+                        ),
+                        evidence_has_metric_tokens=_diagnostic_has_metric_tokens(
+                            candidate.metric,
+                            item.evidence.quote,
+                        ),
+                    )
+                    for item in candidate.recognition_conditions[
+                        :_MAX_DIAGNOSTIC_RECOGNITION_CONDITIONS
+                    ]
+                ]
                 shapes.append(
                     QuantitativeDiagnosticCandidateShape(
                         source_ordinal=source_ordinals[attachment_id],
                         table_ordinal=table_ordinal,
                         criterion_ordinal=criterion_ordinal,
                         document_type=extraction.document_type,
-                        status=review.status,
-                        issue_codes=sorted(
-                            {
-                                _safe_diagnostic_code(code)
-                                for code in review.issue_codes
-                            }
-                        )[:30],
+                        status=(
+                            "AVAILABLE"
+                            if candidate_status == "AVAILABLE"
+                            else selected.status
+                        ),
+                        issue_codes=(
+                            []
+                            if candidate_status == "AVAILABLE"
+                            else sorted(
+                                {
+                                    _safe_diagnostic_code(code)
+                                    for code in selected.issue_codes
+                                }
+                            )[:30]
+                        ),
                         criterion_character_count=len(candidate.criterion_literal),
                         evidence_character_count=len(candidate.evidence.quote),
                         criterion_literal_matches_evidence=(
@@ -671,11 +748,12 @@ def _quantitative_review_candidate_shapes(
                         recognition_condition_count=len(
                             candidate.recognition_conditions
                         ),
+                        recognition_conditions=recognition_conditions,
                         case_count=len(candidate.cases),
                         cases=cases,
                     )
                 )
-                if len(shapes) >= _MAX_DIAGNOSTIC_REVIEW_CANDIDATES:
+                if len(shapes) >= _MAX_DIAGNOSTIC_CANDIDATES:
                     return shapes
     return shapes
 
@@ -705,6 +783,7 @@ def _quantitative_diagnostics(
             issues=[],
             review_candidate_issues=[],
             activation_reasons=[],
+            available_candidate_shapes=[],
             review_candidate_shapes=[],
         )
 
@@ -756,9 +835,15 @@ def _quantitative_diagnostics(
                 for code in _profile_activation_reasons(profile)
             }
         )[:_MAX_DIAGNOSTIC_CODES],
-        review_candidate_shapes=_quantitative_review_candidate_shapes(
+        available_candidate_shapes=_quantitative_candidate_shapes(
             notice,
             profile,
+            candidate_status="AVAILABLE",
+        ),
+        review_candidate_shapes=_quantitative_candidate_shapes(
+            notice,
+            profile,
+            candidate_status="REVIEW",
         ),
     )
 
@@ -772,7 +857,7 @@ def get_manual_quantitative_diagnostics(
     request: Request,
     response: Response,
 ) -> ManualQuantitativeDiagnosticsResponse:
-    """Return PIN-only codes and bounded public-table REVIEW candidate shapes."""
+    """Return PIN-only codes and bounded public-table candidate shapes."""
 
     if not _manual_feature_enabled(request):
         raise HTTPException(status_code=404, detail="수동 분석 기능이 비활성화되어 있습니다.")
