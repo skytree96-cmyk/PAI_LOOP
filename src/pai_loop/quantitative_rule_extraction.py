@@ -31,8 +31,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.9"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.9"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.10"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.10"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -1674,6 +1674,7 @@ def _augment_sourcewide_hwp_activation_context(
     lines: tuple[str, ...],
     criterion_regions: list[tuple[int, int] | None],
     boundary_spans: Iterable[tuple[int, int]],
+    protected_structure_spans: Iterable[tuple[int, int]],
 ) -> list[QuantitativeRuleCandidate]:
     """Attach only exact table semantics needed by deterministic activation."""
 
@@ -1683,6 +1684,7 @@ def _augment_sourcewide_hwp_activation_context(
         criterion_regions=criterion_regions,
         boundary_spans=boundary_spans,
     )
+    protected_spans = tuple(protected_structure_spans)
     output: list[QuantitativeRuleCandidate] = []
     for candidate, criterion_region in zip(
         candidates,
@@ -1724,9 +1726,14 @@ def _augment_sourcewide_hwp_activation_context(
             # claim.  Keeping both shapes would make two different keys own
             # the same physical span and falsely trip the collision guard.
             # Replace exactly one condition whose provenance matches and whose
-            # unique literal/evidence footprint is wholly covered by this
-            # independently proven source cell.  Multiple matches must remain
-            # visible to the duplicate/collision guards.
+            # literal/evidence footprint is wholly covered by this independently
+            # proven source cell.  A short literal may occur in another
+            # criterion (for example, the same lookback phrase in both amount
+            # and count rows), so uniqueness is proved inside the owned full
+            # cell rather than across the entire document.  Multiple matches
+            # inside the cell, broad evidence crossing cells, and multiple
+            # model conditions must remain visible to the duplicate/collision
+            # guards.
             addition_literal_span = _unique_anchor_line_span(
                 lines, condition.literal
             )
@@ -1740,25 +1747,58 @@ def _augment_sourcewide_hwp_activation_context(
                 else None
             )
             if addition_span is not None:
+                addition_text = "\n".join(
+                    lines[addition_span[0] : addition_span[1]]
+                )
                 replacement_indexes: list[int] = []
                 for existing_index, existing in enumerate(conditions):
-                    existing_literal_span = _unique_anchor_line_span(
+                    all_existing_literal_spans = _anchor_line_spans(
                         lines, existing.literal
                     )
-                    existing_evidence_span = _unique_anchor_line_span(
+                    all_existing_evidence_spans = _anchor_line_spans(
                         lines, existing.evidence.quote
+                    )
+                    existing_literal_spans = tuple(
+                        span
+                        for span in all_existing_literal_spans
+                        if _span_inside_region(span, addition_span)
+                    )
+                    existing_evidence_spans = tuple(
+                        span
+                        for span in all_existing_evidence_spans
+                        if _span_inside_region(span, addition_span)
+                    )
+                    outside_structure_collision = any(
+                        not _span_inside_region(span, addition_span)
+                        and any(
+                            _spans_overlap(span, protected_span)
+                            for protected_span in protected_spans
+                        )
+                        for span in (
+                            *all_existing_literal_spans,
+                            *all_existing_evidence_spans,
+                        )
                     )
                     if (
                         existing.evidence.attachment_id
                         == condition.evidence.attachment_id
-                        and existing_literal_span is not None
-                        and existing_evidence_span is not None
-                        and _spans_overlap(
-                            existing_literal_span,
-                            existing_evidence_span,
+                        and len(existing_literal_spans) == 1
+                        and len(existing_evidence_spans) == 1
+                        and _anchor_occurrence_count(
+                            existing.literal,
+                            addition_text,
                         )
-                        and _span_inside_region(existing_literal_span, addition_span)
-                        and _span_inside_region(existing_evidence_span, addition_span)
+                        == 1
+                        and _anchor_occurrence_count(
+                            existing.evidence.quote,
+                            addition_text,
+                        )
+                        == 1
+                        and not outside_structure_collision
+                        and _spans_overlap(
+                            existing_literal_spans[0],
+                            existing_evidence_spans[0],
+                        )
                         and _literal_is_anchored(
                             existing.literal,
                             existing.evidence,
@@ -2983,6 +3023,7 @@ def _rebind_split_table_cell_literals(
             next_blank_or_section=next_blank_or_section,
         )
     )
+    sourcewide_header_rebound_owners = set(sourcewide_header_rebound_owners)
 
     table_fences: list[tuple[tuple[int, int], ...]] = []
     candidate_structure_spans: list[list[tuple[tuple[int, int], ...]]] = []
@@ -3183,6 +3224,38 @@ def _rebind_split_table_cell_literals(
             span for spans in table_structure_spans for span in spans
         )
     )
+    proven_repaired_structure_span_list = [
+        span
+        for candidates_for_table in sourcewide_header_candidates
+        for spans in candidates_for_table
+        for span in spans
+    ]
+    for table_index, table in enumerate(payload.quantitative_tables):
+        for candidate_index, candidate in enumerate(table.criteria):
+            criterion_region = criterion_regions[table_index][candidate_index]
+            if criterion_region is None:
+                continue
+            for case in candidate.cases:
+                case_span = _unique_case_support_span(
+                    lines,
+                    candidate=candidate,
+                    case=case,
+                    criterion_region=criterion_region,
+                )
+                if case_span is not None:
+                    proven_repaired_structure_span_list.append(case_span)
+    proven_repaired_structure_spans = tuple(
+        dict.fromkeys(proven_repaired_structure_span_list)
+    )
+    globally_protected_structure_spans = tuple(
+        dict.fromkeys(
+            (
+                *all_structure_spans,
+                *sourcewide_boundary_spans,
+                *proven_repaired_structure_spans,
+            )
+        )
+    )
     repaired_tables: list[QuantitativeTableCandidate] = []
     ambiguity_resolution_blockers: list[
         SourcewideAmbiguityResolutionBlocker | None
@@ -3350,30 +3423,76 @@ def _rebind_split_table_cell_literals(
                     )
                 )
             )
-            repaired_candidates.append(
-                _rebind_candidate_table_cell_literals(
-                    candidate,
-                    source=source,
-                    lines=lines,
-                    foreign_structure_spans=foreign_structure,
-                    foreign_shared_criterion_evidence_spans=(
-                        safe_shared_criterion_evidence_spans
-                    ),
-                    foreign_recognition_spans=foreign_recognition,
-                    criterion_region=criterion_regions[table_index][candidate_index],
-                    criterion_anchor_span=criterion_anchor_spans[table_index][
-                        candidate_index
-                    ],
-                    shared_recognition_keys=shared_candidate_keys,
-                    external_recognition_keys=external_candidate_keys,
-                )
+            repaired_candidate = _rebind_candidate_table_cell_literals(
+                candidate,
+                source=source,
+                lines=lines,
+                foreign_structure_spans=foreign_structure,
+                foreign_shared_criterion_evidence_spans=(
+                    safe_shared_criterion_evidence_spans
+                ),
+                foreign_recognition_spans=foreign_recognition,
+                criterion_region=criterion_regions[table_index][candidate_index],
+                criterion_anchor_span=criterion_anchor_spans[table_index][
+                    candidate_index
+                ],
+                shared_recognition_keys=shared_candidate_keys,
+                external_recognition_keys=external_candidate_keys,
             )
+            repaired_candidates.append(repaired_candidate)
+            repaired_header_span = _unique_anchor_line_span(
+                lines,
+                repaired_candidate.criterion_literal,
+            )
+            criterion_region = criterion_regions[table_index][candidate_index]
+            regional_metric_headers = tuple(
+                span
+                for span in sourcewide_header_candidates[table_index][
+                    candidate_index
+                ]
+                if _span_inside_region(span, criterion_region)
+            )
+            if (
+                (
+                    repaired_candidate.criterion_literal
+                    != candidate.criterion_literal
+                    or repaired_candidate.evidence.quote
+                    != candidate.evidence.quote
+                )
+                and repaired_header_span is not None
+                and regional_metric_headers == (repaired_header_span,)
+            ):
+                # A partial HWP header can be proven only after criterion
+                # regions are established.  Count that exact region-bounded
+                # repair toward the sourcewide proof only when it is also the
+                # sole supported metric+maximum header in that region.
+                # Unchanged model headers remain deliberately excluded.
+                sourcewide_header_rebound_owners.add(
+                    (table_index, candidate_index)
+                )
 
+        repaired_current_structure_spans = _all_anchor_line_spans(
+            lines,
+            (
+                value
+                for candidate in repaired_candidates
+                for value in (
+                    candidate.evidence.quote,
+                    candidate.criterion_literal,
+                    *(case.evidence.quote for case in candidate.cases),
+                    *(case.literal for case in candidate.cases),
+                )
+            ),
+        )
         repaired_candidates = _augment_sourcewide_hwp_activation_context(
             repaired_candidates,
             lines=lines,
             criterion_regions=criterion_regions[table_index],
             boundary_spans=sourcewide_boundary_spans,
+            protected_structure_spans=(
+                *globally_protected_structure_spans,
+                *repaired_current_structure_spans,
+            ),
         )
 
         ambiguous_case_claim = False
@@ -3512,7 +3631,7 @@ def _rebind_split_table_cell_literals(
             table=table,
             criteria=repaired_candidates,
             lines=lines,
-            rebound_owners=sourcewide_header_rebound_owners,
+            rebound_owners=frozenset(sourcewide_header_rebound_owners),
             criterion_anchors=criterion_anchor_spans[table_index],
             criterion_regions=criterion_regions[table_index],
             table_region=table_regions[table_index],

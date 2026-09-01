@@ -3714,6 +3714,236 @@ def test_busan_source_conditions_canonicalize_short_same_cell_evidence() -> None
         assert matching[0].evidence.quote == full_condition
 
 
+def test_busan_source_conditions_canonicalize_repeated_short_scope_in_owned_cell() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    short_condition = "최근 3년간 지자체, 공공기관 등"
+    full_condition = (
+        "최근 3년간 지자체, 공공기관 등\n"
+        "(교육, 취업, 행사) 용역 수행완료 실적 (6점)"
+    )
+    table["criteria"][0].setdefault("recognition_conditions", []).append(
+        {
+            "literal": short_condition,
+            "evidence": anchor(short_condition),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" not in issue_codes(profile)
+    amount = next(
+        candidate
+        for candidate in profile.available_candidates
+        if candidate.metric == "PERFORMANCE_AMOUNT"
+    )
+    assert short_condition not in {
+        condition.literal for condition in amount.recognition_conditions
+    }
+    matching = [
+        condition
+        for condition in amount.recognition_conditions
+        if condition.literal == full_condition
+    ]
+    assert len(matching) == 1
+    assert matching[0].evidence.quote == full_condition
+
+
+def test_busan_source_conditions_canonicalize_same_short_scope_per_exact_criterion() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    table["ambiguity_reason"] = None
+    exact_headers = (
+        "1) 용역수행 실적(금액)\n(6점)",
+        "2) 용역수행 실적(건수)\n4점",
+        "❍ 제안업체 경영상태 (10점)",
+    )
+    for candidate, header in zip(
+        table["criteria"],
+        exact_headers,
+        strict=True,
+    ):
+        candidate["criterion_literal"] = header
+        candidate["evidence"] = anchor(header)
+    short_condition = "최근 3년간 지자체, 공공기관 등"
+    full_conditions = (
+        (
+            "최근 3년간 지자체, 공공기관 등\n"
+            "(교육, 취업, 행사) 용역 수행완료 실적 (6점)"
+        ),
+        (
+            "최근 3년간 지자체, 공공기관 등\n"
+            "(교육,취업,행사)용역\n수행완료 실적 (4점)"
+        ),
+    )
+    for candidate in table["criteria"][:2]:
+        candidate.setdefault("recognition_conditions", []).append(
+            {
+                "literal": short_condition,
+                "evidence": anchor(short_condition),
+            }
+        )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    for candidate, full_condition in zip(
+        profile.available_candidates[:2],
+        full_conditions,
+        strict=True,
+    ):
+        assert short_condition not in {
+            condition.literal for condition in candidate.recognition_conditions
+        }
+        matching = [
+            condition
+            for condition in candidate.recognition_conditions
+            if condition.literal == full_condition
+        ]
+        assert len(matching) == 1
+        assert matching[0].evidence.quote == full_condition
+
+
+def test_busan_source_conditions_preserve_repeated_short_model_duplicates() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    short_condition = "최근 3년간 지자체, 공공기관 등"
+    condition = {
+        "literal": short_condition,
+        "evidence": anchor(short_condition),
+    }
+    table["criteria"][0].setdefault("recognition_conditions", []).extend(
+        [condition, json.loads(json.dumps(condition))]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "RECOGNITION_CONDITION_DUPLICATE" in issue_codes(profile)
+
+
+@pytest.mark.parametrize("structural_claim", ("foreign-header", "foreign-case"))
+def test_busan_source_conditions_never_canonicalize_structural_claims(
+    structural_claim: str,
+) -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    exact_headers = (
+        "1) 용역수행 실적(금액)\n(6점)",
+        "2) 용역수행 실적(건수)\n4점",
+        "❍ 제안업체 경영상태 (10점)",
+    )
+    for candidate, header in zip(
+        table["criteria"],
+        exact_headers,
+        strict=True,
+    ):
+        candidate["criterion_literal"] = header
+        candidate["evidence"] = anchor(header)
+    if structural_claim == "foreign-header":
+        owner = table["criteria"][0]
+        literal = exact_headers[1]
+    else:
+        for case in table["criteria"][0]["cases"]:
+            score = f"{float(case['award_value']):g}"
+            literal = f"{case['literal']}\n{score}"
+            case["literal"] = literal
+            case["evidence"] = anchor(literal)
+        owner = table["criteria"][2]
+        literal = "A. 2억 원 이상\n6"
+    owner.setdefault("recognition_conditions", []).append(
+        {
+            "literal": literal,
+            "evidence": anchor(literal),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+    assert len(profile.available_candidates) == 3
+    assert profile.review_candidates == ()
+
+
+def test_busan_source_conditions_do_not_hide_repeated_header_score_literal() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    table["ambiguity_reason"] = None
+    exact_headers = (
+        "1) 용역수행 실적(금액)\n(6점)",
+        "2) 용역수행 실적(건수)\n4점",
+        "❍ 제안업체 경영상태 (10점)",
+    )
+    for candidate, header in zip(
+        table["criteria"],
+        exact_headers,
+        strict=True,
+    ):
+        candidate["criterion_literal"] = header
+        candidate["evidence"] = anchor(header)
+    table["criteria"][1].setdefault("recognition_conditions", []).append(
+        {
+            "literal": "4점",
+            "evidence": anchor("4점"),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+    assert len(profile.available_candidates) == 3
+    assert profile.review_candidates == ()
+
+
+def test_busan_source_conditions_do_not_hide_repeated_case_row_literal() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    table["ambiguity_reason"] = None
+    exact_headers = (
+        "1) 용역수행 실적(금액)\n(6점)",
+        "2) 용역수행 실적(건수)\n4점",
+        "❍ 제안업체 경영상태 (10점)",
+    )
+    for candidate, header in zip(
+        table["criteria"],
+        exact_headers,
+        strict=True,
+    ):
+        candidate["criterion_literal"] = header
+        candidate["evidence"] = anchor(header)
+    original_row = "A. 2억 원 이상\n6"
+    structural_row = "A. 2억 원 이상 지자체, 공공기관 등\n6"
+    source = source.replace(original_row, structural_row, 1)
+    first_case = table["criteria"][0]["cases"][0]
+    first_case["literal"] = structural_row
+    first_case["evidence"] = anchor(structural_row)
+    table["criteria"][0].setdefault("recognition_conditions", []).append(
+        {
+            "literal": "지자체, 공공기관 등",
+            "evidence": anchor("지자체, 공공기관 등"),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+    assert len(profile.available_candidates) == 3
+    assert profile.review_candidates == ()
+
+
 def test_busan_source_conditions_never_replace_cross_attachment_anchor() -> None:
     table, source, _footnote_block = (
         busan_hwp_production_partial_anchor_fixture()
