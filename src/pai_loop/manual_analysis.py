@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import re
 import secrets
 import threading
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -64,6 +66,36 @@ class ManualAnalysisRequest(BaseModel):
         return self
 
 
+class QuantitativeDiagnosticIssue(BaseModel):
+    """Safe aggregate of one internal validation code for PIN operators."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,100}$")
+    disposition: Literal["REVIEW", "INCOMPLETE"]
+    count: int = Field(ge=1)
+
+
+class ManualQuantitativeDiagnosticsResponse(BaseModel):
+    """Redacted quantitative state without source text, facts, IDs, or digests."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    notice_key: str
+    profile_status: Literal[
+        "MISSING", "AVAILABLE", "REVIEW", "INCOMPLETE", "NOT_APPLICABLE"
+    ]
+    expected_attachment_count: int = Field(ge=0)
+    processed_attachment_count: int = Field(ge=0)
+    document_binding_count: int = Field(ge=0)
+    table_status_counts: dict[str, int]
+    available_candidate_count: int = Field(ge=0)
+    review_candidate_count: int = Field(ge=0)
+    issues: list[QuantitativeDiagnosticIssue]
+    review_candidate_issues: list[QuantitativeDiagnosticIssue]
+    activation_reasons: list[str]
+
+
 router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
 
 # Public clicks never receive the server API key. This separate BFF boundary
@@ -77,6 +109,9 @@ _PIN_FAILURE_LOCK = threading.Lock()
 _PIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _PIN_FAILURES_PER_CLIENT = 5
 _PIN_FAILURES_GLOBAL = 20
+_SAFE_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
+_SHA256_SHAPE = re.compile(r"^[A-Fa-f0-9]{64}$")
+_MAX_DIAGNOSTIC_CODES = 100
 
 
 def _utc(value: datetime) -> datetime:
@@ -375,6 +410,121 @@ def _already_analysed(notice: Notice, reason: PublicAnalysisReason) -> ManualAna
         analysis_attempted=reason.attempted,
         message="이미 현재 공고 버전의 분석이 완료되어 기존 결과를 그대로 사용했습니다.",
     )
+
+
+def _safe_diagnostic_code(value: object) -> str:
+    candidate = str(value or "")
+    for prefix in ("LOGICAL_TABLE_CONFLICT", "LOGICAL_CRITERION_CONFLICT"):
+        if candidate.startswith(prefix + "|"):
+            return prefix
+    return (
+        candidate
+        if _SAFE_DIAGNOSTIC_CODE.fullmatch(candidate)
+        and not _SHA256_SHAPE.fullmatch(candidate)
+        else "UNKNOWN_VALIDATION_ISSUE"
+    )
+
+
+def _quantitative_diagnostics(
+    notice: Notice,
+) -> ManualQuantitativeDiagnosticsResponse:
+    # Local import avoids the manual-analysis -> analysis-api -> quantitative
+    # module cycle during application startup. Both helpers are pure reads over
+    # the already-loaded current notice versions.
+    from .quantitative_scoring import (
+        _current_dynamic_quantitative_profile,
+        _profile_activation_reasons,
+    )
+
+    profile = _current_dynamic_quantitative_profile(notice)
+    if profile is None:
+        return ManualQuantitativeDiagnosticsResponse(
+            notice_key=notice.notice_key,
+            profile_status="MISSING",
+            expected_attachment_count=0,
+            processed_attachment_count=0,
+            document_binding_count=0,
+            table_status_counts={},
+            available_candidate_count=0,
+            review_candidate_count=0,
+            issues=[],
+            review_candidate_issues=[],
+            activation_reasons=[],
+        )
+
+    issue_counts = Counter(
+        (_safe_diagnostic_code(item.code), item.disposition)
+        for item in profile.issues
+    )
+    review_issue_counts = Counter(
+        (_safe_diagnostic_code(code), item.status)
+        for item in profile.review_candidates
+        for code in item.issue_codes
+    )
+    table_status_counts = Counter(item.status for item in profile.tables)
+    return ManualQuantitativeDiagnosticsResponse(
+        notice_key=notice.notice_key,
+        profile_status=profile.status,
+        expected_attachment_count=len(profile.expected_attachment_ids),
+        processed_attachment_count=len(profile.processed_attachment_ids),
+        document_binding_count=len(profile.document_bindings),
+        table_status_counts={
+            key: table_status_counts[key]
+            for key in sorted(table_status_counts)
+        },
+        available_candidate_count=len(profile.available_candidates),
+        review_candidate_count=len(profile.review_candidates),
+        issues=[
+            QuantitativeDiagnosticIssue(
+                code=code,
+                disposition=disposition,
+                count=count,
+            )
+            for (code, disposition), count in sorted(issue_counts.items())[
+                :_MAX_DIAGNOSTIC_CODES
+            ]
+        ],
+        review_candidate_issues=[
+            QuantitativeDiagnosticIssue(
+                code=code,
+                disposition=disposition,
+                count=count,
+            )
+            for (code, disposition), count in sorted(review_issue_counts.items())[
+                :_MAX_DIAGNOSTIC_CODES
+            ]
+        ],
+        activation_reasons=sorted(
+            {
+                _safe_diagnostic_code(code)
+                for code in _profile_activation_reasons(profile)
+            }
+        )[:_MAX_DIAGNOSTIC_CODES],
+    )
+
+
+@router.post(
+    "/notices/{notice_key}/analysis/quantitative-diagnostics",
+    response_model=ManualQuantitativeDiagnosticsResponse,
+)
+def get_manual_quantitative_diagnostics(
+    notice_key: str,
+    request: Request,
+    response: Response,
+) -> ManualQuantitativeDiagnosticsResponse:
+    """Return PIN-only validation codes without exposing source or company data."""
+
+    if not _manual_feature_enabled(request):
+        raise HTTPException(status_code=404, detail="수동 분석 기능이 비활성화되어 있습니다.")
+    if not _same_origin_request(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="홈페이지와 동일한 출처에서만 진단할 수 있습니다.",
+        )
+    _require_manual_operator(request)
+    notice = _load_notice(request, notice_key)
+    response.headers["Cache-Control"] = "no-store"
+    return _quantitative_diagnostics(notice)
 
 
 @router.post(

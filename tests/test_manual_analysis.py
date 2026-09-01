@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,7 @@ from pai_loop.integrations.openai_extraction import (
     aggregate_openai_attempts,
 )
 from pai_loop.main import create_app
+from pai_loop.manual_analysis import _quantitative_diagnostics
 from pai_loop.models import IngestionJob, PpsNoticeAuthority
 from pai_loop.pps_enrichment import PublicAnalysisReason
 
@@ -778,3 +780,163 @@ def test_production_manual_analysis_is_hidden_until_token_is_configured(
             json=EXTRACTION_ALLOWED,
         )
         assert response.status_code == 404
+
+
+def test_quantitative_diagnostics_requires_same_origin_pin_and_disables_cache(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+    app.state.settings = replace(
+        app.state.settings,
+        environment="production",
+        public_manual_analysis_token="2468",
+    )
+    production_origin = {
+        "Origin": "https://testserver",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    path = "/api/v1/notices/PPS-MANUAL-001/analysis/quantitative-diagnostics"
+    with TestClient(app, base_url="https://testserver") as client:
+        _create_open_pps_notice(client)
+
+        cross_origin = client.post(
+            path,
+            headers={"Origin": "https://attacker.invalid"},
+        )
+        assert cross_origin.status_code == 403
+        missing_pin = client.post(path, headers=production_origin)
+        assert missing_pin.status_code == 401
+        missing_notice_without_pin = client.post(
+            "/api/v1/notices/PPS-MISSING/analysis/quantitative-diagnostics",
+            headers=production_origin,
+        )
+        assert missing_notice_without_pin.status_code == 401
+
+        response = client.post(
+            path,
+            headers={
+                **production_origin,
+                "X-PAI-Manual-Token": "2468",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json() == {
+            "notice_key": "PPS-MANUAL-001",
+            "profile_status": "MISSING",
+            "expected_attachment_count": 0,
+            "processed_attachment_count": 0,
+            "document_binding_count": 0,
+            "table_status_counts": {},
+            "available_candidate_count": 0,
+            "review_candidate_count": 0,
+            "issues": [],
+            "review_candidate_issues": [],
+            "activation_reasons": [],
+        }
+        assert "2468" not in response.text
+
+
+def test_quantitative_diagnostics_aggregates_and_redacts_untrusted_values(
+    monkeypatch,
+) -> None:
+    sensitive = "SENSITIVE_SOURCE_SENTINEL"
+    profile = SimpleNamespace(
+        status="INCOMPLETE",
+        expected_attachment_ids=(sensitive, "attachment-2"),
+        processed_attachment_ids=(sensitive,),
+        document_bindings=(SimpleNamespace(attachment_id=sensitive),),
+        tables=(
+            SimpleNamespace(status="AVAILABLE", label=sensitive),
+            SimpleNamespace(status="INCOMPLETE", label=sensitive),
+        ),
+        available_candidates=(SimpleNamespace(label=sensitive),),
+        review_candidates=(
+            SimpleNamespace(
+                status="REVIEW",
+                issue_codes=("CASE_ROWS_INCOMPLETE", "<img src=x>"),
+                label=sensitive,
+            ),
+        ),
+        issues=(
+            SimpleNamespace(
+                code="VALIDATOR_VERSION_MISMATCH",
+                disposition="INCOMPLETE",
+                message=sensitive,
+            ),
+            SimpleNamespace(
+                code="VALIDATOR_VERSION_MISMATCH",
+                disposition="INCOMPLETE",
+                message=sensitive,
+            ),
+            SimpleNamespace(
+                code="<script>alert(1)</script>",
+                disposition="REVIEW",
+                message=sensitive,
+            ),
+            SimpleNamespace(
+                code="A" * 64,
+                disposition="INCOMPLETE",
+                message=sensitive,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring._current_dynamic_quantitative_profile",
+        lambda _notice: profile,
+    )
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring._profile_activation_reasons",
+        lambda _profile: [
+            "SOURCE_VALIDATION_ISSUES_PRESENT",
+            "LOGICAL_TABLE_CONFLICT|private-attachment|private-table|TOTAL_MISMATCH",
+            "LOGICAL_CRITERION_CONFLICT|private-attachment|private-table|private-row",
+            "B" * 64,
+            "<unsafe>",
+        ],
+    )
+
+    result = _quantitative_diagnostics(
+        SimpleNamespace(notice_key="SYN-QUANT-DIAGNOSTIC")
+    )
+    payload = result.model_dump(mode="json")
+
+    assert payload["profile_status"] == "INCOMPLETE"
+    assert payload["expected_attachment_count"] == 2
+    assert payload["processed_attachment_count"] == 1
+    assert payload["table_status_counts"] == {"AVAILABLE": 1, "INCOMPLETE": 1}
+    assert payload["issues"] == [
+        {
+            "code": "UNKNOWN_VALIDATION_ISSUE",
+            "disposition": "INCOMPLETE",
+            "count": 1,
+        },
+        {
+            "code": "UNKNOWN_VALIDATION_ISSUE",
+            "disposition": "REVIEW",
+            "count": 1,
+        },
+        {
+            "code": "VALIDATOR_VERSION_MISMATCH",
+            "disposition": "INCOMPLETE",
+            "count": 2,
+        },
+    ]
+    assert payload["review_candidate_issues"] == [
+        {"code": "CASE_ROWS_INCOMPLETE", "disposition": "REVIEW", "count": 1},
+        {
+            "code": "UNKNOWN_VALIDATION_ISSUE",
+            "disposition": "REVIEW",
+            "count": 1,
+        },
+    ]
+    assert payload["activation_reasons"] == [
+        "LOGICAL_CRITERION_CONFLICT",
+        "LOGICAL_TABLE_CONFLICT",
+        "SOURCE_VALIDATION_ISSUES_PRESENT",
+        "UNKNOWN_VALIDATION_ISSUE",
+    ]
+    assert sensitive not in result.model_dump_json()
+    assert "A" * 64 not in result.model_dump_json()
+    assert "B" * 64 not in result.model_dump_json()
+    assert "private-attachment" not in result.model_dump_json()
