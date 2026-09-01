@@ -82,10 +82,144 @@ SourceValidationStatus = Literal[
 ActivationStatus = Literal[
     "AUTO_ACTIVE", "PARTIAL_ACTIVE", "REVIEW_REQUIRED", "NOT_APPLICABLE"
 ]
+PublicCriterionDisplayCode = Literal[
+    "PERFORMANCE_AMOUNT",
+    "PERFORMANCE_COUNT",
+    "PERFORMANCE",
+    "PERSONNEL_COUNT",
+    "CERTIFICATION_COUNT",
+    "CREDIT_RATING",
+    "FINANCIAL_RATIO",
+    "BUSINESS_YEARS",
+    "FACILITY_EQUIPMENT_COUNT",
+    "AWARD_COUNT",
+    "LOCAL_PRESENCE",
+    "SOCIAL_RESPONSIBILITY",
+    "SAFETY_HEALTH",
+    "OTHER",
+]
+
+PUBLIC_QUANTITATIVE_CRITERIA_SCHEMA_VERSION = (
+    "public-quantitative-criteria-1.0.0"
+)
+_PUBLIC_CRITERION_DISPLAY_CODE_BY_CATEGORY: dict[
+    str, PublicCriterionDisplayCode
+] = {
+    "PERFORMANCE_AMOUNT": "PERFORMANCE_AMOUNT",
+    "PERFORMANCE_COUNT": "PERFORMANCE_COUNT",
+    "PERSONNEL_COUNT": "PERSONNEL_COUNT",
+    "CERTIFICATION_COUNT": "CERTIFICATION_COUNT",
+    "CREDIT_RATING": "CREDIT_RATING",
+    "FINANCIAL_RATIO": "FINANCIAL_RATIO",
+    "BUSINESS_YEARS": "BUSINESS_YEARS",
+    "FACILITY_EQUIPMENT_COUNT": "FACILITY_EQUIPMENT_COUNT",
+    "AWARD_COUNT": "AWARD_COUNT",
+    "LOCAL_PRESENCE": "LOCAL_PRESENCE",
+    "수행실적": "PERFORMANCE",
+    "전문인력": "PERSONNEL_COUNT",
+    "경영상태": "CREDIT_RATING",
+    "사회적책임": "SOCIAL_RESPONSIBILITY",
+    "안전보건": "SAFETY_HEALTH",
+}
+_PUBLIC_CRITERION_LABEL_BY_DISPLAY_CODE: dict[
+    PublicCriterionDisplayCode, str
+] = {
+    "PERFORMANCE_AMOUNT": "용역수행 실적(금액)",
+    "PERFORMANCE_COUNT": "용역수행 실적(건수)",
+    "PERFORMANCE": "용역수행 실적",
+    "PERSONNEL_COUNT": "전문인력 보유",
+    "CERTIFICATION_COUNT": "인증 보유",
+    "CREDIT_RATING": "제안업체 경영상태",
+    "FINANCIAL_RATIO": "재무비율",
+    "BUSINESS_YEARS": "업력",
+    "FACILITY_EQUIPMENT_COUNT": "시설·장비 보유",
+    "AWARD_COUNT": "수상 실적",
+    "LOCAL_PRESENCE": "지역 소재",
+    "SOCIAL_RESPONSIBILITY": "사회적 책임",
+    "SAFETY_HEALTH": "안전·보건",
+    "OTHER": "기타 정량 평가항목",
+}
 
 
 class QuantModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class PublicQuantitativeCriterionSnapshot(QuantModel):
+    """Public-only score row persisted without source or company bindings."""
+
+    display_code: PublicCriterionDisplayCode
+    max_points: float = Field(gt=0)
+    estimated_points: float | None = Field(ge=0)
+    lower_points: float = Field(ge=0)
+    upper_points: float = Field(ge=0)
+    status: EstimateStatus
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_coerced_or_non_finite_numbers(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        for field_name in (
+            "max_points",
+            "estimated_points",
+            "lower_points",
+            "upper_points",
+        ):
+            field_value = value.get(field_name)
+            if field_name == "estimated_points" and field_value is None:
+                continue
+            try:
+                is_finite_number = (
+                    not isinstance(field_value, bool)
+                    and isinstance(field_value, (int, float))
+                    and math.isfinite(float(field_value))
+                )
+            except (OverflowError, TypeError, ValueError):
+                is_finite_number = False
+            if not is_finite_number:
+                raise ValueError(
+                    "public criterion points must be finite JSON numbers"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def validate_points_and_status(self) -> "PublicQuantitativeCriterionSnapshot":
+        for field_value in (
+            self.max_points,
+            self.estimated_points,
+            self.lower_points,
+            self.upper_points,
+        ):
+            if field_value is not None and _canonical_public_points(field_value) != field_value:
+                raise ValueError("public criterion points must use two-decimal precision")
+        if self.lower_points > self.upper_points or self.upper_points > self.max_points:
+            raise ValueError("public criterion range must fit within max_points")
+        if self.estimated_points is not None and (
+            self.status not in {"CONFIRMED", "ESTIMATED"}
+            or self.estimated_points != self.lower_points
+            or self.estimated_points != self.upper_points
+        ):
+            raise ValueError("public exact estimate must equal both range bounds")
+        if self.status == "CONFIRMED" and (
+            self.lower_points != self.upper_points
+            or self.estimated_points != self.lower_points
+        ):
+            raise ValueError("public confirmed criterion must be exact")
+        if (
+            self.status == "ESTIMATED"
+            and self.lower_points == self.upper_points
+            and self.estimated_points != self.lower_points
+        ):
+            raise ValueError("public exact estimated criterion must retain its estimate")
+        if self.status in {"REVIEW", "UNSCORABLE"} and self.estimated_points is not None:
+            raise ValueError("public unresolved criterion cannot have an exact estimate")
+        return self
+
+
+class PublicQuantitativeCriteriaSnapshot(QuantModel):
+    schema_version: Literal["public-quantitative-criteria-1.0.0"]
+    items: list[PublicQuantitativeCriterionSnapshot] = Field(max_length=200)
 
 
 class SourceAnchor(QuantModel):
@@ -311,6 +445,25 @@ def _round_points(value: float) -> float:
     return float(
         Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     )
+
+
+def _canonical_public_points(value: float) -> float | None:
+    try:
+        rounded = _round_points(value)
+    except (InvalidOperation, OverflowError, TypeError, ValueError):
+        return None
+    return rounded if math.isfinite(rounded) else None
+
+
+def _sum_public_points(values: Iterable[float]) -> float | None:
+    try:
+        total = sum((Decimal(str(value)) for value in values), Decimal("0"))
+        rounded = float(
+            total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+    except (InvalidOperation, OverflowError, TypeError, ValueError):
+        return None
+    return rounded if math.isfinite(rounded) else None
 
 
 def _rule_error(criterion: QuantitativeCriterion) -> str | None:
@@ -3725,30 +3878,229 @@ quantitative_scoring_router = APIRouter(
 )
 
 
+def _public_criterion_display_code(category: str) -> PublicCriterionDisplayCode:
+    return _PUBLIC_CRITERION_DISPLAY_CODE_BY_CATEGORY.get(category, "OTHER")
+
+
+def _public_number_matches(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    canonical_left = _canonical_public_points(left)
+    return canonical_left is not None and left == canonical_left == right
+
+
+def _public_criteria_match_aggregate(
+    items: Sequence[PublicQuantitativeCriterionSnapshot],
+    *,
+    total_max_points: float | None,
+    confirmed_points: float | None,
+    estimated_points: float | None,
+    lower_points: float | None,
+    upper_points: float | None,
+    evidence_coverage_pct: float,
+    overall_status: EstimateStatus,
+) -> bool:
+    if not items:
+        return (
+            total_max_points is None
+            and confirmed_points is None
+            and estimated_points is None
+            and lower_points is None
+            and upper_points is None
+            and _public_number_matches(evidence_coverage_pct, 0)
+            and overall_status == "REVIEW"
+        )
+    if (
+        total_max_points is None
+        or confirmed_points is None
+        or lower_points is None
+        or upper_points is None
+    ):
+        return False
+
+    expected_total = _sum_public_points(item.max_points for item in items)
+    expected_confirmed = _sum_public_points(
+        item.lower_points for item in items if item.status == "CONFIRMED"
+    )
+    expected_lower = _sum_public_points(item.lower_points for item in items)
+    expected_upper = _sum_public_points(item.upper_points for item in items)
+    confirmed_weight = _sum_public_points(
+        item.max_points for item in items if item.status == "CONFIRMED"
+    )
+    if (
+        expected_total is None
+        or expected_total <= 0
+        or expected_confirmed is None
+        or expected_lower is None
+        or expected_upper is None
+        or confirmed_weight is None
+    ):
+        return False
+    expected_coverage = _canonical_public_points(
+        (confirmed_weight / expected_total) * 100
+    )
+    if expected_coverage is None:
+        return False
+    statuses = {item.status for item in items}
+    if "REVIEW" in statuses:
+        expected_status: EstimateStatus = "REVIEW"
+    elif "UNSCORABLE" in statuses:
+        expected_status = "UNSCORABLE"
+    elif "ESTIMATED" in statuses:
+        expected_status = "ESTIMATED"
+    else:
+        expected_status = "CONFIRMED"
+    expected_estimated = (
+        expected_lower
+        if expected_lower == expected_upper
+        and expected_status in {"CONFIRMED", "ESTIMATED"}
+        else None
+    )
+    return (
+        _public_number_matches(total_max_points, expected_total)
+        and _public_number_matches(confirmed_points, expected_confirmed)
+        and _public_number_matches(lower_points, expected_lower)
+        and _public_number_matches(upper_points, expected_upper)
+        and _public_number_matches(estimated_points, expected_estimated)
+        and _public_number_matches(evidence_coverage_pct, expected_coverage)
+        and overall_status == expected_status
+    )
+
+
+def build_public_quantitative_criteria_snapshot(
+    result: QuantitativeEstimateResult,
+) -> dict[str, Any] | None:
+    """Build a versioned public-only row snapshot or omit it fail closed."""
+
+    try:
+        snapshot = PublicQuantitativeCriteriaSnapshot(
+            schema_version=PUBLIC_QUANTITATIVE_CRITERIA_SCHEMA_VERSION,
+            items=[
+                PublicQuantitativeCriterionSnapshot(
+                    display_code=_public_criterion_display_code(
+                        criterion.category
+                    ),
+                    max_points=criterion.max_points,
+                    estimated_points=criterion.estimated_points,
+                    lower_points=criterion.lower_points,
+                    upper_points=criterion.upper_points,
+                    status=criterion.status,
+                )
+                for criterion in result.criteria
+            ],
+        )
+    except ValidationError:
+        return None
+    if not _public_criteria_match_aggregate(
+        snapshot.items,
+        total_max_points=result.total_max_points,
+        confirmed_points=result.confirmed_points,
+        estimated_points=result.estimated_points,
+        lower_points=result.lower_points,
+        upper_points=result.upper_points,
+        evidence_coverage_pct=result.evidence_coverage_pct,
+        overall_status=result.overall_status,
+    ):
+        return None
+    return snapshot.model_dump(mode="json")
+
+
+def _restore_public_quantitative_criteria_snapshot(
+    value: object,
+    *,
+    total_max_points: float | None,
+    confirmed_points: float | None,
+    estimated_points: float | None,
+    lower_points: float | None,
+    upper_points: float | None,
+    evidence_coverage_pct: float,
+    overall_status: EstimateStatus,
+) -> list[CriterionEstimate] | None:
+    try:
+        snapshot = PublicQuantitativeCriteriaSnapshot.model_validate(value)
+    except ValidationError:
+        return None
+    if not _public_criteria_match_aggregate(
+        snapshot.items,
+        total_max_points=total_max_points,
+        confirmed_points=confirmed_points,
+        estimated_points=estimated_points,
+        lower_points=lower_points,
+        upper_points=upper_points,
+        evidence_coverage_pct=evidence_coverage_pct,
+        overall_status=overall_status,
+    ):
+        return None
+
+    rationale_by_status = {
+        "CONFIRMED": "저장된 최신 분석에서 확정된 항목 점수입니다.",
+        "ESTIMATED": "저장된 최신 분석의 잠정 점수 또는 범위입니다.",
+        "UNSCORABLE": "현재 공개 요약만으로 산정할 수 없는 항목입니다.",
+        "REVIEW": "저장된 최신 분석에서 자동 산정을 보류한 항목입니다.",
+    }
+    criteria: list[CriterionEstimate] = []
+    for index, item in enumerate(snapshot.items, start=1):
+        label = _PUBLIC_CRITERION_LABEL_BY_DISPLAY_CODE[item.display_code]
+        if item.display_code == "OTHER":
+            label = f"{label} {index}"
+        criteria.append(
+            CriterionEstimate(
+                criterion_id=f"PUBLIC-CRITERION-{index:03d}",
+                category="PUBLIC_QUANTITATIVE",
+                label=label,
+                max_points=item.max_points,
+                formula="공개 화면에서는 세부 원문 산식을 제외합니다.",
+                rule_floor_points=0,
+                floor_condition=None,
+                rule_base_points=None,
+                base_condition=None,
+                source_anchor=None,
+                evidence_key=None,
+                evidence_reference=None,
+                evidence_sha256=None,
+                fact_binding_sha256=None,
+                estimated_points=item.estimated_points,
+                lower_points=item.lower_points,
+                upper_points=item.upper_points,
+                confidence=0,
+                status=item.status,
+                rationale=rationale_by_status[item.status],
+                assumptions=[],
+            )
+        )
+    return criteria
+
+
 def _public_quantitative_projection(
     result: QuantitativeEstimateResult,
 ) -> QuantitativeEstimateResult:
     """Remove company/evidence bindings from the anonymous read-only view."""
 
-    criteria = [
-        criterion.model_copy(
-            update={
-                "criterion_id": f"PUBLIC-CRITERION-{index:03d}",
-                "formula": "공개 화면에서는 세부 원문 산식을 제외합니다.",
-                "source_anchor": None,
-                "evidence_key": None,
-                "evidence_reference": None,
-                "evidence_sha256": None,
-                "fact_binding_sha256": None,
-            }
+    snapshot = build_public_quantitative_criteria_snapshot(result)
+    criteria = (
+        _restore_public_quantitative_criteria_snapshot(
+            snapshot,
+            total_max_points=result.total_max_points,
+            confirmed_points=result.confirmed_points,
+            estimated_points=result.estimated_points,
+            lower_points=result.lower_points,
+            upper_points=result.upper_points,
+            evidence_coverage_pct=result.evidence_coverage_pct,
+            overall_status=result.overall_status,
         )
-        for index, criterion in enumerate(result.criteria, start=1)
-    ]
+        if snapshot is not None
+        else None
+    )
     return result.model_copy(
         update={
             "ruleset_version": "public-quantitative-summary-v1",
             "source_anchor": None,
-            "criteria": criteria,
+            "activation_reasons": (
+                []
+                if result.activation_status == "AUTO_ACTIVE"
+                else ["PUBLIC_ANALYSIS_REVIEW_REQUIRED"]
+            ),
+            "criteria": criteria or [],
             "assumptions": [
                 "공개 화면에서는 회사 사실값과 원문·내부 증빙 식별자를 제외합니다."
             ],
@@ -3836,7 +4188,10 @@ def _stored_public_quantitative_projection(
             return None
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("snapshot aggregate must be numeric")
-        number = float(value)
+        try:
+            number = float(value)
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("snapshot aggregate must be finite") from exc
         if not math.isfinite(number):
             raise ValueError("snapshot aggregate must be finite")
         if minimum is not None and number < minimum:
@@ -3859,6 +4214,21 @@ def _stored_public_quantitative_projection(
         return None
 
     if coverage is None or confidence is None:
+        return None
+    if any(
+        number is not None and _canonical_public_points(number) != number
+        for number in (
+            estimated,
+            lower,
+            upper,
+            total_max,
+            confirmed,
+            coverage,
+            confidence,
+        )
+    ):
+        return None
+    if total_max is not None and total_max <= 0:
         return None
     if (lower is None) != (upper is None):
         return None
@@ -3885,6 +4255,27 @@ def _stored_public_quantitative_projection(
         or confirmed > total_max
         or (lower is not None and confirmed > lower)
     ):
+        return None
+    if lower is None:
+        if (
+            score.status != "REVIEW"
+            or total_max is not None
+            or confirmed is not None
+            or estimated is not None
+            or coverage != 0
+        ):
+            return None
+    elif total_max is None or confirmed is None:
+        return None
+    if score.status == "CONFIRMED" and (
+        estimated is None
+        or lower != upper
+        or estimated != lower
+        or confirmed != lower
+        or coverage != 100
+    ):
+        return None
+    if score.status == "ESTIMATED" and lower is None:
         return None
 
     rule_source_status = basis.get("rule_source_status")
@@ -3922,6 +4313,16 @@ def _stored_public_quantitative_projection(
         or source_validation_status != "REVIEW_REQUIRED"
     ):
         return None
+    if lower is None and (
+        activation_status not in {"REVIEW_REQUIRED", "NOT_APPLICABLE"}
+        or confidence != 0
+    ):
+        return None
+    if lower is not None and activation_status not in {
+        "AUTO_ACTIVE",
+        "PARTIAL_ACTIVE",
+    }:
+        return None
     if score.status not in {"CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"}:
         return None
     if score.band not in {"GREEN", "YELLOW", "RED", "GRAY"}:
@@ -3943,6 +4344,22 @@ def _stored_public_quantitative_projection(
         expected_band = "GREEN"
     if score.band != expected_band:
         return None
+
+    public_criteria: list[CriterionEstimate] = []
+    if "public_criteria" in basis:
+        restored_criteria = _restore_public_quantitative_criteria_snapshot(
+            basis.get("public_criteria"),
+            total_max_points=total_max,
+            confirmed_points=confirmed,
+            estimated_points=estimated,
+            lower_points=lower,
+            upper_points=upper,
+            evidence_coverage_pct=coverage,
+            overall_status=score.status,
+        )
+        if restored_criteria is None:
+            return None
+        public_criteria = restored_criteria
 
     activation_reasons = (
         []
@@ -3981,9 +4398,9 @@ def _stored_public_quantitative_projection(
             minimum_score=None,
             meets_minimum=None,
             confidence=confidence,
-            criteria=[],
+            criteria=public_criteria,
             assumptions=[
-                "저장된 최신 분석 스냅샷의 공개 가능한 합계와 범위만 표시합니다."
+                "저장된 최신 분석 스냅샷에서 공개 가능한 배점·범위·상태만 표시합니다."
             ],
             evidence_observations=[],
             opinion=opinion,

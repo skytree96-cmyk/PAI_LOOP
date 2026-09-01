@@ -613,6 +613,12 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
     monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     binding = "b" * 64
+    private_category = "SENSITIVE-RAW-CATEGORY"
+    private_label = "SENSITIVE-RAW-LABEL"
+    private_rationale = "SENSITIVE-COMPANY-FACT-RATIONALE"
+    private_assumption = "SENSITIVE-COMPANY-FACT-ASSUMPTION"
+    private_floor_condition = "SENSITIVE-SOURCE-FLOOR-CONDITION"
+    private_base_condition = "SENSITIVE-SOURCE-BASE-CONDITION"
     anchor = SourceAnchor(
         document_label="internal-rfp.pdf",
         document_sha256="a" * 64,
@@ -621,12 +627,22 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
         quote="SENSITIVE-EXACT-SOURCE-QUOTE",
     )
     criterion = _numeric_criterion().model_copy(
-        update={"source_anchor": anchor, "fact_binding_sha256": binding}
+        update={
+            "category": private_category,
+            "label": private_label,
+            "rule_floor_points": 2,
+            "floor_condition": private_floor_condition,
+            "rule_base_points": 5,
+            "base_condition": private_base_condition,
+            "source_anchor": anchor,
+            "fact_binding_sha256": binding,
+        }
     )
     sensitive_result = estimate_quantitative_score(
         _active_request(
             ruleset_version="dynamic-sensitive-ruleset",
             source_anchor=anchor,
+            assumptions=[private_assumption],
             criteria=[criterion],
             facts=[
                 QuantitativeFact(
@@ -638,6 +654,7 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
                     evidence_sha256="c" * 64,
                     fact_binding_sha256=binding,
                     confidence=1,
+                    rationale=private_rationale,
                 )
             ],
         )
@@ -690,6 +707,8 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
     assert public_payload["activation_status"] == "AUTO_ACTIVE"
     assert public_payload["ruleset_version"] == "public-quantitative-summary-v1"
     assert public_payload["criteria"][0]["criterion_id"] == "PUBLIC-CRITERION-001"
+    assert public_payload["criteria"][0]["category"] == "PUBLIC_QUANTITATIVE"
+    assert public_payload["criteria"][0]["label"] == "기타 정량 평가항목 1"
     assert public_payload["source_anchor"] is None
     assert public_payload["evidence_observations"] == []
     assert public_payload["criteria"][0]["source_anchor"] is None
@@ -697,6 +716,11 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
     assert public_payload["criteria"][0]["evidence_reference"] is None
     assert public_payload["criteria"][0]["evidence_sha256"] is None
     assert public_payload["criteria"][0]["fact_binding_sha256"] is None
+    assert public_payload["criteria"][0]["rule_floor_points"] == 0
+    assert public_payload["criteria"][0]["floor_condition"] is None
+    assert public_payload["criteria"][0]["rule_base_points"] is None
+    assert public_payload["criteria"][0]["base_condition"] is None
+    assert public_payload["criteria"][0]["assumptions"] == []
     assert public_payload["criteria"][0]["formula"] == (
         "공개 화면에서는 세부 원문 산식을 제외합니다."
     )
@@ -708,6 +732,12 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
         "c" * 64,
         "dynamic-sensitive-ruleset",
         criterion.criterion_id,
+        private_category,
+        private_label,
+        private_rationale,
+        private_assumption,
+        private_floor_condition,
+        private_base_condition,
     ):
         assert sensitive not in public_response.text
 

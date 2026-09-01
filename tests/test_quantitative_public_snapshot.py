@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -17,6 +18,7 @@ PRIVATE_BASIS_MARKER = "SYN-PRIVATE-BASIS-MARKER"
 PRIVATE_RULESET = "SYN-PRIVATE-DYNAMIC-RULESET"
 PRIVATE_INPUT_SHA256 = "a" * 64
 PRIVATE_OUTPUT_SHA256 = "b" * 64
+_MISSING = object()
 
 
 def _public_app(monkeypatch):
@@ -88,7 +90,23 @@ def _quantitative_snapshot(
     band: str,
     confirmed: float,
     coverage: float,
+    public_criteria: object = _MISSING,
 ) -> ScoreSnapshot:
+    basis_json = {
+        "input_sha256": PRIVATE_INPUT_SHA256,
+        "profile_output_sha256": PRIVATE_OUTPUT_SHA256,
+        "ruleset_version": PRIVATE_RULESET,
+        "private_note": PRIVATE_BASIS_MARKER,
+        "rule_source_status": "AVAILABLE",
+        "source_validation_status": "SOURCE_VALIDATED",
+        "activation_status": "AUTO_ACTIVE",
+        "activation_reasons": [],
+        "total_max_points": 20,
+        "confirmed_points": confirmed,
+        "evidence_coverage_pct": coverage,
+    }
+    if public_criteria is not _MISSING:
+        basis_json["public_criteria"] = public_criteria
     return ScoreSnapshot(
         score_key="quantitative.total",
         score_type="QUANTITATIVE_ESTIMATE",
@@ -100,20 +118,94 @@ def _quantitative_snapshot(
         band=band,
         confidence=0.75,
         method_version=QUANTITATIVE_ENGINE_VERSION,
-        basis_json={
-            "input_sha256": PRIVATE_INPUT_SHA256,
-            "profile_output_sha256": PRIVATE_OUTPUT_SHA256,
-            "ruleset_version": PRIVATE_RULESET,
-            "private_note": PRIVATE_BASIS_MARKER,
-            "rule_source_status": "AVAILABLE",
-            "source_validation_status": "SOURCE_VALIDATED",
-            "activation_status": "AUTO_ACTIVE",
-            "activation_reasons": [],
-            "total_max_points": 20,
-            "confirmed_points": confirmed,
-            "evidence_coverage_pct": coverage,
-        },
+        basis_json=basis_json,
     )
+
+
+def _public_criteria_snapshot() -> dict[str, object]:
+    return {
+        "schema_version": "public-quantitative-criteria-1.0.0",
+        "items": [
+            {
+                "display_code": "PERFORMANCE_AMOUNT",
+                "max_points": 4,
+                "estimated_points": 4,
+                "lower_points": 4,
+                "upper_points": 4,
+                "status": "CONFIRMED",
+            },
+            {
+                "display_code": "PERFORMANCE_COUNT",
+                "max_points": 6,
+                "estimated_points": 6,
+                "lower_points": 6,
+                "upper_points": 6,
+                "status": "CONFIRMED",
+            },
+            {
+                "display_code": "CREDIT_RATING",
+                "max_points": 10,
+                "estimated_points": 10,
+                "lower_points": 10,
+                "upper_points": 10,
+                "status": "CONFIRMED",
+            },
+        ],
+    }
+
+
+def _malformed_public_criteria_snapshots() -> list[object]:
+    cases: list[object] = []
+    cases.append({"schema_version": "public-quantitative-criteria-1.0.0"})
+    cases.append(
+        {
+            "schema_version": "public-quantitative-criteria-1.0.0",
+            "items": None,
+        }
+    )
+    missing_estimate = _public_criteria_snapshot()
+    del missing_estimate["items"][0]["estimated_points"]
+    cases.append(missing_estimate)
+    extra_private_field = _public_criteria_snapshot()
+    extra_private_field["items"][0]["source_quote"] = PRIVATE_BASIS_MARKER
+    cases.append(extra_private_field)
+    unknown_display_code = _public_criteria_snapshot()
+    unknown_display_code["items"][0]["display_code"] = "PROVIDER-INTERNAL-ID"
+    cases.append(unknown_display_code)
+    boolean_points = _public_criteria_snapshot()
+    boolean_points["items"][0]["max_points"] = True
+    cases.append(boolean_points)
+    mismatched_total = _public_criteria_snapshot()
+    mismatched_total["items"][0]["max_points"] = 5
+    cases.append(mismatched_total)
+    inconsistent_status = _public_criteria_snapshot()
+    inconsistent_status["items"][0]["status"] = "REVIEW"
+    cases.append(inconsistent_status)
+    huge_number = _public_criteria_snapshot()
+    huge_number["items"][0]["max_points"] = 10**400
+    cases.append(huge_number)
+    too_many = _public_criteria_snapshot()
+    too_many["items"] = [copy.deepcopy(too_many["items"][0]) for _ in range(201)]
+    cases.append(too_many)
+    return [
+        pytest.param(value, id=case_id)
+        for value, case_id in zip(
+            cases,
+            (
+                "missing-items",
+                "null-items",
+                "missing-required-estimate",
+                "extra-private-field",
+                "unknown-display-code",
+                "boolean-points",
+                "aggregate-mismatch",
+                "status-mismatch",
+                "huge-number",
+                "too-many-items",
+            ),
+            strict=True,
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -240,6 +332,106 @@ def test_public_endpoint_returns_latest_current_sanitised_aggregate_without_rees
         assert private_value not in response.text
 
 
+def test_public_endpoint_restores_safe_item_rows_from_current_snapshot(
+    monkeypatch,
+) -> None:
+    app = _public_app(monkeypatch)
+
+    def unexpected_reestimate(*_args, **_kwargs):
+        raise AssertionError("a valid public item snapshot must not be re-estimated")
+
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring.estimate_for_notice",
+        unexpected_reestimate,
+    )
+
+    with TestClient(app) as public_client:
+        with app.state.session_factory() as session:
+            notice = _notice(notice_key="SYN-PUBLIC-QUANT-ITEMS")
+            _version(
+                notice,
+                version_no=1,
+                kind="PPS_NOTICE_METADATA",
+                digest_character="6",
+            )
+            basis = _version(
+                notice,
+                version_no=2,
+                kind="MATERIALIZED_ANALYSIS",
+                digest_character="7",
+            )
+            session.add(notice)
+            session.flush()
+            session.add(
+                _run(
+                    notice,
+                    basis,
+                    label="latest",
+                    generated_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                    score=_quantitative_snapshot(
+                        value=20,
+                        lower=20,
+                        upper=20,
+                        status="CONFIRMED",
+                        band="GREEN",
+                        confirmed=20,
+                        coverage=100,
+                        public_criteria=_public_criteria_snapshot(),
+                    ),
+                )
+            )
+            session.commit()
+
+        response = public_client.get(
+            "/api/v1/notices/SYN-PUBLIC-QUANT-ITEMS/quantitative-estimate"
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert [item["criterion_id"] for item in payload["criteria"]] == [
+        "PUBLIC-CRITERION-001",
+        "PUBLIC-CRITERION-002",
+        "PUBLIC-CRITERION-003",
+    ]
+    assert [item["label"] for item in payload["criteria"]] == [
+        "용역수행 실적(금액)",
+        "용역수행 실적(건수)",
+        "제안업체 경영상태",
+    ]
+    assert [item["max_points"] for item in payload["criteria"]] == [4, 6, 10]
+    assert [item["estimated_points"] for item in payload["criteria"]] == [
+        4,
+        6,
+        10,
+    ]
+    assert {item["status"] for item in payload["criteria"]} == {"CONFIRMED"}
+    for item in payload["criteria"]:
+        assert item["category"] == "PUBLIC_QUANTITATIVE"
+        assert item["formula"] == "공개 화면에서는 세부 원문 산식을 제외합니다."
+        assert item["rule_floor_points"] == 0
+        assert item["floor_condition"] is None
+        assert item["rule_base_points"] is None
+        assert item["base_condition"] is None
+        assert item["source_anchor"] is None
+        assert item["evidence_key"] is None
+        assert item["evidence_reference"] is None
+        assert item["evidence_sha256"] is None
+        assert item["fact_binding_sha256"] is None
+        assert item["assumptions"] == []
+
+    for private_value in (
+        PRIVATE_BASIS_MARKER,
+        PRIVATE_RULESET,
+        PRIVATE_INPUT_SHA256,
+        PRIVATE_OUTPUT_SHA256,
+        "private_note",
+        "PERFORMANCE_AMOUNT",
+        "PERFORMANCE_COUNT",
+        "CREDIT_RATING",
+    ):
+        assert private_value not in response.text
+
+
 def _fallback_result() -> QuantitativeEstimateResult:
     return QuantitativeEstimateResult(
         engine_version=QUANTITATIVE_ENGINE_VERSION,
@@ -268,6 +460,189 @@ def _fallback_result() -> QuantitativeEstimateResult:
         opinion="SYN fallback result",
         separation_notice="SYN scoring remains separate from eligibility.",
     )
+
+
+@pytest.mark.parametrize(
+    "malformed_public_criteria",
+    _malformed_public_criteria_snapshots(),
+)
+def test_malformed_latest_public_item_snapshot_falls_back_without_using_older_run(
+    monkeypatch,
+    malformed_public_criteria: object,
+) -> None:
+    app = _public_app(monkeypatch)
+    observed_fact_counts: list[int] = []
+
+    def fallback_estimate(_notice, company_facts, *_args):
+        observed_fact_counts.append(len(tuple(company_facts)))
+        return _fallback_result()
+
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring.estimate_for_notice",
+        fallback_estimate,
+    )
+    now = datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
+
+    with TestClient(app) as public_client:
+        with app.state.session_factory() as session:
+            notice = _notice(notice_key="SYN-PUBLIC-QUANT-MALFORMED")
+            _version(
+                notice,
+                version_no=1,
+                kind="PPS_NOTICE_METADATA",
+                digest_character="8",
+            )
+            basis = _version(
+                notice,
+                version_no=2,
+                kind="MATERIALIZED_ANALYSIS",
+                digest_character="9",
+            )
+            session.add(notice)
+            session.flush()
+            session.add_all(
+                [
+                    _run(
+                        notice,
+                        basis,
+                        label="old",
+                        generated_at=now - timedelta(hours=1),
+                        score=_quantitative_snapshot(
+                            value=20,
+                            lower=20,
+                            upper=20,
+                            status="CONFIRMED",
+                            band="GREEN",
+                            confirmed=20,
+                            coverage=100,
+                            public_criteria=_public_criteria_snapshot(),
+                        ),
+                    ),
+                    _run(
+                        notice,
+                        basis,
+                        label="latest",
+                        generated_at=now,
+                        score=_quantitative_snapshot(
+                            value=20,
+                            lower=20,
+                            upper=20,
+                            status="CONFIRMED",
+                            band="GREEN",
+                            confirmed=20,
+                            coverage=100,
+                            public_criteria=malformed_public_criteria,
+                        ),
+                    ),
+                ]
+            )
+            session.commit()
+
+        response = public_client.get(
+            "/api/v1/notices/SYN-PUBLIC-QUANT-MALFORMED/quantitative-estimate"
+        )
+
+    assert response.status_code == 200, response.text
+    assert observed_fact_counts == [0]
+    payload = response.json()
+    assert payload["total_max_points"] == 10
+    assert payload["criteria"] == []
+    assert PRIVATE_BASIS_MARKER not in response.text
+    assert "PROVIDER-INTERNAL-ID" not in response.text
+
+
+@pytest.mark.parametrize(
+    "invalid_state",
+    (
+        "huge-total",
+        "confirmed-without-score",
+        "inactive-auto-active",
+        "active-review-required",
+        "noncanonical-points",
+    ),
+)
+def test_invalid_legacy_aggregate_snapshot_falls_back_fail_closed(
+    monkeypatch,
+    invalid_state: str,
+) -> None:
+    app = _public_app(monkeypatch)
+    observed_fact_counts: list[int] = []
+
+    def fallback_estimate(_notice, company_facts, *_args):
+        observed_fact_counts.append(len(tuple(company_facts)))
+        return _fallback_result()
+
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring.estimate_for_notice",
+        fallback_estimate,
+    )
+    score = _quantitative_snapshot(
+        value=None,
+        lower=9.7,
+        upper=20,
+        status="REVIEW",
+        band="RED",
+        confirmed=0,
+        coverage=0,
+    )
+    if invalid_state == "huge-total":
+        score.basis_json["total_max_points"] = 10**400
+    elif invalid_state == "confirmed-without-score":
+        score.value = None
+        score.lower_value = None
+        score.upper_value = None
+        score.status = "CONFIRMED"
+        score.band = "GRAY"
+        score.basis_json["total_max_points"] = None
+        score.basis_json["confirmed_points"] = None
+    elif invalid_state == "inactive-auto-active":
+        score.value = None
+        score.lower_value = None
+        score.upper_value = None
+        score.band = "GRAY"
+        score.confidence = 0
+        score.basis_json["total_max_points"] = None
+        score.basis_json["confirmed_points"] = None
+    elif invalid_state == "active-review-required":
+        score.basis_json["activation_status"] = "REVIEW_REQUIRED"
+    elif invalid_state == "noncanonical-points":
+        score.lower_value = 9.701
+
+    with TestClient(app) as public_client:
+        with app.state.session_factory() as session:
+            notice = _notice(notice_key=f"SYN-LEGACY-{invalid_state}")
+            _version(
+                notice,
+                version_no=1,
+                kind="PPS_NOTICE_METADATA",
+                digest_character="a",
+            )
+            basis = _version(
+                notice,
+                version_no=2,
+                kind="MATERIALIZED_ANALYSIS",
+                digest_character="b",
+            )
+            session.add(notice)
+            session.flush()
+            session.add(
+                _run(
+                    notice,
+                    basis,
+                    label="latest",
+                    generated_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                    score=score,
+                )
+            )
+            session.commit()
+
+        response = public_client.get(
+            f"/api/v1/notices/SYN-LEGACY-{invalid_state}/quantitative-estimate"
+        )
+
+    assert response.status_code == 200, response.text
+    assert observed_fact_counts == [0]
+    assert response.json()["total_max_points"] == 10
 
 
 def test_public_endpoint_falls_back_when_snapshot_predates_newer_pps_metadata(
