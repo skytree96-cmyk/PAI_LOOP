@@ -140,6 +140,11 @@ do not invent one and report it as required.
   every attachment in the current valid PPS manifest. A rule may become
   `AUTO_ACTIVE` only after attachment coverage, anchors, table totals, bands,
   units, and formula checks are mechanically valid.
+- When HWP table cells split one source row across consecutive paragraphs,
+  rebind only a unique, bounded condition-to-score span inside the same table
+  and criterion. Treat blank/section boundaries, another criterion or case
+  anchor, repeated anchors, and overlapping row claims as hard failures; never
+  alter the extracted operator, category, threshold, award, or maximum value.
 - Successful extraction does not approve a score. Reject LLM-proposed company
   scores, `GO` values, or other decision fields; only deterministic application
   code may calculate and persist a score.
