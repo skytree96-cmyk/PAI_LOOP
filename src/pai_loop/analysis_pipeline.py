@@ -65,6 +65,7 @@ from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
     QUANTITATIVE_CANONICAL_FACT_KEYS,
+    build_public_quantitative_criteria_snapshot,
     estimate_for_notice,
     load_quantitative_profile_catalog,
 )
@@ -76,9 +77,9 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.2"
+PIPELINE_VERSION = "analysis-pipeline-0.6.3"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.0"
-SNAPSHOT_VERSION = "analysis-snapshot-0.2.0"
+SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
 MATERIALIZED_KIND = "ANALYSIS_PIPELINE_MATERIALIZATION"
 RUN_KIND = "FULL_REVIEW"
@@ -2041,6 +2042,13 @@ def run_analysis_pipeline(
             # results remain expressible through lower/upper bounds and the
             # explicit confirmed_points basis field.
             quantitative_value = quantitative.estimated_points
+            public_quantitative_criteria = (
+                build_public_quantitative_criteria_snapshot(quantitative)
+            )
+            if public_quantitative_criteria is None:
+                raise AnalysisPipelineError(
+                    "quantitative public criteria snapshot invariant failed"
+                )
             competition = award_intelligence["competition_risk"]
             award_prediction = award_intelligence["prediction"]["award_rate"]
             submitted_prediction = award_intelligence["prediction"]["submitted_bid_rate"]
@@ -2110,6 +2118,7 @@ def run_analysis_pipeline(
                             "profile_output_sha256": _digest(
                                 quantitative.model_dump(mode="json")
                             ),
+                            "public_criteria": public_quantitative_criteria,
                         },
                     ),
                     ScoreSnapshot(

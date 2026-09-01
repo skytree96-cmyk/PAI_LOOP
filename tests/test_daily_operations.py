@@ -745,6 +745,7 @@ def _seed_stale_analysis_snapshot(
     status: str = "OPEN",
     deadline: datetime | None = None,
     quantitative_engine_only: bool = False,
+    public_criteria_contract_only: bool = False,
 ) -> str:
     notice_key = "MANUAL-INCHON-2025-17"
     with client.app.state.session_factory() as session:
@@ -764,6 +765,9 @@ def _seed_stale_analysis_snapshot(
             stale_basis["quantitative_engine"] = (
                 "pai-loop-quantitative-engine-previous"
             )
+        elif public_criteria_contract_only:
+            stale_basis["pipeline"] = "analysis-pipeline-0.6.2"
+            stale_basis["snapshot"] = "analysis-snapshot-0.2.0"
         else:
             stale_basis["pipeline"] = "analysis-pipeline-previous"
             stale_basis["requirement_policy"] = "requirement-policy-previous"
@@ -774,6 +778,38 @@ def _seed_stale_analysis_snapshot(
         notice.status = status
         session.commit()
     return notice_key
+
+
+def test_public_criteria_contract_stale_open_snapshot_enters_refresh_queues(
+    client: TestClient,
+) -> None:
+    notice_key = _seed_stale_analysis_snapshot(
+        client,
+        public_criteria_contract_only=True,
+    )
+
+    briefing = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={
+            "days": 7,
+            "limit": 50,
+            "as_of": "2026-08-27T16:30:00+09:00",
+        },
+    )
+    assert briefing.status_code == 200, briefing.text
+    body = briefing.json()
+    item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
+    assert item["analysis_snapshot"]["version_current"] is False
+    assert item["analysis_snapshot"]["pipeline_version"] == (
+        "analysis-pipeline-0.6.2"
+    )
+    assert body["analysis_queue"]["retryable_notice_keys"] == [notice_key]
+    with client.app.state.session_factory() as session:
+        assert _select_backfill_notice_keys(
+            session,
+            AnalysisBackfillPlanRequest(include_retryable=False),
+            now=datetime(2026, 8, 27, 7, 30, tzinfo=timezone.utc),
+        ) == [notice_key]
 
 
 def test_quantitative_engine_stale_open_snapshot_enters_daily_and_backfill(

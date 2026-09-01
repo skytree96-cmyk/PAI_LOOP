@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from pai_loop.analysis_pipeline import (
+    AnalysisPipelineError,
     AnalysisPipelineSourceError,
     AnalysisPipelineTransactionError,
     MATERIALIZATION_VERSION,
@@ -319,6 +320,40 @@ def test_pipeline_merges_sources_and_persists_full_immutable_snapshot(db_session
     assert scores["quantitative.total"].lower_value == 9.7
     assert scores["quantitative.total"].upper_value == 20
     assert scores["quantitative.total"].basis_json["confirmed_points"] == 0
+    public_criteria = scores["quantitative.total"].basis_json["public_criteria"]
+    assert public_criteria["schema_version"] == (
+        "public-quantitative-criteria-1.0.0"
+    )
+    assert public_criteria["items"]
+    assert all(
+        set(item)
+        == {
+            "display_code",
+            "max_points",
+            "estimated_points",
+            "lower_points",
+            "upper_points",
+            "status",
+        }
+        for item in public_criteria["items"]
+    )
+    public_criteria_text = str(public_criteria)
+    for forbidden_field in (
+        "criterion_id",
+        "category",
+        "label",
+        "formula",
+        "rationale",
+        "assumptions",
+        "condition",
+        "source_anchor",
+        "quote",
+        "evidence",
+        "fact_binding",
+        "attachment",
+        "sha256",
+    ):
+        assert forbidden_field not in public_criteria_text
     assert scores["competition.risk"].status == "MODEL_ESTIMATE"
     assert scores["pricing.award_rate_prediction"].status == "MODEL_ESTIMATE"
     assert scores["pricing.submitted_bid_rate_prediction"].status == "INSUFFICIENT_DATA"
@@ -443,9 +478,9 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.2"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.3"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.0"
-    assert SNAPSHOT_VERSION == "analysis-snapshot-0.2.0"
+    assert SNAPSHOT_VERSION == "analysis-snapshot-0.3.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
     notice.risk_dimensions = None
     _source_version(
@@ -1149,6 +1184,50 @@ def test_pipeline_rolls_back_every_derived_row_on_failure(
 
     with pytest.raises(RuntimeError, match="synthetic failure"):
         run_analysis_pipeline(db_session, notice_id=notice.id, _stage_hook=fail_at)
+
+    assert db_session.scalar(select(func.count(NoticeVersion.id))) == 1
+    assert db_session.scalar(select(func.count(AtomicRequirement.id))) == 0
+    assert db_session.scalar(select(func.count(Evaluation.id))) == 0
+    assert db_session.scalar(select(func.count(AnalysisRun.id))) == 0
+    assert db_session.scalar(select(func.count(RequirementResultSnapshot.id))) == 0
+    assert db_session.scalar(select(func.count(ScoreSnapshot.id))) == 0
+    assert db_session.scalar(select(func.count(RecommendationSnapshot.id))) == 0
+
+
+def test_pipeline_rolls_back_when_public_criteria_snapshot_is_invalid(
+    db_session: Session,
+    monkeypatch,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="PUBLIC-CRITERIA-INVARIANT",
+        title="공개 정량 스냅샷 불변식",
+    )
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-PUBLIC-CRITERIA-INVARIANT",
+        digest_char="9",
+        requirements=[
+            _requirement(
+                "REQ-PUBLIC-CRITERIA-INVARIANT",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-PUBLIC-CRITERIA-INVARIANT",
+            )
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+    monkeypatch.setattr(
+        "pai_loop.analysis_pipeline.build_public_quantitative_criteria_snapshot",
+        lambda _result: None,
+    )
+
+    with pytest.raises(
+        AnalysisPipelineError,
+        match="public criteria snapshot invariant failed",
+    ):
+        run_analysis_pipeline(db_session, notice_id=notice.id)
 
     assert db_session.scalar(select(func.count(NoticeVersion.id))) == 1
     assert db_session.scalar(select(func.count(AtomicRequirement.id))) == 0
