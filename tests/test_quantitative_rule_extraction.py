@@ -3553,13 +3553,25 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
     )
     source = source.replace(
         "1) 용역수행 실적(금액, 6점)",
-        "1) 용역수행 실적(금액)\n(6점)",
+        (
+            "1) 용역수행 실적(금액)\n(6점)\n"
+            "세부 항목\n평가요소\n배점\n등급\n배점(점)\n"
+            "최근 3년간 지자체, 공공기관 등\n"
+            "(교육, 취업, 행사) 용역 수행완료 실적 (6점)\n"
+            "단일용역\n최고금액\n(1건)\n6"
+        ),
     ).replace(
         "B. 4건\n3.7",
         "B. 4건\n3.7\nC. 3건\n3.4\nD. 2건\n3.1\nE. 1건\n2.8",
     ).replace(
         "2) 용역수행 실적(건수, 4점)",
-        "2) 용역수행 실적(건수)\n4점",
+        (
+            "2) 용역수행 실적(건수)\n4점\n"
+            "세부 항목\n평가요소\n배점\n등급\n배점(점)\n"
+            "최근 3년간 지자체, 공공기관 등\n"
+            "(교육,취업,행사)용역\n수행완료 실적 (4점)\n"
+            "실적건수\n(0.2억원\n이상)\n4"
+        ),
     ).replace(
         "❍ 제안업체 경영상태 (10점)",
         "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
@@ -3692,6 +3704,80 @@ def test_busan_hwp_sourcewide_header_cannot_borrow_rows_across_unmodeled_table(
         (
             "1) 용역수행 실적(금액, 6점)\n"
             f"{unmodeled_boundary}\n"
+            "A. 2억 원 이상"
+        ),
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+def test_busan_hwp_column_detail_with_different_points_remains_boundary() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)\nA. 2억 원 이상",
+        (
+            "1) 용역수행 실적(금액, 6점)\n"
+            "세부 항목\n평가요소\n배점\n등급\n배점(점)\n"
+            "최근 3년간 지자체, 공공기관 등\n"
+            "(교육, 취업, 행사) 용역 수행완료 실적 (5점)\n"
+            "A. 2억 원 이상"
+        ),
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+@pytest.mark.parametrize(
+    "independent_same_point_detail",
+    [
+        (
+            "3) 최근 3년간 지자체, 공공기관 등 "
+            "(교육, 취업, 행사) 용역 수행완료 실적 (6점)"
+        ),
+        "최근 3년간 타 기관 IT 용역 실적 (6점)",
+    ],
+    ids=("numbered", "different-scope"),
+)
+def test_busan_hwp_column_cluster_does_not_hide_same_point_criterion(
+    independent_same_point_detail: str,
+) -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)\nA. 2억 원 이상",
+        (
+            "1) 용역수행 실적(금액, 6점)\n"
+            "세부 항목\n평가요소\n배점\n등급\n배점(점)\n"
+            f"{independent_same_point_detail}\n"
             "A. 2억 원 이상"
         ),
     )

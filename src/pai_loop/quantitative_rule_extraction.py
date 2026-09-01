@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.4"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.4"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.5"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.5"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -972,6 +972,110 @@ def _clear_sourcewide_criterion_header(window: str) -> bool:
     )
 
 
+_SOURCEWIDE_QUANTITATIVE_COLUMN_HEADER_CLUSTER = (
+    "세부항목",
+    "평가요소",
+    "배점",
+    "등급",
+    "배점(점)",
+)
+_MAX_SOURCEWIDE_COLUMN_HEADER_LOOKBACK = 8
+_MAX_SOURCEWIDE_COLUMN_DETAIL_PREFIX_LINES = 3
+
+
+def _is_quantitative_column_detail_boundary(
+    lines: tuple[str, ...],
+    *,
+    start: int,
+    end: int,
+) -> bool:
+    """Identify a performance-detail cell beneath an explicit table header.
+
+    HWP extraction flattens rows into one line per cell.  In that layout the
+    detail description beneath the five quantitative column headings can look
+    like a new, unnumbered criterion because it also ends in ``(N점)``.  Keep
+    the exception tied to the exact ordered header cluster and the performance
+    detail vocabulary so an independent noun-like criterion remains a hard
+    source boundary.  The candidate window may begin at the final ``배점(점)``
+    cell, so inspect the whole bounded lookback rather than only its start.
+    """
+
+    context_start = max(0, start - _MAX_SOURCEWIDE_COLUMN_HEADER_LOOKBACK)
+    indexed = tuple(
+        (
+            index,
+            re.sub(r"\s+", "", unicodedata.normalize("NFKC", lines[index])),
+        )
+        for index in range(context_start, end)
+        if lines[index] and not _HWP_SECTION_LINE_RE.fullmatch(lines[index])
+    )
+    cluster_size = len(_SOURCEWIDE_QUANTITATIVE_COLUMN_HEADER_CLUSTER)
+    for index in range(max(0, len(indexed) - cluster_size + 1)):
+        cluster = indexed[index : index + cluster_size]
+        if tuple(value for _line_index, value in cluster) != (
+            _SOURCEWIDE_QUANTITATIVE_COLUMN_HEADER_CLUSTER
+        ):
+            continue
+        cluster_start = cluster[0][0]
+        cluster_end = cluster[-1][0] + 1
+        if not (
+            cluster_start
+            <= start
+            <= cluster_end + _MAX_SOURCEWIDE_COLUMN_DETAIL_PREFIX_LINES
+        ):
+            continue
+        detail_window = "\n".join(lines[cluster_end:end])
+        if re.match(
+            r"\s*(?:(?:\d+|[가-힣])\s*[.)]\s*|[❍○●■□▪▶]\s*)",
+            detail_window,
+        ):
+            continue
+        detail_points = _header_point_tokens(detail_window)
+        if len(detail_points) != 1:
+            continue
+        preceding_points: set[Decimal] = set()
+        for header_start in range(
+            max(0, cluster_start - _MAX_TABLE_CELL_WINDOW_LINES),
+            cluster_start,
+        ):
+            header_lines = lines[header_start:cluster_start]
+            if any(not line for line in header_lines) or any(
+                _HWP_SECTION_LINE_RE.fullmatch(line) for line in header_lines
+            ):
+                continue
+            header_window = "\n".join(header_lines)
+            header_points = _header_point_tokens(header_window)
+            if len(header_points) != 1:
+                continue
+            header_point, point_offset = header_points[0]
+            if any(
+                _metric_tokens_precede_point(metric, header_window, point_offset)
+                for metric in ("PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT")
+            ):
+                preceding_points.add(header_point)
+        if preceding_points != {detail_points[0][0]}:
+            continue
+        detail = "".join(
+            value for line_index, value in indexed if cluster_end <= line_index < end
+        )
+        if all(
+            token in detail
+            for token in (
+                "최근",
+                "지자체",
+                "공공기관",
+                "교육",
+                "취업",
+                "행사",
+                "용역",
+                "수행완료",
+                "실적",
+            )
+        ):
+            return True
+    return False
+
+
 def _sourcewide_structural_boundary_spans(
     lines: tuple[str, ...],
 ) -> tuple[tuple[tuple[int, int], ...], bool]:
@@ -1008,6 +1112,11 @@ def _sourcewide_structural_boundary_spans(
             explicit_criterion_header = bool(
                 not _COMPARATOR_MARKER_RE.search(window)
                 and _clear_sourcewide_criterion_header(window)
+                and not _is_quantitative_column_detail_boundary(
+                    lines,
+                    start=start,
+                    end=end,
+                )
             )
             if supported_metric_header or explicit_criterion_header:
                 matches.append((start, end))
