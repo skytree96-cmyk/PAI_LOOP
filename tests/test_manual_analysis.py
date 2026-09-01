@@ -1166,12 +1166,13 @@ def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
             "section": marker,
             "confidence": 0.99,
         }
+        primary_condition_quote = f"실적 건수 기준 4점 {marker}"
         conditions = [
             {
                 "literal": "4점",
                 "evidence": {
                     **anchor,
-                    "quote": f"실적 건수 기준 4점 {marker}",
+                    "quote": primary_condition_quote,
                 },
             },
             *[
@@ -1196,7 +1197,7 @@ def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
                         {
                             "criterion_id": "CRITERION-AVAILABLE-PRIVATE",
                             "label": marker,
-                            "criterion_literal": f"실적 건수 평가 6점 {marker}",
+                            "criterion_literal": primary_condition_quote,
                             "max_points": 6,
                             "scoring_method": "CASE_TABLE",
                             "metric": "PERFORMANCE_COUNT",
@@ -1204,17 +1205,70 @@ def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
                             "brackets": [],
                             "threshold": None,
                             "formula_literal": None,
-                            "cases": [],
+                            "cases": [
+                                {
+                                    "literal": "4점",
+                                    "operator": "GTE",
+                                    "comparison_value": 1,
+                                    "category_values": [],
+                                    "award_kind": "POINTS",
+                                    "award_value": 4,
+                                    "row_order": 1,
+                                    "evidence": {**anchor, "quote": "4점"},
+                                }
+                            ],
                             "recognition_conditions": conditions,
                             "required_evidence": [],
                             "evidence": {
                                 **anchor,
-                                "quote": f"실적 건수 평가 6점 {marker}",
+                                "quote": primary_condition_quote,
                             },
                             "ambiguity_reason": None,
-                        }
+                        },
+                        {
+                            "criterion_id": "CRITERION-OTHER-PRIVATE",
+                            "label": marker,
+                            "criterion_literal": f"타 평가 기준 4점 {marker}",
+                            "max_points": 4,
+                            "scoring_method": "CASE_TABLE",
+                            "metric": "PERFORMANCE_COUNT",
+                            "unit": "건",
+                            "brackets": [],
+                            "threshold": None,
+                            "formula_literal": None,
+                            "cases": [
+                                {
+                                    "literal": primary_condition_quote,
+                                    "operator": "EQ",
+                                    "comparison_value": 1,
+                                    "category_values": [],
+                                    "award_kind": "POINTS",
+                                    "award_value": 4,
+                                    "row_order": 1,
+                                    "evidence": {
+                                        **anchor,
+                                        "quote": primary_condition_quote,
+                                    },
+                                }
+                            ],
+                            "recognition_conditions": [
+                                {
+                                    "literal": "4점",
+                                    "evidence": {
+                                        **anchor,
+                                        "quote": primary_condition_quote,
+                                    },
+                                }
+                            ],
+                            "required_evidence": [],
+                            "evidence": {
+                                **anchor,
+                                "quote": f"타 평가 기준 4점 {marker}",
+                            },
+                            "ambiguity_reason": None,
+                        },
                     ],
-                    "total_points": 6,
+                    "total_points": 10,
                     "total_evidence": {
                         **anchor,
                         "quote": f"정량평가 6점 {marker}",
@@ -1222,7 +1276,63 @@ def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
                     "minimum_score": None,
                     "minimum_evidence": None,
                     "ambiguity_reason": None,
-                }
+                },
+                {
+                    "table_id": "TABLE-FOREIGN-PRIVATE",
+                    "label": marker,
+                    "criteria": [
+                        {
+                            "criterion_id": "CRITERION-FOREIGN-PRIVATE",
+                            "label": marker,
+                            "criterion_literal": primary_condition_quote,
+                            "max_points": 4,
+                            "scoring_method": "CASE_TABLE",
+                            "metric": "PERFORMANCE_COUNT",
+                            "unit": "건",
+                            "brackets": [],
+                            "threshold": None,
+                            "formula_literal": None,
+                            "cases": [
+                                {
+                                    "literal": primary_condition_quote,
+                                    "operator": "EQ",
+                                    "comparison_value": 1,
+                                    "category_values": [],
+                                    "award_kind": "POINTS",
+                                    "award_value": 4,
+                                    "row_order": 1,
+                                    "evidence": {
+                                        **anchor,
+                                        "quote": primary_condition_quote,
+                                    },
+                                }
+                            ],
+                            "recognition_conditions": [
+                                {
+                                    "literal": "4점",
+                                    "evidence": {
+                                        **anchor,
+                                        "quote": primary_condition_quote,
+                                    },
+                                }
+                            ],
+                            "required_evidence": [],
+                            "evidence": {
+                                **anchor,
+                                "quote": primary_condition_quote,
+                            },
+                            "ambiguity_reason": None,
+                        }
+                    ],
+                    "total_points": 4,
+                    "total_evidence": {
+                        **anchor,
+                        "quote": primary_condition_quote,
+                    },
+                    "minimum_score": None,
+                    "minimum_evidence": None,
+                    "ambiguity_reason": None,
+                },
             ],
             "quantitative_table_not_applicable": None,
             "missing_or_unreadable": [],
@@ -1299,7 +1409,21 @@ def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
     assert shape["metric"] == "PERFORMANCE_COUNT"
     assert shape["recognition_condition_count"] == 13
     assert len(shape["recognition_conditions"]) == 12
-    assert shape["recognition_conditions"][0] == {
+    condition = shape["recognition_conditions"][0]
+    assert {
+        key: condition[key]
+        for key in (
+            "literal_character_count",
+            "evidence_character_count",
+            "literal_point_values",
+            "evidence_point_values",
+            "literal_is_point_only",
+            "evidence_is_point_only",
+            "literal_matches_evidence",
+            "literal_has_metric_tokens",
+            "evidence_has_metric_tokens",
+        )
+    } == {
         "literal_character_count": 2,
         "evidence_character_count": len(
             f"실적 건수 기준 4점 {sensitive_marker}"
@@ -1312,10 +1436,92 @@ def test_quantitative_diagnostics_returns_redacted_current_available_shapes(
         "literal_has_metric_tokens": False,
         "evidence_has_metric_tokens": True,
     }
+
+    def relation(
+        *,
+        targets: int,
+        literal_overlap: int,
+        evidence_overlap: int,
+        literal_match: int,
+        evidence_match: int,
+        literal_occurrences: int,
+        evidence_occurrences: int,
+        equivalent: bool,
+    ) -> dict[str, object]:
+        return {
+            "target_count": targets,
+            "scanned_target_count": targets,
+            "scan_truncated": False,
+            "literal_overlaps": literal_overlap > 0,
+            "literal_overlap_target_count": literal_overlap,
+            "evidence_overlaps": evidence_overlap > 0,
+            "evidence_overlap_target_count": evidence_overlap,
+            "literal_matches": literal_match > 0,
+            "literal_match_target_count": literal_match,
+            "evidence_matches": evidence_match > 0,
+            "evidence_match_target_count": evidence_match,
+            "literal_occurrence_count": literal_occurrences,
+            "evidence_occurrence_count": evidence_occurrences,
+            "literal_evidence_occurrence_equivalent": equivalent,
+        }
+
+    assert condition["own_criterion_anchor"] == relation(
+        targets=1,
+        literal_overlap=1,
+        evidence_overlap=1,
+        literal_match=0,
+        evidence_match=1,
+        literal_occurrences=2,
+        evidence_occurrences=2,
+        equivalent=True,
+    )
+    assert condition["own_case_rows"] == relation(
+        targets=1,
+        literal_overlap=1,
+        evidence_overlap=1,
+        literal_match=1,
+        evidence_match=0,
+        literal_occurrences=2,
+        evidence_occurrences=0,
+        equivalent=False,
+    )
+    assert condition["other_criteria_anchors"] == relation(
+        targets=1,
+        literal_overlap=1,
+        evidence_overlap=0,
+        literal_match=0,
+        evidence_match=0,
+        literal_occurrences=2,
+        evidence_occurrences=0,
+        equivalent=False,
+    )
+    assert condition["other_case_rows"] == relation(
+        targets=1,
+        literal_overlap=1,
+        evidence_overlap=1,
+        literal_match=0,
+        evidence_match=1,
+        literal_occurrences=2,
+        evidence_occurrences=2,
+        equivalent=True,
+    )
+    assert condition["other_recognition_conditions"] == relation(
+        targets=13,
+        literal_overlap=1,
+        evidence_overlap=1,
+        literal_match=1,
+        evidence_match=1,
+        literal_occurrences=2,
+        evidence_occurrences=1,
+        equivalent=False,
+    )
     encoded = _quantitative_diagnostics(notice).model_dump_json()
     assert attachment_id not in encoded
     assert "TABLE-AVAILABLE-PRIVATE" not in encoded
+    assert "TABLE-FOREIGN-PRIVATE" not in encoded
     assert "CRITERION-AVAILABLE-PRIVATE" not in encoded
+    assert "CRITERION-OTHER-PRIVATE" not in encoded
+    assert "CRITERION-FOREIGN-PRIVATE" not in encoded
     assert sensitive_marker not in encoded
     assert "실적 건수 기준" not in encoded
     assert "후속조건" not in encoded

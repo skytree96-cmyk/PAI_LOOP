@@ -31,8 +31,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.10"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.10"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.11"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -1668,6 +1668,95 @@ def _repair_source_bound_candidate_unit(
     return candidate
 
 
+def _source_condition_replacement_indexes(
+    conditions: list[QuantitativeRecognitionCondition],
+    *,
+    canonical_condition: QuantitativeRecognitionCondition,
+    lines: tuple[str, ...],
+    protected_structure_spans: tuple[tuple[int, int], ...],
+    reject_canonical_structure_collision: bool = False,
+) -> tuple[int, ...]:
+    """Return model claims wholly owned by one exact source-derived cell."""
+
+    canonical_literal_span = _unique_anchor_line_span(
+        lines, canonical_condition.literal
+    )
+    canonical_evidence_span = _unique_anchor_line_span(
+        lines, canonical_condition.evidence.quote
+    )
+    canonical_span = (
+        canonical_literal_span
+        if canonical_literal_span is not None
+        and canonical_literal_span == canonical_evidence_span
+        else None
+    )
+    if canonical_span is None or (
+        reject_canonical_structure_collision
+        and any(
+            _spans_overlap(canonical_span, protected_span)
+            for protected_span in protected_structure_spans
+        )
+    ):
+        return ()
+
+    canonical_text = "\n".join(
+        lines[canonical_span[0] : canonical_span[1]]
+    )
+    replacement_indexes: list[int] = []
+    for existing_index, existing in enumerate(conditions):
+        all_existing_literal_spans = _anchor_line_spans(
+            lines, existing.literal
+        )
+        all_existing_evidence_spans = _anchor_line_spans(
+            lines, existing.evidence.quote
+        )
+        existing_literal_spans = tuple(
+            span
+            for span in all_existing_literal_spans
+            if _span_inside_region(span, canonical_span)
+        )
+        existing_evidence_spans = tuple(
+            span
+            for span in all_existing_evidence_spans
+            if _span_inside_region(span, canonical_span)
+        )
+        outside_structure_collision = any(
+            not _span_inside_region(span, canonical_span)
+            and any(
+                _spans_overlap(span, protected_span)
+                for protected_span in protected_structure_spans
+            )
+            for span in (
+                *all_existing_literal_spans,
+                *all_existing_evidence_spans,
+            )
+        )
+        if (
+            existing.evidence.attachment_id
+            == canonical_condition.evidence.attachment_id
+            and len(existing_literal_spans) == 1
+            and len(existing_evidence_spans) == 1
+            and _anchor_occurrence_count(existing.literal, canonical_text) == 1
+            and _anchor_occurrence_count(
+                existing.evidence.quote,
+                canonical_text,
+            )
+            == 1
+            and not outside_structure_collision
+            and _spans_overlap(
+                existing_literal_spans[0],
+                existing_evidence_spans[0],
+            )
+            and _literal_is_anchored(
+                existing.literal,
+                existing.evidence,
+                canonical_condition.literal,
+            )
+        ):
+            replacement_indexes.append(existing_index)
+    return tuple(replacement_indexes)
+
+
 def _augment_sourcewide_hwp_activation_context(
     candidates: list[QuantitativeRuleCandidate],
     *,
@@ -1685,6 +1774,40 @@ def _augment_sourcewide_hwp_activation_context(
         boundary_spans=boundary_spans,
     )
     protected_spans = tuple(protected_structure_spans)
+    amount_share_owners: list[
+        tuple[QuantitativeRuleCandidate, QuantitativeRecognitionCondition]
+    ] = []
+    for sibling, sibling_region in zip(
+        candidates,
+        criterion_regions,
+        strict=True,
+    ):
+        if (
+            sibling.metric != "PERFORMANCE_AMOUNT"
+            or sibling.scoring_method != "CASE_TABLE"
+            or not sibling.cases
+            or sibling.ambiguity_reason is not None
+            or [case.row_order for case in sibling.cases]
+            != list(range(1, len(sibling.cases) + 1))
+            or not _performance_detail_conditions(
+                sibling,
+                lines=lines,
+                criterion_region=sibling_region,
+            )
+        ):
+            continue
+        sibling_footnotes = _unique_performance_footnotes(
+            sibling,
+            lines=lines,
+            footer_region=footer_region,
+        )
+        share_condition = sibling_footnotes.get("SHARE")
+        if share_condition is not None:
+            amount_share_owners.append((sibling, share_condition))
+    unique_amount_share_owner = (
+        amount_share_owners[0] if len(amount_share_owners) == 1 else None
+    )
+
     output: list[QuantitativeRuleCandidate] = []
     for candidate, criterion_region in zip(
         candidates,
@@ -1719,6 +1842,29 @@ def _augment_sourcewide_hwp_activation_context(
         if candidate.metric == "PERFORMANCE_AMOUNT" and "SHARE" in footnotes:
             additions.append(footnotes["SHARE"])
         conditions = list(candidate.recognition_conditions)
+        if (
+            candidate.metric == "PERFORMANCE_COUNT"
+            and unique_amount_share_owner is not None
+        ):
+            amount_owner, amount_share_condition = unique_amount_share_owner
+            if (
+                candidate.evidence.attachment_id
+                == amount_owner.evidence.attachment_id
+                == amount_share_condition.evidence.attachment_id
+            ):
+                stray_share_indexes = _source_condition_replacement_indexes(
+                    conditions,
+                    canonical_condition=amount_share_condition,
+                    lines=lines,
+                    protected_structure_spans=protected_spans,
+                    reject_canonical_structure_collision=True,
+                )
+                if len(stray_share_indexes) == 1:
+                    # The source-derived SHARE footnote belongs only to the
+                    # unique amount sibling.  Dropping the count copy avoids
+                    # both a false collision and an incorrect APPLY_SHARE
+                    # scope; it must never be canonicalized into count.
+                    conditions.pop(stray_share_indexes[0])
         for condition in additions:
             # Claude may copy a short semantic recognition literal while its
             # evidence anchor contains that same HWP cell in full.
@@ -1734,80 +1880,14 @@ def _augment_sourcewide_hwp_activation_context(
             # inside the cell, broad evidence crossing cells, and multiple
             # model conditions must remain visible to the duplicate/collision
             # guards.
-            addition_literal_span = _unique_anchor_line_span(
-                lines, condition.literal
+            replacement_indexes = _source_condition_replacement_indexes(
+                conditions,
+                canonical_condition=condition,
+                lines=lines,
+                protected_structure_spans=protected_spans,
             )
-            addition_evidence_span = _unique_anchor_line_span(
-                lines, condition.evidence.quote
-            )
-            addition_span = (
-                addition_literal_span
-                if addition_literal_span is not None
-                and addition_literal_span == addition_evidence_span
-                else None
-            )
-            if addition_span is not None:
-                addition_text = "\n".join(
-                    lines[addition_span[0] : addition_span[1]]
-                )
-                replacement_indexes: list[int] = []
-                for existing_index, existing in enumerate(conditions):
-                    all_existing_literal_spans = _anchor_line_spans(
-                        lines, existing.literal
-                    )
-                    all_existing_evidence_spans = _anchor_line_spans(
-                        lines, existing.evidence.quote
-                    )
-                    existing_literal_spans = tuple(
-                        span
-                        for span in all_existing_literal_spans
-                        if _span_inside_region(span, addition_span)
-                    )
-                    existing_evidence_spans = tuple(
-                        span
-                        for span in all_existing_evidence_spans
-                        if _span_inside_region(span, addition_span)
-                    )
-                    outside_structure_collision = any(
-                        not _span_inside_region(span, addition_span)
-                        and any(
-                            _spans_overlap(span, protected_span)
-                            for protected_span in protected_spans
-                        )
-                        for span in (
-                            *all_existing_literal_spans,
-                            *all_existing_evidence_spans,
-                        )
-                    )
-                    if (
-                        existing.evidence.attachment_id
-                        == condition.evidence.attachment_id
-                        and len(existing_literal_spans) == 1
-                        and len(existing_evidence_spans) == 1
-                        and _anchor_occurrence_count(
-                            existing.literal,
-                            addition_text,
-                        )
-                        == 1
-                        and _anchor_occurrence_count(
-                            existing.evidence.quote,
-                            addition_text,
-                        )
-                        == 1
-                        and not outside_structure_collision
-                        and _spans_overlap(
-                            existing_literal_spans[0],
-                            existing_evidence_spans[0],
-                        )
-                        and _literal_is_anchored(
-                            existing.literal,
-                            existing.evidence,
-                            condition.literal,
-                        )
-                    ):
-                        replacement_indexes.append(existing_index)
-                if len(replacement_indexes) == 1:
-                    conditions.pop(replacement_indexes[0])
+            if len(replacement_indexes) == 1:
+                conditions.pop(replacement_indexes[0])
             key = _recognition_key(condition.literal, condition.evidence.quote)
             if key not in {
                 _recognition_key(item.literal, item.evidence.quote)
