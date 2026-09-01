@@ -6,7 +6,7 @@ import math
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.6.0"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.5.0"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.0"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.0"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -296,6 +296,37 @@ _ASCII_REVERSED_BOUND_RE = re.compile(
     re.IGNORECASE,
 )
 _COMPARATOR_MARKER_RE = re.compile(r"이상|초과|이하|미만|>=|<=|==|>|<|=")
+_MAX_TABLE_CELL_WINDOW_LINES = 4
+_MAX_TABLE_CELL_WINDOW_CHARS = 500
+_HWP_SECTION_LINE_RE = re.compile(r"^\[HWP SECTION \d+\]$")
+_HWP_FOOTNOTE_LINE_RE = re.compile(
+    r"^(?:※|[*＊]|[①-⑳]|\[\s*주\s*\]|주\s*\d+\s*[.)]?)"
+)
+_AMOUNT_UNIT_SCALE = {
+    "원": Decimal("1"),
+    "천원": Decimal("1000"),
+    "만원": Decimal("10000"),
+    "백만원": Decimal("1000000"),
+    "천만원": Decimal("10000000"),
+    "억원": Decimal("100000000"),
+}
+_AMOUNT_KOREAN_BOUND_RE = re.compile(
+    rf"(?P<num>{_NUM_PATTERN})\s*"
+    r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원)\s*"
+    r"(?P<op>이상|초과|이하|미만)",
+    re.IGNORECASE,
+)
+_AMOUNT_ASCII_DIRECT_BOUND_RE = re.compile(
+    rf"(?P<op>>=|<=|==|>|<|=)\s*(?P<num>{_NUM_PATTERN})\s*"
+    r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원)",
+    re.IGNORECASE,
+)
+_AMOUNT_ASCII_REVERSED_BOUND_RE = re.compile(
+    rf"(?P<num>{_NUM_PATTERN})\s*"
+    r"(?P<unit>천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원)\s*"
+    r"(?P<op>>=|<=|==|>|<|=)\s*(?=[A-Za-z가-힣_(]|$)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_case_category(value: str) -> str:
@@ -414,6 +445,1049 @@ def _comparator_binding_issue(
         mismatch_message,
         **context,
     )
+
+
+def _source_lines(source: str) -> tuple[str, ...]:
+    """Return visible HWP paragraphs while preserving their exact order."""
+
+    return tuple(line.strip() for line in source.splitlines())
+
+
+def _normalise_anchor_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value)
+    visible = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    return " ".join(visible.split())
+
+
+def _overlapping_substring_count(source: str, needle: str) -> int:
+    if not needle:
+        return 0
+    count = 0
+    offset = 0
+    while (match := source.find(needle, offset)) >= 0:
+        count += 1
+        offset = match + 1
+    return count
+
+
+def _anchor_occurrence_count(quote: str, source: str) -> int:
+    normalized_quote = _normalise_anchor_text(quote)
+    normalized_source = _normalise_anchor_text(source)
+    if not normalized_quote:
+        return 0
+    compact_quote = "".join(normalized_quote.split())
+    compact_source = "".join(normalized_source.split())
+    return max(
+        _overlapping_substring_count(normalized_source, normalized_quote),
+        _overlapping_substring_count(compact_source, compact_quote),
+    )
+
+
+def _anchor_line_spans(
+    lines: tuple[str, ...],
+    quote: str,
+) -> tuple[tuple[int, int], ...]:
+    """Locate every minimal bounded line span containing the exact anchor."""
+
+    matches: list[tuple[int, int, str]] = []
+    for start in range(len(lines)):
+        for end in range(
+            start + 1,
+            min(len(lines), start + _MAX_TABLE_CELL_WINDOW_LINES) + 1,
+        ):
+            window = "\n".join(lines[start:end])
+            if len(window) > _MAX_TABLE_CELL_WINDOW_CHARS:
+                break
+            if evidence_quote_matches_source(quote, window):
+                matches.append((start, end, window))
+                break
+    if not matches:
+        return ()
+    minimal = [
+        (start, end)
+        for start, end, _window in matches
+        if not any(
+            other_start >= start
+            and other_end <= end
+            and (other_start, other_end) != (start, end)
+            for other_start, other_end, _other_window in matches
+        )
+    ]
+    return tuple(minimal)
+
+
+def _unique_anchor_line_span(
+    lines: tuple[str, ...],
+    quote: str,
+) -> tuple[int, int] | None:
+    spans = _anchor_line_spans(lines, quote)
+    if len(spans) != 1:
+        return None
+    start, end = spans[0]
+    return spans[0] if _anchor_occurrence_count(quote, "\n".join(lines[start:end])) == 1 else None
+
+
+def _all_anchor_line_spans(
+    lines: tuple[str, ...],
+    values: Iterable[str],
+) -> tuple[tuple[int, int], ...]:
+    """Return every source occurrence span, deduplicated in source order."""
+
+    return tuple(
+        dict.fromkeys(
+            span
+            for value in values
+            if value
+            for span in _anchor_line_spans(lines, value)
+        )
+    )
+
+
+def _spans_overlap(
+    left: tuple[int, int],
+    right: tuple[int, int],
+) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def _minimal_anchor_window(
+    lines: tuple[str, ...],
+    *,
+    anchor_span: tuple[int, int],
+    predicate: Callable[[str], bool],
+    maximum_lines: int = _MAX_TABLE_CELL_WINDOW_LINES,
+    allow_before_anchor: bool = True,
+) -> str | None:
+    anchor_start, anchor_end = anchor_span
+    lower = (
+        max(0, anchor_start - maximum_lines + 1)
+        if allow_before_anchor
+        else anchor_start
+    )
+    upper = min(len(lines), anchor_end + maximum_lines - 1)
+    matches: list[tuple[int, int, str]] = []
+    for start in range(lower, anchor_start + 1):
+        for end in range(anchor_end, upper + 1):
+            if end - start > maximum_lines:
+                continue
+            window = "\n".join(lines[start:end])
+            if (
+                len(window) > _MAX_TABLE_CELL_WINDOW_CHARS
+                or any(not line for line in lines[start:end])
+                or any(_HWP_SECTION_LINE_RE.fullmatch(line) for line in lines[start:end])
+            ):
+                continue
+            if predicate(window):
+                matches.append((start, end, window))
+    if not matches:
+        return None
+    best_size = min((end - start, len(window)) for start, end, window in matches)
+    best = [
+        window
+        for start, end, window in matches
+        if (end - start, len(window)) == best_size
+    ]
+    return best[0] if len(best) == 1 else None
+
+
+def _score_cell_matches(
+    line: str,
+    *,
+    value: float,
+    percent: bool,
+) -> bool:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+    match = re.fullmatch(
+        rf"(?:배점(?:의)?)?(?P<num>{_NUM_PATTERN})(?P<unit>점|%|퍼센트)?",
+        compact,
+    )
+    if match is None:
+        return False
+    try:
+        parsed = Decimal(match.group("num").replace(",", ""))
+    except InvalidOperation:
+        return False
+    expected = _decimal(value)
+    if parsed is None or expected is None or parsed != expected:
+        return False
+    unit = match.group("unit") or ""
+    return unit in {"%", "퍼센트"} if percent else unit in {"", "점"}
+
+
+def _is_score_cell(line: str) -> bool:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+    return bool(
+        re.fullmatch(
+            rf"(?:배점(?:의)?)?{_NUM_PATTERN}(?:점|%|퍼센트)?",
+            compact,
+        )
+    )
+
+
+def _normalise_amount_unit(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
+
+
+def _amount_gte_condition_matches(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
+    condition: str,
+) -> bool:
+    expected = _decimal(case.comparison_value)
+    if expected is None:
+        return False
+    if candidate.metric == "PERFORMANCE_AMOUNT":
+        bound_matches = [
+            (match, operator_map[match.group("op")])
+            for regex, operator_map in (
+                (_AMOUNT_KOREAN_BOUND_RE, _KOREAN_OPERATOR),
+                (_AMOUNT_ASCII_DIRECT_BOUND_RE, _DIRECT_OPERATOR),
+                (_AMOUNT_ASCII_REVERSED_BOUND_RE, _REVERSED_OPERATOR),
+            )
+            for match in regex.finditer(condition)
+        ]
+        if not bound_matches:
+            # Preserve the existing explicit header-unit inheritance path for
+            # truly unitless rows. A recognised currency unit must bind to the
+            # comparator in this row and may never borrow another metric's term.
+            if re.search(r"천\s*만\s*원|백\s*만\s*원|억\s*원|만\s*원|천\s*원|원", condition):
+                return False
+            return Counter(_comparator_terms(condition)) == Counter(
+                ((expected, "GTE"),)
+            )
+        if (
+            len(bound_matches) != 1
+            or bound_matches[0][1] != "GTE"
+            or len(_COMPARATOR_MARKER_RE.findall(condition)) != 1
+        ):
+            return False
+        match = bound_matches[0][0]
+        try:
+            source_number = Decimal(match.group("num").replace(",", ""))
+        except InvalidOperation:
+            return False
+        source_scale = _AMOUNT_UNIT_SCALE.get(
+            _normalise_amount_unit(match.group("unit"))
+        )
+        candidate_scale = _AMOUNT_UNIT_SCALE.get(
+            _normalise_amount_unit(candidate.unit or "")
+        )
+        return bool(
+            source_scale is not None
+            and candidate_scale is not None
+            and source_number * source_scale == expected * candidate_scale
+        )
+    return bool(
+        len(_NUMBER_RE.findall(condition)) == 1
+        and Counter(_comparator_terms(condition)) == Counter(((expected, "GTE"),))
+    )
+
+
+def _case_condition_matches(
+    candidate: QuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral,
+    condition: str,
+) -> bool:
+    if case.operator == "GTE":
+        if candidate.metric == "PERFORMANCE_AMOUNT":
+            return _amount_gte_condition_matches(candidate, case, condition)
+        comparison = _decimal(case.comparison_value)
+        return bool(
+            comparison is not None
+            and Counter(_comparator_terms(condition))
+            == Counter(((comparison, "GTE"),))
+        )
+    if case.operator == "EQ":
+        return bool(
+            case.comparison_value is not None
+            and len(_NUMBER_RE.findall(condition)) == 1
+            and _literal_contains_number(case.comparison_value, condition)
+            and not _COMPARATOR_MARKER_RE.search(condition)
+        )
+    return case.operator == "IN" and all(
+        _case_literal_contains_exact_category(condition, value)
+        for value in case.category_values
+    )
+
+
+def _case_comparison_matches(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
+    literal: str,
+) -> bool:
+    if case.comparison_value is None:
+        return True
+    lines = literal.splitlines()
+    condition = (
+        "\n".join(lines[:-1])
+        if len(lines) >= 2
+        and _score_cell_matches(
+            lines[-1],
+            value=case.award_value,
+            percent=case.award_kind == "PERCENT_OF_MAX",
+        )
+        else literal
+    )
+    if case.operator == "GTE":
+        if candidate.metric == "PERFORMANCE_AMOUNT":
+            return _amount_gte_condition_matches(candidate, case, condition)
+        comparison = _decimal(case.comparison_value)
+        return bool(
+            comparison is not None
+            and Counter(_comparator_terms(condition))
+            == Counter(((comparison, "GTE"),))
+        )
+    return _literal_contains_number(case.comparison_value, condition)
+
+
+def _case_row_window_matches(
+    candidate: QuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral,
+    window: str,
+) -> bool:
+    row_lines = window.splitlines()
+    if len(row_lines) < 2 or not _score_cell_matches(
+        row_lines[-1],
+        value=case.award_value,
+        percent=case.award_kind == "PERCENT_OF_MAX",
+    ):
+        return False
+    condition_lines = row_lines[:-1]
+    # A score-like cell before the final cell proves a column-major or crossed
+    # row layout, not one condition->award HWP row.
+    if any(_is_score_cell(line) for line in condition_lines):
+        return False
+    condition = "\n".join(condition_lines)
+    return _case_condition_matches(candidate, case, condition)
+
+
+def _criterion_window_matches(
+    candidate: QuantitativeRuleCandidate,
+    window: str,
+) -> bool:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", window))
+    expected = _decimal(candidate.max_points)
+    return bool(
+        expected is not None
+        and evidence_quote_matches_source(candidate.criterion_literal, window)
+        and any(
+            Decimal(match.group("num").replace(",", "")) == expected
+            for match in re.finditer(rf"(?P<num>{_NUM_PATTERN})\s*점", compact)
+        )
+    )
+
+
+def _recognition_key(literal: str, quote: str) -> tuple[str, str]:
+    return (_normalise_anchor_text(literal).casefold(), _normalise_anchor_text(quote))
+
+
+def _span_inside_region(
+    span: tuple[int, int],
+    region: tuple[int, int] | None,
+) -> bool:
+    return region is not None and region[0] <= span[0] and span[1] <= region[1]
+
+
+def _is_explicit_hwp_footnote_span(
+    lines: tuple[str, ...],
+    span: tuple[int, int],
+) -> bool:
+    return bool(
+        span[0] < len(lines)
+        and _HWP_FOOTNOTE_LINE_RE.match(lines[span[0]].lstrip())
+    )
+
+
+def _rebind_candidate_table_cell_literals(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    source: str,
+    lines: tuple[str, ...],
+    foreign_structure_spans: tuple[tuple[int, int], ...] = (),
+    foreign_recognition_spans: tuple[tuple[int, int], ...] = (),
+    criterion_region: tuple[int, int] | None = None,
+    shared_recognition_keys: frozenset[tuple[str, str]] = frozenset(),
+    external_recognition_keys: frozenset[tuple[str, str]] = frozenset(),
+) -> QuantitativeRuleCandidate:
+    """Repair exact HWP cell splits without changing structured rule values."""
+
+    if criterion_region is None:
+        return candidate
+
+    candidate_span = _unique_anchor_line_span(lines, candidate.evidence.quote)
+    candidate_structure_spans = _all_anchor_line_spans(
+        lines,
+        (candidate.evidence.quote, candidate.criterion_literal),
+    )
+    case_anchor_spans = [
+        _unique_anchor_line_span(lines, case.evidence.quote)
+        for case in candidate.cases
+    ]
+    recognition_anchor_spans = [
+        _unique_anchor_line_span(lines, item.evidence.quote)
+        for item in candidate.recognition_conditions
+    ]
+    case_anchor_spans_all = [
+        _anchor_line_spans(lines, case.evidence.quote) for case in candidate.cases
+    ]
+    case_literal_spans_all = [
+        _anchor_line_spans(lines, case.literal) for case in candidate.cases
+    ]
+    recognition_anchor_spans_all = [
+        _anchor_line_spans(lines, item.evidence.quote)
+        for item in candidate.recognition_conditions
+    ]
+    recognition_literal_spans_all = [
+        _anchor_line_spans(lines, item.literal)
+        for item in candidate.recognition_conditions
+    ]
+    case_anchors_are_ordered = bool(
+        case_anchor_spans
+        and all(span is not None for span in case_anchor_spans)
+        and all(
+            left is not None and right is not None and left[0] < right[0]
+            for left, right in zip(
+                case_anchor_spans,
+                case_anchor_spans[1:],
+                strict=False,
+            )
+        )
+    )
+    reserved_case_spans = [
+        span
+        for spans in (*case_anchor_spans_all, *case_literal_spans_all)
+        for span in spans
+    ]
+    reserved_recognition_spans = [
+        span
+        for spans in (
+            *recognition_anchor_spans_all,
+            *recognition_literal_spans_all,
+        )
+        for span in spans
+    ]
+    criterion_literal = candidate.criterion_literal
+    criterion_evidence = candidate.evidence
+    if (
+        candidate_span is not None
+        and not (
+            _literal_is_anchored(criterion_literal, criterion_evidence, source)
+            and _literal_contains_number(candidate.max_points, criterion_literal)
+        )
+    ):
+        window = _minimal_anchor_window(
+            lines,
+            anchor_span=candidate_span,
+            maximum_lines=4,
+            allow_before_anchor=False,
+            predicate=lambda value: _criterion_window_matches(candidate, value),
+        )
+        if window is not None:
+            span = _unique_anchor_line_span(lines, window)
+            if span is not None and not any(
+                span[0] < reserved[1] and reserved[0] < span[1]
+                for reserved in (
+                    *reserved_case_spans,
+                    *reserved_recognition_spans,
+                    *foreign_structure_spans,
+                    *foreign_recognition_spans,
+                )
+            ) and _span_inside_region(span, criterion_region):
+                criterion_literal = window
+                criterion_evidence = candidate.evidence.model_copy(
+                    update={"quote": window}
+                )
+
+    repaired_cases = list(candidate.cases)
+    repaired_spans: list[tuple[int, int]] = []
+    for index, case in enumerate(candidate.cases):
+        if (
+            _literal_is_anchored(case.literal, case.evidence, source)
+            and _case_row_window_matches(candidate, case, case.literal)
+        ):
+            continue
+        if not case_anchors_are_ordered:
+            continue
+        anchor_span = case_anchor_spans[index]
+        if anchor_span is None:
+            continue
+        window = _minimal_anchor_window(
+            lines,
+            anchor_span=anchor_span,
+            predicate=lambda value, row=case: bool(
+                evidence_quote_matches_source(row.literal, value)
+                and evidence_quote_matches_source(row.evidence.quote, value)
+                and _case_row_window_matches(candidate, row, value)
+            ),
+        )
+        if window is None:
+            continue
+        span = _unique_anchor_line_span(lines, window)
+        other_case_spans = [
+            reserved
+            for other_index, pair in enumerate(
+                zip(case_anchor_spans_all, case_literal_spans_all, strict=True)
+            )
+            if other_index != index
+            for spans in pair
+            for reserved in spans
+        ]
+        non_case_spans = [
+            span
+            for span in (
+                *candidate_structure_spans,
+                *reserved_recognition_spans,
+                *foreign_structure_spans,
+                *foreign_recognition_spans,
+            )
+            if span is not None
+        ]
+        if span is None or not _span_inside_region(span, criterion_region) or any(
+            span[0] < reserved[1] and reserved[0] < span[1]
+            for reserved in (
+                *other_case_spans,
+                *non_case_spans,
+                *repaired_spans,
+            )
+        ):
+            continue
+        repaired_spans.append(span)
+        repaired_cases[index] = case.model_copy(
+            update={
+                "literal": window,
+                "evidence": case.evidence.model_copy(update={"quote": window}),
+            }
+        )
+
+    repaired_conditions = list(candidate.recognition_conditions)
+    for index, condition in enumerate(candidate.recognition_conditions):
+        if _literal_is_anchored(condition.literal, condition.evidence, source):
+            continue
+        anchor_span = recognition_anchor_spans[index]
+        if anchor_span is None:
+            continue
+        window = _minimal_anchor_window(
+            lines,
+            anchor_span=anchor_span,
+            predicate=lambda value, row=condition: bool(
+                evidence_quote_matches_source(row.literal, value)
+                and evidence_quote_matches_source(row.evidence.quote, value)
+            ),
+        )
+        span = _unique_anchor_line_span(lines, window) if window is not None else None
+        other_recognition_spans = [
+            reserved
+            for other_index, pair in enumerate(
+                zip(
+                    recognition_anchor_spans_all,
+                    recognition_literal_spans_all,
+                    strict=True,
+                )
+            )
+            if other_index != index
+            for spans in pair
+            for reserved in spans
+        ]
+        blocked_spans = [
+            reserved
+            for reserved in (
+                *candidate_structure_spans,
+                *reserved_case_spans,
+                *other_recognition_spans,
+                *foreign_structure_spans,
+                *foreign_recognition_spans,
+            )
+            if reserved is not None
+        ]
+        condition_key = _recognition_key(condition.literal, condition.evidence.quote)
+        if (
+            span is not None
+            and (
+                condition_key in shared_recognition_keys
+                or condition_key in external_recognition_keys
+                or _span_inside_region(span, criterion_region)
+            )
+            and not any(
+                span[0] < reserved[1] and reserved[0] < span[1]
+                for reserved in blocked_spans
+            )
+        ):
+            repaired_conditions[index] = condition.model_copy(
+                update={
+                    "evidence": condition.evidence.model_copy(
+                        update={"quote": window}
+                    )
+                }
+            )
+
+    return candidate.model_copy(
+        update={
+            "criterion_literal": criterion_literal,
+            "evidence": criterion_evidence,
+            "cases": repaired_cases,
+            "recognition_conditions": repaired_conditions,
+        }
+    )
+
+
+def _rebind_split_table_cell_literals(
+    payload: ExtractionPayload,
+    *,
+    source: str,
+) -> ExtractionPayload:
+    """Repair only exact, unambiguous table-cell layout fragmentation."""
+
+    lines = _source_lines(source)
+    if (
+        not lines
+        or not any(_HWP_SECTION_LINE_RE.fullmatch(line) for line in lines)
+        or not payload.quantitative_tables
+    ):
+        return payload
+
+    table_fences: list[tuple[tuple[int, int], ...]] = []
+    candidate_structure_spans: list[list[tuple[tuple[int, int], ...]]] = []
+    table_structure_spans: list[tuple[tuple[int, int], ...]] = []
+    candidate_recognition_entries: list[
+        list[tuple[tuple[tuple[str, str], tuple[tuple[int, int], ...]], ...]]
+    ] = []
+    criterion_anchor_spans: list[list[tuple[int, int] | None]] = []
+
+    for table in payload.quantitative_tables:
+        fence_values = [
+            evidence.quote
+            for evidence in (table.total_evidence, table.minimum_evidence)
+            if evidence is not None
+        ]
+        fences = _all_anchor_line_spans(lines, fence_values)
+        table_fences.append(fences)
+
+        structures_for_table: list[tuple[tuple[int, int], ...]] = []
+        recognition_for_table: list[
+            tuple[tuple[tuple[str, str], tuple[tuple[int, int], ...]], ...]
+        ] = []
+        anchors_for_table: list[tuple[int, int] | None] = []
+        for candidate in table.criteria:
+            structure_values = (
+                candidate.evidence.quote,
+                candidate.criterion_literal,
+                *(item.evidence.quote for item in candidate.cases),
+                *(item.literal for item in candidate.cases),
+            )
+            structures_for_table.append(
+                _all_anchor_line_spans(lines, structure_values)
+            )
+            recognition_for_table.append(
+                tuple(
+                    (
+                        _recognition_key(item.literal, item.evidence.quote),
+                        _all_anchor_line_spans(
+                            lines,
+                            (item.evidence.quote, item.literal),
+                        ),
+                    )
+                    for item in candidate.recognition_conditions
+                )
+            )
+            anchors_for_table.append(
+                _unique_anchor_line_span(lines, candidate.evidence.quote)
+            )
+        candidate_structure_spans.append(structures_for_table)
+        candidate_recognition_entries.append(recognition_for_table)
+        criterion_anchor_spans.append(anchors_for_table)
+        table_structure_spans.append(
+            tuple(
+                dict.fromkeys(
+                    (
+                        *fences,
+                        *(
+                            span
+                            for spans in structures_for_table
+                            for span in spans
+                        ),
+                    )
+                )
+            )
+        )
+
+    hwp_section_starts = tuple(
+        index
+        for index, line in enumerate(lines)
+        if _HWP_SECTION_LINE_RE.fullmatch(line)
+    )
+    criterion_regions: list[list[tuple[int, int] | None]] = []
+    for table_index, table in enumerate(payload.quantitative_tables):
+        anchors = criterion_anchor_spans[table_index]
+        ordered = bool(
+            anchors
+            and all(span is not None for span in anchors)
+            and all(
+                left is not None and right is not None and left[0] < right[0]
+                for left, right in zip(anchors, anchors[1:], strict=False)
+            )
+        )
+        if not ordered:
+            criterion_regions.append([None for _candidate in table.criteria])
+            continue
+
+        resolved_anchors = [span for span in anchors if span is not None]
+        regions_for_table: list[tuple[int, int] | None] = []
+        for candidate_index, anchor_span in enumerate(resolved_anchors):
+            start = anchor_span[0]
+            boundary_starts = [
+                span[0]
+                for span in table_fences[table_index]
+                if span[0] > start
+            ]
+            boundary_starts.extend(
+                marker
+                for marker in hwp_section_starts
+                if marker > start
+            )
+            if candidate_index + 1 < len(resolved_anchors):
+                boundary_starts.append(resolved_anchors[candidate_index + 1][0])
+            boundary_starts.extend(
+                span[0]
+                for other_table_index, other_anchors in enumerate(
+                    criterion_anchor_spans
+                )
+                if other_table_index != table_index
+                for span in other_anchors
+                if span is not None and span[0] > start
+            )
+            end = min(boundary_starts, default=len(lines))
+            regions_for_table.append((start, end) if end > start else None)
+        criterion_regions.append(regions_for_table)
+
+    table_regions: list[tuple[int, int] | None] = []
+    table_core_regions: list[tuple[int, int] | None] = []
+    for table_index, regions in enumerate(criterion_regions):
+        if not regions or any(region is None for region in regions):
+            table_regions.append(None)
+            table_core_regions.append(None)
+            continue
+        resolved_regions = [region for region in regions if region is not None]
+        start = resolved_regions[0][0]
+        boundary_starts = [
+            marker for marker in hwp_section_starts if marker > start
+        ]
+        boundary_starts.extend(
+            span[0]
+            for other_table_index, other_anchors in enumerate(
+                criterion_anchor_spans
+            )
+            if other_table_index != table_index
+            for span in other_anchors
+            if span is not None and span[0] > start
+        )
+        end = min(boundary_starts, default=len(lines))
+        table_region = (start, end) if end > start else None
+        table_regions.append(table_region)
+        last_criterion_start = resolved_regions[-1][0]
+        core_end = min(
+            (
+                span[0]
+                for span in table_fences[table_index]
+                if span[0] > last_criterion_start
+            ),
+            default=end,
+        )
+        table_core_regions.append(
+            (start, core_end) if core_end > start else None
+        )
+
+    all_structure_spans = tuple(
+        dict.fromkeys(
+            span for spans in table_structure_spans for span in spans
+        )
+    )
+    repaired_tables: list[QuantitativeTableCandidate] = []
+    for table_index, table in enumerate(payload.quantitative_tables):
+        recognition_owners: dict[tuple[str, str], set[int]] = {}
+        for candidate_index, entries in enumerate(
+            candidate_recognition_entries[table_index]
+        ):
+            for key, _spans in entries:
+                recognition_owners.setdefault(key, set()).add(candidate_index)
+        shared_keys = frozenset(
+            key for key, owners in recognition_owners.items() if len(owners) > 1
+        )
+
+        repaired_candidates: list[QuantitativeRuleCandidate] = []
+        for candidate_index, candidate in enumerate(table.criteria):
+            candidate_keys = {
+                key
+                for key, _spans in candidate_recognition_entries[table_index][
+                    candidate_index
+                ]
+            }
+            shareable_candidate_keys = {
+                _recognition_key(item.literal, item.evidence.quote)
+                for item in candidate.recognition_conditions
+                if (
+                    (literal_span := _unique_anchor_line_span(lines, item.literal))
+                    is not None
+                )
+                if (
+                    (evidence_span := _unique_anchor_line_span(
+                        lines, item.evidence.quote
+                    ))
+                    is not None
+                )
+                if _spans_overlap(literal_span, evidence_span)
+                and _span_inside_region(
+                    literal_span,
+                    table_core_regions[table_index],
+                )
+                and _span_inside_region(
+                    evidence_span,
+                    table_core_regions[table_index],
+                )
+            }
+            shared_candidate_keys = frozenset(
+                candidate_keys & shared_keys & shareable_candidate_keys
+            )
+            external_candidate_keys = frozenset(
+                _recognition_key(item.literal, item.evidence.quote)
+                for item in candidate.recognition_conditions
+                if (
+                    (literal_span := _unique_anchor_line_span(lines, item.literal))
+                    is not None
+                )
+                if (
+                    (evidence_span := _unique_anchor_line_span(
+                        lines, item.evidence.quote
+                    ))
+                    is not None
+                )
+                if _spans_overlap(literal_span, evidence_span)
+                and _span_inside_region(literal_span, table_regions[table_index])
+                and _span_inside_region(evidence_span, table_regions[table_index])
+                and _is_explicit_hwp_footnote_span(lines, literal_span)
+                and not any(
+                    _spans_overlap(literal_span, structure_span)
+                    or _spans_overlap(evidence_span, structure_span)
+                    for structure_span in all_structure_spans
+                )
+            )
+            foreign_structure = tuple(
+                dict.fromkeys(
+                    (
+                        *table_fences[table_index],
+                        *(
+                            span
+                            for other_candidate_index, spans in enumerate(
+                                candidate_structure_spans[table_index]
+                            )
+                            if other_candidate_index != candidate_index
+                            for span in spans
+                        ),
+                        *(
+                            span
+                            for other_table_index, spans in enumerate(
+                                table_structure_spans
+                            )
+                            if other_table_index != table_index
+                            for span in spans
+                        ),
+                    )
+                )
+            )
+            foreign_recognition = tuple(
+                dict.fromkeys(
+                    (
+                        *(
+                            span
+                            for other_candidate_index, entries in enumerate(
+                                candidate_recognition_entries[table_index]
+                            )
+                            if other_candidate_index != candidate_index
+                            for key, spans in entries
+                            if key
+                            not in (
+                                shared_candidate_keys | external_candidate_keys
+                            )
+                            for span in spans
+                        ),
+                        *(
+                            span
+                            for other_table_index, candidates in enumerate(
+                                candidate_recognition_entries
+                            )
+                            if other_table_index != table_index
+                            for entries in candidates
+                            for _key, spans in entries
+                            for span in spans
+                        ),
+                    )
+                )
+            )
+            repaired_candidates.append(
+                _rebind_candidate_table_cell_literals(
+                    candidate,
+                    source=source,
+                    lines=lines,
+                    foreign_structure_spans=foreign_structure,
+                    foreign_recognition_spans=foreign_recognition,
+                    criterion_region=criterion_regions[table_index][candidate_index],
+                    shared_recognition_keys=shared_candidate_keys,
+                    external_recognition_keys=external_candidate_keys,
+                )
+            )
+
+        ambiguous_case_claim = False
+        case_claims: list[
+            tuple[tuple[int, int], tuple[int, int]]
+        ] = []
+        for candidate_index, candidate in enumerate(repaired_candidates):
+            region = criterion_regions[table_index][candidate_index]
+            for case_index, case in enumerate(candidate.cases):
+                literal_spans = _anchor_line_spans(lines, case.literal)
+                evidence_spans = _anchor_line_spans(lines, case.evidence.quote)
+                if len(literal_spans) != 1 or len(evidence_spans) != 1:
+                    ambiguous_case_claim = True
+                if (
+                    region is not None
+                    and len(literal_spans) == 1
+                    and _case_row_window_matches(candidate, case, case.literal)
+                    and not _span_inside_region(literal_spans[0], region)
+                ):
+                    ambiguous_case_claim = True
+                owner = (candidate_index, case_index)
+                for span in dict.fromkeys((*literal_spans, *evidence_spans)):
+                    case_claims.append((owner, span))
+
+        for left_index, (left_owner, left_span) in enumerate(case_claims):
+            if any(
+                left_owner != right_owner and _spans_overlap(left_span, right_span)
+                for right_owner, right_span in case_claims[left_index + 1 :]
+            ):
+                ambiguous_case_claim = True
+                break
+
+        repaired_recognition_owners: dict[tuple[str, str], set[int]] = {}
+        for candidate_index, candidate in enumerate(repaired_candidates):
+            for condition in candidate.recognition_conditions:
+                repaired_recognition_owners.setdefault(
+                    _recognition_key(
+                        condition.literal,
+                        condition.evidence.quote,
+                    ),
+                    set(),
+                ).add(candidate_index)
+        repaired_shared_keys = frozenset(
+            key
+            for key, owners in repaired_recognition_owners.items()
+            if len(owners) > 1
+        )
+        ambiguous_recognition_claim = False
+        recognition_claims: list[
+            tuple[tuple[int, int], tuple[str, str], tuple[int, int]]
+        ] = []
+        for candidate_index, candidate in enumerate(repaired_candidates):
+            criterion_region = criterion_regions[table_index][candidate_index]
+            table_region = table_regions[table_index]
+            for condition_index, condition in enumerate(
+                candidate.recognition_conditions
+            ):
+                key = _recognition_key(
+                    condition.literal,
+                    condition.evidence.quote,
+                )
+                literal_spans = _anchor_line_spans(lines, condition.literal)
+                evidence_spans = _anchor_line_spans(
+                    lines,
+                    condition.evidence.quote,
+                )
+                if len(literal_spans) != 1 or len(evidence_spans) != 1:
+                    ambiguous_recognition_claim = True
+                owner = (candidate_index, condition_index)
+                claim_spans = tuple(
+                    dict.fromkeys((*literal_spans, *evidence_spans))
+                )
+                for span in claim_spans:
+                    recognition_claims.append((owner, key, span))
+                if not literal_spans or not evidence_spans:
+                    continue
+                if not any(
+                    _spans_overlap(literal_span, evidence_span)
+                    for literal_span in literal_spans
+                    for evidence_span in evidence_spans
+                ):
+                    ambiguous_recognition_claim = True
+                if any(
+                    _spans_overlap(span, structure_span)
+                    for span in claim_spans
+                    for structure_span in all_structure_spans
+                ):
+                    ambiguous_recognition_claim = True
+                inside_criterion = all(
+                    _span_inside_region(span, criterion_region)
+                    for span in claim_spans
+                )
+                explicit_table_footnote = bool(
+                    table_region is not None
+                    and all(
+                        _span_inside_region(span, table_region)
+                        for span in claim_spans
+                    )
+                    and any(
+                        _is_explicit_hwp_footnote_span(lines, span)
+                        for span in claim_spans
+                    )
+                )
+                shared_in_table = bool(
+                    key in repaired_shared_keys
+                    and table_core_regions[table_index] is not None
+                    and all(
+                        _span_inside_region(
+                            span,
+                            table_core_regions[table_index],
+                        )
+                        for span in claim_spans
+                    )
+                )
+                if not (inside_criterion or explicit_table_footnote or shared_in_table):
+                    ambiguous_recognition_claim = True
+
+        for left_index, (left_owner, left_key, left_span) in enumerate(
+            recognition_claims
+        ):
+            if any(
+                left_owner != right_owner
+                and left_key != right_key
+                and _spans_overlap(left_span, right_span)
+                for right_owner, right_key, right_span in recognition_claims[
+                    left_index + 1 :
+                ]
+            ):
+                ambiguous_recognition_claim = True
+                break
+
+        ambiguity_reason = table.ambiguity_reason
+        if ambiguous_case_claim:
+            ambiguity_reason = (
+                ambiguity_reason
+                or "정량평가 행 근거가 복수 평가항목에 중복 연결되었습니다."
+            )
+        if ambiguous_recognition_claim:
+            ambiguity_reason = (
+                ambiguity_reason
+                or "정량평가 인식조건 근거가 평가항목 구조와 모호하게 연결되었습니다."
+            )
+        repaired_tables.append(
+            table.model_copy(
+                update={
+                    "criteria": repaired_candidates,
+                    "ambiguity_reason": ambiguity_reason,
+                }
+            )
+        )
+    return payload.model_copy(update={"quantitative_tables": repaired_tables})
 
 
 def _normalise_source_gap(value: str) -> str:
@@ -844,10 +1918,10 @@ def _assert_available_candidate_invariants(
         for case in candidate.cases:
             if not evidence_quote_matches_source(case.literal, case.evidence.quote):
                 raise ValueError("AVAILABLE CASE literal is not bound to its anchor")
-            values = [case.award_value]
-            if case.comparison_value is not None:
-                values.append(case.comparison_value)
-            if any(not _literal_contains_number(value, case.literal) for value in values):
+            if not _literal_contains_number(
+                case.award_value,
+                case.literal,
+            ) or not _case_comparison_matches(candidate, case, case.literal):
                 raise ValueError("AVAILABLE CASE numbers do not match its literal")
             rows.append(
                 CaseTableRowLiteral(
@@ -1340,10 +2414,10 @@ def _validate_cases(
                     **context,
                 )
             )
-        numeric_values = [case.award_value]
-        if case.comparison_value is not None:
-            numeric_values.append(case.comparison_value)
-        if any(not _literal_contains_number(value, case.literal) for value in numeric_values):
+        if not _literal_contains_number(
+            case.award_value,
+            case.literal,
+        ) or not _case_comparison_matches(candidate, case, case.literal):
             issues.append(
                 _issue(
                     "CASE_NUMBER_MISMATCH",
@@ -1361,7 +2435,21 @@ def _validate_cases(
                     **context,
                 )
             )
-        if case.operator == "GTE" and case.comparison_value is not None:
+        if (
+            case.operator == "GTE"
+            and case.comparison_value is not None
+            and candidate.metric == "PERFORMANCE_AMOUNT"
+        ):
+            if not _case_comparison_matches(candidate, case, case.literal):
+                issues.append(
+                    _issue(
+                        "CASE_COMPARATOR_MISMATCH",
+                        "INCOMPLETE",
+                        "CASE_TABLE 원문의 비교 연산자와 구조화한 조건이 일치하지 않습니다.",
+                        **context,
+                    )
+                )
+        elif case.operator == "GTE" and case.comparison_value is not None:
             comparison = _decimal(case.comparison_value)
             comparator_issue = _comparator_binding_issue(
                 literal=case.literal,
@@ -1967,7 +3055,10 @@ def build_quantitative_candidate_profile(
 
     seen_table_ids: set[tuple[str, str]] = set()
     for attachment_id in sorted(processed & expected):
-        payload = extractions_by_attachment_id[attachment_id]
+        payload = _rebind_split_table_cell_literals(
+            extractions_by_attachment_id[attachment_id],
+            source=source_text_by_attachment_id.get(attachment_id, ""),
+        )
         source_gaps = [
             gap
             for gap in payload.missing_or_unreadable

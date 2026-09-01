@@ -1745,3 +1745,1651 @@ def test_not_applicable_record_requires_exact_evidence_even_with_new_fingerprint
     )
     assert profile.status == "INCOMPLETE"
     assert "RECORD_INVARIANT_VIOLATION" in issue_codes(profile)
+
+
+def split_cell_case_table(
+    *,
+    metric: str = "PERFORMANCE_COUNT",
+    unit: str = "건",
+    max_points: float = 6,
+    cases: list[dict],
+) -> dict:
+    """One CASE_TABLE criterion whose model anchors name condition cells only."""
+
+    table = valid_table()
+    criterion = table["criteria"][0]
+    criterion.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-1",
+            "label": "수행실적",
+            "criterion_literal": f"수행실적 {max_points:g}점",
+            "max_points": max_points,
+            "scoring_method": "CASE_TABLE",
+            "metric": metric,
+            "unit": unit,
+            "brackets": [],
+            "threshold": None,
+            "formula_literal": None,
+            "cases": cases,
+            "recognition_conditions": [],
+            "required_evidence": [
+                (
+                    "company.credit_rating"
+                    if metric == "CREDIT_RATING"
+                    else (
+                        "company.performance.amount"
+                        if metric == "PERFORMANCE_AMOUNT"
+                        else "company.performance.count"
+                    )
+                )
+            ],
+            "evidence": anchor(f"수행실적 {max_points:g}점"),
+            "ambiguity_reason": None,
+        }
+    )
+    table["total_points"] = max_points
+    table["total_evidence"] = anchor(f"정량평가 총점 {max_points:g}점")
+    table["minimum_score"] = None
+    table["minimum_evidence"] = None
+    return table
+
+
+def split_case(
+    literal: str,
+    *,
+    operator: str,
+    comparison_value: float | None,
+    category_values: list[str],
+    award_kind: str,
+    award_value: float,
+    row_order: int,
+) -> dict:
+    return {
+        "literal": literal,
+        "operator": operator,
+        "comparison_value": comparison_value,
+        "category_values": category_values,
+        "award_kind": award_kind,
+        "award_value": award_value,
+        "row_order": row_order,
+        # HWP extraction supplies this exact condition cell, while the score
+        # cell is a separate next source line.
+        "evidence": anchor(literal),
+    }
+
+
+def test_split_hwp_gte_cells_bind_the_immediately_following_award_cell() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "6점",
+            "2건 이상",
+            "4점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            ),
+            split_case(
+                "2건 이상",
+                operator="GTE",
+                comparison_value=2,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=2,
+            ),
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert [item.literal for item in profile.available_candidates[0].cases] == [
+        "3건 이상\n6점",
+        "2건 이상\n4점",
+    ]
+
+
+def test_split_hwp_eq_cells_bind_the_immediately_following_award_cell() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건",
+            "6점",
+            "2건",
+            "4점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건",
+                operator="EQ",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            ),
+            split_case(
+                "2건",
+                operator="EQ",
+                comparison_value=2,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=2,
+            ),
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert [item.literal for item in profile.available_candidates[0].cases] == [
+        "3건\n6점",
+        "2건\n4점",
+    ]
+
+
+def test_split_hwp_categorical_percent_cells_bind_the_immediately_following_award_cell() -> None:
+    categories = ["AAA", "AA+", "AA", "AA-", "A+", "A0"]
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 10점",
+            "AAA, AA+, AA, AA-, A+, A0",
+            "100%",
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="CREDIT_RATING",
+        unit="등급",
+        max_points=10,
+        cases=[
+            split_case(
+                "AAA, AA+, AA, AA-, A+, A0",
+                operator="IN",
+                comparison_value=None,
+                category_values=categories,
+                award_kind="PERCENT_OF_MAX",
+                award_value=100,
+                row_order=1,
+            )
+        ],
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.available_candidates[0].cases[0].literal.endswith("\n100%")
+
+
+def test_split_hwp_case_cannot_borrow_the_next_rows_award() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "6점",
+            "2건 이상",
+            "4점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=1,
+            ),
+            split_case(
+                "2건 이상",
+                operator="GTE",
+                comparison_value=2,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=2,
+            ),
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_repeated_condition_anchor_is_not_rebound() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "6점",
+            "3건 이상",
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_column_major_cells_are_not_rebound_as_rows() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "2건 이상",
+            "6점",
+            "4점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            ),
+            split_case(
+                "2건 이상",
+                operator="GTE",
+                comparison_value=2,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=2,
+            ),
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_score_cell_anchor_recovers_the_unique_previous_condition() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "배점 6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    row = split_case(
+        "배점 6점",
+        operator="GTE",
+        comparison_value=3,
+        category_values=[],
+        award_kind="POINTS",
+        award_value=6,
+        row_order=1,
+    )
+    table = split_cell_case_table(cases=[row])
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.available_candidates[0].cases[0].literal == "3건 이상\n배점 6점"
+
+
+def test_split_hwp_amount_condition_converts_source_eok_to_candidate_won() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "2억 원 이상",
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    row = split_case(
+        "2억 원 이상",
+        operator="GTE",
+        comparison_value=200_000_000,
+        category_values=[],
+        award_kind="POINTS",
+        award_value=6,
+        row_order=1,
+    )
+    table = split_cell_case_table(
+        metric="PERFORMANCE_AMOUNT",
+        unit="원",
+        cases=[row],
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.available_candidates[0].cases[0].literal == "2억 원 이상\n6점"
+
+
+def test_split_cells_without_hwp_section_marker_are_not_rebound() -> None:
+    source = "\n".join(
+        ["수행실적 6점", "3건 이상", "6점", "정량평가 총점 6점"]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_case_cannot_borrow_the_previous_rows_award() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "2건 이상",
+            "4점",
+            "3건 이상",
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_case_rejects_gte_when_source_condition_is_lte() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이하",
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이하",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_COMPARATOR_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_criterion_label_and_score_cells_are_bound_when_unique() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적",
+            "6점",
+            "3건 이상 6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    row = split_case(
+        "3건 이상 6점",
+        operator="GTE",
+        comparison_value=3,
+        category_values=[],
+        award_kind="POINTS",
+        award_value=6,
+        row_order=1,
+    )
+    table = split_cell_case_table(cases=[row])
+    table["criteria"][0]["criterion_literal"] = "수행실적"
+    table["criteria"][0]["evidence"] = anchor("수행실적")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    candidate = profile.available_candidates[0]
+    assert candidate.criterion_literal == "수행실적\n6점"
+    assert candidate.evidence.quote == "수행실적\n6점"
+
+
+def test_split_hwp_recognition_extends_exact_window_but_rejects_paraphrase() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상 6점",
+            "최근 3년 이내",
+            "완료 실적만 인정",
+            "정량평가 총점 6점",
+        ]
+    )
+    row = split_case(
+        "3건 이상 6점",
+        operator="GTE",
+        comparison_value=3,
+        category_values=[],
+        award_kind="POINTS",
+        award_value=6,
+        row_order=1,
+    )
+    exact_table = split_cell_case_table(cases=[row])
+    exact_table["criteria"][0]["recognition_conditions"] = [
+        {
+            "literal": "최근 3년 이내 완료 실적만 인정",
+            "evidence": anchor("최근 3년 이내"),
+        }
+    ]
+    paraphrase_table = split_cell_case_table(cases=[row])
+    paraphrase_table["criteria"][0]["recognition_conditions"] = [
+        {
+            "literal": "최근 3년간 완료 실적만 인정",
+            "evidence": anchor("최근 3년 이내"),
+        }
+    ]
+
+    exact = build(payload_with_table(exact_table), source=source)
+    paraphrase = build(payload_with_table(paraphrase_table), source=source)
+
+    assert exact.status == "AVAILABLE", issue_codes(exact)
+    condition = exact.available_candidates[0].recognition_conditions[0]
+    assert condition.literal == "최근 3년 이내 완료 실적만 인정"
+    assert condition.evidence.quote == "최근 3년 이내\n완료 실적만 인정"
+    assert paraphrase.status == "INCOMPLETE"
+    assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in issue_codes(paraphrase)
+
+
+def test_split_hwp_rejects_exact_line_anchor_with_a_second_longer_substring_match() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "6점",
+            "참고: 3건 이상인 경우 별도 확인",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_two_criteria_cannot_claim_the_same_case_source_row() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "기준 B 6점",
+            "3건 이상",
+            "6점",
+            "정량평가 총점 12점",
+        ]
+    )
+    shared_case = split_case(
+        "3건 이상",
+        operator="GTE",
+        comparison_value=3,
+        category_values=[],
+        award_kind="POINTS",
+        award_value=6,
+        row_order=1,
+    )
+    table = split_cell_case_table(cases=[shared_case])
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-2",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 6점",
+            "evidence": anchor("기준 B 6점"),
+        }
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-1",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 12
+    table["total_evidence"] = anchor("정량평가 총점 12점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert profile.available_candidates == ()
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_split_hwp_criterion_cannot_borrow_the_previous_criterions_max_cell() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A",
+            "6점",
+            "기준 B",
+            "3건 이상 4점",
+            "정량평가 총점 10점",
+        ]
+    )
+    row = split_case(
+        "3건 이상 4점",
+        operator="GTE",
+        comparison_value=3,
+        category_values=[],
+        award_kind="POINTS",
+        award_value=4,
+        row_order=1,
+    )
+    table = split_cell_case_table(max_points=4, cases=[row])
+    table["criteria"][0].update(
+        {"label": "기준 B", "criterion_literal": "기준 B", "evidence": anchor("기준 B")}
+    )
+    table["total_points"] = 4
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "MAX_POINTS_LITERAL_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_does_not_bind_condition_and_score_across_a_blank_line() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            "3건 이상",
+            "",
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_amount_ascii_gte_keeps_exact_won_comparison() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            ">= 200000000 원",
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="PERFORMANCE_AMOUNT",
+        unit="원",
+        cases=[
+            split_case(
+                ">= 200000000 원",
+                operator="GTE",
+                comparison_value=200_000_000,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ],
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    ("source_condition", "comparison_value", "expected_status"),
+    [
+        ("2만원 이상", 2, "INCOMPLETE"),
+        ("200백만원 이상", 2, "AVAILABLE"),
+    ],
+)
+def test_split_hwp_amount_units_never_confuse_manwon_with_eokwon(
+    source_condition: str,
+    comparison_value: float,
+    expected_status: str,
+) -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            source_condition,
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="PERFORMANCE_AMOUNT",
+        unit="억원",
+        cases=[
+            split_case(
+                source_condition,
+                operator="GTE",
+                comparison_value=comparison_value,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ],
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == expected_status, issue_codes(profile)
+    if expected_status == "INCOMPLETE":
+        assert profile.available_candidates == ()
+        assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_ambiguous_foreign_structure_anchor_blocks_case_rebind() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "3건 이상",
+            "기준 B",
+            "참고",
+            "6점",
+            "기준 B 4점",
+            "2건 이상 4점",
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            # This shorter structural literal occurs both inside A's tempting
+            # repair window and inside B's unique criterion anchor.
+            "criterion_literal": "기준 B",
+            "max_points": 4,
+            "evidence": anchor("기준 B 4점"),
+            "cases": [
+                split_case(
+                    "2건 이상 4점",
+                    operator="GTE",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                )
+            ],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    first_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "SPLIT-CELL-CASE-A"
+    )
+    assert first_review.status == "INCOMPLETE"
+    assert "CASE_NUMBER_MISMATCH" in first_review.issue_codes
+
+
+@pytest.mark.parametrize(
+    "source_cell",
+    ["3건 이상 / 3건 이상", "3건 이상 / 3 건 이 상"],
+)
+def test_split_hwp_same_line_duplicate_case_target_is_not_rebound(
+    source_cell: str,
+) -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적 6점",
+            source_cell,
+            "6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_split_hwp_shared_recognition_window_is_reused_for_identical_key() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "3건 이상 6점",
+            "기준 B 4점",
+            "2건 이상 4점",
+            "최근 3년 이내",
+            "완료 실적만 인정",
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+            "recognition_conditions": [
+                {
+                    "literal": "최근 3년 이내 완료 실적만 인정",
+                    "evidence": anchor("최근 3년 이내"),
+                }
+            ],
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 4점",
+            "max_points": 4,
+            "evidence": anchor("기준 B 4점"),
+            "cases": [
+                split_case(
+                    "2건 이상 4점",
+                    operator="GTE",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                )
+            ],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert len(profile.available_candidates) == 2
+    assert {
+        item.recognition_conditions[0].evidence.quote
+        for item in profile.available_candidates
+    } == {"최근 3년 이내\n완료 실적만 인정"}
+
+
+def test_split_hwp_partially_overlapping_case_claims_make_table_ambiguous() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 10점",
+            "AAA",
+            "AA+",
+            "100%",
+            "기준 B 10점",
+            "정량평가 총점 20점",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="CREDIT_RATING",
+        unit="등급",
+        max_points=10,
+        cases=[
+            split_case(
+                "AAA\nAA+\n100%",
+                operator="IN",
+                comparison_value=None,
+                category_values=["AAA", "AA+"],
+                award_kind="PERCENT_OF_MAX",
+                award_value=100,
+                row_order=1,
+            )
+        ],
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 10점",
+            "evidence": anchor("기준 A 10점"),
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 10점",
+            "evidence": anchor("기준 B 10점"),
+            "cases": [
+                split_case(
+                    "AA+\n100%",
+                    operator="IN",
+                    comparison_value=None,
+                    category_values=["AA+"],
+                    award_kind="PERCENT_OF_MAX",
+                    award_value=100,
+                    row_order=1,
+                )
+            ],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 20
+    table["total_evidence"] = anchor("정량평가 총점 20점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_split_hwp_criterion_rebind_cannot_escape_into_next_criterion() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A",
+            "기준 B 6점",
+            "2건 이상 6점",
+            "정량평가 총점 12점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "2건 이상 6점",
+                operator="GTE",
+                comparison_value=2,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A",
+            "evidence": anchor("기준 A"),
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 6점",
+            "evidence": anchor("기준 B 6점"),
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 12
+    table["total_evidence"] = anchor("정량평가 총점 12점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert "MAX_POINTS_LITERAL_MISMATCH" in issue_codes(profile)
+
+
+def test_busan_hwp_split_cells_recover_all_three_quantitative_criteria() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "1) 용역수행 실적(금액, 6점)",
+            "A. 2억 원 이상",
+            "6",
+            "B. 1.5억 원 이상",
+            "5.5",
+            "C. 1억 원 이상",
+            "5",
+            "2) 용역수행 실적(건수, 4점)",
+            "A. 5건 이상",
+            "4",
+            "B. 4건",
+            "3.7",
+            "C. 3건",
+            "3.4",
+            "D. 2건",
+            "3.1",
+            "E. 1건",
+            "2.8",
+            "※ 실적인정 기준",
+            "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다.",
+            "③ 공동계약으로 참여한 실적의 경우",
+            "공동계약 참여 비율에 따른 금액의 실적",
+            "❍ 제안업체 경영상태 (10점)",
+            "AAA, AA+, AA0, AA-",
+            "A+, A0, A-, BBB+, BBB0",
+            "배점의 100%",
+            "BBB-, BB+, BB0, BB-",
+            "배점의 95%",
+            "B+, B0, B-",
+            "배점의 90%",
+            "CCC+ 이하",
+            "배점의 70%",
+            "총점 20점",
+        ]
+    )
+    amount_table = split_cell_case_table(
+        metric="PERFORMANCE_AMOUNT",
+        unit="원",
+        cases=[
+            split_case(
+                "A. 2억 원 이상",
+                operator="GTE",
+                comparison_value=200_000_000,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            ),
+            split_case(
+                "B. 1.5억 원 이상",
+                operator="GTE",
+                comparison_value=150_000_000,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=5.5,
+                row_order=2,
+            ),
+            split_case(
+                "C. 1억 원 이상",
+                operator="GTE",
+                comparison_value=100_000_000,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=5,
+                row_order=3,
+            ),
+        ],
+    )
+    amount = amount_table["criteria"][0]
+    amount.update(
+        {
+            "criterion_id": "BUSAN-AMOUNT",
+            "label": "용역수행 실적(금액)",
+            "criterion_literal": "1) 용역수행 실적(금액, 6점)",
+            "evidence": anchor("1) 용역수행 실적(금액, 6점)"),
+            "recognition_conditions": [
+                {
+                    "literal": (
+                        "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+                    ),
+                    "evidence": anchor(
+                        "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+                    ),
+                },
+                {
+                    "literal": (
+                        "공동계약으로 참여한 실적의 경우 "
+                        "공동계약 참여 비율에 따른 금액의 실적"
+                    ),
+                    "evidence": anchor("공동계약으로 참여한 실적의 경우"),
+                },
+            ],
+        }
+    )
+
+    count = json.loads(json.dumps(amount))
+    count.update(
+        {
+            "criterion_id": "BUSAN-COUNT",
+            "label": "용역수행 실적(건수)",
+            "criterion_literal": "2) 용역수행 실적(건수, 4점)",
+            "max_points": 4,
+            "metric": "PERFORMANCE_COUNT",
+            "unit": "건",
+            "required_evidence": ["company.performance.count"],
+            "evidence": anchor("2) 용역수행 실적(건수, 4점)"),
+            "recognition_conditions": [
+                {
+                    "literal": (
+                        "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+                    ),
+                    "evidence": anchor(
+                        "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+                    ),
+                }
+            ],
+            "cases": [
+                split_case(
+                    "A. 5건 이상",
+                    operator="GTE",
+                    comparison_value=5,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                ),
+                *[
+                    split_case(
+                        literal,
+                        operator="EQ",
+                        comparison_value=value,
+                        category_values=[],
+                        award_kind="POINTS",
+                        award_value=points,
+                        row_order=row_order,
+                    )
+                    for row_order, (literal, value, points) in enumerate(
+                        [
+                            ("B. 4건", 4, 3.7),
+                            ("C. 3건", 3, 3.4),
+                            ("D. 2건", 2, 3.1),
+                            ("E. 1건", 1, 2.8),
+                        ],
+                        start=2,
+                    )
+                ],
+            ],
+        }
+    )
+
+    credit = json.loads(json.dumps(amount))
+    credit.update(
+        {
+            "criterion_id": "BUSAN-CREDIT",
+            "label": "제안업체 경영상태",
+            "criterion_literal": "❍ 제안업체 경영상태 (10점)",
+            "max_points": 10,
+            "metric": "CREDIT_RATING",
+            "unit": "등급",
+            "required_evidence": ["company.credit_rating"],
+            "evidence": anchor("❍ 제안업체 경영상태 (10점)"),
+            "recognition_conditions": [],
+            "cases": [
+                split_case(
+                    "AAA, AA+, AA0, AA-\nA+, A0, A-, BBB+, BBB0",
+                    operator="IN",
+                    comparison_value=None,
+                    category_values=[
+                        "AAA",
+                        "AA+",
+                        "AA0",
+                        "AA-",
+                        "A+",
+                        "A0",
+                        "A-",
+                        "BBB+",
+                        "BBB0",
+                    ],
+                    award_kind="PERCENT_OF_MAX",
+                    award_value=100,
+                    row_order=1,
+                ),
+                split_case(
+                    "BBB-, BB+, BB0, BB-",
+                    operator="IN",
+                    comparison_value=None,
+                    category_values=["BBB-", "BB+", "BB0", "BB-"],
+                    award_kind="PERCENT_OF_MAX",
+                    award_value=95,
+                    row_order=2,
+                ),
+                split_case(
+                    "B+, B0, B-",
+                    operator="IN",
+                    comparison_value=None,
+                    category_values=["B+", "B0", "B-"],
+                    award_kind="PERCENT_OF_MAX",
+                    award_value=90,
+                    row_order=3,
+                ),
+                split_case(
+                    "CCC+ 이하",
+                    operator="IN",
+                    comparison_value=None,
+                    category_values=["CCC+ 이하"],
+                    award_kind="PERCENT_OF_MAX",
+                    award_value=70,
+                    row_order=4,
+                ),
+            ],
+        }
+    )
+
+    amount_table["criteria"] = [amount, count, credit]
+    amount_table["total_points"] = 20
+    amount_table["total_evidence"] = anchor("총점 20점")
+
+    profile = build(payload_with_table(amount_table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert [item.max_points for item in profile.available_candidates] == [6, 4, 10]
+    assert [
+        len(item.cases) for item in profile.available_candidates
+    ] == [3, 5, 4]
+
+
+def test_split_hwp_explicit_table_footnote_can_bind_to_an_earlier_criterion() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "3건 이상 6점",
+            "기준 B 4점",
+            "2건 이상 4점",
+            "③ 공동계약으로 참여한 실적의 경우",
+            "참여 비율에 따른 금액의 실적",
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+            "recognition_conditions": [
+                {
+                    "literal": (
+                        "공동계약으로 참여한 실적의 경우 "
+                        "참여 비율에 따른 금액의 실적"
+                    ),
+                    "evidence": anchor("공동계약으로 참여한 실적의 경우"),
+                }
+            ],
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 4점",
+            "max_points": 4,
+            "evidence": anchor("기준 B 4점"),
+            "cases": [
+                split_case(
+                    "2건 이상 4점",
+                    operator="GTE",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                )
+            ],
+            "recognition_conditions": [],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    condition = next(
+        item
+        for item in profile.available_candidates
+        if item.criterion_id == "SPLIT-CELL-CASE-A"
+    ).recognition_conditions[0]
+    assert condition.evidence.quote == (
+        "③ 공동계약으로 참여한 실적의 경우\n참여 비율에 따른 금액의 실적"
+    )
+
+
+@pytest.mark.parametrize(
+    "external_line",
+    [
+        "최근 3년 이내 완료 실적만 인정",
+        "1. 최근 3년 이내 완료 실적만 인정",
+    ],
+)
+def test_split_hwp_plain_external_recognition_is_not_assigned_across_criteria(
+    external_line: str,
+) -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "3건 이상 6점",
+            "기준 B 4점",
+            "2건 이상 4점",
+            external_line,
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+            "recognition_conditions": [
+                {
+                    "literal": external_line,
+                    "evidence": anchor(external_line),
+                }
+            ],
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 4점",
+            "max_points": 4,
+            "evidence": anchor("기준 B 4점"),
+            "cases": [
+                split_case(
+                    "2건 이상 4점",
+                    operator="GTE",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                )
+            ],
+            "recognition_conditions": [],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_split_hwp_shared_recognition_cannot_reuse_a_structural_header() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "3건 이상 6점",
+            "기준 B 4점",
+            "2건 이상 4점",
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    shared_condition = {
+        "literal": "기준 B 4점",
+        "evidence": anchor("기준 B 4점"),
+    }
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+            "recognition_conditions": [shared_condition],
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 4점",
+            "max_points": 4,
+            "evidence": anchor("기준 B 4점"),
+            "cases": [
+                split_case(
+                    "2건 이상 4점",
+                    operator="GTE",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                )
+            ],
+            "recognition_conditions": [shared_condition],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    ("footer_lines", "literal", "quote", "expected_available"),
+    [
+        (
+            ["최근 3년 이내 완료 실적만 인정"],
+            "최근 3년 이내 완료 실적만 인정",
+            "최근 3년 이내 완료 실적만 인정",
+            False,
+        ),
+        (
+            ["① 최근 3년 이내", "완료 실적만 인정"],
+            "최근 3년 이내 완료 실적만 인정",
+            "최근 3년 이내",
+            True,
+        ),
+    ],
+)
+def test_split_hwp_shared_recognition_after_total_requires_explicit_footnote(
+    footer_lines: list[str],
+    literal: str,
+    quote: str,
+    expected_available: bool,
+) -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "기준 A 6점",
+            "3건 이상 6점",
+            "기준 B 4점",
+            "2건 이상 4점",
+            "정량평가 총점 10점",
+            *footer_lines,
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    shared_condition = {
+        "literal": literal,
+        "evidence": anchor(quote),
+    }
+    table["criteria"][0].update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-A",
+            "label": "기준 A",
+            "criterion_literal": "기준 A 6점",
+            "evidence": anchor("기준 A 6점"),
+            "recognition_conditions": [shared_condition],
+        }
+    )
+    second = json.loads(json.dumps(table["criteria"][0]))
+    second.update(
+        {
+            "criterion_id": "SPLIT-CELL-CASE-B",
+            "label": "기준 B",
+            "criterion_literal": "기준 B 4점",
+            "max_points": 4,
+            "evidence": anchor("기준 B 4점"),
+            "cases": [
+                split_case(
+                    "2건 이상 4점",
+                    operator="GTE",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                )
+            ],
+            "recognition_conditions": [shared_condition],
+        }
+    )
+    table["criteria"].append(second)
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("정량평가 총점 10점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    if expected_available:
+        assert profile.status == "AVAILABLE", issue_codes(profile)
+        assert {
+            item.recognition_conditions[0].evidence.quote
+            for item in profile.available_candidates
+        } == {"\n".join(footer_lines)}
+    else:
+        assert profile.status != "AVAILABLE"
+        assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_previous_split_cell_validator_record_is_rejected_as_stale() -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    stale = record.model_copy(
+        update={
+            "validator_version": "pai-loop-quantitative-attachment-validator-0.5.0"
+        }
+    )
+    stale = stale.model_copy(
+        update={
+            "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                stale
+            )
+        }
+    )
+
+    profile = merge_validated_quantitative_records(
+        [stale],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "VALIDATOR_VERSION_MISMATCH" in issue_codes(profile)
