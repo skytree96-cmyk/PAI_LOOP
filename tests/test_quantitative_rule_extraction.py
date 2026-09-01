@@ -3479,6 +3479,349 @@ def test_busan_hwp_duplicate_summary_headers_bind_only_detailed_criteria() -> No
     assert [len(item.cases) for item in profile.available_candidates] == [3, 2, 4]
 
 
+def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount, count, credit = table["criteria"]
+
+    # Production diagnostics showed three different partial model shapes:
+    # amount evidence had only the 6-point cell, count evidence had only the
+    # metric words, and the credit literal omitted its 10-point maximum.
+    amount.update(
+        {
+            "criterion_literal": "용역수행 실적(금액, 6점)",
+            "evidence": anchor("6점"),
+        }
+    )
+    count.update(
+        {
+            "criterion_literal": "용역수행 실적(건수, 4점)",
+            "evidence": anchor("용역수행 실적(건수)"),
+            "cases": [
+                split_case(
+                    "A. 5건 이상",
+                    operator="GTE",
+                    comparison_value=5,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=4,
+                    row_order=1,
+                ),
+                split_case(
+                    "B. 4건",
+                    operator="EQ",
+                    comparison_value=4,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3.7,
+                    row_order=2,
+                ),
+                split_case(
+                    "C. 3건",
+                    operator="EQ",
+                    comparison_value=3,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3.4,
+                    row_order=3,
+                ),
+                split_case(
+                    "D. 2건",
+                    operator="EQ",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3.1,
+                    row_order=4,
+                ),
+                split_case(
+                    "E. 1건",
+                    operator="EQ",
+                    comparison_value=1,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=2.8,
+                    row_order=5,
+                ),
+            ],
+        }
+    )
+    credit.update(
+        {
+            "criterion_literal": "제안업체 경영상태",
+            "evidence": anchor("제안업체 경영상태 요약 (10점)"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)",
+        "1) 용역수행 실적(금액)\n(6점)",
+    ).replace(
+        "B. 4건\n3.7",
+        "B. 4건\n3.7\nC. 3건\n3.4\nD. 2건\n3.1\nE. 1건\n2.8",
+    ).replace(
+        "2) 용역수행 실적(건수, 4점)",
+        "2) 용역수행 실적(건수)\n4점",
+    ).replace(
+        "❍ 제안업체 경영상태 (10점)",
+        "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert [item.criterion_literal for item in profile.available_candidates] == [
+        "1) 용역수행 실적(금액)\n(6점)",
+        "2) 용역수행 실적(건수)\n4점",
+        "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
+    ]
+    assert [item.max_points for item in profile.available_candidates] == [6, 4, 10]
+    assert [item.metric for item in profile.available_candidates] == [
+        "PERFORMANCE_AMOUNT",
+        "PERFORMANCE_COUNT",
+        "CREDIT_RATING",
+    ]
+    assert [len(item.cases) for item in profile.available_candidates] == [3, 5, 4]
+    assert [item.evidence.page for item in profile.available_candidates] == [
+        None,
+        None,
+        None,
+    ]
+    assert [item.evidence.section for item in profile.available_candidates] == [
+        "HWP SECTION 0",
+        "HWP SECTION 0",
+        "HWP SECTION 0",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("replacement", "mutate_table"),
+    [
+        ("1) 용역수행 실적(건수, 6점)", None),
+        ("1) 용역수행 실적(금액, 7점)", None),
+        ("1) 용역수행 실적(금액, 6점 / 총 20점)", None),
+        (
+            "1) 용역수행 실적(금액, 6점)",
+            lambda table: table["criteria"][0]["cases"][1].update(
+                {"row_order": 3}
+            ),
+        ),
+    ],
+    ids=("metric", "maximum", "multiple-points", "row-order"),
+)
+def test_busan_hwp_sourcewide_header_mismatch_fails_closed(
+    replacement: str,
+    mutate_table,
+) -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    if mutate_table is not None:
+        mutate_table(table)
+    source = source.replace("1) 용역수행 실적(금액, 6점)", replacement)
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+def test_busan_hwp_sourcewide_header_cannot_borrow_rows_across_section() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)\nA. 2억 원 이상",
+        "1) 용역수행 실적(금액, 6점)\n[HWP SECTION 1]\nA. 2억 원 이상",
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+@pytest.mark.parametrize(
+    "unmodeled_boundary",
+    [
+        "3) 기술인력 보유현황 (5점)",
+        "기술인력 보유현황 (5점)",
+        "최근 3년간 기술인력 보유현황 (5점)",
+        "ISO 인증 보유현황 (5점)",
+        "9) 용역수행 실적(건수, 5점)",
+    ],
+    ids=(
+        "explicit-criterion",
+        "numberless-criterion",
+        "numberless-year-label",
+        "numberless-ascii-label",
+        "supported-metric",
+    ),
+)
+def test_busan_hwp_sourcewide_header_cannot_borrow_rows_across_unmodeled_table(
+    unmodeled_boundary: str,
+) -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)\nA. 2억 원 이상",
+        (
+            "1) 용역수행 실적(금액, 6점)\n"
+            f"{unmodeled_boundary}\n"
+            "A. 2억 원 이상"
+        ),
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+def test_sourcewide_boundary_does_not_mistake_korean_eq_case_for_header() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "용역수행 실적(건수, 4점)",
+            "가. 5건 이상 4점",
+            "나. 4건 3.7점",
+            "다. 3건 3.4점",
+            "정량평가 총점 4점",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="PERFORMANCE_COUNT",
+        unit="건",
+        max_points=4,
+        cases=[
+            split_case(
+                "가. 5건 이상 4점",
+                operator="GTE",
+                comparison_value=5,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=4,
+                row_order=1,
+            ),
+            split_case(
+                "나. 4건 3.7점",
+                operator="EQ",
+                comparison_value=4,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=3.7,
+                row_order=2,
+            ),
+            split_case(
+                "다. 3건 3.4점",
+                operator="EQ",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=3.4,
+                row_order=3,
+            ),
+        ],
+    )
+    criterion = table["criteria"][0]
+    criterion.update(
+        {
+            "criterion_literal": "모델이 재작성한 건수 기준",
+            "evidence": anchor("4점"),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    candidate = profile.available_candidates[0]
+    assert candidate.criterion_literal == "용역수행 실적(건수, 4점)"
+    assert [case.row_order for case in candidate.cases] == [1, 2, 3]
+
+
+def test_busan_hwp_sourcewide_header_without_owning_section_fails_closed() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점", page=99),
+        }
+    )
+    source = source.replace("[HWP SECTION 0]\n", "").replace(
+        "총점 20점",
+        "총점 20점\n[HWP SECTION 1]\n후속 부록",
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
+def test_busan_hwp_repeated_sourcewide_headers_exceeding_cap_fail_closed() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_literal": "모델이 재작성한 금액 기준 6점",
+            "evidence": anchor("6점"),
+        }
+    )
+    repeated = "\n".join(
+        f"{index}) 용역수행 실적(금액, 6점)"
+        for index in range(1, 67)
+    )
+    source = source.replace(
+        "1) 용역수행 실적(금액, 6점)",
+        repeated,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "CRITERION_LITERAL_MISMATCH" in amount_review.issue_codes
+
+
 def test_busan_hwp_two_complete_detailed_headers_remain_ambiguous() -> None:
     table, source = busan_hwp_duplicate_summary_fixture(
         duplicate_amount_detail=True
