@@ -3333,6 +3333,145 @@ def test_busan_hwp_incomplete_multicolumn_row_is_not_repaired() -> None:
     assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
 
 
+@pytest.mark.parametrize(
+    "header_mutation",
+    ("missing", "duplicate", "out-of-region"),
+)
+def test_busan_credit_unit_repair_requires_one_owned_header_cluster(
+    header_mutation: str,
+) -> None:
+    table, source = busan_hwp_multicolumn_credit_fixture()
+    table["criteria"][0]["unit"] = "점"
+    cluster = "\n".join(
+        (
+            "신용평가등급",
+            "평점",
+            "회사채",
+            "기업어음",
+            "기업신용평가등급",
+        )
+    )
+    if header_mutation == "missing":
+        source = source.replace("기업어음", "전자어음", 1)
+    elif header_mutation == "duplicate":
+        source = source.replace(cluster, f"{cluster}\n{cluster}", 1)
+    else:
+        source = source.replace(f"{cluster}\n", "", 1)
+        source = source.replace(
+            "[HWP SECTION 0]\n",
+            f"[HWP SECTION 0]\n{cluster}\n",
+            1,
+        )
+
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(profile)
+
+    assert record.status == "AVAILABLE", record.issues
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.available_candidates[0].unit == "점"
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert request.activation_reasons == [
+        "UNSUPPORTED_SCORING_DSL",
+        "UNSUPPORTED_UNIT",
+    ]
+
+
+def test_busan_credit_unit_repair_rejects_commercial_paper_case_cell() -> None:
+    table, source = busan_hwp_multicolumn_credit_fixture()
+    credit = table["criteria"][0]
+    credit["unit"] = "점"
+    borrowed = "C 이하\nCCC+ 이하\n배점의 70%"
+    credit["cases"][-1].update(
+        {
+            "literal": borrowed,
+            "evidence": anchor(borrowed),
+            "category_values": ["C 이하"],
+        }
+    )
+
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(profile)
+
+    assert record.status == "AVAILABLE", record.issues
+    assert profile.available_candidates[0].unit == "점"
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert request.activation_reasons == [
+        "UNSUPPORTED_SCORING_DSL",
+        "UNSUPPORTED_UNIT",
+    ]
+
+
+@pytest.mark.parametrize("payload_mutation", ("missing-row", "partial-cell"))
+def test_busan_credit_unit_repair_requires_complete_owned_source_rows(
+    payload_mutation: str,
+) -> None:
+    table, source = busan_hwp_multicolumn_credit_fixture()
+    credit = table["criteria"][0]
+    credit["unit"] = "점"
+    if payload_mutation == "missing-row":
+        credit["cases"] = credit["cases"][:-1]
+    else:
+        partial = "A+, A0, A-, BBB+, BBB0"
+        credit["cases"][0].update(
+            {
+                "literal": partial,
+                "evidence": anchor(partial),
+                "category_values": ["A+", "A0", "A-", "BBB+", "BBB0"],
+            }
+        )
+
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(profile)
+
+    assert record.status == "AVAILABLE", record.issues
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.available_candidates[0].unit == "점"
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert request.activation_reasons == [
+        "UNSUPPORTED_SCORING_DSL",
+        "UNSUPPORTED_UNIT",
+    ]
+
+
 def busan_hwp_duplicate_summary_fixture(
     *,
     duplicate_amount_detail: bool = False,
@@ -3479,9 +3618,234 @@ def test_busan_hwp_duplicate_summary_headers_bind_only_detailed_criteria() -> No
     assert [len(item.cases) for item in profile.available_candidates] == [3, 2, 4]
 
 
+def test_exact_sourcewide_rebind_clears_fully_resolved_model_table_ambiguity() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "요약 배점과 상세 배점 중 적용 표를 확인해야 함"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert "AMBIGUOUS_TABLE" not in issue_codes(profile)
+    assert [item.criterion_literal for item in profile.available_candidates] == [
+        "1) 용역수행 실적(금액, 6점)",
+        "2) 용역수행 실적(건수, 4점)",
+        "❍ 제안업체 경영상태 (10점)",
+    ]
+
+
+def test_busan_summary_total_before_detail_proves_same_source_table() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
+    summary = "❍ 정량적 평가(20점): 부산광역시교육청 사업부서 평가"
+    table["total_evidence"] = anchor(summary)
+    source = source.replace(
+        "[HWP SECTION 0]\n",
+        "[HWP SECTION 0]\n참고 수행능력 (3점)\n[HWP SECTION 1]\n",
+        1,
+    ).replace(
+        "정량적 평가 요약",
+        f"정량적 평가 요약\n{summary}",
+        1,
+    ).replace(
+        "1) 용역수행 실적(금액, 6점)",
+        "나. 정량적 평가 세부기준\n1) 용역수행 실적(금액, 6점)",
+        1,
+    ).replace("\n총점 20점", "", 1)
+    source = (
+        f"{source}\n3. 제안서 평가\n"
+        "❍ 총점 100점 만점으로 정량적 평가(20점) 및 "
+        "정성적 평가(80점)를 실시한다."
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert "AMBIGUOUS_TABLE" not in issue_codes(profile)
+
+
+def test_sourcewide_rebind_keeps_ambiguity_when_total_is_outside_table_section() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "총점 귀속 확인 필요"
+    source = source.replace("\n총점 20점", "", 1)
+    source = f"{source}\n[HWP SECTION 1]\n총점 20점"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_sourcewide_rebind_keeps_ambiguity_for_second_source_only_table() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "별도 정량평가표 적용 여부 확인 필요"
+    source = (
+        f"{source}\n[HWP SECTION 1]\n정량적 평가표\n"
+        "가격경쟁력 30점\n총점 30점"
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_sourcewide_rebind_keeps_ambiguity_for_ordinal_competing_table() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
+    source = (
+        f"{source}\n[HWP SECTION 1]\n다. 정량적 평가 세부기준\n"
+        "가격경쟁력 (30점)\n합계 : 30점"
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "ambiguity_reason",
+    (
+        "외부 별도지침 적용 여부를 확인해야 함",
+        "외부 별도지침과 요약 배점 및 상세 배점을 함께 확인해야 함",
+        "HWP 셀 구조상 행 연결 검토 필요. 원문 외 사유로 적용 표를 확인해야 함",
+    ),
+)
+def test_sourcewide_rebind_does_not_clear_unrelated_model_ambiguity(
+    ambiguity_reason: str,
+) -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = ambiguity_reason
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_sourcewide_rebind_requires_every_owned_source_case_row() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
+    table["criteria"][1]["cases"] = table["criteria"][1]["cases"][:1]
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_sourcewide_rebind_rejects_unmodeled_credit_zero_point_row() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
+    source = source.replace(
+        "* 등급별 평점이",
+        "DDD 이하\n0점\n* 등급별 평점이",
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_exact_model_headers_do_not_clear_model_table_ambiguity() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    for candidate, literal in zip(
+        table["criteria"],
+        (
+            "1) 용역수행 실적(금액, 6점)",
+            "2) 용역수행 실적(건수, 4점)",
+            "❍ 제안업체 경영상태 (10점)",
+        ),
+        strict=True,
+    ):
+        candidate["criterion_literal"] = literal
+        candidate["evidence"] = anchor(literal)
+    table["ambiguity_reason"] = "원문 외부 사유로 적용 표를 확인해야 함"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_partial_sourcewide_rebind_does_not_clear_model_table_ambiguity() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    amount = table["criteria"][0]
+    amount["criterion_literal"] = "1) 용역수행 실적(금액, 6점)"
+    amount["evidence"] = anchor("1) 용역수행 실적(금액, 6점)")
+    table["ambiguity_reason"] = "모든 평가항목의 상세 배점을 확인해야 함"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_sourcewide_rebind_never_clears_ambiguity_for_two_tables() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "복수 평가표 중 적용 대상을 확인해야 함"
+    second = json.loads(json.dumps(table))
+    second["table_id"] = "BUSAN-DUPLICATE-TABLE-2"
+    for candidate in second["criteria"]:
+        candidate["criterion_id"] = f"{candidate['criterion_id']}-2"
+    payload = payload_with_table(table).model_copy(
+        update={
+            "quantitative_tables": [
+                ExtractionPayload.model_validate(
+                    {
+                        **payload_with_table(table).model_dump(),
+                        "quantitative_tables": [second],
+                    }
+                ).quantitative_tables[0],
+                *payload_with_table(table).quantitative_tables,
+            ]
+        }
+    )
+
+    profile = build(payload, source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "payload_mutation",
+    ("source-gap", "not-applicable", "duplicate-total", "total-mismatch"),
+)
+def test_sourcewide_rebind_requires_complete_unique_consistent_table_proof(
+    payload_mutation: str,
+) -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    table["ambiguity_reason"] = "상세 평가표 완전성을 확인해야 함"
+    payload_data = payload_with_table(table).model_dump()
+    if payload_mutation == "source-gap":
+        payload_data["missing_or_unreadable"] = ["평가표 일부 행 판독 불가"]
+    elif payload_mutation == "not-applicable":
+        source = f"{source}\n이 공고에는 정량평가표가 적용되지 않음"
+        payload_data["quantitative_table_not_applicable"] = {
+            "reason_literal": "이 공고에는 정량평가표가 적용되지 않음",
+            "evidence": anchor("이 공고에는 정량평가표가 적용되지 않음"),
+        }
+    elif payload_mutation == "duplicate-total":
+        source = source.replace("총점 20점", "총점 20점\n총점 20점")
+    else:
+        table["total_points"] = 21
+        table["total_evidence"] = anchor("총점 21점")
+        source = source.replace("총점 20점", "총점 21점")
+        payload_data = payload_with_table(table).model_dump()
+
+    profile = build(ExtractionPayload.model_validate(payload_data), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
 def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> None:
     table, source = busan_hwp_duplicate_summary_fixture()
     amount, count, credit = table["criteria"]
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
 
     # Production diagnostics showed three different partial model shapes:
     # amount evidence had only the 6-point cell, count evidence had only the
@@ -3585,9 +3949,6 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
             "실적건수\n(0.2억원\n이상)\n4"
         ),
     ).replace(
-        "❍ 제안업체 경영상태 (10점)",
-        "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
-    ).replace(
         "E. 1건\n2.8\n❍ 제안업체 경영상태",
         (
             f"E. 1건\n2.8\n{footnote_block}\n"
@@ -3601,7 +3962,7 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
     assert [item.criterion_literal for item in profile.available_candidates] == [
         "1) 용역수행 실적(금액)\n(6점)",
         "2) 용역수행 실적(건수)\n4점",
-        "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
+        "❍ 제안업체 경영상태 (10점)",
     ]
     assert [item.max_points for item in profile.available_candidates] == [6, 4, 10]
     assert [item.metric for item in profile.available_candidates] == [

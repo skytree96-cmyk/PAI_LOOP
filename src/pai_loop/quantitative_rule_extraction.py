@@ -31,8 +31,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.6"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.6"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.7"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.7"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -304,7 +304,7 @@ _MAX_SOURCEWIDE_HEADER_MATCHES = 64
 _MAX_SOURCEWIDE_BOUNDARY_SPANS = 512
 _HWP_SECTION_LINE_RE = re.compile(r"^\[HWP SECTION \d+\]$")
 _SOURCEWIDE_TABLE_MARKER_RE = re.compile(
-    r"^(?:정량(?:적)?\s*평가(?:\s*세부\s*기준|\s*기준|표)?|"
+    r"^(?:[가-힣]\.\s*)?(?:정량(?:적)?\s*평가(?:\s*세부\s*기준|\s*기준|표)?|"
     r"평가\s*배점표|평가\s*기준표)$"
 )
 _SOURCEWIDE_HEADER_NOUN_SUFFIX_RE = re.compile(
@@ -1080,6 +1080,35 @@ def _is_quantitative_column_detail_boundary(
 _COUNT_SOURCE_UNIT_RE = re.compile(
     rf"(?<![\d.])(?P<num>{_NUM_PATTERN})\s*(?P<unit>건|회|개)"
 )
+_SOURCEWIDE_SIMPLE_QUANTITATIVE_TOTAL_RE = re.compile(
+    rf"^(?:[❍·•-])?(?:정량(?:적)?평가)?(?:총점|총배점|합계)"
+    rf"[:：]?(?P<points>{_NUM_PATTERN})점(?:만점)?[.]?$"
+)
+_SOURCEWIDE_QUANTITATIVE_SUMMARY_TOTAL_RE = re.compile(
+    rf"^(?:❍)?정량적평가\((?P<points>{_NUM_PATTERN})점\):.+평가$"
+)
+_BUSAN_QUANTITATIVE_DETAIL_MARKER_RE = re.compile(
+    r"^[가-힣]\.\s*정량적\s*평가\s*세부\s*기준$"
+)
+_CREDIT_RATING_COLUMN_HEADER_CLUSTER = (
+    "신용평가등급",
+    "평점",
+    "회사채",
+    "기업어음",
+    "기업신용평가등급",
+)
+_BUSAN_SOURCEWIDE_AMBIGUITY_SIGNATURE = (
+    ("PERFORMANCE_AMOUNT", Decimal("6")),
+    ("PERFORMANCE_COUNT", Decimal("4")),
+    ("CREDIT_RATING", Decimal("10")),
+)
+_BUSAN_ENTERPRISE_CREDIT_CATEGORY_ROWS = (
+    ("AAA", "AA+", "AA0", "AA-", "A+", "A0", "A-", "BBB+", "BBB0"),
+    ("BBB-", "BB+", "BB0", "BB-"),
+    ("B+", "B0", "B-"),
+    ("CCC+ 이하",),
+)
+_SOURCEWIDE_LABELED_CASE_START_RE = re.compile(r"^(?P<label>[A-Z])[.]\s*\S.*$")
 _COMPACT_COUNT_MINIMUM_RE = re.compile(
     r"실적건수\(\d[\d,]*(?:\.\d+)?"
     r"(?:천만원|백만원|억원|만원|천원|원|억|만|천)이상\)"
@@ -1322,6 +1351,132 @@ def _source_bound_count_unit(
     return units[0] if units and len(set(units)) == 1 else None
 
 
+def _source_bound_credit_rating_header_quote(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    criterion_region: tuple[int, int] | None,
+) -> str | None:
+    """Return one exact owned HWP header quote proving the rating unit."""
+
+    if (
+        candidate.metric != "CREDIT_RATING"
+        or candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+        or criterion_region is None
+        or not all(
+            case.operator == "IN"
+            and case.category_values
+            and case.comparison_value is None
+            for case in candidate.cases
+        )
+    ):
+        return None
+
+    criterion_literal_span = _unique_anchor_line_span(
+        lines, candidate.criterion_literal
+    )
+    criterion_evidence_span = _unique_anchor_line_span(
+        lines, candidate.evidence.quote
+    )
+    if (
+        criterion_literal_span is None
+        or criterion_evidence_span is None
+        or criterion_literal_span[0] != criterion_region[0]
+        or criterion_evidence_span[0] != criterion_region[0]
+        or not _spans_overlap(criterion_literal_span, criterion_evidence_span)
+        or not _span_inside_region(criterion_literal_span, criterion_region)
+        or not _span_inside_region(criterion_evidence_span, criterion_region)
+    ):
+        return None
+
+    case_spans: list[tuple[int, int]] = []
+    for case in sorted(candidate.cases, key=lambda item: item.row_order):
+        literal_span = _unique_anchor_line_span(lines, case.literal)
+        evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+        award_span = _unique_percent_score_line_span(
+            lines,
+            case=case,
+            criterion_region=criterion_region,
+        )
+        literal_lines = case.literal.splitlines()
+        if (
+            literal_span is None
+            or evidence_span is None
+            or award_span is None
+            or literal_span != evidence_span
+            or literal_span[1] != award_span[1]
+            or not _span_inside_region(literal_span, criterion_region)
+            or not _span_inside_region(award_span, literal_span)
+            or not _case_row_window_matches(candidate, case, case.literal)
+            or len(literal_lines) < 2
+        ):
+            return None
+        observed_cell = re.sub(
+            r",+",
+            ",",
+            re.sub(
+                r"\s+",
+                "",
+                unicodedata.normalize("NFKC", "\n".join(literal_lines[:-1])),
+            ),
+        ).strip(",")
+        expected_cell = ",".join(
+            re.sub(
+                r"\s+",
+                "",
+                unicodedata.normalize("NFKC", value),
+            ).strip(",")
+            for value in case.category_values
+        )
+        if observed_cell != expected_cell:
+            return None
+        case_spans.append(literal_span)
+
+    if any(
+        left[1] > right[0]
+        for left, right in zip(case_spans, case_spans[1:], strict=False)
+    ):
+        return None
+    if not _sourcewide_case_census_matches(
+        candidate,
+        lines=lines,
+        criterion_region=criterion_region,
+    ):
+        return None
+
+    first_case_start = case_spans[0][0]
+    cluster_size = len(_CREDIT_RATING_COLUMN_HEADER_CLUSTER)
+    matches: list[tuple[int, int]] = []
+    for start in range(
+        criterion_region[0] + 1,
+        max(criterion_region[0] + 1, first_case_start - cluster_size + 1),
+    ):
+        end = start + cluster_size
+        if end > first_case_start:
+            break
+        observed = tuple(
+            re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+            for line in lines[start:end]
+        )
+        if observed == _CREDIT_RATING_COLUMN_HEADER_CLUSTER:
+            matches.append((start, end))
+    if len(matches) != 1:
+        return None
+    # Keep the persisted evidence inside the ordinary bounded-anchor window.
+    # The complete five-cell cluster was proved above; the title-through-first
+    # `신용평가등급` cell is the smallest quote that binds both the criterion
+    # maximum and the recovered categorical unit.
+    bound_span = (criterion_region[0], matches[0][0] + 1)
+    quote = "\n".join(lines[bound_span[0] : bound_span[1]])
+    return (
+        quote
+        if len(quote) <= 500
+        and _unique_anchor_line_span(lines, quote) == bound_span
+        else None
+    )
+
+
 def _source_bound_performance_footer_region(
     candidates: list[QuantitativeRuleCandidate],
     *,
@@ -1383,6 +1538,9 @@ def _source_bound_performance_footer_region(
 
 def _repair_source_bound_candidate_unit(
     candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    criterion_region: tuple[int, int] | None,
 ) -> QuantitativeRuleCandidate:
     normalized = _normalise_amount_unit(candidate.unit or "")
     if candidate.metric == "PERFORMANCE_COUNT":
@@ -1397,26 +1555,23 @@ def _repair_source_bound_candidate_unit(
     if candidate.metric == "CREDIT_RATING":
         if normalized in {"등급", "신용등급", "rating"}:
             return candidate
-        header = re.sub(
-            r"\s+",
-            "",
-            unicodedata.normalize(
-                "NFKC",
-                f"{candidate.criterion_literal} {candidate.evidence.quote}",
-            ),
+        bound_quote = _source_bound_credit_rating_header_quote(
+            candidate,
+            lines=lines,
+            criterion_region=criterion_region,
         )
-        if (
-            "신용평가등급" in header
-            and candidate.scoring_method == "CASE_TABLE"
-            and candidate.cases
-            and all(
-                case.operator == "IN"
-                and case.category_values
-                and case.comparison_value is None
-                for case in candidate.cases
+        return (
+            candidate.model_copy(
+                update={
+                    "unit": "등급",
+                    "evidence": candidate.evidence.model_copy(
+                        update={"page": None, "quote": bound_quote}
+                    ),
+                }
             )
-        ):
-            return candidate.model_copy(update={"unit": "등급"})
+            if bound_quote is not None
+            else candidate
+        )
     return candidate
 
 
@@ -1441,7 +1596,11 @@ def _augment_sourcewide_hwp_activation_context(
         criterion_regions,
         strict=True,
     ):
-        candidate = _repair_source_bound_candidate_unit(candidate)
+        candidate = _repair_source_bound_candidate_unit(
+            candidate,
+            lines=lines,
+            criterion_region=criterion_region,
+        )
         if candidate.metric not in {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}:
             output.append(candidate)
             continue
@@ -1491,7 +1650,9 @@ def _sourcewide_structural_boundary_spans(
     matches: list[tuple[int, int]] = [
         (index, index + 1)
         for index, line in enumerate(lines)
-        if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(line)
+        if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(
+            unicodedata.normalize("NFKC", line).strip()
+        )
     ]
     if len(matches) > _MAX_SOURCEWIDE_BOUNDARY_SPANS:
         return (), True
@@ -1530,6 +1691,25 @@ def _sourcewide_structural_boundary_spans(
                 if len(matches) > _MAX_SOURCEWIDE_BOUNDARY_SPANS:
                     return (), True
     return _minimal_sourcewide_spans(matches), False
+
+
+def _sourcewide_quantitative_total_candidates(
+    lines: tuple[str, ...],
+) -> tuple[tuple[tuple[int, int], Decimal], ...]:
+    """Return only exact one-line objective-total declarations."""
+
+    output: list[tuple[tuple[int, int], Decimal]] = []
+    for index, line in enumerate(lines):
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+        match = _SOURCEWIDE_SIMPLE_QUANTITATIVE_TOTAL_RE.fullmatch(compact)
+        if match is None:
+            continue
+        try:
+            points = Decimal(match.group("points").replace(",", ""))
+        except InvalidOperation:
+            continue
+        output.append(((index, index + 1), points))
+    return tuple(output)
 
 
 def _next_blank_or_section_boundaries(
@@ -1688,7 +1868,7 @@ def _rebind_unique_sourcewide_case_table_headers(
     header_candidates: list[list[tuple[tuple[int, int], ...]]],
     sourcewide_boundary_spans: tuple[tuple[int, int], ...],
     next_blank_or_section: tuple[int, ...],
-) -> ExtractionPayload:
+) -> tuple[ExtractionPayload, frozenset[tuple[int, int]]]:
     """Rebind one exact detailed header when a model anchored a subtotal.
 
     This is intentionally a narrow pre-pass for the three deterministic
@@ -1874,9 +2054,10 @@ def _rebind_unique_sourcewide_case_table_headers(
         )
     }
     if not selected or len(ambiguous_owners) == len(selected):
-        return payload
+        return payload, frozenset()
 
     repaired_tables: list[QuantitativeTableCandidate] = []
+    rebound_owners: set[tuple[int, int]] = set()
     for table_index, table in enumerate(tables):
         repaired_candidates: list[QuantitativeRuleCandidate] = []
         for candidate_index, candidate in enumerate(table.criteria):
@@ -1894,24 +2075,28 @@ def _rebind_unique_sourcewide_case_table_headers(
             if section is None:
                 repaired_candidates.append(candidate)
                 continue
-            repaired_candidates.append(
-                candidate.model_copy(
-                    update={
-                        "criterion_literal": source_slice,
-                        "evidence": candidate.evidence.model_copy(
-                            update={
-                                "page": None,
-                                "section": section,
-                                "quote": source_slice,
-                            }
-                        ),
-                    }
-                )
+            repaired_candidate = candidate.model_copy(
+                update={
+                    "criterion_literal": source_slice,
+                    "evidence": candidate.evidence.model_copy(
+                        update={
+                            "page": None,
+                            "section": section,
+                            "quote": source_slice,
+                        }
+                    ),
+                }
             )
+            repaired_candidates.append(repaired_candidate)
+            if repaired_candidate != candidate:
+                rebound_owners.add(owner)
         repaired_tables.append(
             table.model_copy(update={"criteria": repaired_candidates})
         )
-    return payload.model_copy(update={"quantitative_tables": repaired_tables})
+    return (
+        payload.model_copy(update={"quantitative_tables": repaired_tables}),
+        frozenset(rebound_owners),
+    )
 
 
 def _unique_percent_score_line_span(
@@ -1934,6 +2119,156 @@ def _unique_percent_score_line_span(
         )
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _sourcewide_percent_award_spans(
+    lines: tuple[str, ...],
+    *,
+    criterion_region: tuple[int, int] | None,
+) -> tuple[tuple[int, int], ...]:
+    """Return every exact percent award cell inside one owned criterion."""
+
+    if criterion_region is None:
+        return ()
+    return tuple(
+        (index, index + 1)
+        for index in range(criterion_region[0], criterion_region[1])
+        if re.fullmatch(
+            rf"(?:배점(?:의)?)?{_NUM_PATTERN}(?:%|퍼센트)",
+            re.sub(
+                r"\s+",
+                "",
+                unicodedata.normalize("NFKC", lines[index]),
+            ),
+        )
+    )
+
+
+def _sourcewide_case_census_matches(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    criterion_region: tuple[int, int] | None,
+) -> bool:
+    """Prove that payload CASE rows exhaust the exact owned source rows."""
+
+    if criterion_region is None or not candidate.cases:
+        return False
+    ordered_cases = sorted(candidate.cases, key=lambda item: item.row_order)
+
+    if candidate.metric == "CREDIT_RATING":
+        normalized_rows = tuple(
+            tuple(
+                re.sub(
+                    r"\s+",
+                    " ",
+                    unicodedata.normalize("NFKC", value),
+                ).strip()
+                for value in case.category_values
+            )
+            for case in ordered_cases
+        )
+        if normalized_rows != _BUSAN_ENTERPRISE_CREDIT_CATEGORY_ROWS:
+            return False
+        claimed_awards = tuple(
+            _unique_percent_score_line_span(
+                lines,
+                case=case,
+                criterion_region=criterion_region,
+            )
+            for case in ordered_cases
+        )
+        claimed_rows: list[tuple[int, int]] = []
+        for case, award_span in zip(ordered_cases, claimed_awards, strict=True):
+            literal_span = _unique_anchor_line_span(lines, case.literal)
+            evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+            if (
+                award_span is None
+                or literal_span is None
+                or evidence_span is None
+                or literal_span != evidence_span
+                or literal_span[0] >= award_span[0]
+                or literal_span[1] != award_span[1]
+                or not _span_inside_region(literal_span, criterion_region)
+                or not _span_inside_region(award_span, literal_span)
+            ):
+                return False
+            claimed_rows.append(literal_span)
+        source_award_cells = tuple(
+            (index, index + 1)
+            for index in range(criterion_region[0], criterion_region[1])
+            if _is_score_cell(lines[index])
+        )
+        return bool(
+            all(span is not None for span in claimed_awards)
+            and tuple(span for span in claimed_awards if span is not None)
+            == source_award_cells
+            and source_award_cells
+            == _sourcewide_percent_award_spans(
+                lines, criterion_region=criterion_region
+            )
+            and all(
+                left[1] <= right[0]
+                for left, right in zip(claimed_rows, claimed_rows[1:], strict=False)
+            )
+        )
+
+    if candidate.metric not in {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}:
+        return False
+
+    source_starts: list[tuple[int, str]] = []
+    for index in range(criterion_region[0], criterion_region[1]):
+        normalized = unicodedata.normalize("NFKC", lines[index]).strip()
+        match = _SOURCEWIDE_LABELED_CASE_START_RE.fullmatch(normalized)
+        if match is not None:
+            source_starts.append((index, match.group("label")))
+    if not source_starts or [label for _index, label in source_starts] != [
+        chr(ord("A") + offset) for offset in range(len(source_starts))
+    ]:
+        return False
+
+    source_rows: list[tuple[int, int]] = []
+    for row_index, (start, _label) in enumerate(source_starts):
+        next_start = (
+            source_starts[row_index + 1][0]
+            if row_index + 1 < len(source_starts)
+            else criterion_region[1]
+        )
+        score_spans = [
+            (index, index + 1)
+            for index in range(start + 1, next_start)
+            if _is_score_cell(lines[index])
+        ]
+        if len(score_spans) != 1:
+            return False
+        source_rows.append((start, score_spans[0][1]))
+
+    claimed_rows: list[tuple[int, int]] = []
+    for case in ordered_cases:
+        literal_span = _unique_anchor_line_span(lines, case.literal)
+        evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+        if (
+            literal_span is None
+            or evidence_span is None
+            or not _spans_overlap(literal_span, evidence_span)
+        ):
+            return False
+        claimed_rows.append(literal_span)
+    return tuple(claimed_rows) == tuple(source_rows)
+
+
+def _sourcewide_ambiguity_is_structural(reason: str | None) -> bool:
+    """Allow only ambiguity text that the exact HWP rebind can resolve."""
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        unicodedata.normalize("NFKC", reason or ""),
+    ).strip()
+    return normalized in {
+        "HWP 셀 구조상 행 연결 검토 필요",
+        "요약 배점과 상세 배점 중 적용 표를 확인해야 함",
+    }
 
 
 def _recognition_key(literal: str, quote: str) -> tuple[str, str]:
@@ -2210,6 +2545,217 @@ def _rebind_candidate_table_cell_literals(
     )
 
 
+def _table_has_exact_sourcewide_ambiguity_resolution(
+    payload: ExtractionPayload,
+    *,
+    table_index: int,
+    table: QuantitativeTableCandidate,
+    criteria: list[QuantitativeRuleCandidate],
+    lines: tuple[str, ...],
+    rebound_owners: frozenset[tuple[int, int]],
+    criterion_anchors: list[tuple[int, int] | None],
+    criterion_regions: list[tuple[int, int] | None],
+    table_region: tuple[int, int] | None,
+    sourcewide_boundary_spans: tuple[tuple[int, int], ...],
+    hwp_section_starts: tuple[int, ...],
+    next_blank_or_section: tuple[int, ...],
+    boundary_overflow: bool,
+    ambiguous_case_claim: bool,
+    ambiguous_recognition_claim: bool,
+) -> bool:
+    """Clear only a model ambiguity fully resolved by exact source structure.
+
+    An extractor-provided ambiguity is decision-bearing and normally remains
+    fail-closed.  The sole exception is a one-table HWP payload where every
+    criterion was actually rebound from a unique source-wide header and the
+    complete table geometry and total independently agree.  This deliberately
+    excludes already-valid model headers, partial repairs, multi-table payloads,
+    declared source gaps, and any later structural ambiguity.
+    """
+
+    if (
+        not table.ambiguity_reason
+        or not _sourcewide_ambiguity_is_structural(table.ambiguity_reason)
+        or len(payload.quantitative_tables) != 1
+        or table_index != 0
+        or not table.criteria
+        or payload.missing_or_unreadable
+        or payload.quantitative_table_not_applicable is not None
+        or boundary_overflow
+        or ambiguous_case_claim
+        or ambiguous_recognition_claim
+    ):
+        return False
+
+    expected_owners = frozenset(
+        (table_index, candidate_index)
+        for candidate_index in range(len(table.criteria))
+    )
+    if rebound_owners != expected_owners:
+        return False
+
+    signature = tuple(
+        (candidate.metric, _decimal(candidate.max_points))
+        for candidate in criteria
+    )
+    if signature != _BUSAN_SOURCEWIDE_AMBIGUITY_SIGNATURE:
+        return False
+
+    if (
+        table_region is None
+        or len(criterion_anchors) != len(table.criteria)
+        or len(criterion_regions) != len(table.criteria)
+        or any(anchor is None for anchor in criterion_anchors)
+        or any(region is None for region in criterion_regions)
+    ):
+        return False
+    resolved_anchors = [anchor for anchor in criterion_anchors if anchor is not None]
+    resolved_regions = [region for region in criterion_regions if region is not None]
+    if not all(
+        region[0] < region[1]
+        and region[0] == anchor[0]
+        and _span_inside_region(anchor, region)
+        and _span_inside_region(region, table_region)
+        for anchor, region in zip(resolved_anchors, resolved_regions, strict=True)
+    ):
+        return False
+    if not all(
+        left_anchor[0] < right_anchor[0] and left_region[1] <= right_region[0]
+        for left_anchor, right_anchor, left_region, right_region in zip(
+            resolved_anchors,
+            resolved_anchors[1:],
+            resolved_regions,
+            resolved_regions[1:],
+            strict=False,
+        )
+    ):
+        return False
+    if not all(
+        _sourcewide_case_census_matches(
+            candidate,
+            lines=lines,
+            criterion_region=region,
+        )
+        for candidate, region in zip(criteria, resolved_regions, strict=True)
+    ):
+        return False
+
+    total = _decimal(table.total_points)
+    if total is None or table.total_evidence is None:
+        return False
+    total_span = _unique_anchor_line_span(lines, table.total_evidence.quote)
+    if (
+        total_span is None
+        or not _literal_contains_number(total, table.total_evidence.quote)
+    ):
+        return False
+    owned_claim_spans: list[tuple[int, int]] = list(resolved_anchors)
+    for candidate, region in zip(criteria, resolved_regions, strict=True):
+        for case in candidate.cases:
+            literal_span = _unique_anchor_line_span(lines, case.literal)
+            evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+            if (
+                literal_span is None
+                or evidence_span is None
+                or not _spans_overlap(literal_span, evidence_span)
+                or not _span_inside_region(literal_span, region)
+                or not _span_inside_region(evidence_span, region)
+            ):
+                return False
+            owned_claim_spans.extend((literal_span, evidence_span))
+    last_claim_end = max(span[1] for span in owned_claim_spans)
+    owning_sections = [index for index in hwp_section_starts if index < table_region[0]]
+    if not owning_sections:
+        return False
+    owning_section = owning_sections[-1]
+
+    def section_for(span: tuple[int, int]) -> int | None:
+        starts = [index for index in hwp_section_starts if index < span[0]]
+        return starts[-1] if starts else None
+
+    table_marker_spans = tuple(
+        (index, index + 1)
+        for index, line in enumerate(lines)
+        if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(
+            unicodedata.normalize("NFKC", line).strip()
+        )
+    )
+    owner_markers = [
+        span
+        for span in table_marker_spans
+        if section_for(span) == owning_section and span[0] < table_region[0]
+    ]
+    if len(owner_markers) > 1 or any(
+        section_for(span) != owning_section or span[0] >= table_region[0]
+        for span in table_marker_spans
+        if span not in owner_markers
+    ):
+        return False
+
+    simple_totals = _sourcewide_quantitative_total_candidates(lines)
+    if any(not _spans_overlap(span, total_span) for span, _points in simple_totals):
+        return False
+
+    trailing_total = bool(
+        _span_inside_region(total_span, table_region)
+        and total_span[0] >= last_claim_end
+        and len(simple_totals) == 1
+        and _spans_overlap(simple_totals[0][0], total_span)
+        and simple_totals[0][1] == total
+        and (
+            last_claim_end >= len(next_blank_or_section)
+            or next_blank_or_section[last_claim_end] >= total_span[0]
+        )
+        and not any(
+            last_claim_end <= span[0] < total_span[0]
+            and not _spans_overlap(span, total_span)
+            for span in sourcewide_boundary_spans
+        )
+    )
+
+    summary_candidates: list[tuple[tuple[int, int], Decimal]] = []
+    for index, line in enumerate(lines):
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+        match = _SOURCEWIDE_QUANTITATIVE_SUMMARY_TOTAL_RE.fullmatch(compact)
+        if match is None:
+            continue
+        try:
+            points = Decimal(match.group("points").replace(",", ""))
+        except InvalidOperation:
+            continue
+        summary_candidates.append(((index, index + 1), points))
+    detail_markers = [
+        (index, index + 1)
+        for index, line in enumerate(lines)
+        if _BUSAN_QUANTITATIVE_DETAIL_MARKER_RE.fullmatch(
+            unicodedata.normalize("NFKC", line)
+        )
+    ]
+    summary_total = bool(
+        len(summary_candidates) == 1
+        and summary_candidates[0][0] == total_span
+        and summary_candidates[0][1] == total
+        and section_for(total_span) == owning_section
+        and len(detail_markers) == 1
+        and section_for(detail_markers[0]) == owning_section
+        and total_span[1] <= detail_markers[0][0]
+        and detail_markers[0][1] == resolved_anchors[0][0]
+        and not simple_totals
+    )
+    if not (trailing_total or summary_total):
+        return False
+
+    criterion_maxima = [_decimal(candidate.max_points) for candidate in criteria]
+    return bool(
+        all(value is not None for value in criterion_maxima)
+        and sum(
+            (value for value in criterion_maxima if value is not None),
+            Decimal("0"),
+        )
+        == total
+    )
+
+
 def _rebind_split_table_cell_literals(
     payload: ExtractionPayload,
     *,
@@ -2262,14 +2808,16 @@ def _rebind_split_table_cell_literals(
                 header_cache[cache_key] = spans
             candidates_for_table.append(spans)
         sourcewide_header_candidates.append(candidates_for_table)
-    payload = _rebind_unique_sourcewide_case_table_headers(
-        payload,
-        source=source,
-        lines=lines,
-        hwp_section_starts=hwp_section_starts,
-        header_candidates=sourcewide_header_candidates,
-        sourcewide_boundary_spans=sourcewide_boundary_spans,
-        next_blank_or_section=next_blank_or_section,
+    payload, sourcewide_header_rebound_owners = (
+        _rebind_unique_sourcewide_case_table_headers(
+            payload,
+            source=source,
+            lines=lines,
+            hwp_section_starts=hwp_section_starts,
+            header_candidates=sourcewide_header_candidates,
+            sourcewide_boundary_spans=sourcewide_boundary_spans,
+            next_blank_or_section=next_blank_or_section,
+        )
     )
 
     table_fences: list[tuple[tuple[int, int], ...]] = []
@@ -2791,6 +3339,24 @@ def _rebind_split_table_cell_literals(
                 break
 
         ambiguity_reason = table.ambiguity_reason
+        if _table_has_exact_sourcewide_ambiguity_resolution(
+            payload,
+            table_index=table_index,
+            table=table,
+            criteria=repaired_candidates,
+            lines=lines,
+            rebound_owners=sourcewide_header_rebound_owners,
+            criterion_anchors=criterion_anchor_spans[table_index],
+            criterion_regions=criterion_regions[table_index],
+            table_region=table_regions[table_index],
+            sourcewide_boundary_spans=sourcewide_boundary_spans,
+            hwp_section_starts=hwp_section_starts,
+            next_blank_or_section=next_blank_or_section,
+            boundary_overflow=boundary_overflow,
+            ambiguous_case_claim=ambiguous_case_claim,
+            ambiguous_recognition_claim=ambiguous_recognition_claim,
+        ):
+            ambiguity_reason = None
         if ambiguous_case_claim:
             ambiguity_reason = (
                 ambiguity_reason
