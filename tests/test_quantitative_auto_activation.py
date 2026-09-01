@@ -9,12 +9,16 @@ from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import ExtractionPayload
 from pai_loop.models import CompanyFact, Evidence
 from pai_loop.quantitative_rule_extraction import (
+    ImmutableQuantitativeCase,
+    ImmutableQuantitativeRecognitionCondition,
     merge_validated_quantitative_records,
     validate_quantitative_attachment_extraction,
 )
 from pai_loop.quantitative_scoring import (
     QuantitativeEstimateRequest,
     QuantitativeFact,
+    _candidate_bound_unit_scales_are_consistent,
+    _candidate_unit_is_source_bound,
     estimate_quantitative_score,
     quantitative_request_from_candidate_profile,
     quantitative_company_fact_payload_sha256,
@@ -367,6 +371,93 @@ def test_header_unit_can_be_inherited_by_unitless_numeric_rows() -> None:
 
     assert request.activation_status == "AUTO_ACTIVE"
     assert "BOUND_UNIT_INCONSISTENT" not in request.activation_reasons
+
+
+def test_case_table_header_unit_can_be_inherited_by_unitless_amount_rows() -> None:
+    profile = _validated_profile(
+        metric="PERFORMANCE_AMOUNT",
+        unit="원",
+        fact_key="company.performance.amount",
+        label="유사사업 수행실적",
+    )
+    candidate = profile.available_candidates[0]
+
+    def case(literal: str, value: float, points: float, order: int):
+        return ImmutableQuantitativeCase(
+            literal=literal,
+            operator="GTE",
+            comparison_value=value,
+            category_values=(),
+            award_kind="POINTS",
+            award_value=points,
+            row_order=order,
+            evidence=candidate.evidence.model_copy(update={"quote": literal}),
+        )
+
+    criterion_literal = "유사사업 수행실적 6점 (단위: 원)"
+    candidate = candidate.model_copy(
+        update={
+            "criterion_literal": criterion_literal,
+            "evidence": candidate.evidence.model_copy(
+                update={"quote": criterion_literal}
+            ),
+            "max_points": 6,
+            "scoring_method": "CASE_TABLE",
+            "brackets": (),
+            "cases": (
+                case("200000000 이상 6점", 200_000_000, 6, 1),
+                case("150000000 이상 5점", 150_000_000, 5, 2),
+            ),
+        }
+    )
+
+    assert _candidate_unit_is_source_bound(candidate) is True
+    assert _candidate_bound_unit_scales_are_consistent(candidate) is True
+
+
+def test_unrelated_recognition_condition_cannot_bind_count_unit() -> None:
+    profile = _validated_profile(
+        metric="PERFORMANCE_COUNT",
+        unit="건",
+        fact_key="company.performance.count",
+        label="유사사업 수행실적",
+    )
+    candidate = profile.available_candidates[0]
+
+    def case(literal: str, value: float, points: float, order: int):
+        return ImmutableQuantitativeCase(
+            literal=literal,
+            operator="GTE",
+            comparison_value=value,
+            category_values=(),
+            award_kind="POINTS",
+            award_value=points,
+            row_order=order,
+            evidence=candidate.evidence.model_copy(update={"quote": literal}),
+        )
+
+    unrelated = "증빙서류 1건 제출"
+    candidate = candidate.model_copy(
+        update={
+            "max_points": 4,
+            "scoring_method": "CASE_TABLE",
+            "brackets": (),
+            "cases": (
+                case("5 이상 4점", 5, 4, 1),
+                case("4 이상 3점", 4, 3, 2),
+            ),
+            "recognition_conditions": (
+                ImmutableQuantitativeRecognitionCondition(
+                    literal=unrelated,
+                    evidence=candidate.evidence.model_copy(
+                        update={"quote": unrelated}
+                    ),
+                ),
+            ),
+        }
+    )
+
+    assert _candidate_unit_is_source_bound(candidate) is False
 
 
 def _company_fact(

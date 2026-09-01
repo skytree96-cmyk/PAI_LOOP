@@ -20,6 +20,7 @@ from .integrations.openai_extraction import (
     PROMPT_VERSION,
     QuantitativeBracketLiteral,
     QuantitativeCaseLiteral,
+    QuantitativeRecognitionCondition,
     QuantitativeRuleCandidate,
     QuantitativeScoringMethod,
     QuantitativeTableCandidate,
@@ -30,8 +31,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.5"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.5"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.6"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.6"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -1074,6 +1075,412 @@ def _is_quantitative_column_detail_boundary(
         ):
             return True
     return False
+
+
+_COUNT_SOURCE_UNIT_RE = re.compile(
+    rf"(?<![\d.])(?P<num>{_NUM_PATTERN})\s*(?P<unit>건|회|개)"
+)
+_COMPACT_COUNT_MINIMUM_RE = re.compile(
+    r"실적건수\(\d[\d,]*(?:\.\d+)?"
+    r"(?:천만원|백만원|억원|만원|천원|원|억|만|천)이상\)"
+)
+_PERFORMANCE_FOOTNOTE_PATTERNS: Mapping[str, re.Pattern[str]] = {
+    "ANCHOR": re.compile(r"^①.*최근\s*3년간.*입찰\s*공고일.*기준"),
+    "CERTIFICATE": re.compile(
+        r"^②.*증빙서류.*용역수행실적.*용역실적증명서"
+    ),
+    "SHARE": re.compile(
+        r"^③.*공동계약.*참여\s*비율.*금액.*실적"
+    ),
+}
+
+
+def _source_bound_recognition_condition(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    span: tuple[int, int],
+) -> QuantitativeRecognitionCondition | None:
+    """Build one exact HWP recognition condition, never reconstructed prose."""
+
+    start, end = span
+    if (
+        end <= start
+        or end - start > _MAX_TABLE_CELL_WINDOW_LINES
+        or any(not line for line in lines[start:end])
+        or any(_HWP_SECTION_LINE_RE.fullmatch(line) for line in lines[start:end])
+    ):
+        return None
+    quote = "\n".join(lines[start:end])
+    if (
+        len(quote) > 500
+        or _unique_anchor_line_span(lines, quote) != span
+    ):
+        return None
+    return QuantitativeRecognitionCondition(
+        literal=quote,
+        evidence=candidate.evidence.model_copy(
+            update={"page": None, "quote": quote}
+        ),
+    )
+
+
+def _unique_quantitative_column_cluster(
+    lines: tuple[str, ...],
+    *,
+    region: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    if region is None:
+        return None
+    cluster_size = len(_SOURCEWIDE_QUANTITATIVE_COLUMN_HEADER_CLUSTER)
+    matches: list[tuple[int, int]] = []
+    for start in range(region[0], max(region[0], region[1] - cluster_size + 1)):
+        end = start + cluster_size
+        if end > region[1]:
+            break
+        compact = tuple(
+            re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+            for line in lines[start:end]
+        )
+        if compact == _SOURCEWIDE_QUANTITATIVE_COLUMN_HEADER_CLUSTER:
+            matches.append((start, end))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _performance_detail_conditions(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    criterion_region: tuple[int, int] | None,
+) -> tuple[QuantitativeRecognitionCondition, ...]:
+    """Recover exact semantic cells between a unique HWP header and first row."""
+
+    if (
+        criterion_region is None
+        or candidate.metric not in {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}
+        or candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+    ):
+        return ()
+    cluster = _unique_quantitative_column_cluster(lines, region=criterion_region)
+    first_case = _unique_anchor_line_span(lines, candidate.cases[0].literal)
+    if (
+        cluster is None
+        or first_case is None
+        or not _span_inside_region(first_case, criterion_region)
+        or first_case[0] <= cluster[1]
+    ):
+        return ()
+
+    detail_end = first_case[0]
+    while detail_end > cluster[1] and _score_cell_matches(
+        lines[detail_end - 1],
+        value=candidate.max_points,
+        percent=False,
+    ):
+        detail_end -= 1
+    marker_tokens = (
+        ("단일", "용역")
+        if candidate.metric == "PERFORMANCE_AMOUNT"
+        else ("실적", "건수")
+    )
+    marker_indexes = [
+        index
+        for index in range(cluster[1], detail_end)
+        if all(
+            token
+            in re.sub(r"\s+", "", unicodedata.normalize("NFKC", lines[index]))
+            for token in marker_tokens
+        )
+    ]
+    if len(marker_indexes) != 1:
+        return ()
+    marker = marker_indexes[0]
+    scope_span = (cluster[1], marker)
+    detail_span = (marker, detail_end)
+    if (
+        scope_span[1] <= scope_span[0]
+        or detail_span[1] <= detail_span[0]
+        or not _is_quantitative_column_detail_boundary(
+            lines,
+            start=scope_span[0],
+            end=scope_span[1],
+        )
+    ):
+        return ()
+    compact_detail = re.sub(
+        r"\s+",
+        "",
+        unicodedata.normalize(
+            "NFKC",
+            "\n".join(lines[detail_span[0] : detail_span[1]]),
+        ),
+    )
+    if candidate.metric == "PERFORMANCE_AMOUNT":
+        detail_matches = bool(
+            re.fullmatch(
+                r"단일용역(?:의)?(?:최고|최대)(?:계약)?금액\(1건\)",
+                compact_detail,
+            )
+        )
+    else:
+        detail_matches = bool(_COMPACT_COUNT_MINIMUM_RE.fullmatch(compact_detail))
+    if not detail_matches:
+        return ()
+
+    conditions = tuple(
+        _source_bound_recognition_condition(
+            candidate,
+            lines=lines,
+            span=span,
+        )
+        for span in (scope_span, detail_span)
+    )
+    return (
+        tuple(item for item in conditions if item is not None)
+        if all(item is not None for item in conditions)
+        else ()
+    )
+
+
+def _unique_performance_footnotes(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    footer_region: tuple[int, int] | None,
+) -> Mapping[str, QuantitativeRecognitionCondition]:
+    """Return the exact ordered 부산-style recognition block when unambiguous."""
+
+    if footer_region is None:
+        return {}
+    markers = [
+        index
+        for index in range(footer_region[0], footer_region[1])
+        if re.sub(
+            r"\s+",
+            "",
+            unicodedata.normalize("NFKC", lines[index]),
+        ).startswith("※실적인정기준")
+    ]
+    if len(markers) != 1:
+        return {}
+    resolved: dict[str, tuple[int, int]] = {}
+    for key, pattern in _PERFORMANCE_FOOTNOTE_PATTERNS.items():
+        matches = [
+            (index, index + 1)
+            for index in range(markers[0] + 1, footer_region[1])
+            if pattern.search(lines[index])
+        ]
+        if len(matches) != 1:
+            return {}
+        resolved[key] = matches[0]
+    ordered = [resolved[key][0] for key in ("ANCHOR", "CERTIFICATE", "SHARE")]
+    if ordered != sorted(ordered) or any(
+        not lines[index] or _HWP_SECTION_LINE_RE.fullmatch(lines[index])
+        for index in range(markers[0], resolved["SHARE"][1])
+    ):
+        return {}
+    output: dict[str, QuantitativeRecognitionCondition] = {}
+    for key, span in resolved.items():
+        condition = _source_bound_recognition_condition(
+            candidate,
+            lines=lines,
+            span=span,
+        )
+        if condition is None:
+            return {}
+        output[key] = condition
+    return output
+
+
+def _source_bound_count_unit(
+    candidate: QuantitativeRuleCandidate,
+) -> str | None:
+    if (
+        candidate.metric != "PERFORMANCE_COUNT"
+        or candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+    ):
+        return None
+    units: list[str] = []
+    for case in candidate.cases:
+        expected = _decimal(case.comparison_value)
+        if expected is None or case.operator not in {"GTE", "EQ"}:
+            return None
+        matches = list(_COUNT_SOURCE_UNIT_RE.finditer(case.literal))
+        valid: list[str] = []
+        for match in matches:
+            try:
+                parsed = Decimal(match.group("num").replace(",", ""))
+            except InvalidOperation:
+                return None
+            if parsed == expected:
+                valid.append(match.group("unit"))
+        if len(matches) != 1 or len(valid) != 1:
+            return None
+        units.append(valid[0])
+    return units[0] if units and len(set(units)) == 1 else None
+
+
+def _source_bound_performance_footer_region(
+    candidates: list[QuantitativeRuleCandidate],
+    *,
+    lines: tuple[str, ...],
+    criterion_regions: list[tuple[int, int] | None],
+    boundary_spans: Iterable[tuple[int, int]],
+) -> tuple[int, int] | None:
+    """Fence shared footnotes to the final modeled performance criterion.
+
+    부산형 표는 공통 실적인정 각주를 금액 항목이 아니라 마지막 건수
+    행 뒤에 둔다.  그 좁은 footer만 공유하고, 다음 명시적 기준이나 다른
+    표의 각주까지 가로질러 빌리지 않는다.
+    """
+
+    owners = [
+        (index, region)
+        for index, (candidate, region) in enumerate(
+            zip(candidates, criterion_regions, strict=True)
+        )
+        if candidate.metric in {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}
+        and candidate.scoring_method == "CASE_TABLE"
+        and candidate.cases
+        and region is not None
+    ]
+    if not owners:
+        return None
+    owner_index, owner_region = max(owners, key=lambda item: item[1][0])
+    case_ends: list[int] = []
+    for case in candidates[owner_index].cases:
+        literal_span = _unique_anchor_line_span(lines, case.literal)
+        evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+        if (
+            literal_span is None
+            or evidence_span is None
+            or not _span_inside_region(literal_span, owner_region)
+            or not _span_inside_region(evidence_span, owner_region)
+        ):
+            return None
+        case_ends.append(max(literal_span[1], evidence_span[1]))
+    if case_ends != sorted(case_ends):
+        return None
+    footer_start = case_ends[-1]
+    footer_end = min(
+        (
+            owner_region[1],
+            *(
+                span[0]
+                for span in boundary_spans
+                if span[0] >= footer_start
+            ),
+        )
+    )
+    return (
+        (footer_start, footer_end)
+        if footer_end > footer_start
+        else None
+    )
+
+
+def _repair_source_bound_candidate_unit(
+    candidate: QuantitativeRuleCandidate,
+) -> QuantitativeRuleCandidate:
+    normalized = _normalise_amount_unit(candidate.unit or "")
+    if candidate.metric == "PERFORMANCE_COUNT":
+        if normalized in {"건", "회", "개"}:
+            return candidate
+        repaired = _source_bound_count_unit(candidate)
+        return (
+            candidate.model_copy(update={"unit": repaired})
+            if repaired is not None
+            else candidate
+        )
+    if candidate.metric == "CREDIT_RATING":
+        if normalized in {"등급", "신용등급", "rating"}:
+            return candidate
+        header = re.sub(
+            r"\s+",
+            "",
+            unicodedata.normalize(
+                "NFKC",
+                f"{candidate.criterion_literal} {candidate.evidence.quote}",
+            ),
+        )
+        if (
+            "신용평가등급" in header
+            and candidate.scoring_method == "CASE_TABLE"
+            and candidate.cases
+            and all(
+                case.operator == "IN"
+                and case.category_values
+                and case.comparison_value is None
+                for case in candidate.cases
+            )
+        ):
+            return candidate.model_copy(update={"unit": "등급"})
+    return candidate
+
+
+def _augment_sourcewide_hwp_activation_context(
+    candidates: list[QuantitativeRuleCandidate],
+    *,
+    lines: tuple[str, ...],
+    criterion_regions: list[tuple[int, int] | None],
+    boundary_spans: Iterable[tuple[int, int]],
+) -> list[QuantitativeRuleCandidate]:
+    """Attach only exact table semantics needed by deterministic activation."""
+
+    footer_region = _source_bound_performance_footer_region(
+        candidates,
+        lines=lines,
+        criterion_regions=criterion_regions,
+        boundary_spans=boundary_spans,
+    )
+    output: list[QuantitativeRuleCandidate] = []
+    for candidate, criterion_region in zip(
+        candidates,
+        criterion_regions,
+        strict=True,
+    ):
+        candidate = _repair_source_bound_candidate_unit(candidate)
+        if candidate.metric not in {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}:
+            output.append(candidate)
+            continue
+        detail_conditions = _performance_detail_conditions(
+            candidate,
+            lines=lines,
+            criterion_region=criterion_region,
+        )
+        if not detail_conditions:
+            output.append(candidate)
+            continue
+        footnotes = _unique_performance_footnotes(
+            candidate,
+            lines=lines,
+            footer_region=footer_region,
+        )
+        additions = [
+            *detail_conditions,
+            *(footnotes[key] for key in ("ANCHOR", "CERTIFICATE") if key in footnotes),
+        ]
+        if candidate.metric == "PERFORMANCE_AMOUNT" and "SHARE" in footnotes:
+            additions.append(footnotes["SHARE"])
+        conditions = list(candidate.recognition_conditions)
+        seen = {
+            _recognition_key(item.literal, item.evidence.quote)
+            for item in conditions
+        }
+        for condition in additions:
+            key = _recognition_key(
+                condition.literal,
+                condition.evidence.quote,
+            )
+            if key not in seen:
+                seen.add(key)
+                conditions.append(condition)
+        output.append(
+            candidate.model_copy(update={"recognition_conditions": conditions})
+        )
+    return output
 
 
 def _sourcewide_structural_boundary_spans(
@@ -2246,6 +2653,13 @@ def _rebind_split_table_cell_literals(
                     external_recognition_keys=external_candidate_keys,
                 )
             )
+
+        repaired_candidates = _augment_sourcewide_hwp_activation_context(
+            repaired_candidates,
+            lines=lines,
+            criterion_regions=criterion_regions[table_index],
+            boundary_spans=sourcewide_boundary_spans,
+        )
 
         ambiguous_case_claim = False
         case_claims: list[

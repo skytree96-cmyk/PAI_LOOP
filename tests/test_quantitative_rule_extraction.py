@@ -3496,6 +3496,7 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
         {
             "criterion_literal": "용역수행 실적(건수, 4점)",
             "evidence": anchor("용역수행 실적(건수)"),
+            "unit": None,
             "cases": [
                 split_case(
                     "A. 5건 이상",
@@ -3549,7 +3550,18 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
         {
             "criterion_literal": "제안업체 경영상태",
             "evidence": anchor("제안업체 경영상태 요약 (10점)"),
+            "unit": "점",
         }
+    )
+    footnote_block = (
+        "※ 실적인정 기준\n"
+        "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다.\n"
+        "② 증빙서류로 용역수행실적 총괄표(별지서식5호), "
+        "용역실적증명서(별지서식6호)를 첨부한다.\n"
+        "③ 공동계약으로 참여한 실적의 경우 공동계약 참여 비율에 "
+        "따른 금액의 실적\n"
+        "④ 자체 합산표 및 증빙서류를 제출하지 않은 경우에는 "
+        "최저점으로 처리한다."
     )
     source = source.replace(
         "1) 용역수행 실적(금액, 6점)",
@@ -3575,6 +3587,12 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
     ).replace(
         "❍ 제안업체 경영상태 (10점)",
         "❍ 제안업체 경영상태(신용평가등급)\n(10점)",
+    ).replace(
+        "E. 1건\n2.8\n❍ 제안업체 경영상태",
+        (
+            f"E. 1건\n2.8\n{footnote_block}\n"
+            "❍ 제안업체 경영상태"
+        ),
     )
 
     profile = build(payload_with_table(table), source=source)
@@ -3591,7 +3609,16 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
         "PERFORMANCE_COUNT",
         "CREDIT_RATING",
     ]
+    assert [item.unit for item in profile.available_candidates] == [
+        "원",
+        "건",
+        "등급",
+    ]
     assert [len(item.cases) for item in profile.available_candidates] == [3, 5, 4]
+    assert [
+        len(item.recognition_conditions)
+        for item in profile.available_candidates
+    ] == [5, 4, 0]
     assert [item.evidence.page for item in profile.available_candidates] == [
         None,
         None,
@@ -3602,6 +3629,75 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
         "HWP SECTION 0",
         "HWP SECTION 0",
     ]
+
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    runtime_profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(runtime_profile)
+
+    assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons
+    assert request.activation_reasons == []
+    criteria = {item.metric_key: item for item in request.criteria}
+    amount_scope = criteria["company.performance.amount"].performance_scope
+    count_scope = criteria["company.performance.count"].performance_scope
+    assert amount_scope is not None
+    assert amount_scope.lookback_years == 3
+    assert amount_scope.lookback_anchor_basis == "BID_NOTICE_DATE"
+    assert amount_scope.aggregation == "MAX_SINGLE_AMOUNT"
+    assert amount_scope.consortium_share_rule == "APPLY_SHARE"
+    assert amount_scope.certificate_required is True
+    assert set(amount_scope.similarity_keywords) == {"교육", "취업", "행사"}
+    assert count_scope is not None
+    assert count_scope.lookback_years == 3
+    assert count_scope.lookback_anchor_basis == "BID_NOTICE_DATE"
+    assert count_scope.aggregation == "COUNT"
+    assert count_scope.minimum_single_contract_amount_krw == 20_000_000
+    assert count_scope.certificate_required is True
+
+    footer_after_credit = source.replace(
+        f"{footnote_block}\n❍ 제안업체 경영상태",
+        "❍ 제안업체 경영상태",
+        1,
+    ).replace(
+        "\n총점 20점",
+        f"\n{footnote_block}\n총점 20점",
+        1,
+    )
+    later_profile = build(
+        payload_with_table(table),
+        source=footer_after_credit,
+    )
+    assert later_profile.status == "AVAILABLE", issue_codes(later_profile)
+    assert [
+        len(item.recognition_conditions)
+        for item in later_profile.available_candidates
+    ] == [2, 2, 0]
+
+    footer_after_unmodeled_boundary = source.replace(
+        "※ 실적인정 기준",
+        "9) 후속 별도 실적인정 기준 (1점)\n※ 실적인정 기준",
+        1,
+    )
+    bounded_profile = build(
+        payload_with_table(table),
+        source=footer_after_unmodeled_boundary,
+    )
+    assert bounded_profile.status == "AVAILABLE", issue_codes(bounded_profile)
+    assert [
+        len(item.recognition_conditions)
+        for item in bounded_profile.available_candidates
+    ] == [2, 2, 0]
 
 
 @pytest.mark.parametrize(
