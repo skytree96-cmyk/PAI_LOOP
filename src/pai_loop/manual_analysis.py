@@ -4,6 +4,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 import uuid
 from collections import Counter
 from contextlib import contextmanager
@@ -95,6 +96,27 @@ class QuantitativeDiagnosticCaseShape(BaseModel):
     literal_matches_evidence: bool
 
 
+class QuantitativeDiagnosticRecognitionRelationShape(BaseModel):
+    """Bounded structural relation counts for one raw-table target group."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_count: int = Field(ge=0, le=10_000)
+    scanned_target_count: int = Field(ge=0, le=200)
+    scan_truncated: bool
+    literal_overlaps: bool
+    literal_overlap_target_count: int = Field(ge=0, le=200)
+    evidence_overlaps: bool
+    evidence_overlap_target_count: int = Field(ge=0, le=200)
+    literal_matches: bool
+    literal_match_target_count: int = Field(ge=0, le=200)
+    evidence_matches: bool
+    evidence_match_target_count: int = Field(ge=0, le=200)
+    literal_occurrence_count: int = Field(ge=0, le=500_000)
+    evidence_occurrence_count: int = Field(ge=0, le=500_000)
+    literal_evidence_occurrence_equivalent: bool
+
+
 class QuantitativeDiagnosticRecognitionConditionShape(BaseModel):
     """Non-text shape of one criterion recognition condition."""
 
@@ -109,6 +131,11 @@ class QuantitativeDiagnosticRecognitionConditionShape(BaseModel):
     literal_matches_evidence: bool
     literal_has_metric_tokens: bool | None
     evidence_has_metric_tokens: bool | None
+    own_criterion_anchor: QuantitativeDiagnosticRecognitionRelationShape
+    own_case_rows: QuantitativeDiagnosticRecognitionRelationShape
+    other_criteria_anchors: QuantitativeDiagnosticRecognitionRelationShape
+    other_case_rows: QuantitativeDiagnosticRecognitionRelationShape
+    other_recognition_conditions: QuantitativeDiagnosticRecognitionRelationShape
 
 
 class QuantitativeDiagnosticCandidateShape(BaseModel):
@@ -204,6 +231,7 @@ _MAX_DIAGNOSTIC_CODES = 100
 _MAX_DIAGNOSTIC_CANDIDATES = 12
 _MAX_DIAGNOSTIC_CASES = 12
 _MAX_DIAGNOSTIC_RECOGNITION_CONDITIONS = 12
+_MAX_DIAGNOSTIC_RELATION_TARGETS = 200
 _DIAGNOSTIC_POINT_VALUE = re.compile(
     r"(?<![\d.])(\d{1,3}(?:\.\d{1,2})?)\s*점(?!\s*[\d.])"
 )
@@ -544,6 +572,124 @@ def _diagnostic_is_point_only(value: object) -> bool:
     return _DIAGNOSTIC_POINT_VALUE.fullmatch(str(value or "").strip()) is not None
 
 
+def _diagnostic_normalise_anchor(value: object) -> str:
+    normalized = unicodedata.normalize("NFC", str(value or ""))
+    visible = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    return " ".join(visible.split())
+
+
+def _diagnostic_overlapping_substring_count(source: str, needle: str) -> int:
+    if not needle:
+        return 0
+    count = 0
+    offset = 0
+    while (match := source.find(needle, offset)) >= 0:
+        count += 1
+        offset = match + 1
+    return count
+
+
+def _diagnostic_occurrence_count(needle: object, source: object) -> int:
+    """Mirror exact anchor occurrence semantics on one raw extraction string."""
+
+    normalized_needle = _diagnostic_normalise_anchor(needle)
+    normalized_source = _diagnostic_normalise_anchor(source)
+    if not normalized_needle:
+        return 0
+    compact_needle = "".join(normalized_needle.split())
+    compact_source = "".join(normalized_source.split())
+    return max(
+        _diagnostic_overlapping_substring_count(
+            normalized_source,
+            normalized_needle,
+        ),
+        _diagnostic_overlapping_substring_count(compact_source, compact_needle),
+    )
+
+
+def _diagnostic_recognition_relation(
+    literal: object,
+    evidence: object,
+    targets: list[tuple[object, object]],
+) -> QuantitativeDiagnosticRecognitionRelationShape:
+    """Compare one condition only with bounded pairs in its raw table."""
+
+    scanned = targets[:_MAX_DIAGNOSTIC_RELATION_TARGETS]
+    normalized_literal = _diagnostic_normalise_anchor(literal)
+    normalized_evidence = _diagnostic_normalise_anchor(evidence)
+    literal_occurrences: list[int] = []
+    evidence_occurrences: list[int] = []
+    literal_overlap_count = 0
+    evidence_overlap_count = 0
+    literal_match_count = 0
+    evidence_match_count = 0
+    for left, right in scanned:
+        fragments = (left, right)
+        normalized_fragments = tuple(
+            _diagnostic_normalise_anchor(fragment) for fragment in fragments
+        )
+        fragment_literal_occurrences = tuple(
+            _diagnostic_occurrence_count(literal, fragment)
+            for fragment in fragments
+        )
+        fragment_evidence_occurrences = tuple(
+            _diagnostic_occurrence_count(evidence, fragment)
+            for fragment in fragments
+        )
+        literal_occurrences.extend(fragment_literal_occurrences)
+        evidence_occurrences.extend(fragment_evidence_occurrences)
+        literal_overlap_count += int(
+            any(fragment_literal_occurrences)
+            or any(
+                _diagnostic_occurrence_count(fragment, literal) > 0
+                for fragment in fragments
+            )
+        )
+        evidence_overlap_count += int(
+            any(fragment_evidence_occurrences)
+            or any(
+                _diagnostic_occurrence_count(fragment, evidence) > 0
+                for fragment in fragments
+            )
+        )
+        literal_match_count += int(
+            bool(normalized_literal)
+            and normalized_literal in normalized_fragments
+        )
+        evidence_match_count += int(
+            bool(normalized_evidence)
+            and normalized_evidence in normalized_fragments
+        )
+    literal_occurrence_count = sum(literal_occurrences)
+    evidence_occurrence_count = sum(evidence_occurrences)
+    return QuantitativeDiagnosticRecognitionRelationShape(
+        target_count=len(targets),
+        scanned_target_count=len(scanned),
+        scan_truncated=len(scanned) != len(targets),
+        literal_overlaps=literal_overlap_count > 0,
+        literal_overlap_target_count=literal_overlap_count,
+        evidence_overlaps=evidence_overlap_count > 0,
+        evidence_overlap_target_count=evidence_overlap_count,
+        literal_matches=literal_match_count > 0,
+        literal_match_target_count=literal_match_count,
+        evidence_matches=evidence_match_count > 0,
+        evidence_match_target_count=evidence_match_count,
+        literal_occurrence_count=literal_occurrence_count,
+        evidence_occurrence_count=evidence_occurrence_count,
+        # Equal totals can hide claims landing in different rows. Equivalence
+        # therefore requires the complete per-fragment occurrence vector to
+        # match and at least one positive occurrence.
+        literal_evidence_occurrence_equivalent=(
+            any(literal_occurrences)
+            and literal_occurrences == evidence_occurrences
+        ),
+    )
+
+
 def _diagnostic_has_metric_tokens(metric: str, value: object) -> bool | None:
     compact = re.sub(r"\s+", "", str(value or ""))
     groups = _DIAGNOSTIC_METRIC_TOKENS.get(metric, ())
@@ -663,37 +809,104 @@ def _quantitative_candidate_shapes(
                 max_points, max_points_safe = _safe_diagnostic_score(
                     candidate.max_points
                 )
-                recognition_conditions = [
-                    QuantitativeDiagnosticRecognitionConditionShape(
-                        literal_character_count=len(item.literal),
-                        evidence_character_count=len(item.evidence.quote),
-                        literal_point_values=_diagnostic_point_values(item.literal),
-                        evidence_point_values=_diagnostic_point_values(
-                            item.evidence.quote
-                        ),
-                        literal_is_point_only=_diagnostic_is_point_only(
-                            item.literal
-                        ),
-                        evidence_is_point_only=_diagnostic_is_point_only(
-                            item.evidence.quote
-                        ),
-                        literal_matches_evidence=evidence_quote_matches_source(
-                            item.literal,
-                            item.evidence.quote,
-                        ),
-                        literal_has_metric_tokens=_diagnostic_has_metric_tokens(
-                            candidate.metric,
-                            item.literal,
-                        ),
-                        evidence_has_metric_tokens=_diagnostic_has_metric_tokens(
-                            candidate.metric,
-                            item.evidence.quote,
-                        ),
+                criterion_index = criterion_ordinal - 1
+                own_criterion_targets = [
+                    (candidate.criterion_literal, candidate.evidence.quote)
+                ]
+                own_case_targets = [
+                    (case.literal, case.evidence.quote)
+                    for case in candidate.cases
+                ]
+                other_criteria_targets = [
+                    (
+                        other_candidate.criterion_literal,
+                        other_candidate.evidence.quote,
                     )
-                    for item in candidate.recognition_conditions[
+                    for other_index, other_candidate in enumerate(table.criteria)
+                    if other_index != criterion_index
+                ]
+                other_case_targets = [
+                    (case.literal, case.evidence.quote)
+                    for other_index, other_candidate in enumerate(table.criteria)
+                    if other_index != criterion_index
+                    for case in other_candidate.cases
+                ]
+                recognition_conditions: list[
+                    QuantitativeDiagnosticRecognitionConditionShape
+                ] = []
+                for condition_index, item in enumerate(
+                    candidate.recognition_conditions[
                         :_MAX_DIAGNOSTIC_RECOGNITION_CONDITIONS
                     ]
-                ]
+                ):
+                    other_recognition_targets = [
+                        (condition.literal, condition.evidence.quote)
+                        for other_index, other_candidate in enumerate(table.criteria)
+                        for other_condition_index, condition in enumerate(
+                            other_candidate.recognition_conditions
+                        )
+                        if (other_index, other_condition_index)
+                        != (criterion_index, condition_index)
+                    ]
+                    recognition_conditions.append(
+                        QuantitativeDiagnosticRecognitionConditionShape(
+                            literal_character_count=len(item.literal),
+                            evidence_character_count=len(item.evidence.quote),
+                            literal_point_values=_diagnostic_point_values(
+                                item.literal
+                            ),
+                            evidence_point_values=_diagnostic_point_values(
+                                item.evidence.quote
+                            ),
+                            literal_is_point_only=_diagnostic_is_point_only(
+                                item.literal,
+                            ),
+                            evidence_is_point_only=_diagnostic_is_point_only(
+                                item.evidence.quote,
+                            ),
+                            literal_matches_evidence=evidence_quote_matches_source(
+                                item.literal,
+                                item.evidence.quote,
+                            ),
+                            literal_has_metric_tokens=_diagnostic_has_metric_tokens(
+                                candidate.metric,
+                                item.literal,
+                            ),
+                            evidence_has_metric_tokens=_diagnostic_has_metric_tokens(
+                                candidate.metric,
+                                item.evidence.quote,
+                            ),
+                            own_criterion_anchor=_diagnostic_recognition_relation(
+                                item.literal,
+                                item.evidence.quote,
+                                own_criterion_targets,
+                            ),
+                            own_case_rows=_diagnostic_recognition_relation(
+                                item.literal,
+                                item.evidence.quote,
+                                own_case_targets,
+                            ),
+                            other_criteria_anchors=(
+                                _diagnostic_recognition_relation(
+                                    item.literal,
+                                    item.evidence.quote,
+                                    other_criteria_targets,
+                                )
+                            ),
+                            other_case_rows=_diagnostic_recognition_relation(
+                                item.literal,
+                                item.evidence.quote,
+                                other_case_targets,
+                            ),
+                            other_recognition_conditions=(
+                                _diagnostic_recognition_relation(
+                                    item.literal,
+                                    item.evidence.quote,
+                                    other_recognition_targets,
+                                )
+                            ),
+                        )
+                    )
                 shapes.append(
                     QuantitativeDiagnosticCandidateShape(
                         source_ordinal=source_ordinals[attachment_id],

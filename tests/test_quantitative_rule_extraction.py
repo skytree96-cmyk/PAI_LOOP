@@ -4407,6 +4407,170 @@ def busan_hwp_production_partial_anchor_fixture() -> tuple[dict, str, str]:
     return table, source, footnote_block
 
 
+def busan_hwp_production_raw_performance_conditions(
+    footnote_block: str,
+) -> list[dict[str, object]]:
+    """Mirror the bounded literal/evidence shapes observed in production."""
+
+    conditions: list[dict[str, object]] = []
+    for line in footnote_block.splitlines()[1:]:
+        literal = line[2:] if len(line) > 1 and line[1] == " " else line[1:]
+        evidence_literal = literal[:-1] if literal.endswith(".") else literal
+        conditions.append(
+            {
+                "literal": literal,
+                "evidence": anchor(evidence_literal),
+            }
+        )
+    return conditions
+
+
+def test_busan_hwp_removes_only_count_share_owned_by_amount() -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    raw_conditions = busan_hwp_production_raw_performance_conditions(
+        footnote_block
+    )
+    for candidate in table["criteria"][:2]:
+        candidate["recognition_conditions"] = json.loads(
+            json.dumps(raw_conditions)
+        )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" not in issue_codes(profile)
+    assert [
+        len(item.recognition_conditions)
+        for item in profile.available_candidates
+    ] == [6, 5, 0]
+
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    runtime_profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(runtime_profile)
+
+    assert record.status == "AVAILABLE", record.issues
+    assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons
+    assert request.activation_reasons == []
+    criteria = {item.metric_key: item for item in request.criteria}
+    amount_scope = criteria["company.performance.amount"].performance_scope
+    count_scope = criteria["company.performance.count"].performance_scope
+    assert amount_scope is not None
+    assert count_scope is not None
+    assert amount_scope.consortium_share_rule == "APPLY_SHARE"
+    assert count_scope.consortium_share_rule == "UNSPECIFIED"
+
+
+def test_busan_hwp_preserves_duplicate_count_share_claims() -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    raw_conditions = busan_hwp_production_raw_performance_conditions(
+        footnote_block
+    )
+    for candidate in table["criteria"][:2]:
+        candidate["recognition_conditions"] = json.loads(
+            json.dumps(raw_conditions)
+        )
+    table["criteria"][1]["recognition_conditions"].append(
+        json.loads(json.dumps(raw_conditions[2]))
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "RECOGNITION_CONDITION_DUPLICATE" in issue_codes(profile)
+
+
+def test_busan_hwp_preserves_cross_attachment_count_share_claim() -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    raw_conditions = busan_hwp_production_raw_performance_conditions(
+        footnote_block
+    )
+    for candidate in table["criteria"][:2]:
+        candidate["recognition_conditions"] = json.loads(
+            json.dumps(raw_conditions)
+        )
+    table["criteria"][1]["recognition_conditions"][2]["evidence"][
+        "attachment_id"
+    ] = "ATT-OTHER"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "UNKNOWN_ATTACHMENT" in issue_codes(profile)
+
+
+@pytest.mark.parametrize("evidence_shape", ("broad", "disjoint"))
+def test_busan_hwp_preserves_unbounded_count_share_claim(
+    evidence_shape: str,
+) -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    raw_conditions = busan_hwp_production_raw_performance_conditions(
+        footnote_block
+    )
+    for candidate in table["criteria"][:2]:
+        candidate["recognition_conditions"] = json.loads(
+            json.dumps(raw_conditions)
+        )
+    count_share = table["criteria"][1]["recognition_conditions"][2]
+    if evidence_shape == "broad":
+        count_share["evidence"] = anchor(
+            "\n".join(footnote_block.splitlines()[3:5])
+        )
+    else:
+        count_share["evidence"] = anchor(raw_conditions[0]["literal"])
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+    assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in issue_codes(profile)
+
+
+@pytest.mark.parametrize("owner_mutation", ("ambiguous", "invalid-row-order"))
+def test_busan_hwp_preserves_count_share_without_unique_valid_amount_owner(
+    owner_mutation: str,
+) -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    raw_conditions = busan_hwp_production_raw_performance_conditions(
+        footnote_block
+    )
+    for candidate in table["criteria"][:2]:
+        candidate["recognition_conditions"] = json.loads(
+            json.dumps(raw_conditions)
+        )
+    amount = table["criteria"][0]
+    if owner_mutation == "ambiguous":
+        amount["ambiguity_reason"] = "금액 기준 소유자 확인 필요"
+    else:
+        amount["cases"][1]["row_order"] = 3
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+
+
 def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> None:
     table, source, footnote_block = (
         busan_hwp_production_partial_anchor_fixture()
