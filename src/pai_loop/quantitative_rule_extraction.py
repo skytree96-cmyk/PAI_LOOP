@@ -31,8 +31,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.7"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.7"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.8"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.8"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -103,6 +103,23 @@ AttachmentRecordStatus = Literal[
     "INCOMPLETE",
     "NO_TABLE",
     "NOT_APPLICABLE",
+]
+SourcewideAmbiguityResolutionBlocker = Literal[
+    "SOURCEWIDE_AMBIGUITY_REASON_NOT_STRUCTURAL",
+    "SOURCEWIDE_AMBIGUITY_SCOPE_UNSUPPORTED",
+    "SOURCEWIDE_AMBIGUITY_SOURCE_GAPS_PRESENT",
+    "SOURCEWIDE_AMBIGUITY_BOUNDARY_SCAN_LIMIT",
+    "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION",
+    "SOURCEWIDE_AMBIGUITY_REBIND_INCOMPLETE",
+    "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED",
+    "SOURCEWIDE_AMBIGUITY_GEOMETRY_UNPROVEN",
+    "SOURCEWIDE_AMBIGUITY_CASE_CENSUS_MISMATCH",
+    "SOURCEWIDE_AMBIGUITY_TOTAL_EVIDENCE_UNPROVEN",
+    "SOURCEWIDE_AMBIGUITY_CASE_EVIDENCE_UNPROVEN",
+    "SOURCEWIDE_AMBIGUITY_SECTION_UNPROVEN",
+    "SOURCEWIDE_AMBIGUITY_COMPETING_STRUCTURE",
+    "SOURCEWIDE_AMBIGUITY_TOTAL_PROVENANCE_UNPROVEN",
+    "SOURCEWIDE_AMBIGUITY_TOTAL_MISMATCH",
 ]
 
 
@@ -1108,6 +1125,10 @@ _BUSAN_ENTERPRISE_CREDIT_CATEGORY_ROWS = (
     ("B+", "B0", "B-"),
     ("CCC+ 이하",),
 )
+_BUSAN_CREDIT_RATING_FOOTNOTE_RE = re.compile(
+    r"^\*등급별평점이소수점이하의숫자가있는경우"
+    r"소수점다섯째자리에서반올림함[.]?$"
+)
 _SOURCEWIDE_LABELED_CASE_START_RE = re.compile(r"^(?P<label>[A-Z])[.]\s*\S.*$")
 _COMPACT_COUNT_MINIMUM_RE = re.compile(
     r"실적건수\(\d[\d,]*(?:\.\d+)?"
@@ -1351,6 +1372,68 @@ def _source_bound_count_unit(
     return units[0] if units and len(set(units)) == 1 else None
 
 
+def _source_bound_credit_rating_case_region(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    criterion_region: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    """Fence the 부산 credit rows at their unique exact source footnote.
+
+    The HWP extractor can leave the final criterion open through later forms,
+    whose standalone numbers look like score cells.  Cropping at the last
+    modeled case would trust the payload, so the only accepted end boundary is
+    the unique published rounding footnote immediately following all owned case
+    rows.  Missing/repeated footnotes and any intervening nonblank row fail
+    closed.
+    """
+
+    if (
+        candidate.metric != "CREDIT_RATING"
+        or candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+        or criterion_region is None
+    ):
+        return None
+    footnotes = [
+        index
+        for index, line in enumerate(lines)
+        if _BUSAN_CREDIT_RATING_FOOTNOTE_RE.fullmatch(
+            re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+        )
+    ]
+    if len(footnotes) != 1:
+        return None
+    footnote = footnotes[0]
+    bounded_region = (criterion_region[0], footnote)
+    if (
+        footnote <= criterion_region[0]
+        or footnote >= criterion_region[1]
+    ):
+        return None
+
+    case_spans: list[tuple[int, int]] = []
+    for case in sorted(candidate.cases, key=lambda item: item.row_order):
+        literal_span = _unique_anchor_line_span(lines, case.literal)
+        evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+        if (
+            literal_span is None
+            or evidence_span is None
+            or literal_span != evidence_span
+            or not _span_inside_region(literal_span, bounded_region)
+        ):
+            return None
+        case_spans.append(literal_span)
+    if any(
+        left[1] > right[0]
+        for left, right in zip(case_spans, case_spans[1:], strict=False)
+    ):
+        return None
+    if any(lines[index] for index in range(case_spans[-1][1], footnote)):
+        return None
+    return bounded_region
+
+
 def _source_bound_credit_rating_header_quote(
     candidate: QuantitativeRuleCandidate,
     *,
@@ -1372,6 +1455,16 @@ def _source_bound_credit_rating_header_quote(
         )
     ):
         return None
+
+    source_region = criterion_region
+    owned_region = _source_bound_credit_rating_case_region(
+        candidate,
+        lines=lines,
+        criterion_region=source_region,
+    )
+    if owned_region is None:
+        return None
+    criterion_region = owned_region
 
     criterion_literal_span = _unique_anchor_line_span(
         lines, candidate.criterion_literal
@@ -1441,7 +1534,7 @@ def _source_bound_credit_rating_header_quote(
     if not _sourcewide_case_census_matches(
         candidate,
         lines=lines,
-        criterion_region=criterion_region,
+        criterion_region=source_region,
     ):
         return None
 
@@ -2157,6 +2250,14 @@ def _sourcewide_case_census_matches(
     ordered_cases = sorted(candidate.cases, key=lambda item: item.row_order)
 
     if candidate.metric == "CREDIT_RATING":
+        owned_region = _source_bound_credit_rating_case_region(
+            candidate,
+            lines=lines,
+            criterion_region=criterion_region,
+        )
+        if owned_region is None:
+            return False
+        criterion_region = owned_region
         normalized_rows = tuple(
             tuple(
                 re.sub(
@@ -2545,7 +2646,7 @@ def _rebind_candidate_table_cell_literals(
     )
 
 
-def _table_has_exact_sourcewide_ambiguity_resolution(
+def _sourcewide_ambiguity_resolution_blocker(
     payload: ExtractionPayload,
     *,
     table_index: int,
@@ -2562,8 +2663,8 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
     boundary_overflow: bool,
     ambiguous_case_claim: bool,
     ambiguous_recognition_claim: bool,
-) -> bool:
-    """Clear only a model ambiguity fully resolved by exact source structure.
+) -> SourcewideAmbiguityResolutionBlocker | None:
+    """Return a safe reason code when exact sourcewide resolution is blocked.
 
     An extractor-provided ambiguity is decision-bearing and normally remains
     fail-closed.  The sole exception is a one-table HWP payload where every
@@ -2571,35 +2672,45 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
     complete table geometry and total independently agree.  This deliberately
     excludes already-valid model headers, partial repairs, multi-table payloads,
     declared source gaps, and any later structural ambiguity.
+
+    The returned value is an enum-only diagnostic code.  It contains no source
+    text, model prose, attachment/table identifiers, or bidder facts, so the
+    existing PIN-only diagnostics endpoint can safely aggregate it from profile
+    issues. ``None`` means either that no ambiguity existed or that every exact
+    proof gate succeeded.
     """
 
+    if not table.ambiguity_reason:
+        return None
+    if not _sourcewide_ambiguity_is_structural(table.ambiguity_reason):
+        return "SOURCEWIDE_AMBIGUITY_REASON_NOT_STRUCTURAL"
     if (
-        not table.ambiguity_reason
-        or not _sourcewide_ambiguity_is_structural(table.ambiguity_reason)
-        or len(payload.quantitative_tables) != 1
+        len(payload.quantitative_tables) != 1
         or table_index != 0
         or not table.criteria
-        or payload.missing_or_unreadable
         or payload.quantitative_table_not_applicable is not None
-        or boundary_overflow
-        or ambiguous_case_claim
-        or ambiguous_recognition_claim
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_SCOPE_UNSUPPORTED"
+    if payload.missing_or_unreadable:
+        return "SOURCEWIDE_AMBIGUITY_SOURCE_GAPS_PRESENT"
+    if boundary_overflow:
+        return "SOURCEWIDE_AMBIGUITY_BOUNDARY_SCAN_LIMIT"
+    if ambiguous_case_claim or ambiguous_recognition_claim:
+        return "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION"
 
     expected_owners = frozenset(
         (table_index, candidate_index)
         for candidate_index in range(len(table.criteria))
     )
     if rebound_owners != expected_owners:
-        return False
+        return "SOURCEWIDE_AMBIGUITY_REBIND_INCOMPLETE"
 
     signature = tuple(
         (candidate.metric, _decimal(candidate.max_points))
         for candidate in criteria
     )
     if signature != _BUSAN_SOURCEWIDE_AMBIGUITY_SIGNATURE:
-        return False
+        return "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED"
 
     if (
         table_region is None
@@ -2608,7 +2719,7 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
         or any(anchor is None for anchor in criterion_anchors)
         or any(region is None for region in criterion_regions)
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_GEOMETRY_UNPROVEN"
     resolved_anchors = [anchor for anchor in criterion_anchors if anchor is not None]
     resolved_regions = [region for region in criterion_regions if region is not None]
     if not all(
@@ -2618,7 +2729,7 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
         and _span_inside_region(region, table_region)
         for anchor, region in zip(resolved_anchors, resolved_regions, strict=True)
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_GEOMETRY_UNPROVEN"
     if not all(
         left_anchor[0] < right_anchor[0] and left_region[1] <= right_region[0]
         for left_anchor, right_anchor, left_region, right_region in zip(
@@ -2629,7 +2740,7 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
             strict=False,
         )
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_GEOMETRY_UNPROVEN"
     if not all(
         _sourcewide_case_census_matches(
             candidate,
@@ -2638,17 +2749,17 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
         )
         for candidate, region in zip(criteria, resolved_regions, strict=True)
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_CASE_CENSUS_MISMATCH"
 
     total = _decimal(table.total_points)
     if total is None or table.total_evidence is None:
-        return False
+        return "SOURCEWIDE_AMBIGUITY_TOTAL_EVIDENCE_UNPROVEN"
     total_span = _unique_anchor_line_span(lines, table.total_evidence.quote)
     if (
         total_span is None
         or not _literal_contains_number(total, table.total_evidence.quote)
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_TOTAL_EVIDENCE_UNPROVEN"
     owned_claim_spans: list[tuple[int, int]] = list(resolved_anchors)
     for candidate, region in zip(criteria, resolved_regions, strict=True):
         for case in candidate.cases:
@@ -2661,12 +2772,12 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
                 or not _span_inside_region(literal_span, region)
                 or not _span_inside_region(evidence_span, region)
             ):
-                return False
+                return "SOURCEWIDE_AMBIGUITY_CASE_EVIDENCE_UNPROVEN"
             owned_claim_spans.extend((literal_span, evidence_span))
     last_claim_end = max(span[1] for span in owned_claim_spans)
     owning_sections = [index for index in hwp_section_starts if index < table_region[0]]
     if not owning_sections:
-        return False
+        return "SOURCEWIDE_AMBIGUITY_SECTION_UNPROVEN"
     owning_section = owning_sections[-1]
 
     def section_for(span: tuple[int, int]) -> int | None:
@@ -2690,11 +2801,11 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
         for span in table_marker_spans
         if span not in owner_markers
     ):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_COMPETING_STRUCTURE"
 
     simple_totals = _sourcewide_quantitative_total_candidates(lines)
     if any(not _spans_overlap(span, total_span) for span, _points in simple_totals):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_COMPETING_STRUCTURE"
 
     trailing_total = bool(
         _span_inside_region(total_span, table_region)
@@ -2743,33 +2854,41 @@ def _table_has_exact_sourcewide_ambiguity_resolution(
         and not simple_totals
     )
     if not (trailing_total or summary_total):
-        return False
+        return "SOURCEWIDE_AMBIGUITY_TOTAL_PROVENANCE_UNPROVEN"
 
     criterion_maxima = [_decimal(candidate.max_points) for candidate in criteria]
-    return bool(
-        all(value is not None for value in criterion_maxima)
-        and sum(
-            (value for value in criterion_maxima if value is not None),
-            Decimal("0"),
-        )
-        == total
-    )
+    if not all(value is not None for value in criterion_maxima) or sum(
+        (value for value in criterion_maxima if value is not None),
+        Decimal("0"),
+    ) != total:
+        return "SOURCEWIDE_AMBIGUITY_TOTAL_MISMATCH"
+    return None
 
 
 def _rebind_split_table_cell_literals(
     payload: ExtractionPayload,
     *,
     source: str,
-) -> ExtractionPayload:
-    """Repair only exact, unambiguous table-cell layout fragmentation."""
+) -> tuple[
+    ExtractionPayload,
+    tuple[SourcewideAmbiguityResolutionBlocker | None, ...],
+]:
+    """Repair exact HWP cell splits and return table-aligned safe blockers."""
 
     lines = _source_lines(source)
-    if (
-        not lines
-        or not any(_HWP_SECTION_LINE_RE.fullmatch(line) for line in lines)
-        or not payload.quantitative_tables
+    if not payload.quantitative_tables:
+        return payload, ()
+    if not lines or not any(
+        _HWP_SECTION_LINE_RE.fullmatch(line) for line in lines
     ):
-        return payload
+        return payload, tuple(
+            (
+                "SOURCEWIDE_AMBIGUITY_SCOPE_UNSUPPORTED"
+                if table.ambiguity_reason
+                else None
+            )
+            for table in payload.quantitative_tables
+        )
 
     hwp_section_starts = tuple(
         index
@@ -3020,6 +3139,9 @@ def _rebind_split_table_cell_literals(
         )
     )
     repaired_tables: list[QuantitativeTableCandidate] = []
+    ambiguity_resolution_blockers: list[
+        SourcewideAmbiguityResolutionBlocker | None
+    ] = []
     for table_index, table in enumerate(payload.quantitative_tables):
         recognition_owners: dict[tuple[str, str], set[int]] = {}
         for candidate_index, entries in enumerate(
@@ -3339,7 +3461,7 @@ def _rebind_split_table_cell_literals(
                 break
 
         ambiguity_reason = table.ambiguity_reason
-        if _table_has_exact_sourcewide_ambiguity_resolution(
+        ambiguity_resolution_blocker = _sourcewide_ambiguity_resolution_blocker(
             payload,
             table_index=table_index,
             table=table,
@@ -3355,7 +3477,8 @@ def _rebind_split_table_cell_literals(
             boundary_overflow=boundary_overflow,
             ambiguous_case_claim=ambiguous_case_claim,
             ambiguous_recognition_claim=ambiguous_recognition_claim,
-        ):
+        )
+        if table.ambiguity_reason and ambiguity_resolution_blocker is None:
             ambiguity_reason = None
         if ambiguous_case_claim:
             ambiguity_reason = (
@@ -3367,6 +3490,16 @@ def _rebind_split_table_cell_literals(
                 ambiguity_reason
                 or "정량평가 인식조건 근거가 평가항목 구조와 모호하게 연결되었습니다."
             )
+        if (
+            ambiguity_resolution_blocker is None
+            and (ambiguous_case_claim or ambiguous_recognition_claim)
+        ):
+            ambiguity_resolution_blocker = (
+                "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION"
+            )
+        ambiguity_resolution_blockers.append(
+            ambiguity_resolution_blocker if ambiguity_reason else None
+        )
         repaired_tables.append(
             table.model_copy(
                 update={
@@ -3375,7 +3508,10 @@ def _rebind_split_table_cell_literals(
                 }
             )
         )
-    return payload.model_copy(update={"quantitative_tables": repaired_tables})
+    return (
+        payload.model_copy(update={"quantitative_tables": repaired_tables}),
+        tuple(ambiguity_resolution_blockers),
+    )
 
 
 def _normalise_source_gap(value: str) -> str:
@@ -4943,7 +5079,7 @@ def build_quantitative_candidate_profile(
 
     seen_table_ids: set[tuple[str, str]] = set()
     for attachment_id in sorted(processed & expected):
-        payload = _rebind_split_table_cell_literals(
+        payload, ambiguity_resolution_blockers = _rebind_split_table_cell_literals(
             extractions_by_attachment_id[attachment_id],
             source=source_text_by_attachment_id.get(attachment_id, ""),
         )
@@ -5031,7 +5167,7 @@ def build_quantitative_candidate_profile(
                 )
             )
 
-        for table in payload.quantitative_tables:
+        for table_index, table in enumerate(payload.quantitative_tables):
             table_key = (attachment_id, table.table_id)
             table_issues = _validate_table_metadata(
                 table,
@@ -5039,6 +5175,19 @@ def build_quantitative_candidate_profile(
                 source_text_by_attachment_id=source_text_by_attachment_id,
                 expected_attachment_ids=expected,
             )
+            ambiguity_resolution_blocker = ambiguity_resolution_blockers[
+                table_index
+            ]
+            if ambiguity_resolution_blocker is not None:
+                table_issues.append(
+                    _issue(
+                        ambiguity_resolution_blocker,
+                        "REVIEW",
+                        "정량평가표 모호성의 정확한 원문 구조 해제 조건이 충족되지 않았습니다.",
+                        attachment_id=attachment_id,
+                        table_id=table.table_id,
+                    )
+                )
             if table_key in seen_table_ids:
                 table_issues.append(
                     _issue(
