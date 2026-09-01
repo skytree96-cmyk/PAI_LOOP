@@ -196,6 +196,9 @@ def test_daily_briefing_batches_notice_history_and_loads_only_latest_snapshot(
                 basis_versions={
                     "pipeline": daily_operations.PIPELINE_VERSION,
                     "requirement_policy": daily_operations.POLICY_VERSION,
+                    "quantitative_engine": (
+                        daily_operations.QUANTITATIVE_ENGINE_VERSION
+                    ),
                 },
                 input_manifest={"discarded": "x" * 40_000},
                 output_summary={"marker": f"old-{index}"},
@@ -210,6 +213,9 @@ def test_daily_briefing_batches_notice_history_and_loads_only_latest_snapshot(
                 basis_versions={
                     "pipeline": daily_operations.PIPELINE_VERSION,
                     "requirement_policy": daily_operations.POLICY_VERSION,
+                    "quantitative_engine": (
+                        daily_operations.QUANTITATIVE_ENGINE_VERSION
+                    ),
                 },
                 input_manifest={"discarded": "y" * 40_000},
                 output_summary={"marker": f"latest-{index}"},
@@ -738,6 +744,7 @@ def _seed_stale_analysis_snapshot(
     *,
     status: str = "OPEN",
     deadline: datetime | None = None,
+    quantitative_engine_only: bool = False,
 ) -> str:
     notice_key = "MANUAL-INCHON-2025-17"
     with client.app.state.session_factory() as session:
@@ -753,8 +760,13 @@ def _seed_stale_analysis_snapshot(
         notice = session.query(Notice).filter_by(notice_key=notice_key).one()
         run = session.query(AnalysisRun).filter_by(notice_id=notice.id).one()
         stale_basis = dict(run.basis_versions or {})
-        stale_basis["pipeline"] = "analysis-pipeline-previous"
-        stale_basis["requirement_policy"] = "requirement-policy-previous"
+        if quantitative_engine_only:
+            stale_basis["quantitative_engine"] = (
+                "pai-loop-quantitative-engine-previous"
+            )
+        else:
+            stale_basis["pipeline"] = "analysis-pipeline-previous"
+            stale_basis["requirement_policy"] = "requirement-policy-previous"
         run.basis_versions = stale_basis
         run.status = "COMPLETED"
         notice.published_at = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
@@ -762,6 +774,41 @@ def _seed_stale_analysis_snapshot(
         notice.status = status
         session.commit()
     return notice_key
+
+
+def test_quantitative_engine_stale_open_snapshot_enters_daily_and_backfill(
+    client: TestClient,
+) -> None:
+    notice_key = _seed_stale_analysis_snapshot(
+        client,
+        quantitative_engine_only=True,
+    )
+
+    briefing = client.get(
+        "/api/v1/operations/daily-briefing",
+        params={
+            "days": 7,
+            "limit": 50,
+            "as_of": "2026-08-27T16:30:00+09:00",
+        },
+    )
+    assert briefing.status_code == 200, briefing.text
+    body = briefing.json()
+    item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
+    snapshot = item["analysis_snapshot"]
+    assert snapshot["version_current"] is False
+    assert snapshot["pipeline_version"] == daily_operations.PIPELINE_VERSION
+    assert snapshot["policy_version"] == daily_operations.POLICY_VERSION
+    assert snapshot["quantitative_engine_version"] == (
+        "pai-loop-quantitative-engine-previous"
+    )
+    assert body["analysis_queue"]["retryable_notice_keys"] == [notice_key]
+    with client.app.state.session_factory() as session:
+        assert _select_backfill_notice_keys(
+            session,
+            AnalysisBackfillPlanRequest(include_retryable=False),
+            now=datetime(2026, 8, 27, 7, 30, tzinfo=timezone.utc),
+        ) == [notice_key]
 
 
 def test_version_stale_open_snapshot_enters_daily_and_backfill_once(
