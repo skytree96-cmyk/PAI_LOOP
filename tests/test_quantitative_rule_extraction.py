@@ -107,6 +107,24 @@ def payload_with_table(table: dict | None = None) -> ExtractionPayload:
     )
 
 
+def payload_with_gap(
+    gap: str,
+    *,
+    table: dict | None = None,
+    document_type: str = "RFP",
+) -> ExtractionPayload:
+    return ExtractionPayload.model_validate(
+        {
+            "document_type": document_type,
+            "requirements": [],
+            "quantitative_tables": [table] if table is not None else [],
+            "quantitative_table_not_applicable": None,
+            "missing_or_unreadable": [gap],
+            "summary": "첨부별 원문 결손 보고",
+        }
+    )
+
+
 def threshold_table(*, operator: str = "GTE") -> tuple[dict, str]:
     literal = "5억원 이상 충족 10점 미충족 0점"
     source = "\n".join(
@@ -461,6 +479,49 @@ def test_persisted_attachment_record_has_exact_bindings_but_no_raw_source() -> N
     assert len(profile.available_candidates) == 1
 
 
+@pytest.mark.parametrize(
+    "runtime_profile",
+    [
+        {
+            "document_type": "RFP",
+            "source_label": "제안요청서.hwp",
+        },
+        {
+            "document_type": "RFP",
+            "source_label": "제안요청서.hwp",
+            "missing_or_unreadable": None,
+        },
+        {
+            "document_type": "RFP",
+            "source_label": "제안요청서.hwp",
+            "missing_or_unreadable": "not-a-list",
+        },
+    ],
+)
+def test_supplied_runtime_profile_requires_a_valid_source_gap_list(
+    runtime_profile: dict[str, object],
+) -> None:
+    manifest_sha = "b" * 64
+    document_sha = "a" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+        attachment_profiles={ATTACHMENT_ID: runtime_profile},
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "SOURCE_GAP_BINDING_MISMATCH" in issue_codes(profile)
+
+
 def test_coherent_review_and_incomplete_records_survive_strict_invariants() -> None:
     review_table = valid_table()
     review_table["criteria"][0]["metric"] = "UNKNOWN"
@@ -526,6 +587,486 @@ def test_durable_merge_accepts_neutral_no_table_record_from_another_chunk() -> N
     )
     assert profile.status == "AVAILABLE"
     assert set(profile.processed_attachment_ids) == {ATTACHMENT_ID, "ATT-FORM-2"}
+
+
+def test_explicit_qualitative_only_omission_does_not_block_quantitative_table() -> None:
+    gap = (
+        "가. 평가 항목별 배점 표에서 매우우수/우수/보통/미흡 등급의 실제 "
+        "점수 구간 기준이 정성평가 항목에 대해 상세 서술되지 않음"
+        "(정성평가이므로 정량 테이블에서 제외)"
+    )
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(gap, table=valid_table()),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+
+    assert record.status == "AVAILABLE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" not in {
+        issue.code for issue in record.issues
+    }
+
+
+def test_local_quantitative_table_absence_resolves_only_with_available_sibling() -> None:
+    manifest_sha = "c" * 64
+    local_attachment_id = "ATT-PDF-2"
+    local_gap = (
+        "제안요청서(붙임) 본문이 제공되지 않아 세부 평가배점표"
+        "(정량평가 기준)를 확인할 수 없음"
+    )
+    local_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(local_gap, document_type="NOTICE"),
+        source_text="입찰공고 일반사항",
+        attachment_id=local_attachment_id,
+        document_sha256="d" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    table_record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256=manifest_sha,
+    )
+
+    assert local_record.status == "INCOMPLETE"
+    local_issue = next(
+        issue
+        for issue in local_record.issues
+        if issue.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+    )
+    assert local_issue.required_sibling_document_types == ("RFP",)
+    assert local_issue.required_sibling_label_markers == ("제안요청서",)
+    profile = merge_validated_quantitative_records(
+        [local_record, table_record],
+        expected_documents={
+            local_attachment_id: "d" * 64,
+            ATTACHMENT_ID: "a" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            local_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "입찰공고문.pdf",
+                "missing_or_unreadable": [local_gap],
+            },
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "부산교육한마당 제안 요청서.hwp",
+                "missing_or_unreadable": [],
+            },
+        },
+    )
+
+    assert profile.status == "AVAILABLE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" not in issue_codes(profile)
+
+
+def test_current_document_label_is_not_mistaken_for_a_required_sibling() -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            "공고문에는 제안요청서 본문이 제공되지 않아 세부 평가배점표를 확인할 수 없음",
+            document_type="NOTICE",
+        ),
+        source_text="입찰공고 일반사항",
+        attachment_id="ATT-PDF-CONTEXT",
+        document_sha256="9" * 64,
+        manifest_sha256="0" * 64,
+    )
+    local_issues = [
+        issue
+        for issue in record.issues
+        if issue.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+    ]
+
+    assert len(local_issues) == 1
+    assert local_issues[0].required_sibling_document_types == ("RFP",)
+    assert local_issues[0].required_sibling_label_markers == ("제안요청서",)
+
+
+def test_multi_type_specification_target_keeps_the_other_sibling_type() -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            "별도 규격서가 제공되지 않아 평가배점표를 확인할 수 없음",
+            document_type="RFP",
+        ),
+        source_text="제안요청서 일반사항",
+        attachment_id="ATT-RFP-CONTEXT",
+        document_sha256="1" * 64,
+        manifest_sha256="2" * 64,
+    )
+    local_issue = next(
+        issue
+        for issue in record.issues
+        if issue.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+    )
+
+    assert local_issue.required_sibling_document_types == ("SCOPE",)
+    assert local_issue.required_sibling_label_markers == ("규격서",)
+
+
+def test_local_quantitative_table_absence_cannot_resolve_from_self() -> None:
+    local_gap = "이 첨부 본문에는 정량평가 배점표가 포함되지 않음"
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(local_gap, table=valid_table()),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+        attachment_profiles={
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [local_gap],
+            }
+        },
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" in issue_codes(profile)
+
+
+def test_unreadable_quantitative_gap_is_not_resolved_by_available_sibling() -> None:
+    manifest_sha = "e" * 64
+    local_attachment_id = "ATT-PDF-3"
+    unreadable_gap = (
+        "공고문 본문의 정량평가 배점표가 제공되지 않았고 일부는 흐려 판독 불가"
+    )
+    unreadable_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            unreadable_gap,
+            document_type="NOTICE",
+        ),
+        source_text="입찰공고 일반사항",
+        attachment_id=local_attachment_id,
+        document_sha256="f" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    table_record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [unreadable_record, table_record],
+        expected_documents={
+            local_attachment_id: "f" * 64,
+            ATTACHMENT_ID: "a" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            local_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "입찰공고문.pdf",
+                "missing_or_unreadable": [unreadable_gap],
+            },
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [],
+            },
+        },
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" in issue_codes(profile)
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" not in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "공고문 본문의 정량평가표 점수 구간이 제공되지 않음",
+        "제안요청서의 배점 기준이 제공되지 않아 정량평가표를 완성할 수 없음",
+        "이 첨부에는 일부 페이지가 포함되지 않아 정량평가표를 확인할 수 없음",
+    ],
+)
+def test_partial_quantitative_table_gap_is_not_resolved_by_available_sibling(
+    gap: str,
+) -> None:
+    manifest_sha = "1" * 64
+    local_attachment_id = "ATT-PDF-4"
+    partial_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(gap, document_type="NOTICE"),
+        source_text="입찰공고 일반사항",
+        attachment_id=local_attachment_id,
+        document_sha256="2" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    table_record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [partial_record, table_record],
+        expected_documents={
+            local_attachment_id: "2" * 64,
+            ATTACHMENT_ID: "a" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            local_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "입찰공고문.pdf",
+                "missing_or_unreadable": [gap],
+            },
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [],
+            },
+        },
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" in issue_codes(profile)
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" not in issue_codes(profile)
+
+
+def test_review_table_record_cannot_resolve_local_table_absence() -> None:
+    manifest_sha = "3" * 64
+    local_attachment_id = "ATT-PDF-5"
+    local_gap = "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"
+    local_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            local_gap,
+            document_type="NOTICE",
+        ),
+        source_text="입찰공고 일반사항",
+        attachment_id=local_attachment_id,
+        document_sha256="4" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    review_table = valid_table()
+    review_table["criteria"][0]["metric"] = "UNKNOWN"
+    review_record = validate_quantitative_attachment_extraction(
+        payload_with_table(review_table),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [local_record, review_record],
+        expected_documents={
+            local_attachment_id: "4" * 64,
+            ATTACHMENT_ID: "a" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            local_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "입찰공고문.pdf",
+                "missing_or_unreadable": [local_gap],
+            },
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [],
+            },
+        },
+    )
+
+    assert review_record.status == "REVIEW"
+    assert profile.status == "INCOMPLETE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" in issue_codes(profile)
+
+
+def test_unrelated_available_table_cannot_resolve_named_sibling_gap() -> None:
+    manifest_sha = "5" * 64
+    local_attachment_id = "ATT-PDF-6"
+    local_gap = "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"
+    local_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            local_gap,
+            document_type="NOTICE",
+        ),
+        source_text="입찰공고 일반사항",
+        attachment_id=local_attachment_id,
+        document_sha256="6" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    table_record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [local_record, table_record],
+        expected_documents={
+            local_attachment_id: "6" * 64,
+            ATTACHMENT_ID: "a" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            local_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "입찰공고문.pdf",
+                "missing_or_unreadable": [local_gap],
+            },
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "인력 배치 평가표.hwp",
+                "missing_or_unreadable": [],
+            },
+        },
+    )
+
+    assert table_record.status == "AVAILABLE"
+    assert profile.status == "INCOMPLETE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" in issue_codes(profile)
+
+
+def test_recomputed_fingerprint_cannot_forge_local_gap_sibling_target() -> None:
+    local_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            "이 첨부 본문에는 평가배점표가 포함되지 않음",
+            document_type="NOTICE",
+        ),
+        source_text="입찰공고 일반사항",
+        attachment_id="ATT-PDF-7",
+        document_sha256="7" * 64,
+        manifest_sha256="8" * 64,
+    )
+    issue = local_record.issues[0].model_copy(
+        update={
+            "required_sibling_document_types": ("RFP",),
+            "required_sibling_label_markers": ("제안요청서",),
+        }
+    )
+    forged = local_record.model_copy(update={"issues": (issue,)})
+    forged = forged.model_copy(
+        update={
+            "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                forged
+            )
+        }
+    )
+    profile = merge_validated_quantitative_records(
+        [forged],
+        expected_documents={"ATT-PDF-7": "7" * 64},
+        manifest_sha256="8" * 64,
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "RECORD_INVARIANT_VIOLATION" in issue_codes(profile)
+
+
+def test_current_extraction_rejects_forged_gap_statement_and_target() -> None:
+    manifest_sha = "8" * 64
+    original_gap = "이 첨부 본문에는 평가배점표가 포함되지 않음"
+    forged_gap = "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"
+    local_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(original_gap, document_type="NOTICE"),
+        source_text="입찰공고 일반사항",
+        attachment_id="ATT-PDF-8",
+        document_sha256="7" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    issue = local_record.issues[0].model_copy(
+        update={
+            "required_sibling_document_types": ("RFP",),
+            "required_sibling_label_markers": ("제안요청서",),
+            "source_gap_statement": forged_gap,
+        }
+    )
+    forged = local_record.model_copy(update={"issues": (issue,)})
+    forged = forged.model_copy(
+        update={
+            "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                forged
+            )
+        }
+    )
+    table_record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [forged, table_record],
+        expected_documents={
+            "ATT-PDF-8": "7" * 64,
+            ATTACHMENT_ID: "a" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            "ATT-PDF-8": {
+                "document_type": "NOTICE",
+                "source_label": "입찰공고문.pdf",
+                "missing_or_unreadable": [original_gap],
+            },
+            ATTACHMENT_ID: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [],
+            },
+        },
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "SOURCE_GAP_BINDING_MISMATCH" in issue_codes(profile)
+
+
+def test_qualitative_exclusion_with_declared_omission_remains_incomplete() -> None:
+    gap = "정성평가 일부가 누락되어 정량 테이블에서 제외"
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(gap, table=valid_table()),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+
+    assert record.status == "INCOMPLETE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" in {
+        issue.code for issue in record.issues
+    }
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        (
+            "정성평가 기준과 정량평가표의 경영상태 등급별 점수가 상세 서술되지 않음"
+            "(정성평가이므로 정량 테이블에서 제외)"
+        ),
+        "정성평가 기준과 평가배점표의 경영상태 등급별 점수가 상세 서술되지 않음"
+        "(정성평가이므로 정량 테이블에서 제외)",
+        "정성평가 항목은 정량 테이블에서 제외하며 경영상태 등급별 점수는 제시되지 않음",
+        "경영상태 등급별 점수는 제시되지 않으며 정성평가 항목은 정량 테이블에서 제외",
+        "정성평가 항목은 정량 테이블에서 제외하며 용역실적 산식은 제시되지 않음",
+    ],
+)
+def test_mixed_qualitative_and_quantitative_gap_remains_incomplete(gap: str) -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(gap, table=valid_table()),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+
+    assert record.status == "INCOMPLETE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" in {
+        issue.code for issue in record.issues
+    }
 
 
 def test_merge_rejects_stale_manifest_or_tampered_persisted_record() -> None:

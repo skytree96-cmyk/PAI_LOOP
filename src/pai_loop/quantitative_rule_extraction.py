@@ -30,8 +30,68 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.4.0"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.3.0"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.5.0"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.4.0"
+
+_ATTACHMENT_LOCAL_ABSENCE_TERMS = (
+    "포함되지",
+    "별도 첨부",
+    "별도 문서",
+    "별도 제공",
+    "첨부되지",
+    "제공되지",
+    "미포함",
+)
+_QUANTITATIVE_GAP_TERMS = (
+    "정량평가표",
+    "정량 평가표",
+    "평가배점표",
+    "평가 배점표",
+    "평가표",
+    "배점표",
+)
+_UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐림")
+_PARTIAL_TABLE_GAP_TERMS = (
+    "일부",
+    "일부분",
+    "페이지",
+    "행",
+    "열",
+    "항목",
+    "기준",
+    "등급",
+    "구간",
+    "산식",
+    "점수",
+)
+_ATTACHMENT_LOCAL_CONTEXT_TERMS = (
+    "이 첨부",
+    "해당 첨부",
+    "공고문",
+    "본문",
+    "제안요청서",
+    "과업지시서",
+    "과업 지시서",
+    "과업내용서",
+    "과업 내용서",
+    "규격서",
+    "사양서",
+    "세부사양",
+    "시방서",
+    "내역서",
+)
+_SIBLING_DOCUMENT_TARGETS = (
+    (("제안요청서", "제안 요청서"), ("RFP",)),
+    (("과업지시서", "과업 지시서", "과업내용서", "과업 내용서"), ("SCOPE",)),
+    (("입찰공고", "공고문"), ("NOTICE",)),
+    (("규격서", "사양서", "세부사양", "시방서", "내역서"), ("RFP", "SCOPE")),
+)
+_QUALITATIVE_ONLY_EXCLUSION_RE = re.compile(
+    r"(?s)(?:가\.\s*)?평가\s*항목별\s*배점\s*표에서\s*"
+    r"매우우수/우수/보통/미흡\s*등급의\s*실제\s*점수\s*구간\s*기준이\s*"
+    r"정성\s*평가\s*항목에\s*대해\s*상세\s*서술되지\s*않음\s*"
+    r"\(\s*정성\s*평가이므로\s*정량\s*테이블에서\s*제외\s*\)\s*\.?"
+)
 
 ProfileStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE", "NOT_APPLICABLE"]
 CandidateStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE"]
@@ -64,6 +124,14 @@ class QuantitativeValidationIssue(FrozenModel):
     attachment_id: str | None = None
     table_id: str | None = None
     criterion_id: str | None = None
+    required_sibling_document_types: tuple[
+        Literal["NOTICE", "RFP", "SCOPE", "FORM", "OTHER"], ...
+    ] = ()
+    required_sibling_label_markers: tuple[str, ...] = ()
+    source_gap_statement: str | None = Field(default=None, max_length=1000)
+    source_gap_document_type: Literal[
+        "NOTICE", "RFP", "SCOPE", "FORM", "OTHER"
+    ] | None = None
 
 
 class ImmutableQuantitativeBracket(FrozenModel):
@@ -348,6 +416,113 @@ def _comparator_binding_issue(
     )
 
 
+def _normalise_source_gap(value: str) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip()
+
+
+def _is_explicit_qualitative_only_exclusion(value: str) -> bool:
+    """Ignore only an explicit qualitative-only exclusion from quant extraction."""
+
+    gap = _normalise_source_gap(value)
+    return bool(gap and _QUALITATIVE_ONLY_EXCLUSION_RE.fullmatch(gap))
+
+
+def _compact_document_label(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
+
+
+def _attachment_local_quantitative_table_targets(
+    value: str,
+    *,
+    current_document_type: str,
+) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] | None:
+    """Return explicit sibling targets, an empty tuple for unlinked local gaps, or None."""
+
+    gap = _normalise_source_gap(value)
+    if (
+        not gap
+        or not re.fullmatch(r"(?s).{1,1000}", gap)
+        or any(term in gap for term in _UNREADABLE_GAP_TERMS)
+    ):
+        return None
+
+    context_positions = [
+        (term, match)
+        for term in _ATTACHMENT_LOCAL_CONTEXT_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    absence_positions = [
+        match
+        for term in _ATTACHMENT_LOCAL_ABSENCE_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    table_positions = [
+        match
+        for term in _QUANTITATIVE_GAP_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    if not context_positions or not absence_positions or not table_positions:
+        return None
+
+    qualifying_context_terms: set[str] = set()
+    for context_term, context in context_positions:
+        if any(
+            0 <= absence.start() - context.end() <= 120
+            and 0 <= table.start() - absence.end() <= 200
+            and not any(
+                term in gap[context.end() : table.end()]
+                for term in _PARTIAL_TABLE_GAP_TERMS
+            )
+            for absence in absence_positions
+            for table in table_positions
+        ):
+            qualifying_context_terms.add(context_term)
+
+    # Or the table itself is explicitly absent from this attachment/body. Do not
+    # promote a partial row/grade/formula gap into a sibling-resolvable absence.
+    for context_term, context in context_positions:
+        if any(
+            0 <= absence.start() - table.end() <= 160
+            and (
+                table.end() <= context.start() <= absence.start()
+                or context.end() <= table.start()
+            )
+            and not any(
+                term in gap[table.end() : absence.start()]
+                for term in _PARTIAL_TABLE_GAP_TERMS
+            )
+            for table in table_positions
+            for absence in absence_positions
+        ):
+            qualifying_context_terms.add(context_term)
+
+    if not qualifying_context_terms:
+        return None
+
+    compact_contexts = {
+        _compact_document_label(term) for term in qualifying_context_terms
+    }
+    targets: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    for markers, document_types in _SIBLING_DOCUMENT_TARGETS:
+        sibling_document_types = tuple(
+            item for item in document_types if item != current_document_type
+        )
+        if not sibling_document_types:
+            continue
+        compact_markers = tuple(
+            sorted(
+                {
+                    _compact_document_label(marker)
+                    for marker in markers
+                    if _compact_document_label(marker) in compact_contexts
+                }
+            )
+        )
+        if compact_markers:
+            targets.append((sibling_document_types, compact_markers))
+    return tuple(targets)
+
+
 def _frozen_anchor(anchor: EvidenceAnchor) -> ImmutableEvidenceAnchor:
     return ImmutableEvidenceAnchor.model_validate(anchor.model_dump(mode="python"))
 
@@ -360,6 +535,14 @@ def _issue(
     attachment_id: str | None = None,
     table_id: str | None = None,
     criterion_id: str | None = None,
+    required_sibling_document_types: tuple[
+        Literal["NOTICE", "RFP", "SCOPE", "FORM", "OTHER"], ...
+    ] = (),
+    required_sibling_label_markers: tuple[str, ...] = (),
+    source_gap_statement: str | None = None,
+    source_gap_document_type: Literal[
+        "NOTICE", "RFP", "SCOPE", "FORM", "OTHER"
+    ] | None = None,
 ) -> QuantitativeValidationIssue:
     return QuantitativeValidationIssue(
         code=code,
@@ -368,6 +551,10 @@ def _issue(
         attachment_id=attachment_id,
         table_id=table_id,
         criterion_id=criterion_id,
+        required_sibling_document_types=required_sibling_document_types,
+        required_sibling_label_markers=required_sibling_label_markers,
+        source_gap_statement=source_gap_statement,
+        source_gap_document_type=source_gap_document_type,
     )
 
 
@@ -700,6 +887,41 @@ def _assert_validated_record_invariants(
         raise ValueError("all persisted candidates must match record attachment_id")
     if any(issue.attachment_id != attachment_id for issue in record.issues):
         raise ValueError("all persisted issues must match record attachment_id")
+    local_gap_groups: dict[
+        tuple[str, str],
+        list[tuple[tuple[str, ...], tuple[str, ...]]],
+    ] = {}
+    for issue in record.issues:
+        sibling_target = (
+            issue.required_sibling_document_types,
+            issue.required_sibling_label_markers,
+        )
+        if issue.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT":
+            if (
+                issue.source_gap_statement is None
+                or issue.source_gap_document_type is None
+            ):
+                raise ValueError("local quantitative gap provenance is missing")
+            local_gap_groups.setdefault(
+                (issue.source_gap_statement, issue.source_gap_document_type),
+                [],
+            ).append(sibling_target)
+        elif (
+            any(sibling_target)
+            or issue.source_gap_statement is not None
+            or issue.source_gap_document_type is not None
+        ):
+            raise ValueError("only local quantitative gaps may declare a sibling target")
+    for (statement, document_type), actual_targets in local_gap_groups.items():
+        derived_targets = _attachment_local_quantitative_table_targets(
+            statement,
+            current_document_type=document_type,
+        )
+        if derived_targets is None:
+            raise ValueError("local quantitative gap provenance is not classifiable")
+        expected_targets = set(derived_targets or (((), ()),))
+        if len(actual_targets) != len(set(actual_targets)) or set(actual_targets) != expected_targets:
+            raise ValueError("local quantitative gap sibling target is invalid")
 
     table_ids = [table.table_id for table in record.tables]
     if len(table_ids) != len(set(table_ids)):
@@ -1732,7 +1954,50 @@ def build_quantitative_candidate_profile(
     seen_table_ids: set[tuple[str, str]] = set()
     for attachment_id in sorted(processed & expected):
         payload = extractions_by_attachment_id[attachment_id]
-        if payload.missing_or_unreadable:
+        source_gaps = [
+            gap
+            for gap in payload.missing_or_unreadable
+            if not _is_explicit_qualitative_only_exclusion(gap)
+        ]
+        local_gap_targets = [
+            (
+                _normalise_source_gap(gap),
+                _attachment_local_quantitative_table_targets(
+                    gap,
+                    current_document_type=payload.document_type,
+                ),
+            )
+            for gap in source_gaps
+        ]
+        target_requirements: set[
+            tuple[str, tuple[str, ...], tuple[str, ...]]
+        ] = set()
+        for gap, targets in local_gap_targets:
+            if targets is None:
+                continue
+            if targets:
+                target_requirements.update(
+                    (gap, document_types, label_markers)
+                    for document_types, label_markers in targets
+                )
+            else:
+                target_requirements.add((gap, (), ()))
+        for gap, document_types, label_markers in sorted(target_requirements):
+            issues.append(
+                _issue(
+                    "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT",
+                    "INCOMPLETE",
+                    "이 첨부에는 정량평가표가 없다고 선언되어 다른 현재 첨부의 검증이 필요합니다.",
+                    attachment_id=attachment_id,
+                    required_sibling_document_types=document_types,
+                    required_sibling_label_markers=label_markers,
+                    source_gap_statement=gap,
+                    source_gap_document_type=payload.document_type,
+                )
+            )
+        if any(
+            targets is None for _gap, targets in local_gap_targets
+        ):
             issues.append(
                 _issue(
                     "EXTRACTION_DECLARED_INCOMPLETE",
@@ -2077,12 +2342,26 @@ def merge_validated_quantitative_records(
 
     if not re.fullmatch(r"[a-f0-9]{64}", manifest_sha256):
         raise ValueError("manifest_sha256 must be a lowercase SHA-256 digest")
+    runtime_profiles_supplied = attachment_profiles is not None
     runtime_profiles = attachment_profiles or {}
+    source_gaps_by_attachment_id: dict[str, tuple[str, ...] | None] = {}
     bindings_list: list[AttachmentDocumentBinding] = []
     for attachment_id, document_sha256 in sorted(expected_documents.items()):
         raw_profile = runtime_profiles.get(attachment_id, {})
         document_type = raw_profile.get("document_type")
         source_label = raw_profile.get("source_label")
+        raw_source_gaps = raw_profile.get("missing_or_unreadable")
+        source_gaps_by_attachment_id[attachment_id] = (
+            tuple(_normalise_source_gap(item) for item in raw_source_gaps)
+            if isinstance(raw_source_gaps, (list, tuple))
+            and all(
+                isinstance(item, str)
+                and bool(_normalise_source_gap(item))
+                and len(_normalise_source_gap(item)) <= 1000
+                for item in raw_source_gaps
+            )
+            else None
+        )
         bindings_list.append(
             AttachmentDocumentBinding(
                 attachment_id=attachment_id,
@@ -2104,6 +2383,7 @@ def merge_validated_quantitative_records(
             )
         )
     bindings = tuple(bindings_list)
+    binding_by_attachment_id = {item.attachment_id: item for item in bindings}
     expected = {item.attachment_id: item.document_sha256 for item in bindings}
     issues: list[QuantitativeValidationIssue] = []
     grouped: dict[str, list[ValidatedQuantitativeAttachmentRecord]] = {}
@@ -2135,6 +2415,7 @@ def merge_validated_quantitative_records(
     review: list[QuantitativeReviewCandidate] = []
     not_applicable: list[ImmutableEvidenceAnchor] = []
     processed: set[str] = set()
+    bound_records: dict[str, ValidatedQuantitativeAttachmentRecord] = {}
 
     for attachment_id in sorted(set(grouped) - set(expected)):
         issues.append(
@@ -2207,6 +2488,67 @@ def merge_validated_quantitative_records(
                     attachment_id=attachment_id,
                 )
             )
+        source_gaps = source_gaps_by_attachment_id.get(attachment_id)
+        gap_issue_codes = {
+            item.code
+            for item in record.issues
+            if item.code
+            in {
+                "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT",
+                "EXTRACTION_DECLARED_INCOMPLETE",
+            }
+        }
+        if source_gaps is None:
+            if runtime_profiles_supplied or gap_issue_codes:
+                binding_errors.append(
+                    _issue(
+                        "SOURCE_GAP_BINDING_MISMATCH",
+                        "INCOMPLETE",
+                        "정량 검증 record의 결손 선언을 현재 추출 결과와 대조할 수 없습니다.",
+                        attachment_id=attachment_id,
+                    )
+                )
+        else:
+            current_document_type = binding_by_attachment_id[
+                attachment_id
+            ].document_type
+            expected_local_gap_statements: set[str] = set()
+            expected_generic_gap = False
+            if current_document_type is None and source_gaps:
+                expected_generic_gap = True
+            else:
+                for gap in source_gaps:
+                    if _is_explicit_qualitative_only_exclusion(gap):
+                        continue
+                    targets = _attachment_local_quantitative_table_targets(
+                        gap,
+                        current_document_type=str(current_document_type),
+                    )
+                    if targets is None:
+                        expected_generic_gap = True
+                    else:
+                        expected_local_gap_statements.add(gap)
+            actual_local_gap_statements = {
+                item.source_gap_statement
+                for item in record.issues
+                if item.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+                and item.source_gap_statement is not None
+            }
+            actual_generic_gap = (
+                "EXTRACTION_DECLARED_INCOMPLETE" in gap_issue_codes
+            )
+            if (
+                expected_local_gap_statements != actual_local_gap_statements
+                or expected_generic_gap != actual_generic_gap
+            ):
+                binding_errors.append(
+                    _issue(
+                        "SOURCE_GAP_BINDING_MISMATCH",
+                        "INCOMPLETE",
+                        "정량 검증 record의 결손 선언이 현재 추출 결과와 일치하지 않습니다.",
+                        attachment_id=attachment_id,
+                    )
+                )
         if (
             record.validation_fingerprint_sha256
             != validated_quantitative_record_fingerprint(record)
@@ -2224,13 +2566,70 @@ def merge_validated_quantitative_records(
             continue
 
         processed.add(attachment_id)
-        issues.extend(record.issues)
+        bound_records[attachment_id] = record
         tables.extend(record.tables)
         available.extend(record.available_candidates)
         review.extend(record.review_candidates)
         not_applicable.extend(record.not_applicable_evidence)
-        if record.status == "INCOMPLETE" and not any(
-            item.disposition == "INCOMPLETE" for item in record.issues
+
+    supplying_attachment_ids = {
+        attachment_id
+        for attachment_id, record in bound_records.items()
+        if record.status == "AVAILABLE"
+        and any(table.status == "AVAILABLE" for table in record.tables)
+    }
+
+    def local_absence_is_resolved(
+        issue: QuantitativeValidationIssue,
+        *,
+        attachment_id: str,
+    ) -> bool:
+        if (
+            issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+            or not issue.required_sibling_document_types
+            or not issue.required_sibling_label_markers
+        ):
+            return False
+        source_binding = binding_by_attachment_id.get(attachment_id)
+        if (
+            source_binding is None
+            or source_binding.document_type != issue.source_gap_document_type
+        ):
+            return False
+        for sibling_id in supplying_attachment_ids - {attachment_id}:
+            binding = binding_by_attachment_id.get(sibling_id)
+            if (
+                binding is None
+                or binding.document_type not in issue.required_sibling_document_types
+                or binding.source_label is None
+            ):
+                continue
+            compact_label = _compact_document_label(binding.source_label)
+            if any(
+                marker in compact_label
+                for marker in issue.required_sibling_label_markers
+            ):
+                return True
+        return False
+
+    for attachment_id, record in sorted(bound_records.items()):
+        resolved_local_absence = any(
+            local_absence_is_resolved(item, attachment_id=attachment_id)
+            for item in record.issues
+        )
+        unresolved_record_issues = tuple(
+            item
+            for item in record.issues
+            if not local_absence_is_resolved(item, attachment_id=attachment_id)
+        )
+        issues.extend(unresolved_record_issues)
+        if (
+            record.status == "INCOMPLETE"
+            and not resolved_local_absence
+            and not any(
+                item.disposition == "INCOMPLETE"
+                for item in unresolved_record_issues
+            )
         ):
             issues.append(
                 _issue(
@@ -2241,7 +2640,7 @@ def merge_validated_quantitative_records(
                 )
             )
         elif record.status == "REVIEW" and not any(
-            item.disposition == "REVIEW" for item in record.issues
+            item.disposition == "REVIEW" for item in unresolved_record_issues
         ):
             issues.append(
                 _issue(

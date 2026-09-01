@@ -47,7 +47,10 @@ from pai_loop.integrations.openai_extraction import (
     aggregate_openai_attempts,
 )
 from pai_loop.quantitative_rule_extraction import (
+    QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
+    ValidatedQuantitativeAttachmentRecord,
     validate_quantitative_attachment_extraction,
+    validated_quantitative_record_fingerprint,
 )
 from pai_loop.models import Evaluation, Notice, NoticeVersion
 from pai_loop.notice_freshness import latest_current_evaluation
@@ -1261,6 +1264,78 @@ def test_cross_processing_version_reuses_identical_source_and_analysis_input() -
         )
         assert current.source_payload["document_processing"]["analysis_input_sha256"] == (
             input_hash
+        )
+
+    assert first.status == "COMPLETED"
+    assert first.openai_calls == 2
+    assert second.status == "REUSED"
+    assert second.openai_calls == 0
+    assert "DUPLICATE_CONTENT_REUSED" in second.warnings
+    assert _CountingExtractionClient.calls == 1
+    engine.dispose()
+
+
+def test_legacy_quantitative_validator_rebuilds_record_without_provider_call() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-QUANT-VALIDATOR-REBUILD",
+    )
+    _CountingExtractionClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+    with factory() as session:
+        legacy = session.get(NoticeVersion, first.version_id)
+        assert legacy is not None
+        legacy_payload = json.loads(json.dumps(legacy.source_payload, ensure_ascii=False))
+        record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            legacy_payload["quantitative_validation_record"]
+        )
+        legacy_record = record.model_copy(
+            update={"validator_version": "pai-loop-quantitative-attachment-validator-0.3.0"}
+        )
+        legacy_record = legacy_record.model_copy(
+            update={
+                "validation_fingerprint_sha256": validated_quantitative_record_fingerprint(
+                    legacy_record
+                )
+            }
+        )
+        legacy_payload["quantitative_validation_record"] = legacy_record.model_dump(
+            mode="json"
+        )
+        legacy.source_payload = legacy_payload
+        session.commit()
+
+    with factory() as session:
+        second = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+        current = session.get(NoticeVersion, second.version_id)
+        original = session.get(NoticeVersion, first.version_id)
+        assert current is not None
+        assert original is not None
+        assert current.id != original.id
+        current_record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            current.source_payload["quantitative_validation_record"]
+        )
+        original_record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            original.source_payload["quantitative_validation_record"]
+        )
+        assert current_record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
+        assert original_record.validator_version.endswith("-0.3.0")
+        assert current_record.validation_fingerprint_sha256 == (
+            validated_quantitative_record_fingerprint(current_record)
         )
 
     assert first.status == "COMPLETED"
