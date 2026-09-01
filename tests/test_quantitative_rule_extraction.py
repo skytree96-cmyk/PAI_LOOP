@@ -2235,6 +2235,72 @@ def test_split_hwp_criterion_label_and_score_cells_are_bound_when_unique() -> No
     assert candidate.evidence.quote == "수행실적\n6점"
 
 
+def test_split_hwp_criterion_uses_exact_evidence_when_model_literal_is_rewritten() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적",
+            "6점",
+            "3건 이상 6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0]["criterion_literal"] = "모델이 재작성한 수행실적 기준"
+    table["criteria"][0]["evidence"] = anchor("수행실적")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    candidate = profile.available_candidates[0]
+    assert candidate.criterion_literal == "수행실적\n6점"
+    assert candidate.evidence.quote == "수행실적\n6점"
+
+
+def test_split_hwp_numeric_only_criterion_evidence_is_not_rebound() -> None:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "수행실적",
+            "6점",
+            "3건 이상 6점",
+            "정량평가 총점 6점",
+        ]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상 6점",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+    table["criteria"][0]["criterion_literal"] = "모델이 재작성한 수행실적 기준"
+    table["criteria"][0]["evidence"] = anchor("6점")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+
+
 def test_split_hwp_recognition_extends_exact_window_but_rejects_paraphrase() -> None:
     source = "\n".join(
         [
@@ -3032,6 +3098,168 @@ def test_busan_hwp_split_cells_recover_all_three_quantitative_criteria() -> None
     assert [
         len(item.cases) for item in profile.available_candidates
     ] == [3, 5, 4]
+
+
+def busan_hwp_multicolumn_credit_fixture(
+    *,
+    duplicate_100_percent_cell: bool = False,
+    omit_100_percent_category_cell: bool = False,
+) -> tuple[dict, str]:
+    """Production-shaped 부산 HWP credit table with column-major cell text."""
+
+    first_row_cells = [
+        "AAA, AA+, AA0, AA-",
+        "A+, A0, A-, BBB+, BBB0",
+        "A1, A2+, A20,",
+        "A2-, A3+, A30",
+        "AAA, AA+, AA0, AA-,",
+        "A+, A0, A-, BBB+, BBB0",
+        "배점의 100%",
+    ]
+    if omit_100_percent_category_cell:
+        first_row_cells.remove("AAA, AA+, AA0, AA-,")
+    if duplicate_100_percent_cell:
+        first_row_cells.append("배점의 100%")
+
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "❍ 제안업체 경영상태 (10점)",
+            "- 조달청 협상에 의한 계약 제안서 평가 세부기준 <별표 8>에 따름",
+            "신용평가등급",
+            "평점",
+            "회사채",
+            "기업어음",
+            "기업신용평가등급",
+            *first_row_cells,
+            "BBB-, BB+, BB0, BB-",
+            "A3-, B+, B0",
+            "BBB-, BB+, BB0, BB-",
+            "배점의 95%",
+            "B+, B0, B-",
+            "B-",
+            "B+, B0, B-",
+            "배점의 90%",
+            "CCC+ 이하",
+            "C 이하",
+            "CCC+ 이하",
+            "배점의 70%",
+            "* 등급별 평점이 소수점 이하의 숫자가 있는 경우 소수점 다섯째자리에서 반올림 함",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="CREDIT_RATING",
+        unit="등급",
+        max_points=10,
+        cases=[
+            split_case(
+                "AAA, AA+, AA0, AA-\nA+, A0, A-, BBB+, BBB0",
+                operator="IN",
+                comparison_value=None,
+                category_values=[
+                    "AAA",
+                    "AA+",
+                    "AA0",
+                    "AA-",
+                    "A+",
+                    "A0",
+                    "A-",
+                    "BBB+",
+                    "BBB0",
+                ],
+                award_kind="PERCENT_OF_MAX",
+                award_value=100,
+                row_order=1,
+            ),
+            split_case(
+                "BBB-, BB+, BB0, BB-",
+                operator="IN",
+                comparison_value=None,
+                category_values=["BBB-", "BB+", "BB0", "BB-"],
+                award_kind="PERCENT_OF_MAX",
+                award_value=95,
+                row_order=2,
+            ),
+            split_case(
+                "B+, B0, B-",
+                operator="IN",
+                comparison_value=None,
+                category_values=["B+", "B0", "B-"],
+                award_kind="PERCENT_OF_MAX",
+                award_value=90,
+                row_order=3,
+            ),
+            split_case(
+                "CCC+ 이하",
+                operator="IN",
+                comparison_value=None,
+                category_values=["CCC+ 이하"],
+                award_kind="PERCENT_OF_MAX",
+                award_value=70,
+                row_order=4,
+            ),
+        ],
+    )
+    # CREDIT_RATING intentionally uses only the enterprise-credit-rating
+    # column. Its selected cell still repeats in the company-bond column, so
+    # category text alone cannot select the owning row.
+    table["criteria"][0]["cases"][0]["evidence"] = anchor(
+        "A+, A0, A-, BBB+, BBB0"
+    )
+    table["criteria"][0].update(
+        {
+            "criterion_id": "BUSAN-MULTICOLUMN-CREDIT",
+            "label": "제안업체 경영상태",
+            "criterion_literal": "❍ 제안업체 경영상태 (10점)",
+            "evidence": anchor("❍ 제안업체 경영상태 (10점)"),
+        }
+    )
+    table["total_evidence"] = anchor("❍ 제안업체 경영상태 (10점)")
+    return table, source
+
+
+def test_busan_hwp_multicolumn_credit_rows_use_unique_percent_cells() -> None:
+    table, source = busan_hwp_multicolumn_credit_fixture()
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    cases = profile.available_candidates[0].cases
+    assert cases[0].literal.splitlines() == [
+        "AAA, AA+, AA0, AA-,",
+        "A+, A0, A-, BBB+, BBB0",
+        "배점의 100%",
+    ]
+    assert [case.literal.splitlines()[-1] for case in cases] == [
+        "배점의 100%",
+        "배점의 95%",
+        "배점의 90%",
+        "배점의 70%",
+    ]
+
+
+def test_busan_hwp_duplicate_percent_cell_is_not_used_as_a_repair_anchor() -> None:
+    table, source = busan_hwp_multicolumn_credit_fixture(
+        duplicate_100_percent_cell=True
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_busan_hwp_incomplete_multicolumn_row_is_not_repaired() -> None:
+    table, source = busan_hwp_multicolumn_credit_fixture(
+        omit_100_percent_category_cell=True
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert profile.available_candidates == ()
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
 
 
 def test_split_hwp_explicit_table_footnote_can_bind_to_an_earlier_criterion() -> None:

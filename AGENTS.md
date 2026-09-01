@@ -145,6 +145,13 @@ do not invent one and report it as required.
   and criterion. Treat blank/section boundaries, another criterion or case
   anchor, repeated anchors, and overlapping row claims as hard failures; never
   alter the extracted operator, category, threshold, award, or maximum value.
+- In a multi-column categorical HWP row where the extracted category anchor is
+  repeated, an exact percent-award cell may seed repair only when that score is
+  unique inside the owning criterion and every extracted category plus the
+  award matches one bounded, ordered source span. A duplicate score cell or a
+  missing category remains a hard failure. Keep parallel fact-type columns
+  separate; for example, enterprise credit rating must not union company-bond
+  or commercial-paper aliases.
 - Successful extraction does not approve a score. Reject LLM-proposed company
   scores, `GO` values, or other decision fields; only deterministic application
   code may calculate and persist a score.
