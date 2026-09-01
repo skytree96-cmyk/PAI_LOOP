@@ -31,8 +31,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.8"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.8"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.9"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.9"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -1717,17 +1717,62 @@ def _augment_sourcewide_hwp_activation_context(
         if candidate.metric == "PERFORMANCE_AMOUNT" and "SHARE" in footnotes:
             additions.append(footnotes["SHARE"])
         conditions = list(candidate.recognition_conditions)
-        seen = {
-            _recognition_key(item.literal, item.evidence.quote)
-            for item in conditions
-        }
         for condition in additions:
-            key = _recognition_key(
-                condition.literal,
-                condition.evidence.quote,
+            # Claude may copy a short semantic recognition literal while its
+            # evidence anchor contains that same HWP cell in full.
+            # The source-derived condition below is the canonical full-cell
+            # claim.  Keeping both shapes would make two different keys own
+            # the same physical span and falsely trip the collision guard.
+            # Replace exactly one condition whose provenance matches and whose
+            # unique literal/evidence footprint is wholly covered by this
+            # independently proven source cell.  Multiple matches must remain
+            # visible to the duplicate/collision guards.
+            addition_literal_span = _unique_anchor_line_span(
+                lines, condition.literal
             )
-            if key not in seen:
-                seen.add(key)
+            addition_evidence_span = _unique_anchor_line_span(
+                lines, condition.evidence.quote
+            )
+            addition_span = (
+                addition_literal_span
+                if addition_literal_span is not None
+                and addition_literal_span == addition_evidence_span
+                else None
+            )
+            if addition_span is not None:
+                replacement_indexes: list[int] = []
+                for existing_index, existing in enumerate(conditions):
+                    existing_literal_span = _unique_anchor_line_span(
+                        lines, existing.literal
+                    )
+                    existing_evidence_span = _unique_anchor_line_span(
+                        lines, existing.evidence.quote
+                    )
+                    if (
+                        existing.evidence.attachment_id
+                        == condition.evidence.attachment_id
+                        and existing_literal_span is not None
+                        and existing_evidence_span is not None
+                        and _spans_overlap(
+                            existing_literal_span,
+                            existing_evidence_span,
+                        )
+                        and _span_inside_region(existing_literal_span, addition_span)
+                        and _span_inside_region(existing_evidence_span, addition_span)
+                        and _literal_is_anchored(
+                            existing.literal,
+                            existing.evidence,
+                            condition.literal,
+                        )
+                    ):
+                        replacement_indexes.append(existing_index)
+                if len(replacement_indexes) == 1:
+                    conditions.pop(replacement_indexes[0])
+            key = _recognition_key(condition.literal, condition.evidence.quote)
+            if key not in {
+                _recognition_key(item.literal, item.evidence.quote)
+                for item in conditions
+            }:
                 conditions.append(condition)
         output.append(
             candidate.model_copy(update={"recognition_conditions": conditions})

@@ -3686,6 +3686,115 @@ def test_busan_summary_total_before_detail_proves_same_source_table() -> None:
     )
 
 
+def test_busan_source_conditions_canonicalize_short_same_cell_evidence() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    full_condition = "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+    short_literal = "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+    for candidate in table["criteria"][:2]:
+        candidate.setdefault("recognition_conditions", []).append(
+            {
+                "literal": short_literal,
+                "evidence": anchor(full_condition),
+            }
+        )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" not in issue_codes(profile)
+    for candidate in profile.available_candidates[:2]:
+        matching = [
+            condition
+            for condition in candidate.recognition_conditions
+            if condition.literal == full_condition
+        ]
+        assert len(matching) == 1
+        assert matching[0].evidence.quote == full_condition
+
+
+def test_busan_source_conditions_never_replace_cross_attachment_anchor() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    full_condition = "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+    evidence = anchor(full_condition)
+    evidence["attachment_id"] = "ATT-OTHER"
+    table["criteria"][0].setdefault("recognition_conditions", []).append(
+        {
+            "literal": "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다.",
+            "evidence": evidence,
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "UNKNOWN_ATTACHMENT" in issue_codes(profile)
+
+
+def test_busan_source_conditions_preserve_duplicate_model_claims() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    full_condition = "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+    condition = {
+        "literal": "‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다.",
+        "evidence": anchor(full_condition),
+    }
+    table["criteria"][0].setdefault("recognition_conditions", []).extend(
+        [condition, json.loads(json.dumps(condition))]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "RECOGNITION_CONDITION_DUPLICATE" in issue_codes(profile)
+
+
+def test_busan_source_conditions_do_not_collapse_multi_cell_claim() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    combined = (
+        "①‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다.\n"
+        "② 증빙서류로 용역수행실적 총괄표(별지서식5호), "
+        "용역실적증명서(별지서식6호)를 첨부한다."
+    )
+    table["criteria"][0].setdefault("recognition_conditions", []).append(
+        {
+            "literal": combined,
+            "evidence": anchor(combined),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+
+
+def test_busan_source_conditions_do_not_hide_disjoint_literal_evidence() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    table["criteria"][0].setdefault("recognition_conditions", []).append(
+        {
+            "literal": "(교육, 취업, 행사) 용역 수행완료 실적 (6점)",
+            "evidence": anchor("A. 2억 원 이상"),
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
+    assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in issue_codes(profile)
+
+
 @pytest.mark.parametrize(
     "footnote_mutation",
     ("missing", "duplicate", "extra-score", "later-section"),
@@ -3952,7 +4061,7 @@ def test_sourcewide_rebind_requires_complete_unique_consistent_table_proof(
     assert "AMBIGUOUS_TABLE" in issue_codes(profile)
 
 
-def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> None:
+def busan_hwp_production_partial_anchor_fixture() -> tuple[dict, str, str]:
     table, source = busan_hwp_duplicate_summary_fixture()
     amount, count, credit = table["criteria"]
     table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
@@ -4064,6 +4173,13 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
             f"E. 1건\n2.8\n{footnote_block}\n"
             "❍ 제안업체 경영상태"
         ),
+    )
+    return table, source, footnote_block
+
+
+def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
     )
 
     profile = build(payload_with_table(table), source=source)
