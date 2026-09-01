@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.5.0"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.4.0"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.6.0"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.5.0"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -433,8 +433,6 @@ def _compact_document_label(value: str) -> str:
 
 def _attachment_local_quantitative_table_targets(
     value: str,
-    *,
-    current_document_type: str,
 ) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] | None:
     """Return explicit sibling targets, an empty tuple for unlinked local gaps, or None."""
 
@@ -504,11 +502,6 @@ def _attachment_local_quantitative_table_targets(
     }
     targets: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     for markers, document_types in _SIBLING_DOCUMENT_TARGETS:
-        sibling_document_types = tuple(
-            item for item in document_types if item != current_document_type
-        )
-        if not sibling_document_types:
-            continue
         compact_markers = tuple(
             sorted(
                 {
@@ -519,8 +512,30 @@ def _attachment_local_quantitative_table_targets(
             )
         )
         if compact_markers:
-            targets.append((sibling_document_types, compact_markers))
+            targets.append((document_types, compact_markers))
     return tuple(targets)
+
+
+def _source_label_document_types(
+    value: str | None,
+) -> tuple[Literal["NOTICE", "RFP", "SCOPE", "FORM"], ...]:
+    """Return deterministic document roles declared by the manifest label."""
+
+    if not isinstance(value, str) or not value.strip():
+        return ()
+    compact = _compact_document_label(value)
+    matches: set[Literal["NOTICE", "RFP", "SCOPE", "FORM"]] = set()
+    if any(marker in compact for marker in ("입찰공고", "공고문")):
+        matches.add("NOTICE")
+    if "제안요청서" in compact:
+        matches.add("RFP")
+    if any(marker in compact for marker in ("과업지시서", "과업내용서")):
+        matches.add("SCOPE")
+    if any(marker in compact for marker in ("작성양식", "제출서식", "서식", "양식")):
+        matches.add("FORM")
+    return tuple(
+        item for item in ("NOTICE", "RFP", "SCOPE", "FORM") if item in matches
+    )
 
 
 def _frozen_anchor(anchor: EvidenceAnchor) -> ImmutableEvidenceAnchor:
@@ -915,7 +930,6 @@ def _assert_validated_record_invariants(
     for (statement, document_type), actual_targets in local_gap_groups.items():
         derived_targets = _attachment_local_quantitative_table_targets(
             statement,
-            current_document_type=document_type,
         )
         if derived_targets is None:
             raise ValueError("local quantitative gap provenance is not classifiable")
@@ -1964,7 +1978,6 @@ def build_quantitative_candidate_profile(
                 _normalise_source_gap(gap),
                 _attachment_local_quantitative_table_targets(
                     gap,
-                    current_document_type=payload.document_type,
                 ),
             )
             for gap in source_gaps
@@ -2522,7 +2535,6 @@ def merge_validated_quantitative_records(
                         continue
                     targets = _attachment_local_quantitative_table_targets(
                         gap,
-                        current_document_type=str(current_document_type),
                     )
                     if targets is None:
                         expected_generic_gap = True
@@ -2575,9 +2587,15 @@ def merge_validated_quantitative_records(
     supplying_attachment_ids = {
         attachment_id
         for attachment_id, record in bound_records.items()
-        if record.status == "AVAILABLE"
-        and any(table.status == "AVAILABLE" for table in record.tables)
+        if any(table.status == "AVAILABLE" for table in record.tables)
     }
+    local_gap_issue_counts = Counter(
+        (attachment_id, item.source_gap_statement)
+        for attachment_id, record in bound_records.items()
+        for item in record.issues
+        if item.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+        and item.source_gap_statement is not None
+    )
 
     def local_absence_is_resolved(
         issue: QuantitativeValidationIssue,
@@ -2593,22 +2611,57 @@ def merge_validated_quantitative_records(
         source_binding = binding_by_attachment_id.get(attachment_id)
         if (
             source_binding is None
+            or source_binding.source_label is None
             or source_binding.document_type != issue.source_gap_document_type
         ):
+            return False
+        source_label_types = _source_label_document_types(source_binding.source_label)
+        if len(source_label_types) > 1:
+            return False
+        source_effective_type = (
+            source_label_types[0]
+            if source_label_types
+            else source_binding.document_type
+        )
+        required_sibling_types = set(issue.required_sibling_document_types)
+        if source_effective_type in required_sibling_types:
+            if len(required_sibling_types) > 1:
+                required_sibling_types.discard(source_effective_type)
+            elif local_gap_issue_counts[
+                (attachment_id, issue.source_gap_statement)
+            ] > 1:
+                # A multi-role statement may name the current attachment as
+                # context (for example, "공고문에는 제안요청서 ... 없음").
+                # Suppress only that current-role issue; another explicit role
+                # from the same statement must still resolve independently.
+                return True
+            else:
+                # A single same-role gap cannot borrow an unrelated document
+                # merely because both were classified as the same type.
+                return False
+        if not required_sibling_types:
             return False
         for sibling_id in supplying_attachment_ids - {attachment_id}:
             binding = binding_by_attachment_id.get(sibling_id)
             if (
                 binding is None
-                or binding.document_type not in issue.required_sibling_document_types
                 or binding.source_label is None
             ):
                 continue
             compact_label = _compact_document_label(binding.source_label)
-            if any(
+            label_matches = any(
                 marker in compact_label
                 for marker in issue.required_sibling_label_markers
-            ):
+            )
+            if not label_matches:
+                continue
+            label_types = _source_label_document_types(binding.source_label)
+            if len(label_types) > 1:
+                continue
+            effective_type = binding.document_type
+            if effective_type in {None, "OTHER"} and label_types:
+                effective_type = label_types[0]
+            if effective_type in required_sibling_types:
                 return True
         return False
 

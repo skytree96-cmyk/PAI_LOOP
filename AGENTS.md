@@ -143,6 +143,13 @@ do not invent one and report it as required.
 - Successful extraction does not approve a score. Reject LLM-proposed company
   scores, `GO` values, or other decision fields; only deterministic application
   code may calculate and persist a score.
+- Resolve an attachment-local missing score table only from a different
+  attachment in the same current manifest whose mechanically validated table is
+  `AVAILABLE` and whose filename has an exact, unambiguous required document
+  role. Form/example files, ambiguous multi-role filenames, stale bindings, and
+  same-role substitutes fail closed. An `AVAILABLE` table inside a `REVIEW`
+  record may supply the table, but every remaining review issue must stay visible
+  and must continue to block automatic activation.
 - Persist a `CONFIRMED`/final company score only when every required input is bound
   to a verified, deadline-valid company fact. The deterministic engine may emit a
   clearly labeled, non-final `ESTIMATED` range from supported `ESTIMATED` facts;
