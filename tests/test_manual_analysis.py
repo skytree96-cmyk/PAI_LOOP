@@ -14,7 +14,10 @@ from pai_loop.integrations.openai_extraction import (
     aggregate_openai_attempts,
 )
 from pai_loop.main import create_app
-from pai_loop.manual_analysis import _quantitative_diagnostics
+from pai_loop.manual_analysis import (
+    _diagnostic_has_metric_tokens,
+    _quantitative_diagnostics,
+)
 from pai_loop.models import IngestionJob, PpsNoticeAuthority
 from pai_loop.pps_enrichment import PublicAnalysisReason
 
@@ -833,6 +836,7 @@ def test_quantitative_diagnostics_requires_same_origin_pin_and_disables_cache(
             "issues": [],
             "review_candidate_issues": [],
             "activation_reasons": [],
+            "review_candidate_shapes": [],
         }
         assert "2468" not in response.text
 
@@ -940,3 +944,208 @@ def test_quantitative_diagnostics_aggregates_and_redacts_untrusted_values(
     assert "A" * 64 not in result.model_dump_json()
     assert "B" * 64 not in result.model_dump_json()
     assert "private-attachment" not in result.model_dump_json()
+
+
+def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
+    monkeypatch,
+) -> None:
+    digest = "a" * 64
+    document_digest = "b" * 64
+    attachment_id = "private-attachment-id"
+    sensitive_marker = "SENSITIVE_SOURCE_SENTINEL"
+    common_anchor = {
+        "attachment_id": attachment_id,
+        "page": 33,
+        "section": "정량적 평가",
+        "confidence": 0.98,
+    }
+    result_payload = {
+        "document_type": "RFP",
+        "requirements": [],
+        "quantitative_tables": [
+            {
+                "table_id": "TABLE-PRIVATE-ID",
+                "label": f"정량 평가표 {sensitive_marker}",
+                "criteria": [
+                    {
+                        "criterion_id": "CRITERION-PRIVATE-ID",
+                        "label": "용역수행 실적",
+                        "criterion_literal": (
+                            f"용역수행 실적(금액, 6점) {sensitive_marker}"
+                        ),
+                        "max_points": 6,
+                        "scoring_method": "CASE_TABLE",
+                        "metric": "PERFORMANCE_AMOUNT",
+                        "unit": "억원",
+                        "brackets": [],
+                        "threshold": None,
+                        "formula_literal": None,
+                        "cases": [
+                            {
+                                "literal": "2억 원 이상\n6점",
+                                "operator": "GTE",
+                                "comparison_value": 2,
+                                "category_values": [],
+                                "award_kind": "POINTS",
+                                "award_value": 6,
+                                "row_order": 1,
+                                "evidence": {
+                                    **common_anchor,
+                                    "quote": "2억 원 이상\n6점",
+                                },
+                            }
+                        ],
+                        "recognition_conditions": [],
+                        "required_evidence": ["company.performance.amount"],
+                        "evidence": {
+                            **common_anchor,
+                            "quote": "용역수행 실적\n(10점)",
+                        },
+                        "ambiguity_reason": None,
+                    }
+                ],
+                "total_points": 20,
+                "total_evidence": {
+                    **common_anchor,
+                    "quote": "정량적 평가\n20점",
+                },
+                "minimum_score": None,
+                "minimum_evidence": None,
+                "ambiguity_reason": None,
+            }
+        ],
+        "quantitative_table_not_applicable": None,
+        "missing_or_unreadable": [],
+        "summary": "정량평가표 추출",
+    }
+    profile = SimpleNamespace(
+        manifest_sha256=digest,
+        status="INCOMPLETE",
+        expected_attachment_ids=(attachment_id,),
+        processed_attachment_ids=(attachment_id,),
+        document_bindings=(SimpleNamespace(attachment_id=attachment_id),),
+        tables=(SimpleNamespace(status="INCOMPLETE"),),
+        available_candidates=(),
+        review_candidates=(
+            SimpleNamespace(
+                source_attachment_id=attachment_id,
+                table_id="TABLE-PRIVATE-ID",
+                criterion_id="CRITERION-PRIVATE-ID",
+                status="INCOMPLETE",
+                issue_codes=("CRITERION_LITERAL_MISMATCH",),
+            ),
+        ),
+        issues=(
+            SimpleNamespace(
+                code="CRITERION_LITERAL_MISMATCH",
+                disposition="INCOMPLETE",
+            ),
+        ),
+    )
+    notice = SimpleNamespace(
+        notice_key="SYN-QUANT-SHAPE",
+        versions=(
+            SimpleNamespace(
+                version_no=2,
+                file_sha256=document_digest,
+                source_payload={
+                    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                    "source_kind": "PPS_PUBLIC_ATTACHMENT",
+                    "status": "ACCEPTED",
+                    "attachment_id": attachment_id,
+                    "current_manifest_sha256": digest,
+                    "quantitative_validation_record": {
+                        "attachment_id": attachment_id,
+                        "manifest_sha256": digest,
+                        "document_sha256": document_digest,
+                    },
+                    "result": result_payload,
+                },
+            ),
+            # A stale record with the same IDs must not replace the current shape.
+            SimpleNamespace(
+                version_no=1,
+                file_sha256="c" * 64,
+                source_payload={
+                    "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                    "source_kind": "PPS_PUBLIC_ATTACHMENT",
+                    "status": "ACCEPTED",
+                    "attachment_id": attachment_id,
+                    "current_manifest_sha256": "d" * 64,
+                    "quantitative_validation_record": {
+                        "attachment_id": attachment_id,
+                        "manifest_sha256": "d" * 64,
+                        "document_sha256": "c" * 64,
+                    },
+                    "result": result_payload,
+                },
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring._current_dynamic_quantitative_profile",
+        lambda _notice: profile,
+    )
+    monkeypatch.setattr(
+        "pai_loop.quantitative_scoring._profile_activation_reasons",
+        lambda _profile: ["TABLE_CRITERIA_LINKAGE_INCOMPLETE"],
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._current_manifest_attempts",
+        lambda _versions: ([], 0, {attachment_id: notice.versions[0]}),
+    )
+
+    payload = _quantitative_diagnostics(notice).model_dump(mode="json")
+
+    assert payload["review_candidate_shapes"] == [
+        {
+            "source_ordinal": 1,
+            "table_ordinal": 1,
+            "criterion_ordinal": 1,
+            "document_type": "RFP",
+            "status": "INCOMPLETE",
+            "issue_codes": ["CRITERION_LITERAL_MISMATCH"],
+            "criterion_character_count": 41,
+            "evidence_character_count": 13,
+            "criterion_literal_matches_evidence": False,
+            "criterion_has_metric_tokens": True,
+            "evidence_has_metric_tokens": False,
+            "criterion_point_values": [6.0],
+            "evidence_point_values": [10.0],
+            "max_points": 6.0,
+            "max_points_within_safe_range": True,
+            "scoring_method": "CASE_TABLE",
+            "metric": "PERFORMANCE_AMOUNT",
+            "unit_present": True,
+            "bracket_count": 0,
+            "threshold_present": False,
+            "formula_present": False,
+            "recognition_condition_count": 0,
+            "case_count": 1,
+            "cases": [
+                {
+                    "row_order": 1,
+                    "operator": "GTE",
+                    "comparison_value_present": True,
+                    "category_value_count": 0,
+                    "award_kind": "POINTS",
+                    "award_value": 6.0,
+                    "award_value_within_safe_range": True,
+                    "literal_point_values": [6.0],
+                    "evidence_point_values": [6.0],
+                    "literal_matches_evidence": True,
+                }
+            ],
+        }
+    ]
+    encoded = _quantitative_diagnostics(notice).model_dump_json()
+    assert attachment_id not in encoded
+    assert "TABLE-PRIVATE-ID" not in encoded
+    assert "CRITERION-PRIVATE-ID" not in encoded
+    assert sensitive_marker not in encoded
+
+
+def test_quantitative_diagnostic_metric_token_check_marks_unsupported_metrics() -> None:
+    assert _diagnostic_has_metric_tokens("PERFORMANCE_AMOUNT", "실적 금액 6점") is True
+    assert _diagnostic_has_metric_tokens("PERFORMANCE_AMOUNT", "실적 10점") is False
+    assert _diagnostic_has_metric_tokens("PERSONNEL_COUNT", "전문인력 5명") is None
