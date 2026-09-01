@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.1"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.1"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.2"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.2"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -298,6 +298,7 @@ _ASCII_REVERSED_BOUND_RE = re.compile(
 _COMPARATOR_MARKER_RE = re.compile(r"이상|초과|이하|미만|>=|<=|==|>|<|=")
 _MAX_TABLE_CELL_WINDOW_LINES = 4
 _MAX_TABLE_CELL_WINDOW_CHARS = 500
+_MAX_CRITERION_HEADER_FALLBACK_LINES = 64
 _HWP_SECTION_LINE_RE = re.compile(r"^\[HWP SECTION \d+\]$")
 _HWP_FOOTNOTE_LINE_RE = re.compile(
     r"^(?:※|[*＊]|[①-⑳]|\[\s*주\s*\]|주\s*\d+\s*[.)]?)"
@@ -783,6 +784,178 @@ def _criterion_window_matches(
     )
 
 
+_METRIC_HEADER_TOKEN_GROUPS: Mapping[str, tuple[tuple[str, ...], ...]] = {
+    "PERFORMANCE_AMOUNT": (("실적", "금액"),),
+    "PERFORMANCE_COUNT": (("실적", "건수"),),
+    "CREDIT_RATING": (("경영상태",), ("신용평가등급",)),
+}
+
+
+def _metric_header_matches(
+    candidate: QuantitativeRuleCandidate,
+    window: str,
+) -> bool:
+    """Recognise only the supported metric words in one exact HWP header."""
+
+    groups = _METRIC_HEADER_TOKEN_GROUPS.get(candidate.metric, ())
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", window))
+    return bool(
+        groups
+        and any(all(token in compact for token in group) for group in groups)
+    )
+
+
+def _candidate_metric_max_header_spans(
+    lines: tuple[str, ...],
+    candidate: QuantitativeRuleCandidate,
+) -> tuple[tuple[int, int], ...]:
+    """Return exact metric+maximum headers without assuming a unique quote."""
+
+    if candidate.scoring_method != "CASE_TABLE" or not candidate.cases:
+        return ()
+    matches: list[tuple[int, int]] = []
+    for anchor_span in _anchor_line_spans(lines, candidate.evidence.quote):
+        window = _minimal_anchor_window(
+            lines,
+            anchor_span=anchor_span,
+            maximum_lines=_MAX_TABLE_CELL_WINDOW_LINES,
+            allow_before_anchor=False,
+            predicate=lambda value: bool(
+                _criterion_window_matches(candidate, value)
+                and _metric_header_matches(candidate, value)
+            ),
+        )
+        if window is None or _anchor_occurrence_count(
+            candidate.evidence.quote,
+            window,
+        ) != 1:
+            continue
+        span = (anchor_span[0], anchor_span[0] + len(window.splitlines()))
+        if span[1] <= len(lines):
+            matches.append(span)
+    return tuple(dict.fromkeys(matches))
+
+
+def _bounded_header_candidate_region(
+    lines: tuple[str, ...],
+    *,
+    header_span: tuple[int, int],
+    boundary_spans: Iterable[tuple[int, int]],
+    table_fences: Iterable[tuple[int, int]],
+    hwp_section_starts: Iterable[int],
+) -> tuple[int, int] | None:
+    """Fence a provisional header at the next structural or blank boundary."""
+
+    start = header_span[0]
+    boundary_starts = [
+        span[0]
+        for span in (*tuple(boundary_spans), *tuple(table_fences))
+        if span[0] > start
+    ]
+    boundary_starts.extend(marker for marker in hwp_section_starts if marker > start)
+    boundary_starts.extend(
+        index for index in range(header_span[1], len(lines)) if not lines[index]
+    )
+    end = min(
+        boundary_starts,
+        default=min(len(lines), start + _MAX_CRITERION_HEADER_FALLBACK_LINES),
+    )
+    end = min(end, start + _MAX_CRITERION_HEADER_FALLBACK_LINES)
+    return (start, end) if end > header_span[1] else None
+
+
+def _unique_case_support_span(
+    lines: tuple[str, ...],
+    *,
+    candidate: QuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral,
+    criterion_region: tuple[int, int],
+) -> tuple[int, int] | None:
+    """Resolve one exact condition-to-award row inside a provisional criterion."""
+
+    matches: list[tuple[int, int]] = []
+    evidence_spans = tuple(
+        span
+        for span in _anchor_line_spans(lines, case.evidence.quote)
+        if _span_inside_region(span, criterion_region)
+    )
+    for literal_span in _anchor_line_spans(lines, case.literal):
+        if not _span_inside_region(literal_span, criterion_region) or not any(
+            _spans_overlap(literal_span, evidence_span)
+            for evidence_span in evidence_spans
+        ):
+            continue
+        if (
+            _literal_contains_number(case.award_value, case.literal)
+            and _case_comparison_matches(candidate, case, case.literal)
+            and (
+                case.operator != "IN"
+                or all(
+                    _case_literal_contains_exact_category(case.literal, value)
+                    for value in case.category_values
+                )
+            )
+        ):
+            matches.append(literal_span)
+
+    repair_anchor = evidence_spans[0] if len(evidence_spans) == 1 else None
+    if repair_anchor is None:
+        repair_anchor = _unique_percent_score_line_span(
+            lines,
+            case=case,
+            criterion_region=criterion_region,
+        )
+    if repair_anchor is not None:
+        window = _minimal_anchor_window(
+            lines,
+            anchor_span=repair_anchor,
+            predicate=lambda value: bool(
+                evidence_quote_matches_source(case.evidence.quote, value)
+                and _case_row_window_matches(candidate, case, value)
+            ),
+        )
+        if window is not None:
+            window_spans = tuple(
+                span
+                for span in _anchor_line_spans(lines, window)
+                if _span_inside_region(span, criterion_region)
+            )
+            if len(window_spans) == 1:
+                matches.append(window_spans[0])
+
+    unique_matches = tuple(dict.fromkeys(matches))
+    return unique_matches[0] if len(unique_matches) == 1 else None
+
+
+def _header_candidate_has_ordered_cases(
+    lines: tuple[str, ...],
+    *,
+    candidate: QuantitativeRuleCandidate,
+    criterion_region: tuple[int, int],
+) -> bool:
+    spans = tuple(
+        _unique_case_support_span(
+            lines,
+            candidate=candidate,
+            case=case,
+            criterion_region=criterion_region,
+        )
+        for case in candidate.cases
+    )
+    return bool(
+        spans
+        and all(span is not None for span in spans)
+        and spans[0] is not None
+        and spans[0][0] > criterion_region[0]
+        and all(
+            left is not None
+            and right is not None
+            and left[1] <= right[0]
+            for left, right in zip(spans, spans[1:], strict=False)
+        )
+    )
+
+
 def _unique_percent_score_line_span(
     lines: tuple[str, ...],
     *,
@@ -832,8 +1005,10 @@ def _rebind_candidate_table_cell_literals(
     source: str,
     lines: tuple[str, ...],
     foreign_structure_spans: tuple[tuple[int, int], ...] = (),
+    foreign_shared_criterion_evidence_spans: tuple[tuple[int, int], ...] = (),
     foreign_recognition_spans: tuple[tuple[int, int], ...] = (),
     criterion_region: tuple[int, int] | None = None,
+    criterion_anchor_span: tuple[int, int] | None = None,
     shared_recognition_keys: frozenset[tuple[str, str]] = frozenset(),
     external_recognition_keys: frozenset[tuple[str, str]] = frozenset(),
 ) -> QuantitativeRuleCandidate:
@@ -842,7 +1017,10 @@ def _rebind_candidate_table_cell_literals(
     if criterion_region is None:
         return candidate
 
-    candidate_span = _unique_anchor_line_span(lines, candidate.evidence.quote)
+    candidate_span = criterion_anchor_span or _unique_anchor_line_span(
+        lines,
+        candidate.evidence.quote,
+    )
     candidate_structure_spans = _all_anchor_line_spans(
         lines,
         (candidate.evidence.quote, candidate.criterion_literal),
@@ -921,12 +1099,20 @@ def _rebind_candidate_table_cell_literals(
         )
         if window is not None:
             span = _unique_anchor_line_span(lines, window)
+            foreign_header_spans = tuple(
+                reserved
+                for reserved in foreign_structure_spans
+                if not (
+                    reserved in foreign_shared_criterion_evidence_spans
+                    and _spans_overlap(reserved, candidate_span)
+                )
+            )
             if span is not None and not any(
                 span[0] < reserved[1] and reserved[0] < span[1]
                 for reserved in (
                     *reserved_case_spans,
                     *reserved_recognition_spans,
-                    *foreign_structure_spans,
+                    *foreign_header_spans,
                     *foreign_recognition_spans,
                 )
             ) and _span_inside_region(span, criterion_region):
@@ -1081,6 +1267,12 @@ def _rebind_split_table_cell_literals(
     ):
         return payload
 
+    hwp_section_starts = tuple(
+        index
+        for index, line in enumerate(lines)
+        if _HWP_SECTION_LINE_RE.fullmatch(line)
+    )
+
     table_fences: list[tuple[tuple[int, int], ...]] = []
     candidate_structure_spans: list[list[tuple[tuple[int, int], ...]]] = []
     table_structure_spans: list[tuple[tuple[int, int], ...]] = []
@@ -1088,6 +1280,7 @@ def _rebind_split_table_cell_literals(
         list[tuple[tuple[tuple[str, str], tuple[tuple[int, int], ...]], ...]]
     ] = []
     criterion_anchor_spans: list[list[tuple[int, int] | None]] = []
+    criterion_header_candidates: list[list[tuple[tuple[int, int], ...]]] = []
 
     for table in payload.quantitative_tables:
         fence_values = [
@@ -1103,6 +1296,7 @@ def _rebind_split_table_cell_literals(
             tuple[tuple[tuple[str, str], tuple[tuple[int, int], ...]], ...]
         ] = []
         anchors_for_table: list[tuple[int, int] | None] = []
+        header_candidates_for_table: list[tuple[tuple[int, int], ...]] = []
         for candidate in table.criteria:
             structure_values = (
                 candidate.evidence.quote,
@@ -1128,9 +1322,13 @@ def _rebind_split_table_cell_literals(
             anchors_for_table.append(
                 _unique_anchor_line_span(lines, candidate.evidence.quote)
             )
+            header_candidates_for_table.append(
+                _candidate_metric_max_header_spans(lines, candidate)
+            )
         candidate_structure_spans.append(structures_for_table)
         candidate_recognition_entries.append(recognition_for_table)
         criterion_anchor_spans.append(anchors_for_table)
+        criterion_header_candidates.append(header_candidates_for_table)
         table_structure_spans.append(
             tuple(
                 dict.fromkeys(
@@ -1146,11 +1344,46 @@ def _rebind_split_table_cell_literals(
             )
         )
 
-    hwp_section_starts = tuple(
-        index
-        for index, line in enumerate(lines)
-        if _HWP_SECTION_LINE_RE.fullmatch(line)
-    )
+    for table_index, table in enumerate(payload.quantitative_tables):
+        primary_anchors = criterion_anchor_spans[table_index]
+        all_header_spans = tuple(
+            dict.fromkeys(
+                (
+                    *(span for span in primary_anchors if span is not None),
+                    *(
+                        span
+                        for spans in criterion_header_candidates[table_index]
+                        for span in spans
+                    ),
+                )
+            )
+        )
+        resolved: list[tuple[int, int] | None] = []
+        for candidate_index, candidate in enumerate(table.criteria):
+            primary = primary_anchors[candidate_index]
+            if primary is not None:
+                resolved.append(primary)
+                continue
+            valid_headers: list[tuple[int, int]] = []
+            for header_span in criterion_header_candidates[table_index][
+                candidate_index
+            ]:
+                region = _bounded_header_candidate_region(
+                    lines,
+                    header_span=header_span,
+                    boundary_spans=all_header_spans,
+                    table_fences=table_fences[table_index],
+                    hwp_section_starts=hwp_section_starts,
+                )
+                if region is not None and _header_candidate_has_ordered_cases(
+                    lines,
+                    candidate=candidate,
+                    criterion_region=region,
+                ):
+                    valid_headers.append(header_span)
+            resolved.append(valid_headers[0] if len(valid_headers) == 1 else None)
+        criterion_anchor_spans[table_index] = resolved
+
     criterion_regions: list[list[tuple[int, int] | None]] = []
     for table_index, table in enumerate(payload.quantitative_tables):
         anchors = criterion_anchor_spans[table_index]
@@ -1329,6 +1562,49 @@ def _rebind_split_table_cell_literals(
                     )
                 )
             )
+            shared_criterion_evidence_spans = tuple(
+                dict.fromkeys(
+                    span
+                    for other_candidate_index, other_candidate in enumerate(
+                        table.criteria
+                    )
+                    if other_candidate_index != candidate_index
+                    if _normalise_anchor_text(other_candidate.evidence.quote)
+                    == _normalise_anchor_text(candidate.evidence.quote)
+                    for span in _anchor_line_spans(
+                        lines,
+                        other_candidate.evidence.quote,
+                    )
+                )
+            )
+            foreign_non_criterion_evidence_spans = tuple(
+                dict.fromkeys(
+                    span
+                    for other_candidate_index, other_candidate in enumerate(
+                        table.criteria
+                    )
+                    if other_candidate_index != candidate_index
+                    for span in _all_anchor_line_spans(
+                        lines,
+                        (
+                            other_candidate.criterion_literal,
+                            *(
+                                case.evidence.quote
+                                for case in other_candidate.cases
+                            ),
+                            *(case.literal for case in other_candidate.cases),
+                        ),
+                    )
+                )
+            )
+            safe_shared_criterion_evidence_spans = tuple(
+                span
+                for span in shared_criterion_evidence_spans
+                if not any(
+                    _spans_overlap(span, foreign_span)
+                    for foreign_span in foreign_non_criterion_evidence_spans
+                )
+            )
             foreign_recognition = tuple(
                 dict.fromkeys(
                     (
@@ -1364,8 +1640,14 @@ def _rebind_split_table_cell_literals(
                     source=source,
                     lines=lines,
                     foreign_structure_spans=foreign_structure,
+                    foreign_shared_criterion_evidence_spans=(
+                        safe_shared_criterion_evidence_spans
+                    ),
                     foreign_recognition_spans=foreign_recognition,
                     criterion_region=criterion_regions[table_index][candidate_index],
+                    criterion_anchor_span=criterion_anchor_spans[table_index][
+                        candidate_index
+                    ],
                     shared_recognition_keys=shared_candidate_keys,
                     external_recognition_keys=external_candidate_keys,
                 )
