@@ -37,6 +37,7 @@ from .integrations.openai_extraction import (
 )
 from .models import Notice, NoticeVersion
 from .quantitative_rule_extraction import (
+    QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
     ValidatedQuantitativeAttachmentRecord,
     validate_quantitative_attachment_extraction,
     validated_quantitative_record_fingerprint,
@@ -639,6 +640,7 @@ def _has_valid_quantitative_record(
         record.attachment_id == attachment_id
         and record.document_sha256 == version.file_sha256.casefold()
         and record.manifest_sha256 == current_manifest_sha256
+        and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
         and record.prompt_version == PROMPT_VERSION
         and record.extraction_schema_version == SCHEMA_VERSION
         and record.validation_fingerprint_sha256

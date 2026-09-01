@@ -1190,6 +1190,11 @@ def _current_dynamic_quantitative_profile(
         attachment_profiles[attachment_id] = {
             "document_type": raw_document_type,
             "source_label": raw_source_label,
+            "missing_or_unreadable": (
+                result.get("missing_or_unreadable")
+                if isinstance(result, dict)
+                else None
+            ),
         }
         if (
             payload.get("status") != "ACCEPTED"
