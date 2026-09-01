@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -2890,6 +2891,7 @@ def test_split_hwp_partially_overlapping_case_claims_make_table_ambiguous() -> N
 
     assert profile.status != "AVAILABLE"
     assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
 
 
 def test_split_hwp_criterion_rebind_cannot_escape_into_next_criterion() -> None:
@@ -3626,6 +3628,9 @@ def test_exact_sourcewide_rebind_clears_fully_resolved_model_table_ambiguity() -
 
     assert profile.status == "AVAILABLE", issue_codes(profile)
     assert "AMBIGUOUS_TABLE" not in issue_codes(profile)
+    assert not any(
+        code.startswith("SOURCEWIDE_AMBIGUITY_") for code in issue_codes(profile)
+    )
     assert [item.criterion_literal for item in profile.available_candidates] == [
         "1) 용역수행 실적(금액, 6점)",
         "2) 용역수행 실적(건수, 4점)",
@@ -3633,7 +3638,7 @@ def test_exact_sourcewide_rebind_clears_fully_resolved_model_table_ambiguity() -
     ]
 
 
-def test_busan_summary_total_before_detail_proves_same_source_table() -> None:
+def busan_hwp_summary_before_detail_fixture() -> tuple[dict, str]:
     table, source = busan_hwp_duplicate_summary_fixture()
     table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
     summary = "❍ 정량적 평가(20점): 부산광역시교육청 사업부서 평가"
@@ -3652,20 +3657,76 @@ def test_busan_summary_total_before_detail_proves_same_source_table() -> None:
         1,
     ).replace("\n총점 20점", "", 1)
     source = (
-        f"{source}\n3. 제안서 평가\n"
+        f"{source}\n"
+        f"{'\n'.join(str(index) for index in range(1, 22))}\n"
+        "10점\n20점\n"
+        "3. 제안서 평가\n"
         "❍ 총점 100점 만점으로 정량적 평가(20점) 및 "
         "정성적 평가(80점)를 실시한다."
     )
+    return table, source
+
+
+def test_busan_summary_total_before_detail_proves_same_source_table() -> None:
+    table, source = busan_hwp_summary_before_detail_fixture()
+    table["criteria"][2]["unit"] = "점"
 
     profile = build(payload_with_table(table), source=source)
 
     assert profile.status == "AVAILABLE", issue_codes(profile)
     assert "AMBIGUOUS_TABLE" not in issue_codes(profile)
+    credit = next(
+        item
+        for item in profile.available_candidates
+        if item.metric == "CREDIT_RATING"
+    )
+    assert credit.unit == "등급"
+    assert not any(
+        code.startswith("SOURCEWIDE_AMBIGUITY_") for code in issue_codes(profile)
+    )
+
+
+@pytest.mark.parametrize(
+    "footnote_mutation",
+    ("missing", "duplicate", "extra-score", "later-section"),
+)
+def test_busan_credit_source_footnote_boundary_fails_closed(
+    footnote_mutation: str,
+) -> None:
+    table, source = busan_hwp_summary_before_detail_fixture()
+    table["criteria"][2]["unit"] = "점"
+    footnote = (
+        "* 등급별 평점이 소수점 이하의 숫자가 있는 경우 "
+        "소수점 다섯째자리에서 반올림 함"
+    )
+    if footnote_mutation == "missing":
+        source = source.replace(f"\n{footnote}", "", 1)
+    elif footnote_mutation == "duplicate":
+        source = source.replace(footnote, f"{footnote}\n{footnote}", 1)
+    elif footnote_mutation == "extra-score":
+        source = source.replace(footnote, f"0점\n{footnote}", 1)
+    else:
+        source = source.replace(f"\n{footnote}", "", 1)
+        source = f"{source}\n[HWP SECTION 2]\n{footnote}"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CASE_CENSUS_MISMATCH" in issue_codes(
+        profile
+    )
+    credit = next(
+        item
+        for item in profile.available_candidates
+        if item.metric == "CREDIT_RATING"
+    )
+    assert credit.unit == "점"
 
 
 def test_sourcewide_rebind_keeps_ambiguity_when_total_is_outside_table_section() -> None:
     table, source = busan_hwp_duplicate_summary_fixture()
-    table["ambiguity_reason"] = "총점 귀속 확인 필요"
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
     source = source.replace("\n총점 20점", "", 1)
     source = f"{source}\n[HWP SECTION 1]\n총점 20점"
 
@@ -3673,6 +3734,10 @@ def test_sourcewide_rebind_keeps_ambiguity_when_total_is_outside_table_section()
 
     assert profile.status == "REVIEW"
     assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert (
+        "SOURCEWIDE_AMBIGUITY_TOTAL_PROVENANCE_UNPROVEN"
+        in issue_codes(profile)
+    )
 
 
 def test_sourcewide_rebind_keeps_ambiguity_for_second_source_only_table() -> None:
@@ -3732,6 +3797,51 @@ def test_sourcewide_rebind_requires_every_owned_source_case_row() -> None:
 
     assert profile.status == "REVIEW"
     assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_CASE_CENSUS_MISMATCH" in issue_codes(profile)
+
+
+def test_sourcewide_ambiguity_blocker_is_enum_only_and_omits_model_prose() -> None:
+    table, source = busan_hwp_duplicate_summary_fixture()
+    model_prose = "외부 별도지침 적용 여부를 확인해야 함"
+    table["ambiguity_reason"] = model_prose
+
+    profile = build(payload_with_table(table), source=source)
+
+    blockers = [
+        item
+        for item in profile.issues
+        if item.code.startswith("SOURCEWIDE_AMBIGUITY_")
+    ]
+    assert [(item.code, item.disposition) for item in blockers] == [
+        ("SOURCEWIDE_AMBIGUITY_REASON_NOT_STRUCTURAL", "REVIEW")
+    ]
+    assert all(
+        re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", item.code)
+        for item in blockers
+    )
+    assert model_prose not in profile.model_dump_json()
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="b" * 64,
+        manifest_sha256="a" * 64,
+    )
+    assert "SOURCEWIDE_AMBIGUITY_REASON_NOT_STRUCTURAL" in {
+        item.code for item in record.issues
+    }
+    assert model_prose not in record.model_dump_json()
+
+
+def test_non_hwp_structural_ambiguity_reports_scope_blocker_code() -> None:
+    table = valid_table()
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
+
+    profile = build(payload_with_table(table))
+
+    assert profile.status == "REVIEW"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+    assert "SOURCEWIDE_AMBIGUITY_SCOPE_UNSUPPORTED" in issue_codes(profile)
 
 
 def test_sourcewide_rebind_rejects_unmodeled_credit_zero_point_row() -> None:
