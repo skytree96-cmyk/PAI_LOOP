@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.0"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.0"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.1"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.1"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -771,14 +771,38 @@ def _criterion_window_matches(
 ) -> bool:
     compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", window))
     expected = _decimal(candidate.max_points)
+    descriptive_anchor = _normalise_anchor_text(candidate.evidence.quote)
     return bool(
         expected is not None
-        and evidence_quote_matches_source(candidate.criterion_literal, window)
+        and re.search(r"[A-Za-z가-힣]{2,}", descriptive_anchor)
+        and evidence_quote_matches_source(candidate.evidence.quote, window)
         and any(
             Decimal(match.group("num").replace(",", "")) == expected
             for match in re.finditer(rf"(?P<num>{_NUM_PATTERN})\s*점", compact)
         )
     )
+
+
+def _unique_percent_score_line_span(
+    lines: tuple[str, ...],
+    *,
+    case: QuantitativeCaseLiteral,
+    criterion_region: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    """Resolve one exact percent award cell inside the owning criterion only."""
+
+    if case.award_kind != "PERCENT_OF_MAX" or criterion_region is None:
+        return None
+    matches = [
+        (index, index + 1)
+        for index in range(criterion_region[0], criterion_region[1])
+        if _score_cell_matches(
+            lines[index],
+            value=case.award_value,
+            percent=True,
+        )
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _recognition_key(literal: str, quote: str) -> tuple[str, str]:
@@ -827,6 +851,15 @@ def _rebind_candidate_table_cell_literals(
         _unique_anchor_line_span(lines, case.evidence.quote)
         for case in candidate.cases
     ]
+    repair_anchor_spans = [
+        span
+        or _unique_percent_score_line_span(
+            lines,
+            case=case,
+            criterion_region=criterion_region,
+        )
+        for case, span in zip(candidate.cases, case_anchor_spans, strict=True)
+    ]
     recognition_anchor_spans = [
         _unique_anchor_line_span(lines, item.evidence.quote)
         for item in candidate.recognition_conditions
@@ -846,13 +879,13 @@ def _rebind_candidate_table_cell_literals(
         for item in candidate.recognition_conditions
     ]
     case_anchors_are_ordered = bool(
-        case_anchor_spans
-        and all(span is not None for span in case_anchor_spans)
+        repair_anchor_spans
+        and all(span is not None for span in repair_anchor_spans)
         and all(
             left is not None and right is not None and left[0] < right[0]
             for left, right in zip(
-                case_anchor_spans,
-                case_anchor_spans[1:],
+                repair_anchor_spans,
+                repair_anchor_spans[1:],
                 strict=False,
             )
         )
@@ -912,15 +945,14 @@ def _rebind_candidate_table_cell_literals(
             continue
         if not case_anchors_are_ordered:
             continue
-        anchor_span = case_anchor_spans[index]
+        anchor_span = repair_anchor_spans[index]
         if anchor_span is None:
             continue
         window = _minimal_anchor_window(
             lines,
             anchor_span=anchor_span,
             predicate=lambda value, row=case: bool(
-                evidence_quote_matches_source(row.literal, value)
-                and evidence_quote_matches_source(row.evidence.quote, value)
+                evidence_quote_matches_source(row.evidence.quote, value)
                 and _case_row_window_matches(candidate, row, value)
             ),
         )
