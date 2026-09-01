@@ -30,8 +30,8 @@ from .integrations.openai_extraction import (
 from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.3"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.3"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.4"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.4"
 
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
@@ -299,7 +299,17 @@ _COMPARATOR_MARKER_RE = re.compile(r"이상|초과|이하|미만|>=|<=|==|>|<|="
 _MAX_TABLE_CELL_WINDOW_LINES = 4
 _MAX_TABLE_CELL_WINDOW_CHARS = 500
 _MAX_CRITERION_HEADER_FALLBACK_LINES = 64
+_MAX_SOURCEWIDE_HEADER_MATCHES = 64
+_MAX_SOURCEWIDE_BOUNDARY_SPANS = 512
 _HWP_SECTION_LINE_RE = re.compile(r"^\[HWP SECTION \d+\]$")
+_SOURCEWIDE_TABLE_MARKER_RE = re.compile(
+    r"^(?:정량(?:적)?\s*평가(?:\s*세부\s*기준|\s*기준|표)?|"
+    r"평가\s*배점표|평가\s*기준표)$"
+)
+_SOURCEWIDE_HEADER_NOUN_SUFFIX_RE = re.compile(
+    r"(?:현황|상태|능력|실적|보유|평가|기준|항목|인력|시설|장비|경력|"
+    r"재무구조|조직)$"
+)
 _HWP_FOOTNOTE_LINE_RE = re.compile(
     r"^(?:※|[*＊]|[①-⑳]|\[\s*주\s*\]|주\s*\d+\s*[.)]?)"
 )
@@ -805,6 +815,33 @@ def _metric_header_matches(
     )
 
 
+def _header_point_tokens(window: str) -> tuple[tuple[Decimal, int], ...]:
+    """Return explicit ``N점`` values and offsets from one bounded window."""
+
+    normalized = unicodedata.normalize("NFKC", window)
+    tokens: list[tuple[Decimal, int]] = []
+    for match in re.finditer(rf"(?P<num>{_NUM_PATTERN})\s*점", normalized):
+        try:
+            tokens.append(
+                (Decimal(match.group("num").replace(",", "")), match.start())
+            )
+        except InvalidOperation:
+            return ()
+    return tuple(tokens)
+
+
+def _metric_tokens_precede_point(
+    metric: str,
+    window: str,
+    point_offset: int,
+) -> bool:
+    normalized = unicodedata.normalize("NFKC", window)
+    return any(
+        all(0 <= normalized.find(token) < point_offset for token in group)
+        for group in _METRIC_HEADER_TOKEN_GROUPS.get(metric, ())
+    )
+
+
 def _metric_header_is_unique(
     candidate: QuantitativeRuleCandidate,
     window: str,
@@ -824,6 +861,26 @@ def _metric_header_is_unique(
             for token in group
         )
     )
+
+
+def _minimal_sourcewide_spans(
+    matches: Iterable[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Remove containing windows in linear time for the fixed four-line bound."""
+
+    unique = tuple(dict.fromkeys(matches))
+    lookup = set(unique)
+    minimal: list[tuple[int, int]] = []
+    for span in unique:
+        contains_smaller = any(
+            (inner_start, inner_end) in lookup
+            and (inner_start, inner_end) != span
+            for inner_start in range(span[0], span[1])
+            for inner_end in range(inner_start + 1, span[1] + 1)
+        )
+        if not contains_smaller:
+            minimal.append(span)
+    return tuple(minimal)
 
 
 def _candidate_metric_max_header_spans(
@@ -866,54 +923,111 @@ def _candidate_metric_max_header_spans(
             window = "\n".join(window_lines)
             if len(window) > _MAX_TABLE_CELL_WINDOW_CHARS:
                 break
-            normalized_window = unicodedata.normalize("NFKC", window)
-            point_tokens: list[Decimal] = []
-            point_matches = list(
-                re.finditer(
-                rf"(?P<num>{_NUM_PATTERN})\s*점",
-                    normalized_window,
-                )
-            )
-            for match in point_matches:
-                try:
-                    point_tokens.append(
-                        Decimal(match.group("num").replace(",", ""))
-                    )
-                except InvalidOperation:
-                    point_tokens = []
-                    break
+            point_tokens = _header_point_tokens(window)
             metric_before_points = bool(
-                len(point_matches) == 1
-                and any(
-                    all(
-                        0 <= normalized_window.find(token) < point_matches[0].start()
-                        for token in group
-                    )
-                    for group in _METRIC_HEADER_TOKEN_GROUPS.get(
-                        candidate.metric, ()
-                    )
+                len(point_tokens) == 1
+                and _metric_tokens_precede_point(
+                    candidate.metric,
+                    window,
+                    point_tokens[0][1],
                 )
             )
             if (
-                point_tokens == [expected]
+                tuple(value for value, _offset in point_tokens) == (expected,)
                 and metric_before_points
                 and _metric_header_is_unique(candidate, window)
             ):
                 matches.append((start, end))
+                if len(matches) > _MAX_SOURCEWIDE_HEADER_MATCHES:
+                    return ()
 
     # A split header can satisfy the predicate together with an unnecessary
     # adjacent line.  Retain only the exact minimal source slice.
-    minimal = [
-        span
-        for span in matches
-        if not any(
-            other[0] >= span[0]
-            and other[1] <= span[1]
-            and other != span
-            for other in matches
-        )
+    return _minimal_sourcewide_spans(matches)
+
+
+def _clear_sourcewide_criterion_header(window: str) -> bool:
+    """Recognise a noun-like criterion heading, never a value/score case row."""
+
+    normalized = unicodedata.normalize("NFKC", window)
+    match = re.fullmatch(
+        rf"\s*(?:(?:\d+|[가-힣])\s*[.)]\s*|[❍○●■□▪▶]\s*)?"
+        rf"(?P<label>[A-Za-z0-9가-힣]"
+        rf"[A-Za-z0-9가-힣\s·/&()_,.\-]{{1,160}}?)\s*"
+        rf"(?:\(\s*)?{_NUM_PATTERN}\s*점\s*\)?\s*",
+        normalized,
+    )
+    if match is None:
+        return False
+    label = re.sub(r"[\s·/&()_,.\-]+$", "", match.group("label"))
+    semantic_label = re.sub(
+        r"\d+(?:\.\d+)?\s*(?:건|원|명|%|등급|점|년|개월|회|개)",
+        "",
+        label,
+    )
+    return bool(
+        _SOURCEWIDE_HEADER_NOUN_SUFFIX_RE.search(label)
+        and not re.search(r"(?:건|원|명|%|등급)$", label)
+        and len(re.findall(r"[가-힣]", semantic_label)) >= 4
+    )
+
+
+def _sourcewide_structural_boundary_spans(
+    lines: tuple[str, ...],
+) -> tuple[tuple[tuple[int, int], ...], bool]:
+    """Find explicit physical table/criterion boundaries omitted by the model."""
+
+    matches: list[tuple[int, int]] = [
+        (index, index + 1)
+        for index, line in enumerate(lines)
+        if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(line)
     ]
-    return tuple(dict.fromkeys(minimal))
+    if len(matches) > _MAX_SOURCEWIDE_BOUNDARY_SPANS:
+        return (), True
+    for start in range(len(lines)):
+        for end in range(
+            start + 1,
+            min(len(lines), start + _MAX_TABLE_CELL_WINDOW_LINES) + 1,
+        ):
+            window_lines = lines[start:end]
+            if any(not line for line in window_lines) or any(
+                _HWP_SECTION_LINE_RE.fullmatch(line) for line in window_lines
+            ):
+                break
+            window = "\n".join(window_lines)
+            if len(window) > _MAX_TABLE_CELL_WINDOW_CHARS:
+                break
+            point_tokens = _header_point_tokens(window)
+            if len(point_tokens) != 1 or point_tokens[0][0] <= 0:
+                continue
+            point_offset = point_tokens[0][1]
+            supported_metric_header = any(
+                _metric_tokens_precede_point(metric, window, point_offset)
+                for metric in _METRIC_HEADER_TOKEN_GROUPS
+            )
+            explicit_criterion_header = bool(
+                not _COMPARATOR_MARKER_RE.search(window)
+                and _clear_sourcewide_criterion_header(window)
+            )
+            if supported_metric_header or explicit_criterion_header:
+                matches.append((start, end))
+                if len(matches) > _MAX_SOURCEWIDE_BOUNDARY_SPANS:
+                    return (), True
+    return _minimal_sourcewide_spans(matches), False
+
+
+def _next_blank_or_section_boundaries(
+    lines: tuple[str, ...],
+) -> tuple[int, ...]:
+    """Precompute the first blank/HWP section marker at or after each index."""
+
+    next_boundary = len(lines)
+    boundaries = [len(lines)] * (len(lines) + 1)
+    for index in range(len(lines) - 1, -1, -1):
+        if not lines[index] or _HWP_SECTION_LINE_RE.fullmatch(lines[index]):
+            next_boundary = index
+        boundaries[index] = next_boundary
+    return tuple(boundaries)
 
 
 def _bounded_header_candidate_region(
@@ -922,7 +1036,7 @@ def _bounded_header_candidate_region(
     header_span: tuple[int, int],
     boundary_spans: Iterable[tuple[int, int]],
     table_fences: Iterable[tuple[int, int]],
-    hwp_section_starts: Iterable[int],
+    next_blank_or_section: tuple[int, ...],
 ) -> tuple[int, int] | None:
     """Fence a provisional header at the next structural or blank boundary."""
 
@@ -932,10 +1046,8 @@ def _bounded_header_candidate_region(
         for span in (*tuple(boundary_spans), *tuple(table_fences))
         if span[0] > start
     ]
-    boundary_starts.extend(marker for marker in hwp_section_starts if marker > start)
-    boundary_starts.extend(
-        index for index in range(header_span[1], len(lines)) if not lines[index]
-    )
+    if header_span[1] < len(next_blank_or_section):
+        boundary_starts.append(next_blank_or_section[header_span[1]])
     end = min(
         boundary_starts,
         default=min(len(lines), start + _MAX_CRITERION_HEADER_FALLBACK_LINES),
@@ -1036,12 +1148,30 @@ def _header_candidate_has_ordered_cases(
     )
 
 
+def _hwp_section_for_span(
+    lines: tuple[str, ...],
+    *,
+    span: tuple[int, int],
+    hwp_section_starts: tuple[int, ...],
+) -> str | None:
+    """Return the exact owning HWP section marker for a source span."""
+
+    preceding = [index for index in hwp_section_starts if index < span[0]]
+    if not preceding:
+        return None
+    marker = lines[preceding[-1]]
+    return marker[1:-1] if _HWP_SECTION_LINE_RE.fullmatch(marker) else None
+
+
 def _rebind_unique_sourcewide_case_table_headers(
     payload: ExtractionPayload,
     *,
     source: str,
     lines: tuple[str, ...],
     hwp_section_starts: tuple[int, ...],
+    header_candidates: list[list[tuple[tuple[int, int], ...]]],
+    sourcewide_boundary_spans: tuple[tuple[int, int], ...],
+    next_blank_or_section: tuple[int, ...],
 ) -> ExtractionPayload:
     """Rebind one exact detailed header when a model anchored a subtotal.
 
@@ -1053,13 +1183,6 @@ def _rebind_unique_sourcewide_case_table_headers(
     """
 
     tables = payload.quantitative_tables
-    header_candidates = [
-        [
-            _candidate_metric_max_header_spans(lines, candidate)
-            for candidate in table.criteria
-        ]
-        for table in tables
-    ]
     all_header_spans = tuple(
         dict.fromkeys(
             span
@@ -1198,14 +1321,27 @@ def _rebind_unique_sourcewide_case_table_headers(
                 region = _bounded_header_candidate_region(
                     lines,
                     header_span=header_span,
-                    boundary_spans=(*all_header_spans, *foreign),
+                    boundary_spans=(
+                        *all_header_spans,
+                        *sourcewide_boundary_spans,
+                        *foreign,
+                    ),
                     table_fences=table_fences[table_index],
-                    hwp_section_starts=hwp_section_starts,
+                    next_blank_or_section=next_blank_or_section,
                 )
-                if region is not None and _header_candidate_has_ordered_cases(
-                    lines,
-                    candidate=candidate,
-                    criterion_region=region,
+                if (
+                    _hwp_section_for_span(
+                        lines,
+                        span=header_span,
+                        hwp_section_starts=hwp_section_starts,
+                    )
+                    is not None
+                    and region is not None
+                    and _header_candidate_has_ordered_cases(
+                        lines,
+                        candidate=candidate,
+                        criterion_region=region,
+                    )
                 ):
                     valid_headers.append(header_span)
             unique_headers = tuple(dict.fromkeys(valid_headers))
@@ -1234,12 +1370,24 @@ def _rebind_unique_sourcewide_case_table_headers(
                 repaired_candidates.append(candidate)
                 continue
             source_slice = "\n".join(lines[span[0] : span[1]])
+            section = _hwp_section_for_span(
+                lines,
+                span=span,
+                hwp_section_starts=hwp_section_starts,
+            )
+            if section is None:
+                repaired_candidates.append(candidate)
+                continue
             repaired_candidates.append(
                 candidate.model_copy(
                     update={
                         "criterion_literal": source_slice,
                         "evidence": candidate.evidence.model_copy(
-                            update={"quote": source_slice}
+                            update={
+                                "page": None,
+                                "section": section,
+                                "quote": source_slice,
+                            }
                         ),
                     }
                 )
@@ -1566,11 +1714,46 @@ def _rebind_split_table_cell_literals(
         for index, line in enumerate(lines)
         if _HWP_SECTION_LINE_RE.fullmatch(line)
     )
+    next_blank_or_section = _next_blank_or_section_boundaries(lines)
+    sourcewide_boundary_spans, boundary_overflow = (
+        _sourcewide_structural_boundary_spans(lines)
+    )
+    header_cache: dict[
+        tuple[str, Decimal], tuple[tuple[int, int], ...]
+    ] = {}
+    sourcewide_header_candidates: list[
+        list[tuple[tuple[int, int], ...]]
+    ] = []
+    for table in payload.quantitative_tables:
+        candidates_for_table: list[tuple[tuple[int, int], ...]] = []
+        for candidate in table.criteria:
+            expected = _decimal(candidate.max_points)
+            valid_shape = bool(
+                candidate.scoring_method == "CASE_TABLE"
+                and candidate.cases
+                and candidate.metric in _METRIC_HEADER_TOKEN_GROUPS
+                and expected is not None
+                and [case.row_order for case in candidate.cases]
+                == list(range(1, len(candidate.cases) + 1))
+            )
+            if boundary_overflow or not valid_shape or expected is None:
+                candidates_for_table.append(())
+                continue
+            cache_key = (candidate.metric, expected)
+            spans = header_cache.get(cache_key)
+            if spans is None:
+                spans = _candidate_metric_max_header_spans(lines, candidate)
+                header_cache[cache_key] = spans
+            candidates_for_table.append(spans)
+        sourcewide_header_candidates.append(candidates_for_table)
     payload = _rebind_unique_sourcewide_case_table_headers(
         payload,
         source=source,
         lines=lines,
         hwp_section_starts=hwp_section_starts,
+        header_candidates=sourcewide_header_candidates,
+        sourcewide_boundary_spans=sourcewide_boundary_spans,
+        next_blank_or_section=next_blank_or_section,
     )
 
     table_fences: list[tuple[tuple[int, int], ...]] = []
@@ -1582,7 +1765,7 @@ def _rebind_split_table_cell_literals(
     criterion_anchor_spans: list[list[tuple[int, int] | None]] = []
     criterion_header_candidates: list[list[tuple[tuple[int, int], ...]]] = []
 
-    for table in payload.quantitative_tables:
+    for table_index, table in enumerate(payload.quantitative_tables):
         fence_values = [
             evidence.quote
             for evidence in (table.total_evidence, table.minimum_evidence)
@@ -1596,7 +1779,9 @@ def _rebind_split_table_cell_literals(
             tuple[tuple[tuple[str, str], tuple[tuple[int, int], ...]], ...]
         ] = []
         anchors_for_table: list[tuple[int, int] | None] = []
-        header_candidates_for_table: list[tuple[tuple[int, int], ...]] = []
+        header_candidates_for_table = list(
+            sourcewide_header_candidates[table_index]
+        )
         for candidate in table.criteria:
             structure_values = (
                 candidate.evidence.quote,
@@ -1621,9 +1806,6 @@ def _rebind_split_table_cell_literals(
             )
             anchors_for_table.append(
                 _unique_anchor_line_span(lines, candidate.evidence.quote)
-            )
-            header_candidates_for_table.append(
-                _candidate_metric_max_header_spans(lines, candidate)
             )
         candidate_structure_spans.append(structures_for_table)
         candidate_recognition_entries.append(recognition_for_table)
@@ -1671,9 +1853,12 @@ def _rebind_split_table_cell_literals(
                 region = _bounded_header_candidate_region(
                     lines,
                     header_span=header_span,
-                    boundary_spans=all_header_spans,
+                    boundary_spans=(
+                        *all_header_spans,
+                        *sourcewide_boundary_spans,
+                    ),
                     table_fences=table_fences[table_index],
-                    hwp_section_starts=hwp_section_starts,
+                    next_blank_or_section=next_blank_or_section,
                 )
                 if region is not None and _header_candidate_has_ordered_cases(
                     lines,
