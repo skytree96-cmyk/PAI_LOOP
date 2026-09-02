@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+
+_KST = timezone(timedelta(hours=9))
 
 
 class PerformanceQuantModel(BaseModel):
@@ -467,6 +470,15 @@ def _record_digest_payload(record: Any) -> dict[str, Any]:
         "start_date": date_value(getattr(record, "start_date", None)),
         "end_date": date_value(getattr(record, "end_date", None)),
         "contract_amount": getattr(record, "contract_amount", None),
+        "gross_contract_amount_krw": getattr(
+            record, "gross_contract_amount_krw", None
+        ),
+        "recognized_performance_amount_krw": getattr(
+            record, "recognized_performance_amount_krw", None
+        ),
+        "recognized_amount_is_net_of_share": getattr(
+            record, "recognized_amount_is_net_of_share", None
+        ),
         "vat_basis": str(getattr(record, "vat_basis", "")),
         "completed": bool(getattr(record, "completed", False)),
         "share_pct": getattr(record, "share_pct", None),
@@ -474,6 +486,34 @@ def _record_digest_payload(record: Any) -> dict[str, Any]:
         "evidence_reference": str(getattr(record, "evidence_reference", "") or ""),
         "keywords": list(getattr(record, "keywords", None) or []),
     }
+
+
+def _performance_register_digest(
+    scope: PerformanceRecognitionScope,
+    records: Iterable[Any],
+    *,
+    as_of_basis: PerformanceLookbackAnchor,
+    as_of_date: date,
+) -> str:
+    payload = {
+        "binding_schema": "pai-loop-performance-quantitative-binding-1.1.0",
+        "algorithm_version": "performance-recognition-0.3.0",
+        "evaluation": {
+            "as_of_basis": as_of_basis,
+            "as_of_date": as_of_date.isoformat(),
+            "vat_factor": str(_VAT_FACTOR),
+        },
+        "scope": scope.model_dump(mode="json"),
+        "records": [_record_digest_payload(record) for record in records],
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _aggregate_matched_value(
@@ -650,13 +690,37 @@ def derive_performance_value(
                 "자동 계산을 중지했습니다."
             ),
         )
-    deadline = as_of.date()
+    normalized_as_of = (
+        as_of
+        if as_of.tzinfo is not None and as_of.utcoffset() is not None
+        else as_of.replace(tzinfo=timezone.utc)
+    )
+    deadline = normalized_as_of.astimezone(_KST).date()
     start = _date_years_before(deadline, scope.lookback_years)
     matched: list[tuple[Any, Decimal]] = []
     candidate_records: list[tuple[Any, Decimal]] = []
     excluded_uncertain: list[str] = []
     for record in records:
-        if str(getattr(record, "record_status", "")).upper() != "VALIDATED":
+        record_status = str(getattr(record, "record_status", "")).upper()
+        if record_status != "VALIDATED":
+            # A private workbook is authoritative as a whole. Active rows that
+            # have not reached VALIDATED therefore represent unresolved
+            # register evidence; silently dropping them could turn a validated
+            # subset into an incorrectly exact score. Legacy/manual drafts stay
+            # excluded as before because they are not part of that atomic
+            # private-import contract.
+            if (
+                str(getattr(record, "source", "")).upper().startswith(
+                    "PRIVATE_IMPORT"
+                )
+                and record_status != "ARCHIVED"
+            ):
+                raw_record_key = getattr(record, "record_key", None)
+                excluded_uncertain.append(
+                    raw_record_key.strip()
+                    if isinstance(raw_record_key, str) and raw_record_key.strip()
+                    else "UNKNOWN"
+                )
             continue
         raw_record_key = getattr(record, "record_key", None)
         revision = getattr(record, "revision", None)
@@ -718,17 +782,25 @@ def derive_performance_value(
         ).upper() not in {"ISSUED", "VERIFIED", "AVAILABLE"}:
             excluded_uncertain.append(record_key)
             continue
-        amount = getattr(record, "contract_amount", None)
+        legacy_amount = getattr(record, "contract_amount", None)
+        gross_amount = getattr(record, "gross_contract_amount_krw", None)
+        certificate_amount = getattr(
+            record, "recognized_performance_amount_krw", None
+        )
+        certificate_amount_is_net = getattr(
+            record, "recognized_amount_is_net_of_share", None
+        )
+        amount = gross_amount if gross_amount is not None else legacy_amount
         amount_required = (
             scope.aggregation in {"SUM_AMOUNT", "MAX_SINGLE_AMOUNT"}
             or scope.minimum_single_contract_amount_krw > 0
         )
-        if amount_required:
-            if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
-                excluded_uncertain.append(record_key)
-                continue
-        elif amount is not None and (
-            isinstance(amount, bool) or not isinstance(amount, int) or amount < 0
+        supplied_amounts = tuple(
+            value for value in (amount, certificate_amount) if value is not None
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in supplied_amounts
         ):
             excluded_uncertain.append(record_key)
             continue
@@ -758,9 +830,44 @@ def derive_performance_value(
         if float(share) < 100 and scope.consortium_share_rule == "UNSPECIFIED":
             excluded_uncertain.append(record_key)
             continue
-        recognized_amount = Decimal(amount or 0)
-        if scope.consortium_share_rule == "APPLY_SHARE":
-            recognized_amount *= Decimal(str(share)) / Decimal("100")
+        if certificate_amount is not None and not isinstance(
+            certificate_amount_is_net, bool
+        ):
+            # A distinct certificate amount without an explicit share basis is
+            # ambiguous. Never guess whether the workbook already applied the
+            # consortium share.
+            excluded_uncertain.append(record_key)
+            continue
+        if scope.consortium_share_rule == "FULL_AMOUNT":
+            if amount is None and amount_required:
+                excluded_uncertain.append(record_key)
+                continue
+            recognized_amount = Decimal(amount or 0)
+        elif scope.consortium_share_rule == "APPLY_SHARE":
+            if certificate_amount is not None and certificate_amount_is_net:
+                # Certificate-backed ``실적금액`` is already attributable to
+                # the company. Applying ``share_pct`` again would double
+                # deduct consortium participation.
+                recognized_amount = Decimal(certificate_amount)
+            else:
+                pre_share_amount = (
+                    certificate_amount
+                    if certificate_amount is not None
+                    else amount
+                )
+                if pre_share_amount is None and amount_required:
+                    excluded_uncertain.append(record_key)
+                    continue
+                recognized_amount = Decimal(pre_share_amount or 0)
+                recognized_amount *= Decimal(str(share)) / Decimal("100")
+        else:
+            source_amount = (
+                certificate_amount if certificate_amount is not None else amount
+            )
+            if source_amount is None and amount_required:
+                excluded_uncertain.append(record_key)
+                continue
+            recognized_amount = Decimal(source_amount or 0)
         candidate_records.append((record, recognized_amount))
         if recognized_amount < scope.minimum_single_contract_amount_krw:
             continue
@@ -791,9 +898,17 @@ def derive_performance_value(
             as_of_basis=as_of_basis,
             as_of_date=deadline,
         )
+        digest = _performance_register_digest(
+            scope,
+            (item[0] for item in matched),
+            as_of_basis=as_of_basis,
+            as_of_date=deadline,
+        )
         return DerivedPerformanceValue(
             status="REVIEW",
             lower_value=(score_band_input.lower_value if score_band_input else None),
+            evidence_reference=f"PERFORMANCE-REGISTER:{digest[:20]}",
+            evidence_sha256=digest,
             matched_record_keys=tuple(str(getattr(item[0], "record_key", "")) for item in matched),
             score_band_input=score_band_input,
             rationale=(
@@ -836,22 +951,12 @@ def derive_performance_value(
         else matched
     )
     value = _aggregate_matched_value(scope, matched)
-    payload = {
-        "binding_schema": "pai-loop-performance-quantitative-binding-1.1.0",
-        "algorithm_version": "performance-recognition-0.2.0",
-        "evaluation": {
-            "as_of_basis": as_of_basis,
-            "as_of_date": deadline.isoformat(),
-            "vat_factor": str(_VAT_FACTOR),
-        },
-        "scope": scope.model_dump(mode="json"),
-        "records": [_record_digest_payload(item[0]) for item in digest_records],
-    }
-    digest = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    digest = _performance_register_digest(
+        scope,
+        (item[0] for item in digest_records),
+        as_of_basis=as_of_basis,
+        as_of_date=deadline,
+    )
     return DerivedPerformanceValue(
         status="ESTIMATED",
         value=value,

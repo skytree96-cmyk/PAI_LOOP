@@ -29,7 +29,9 @@ def normalize_database_url(database_url: str) -> str:
 
 def build_engine(database_url: str) -> Engine:
     database_url = normalize_database_url(database_url)
-    kwargs: dict[str, object] = {"pool_pre_ping": True}
+    # Private performance/evidence values must never be interpolated into
+    # SQLAlchemy exception strings or application logs.
+    kwargs: dict[str, object] = {"pool_pre_ping": True, "hide_parameters": True}
     if database_url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
         if database_url.endswith(":memory:"):

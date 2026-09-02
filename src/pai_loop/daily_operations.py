@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, load_only, selectinload
@@ -286,8 +286,12 @@ def daily_briefing(
     days: Annotated[int, Query(ge=1, le=30)] = 7,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     as_of: datetime | None = None,
+    response: Response = None,
 ) -> dict[str, Any]:
     """Build the stored-data daily feed without calling PPS, OpenAI, or Teams."""
+
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
 
     generated_at = _as_utc(as_of or datetime.now(timezone.utc))
     window_start = generated_at - timedelta(days=days)
@@ -312,7 +316,7 @@ def daily_briefing(
     performance_records = tuple(
         session.scalars(
             select(CompanyPerformanceRecord).where(
-                CompanyPerformanceRecord.record_status == "VALIDATED"
+                CompanyPerformanceRecord.record_status != "ARCHIVED"
             )
         ).all()
     )

@@ -42,6 +42,7 @@ class Settings:
     cors_origins: tuple[str, ...] = ("http://localhost:8000", "http://localhost:5173")
     log_level: str = "INFO"
     api_key: str | None = None
+    private_evidence_token: str | None = None
     public_read_only: bool = False
     public_manual_analysis_enabled: bool = False
     public_manual_analysis_token: str | None = None
@@ -68,6 +69,16 @@ class Settings:
             and len(token) == 4
             and token.isascii()
             and token.isdigit()
+        )
+
+    @property
+    def private_evidence_token_valid(self) -> bool:
+        token = self.private_evidence_token
+        return bool(
+            token
+            and token == token.strip()
+            and 32 <= len(token) <= 512
+            and token.isascii()
         )
 
     @property
@@ -101,6 +112,9 @@ class Settings:
             or ("http://localhost:8000", "http://localhost:5173"),
             log_level=os.getenv("PAI_LOOP_LOG_LEVEL", "INFO"),
             api_key=os.getenv("PAI_LOOP_API_KEY") or None,
+            private_evidence_token=(
+                os.getenv("PAI_LOOP_PRIVATE_EVIDENCE_TOKEN") or None
+            ),
             public_read_only=_as_bool(os.getenv("PAI_LOOP_PUBLIC_READ_ONLY")),
             public_manual_analysis_enabled=_as_bool(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED")
@@ -141,6 +155,10 @@ class Settings:
         )
 
     def validate_security(self) -> None:
+        if self.private_evidence_token and not self.private_evidence_token_valid:
+            raise RuntimeError(
+                "PAI_LOOP_PRIVATE_EVIDENCE_TOKEN must be a 32-512 character ASCII secret"
+            )
         if self.llm_provider not in {"openai", "n8n_claude"}:
             raise RuntimeError("PAI_LOOP_LLM_PROVIDER must be openai or n8n_claude")
         if self.llm_provider == "n8n_claude":

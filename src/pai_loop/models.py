@@ -595,6 +595,11 @@ class CompanyPerformanceRecord(Base, TimestampMixin):
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
     contract_amount: Mapped[int | None] = mapped_column(BigInteger)
+    # Keep gross contract value and certificate-recognized performance value
+    # separate so consortium share is never deducted twice.
+    gross_contract_amount_krw: Mapped[int | None] = mapped_column(BigInteger)
+    recognized_performance_amount_krw: Mapped[int | None] = mapped_column(BigInteger)
+    recognized_amount_is_net_of_share: Mapped[bool | None] = mapped_column(Boolean)
     vat_basis: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     share_pct: Mapped[float] = mapped_column(Float, default=100.0)

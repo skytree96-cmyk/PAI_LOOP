@@ -1479,7 +1479,7 @@ def run_analysis_pipeline(
             performance_records = list(
                 session.scalars(
                     select(CompanyPerformanceRecord).where(
-                        CompanyPerformanceRecord.record_status == "VALIDATED"
+                        CompanyPerformanceRecord.record_status != "ARCHIVED"
                     )
                 ).all()
             )

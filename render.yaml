@@ -18,6 +18,8 @@ services:
           property: connectionString
       - key: PAI_LOOP_API_KEY
         generateValue: true
+      - key: PAI_LOOP_PRIVATE_EVIDENCE_TOKEN
+        sync: false
       - key: PAI_LOOP_PUBLIC_READ_ONLY
         value: "true"
       - key: PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED

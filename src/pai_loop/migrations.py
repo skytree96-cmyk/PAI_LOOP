@@ -6,7 +6,19 @@ import json
 import os
 from collections.abc import Sequence
 
-from sqlalchemy import Column, DateTime, MetaData, String, Table, func, inspect, select
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    MetaData,
+    String,
+    Table,
+    func,
+    inspect,
+    select,
+    text,
+)
 from sqlalchemy.engine import Connection, Engine
 
 from .database import Base, build_engine
@@ -43,6 +55,17 @@ COMPANY_PERFORMANCE_MIGRATION_ID = "20260823_03_company_performance_records"
 COMPANY_PERFORMANCE_MIGRATION_CONTRACT = "company_performance_records:v1"
 COMPANY_PERFORMANCE_MIGRATION_CHECKSUM = hashlib.sha256(
     COMPANY_PERFORMANCE_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID = (
+    "20260902_01_company_performance_recognized_amount"
+)
+COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CONTRACT = (
+    "company_performance_records:gross_contract_amount_krw:bigint|null;"
+    "recognized_performance_amount_krw:bigint|null;"
+    "recognized_amount_is_net_of_share:boolean|null"
+)
+COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM = hashlib.sha256(
+    COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CONTRACT.encode("utf-8")
 ).hexdigest()
 PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
 PRESPEC_MIGRATION_CONTRACT = (
@@ -83,6 +106,11 @@ _migrations = (
         (CompanyPerformanceRecord.__table__,),
     ),
     (
+        COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
+        COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM,
+        (),
+    ),
+    (
         PRESPEC_MIGRATION_ID,
         PRESPEC_MIGRATION_CHECKSUM,
         (
@@ -99,10 +127,92 @@ _required_base_tables = {
     "evaluations",
     "user_decisions",
 }
+_MIGRATION_ADVISORY_LOCK_KEY = 0x5041494C  # "PAIL"
 
 
 class MigrationError(RuntimeError):
     """Raised when an additive schema migration cannot be applied safely."""
+
+
+_COMPANY_PERFORMANCE_RECOGNIZED_COLUMNS = {
+    "gross_contract_amount_krw": ("BIGINT", BigInteger),
+    "recognized_performance_amount_krw": ("BIGINT", BigInteger),
+    "recognized_amount_is_net_of_share": ("BOOLEAN", Boolean),
+}
+
+
+def _validate_company_performance_recognized_amount_columns(
+    columns: Sequence[dict[str, object]],
+    *,
+    require_all: bool,
+) -> None:
+    by_name = {str(column["name"]): column for column in columns}
+    for column_name, (_sql_type, expected_type) in (
+        _COMPANY_PERFORMANCE_RECOGNIZED_COLUMNS.items()
+    ):
+        column = by_name.get(column_name)
+        if column is None:
+            if require_all:
+                raise MigrationError(
+                    "company_performance_records migration did not create required "
+                    f"column {column_name}"
+                )
+            continue
+        actual_type = column.get("type")
+        if not isinstance(actual_type, expected_type):
+            raise MigrationError(
+                "company_performance_records has incompatible existing column "
+                f"{column_name}; expected {expected_type.__name__}"
+            )
+        if column.get("nullable") is not True:
+            raise MigrationError(
+                "company_performance_records has incompatible existing column "
+                f"{column_name}; the additive column must be nullable"
+            )
+
+
+def _validate_applied_company_performance_recognized_amount_migration(
+    connection: Connection,
+) -> None:
+    table_name = CompanyPerformanceRecord.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        raise MigrationError(
+            "company_performance_records is missing although its recognized-amount "
+            "migration is recorded as applied"
+        )
+    _validate_company_performance_recognized_amount_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+
+
+def _add_company_performance_recognized_amount_columns(
+    connection: Connection,
+) -> None:
+    """Add v2 amount columns without rewriting existing business rows."""
+
+    table_name = CompanyPerformanceRecord.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        CompanyPerformanceRecord.__table__.create(connection, checkfirst=True)
+    existing_columns = inspect(connection).get_columns(table_name)
+    _validate_company_performance_recognized_amount_columns(
+        existing_columns,
+        require_all=False,
+    )
+    existing = {str(column["name"]) for column in existing_columns}
+    for column_name, (sql_type, _expected_type) in (
+        _COMPANY_PERFORMANCE_RECOGNIZED_COLUMNS.items()
+    ):
+        if column_name in existing:
+            continue
+        connection.exec_driver_sql(
+            f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {sql_type}'
+        )
+        existing.add(column_name)
+    _validate_company_performance_recognized_amount_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
 
 
 def _applied_checksum(connection: Connection, migration_id: str) -> str | None:
@@ -129,19 +239,28 @@ def pending_migrations(engine: Engine) -> list[str]:
                 raise MigrationError(
                     f"migration checksum mismatch for {migration_id}; manual review is required"
                 )
+            if migration_id == COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID:
+                _validate_applied_company_performance_recognized_amount_migration(
+                    connection
+                )
         return pending
 
 
 def apply_additive_migrations(engine: Engine) -> list[str]:
-    """Create the v1 persistence tables and record an idempotent ledger row.
+    """Apply additive tables/nullable columns and record idempotent ledger rows.
 
-    This migration is intentionally additive: it never alters or drops an
-    existing table. Existing application tables must already be present. A new
-    installation should run ``Base.metadata.create_all`` first (the CLI exposes
-    this as ``--create-base``).
+    Existing rows are never rewritten and tables/columns are never dropped.
+    Existing application tables must already be present. A new installation
+    should run ``Base.metadata.create_all`` first (the CLI exposes this as
+    ``--create-base``).
     """
 
     with engine.begin() as connection:
+        if connection.dialect.name == "postgresql":
+            connection.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": _MIGRATION_ADVISORY_LOCK_KEY},
+            )
         existing = set(inspect(connection).get_table_names())
         missing_base = sorted(_required_base_tables - existing)
         if missing_base:
@@ -160,9 +279,15 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     raise MigrationError(
                         f"migration checksum mismatch for {migration_id}; manual review is required"
                     )
+                if migration_id == COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID:
+                    _validate_applied_company_performance_recognized_amount_migration(
+                        connection
+                    )
                 continue
             for table in tables:
                 table.create(connection, checkfirst=True)
+            if migration_id == COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID:
+                _add_company_performance_recognized_amount_columns(connection)
             connection.execute(
                 schema_migrations.insert().values(
                     migration_id=migration_id,
