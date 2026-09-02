@@ -29,6 +29,14 @@ def test_manual_operator_token_requires_exactly_four_ascii_digits() -> None:
     assert Settings(public_manual_analysis_token="1234").public_manual_analysis_token_valid is True
 
 
+def test_private_evidence_token_requires_high_entropy_length() -> None:
+    assert Settings(private_evidence_token=None).private_evidence_token_valid is False
+    assert Settings(private_evidence_token="short").private_evidence_token_valid is False
+    assert Settings(private_evidence_token="x" * 32).private_evidence_token_valid is True
+    with pytest.raises(RuntimeError, match="PRIVATE_EVIDENCE_TOKEN"):
+        Settings(private_evidence_token="short").validate_security()
+
+
 def test_n8n_claude_selection_reuses_server_boundary_without_openai_key() -> None:
     settings = Settings(
         api_key="server-boundary-key",
@@ -69,6 +77,10 @@ def test_render_manual_analysis_secret_and_cost_cap_are_fail_closed() -> None:
 
     assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN"] == {
         "key": "PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN",
+        "sync": False,
+    }
+    assert env_vars["PAI_LOOP_PRIVATE_EVIDENCE_TOKEN"] == {
+        "key": "PAI_LOOP_PRIVATE_EVIDENCE_TOKEN",
         "sync": False,
     }
     assert env_vars["PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_HOURLY_LIMIT"]["value"] == "5"

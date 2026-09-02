@@ -165,6 +165,111 @@ def test_count_applies_per_record_minimum_before_counting() -> None:
     assert derived.score_band_input.upper_value == 2
 
 
+def test_certificate_recognized_amount_is_not_share_adjusted_twice() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL + " 공동수급 실적은 참여 비율을 적용한다.",
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+    assert scope.consortium_share_rule == "APPLY_SHARE"
+
+    derived = derive_performance_value(
+        scope,
+        [
+            _record(
+                "CERTIFICATE-NET-AMOUNT",
+                contract_amount=400_000_000,
+                gross_contract_amount_krw=400_000_000,
+                recognized_performance_amount_krw=200_000_000,
+                recognized_amount_is_net_of_share=True,
+                share_pct=50,
+            )
+        ],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert derived.status == "ESTIMATED"
+    assert derived.value == 200_000_000
+    assert derived.upper_value == 200_000_000
+    assert derived.score_band_input is not None
+    assert derived.score_band_input.recognized_record_amounts_krw == (200_000_000,)
+
+
+def test_certificate_gross_basis_amount_applies_share_to_certificate_amount() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL + " 공동수급 실적은 참여 비율을 적용한다.",
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+
+    derived = derive_performance_value(
+        scope,
+        [
+            _record(
+                "CERTIFICATE-PRE-SHARE-AMOUNT",
+                contract_amount=400_000_000,
+                gross_contract_amount_krw=400_000_000,
+                recognized_performance_amount_krw=300_000_000,
+                recognized_amount_is_net_of_share=False,
+                share_pct=50,
+            )
+        ],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert derived.status == "ESTIMATED"
+    assert derived.value == 150_000_000
+
+
+def test_legacy_gross_amount_still_applies_share_once() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL + " 공동수급 실적은 참여 비율을 적용한다.",
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+
+    derived = derive_performance_value(
+        scope,
+        [
+            _record(
+                "LEGACY-GROSS-AMOUNT",
+                contract_amount=400_000_000,
+                share_pct=50,
+            )
+        ],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert derived.status == "ESTIMATED"
+    assert derived.value == 200_000_000
+
+
+def test_certificate_amount_without_explicit_share_basis_fails_closed() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL + " 공동수급 실적은 참여 비율을 적용한다.",
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+
+    derived = derive_performance_value(
+        scope,
+        [
+            _record(
+                "CERTIFICATE-UNKNOWN-BASIS",
+                contract_amount=400_000_000,
+                gross_contract_amount_krw=400_000_000,
+                recognized_performance_amount_krw=200_000_000,
+                recognized_amount_is_net_of_share=None,
+                share_pct=50,
+            )
+        ],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert derived.status == "REVIEW"
+    assert derived.value is None
+
+
 def test_count_minimum_accepts_spaced_unit_and_malformed_hint_fails_closed() -> None:
     spaced = parse_performance_recognition_scope(
         COUNT_LITERAL.replace("0.2억원", "0.2억 원"),
@@ -347,6 +452,68 @@ def test_review_preserves_only_a_lower_bound_for_score_band_sensitivity() -> Non
     assert band_input.sensitivity_dimensions == ("VAT_BASIS", "RECORD_ELIGIBILITY")
 
 
+def test_manual_draft_remains_outside_private_register_uncertainty() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL,
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+
+    derived = derive_performance_value(
+        scope,
+        [
+            _record("MANUAL-VALIDATED", contract_amount=110_000_000),
+            _record(
+                "MANUAL-DRAFT",
+                record_status="DRAFT",
+                contract_amount=900_000_000,
+                source="MANUAL",
+            ),
+        ],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert derived.status == "ESTIMATED"
+    assert (derived.lower_value, derived.upper_value) == (100_000_000, 110_000_000)
+
+
+def test_private_draft_makes_validated_subset_a_lower_bound_only() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL,
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+
+    derived = derive_performance_value(
+        scope,
+        [
+            _record(
+                "PRIVATE-VALIDATED",
+                contract_amount=110_000_000,
+                source="PRIVATE_IMPORT",
+            ),
+            _record(
+                "PRIVATE-DRAFT",
+                record_status="DRAFT",
+                contract_amount=900_000_000,
+                source="PRIVATE_IMPORT_DRAFT",
+            ),
+        ],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    )
+
+    assert derived.status == "REVIEW"
+    assert derived.value is None
+    assert derived.lower_value == 100_000_000
+    assert derived.upper_value is None
+    assert derived.score_band_input is not None
+    assert derived.score_band_input.range_status == "LOWER_BOUND_ONLY"
+    assert derived.score_band_input.sensitivity_dimensions == (
+        "VAT_BASIS",
+        "RECORD_ELIGIBILITY",
+    )
+
+
 def test_unspecified_source_vat_still_rejects_unknown_record_vat() -> None:
     scope = parse_performance_recognition_scope(
         COUNT_LITERAL,
@@ -370,3 +537,36 @@ def test_missing_completion_dimension_remains_fail_closed() -> None:
         "최근 3년 (교육, 취업, 행사) 용역 실적",
         metric_key="company.performance.amount",
     ) is None
+
+
+def test_utc_aware_and_naive_as_of_use_the_same_kst_calendar_boundary() -> None:
+    scope = parse_performance_recognition_scope(
+        AMOUNT_LITERAL,
+        metric_key="company.performance.amount",
+    )
+    assert scope is not None
+    record = _record(
+        "KST-NEXT-DAY",
+        end_date=date(2026, 9, 1),
+        contract_amount=220_000_000,
+    )
+
+    aware = derive_performance_value(
+        scope,
+        [record],
+        as_of=datetime(2026, 8, 31, 15, 30, tzinfo=timezone.utc),
+    )
+    naive_utc = derive_performance_value(
+        scope,
+        [record],
+        as_of=datetime(2026, 8, 31, 15, 30),
+    )
+
+    assert (aware.status, naive_utc.status) == ("ESTIMATED", "ESTIMATED")
+    assert aware.matched_record_keys == naive_utc.matched_record_keys == (
+        "KST-NEXT-DAY",
+    )
+    assert aware.score_band_input is not None
+    assert naive_utc.score_band_input is not None
+    assert aware.score_band_input.evaluation_as_of_date == date(2026, 9, 1)
+    assert naive_utc.score_band_input.evaluation_as_of_date == date(2026, 9, 1)

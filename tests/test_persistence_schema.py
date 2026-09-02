@@ -13,6 +13,8 @@ from sqlalchemy.schema import CreateTable
 from pai_loop.database import Base, build_engine
 from pai_loop.migrations import (
     COMPANY_PERFORMANCE_MIGRATION_ID,
+    COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM,
+    COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
     MIGRATION_CHECKSUM,
     MIGRATION_ID,
     NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
@@ -252,12 +254,14 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         MIGRATION_ID,
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         COMPANY_PERFORMANCE_MIGRATION_ID,
+        COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
         MIGRATION_ID,
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         COMPANY_PERFORMANCE_MIGRATION_ID,
+        COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
@@ -278,6 +282,15 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         "pre_specification_documents",
         "pre_specification_analysis_runs",
     } <= tables
+    performance_columns = {
+        column["name"]
+        for column in inspect(engine).get_columns("company_performance_records")
+    }
+    assert {
+        "gross_contract_amount_krw",
+        "recognized_performance_amount_krw",
+        "recognized_amount_is_net_of_share",
+    } <= performance_columns
     engine.dispose()
 
 
@@ -306,12 +319,119 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
     expected = [
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         COMPANY_PERFORMANCE_MIGRATION_ID,
+        COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected
     assert apply_additive_migrations(engine) == expected
     assert "notice_analysis_policies" in inspect(engine).get_table_names()
     assert pending_migrations(engine) == []
+    engine.dispose()
+
+
+def test_recognized_amount_migration_adds_columns_to_v1_table() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        Notice.__table__.create(connection)
+        NoticeVersion.__table__.create(connection)
+        Evaluation.__table__.create(connection)
+        UserDecision.__table__.create(connection)
+        connection.exec_driver_sql(
+            "CREATE TABLE company_performance_records ("
+            "id VARCHAR(36) PRIMARY KEY, record_key VARCHAR(180) NOT NULL)"
+        )
+
+    applied = apply_additive_migrations(engine)
+
+    assert COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID in applied
+    columns = {
+        column["name"]
+        for column in inspect(engine).get_columns("company_performance_records")
+    }
+    assert {
+        "gross_contract_amount_krw",
+        "recognized_performance_amount_krw",
+        "recognized_amount_is_net_of_share",
+    } <= columns
+    assert apply_additive_migrations(engine) == []
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("column_definition", "expected_message"),
+    [
+        (
+            "gross_contract_amount_krw TEXT NULL",
+            "gross_contract_amount_krw; expected BigInteger",
+        ),
+        (
+            "recognized_amount_is_net_of_share BOOLEAN NOT NULL",
+            "recognized_amount_is_net_of_share; the additive column must be nullable",
+        ),
+    ],
+)
+def test_recognized_amount_migration_rejects_incompatible_existing_target_column(
+    column_definition: str,
+    expected_message: str,
+) -> None:
+    engine = build_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        Notice.__table__.create(connection)
+        NoticeVersion.__table__.create(connection)
+        Evaluation.__table__.create(connection)
+        UserDecision.__table__.create(connection)
+        connection.exec_driver_sql(
+            "CREATE TABLE company_performance_records ("
+            "id VARCHAR(36) PRIMARY KEY, record_key VARCHAR(180) NOT NULL, "
+            f"{column_definition})"
+        )
+
+    with pytest.raises(MigrationError, match=expected_message):
+        apply_additive_migrations(engine)
+
+    with engine.connect() as connection:
+        if "schema_migrations" in inspect(connection).get_table_names():
+            assert connection.execute(
+                select(schema_migrations.c.migration_id).where(
+                    schema_migrations.c.migration_id
+                    == COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID
+                )
+            ).scalar_one_or_none() is None
+    engine.dispose()
+
+
+def test_recorded_recognized_amount_migration_revalidates_physical_schema() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        Notice.__table__.create(connection)
+        NoticeVersion.__table__.create(connection)
+        Evaluation.__table__.create(connection)
+        UserDecision.__table__.create(connection)
+        schema_migrations.create(connection)
+        connection.execute(
+            schema_migrations.insert().values(
+                migration_id=COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
+                checksum=COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM,
+            )
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE company_performance_records ("
+            "id VARCHAR(36) PRIMARY KEY, record_key VARCHAR(180) NOT NULL, "
+            "gross_contract_amount_krw BIGINT NULL, "
+            "recognized_performance_amount_krw TEXT NULL, "
+            "recognized_amount_is_net_of_share BOOLEAN NULL)"
+        )
+
+    with pytest.raises(
+        MigrationError,
+        match="recognized_performance_amount_krw; expected BigInteger",
+    ):
+        pending_migrations(engine)
+    with pytest.raises(
+        MigrationError,
+        match="recognized_performance_amount_krw; expected BigInteger",
+    ):
+        apply_additive_migrations(engine)
     engine.dispose()
 
 

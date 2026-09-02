@@ -66,3 +66,31 @@ def require_api_key(request: Request) -> None:
             detail="유효한 서버 인증이 필요합니다.",
             headers={"WWW-Authenticate": "PAI-Loop-ApiKey"},
         )
+
+
+def require_private_evidence_access(request: Request) -> None:
+    """Protect private company evidence with server or high-entropy auth.
+
+    The four-digit demo operator PIN is intentionally not accepted here. It is
+    suitable only for bounded public-demo actions, not private data access or
+    replacement of the authoritative performance register.
+    """
+
+    settings = request.app.state.settings
+    if request.headers.get("X-PAI-LOOP-API-KEY") and settings.api_key:
+        require_api_key(request)
+        return
+    expected = (
+        settings.private_evidence_token
+        if settings.private_evidence_token_valid
+        else ""
+    )
+    candidate = request.headers.get("X-PAI-Private-Evidence-Token", "")
+    if not expected or not candidate or not secrets.compare_digest(
+        candidate.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="비공개 증빙 전용 인증이 필요합니다.",
+            headers={"WWW-Authenticate": "PAI-Private-Evidence"},
+        )

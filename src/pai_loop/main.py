@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +29,7 @@ from .outcome_feedback import router as outcome_feedback_router
 from .operator_decisions import router as operator_decisions_router
 from .performance_records import router as performance_records_router
 from .prespec_api import router as prespec_router
+from .private_company_evidence import router as private_company_evidence_router
 from .pps_discovery import router as pps_discovery_router
 from .public_performance import public_performance_router
 from .quantitative_scoring import quantitative_scoring_router
@@ -34,6 +38,31 @@ from .reference_registry import sync_packaged_reference_data, sync_public_compan
 from .result_learning import router as result_learning_router
 from .schemas import HealthResponse
 from .teams_readiness import router as teams_readiness_router
+
+
+def _scrub_private_performance_search_query(request: Request) -> None:
+    """Remove private free text before Uvicorn formats its access-log line."""
+
+    path = str(request.scope.get("path") or "").rstrip("/")
+    if path != "/api/v1/performance-records" or not (
+        request.headers.get("x-pai-loop-api-key")
+        or request.headers.get("x-pai-private-evidence-token")
+    ):
+        return
+    raw_query = request.scope.get("query_string", b"")
+    if not isinstance(raw_query, bytes) or not raw_query:
+        return
+    try:
+        query_items = parse_qsl(raw_query.decode("ascii"), keep_blank_values=True)
+    except (UnicodeDecodeError, ValueError):
+        return
+    if not any(name == "q" for name, _value in query_items):
+        return
+    # The route rejects this request after authenticating the supplied strong
+    # credential. Clearing the scope here also clears the string Uvicorn reads
+    # after the response when it writes the access log.
+    request.state.private_performance_query_blocked = True
+    request.scope["query_string"] = b""
 
 
 def create_app(*, database_url: str | None = None, seed_synthetic: bool | None = None) -> FastAPI:
@@ -46,6 +75,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             cors_origins=settings.cors_origins,
             log_level=settings.log_level,
             api_key=settings.api_key,
+            private_evidence_token=settings.private_evidence_token,
             public_read_only=settings.public_read_only,
             public_manual_analysis_enabled=settings.public_manual_analysis_enabled,
             public_manual_analysis_token=settings.public_manual_analysis_token,
@@ -104,6 +134,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
 
     @application.middleware("http")
     async def teams_tab_security_headers(request: Request, call_next):
+        _scrub_private_performance_search_query(request)
         response = await call_next(request)
         # Teams tabs are first-party HTTPS pages rendered by Microsoft inside
         # an iframe. CSP is the standards-based allowlist; X-Frame-Options is
@@ -114,6 +145,10 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if request.url.path.startswith(
+            ("/api/v1/performance-records", "/api/v1/operator-evidence")
+        ):
+            response.headers["Cache-Control"] = "no-store"
         if "x-frame-options" in response.headers:
             del response.headers["x-frame-options"]
         return response
@@ -131,6 +166,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(manual_analysis_router)
     application.include_router(pps_discovery_router)
     application.include_router(prespec_router)
+    application.include_router(private_company_evidence_router)
     application.include_router(company_awards_router)
     application.include_router(analysis_persistence_router)
     application.include_router(teams_readiness_router)
@@ -151,6 +187,22 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             version=__version__,
             database=database_status,
         )
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_exception(request: Request, exc: RequestValidationError):
+        if (
+            request.url.path == "/api/v1/performance-records/private-import"
+            or request.url.path.startswith("/api/v1/operator-evidence")
+        ):
+            return JSONResponse(
+                status_code=422,
+                headers={"Cache-Control": "no-store"},
+                content={
+                    "detail": "비공개 증빙 입력 형식을 확인해 주세요.",
+                    "code": "PRIVATE_EVIDENCE_VALIDATION_ERROR",
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @application.exception_handler(Exception)
     async def unhandled_exception(_request: Request, exc: Exception) -> JSONResponse:

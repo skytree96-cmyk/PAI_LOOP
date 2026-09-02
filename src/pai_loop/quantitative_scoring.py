@@ -15,7 +15,7 @@ from importlib import resources
 from itertools import combinations
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -67,7 +67,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.6.1"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -794,6 +794,98 @@ def _points_for_numeric_range(
     return _round_points(min(candidate_points)), _round_points(max(candidate_points))
 
 
+def _performance_lower_bound_saturates_max(
+    criterion: QuantitativeCriterion,
+    lower_value: float | None,
+) -> bool:
+    """Prove that every possible value above a performance lower bound is max.
+
+    This deliberately supports only mechanically bounded numeric programs. It
+    is used when some imported records remain uncertain but the independently
+    validated records already reach a monotonic top band. No raw value is
+    invented and non-monotonic/formula/categorical programs remain blocked.
+    """
+
+    if (
+        not criterion.metric_key.startswith("company.performance.")
+        or lower_value is None
+        or isinstance(lower_value, bool)
+        or not math.isfinite(float(lower_value))
+    ):
+        return False
+    lower = float(lower_value)
+    maximum = _round_points(criterion.max_points)
+    if _points_for_value(criterion, lower) != maximum:
+        return False
+
+    if criterion.formula_type == "CASE_TABLE":
+        table = criterion.case_table
+        if table is None or table.value_kind == "CATEGORICAL":
+            return False
+        if table.value_kind == "DISCRETE" and not lower.is_integer():
+            return False
+        if table.value_kind == "DISCRETE":
+            gte_cutoffs = [
+                float(row.comparison_value)
+                for row in table.rows
+                if row.operator == "GTE" and row.comparison_value is not None
+            ]
+            # Equality-only rows can leave unlisted integer gaps. Saturation is
+            # safe only inside the tail covered by an explicit GTE row.
+            if not gte_cutoffs or lower < min(gte_cutoffs):
+                return False
+        # Compiled numeric CASE tables are source-ordered descending cutoffs
+        # with non-increasing points. If the lower value is already max, every
+        # higher cutoff/value is necessarily the same max band.
+        return all(
+            row.points == maximum
+            for row in table.rows
+            if row.comparison_value is not None
+            and float(row.comparison_value) >= lower
+        )
+
+    if criterion.formula_type == "BRACKET":
+        intersecting = []
+        for bracket in criterion.brackets:
+            upper = math.inf if bracket.max_value is None else bracket.max_value
+            intersects = lower < upper or (
+                lower == upper and bracket.max_inclusive
+            )
+            if intersects:
+                intersecting.append(bracket)
+        return bool(intersecting) and all(
+            _round_points(bracket.points) == maximum for bracket in intersecting
+        )
+
+    if criterion.formula_type == "THRESHOLD":
+        if (
+            criterion.threshold_operator is None
+            or criterion.threshold_value is None
+            or criterion.threshold_points_if_met is None
+            or criterion.threshold_points_if_not_met is None
+        ):
+            return False
+        threshold = criterion.threshold_value
+        operator = criterion.threshold_operator
+        if operator == "GTE":
+            outcomes = {"met"} if lower >= threshold else {"met", "unmet"}
+        elif operator == "GT":
+            outcomes = {"met"} if lower > threshold else {"met", "unmet"}
+        elif operator == "LTE":
+            outcomes = {"unmet"} if lower > threshold else {"met", "unmet"}
+        elif operator == "LT":
+            outcomes = {"unmet"} if lower >= threshold else {"met", "unmet"}
+        else:  # EQ
+            outcomes = {"unmet"} if lower > threshold else {"met", "unmet"}
+        points = {
+            "met": _round_points(criterion.threshold_points_if_met),
+            "unmet": _round_points(criterion.threshold_points_if_not_met),
+        }
+        return all(points[outcome] == maximum for outcome in outcomes)
+
+    return False
+
+
 def _criterion_unscored(
     criterion: QuantitativeCriterion,
     *,
@@ -886,29 +978,35 @@ def _estimate_criterion(
             **fact_audit,
         )
 
+    lower_bound_saturates_max = _performance_lower_bound_saturates_max(
+        criterion, fact.lower_value
+    )
     if criterion.formula_type in {"BRACKET", "THRESHOLD", "FORMULA", "CASE_TABLE"} and fact.status == "ESTIMATED" and (
         fact.lower_value is not None or fact.upper_value is not None
     ):
-        if fact.lower_value is None or fact.upper_value is None:
+        if fact.lower_value is not None and fact.upper_value is None and lower_bound_saturates_max:
+            lower_points = upper_points = _round_points(criterion.max_points)
+        elif fact.lower_value is None or fact.upper_value is None:
             return _criterion_unscored(
                 criterion,
                 status="REVIEW",
                 rationale="추정값 범위의 하한과 상한이 모두 필요합니다.",
                 **fact_audit,
             )
-        point_range = _points_for_numeric_range(
-            criterion,
-            fact.lower_value,
-            fact.upper_value,
-        )
-        if point_range is None:
-            return _criterion_unscored(
+        else:
+            point_range = _points_for_numeric_range(
                 criterion,
-                status="REVIEW",
-                rationale="회사 데이터 범위를 포괄하는 배점 구간이 없습니다.",
-                **fact_audit,
+                fact.lower_value,
+                fact.upper_value,
             )
-        lower_points, upper_points = point_range
+            if point_range is None:
+                return _criterion_unscored(
+                    criterion,
+                    status="REVIEW",
+                    rationale="회사 데이터 범위를 포괄하는 배점 구간이 없습니다.",
+                    **fact_audit,
+                )
+            lower_points, upper_points = point_range
     else:
         if fact.value is None:
             return _criterion_unscored(
@@ -1913,6 +2011,17 @@ def resolve_performance_register_facts(
     """
 
     records = tuple(performance_records)
+    active_private_records = tuple(
+        record
+        for record in records
+        if str(getattr(record, "source", "")).startswith("PRIVATE_IMPORT")
+        and str(getattr(record, "record_status", "")).upper() != "ARCHIVED"
+    )
+    if active_private_records:
+        # One completed private workbook is the authoritative register. Manual
+        # duplicates must not be summed or counted again; during a staged
+        # replacement the pending DRAFT rows also keep scoring fail-closed.
+        records = active_private_records
     resolved: list[QuantitativeFact] = []
     for criterion in criteria:
         scope = criterion.performance_scope
@@ -1946,10 +2055,24 @@ def resolve_performance_register_facts(
             as_of=evaluation_as_of,
             as_of_basis=evaluation_basis,
         )
+        saturated_lower_bound = (
+            derived.status == "REVIEW"
+            and derived.upper_value is None
+            and _performance_lower_bound_saturates_max(
+                criterion, derived.lower_value
+            )
+        )
+        effective_status = "ESTIMATED" if saturated_lower_bound else derived.status
+        rationale = derived.rationale
+        if saturated_lower_bound:
+            rationale += (
+                " 검증 완료 실적만으로 이미 원문 배점의 최상위 구간에 도달했고, "
+                "추가 인정 실적은 점수를 낮출 수 없어 만점 구간을 안전하게 확정했습니다."
+            )
         resolved.append(
             QuantitativeFact(
                 metric_key=criterion.metric_key,
-                status=derived.status,
+                status=effective_status,
                 value=derived.value,
                 lower_value=derived.lower_value,
                 upper_value=derived.upper_value,
@@ -1957,8 +2080,8 @@ def resolve_performance_register_facts(
                 evidence_reference=derived.evidence_reference,
                 evidence_sha256=derived.evidence_sha256,
                 fact_binding_sha256=criterion.fact_binding_sha256,
-                confidence=(0.85 if derived.status == "ESTIMATED" else 0),
-                rationale=derived.rationale,
+                confidence=(0.8 if saturated_lower_bound else (0.85 if derived.status == "ESTIMATED" else 0)),
+                rationale=rationale,
             )
         )
     return resolved
@@ -4420,8 +4543,10 @@ def _stored_public_quantitative_projection(
 def get_notice_quantitative_estimate(
     notice_key: str,
     request: Request,
+    response: Response,
     session: DbSession,
 ) -> QuantitativeEstimateResult:
+    response.headers["Cache-Control"] = "no-store"
     notice = session.scalar(
         select(Notice)
         .options(selectinload(Notice.versions))
@@ -4451,7 +4576,7 @@ def get_notice_quantitative_estimate(
         else list(
             session.scalars(
                 select(CompanyPerformanceRecord).where(
-                    CompanyPerformanceRecord.record_status == "VALIDATED"
+                    CompanyPerformanceRecord.record_status != "ARCHIVED"
                 )
             ).all()
         )

@@ -331,6 +331,30 @@ def test_busan_rfp_scores_twenty_through_real_performance_register_resolver() ->
         )
         for index in range(1, 7)
     ]
+    records.append(
+        CompanyPerformanceRecord(
+            record_key="BUSAN-EDU-UNCERTAIN-AGENCY",
+            revision=1,
+            record_status="VALIDATED",
+            project_name="공공 교육 행사 운영 추가 실적",
+            agency="한빛공사",
+            division="교육사업부",
+            overview="교육 프로그램 및 행사 운영",
+            contract_date=date(2025, 3, 1),
+            start_date=date(2025, 3, 1),
+            end_date=date(2025, 7, 1),
+            contract_amount=500_000_000,
+            vat_basis="INCLUDED",
+            completed=True,
+            share_pct=100,
+            certificate_status="ISSUED",
+            evidence_reference="SYN-EVIDENCE-UNCERTAIN-AGENCY",
+            keywords=["교육", "행사"],
+            source="MANUAL",
+            created_by="KMA 입찰팀",
+            updated_by="KMA 입찰팀",
+        )
+    )
     register_facts = resolve_performance_register_facts(
         request.criteria,
         records,
@@ -351,9 +375,10 @@ def test_busan_rfp_scores_twenty_through_real_performance_register_resolver() ->
         for item in register_facts
         if item.metric_key == "company.performance.count"
     )
+    assert (amount_fact.status, count_fact.status) == ("ESTIMATED", "ESTIMATED")
     assert amount_fact.lower_value is not None and amount_fact.lower_value > 200_000_000
-    assert amount_fact.upper_value == 250_000_000
-    assert (count_fact.lower_value, count_fact.upper_value) == (6, 6)
+    assert amount_fact.upper_value is None
+    assert (count_fact.lower_value, count_fact.upper_value) == (6, None)
 
     credit_fact = QuantitativeFact(
         metric_key="company.credit_rating",
@@ -450,3 +475,259 @@ def test_busan_unspecified_vat_with_undefined_zero_case_requires_review() -> Non
     assert (criterion.status, criterion.estimated_points) == ("REVIEW", None)
     assert (criterion.lower_points, criterion.upper_points) == (0, 4)
     assert (result.overall_status, result.estimated_points) == ("REVIEW", None)
+
+
+def test_private_import_is_authoritative_over_duplicate_manual_performance() -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    criterion = next(
+        item
+        for item in request.criteria
+        if item.metric_key == "company.performance.amount"
+    )
+    manual = CompanyPerformanceRecord(
+        record_key="SYN-MANUAL-DUPLICATE",
+        revision=1,
+        record_status="VALIDATED",
+        project_name="공공기관 교육 행사 운영",
+        agency="부산광역시교육청",
+        overview="교육 행사",
+        keywords=["교육", "행사"],
+        contract_date=date(2025, 1, 1),
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 6, 1),
+        contract_amount=550_000_000,
+        vat_basis="INCLUDED",
+        completed=True,
+        share_pct=100,
+        certificate_status="ISSUED",
+        evidence_reference="SYN-MANUAL-EVIDENCE",
+        source="MANUAL",
+    )
+    private = CompanyPerformanceRecord(
+        record_key="SYN-PRIVATE-AUTHORITATIVE",
+        revision=1,
+        record_status="VALIDATED",
+        project_name="공공기관 교육 행사 운영",
+        agency="부산광역시교육청",
+        overview="교육 행사",
+        keywords=["교육", "행사"],
+        contract_date=date(2025, 1, 1),
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 6, 1),
+        contract_amount=110_000_000,
+        vat_basis="INCLUDED",
+        completed=True,
+        share_pct=100,
+        certificate_status="ISSUED",
+        evidence_reference="private-evidence://synthetic/performance/1",
+        source="PRIVATE_IMPORT",
+    )
+
+    fact = resolve_performance_register_facts(
+        [criterion],
+        [manual, private],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        bid_notice_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+    )[0]
+
+    assert fact.status == "ESTIMATED"
+    assert (fact.lower_value, fact.upper_value) == (100_000_000, 110_000_000)
+
+
+def test_pending_private_import_suppresses_manual_scoring_fail_closed() -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    criterion = next(
+        item
+        for item in request.criteria
+        if item.metric_key == "company.performance.amount"
+    )
+    manual = CompanyPerformanceRecord(
+        record_key="SYN-MANUAL-WOULD-SCORE",
+        revision=1,
+        record_status="VALIDATED",
+        project_name="공공기관 교육 행사 운영",
+        agency="부산광역시교육청",
+        overview="교육 행사",
+        keywords=["교육", "행사"],
+        contract_date=date(2025, 1, 1),
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 6, 1),
+        contract_amount=550_000_000,
+        vat_basis="INCLUDED",
+        completed=True,
+        share_pct=100,
+        certificate_status="ISSUED",
+        evidence_reference="SYN-MANUAL-EVIDENCE",
+        source="MANUAL",
+    )
+    pending_private = CompanyPerformanceRecord(
+        record_key="SYN-PRIVATE-PENDING",
+        revision=1,
+        record_status="DRAFT",
+        project_name="공공기관 교육 행사 운영",
+        agency="부산광역시교육청",
+        overview="교육 행사",
+        keywords=["교육", "행사"],
+        contract_date=date(2025, 1, 1),
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 6, 1),
+        contract_amount=550_000_000,
+        vat_basis="INCLUDED",
+        completed=True,
+        share_pct=100,
+        certificate_status="ISSUED",
+        evidence_reference="private-evidence://synthetic/performance/pending",
+        source="PRIVATE_IMPORT_PENDING_VALIDATED",
+    )
+
+    fact = resolve_performance_register_facts(
+        [criterion],
+        [manual, pending_private],
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        bid_notice_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+    )[0]
+
+    assert fact.status == "REVIEW"
+    assert fact.value is None
+
+
+def test_private_draft_keeps_non_top_busan_band_in_review() -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    criterion = next(
+        item
+        for item in request.criteria
+        if item.metric_key == "company.performance.amount"
+    )
+    records = [
+        CompanyPerformanceRecord(
+            record_key="SYN-PRIVATE-LOWER-BOUND",
+            revision=1,
+            record_status="VALIDATED",
+            project_name="공공기관 교육 행사 운영",
+            agency="부산광역시교육청",
+            overview="교육 행사",
+            keywords=["교육", "행사"],
+            contract_date=date(2025, 1, 1),
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 6, 1),
+            contract_amount=110_000_000,
+            vat_basis="INCLUDED",
+            completed=True,
+            share_pct=100,
+            certificate_status="ISSUED",
+            evidence_reference="private-evidence://synthetic/performance/lower",
+            source="PRIVATE_IMPORT",
+        ),
+        CompanyPerformanceRecord(
+            record_key="SYN-PRIVATE-UNRESOLVED",
+            revision=1,
+            record_status="DRAFT",
+            project_name="공공기관 교육 행사 운영",
+            agency="부산광역시교육청",
+            overview="교육 행사",
+            keywords=["교육", "행사"],
+            contract_date=date(2025, 1, 1),
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 6, 1),
+            contract_amount=900_000_000,
+            vat_basis="INCLUDED",
+            completed=True,
+            share_pct=100,
+            certificate_status="ISSUED",
+            evidence_reference="private-evidence://synthetic/performance/draft",
+            source="PRIVATE_IMPORT_DRAFT",
+        ),
+    ]
+
+    fact = resolve_performance_register_facts(
+        [criterion],
+        records,
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        bid_notice_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+    )[0]
+    result = estimate_quantitative_score(
+        request.model_copy(update={"criteria": [criterion], "facts": [fact]})
+    )
+
+    assert fact.status == "REVIEW"
+    assert fact.lower_value == 100_000_000
+    assert fact.upper_value is None
+    assert result.overall_status == "REVIEW"
+    assert result.estimated_points is None
+
+
+def test_private_draft_allows_busan_twenty_when_lower_bounds_saturate() -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    criteria = {item.metric_key: item for item in request.criteria}
+    records = [
+        CompanyPerformanceRecord(
+            record_key=f"SYN-PRIVATE-BUSAN-{index}",
+            revision=1,
+            record_status="VALIDATED",
+            project_name=f"공공기관 교육 행사 운영 {index}",
+            agency="부산광역시교육청",
+            overview="교육 프로그램 및 행사 운영",
+            keywords=["교육", "행사"],
+            contract_date=date(2025, 1, index),
+            start_date=date(2025, 1, index),
+            end_date=date(2025, 6, index),
+            contract_amount=250_000_000 if index == 1 else 30_000_000,
+            vat_basis="INCLUDED",
+            completed=True,
+            share_pct=100,
+            certificate_status="ISSUED",
+            evidence_reference=f"private-evidence://synthetic/performance/{index}",
+            source="PRIVATE_IMPORT",
+        )
+        for index in range(1, 7)
+    ]
+    records.append(
+        CompanyPerformanceRecord(
+            record_key="SYN-PRIVATE-BUSAN-DRAFT",
+            revision=1,
+            record_status="DRAFT",
+            project_name="공공기관 교육 행사 운영 추가 실적",
+            agency="부산광역시교육청",
+            overview="교육 프로그램 및 행사 운영",
+            keywords=["교육", "행사"],
+            contract_date=date(2025, 7, 1),
+            start_date=date(2025, 7, 1),
+            end_date=date(2025, 8, 1),
+            contract_amount=30_000_000,
+            vat_basis="INCLUDED",
+            completed=True,
+            share_pct=100,
+            certificate_status="ISSUED",
+            evidence_reference="private-evidence://synthetic/performance/unresolved",
+            source="PRIVATE_IMPORT_DRAFT",
+        )
+    )
+
+    performance_facts = resolve_performance_register_facts(
+        request.criteria,
+        records,
+        as_of=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        bid_notice_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+    )
+    assert {fact.status for fact in performance_facts} == {"ESTIMATED"}
+    assert all(fact.upper_value is None for fact in performance_facts)
+
+    credit_fact = QuantitativeFact(
+        metric_key="company.credit_rating",
+        status="CONFIRMED",
+        value="A0",
+        evidence_key="company.credit_rating",
+        fact_binding_sha256=criteria["company.credit_rating"].fact_binding_sha256,
+        confidence=1,
+        rationale="유효 신용평가등급",
+    )
+    result = estimate_quantitative_score(
+        request.model_copy(update={"facts": [*performance_facts, credit_fact]})
+    )
+
+    assert result.overall_status == "ESTIMATED"
+    assert (result.lower_points, result.upper_points, result.estimated_points) == (
+        20,
+        20,
+        20,
+    )
