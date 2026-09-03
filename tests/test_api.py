@@ -13,6 +13,7 @@ from pai_loop.api import _authoritative_pps_events, _stored_notice_authority_row
 from pai_loop.main import create_app
 from pai_loop.models import (
     AnalysisRun,
+    BidOutcome,
     Evaluation,
     IngestionJob,
     MockNotification,
@@ -152,9 +153,49 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     assert dashboard.json()["analyzed_ended_count"] == 0
     assert dashboard.json()["cancelled_count"] == 0
     assert dashboard.json()["visible_ended_count"] == 0
+    assert dashboard.json()["result_missing_count"] == 0
     assert dashboard.json()["closed_count"] == 0
     assert dashboard.json()["expired_count"] == 0
     assert dashboard.json()["analysis_review_backlog_count"] == 0
+
+
+def test_dashboard_counts_ended_notices_without_a_recorded_result(
+    client: TestClient,
+) -> None:
+    ended_at = datetime.now(timezone.utc) - timedelta(days=1)
+    with client.app.state.session_factory() as session:
+        missing = Notice(
+            notice_key="SYN-RESULT-MISSING",
+            bid_notice_no="RESULT-MISSING",
+            revision_no="00",
+            title="결과 미기록 공고",
+            agency="공공기관",
+            deadline=ended_at,
+            status="CLOSED",
+        )
+        recorded = Notice(
+            notice_key="SYN-RESULT-RECORDED",
+            bid_notice_no="RESULT-RECORDED",
+            revision_no="00",
+            title="결과 기록 공고",
+            agency="공공기관",
+            deadline=ended_at,
+            status="CLOSED",
+        )
+        session.add_all([missing, recorded])
+        session.flush()
+        session.add(
+            BidOutcome(
+                notice_id=recorded.id,
+                outcome_key="manual:recorded",
+                status="NO_BID",
+            )
+        )
+        session.commit()
+
+    dashboard = client.get("/api/v1/dashboard")
+    assert dashboard.status_code == 200, dashboard.text
+    assert dashboard.json()["result_missing_count"] == 1
 
 
 def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
@@ -262,6 +303,7 @@ def test_public_board_projects_only_latest_persisted_system_recommendation(
         if item["notice_key"] == "SYN-PASS-001"
     )
     assert summary["recommendation"] == "GO"
+    assert summary["recommendation_conditions"] == []
     assert summary["recommendation_updated_at"] is not None
     detail = client.get("/api/v1/notices/SYN-PASS-001").json()
     assert detail["recommendation"] == "GO"
@@ -315,6 +357,8 @@ def test_public_board_does_not_fall_back_to_stale_system_recommendation(
         if item["notice_key"] == "SYN-PASS-001"
     )
     assert summary["recommendation"] is None
+    assert summary["recommendation_conditions"] == []
+    assert summary["recommendation_evidence_count"] == 0
     assert summary["recommendation_updated_at"] is None
     assert client.get("/api/v1/dashboard").json()["go_count"] == 0
 

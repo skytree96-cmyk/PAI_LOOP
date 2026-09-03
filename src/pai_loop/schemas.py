@@ -218,6 +218,21 @@ class NoticeSummary(ApiModel):
     analysis_attachment_coverage_complete: bool = False
     analysis_attempted: bool = False
     recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
+    recommendation_conditions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "저장된 HOLD 판단을 다시 검토하기 전에 확인할 공개 가능 조건입니다. "
+            "HOLD가 아니면 빈 배열입니다."
+        ),
+    )
+    recommendation_evidence_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "같은 최신 시스템 판단에 연결된 평가에서 마감일 기준 유효한 "
+            "서로 다른 증빙의 개수입니다. 증빙 값과 식별자는 공개하지 않습니다."
+        ),
+    )
     recommendation_updated_at: datetime | None = None
     latest_evaluation: EvaluationOut | None = None
     department_ranking: DepartmentRankingOut | None = None

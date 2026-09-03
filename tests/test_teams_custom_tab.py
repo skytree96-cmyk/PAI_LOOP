@@ -82,24 +82,21 @@ def test_teams_iframe_headers_allow_only_declared_microsoft_hosts(monkeypatch) -
             assert "x-frame-options" not in response.headers
 
 
-def test_table_and_card_detail_arrows_are_functional() -> None:
+def test_table_and_card_detail_actions_open_the_full_screen_view() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
-    assert (
-        'class="row-arrow" type="button" data-open-notice '
-        'aria-label="${escapeAttribute(notice.title)} 상세 패널 열기"'
-    ) in source
-    assert '<span class="row-arrow" aria-hidden="true">' not in source
-    assert '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>' in source
-    assert 'class="recommendation-arrow"' in source
-    assert 'data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기"' in source
+    assert 'class="notice-title-button" type="button" data-open-notice' in source
+    assert 'class="detail-link-button" type="button" data-open-notice' in source
+    assert 'class="notice-card__body" type="button" data-open-notice' in source
+    assert 'aria-label="${escapeAttribute(notice.title)} 전체 상세 보기"' in source
+    assert source.count("전체 상세 보기") >= 4
     assert 'els.noticeTableBody.addEventListener("click", handleNoticeActivation)' in source
     assert 'event.target.closest("[data-open-notice]")' in source
-    assert ".row-arrow:focus-visible" in styles
-    assert ".recommendation-arrow" in styles
-    assert "styles.css?v=20260824-decision1" in html
-    assert "app.js?v=20260824-decision1" in html
+    assert ".detail-link-button" in styles
+    assert "width: 100vw" in styles
+    assert "styles.css?v=20260904-uiux-p0-v1" in html
+    assert "app.js?v=20260904-uiux-p0-v1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:

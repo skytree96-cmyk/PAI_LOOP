@@ -8,7 +8,7 @@
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
   const NOTICE_PAGE_SIZE = 200;
-  const URGENT_DEADLINE_DAYS = 7;
+  const URGENT_DEADLINE_DAYS = 3;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const MANUAL_ANALYSIS_MAX_POLLS = 1800;
   // Compatibility note for older embedded contracts: MANUAL_ANALYSIS_MAX_POLLS = 900.
@@ -37,6 +37,8 @@
     loading: false,
     detailLoading: false,
     requestSequence: 0,
+    connectionDelayTimer: null,
+    lastSuccessfulQueryAt: null,
     noticeSearchTimer: null,
     noticeStatusScope: "ALL",
     teamsLogs: [],
@@ -113,25 +115,28 @@
   const els = {};
 
   const STATUS_LABELS = {
-    PASS: "PASS",
-    REVIEW: "REVIEW",
-    FAIL: "FAIL",
+    PASS: "충족",
+    PASS_EXCEPTION: "조건부 충족",
+    PASS_CURRENT: "현재 충족",
+    REVIEW: "확인 필요",
+    FAIL: "미충족",
     UNKNOWN: "확인 필요",
   };
 
   const RECOMMENDATION_LABELS = {
     GO: "GO",
     CONDITIONAL_GO: "조건부 GO",
-    HOLD: "보류",
+    HOLD: "조건부 GO",
+    DEFERRED: "권고 보류",
     NO_GO: "NO-GO",
     UNKNOWN: "확인 필요",
   };
 
   const DECISION_LABELS = {
-    GO: "GO",
+    GO: "참여",
     HOLD: "보류",
     CONDITIONAL_GO: "보류",
-    NO_GO: "NO-GO",
+    NO_GO: "불참",
   };
 
   const ANALYSIS_REASON_LABELS = {
@@ -162,14 +167,17 @@
     performance: "/performance",
     collected: "/",
     go: "/",
-    urgent: "/",
+    urgent: "/urgent",
     ended: "/",
+    "result-missing": "/result-missing",
   });
 
   const ROUTE_VIEW_MAP = Object.freeze({
     "/": "all",
     "/notices": "new",
     "/reviews": "review",
+    "/urgent": "urgent",
+    "/result-missing": "result-missing",
     "/decisions": "undecided",
     "/results": "closed",
     "/awards": "awards",
@@ -201,15 +209,15 @@
     const ids = [
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
-      "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
+      "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
       "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "ppsSearchSuggestion", "ppsSearchSuggestionButton", "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
       "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
-      "detailDrawer", "drawerLoading", "closeDetailButton", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
+      "detailDrawer", "drawerLoading", "closeDetailButton", "previousNoticeButton", "nextNoticeButton", "detailPosition", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "manualAnalysisTokenDialog", "manualAnalysisTokenInput",
-      "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "analysisPipeline", "evidenceCount",
+      "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
       "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyConcentration", "historyPrediction", "historyCoverage", "historyWarnings", "decisionForm", "decisionExisting", "toggleCommentButton",
       "commentField", "decisionComment", "commentCount", "saveDecisionButton", "toastRegion", "skeletonRowTemplate",
@@ -503,6 +511,8 @@
     els.sidebarScrim.addEventListener("click", closeMobileMenu);
 
     els.closeDetailButton.addEventListener("click", closeDetail);
+    els.previousNoticeButton.addEventListener("click", () => moveDetailSelection(-1));
+    els.nextNoticeButton.addEventListener("click", () => moveDetailSelection(1));
     els.manualAnalyzeButton.addEventListener("click", () => {
       const noticeKey = state.selectedNotice?.noticeKey;
       if (noticeKey) void requestManualAnalysis(noticeKey);
@@ -526,13 +536,19 @@
       button.addEventListener("keydown", handleTabKeydown);
     });
     els.requirementList.addEventListener("click", (event) => {
-      if (event.target.closest("[data-evidence-jump]")) selectTab("evidence");
+      if (!event.target.closest("[data-evidence-jump]")) return;
+      selectTab("evidence");
+      requestAnimationFrame(() => {
+        els.evidenceList.scrollIntoView({ behavior: "smooth", block: "start" });
+        els.evidenceList.focus();
+      });
     });
 
     els.toggleCommentButton.addEventListener("click", toggleCommentField);
     els.decisionInputs.forEach((input) => input.addEventListener("change", updateDecisionButton));
     els.decisionComment.addEventListener("input", () => {
       els.commentCount.textContent = String(els.decisionComment.value.length);
+      updateDecisionButton();
     });
     els.decisionForm.addEventListener("submit", saveDecision);
 
@@ -580,6 +596,10 @@
     state.noticeStatusScope = requestedStatusScope;
     setLoading(true);
     setSystemStatus("loading");
+    window.clearTimeout(state.connectionDelayTimer);
+    state.connectionDelayTimer = window.setTimeout(() => {
+      if (sequence === state.requestSequence && state.loading) setSystemStatus("delayed");
+    }, 10000);
 
     const query = new URLSearchParams(window.location.search);
     const explicitDemo = query.get("demo") === "1" && !forceApi;
@@ -621,6 +641,7 @@
       state.dashboard = deriveDashboard(state.notices);
       state.source = "api";
       state.sourceReason = "";
+      state.lastSuccessfulQueryAt = new Date().toISOString();
       setSystemStatus("online");
       if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) showDemoBanner(state.dashboard.syntheticWarning);
       else hideDemoBanner();
@@ -631,7 +652,7 @@
     }
 
     const reason = humanizeError(noticesResult.reason);
-    renderApplicationError(`서버 API 연결 실패: ${reason}`);
+    renderApplicationError(`운영 서버 연결 실패: ${reason}`);
   }
 
   async function hydrateApplicationMetadata({ sequence, requestedStatusScope }) {
@@ -681,6 +702,7 @@
   }
 
   function renderApplicationError(reason) {
+    window.clearTimeout(state.connectionDelayTimer);
     state.loading = false;
     state.source = "error";
     state.sourceReason = reason;
@@ -744,6 +766,7 @@
   }
 
   function finishLoading() {
+    window.clearTimeout(state.connectionDelayTimer);
     setLoading(false);
     renderAll();
   }
@@ -858,7 +881,7 @@
 
   function noticeStatusScopeForView(view) {
     if (globalNoticeSearchActive()) return "ALL";
-    if (view === "ended") return "ENDED";
+    if (["ended", "result-missing"].includes(view)) return "ENDED";
     return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
   }
 
@@ -896,7 +919,7 @@
     });
     els.filterForm.hidden = prespecMode;
     els.filterForm.classList.toggle("is-pps-mode", ppsMode);
-    els.filterForm.setAttribute("aria-label", ppsMode ? "나라장터 용역 공고 검색" : "AI 수집 공고 검색");
+    els.filterForm.setAttribute("aria-label", ppsMode ? "나라장터 용역 공고 검색" : "저장 공고 검색");
     els.prioritySearch.hidden = ppsMode || prespecMode;
     els.noticeSearchScope.hidden = prespecMode;
     els.noticeViewToggle.hidden = prespecMode;
@@ -911,14 +934,14 @@
       ? "나라장터 용역 공고명 검색"
       : "공고명, 발주기관 또는 공고번호 검색";
     els.noticeSearchHelp.textContent = ppsMode
-      ? "검색어와 게시일을 입력한 뒤 조회 버튼을 눌러야 나라장터 API를 호출합니다."
-      : "검색어를 입력하면 AI가 수집해 저장한 전체 공고에서 찾습니다.";
+      ? "검색어와 게시일을 입력한 뒤 조회 버튼을 눌러야 나라장터를 조회합니다."
+      : "검색어를 입력하면 PAI LOOP에 저장된 전체 공고에서 찾습니다.";
     els.noticePanel.hidden = ppsMode || prespecMode;
     els.prespecSection.hidden = !prespecMode;
     if (ppsMode) {
-      els.noticeSummary.textContent = "AI 수집 DB와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다.";
+      els.noticeSummary.textContent = "PAI LOOP 저장 공고와 분리된 나라장터 용역 공고 조회입니다. 저장 전에는 판단 결과가 없습니다.";
     } else if (prespecMode) {
-      els.noticeSummary.textContent = "입찰공고 전 공개되는 사전규격을 저장 DB와 나라장터에서 함께 탐색합니다.";
+      els.noticeSummary.textContent = "입찰공고 전 공개되는 사전규격을 저장 자료와 나라장터에서 함께 찾습니다.";
       renderPreSpecificationView();
     }
     renderNoticeSearchScope();
@@ -953,12 +976,12 @@
       openNoticeSearchHelpDialog();
     }
     if (announce && changed) {
-      const title = ppsMode ? "나라장터 용역 공고 조회" : prespecMode ? "사전규격 탐색" : "AI 수집 공고 검색";
+      const title = ppsMode ? "나라장터 용역 공고 조회" : prespecMode ? "사전규격 탐색" : "저장 공고 검색";
       const message = ppsMode
         ? "외부 조회는 버튼을 눌렀을 때만 실행되며, 저장 전에는 판단과 점수가 없습니다."
         : prespecMode
           ? "저장된 사전규격과 나라장터 사전규격을 한 화면에서 확인합니다."
-          : "AI가 수집해 PAI LOOP에 저장한 공고와 기존 판단 결과를 검색합니다.";
+          : "PAI LOOP에 저장된 공고와 기존 판단 결과를 검색합니다.";
       showToast(title, message, "success");
     }
   }
@@ -1187,7 +1210,7 @@
         ? "PAI LOOP 서버 연결을 확인한 뒤 나라장터 조회를 실행할 수 있습니다."
         : query.length < 2
           ? "나라장터 용역 공고명 조회를 위해 검색어를 2자 이상 입력해 주세요."
-          : "아래 버튼을 누르면 선택한 게시일 범위의 용역 공고명을 조회합니다. 버튼을 누르기 전에는 외부 API를 호출하지 않습니다.";
+          : "아래 버튼을 누르면 선택한 게시일 범위의 용역 공고명을 조회합니다. 버튼을 누르기 전에는 외부 조회를 시작하지 않습니다.";
       els.ppsDiscoveryResults.replaceChildren();
       return;
     }
@@ -1271,7 +1294,7 @@
       : "";
     return `<article class="pps-candidate ${stored ? "is-stored" : ""} ${stateClass}" role="listitem" ${saving ? 'aria-busy="true"' : ""}>
       <div class="pps-candidate__head">
-        <span class="pps-candidate__badges"><span class="pps-candidate__source-state">${stored ? "PAI LOOP 저장됨" : "나라장터 LIVE"}</span><span class="pps-candidate__state">${escapeHtml(stateLabel)}</span></span>
+        <span class="pps-candidate__badges"><span class="pps-candidate__source-state">${stored ? "PAI LOOP 저장됨" : "나라장터 실시간"}</span><span class="pps-candidate__state">${escapeHtml(stateLabel)}</span></span>
         <span>${escapeHtml(candidate.noticeKind)}${candidate.relatedRevisionStored ? " · 다른 차수 저장됨" : ""}</span>
       </div>
       <h4>${title}</h4>
@@ -1285,7 +1308,7 @@
       ${candidate.directContractSignal ? '<p class="pps-candidate__warning">수의계약 신호가 있어 저장 전 원문 확인이 필요합니다.</p>' : ""}
       ${candidate.saveBlockReason ? `<p class="pps-candidate__warning">${escapeHtml(candidate.saveBlockReason)}</p>` : ""}
       <footer>${sourceLink}<span class="pps-candidate__actions">${detailLink}${analysisButton}${saveButton}</span></footer>
-      <small class="pps-candidate__cost">${analysisAvailability.enabled ? (analysisAvailability.recomputeCurrent ? "저장 근거 재판단 · Claude 0회" : "분석 실행 전 Claude 사용 범위를 확인") : escapeHtml(analysisAvailability.reason)}</small>
+      <small class="pps-candidate__cost">${analysisAvailability.enabled ? (analysisAvailability.recomputeCurrent ? "저장 근거 재판단 · 문서 분석 0회" : "분석 실행 전 문서 분석 범위를 확인") : escapeHtml(analysisAvailability.reason)}</small>
     </article>`;
   }
 
@@ -1318,7 +1341,7 @@
     if (!candidate.saveable || candidate.alreadyStored || !candidate.selectionKey) return;
     const savingKey = candidate.selectionKey || `${candidate.bidNoticeNo}:${index}`;
     if (state.ppsDiscovery.saving.has(savingKey)) return;
-    const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다.\n\n저장할까요?`);
+    const confirmed = window.confirm(`${candidate.title}\n\n이 공고 한 건을 PAI LOOP에 저장합니다. 저장만으로 문서 분석은 시작되지 않습니다.\n\n저장할까요?`);
     if (!confirmed) return;
     state.ppsDiscovery.saving.add(savingKey);
     renderPpsDiscovery();
@@ -1666,7 +1689,7 @@
           <div><dt>계약금액</dt><dd>${escapeHtml(formatPerformanceAmount(record.contractAmountKrw))}</dd></div>
         </dl>
         <div class="performance-keywords" aria-label="실적 키워드">${keywordMarkup}</div>
-        <footer><span>PUBLIC_DERIVED</span><small>후보 조회용 · 인정실적/점수 미확정</small></footer>
+        <footer><span>공개·비식별 자료</span><small>후보 조회용 · 인정실적/점수 미확정</small></footer>
       </article>`;
   }
 
@@ -1810,7 +1833,7 @@
   }
 
   function preSpecificationAnalysisLabel(value) {
-    return ({ RUNNING: "분석 중", QUEUED: "분석 대기", COMPLETED: "분석 완료", PARTIAL: "일부 분석", REVIEW: "사람 검토 필요", FAILED: "분석 실패", ALREADY_ANALYZED: "기존 분석 재사용", COOLDOWN: "재시도 대기" })[value] || value || "분석 전";
+    return ({ RUNNING: "분석 중", QUEUED: "분석 대기", COMPLETED: "분석 완료", PARTIAL: "일부 분석", REVIEW: "상태 확인 필요", FAILED: "분석 실패", ALREADY_ANALYZED: "기존 분석 재사용", COOLDOWN: "재시도 대기" })[value] || "상태 확인 필요";
   }
 
   function preSpecificationAgency(record) {
@@ -1833,7 +1856,7 @@
       <p>${escapeHtml(preSpecificationAgency(record))}</p>
       <dl><div><dt>의견마감</dt><dd>${escapeHtml(formatShortDateTime(record.opinionDeadline))}</dd></div><div><dt>예산</dt><dd>${escapeHtml(formatBudget(record.budgetAmount))}</dd></div><div><dt>첨부</dt><dd>${escapeHtml(documentLabel)}</dd></div><div><dt>저장상태</dt><dd>${stored ? "PAI LOOP 저장됨" : "미저장"}</dd></div></dl>
       <div class="prespec-linked ${record.linkedBidNoticeNos.length ? "is-linked" : ""}">${escapeHtml(linkedLabel)}</div>
-      <footer><small>${source === "stored" ? "저장 DB · PPS 0 · AI 모델 0" : "나라장터 조회 · AI 모델 0"}</small>${action}</footer>
+      <footer><small>${source === "stored" ? "저장 자료 · 외부 조회 0회 · 문서 분석 0회" : "나라장터 조회 · 문서 분석 0회"}</small>${action}</footer>
     </article>`;
   }
 
@@ -1895,20 +1918,20 @@
     const stored = state.prespec.stored;
     els.prespecStoredSubmitButton.disabled = stored.loading;
     if (stored.loading) {
-      els.prespecStoredSummary.textContent = "저장 DB를 검색하고 있습니다. PPS 0회 · AI 모델 0회";
+      els.prespecStoredSummary.textContent = "저장 자료를 검색하고 있습니다. 외부 조회 0회 · 문서 분석 0회";
       els.prespecStoredState.hidden = false;
-      els.prespecStoredState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>저장 DB를 확인하고 있습니다</strong>';
+      els.prespecStoredState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>저장 자료를 확인하고 있습니다</strong>';
     } else if (stored.error) {
-      els.prespecStoredSummary.textContent = "저장 DB 검색에 실패했습니다.";
+      els.prespecStoredSummary.textContent = "저장 자료 검색에 실패했습니다.";
       els.prespecStoredState.hidden = false;
       els.prespecStoredState.innerHTML = `<strong>저장된 사전규격을 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(stored.error))}</p>`;
     } else if (stored.loaded && !stored.records.length) {
-      els.prespecStoredSummary.textContent = "조건에 맞는 저장 사전규격이 없습니다. PPS 0회 · AI 모델 0회";
+      els.prespecStoredSummary.textContent = "조건에 맞는 저장 사전규격이 없습니다. 외부 조회 0회 · 문서 분석 0회";
       els.prespecStoredState.hidden = false;
       els.prespecStoredState.innerHTML = "<strong>저장 결과가 없습니다</strong><p>나라장터 사전규격 검색에서 필요한 건을 선택 저장할 수 있습니다.</p>";
     } else {
       els.prespecStoredSummary.textContent = stored.loaded
-        ? `저장 DB ${formatNumber(stored.records.length)}건${stored.truncated ? " · 표시 상한 도달" : ""} · PPS 0회 · AI 모델 0회`
+        ? `저장 자료 ${formatNumber(stored.records.length)}건${stored.truncated ? " · 표시 상한 도달" : ""} · 외부 조회 0회 · 문서 분석 0회`
         : "저장된 사전규격을 불러오는 중입니다.";
       els.prespecStoredState.hidden = Boolean(stored.records.length);
     }
@@ -1976,7 +1999,7 @@
     els.prespecLiveSearchButton.disabled = live.loading;
     if (live.loading) {
       els.prespecLiveSearchButton.innerHTML = '<span class="button-spinner" aria-hidden="true"></span>검색 중';
-      els.prespecLiveSummary.textContent = "나라장터 사전규격을 조회하고 있습니다. AI 모델 0회";
+      els.prespecLiveSummary.textContent = "나라장터 사전규격을 조회하고 있습니다. 문서 분석 0회";
       els.prespecLiveState.hidden = false;
       els.prespecLiveState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>나라장터를 조회하고 있습니다</strong><p>검색 결과는 자동 저장되지 않습니다.</p>';
     } else {
@@ -1986,11 +2009,11 @@
         els.prespecLiveState.hidden = false;
         els.prespecLiveState.innerHTML = `<strong>검색 결과를 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(live.error))}</p>`;
       } else if (live.searched && !live.records.length) {
-        els.prespecLiveSummary.textContent = `검색 결과 0건 · 나라장터 ${formatNumber(live.apiCalls)}회 · AI 모델 0회`;
+        els.prespecLiveSummary.textContent = `검색 결과 0건 · 나라장터 조회 ${formatNumber(live.apiCalls)}회 · 문서 분석 0회`;
         els.prespecLiveState.hidden = false;
         els.prespecLiveState.innerHTML = "<strong>검색 결과가 없습니다</strong><p>검색어 또는 최대 31일의 등록 기간을 바꿔 보세요.</p>";
       } else if (live.searched) {
-        els.prespecLiveSummary.textContent = `검색 결과 ${formatNumber(live.records.length)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · AI 모델 0회${live.truncated ? " · 일부 결과" : ""}`;
+        els.prespecLiveSummary.textContent = `검색 결과 ${formatNumber(live.records.length)}건 · 나라장터 조회 ${formatNumber(live.apiCalls)}회 · 문서 분석 0회${live.truncated ? " · 일부 결과" : ""}`;
         els.prespecLiveState.hidden = true;
       } else {
         els.prespecLiveSummary.textContent = "버튼을 누르기 전에는 나라장터 API를 호출하지 않습니다.";
@@ -2035,7 +2058,7 @@
       }));
       record.alreadyStored = true;
       state.prespec.details.delete(registryNo);
-      showToast("사전규격 저장 완료", `${record.title} · ${stringValue(response.outcome, "저장됨")} · AI 모델 0회`, "success");
+      showToast("사전규격 저장 완료", `${record.title} · 저장됨 · 문서 분석 0회`, "success");
       await loadStoredPreSpecifications({ force: true });
       await openPreSpecificationDetail(registryNo, { force: true });
     } catch (error) {
@@ -2124,13 +2147,57 @@
     const summaries = extractions.map((item) => stringValue(item?.summary)).filter(Boolean);
     const requirements = extractions.flatMap((item) => arrayValue(item?.requirements)).slice(0, 12);
     const requirementMarkup = requirements.length
-      ? `<ul>${requirements.map((item) => `<li><strong>${escapeHtml(stringValue(item?.normalized_condition, "요구조건"))}</strong><span>${escapeHtml(stringValue(item?.category, "분류 미확인"))}${item?.mandatory ? " · 필수" : ""}</span></li>`).join("")}</ul>`
+      ? `<ul>${requirements.map((item) => `<li><strong>${escapeHtml(stringValue(item?.normalized_condition, "요구조건"))}</strong><span>${escapeHtml(requirementCategoryLabel(item?.category))}${item?.mandatory ? " · 필수" : ""}</span></li>`).join("")}</ul>`
       : "<p>구조화된 요구조건이 없거나 사람 검토가 필요합니다.</p>";
     const documentAudits = arrayValue(analysis.documents);
+    const completion = derivePreSpecificationCompletion({
+      documentsTotal: numberOrNull(analysis.result.documents_total) ?? documentAudits.length,
+      documentsAccepted: numberOrNull(analysis.result.documents_accepted),
+      documentsProcessed: numberOrNull(analysis.result.documents_processed),
+      fallbackProcessed: documentAudits.length,
+      declaredComplete: analysis.status === "COMPLETED",
+    });
+    const resultHeading = completion.completed ? "완료된 분석 결과" : "분석 상태 확인 필요";
+    const auditStatusLabels = { ACCEPTED: "확인 완료", COMPLETED: "확인 완료", REVIEW: "확인 필요", PARTIAL: "일부 확인", FAILED: "처리 실패" };
     const auditMarkup = documentAudits.length
-      ? `<div class="prespec-analysis-audits">${documentAudits.map((item) => `<span>${escapeHtml(`첨부 ${numberOrNull(item?.slot) ?? "—"} · ${stringValue(item?.status, "REVIEW")} · ${stringValue(item?.reason_code, "근거 구조화")}`)}</span>`).join("")}</div>`
+      ? `<div class="prespec-analysis-audits">${documentAudits.map((item) => {
+        const status = stringValue(item?.status).toUpperCase();
+        const reason = ANALYSIS_REASON_LABELS[stringValue(item?.reason_code).toUpperCase()] || "문서 근거 확인";
+        return `<span>${escapeHtml(`첨부 ${numberOrNull(item?.slot) ?? "—"} · ${auditStatusLabels[status] || "상태 확인 필요"} · ${reason}`)}</span>`;
+      }).join("")}</div>`
       : "";
-    return `<section class="prespec-analysis-result"><div class="prespec-analysis-result__head"><h3>완료된 분석 결과</h3><span>${formatNumber(numberOrNull(analysis.result.documents_accepted) ?? 0)} / ${formatNumber(numberOrNull(analysis.result.documents_total) ?? documentAudits.length)} 문서</span></div>${summaries.map((summary) => `<p>${escapeHtml(summary)}</p>`).join("")}${requirementMarkup}${auditMarkup}<p class="prespec-analysis-boundary">요구조건 사전 구조화 결과이며 입찰 GO/NO-GO 판정이 아닙니다.</p></section>`;
+    return `<section class="prespec-analysis-result"><div class="prespec-analysis-result__head"><h3>${resultHeading}</h3><span>확인 완료 ${formatNumber(completion.documentsAccepted)} / 전체 ${formatNumber(completion.documentsTotal)} 문서</span></div>${summaries.map((summary) => `<p>${escapeHtml(summary)}</p>`).join("")}${requirementMarkup}${auditMarkup}<p class="prespec-analysis-boundary">요구조건 사전 구조화 결과이며 입찰 GO/NO-GO 판정이 아닙니다.</p></section>`;
+  }
+
+  function derivePreSpecificationCompletion({ documentsTotal, documentsAccepted, documentsProcessed, fallbackProcessed = 0, declaredComplete = false }) {
+    const total = Math.max(numberOrNull(documentsTotal) ?? 0, 0);
+    const accepted = numberOrNull(documentsAccepted);
+    const processed = numberOrNull(documentsProcessed) ?? accepted ?? Math.max(numberOrNull(fallbackProcessed) ?? 0, 0);
+    const coverageComplete = total > 0 && processed >= total && accepted !== null && accepted >= total;
+    return {
+      documentsTotal: total,
+      documentsAccepted: accepted ?? 0,
+      documentsProcessed: processed,
+      coverageComplete,
+      completed: Boolean(declaredComplete && coverageComplete),
+    };
+  }
+
+  function requirementCategoryLabel(value) {
+    return ({
+      ENTITY: "업체 요건",
+      INDUSTRY_CODE: "업종 요건",
+      CERTIFICATION: "인증 요건",
+      DIRECT_PRODUCTION: "직접생산확인",
+      REGION: "지역 요건",
+      PERFORMANCE: "수행실적",
+      PERSONNEL: "투입인력",
+      FACILITY: "시설·장비",
+      CONSORTIUM: "공동수급",
+      SANCTION: "제재 여부",
+      SUBMISSION: "제출 요건",
+      OTHER: "기타 요건",
+    })[String(value || "").toUpperCase()] || "분류 확인 필요";
   }
 
   function renderPreSpecificationAnalysisStatus(detail) {
@@ -2138,18 +2205,30 @@
     const response = active?.response;
     const statusValue = stringValue(response?.outcome || detail.analysis?.status).toUpperCase();
     const polling = Boolean(active?.polling);
-    const documentsTotal = numberOrNull(response?.documents_total) ?? detail.documents.length;
-    const documentsProcessed = numberOrNull(response?.documents_processed) ?? 0;
-    const openaiCalls = numberOrNull(response?.openai_calls) ?? 0;
-    const message = stringValue(response?.message) || (detail.analysis ? "저장된 최신 분석 상태입니다." : "분석은 자동 실행되지 않습니다. 필요할 때만 비용 상한을 확인하고 실행하세요.");
-    els.prespecAnalysisStatus.innerHTML = `<div class="prespec-analysis-status ${polling ? "is-polling" : ""}">${polling ? '<span class="spinner" aria-hidden="true"></span>' : ""}<div><strong>${escapeHtml(preSpecificationAnalysisLabel(statusValue))}</strong><p>${escapeHtml(message)}</p><small>문서 ${formatNumber(documentsProcessed)}/${formatNumber(documentsTotal)} · Claude ${formatNumber(openaiCalls)}회${polling ? ` · 상태 확인 ${formatNumber(active.polls)}/${PRESPEC_ANALYSIS_MAX_POLLS}` : ""}</small></div></div>`;
-    const completed = detail.analysis?.status === "COMPLETED" || ["COMPLETED", "ALREADY_ANALYZED"].includes(statusValue);
-    els.prespecAnalysisButton.disabled = state.prespec.detailLoading || polling || completed;
-    els.prespecAnalysisButton.textContent = completed ? "분석 결과 저장됨" : polling ? "분석 처리 중" : detail.analysis ? "문서 다시 분석" : "문서 분석 실행";
+    const storedResult = detail.analysis?.result || {};
+    const documentsTotal = numberOrNull(response?.documents_total) ?? numberOrNull(storedResult.documents_total) ?? detail.documents.length;
+    const documentsAccepted = numberOrNull(response?.documents_accepted) ?? numberOrNull(storedResult.documents_accepted);
+    const documentsProcessed = numberOrNull(response?.documents_processed) ?? numberOrNull(storedResult.documents_processed);
+    const analysisCalls = numberOrNull(response?.openai_calls) ?? 0;
+    const declaredComplete = detail.analysis?.status === "COMPLETED" || ["COMPLETED", "ALREADY_ANALYZED"].includes(statusValue);
+    const completion = derivePreSpecificationCompletion({
+      documentsTotal,
+      documentsAccepted,
+      documentsProcessed,
+      fallbackProcessed: arrayValue(detail.analysis?.documents).length,
+      declaredComplete,
+    });
+    const displayStatus = declaredComplete && !completion.coverageComplete ? "REVIEW" : statusValue;
+    const message = declaredComplete && !completion.coverageComplete
+      ? `전체 ${formatNumber(completion.documentsTotal)}개 문서 중 처리 ${formatNumber(completion.documentsProcessed)}개·확인 완료 ${formatNumber(completion.documentsAccepted)}개로 완료 조건과 맞지 않습니다.`
+      : stringValue(response?.message) || (detail.analysis ? "저장된 최신 분석 상태입니다." : "분석은 자동 실행되지 않습니다. 필요할 때만 비용 상한을 확인하고 실행하세요.");
+    els.prespecAnalysisStatus.innerHTML = `<div class="prespec-analysis-status ${polling ? "is-polling" : ""}">${polling ? '<span class="spinner" aria-hidden="true"></span>' : ""}<div><strong>${escapeHtml(preSpecificationAnalysisLabel(displayStatus))}</strong><p>${escapeHtml(message)}</p><small>처리 문서 ${formatNumber(completion.documentsProcessed)}/${formatNumber(completion.documentsTotal)} · 분석 요청 ${formatNumber(analysisCalls)}회${polling ? ` · 상태 확인 ${formatNumber(active.polls)}/${PRESPEC_ANALYSIS_MAX_POLLS}` : ""}</small></div></div>`;
+    els.prespecAnalysisButton.disabled = state.prespec.detailLoading || polling || completion.completed;
+    els.prespecAnalysisButton.textContent = completion.completed ? "분석 결과 저장됨" : polling ? "분석 처리 중" : detail.analysis ? "문서 다시 분석" : "문서 분석 실행";
   }
 
   function confirmPreSpecificationAnalysis(detail) {
-    return window.confirm(`${detail.title}\n\nn8n의 Claude로 사전규격 문서를 분석합니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 시간당 총량 제한 없음(중복 실행 잠금·공고별 재시도 대기는 유지)\n- 결과는 요구조건 구조화이며 GO 판정이 아님\n\n분석을 시작할까요?`);
+    return window.confirm(`${detail.title}\n\n사전규격 첨부문서를 분석합니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 중복 실행 잠금과 공고별 재시도 대기 적용\n- 결과는 요구조건 구조화이며 GO 판정이 아님\n\n분석을 시작할까요?`);
   }
 
   async function requestPreSpecificationAnalysis() {
@@ -2279,8 +2358,8 @@
     els.performanceEditorCreateButton.hidden = !editor.loaded;
     els.performanceEditorUnlockButton.textContent = editor.loaded ? "목록 새로고침" : "운영 실적 열기";
     els.performanceEditorSummary.textContent = editor.loaded
-      ? `직접 등록 실적 ${formatNumber(editor.total)}건 · 공개 스냅샷 ${formatNumber(state.performance.summary?.recordCount || 0)}건과 별도 관리`
-      : "공개 스냅샷과 분리된 운영 실적입니다. 운영 키로 초안을 등록하거나 검증·보관 상태를 관리하세요.";
+      ? `직접 등록 실적 ${formatNumber(editor.total)}건 · 공개 실적 자료 ${formatNumber(state.performance.summary?.recordCount || 0)}건과 별도 관리`
+      : "공개 실적 자료와 분리된 운영 실적입니다. 운영 키로 초안을 등록하거나 검증·보관 상태를 관리하세요.";
     els.performanceEditorState.hidden = editor.records.length > 0;
     if (!editor.records.length && editor.loaded) {
       els.performanceEditorState.innerHTML = "<strong>직접 등록한 실적이 없습니다</strong><p>새 실적 등록으로 초안을 만든 뒤 근거를 검토해 검증 완료하세요.</p>";
@@ -2354,7 +2433,7 @@
       await apiRequest(path, { method: record ? "PATCH" : "POST", headers, body: JSON.stringify(payload) });
       closePerformanceRecordDialog();
       await loadPerformanceEditor({ force: true });
-      showToast(record ? "회사 실적 수정 완료" : "회사 실적 등록 완료", "운영 실적과 공개 스냅샷은 분리되어 관리됩니다.", "success");
+      showToast(record ? "회사 실적 수정 완료" : "회사 실적 등록 완료", "운영 실적과 공개 실적 자료는 분리되어 관리됩니다.", "success");
     } catch (error) {
       if (error?.status === 401) state.manualAnalysisToken = "";
       showToast("회사 실적 저장 실패", editorErrorMessage(error), "error");
@@ -2420,10 +2499,10 @@
       const outcome = notice.outcome;
       const outcomeLabel = outcome ? resultStatusLabel(outcome.status) : "결과 미입력";
       return `<article class="operator-record result-record" role="listitem">
-        <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? recordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(notice.noticeStatus)}</small></div>
+        <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? recordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
         <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(formatBudget(outcome?.submittedBidAmount))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(formatBudget(outcome?.winningBidAmount))}</dd></div></dl>
-        <footer><small>${escapeHtml(outcome ? `${outcome.source}${outcome.basisSource ? ` · 기준 ${outcome.basisSource}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small><button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "결과 수정" : "검토본 만들기") : "결과 입력"}</button></footer>
+        <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small><button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "결과 수정" : "검토본 만들기") : "결과 입력"}</button></footer>
       </article>`;
     }).join("");
     const start = data.total ? data.offset + 1 : 0;
@@ -2531,13 +2610,11 @@
   function nullableText(value) { const cleaned = String(value || "").trim(); return cleaned || null; }
   function nullableNumber(value) { const cleaned = String(value ?? "").trim(); return cleaned === "" ? null : Number(cleaned); }
   function newIdempotencyKey(prefix) { return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`; }
-  function recordStatusLabel(value) { return ({ DRAFT: "초안", VALIDATED: "검증 완료", ARCHIVED: "보관" })[value] || value; }
-  function resultStatusLabel(value) { return ({ NO_BID: "미참여", SUBMITTED: "제출", WON: "낙찰", LOST: "실주", CANCELLED: "취소" })[value] || value; }
-  function editorErrorMessage(error) {
-    const detail = error?.payload?.detail;
-    if (Array.isArray(detail)) return detail.map((item) => stringValue(item?.msg)).filter(Boolean).join(" · ") || humanizeError(error);
-    return stringValue(detail) || humanizeError(error);
-  }
+  function recordStatusLabel(value) { return ({ DRAFT: "초안", VALIDATED: "검증 완료", ARCHIVED: "보관" })[value] || "상태 확인 필요"; }
+  function resultStatusLabel(value) { return ({ NO_BID: "미참여", SUBMITTED: "제출", WON: "낙찰", LOST: "미낙찰", CANCELLED: "취소" })[value] || "결과 확인 필요"; }
+  function resultNoticeStatusLabel(value) { return ({ OPEN: "진행", CLOSED: "공고 종료", EXPIRED: "입찰마감 경과", CANCELLED: "취소공고" })[String(value || "").toUpperCase()] || "상태 확인 필요"; }
+  function resultSourceLabel(value) { return ({ MANUAL_UI: "담당자 입력", PPS_AUTO_FEEDBACK: "나라장터 자동 환류", AUTOMATED: "자동 환류", PPS: "나라장터 결과", PUBLIC_DATA: "공개 자료", MIGRATED: "이전 기록" })[String(value || "").toUpperCase()] || "출처 확인 필요"; }
+  function editorErrorMessage(error) { return humanizeError(error); }
 
   function formatAwardBusinessNumberInput() {
     const digits = els.awardBusinessNumber.value.replace(/\D/g, "").slice(0, 10);
@@ -2595,7 +2672,7 @@
     // with the server's universally safe 28-day windows.
     const estimatedCalls = Math.ceil((span + 1) / 28) * scopes.length;
     if (estimatedCalls > 60) {
-      showToast("조회 범위가 너무 큽니다", "기간이나 업무 구분을 줄여 주세요. 한 번의 조회는 최대 60회 API 호출로 제한됩니다.", "warning");
+      showToast("조회 범위가 너무 큽니다", "기간이나 업무 구분을 줄여 주세요. 한 번의 조회는 외부 요청 60회로 제한됩니다.", "warning");
       return;
     }
     const authHeaders = await manualAnalysisAuthHeaders();
@@ -2865,6 +2942,12 @@
       recommendation: normalizeRecommendation(useHistoricalEvaluation
         ? firstValue(displayEvaluation.risk_band, displayEvaluation.band, displayEvaluation.recommendation)
         : firstValue(source.recommendation, source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)),
+      recommendationConditions: arrayValue(firstValue(source.recommendation_conditions, source.recommendationConditions, []))
+        .map((value) => stringValue(value).replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8),
+      recommendationEvidenceCount: Math.max(0, numberOrNull(firstValue(
+        source.recommendation_evidence_count,
+        source.recommendationEvidenceCount,
+      )) ?? 0),
       decision: normalizeDecision(firstValue(latestDecision.choice, source.decision, source.manager_decision, source.human_decision)),
       decisionComment: stringValue(firstValue(latestDecision.rationale, source.decision_comment, source.comment, source.manager_comment), ""),
       decidedBy: stringValue(firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
@@ -2992,23 +3075,23 @@
     const reasonCode = stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), "");
     const reviewCodes = arrayValue(firstValue(explanation.review_codes, explanation.reviewCodes, [])).map((value) => stringValue(value)).filter(Boolean);
     const defaultFails = arrayValue(firstValue(explanation.default_fail_details, explanation.defaultFailDetails, []));
-    if (eligibility === "PASS") {
-      return "활성화된 필수 조건이 PASS 경로와 일치합니다. 참가 자격과 별개로 준비도·증빙·사업 리스크를 함께 확인한 뒤 최종 입찰 여부를 결정하세요.";
+    if (["PASS", "PASS_CURRENT", "PASS_EXCEPTION"].includes(eligibility)) {
+      return "필수 참가조건과 현재 확인된 회사 정보가 일치합니다. 마감일 기준 증빙과 제출 준비 상태를 확인하세요.";
     }
     if (eligibility === "REVIEW") {
       const codes = reviewCodes.length ? ` (${reviewCodes.join(", ")})` : reasonCode ? ` (${reasonCode})` : "";
-      return `PASS 조건과 바로 일치하지 않지만 연결된 검토 예외${codes}가 확인되었습니다. 담당자가 원문과 최신 증빙을 확인해야 최종 판단할 수 있습니다.`;
+      return `바로 확정할 수 없는 조건${codes}이 있습니다. 담당자가 원문과 최신 증빙을 확인해야 합니다.`;
     }
     if (eligibility === "FAIL") {
       const condition = stringValue(firstValue(defaultFails[0]?.failed_condition, defaultFails[0]?.failedCondition), "필수 참가 조건");
-      return `${condition}이 PASS 경로와 일치하지 않았고 적용 가능한 REVIEW 예외가 없어 DEFAULT FAIL로 판정되었습니다. 원문 조건과 마감일 당시 회사 사실을 확인하세요.`;
+      return `${condition}을 충족하지 못한 것으로 확인되었습니다. 원문 조건과 마감일 당시 회사 정보를 다시 확인하세요.`;
     }
-    return "평가 결과가 아직 생성되지 않았습니다. 공고 버전과 자격 조건을 등록한 뒤 결정론적 평가를 실행하세요.";
+    return "평가 결과가 아직 생성되지 않았습니다. 공고 버전과 자격 조건을 등록한 뒤 규칙 기반 평가를 실행하세요.";
   }
 
   function normalizeRequirement(item, index) {
     if (typeof item === "string") {
-      return { id: `req-${index + 1}`, title: item, description: "근거 확인 필요", status: "UNKNOWN", evidenceId: "" };
+      return { id: `req-${index + 1}`, title: item, description: "근거 확인 필요", status: "UNKNOWN", mandatory: true, evidenceId: "" };
     }
     const source = item && typeof item === "object" ? item : {};
     return {
@@ -3016,6 +3099,7 @@
       title: stringValue(firstValue(source.title, source.label, source.name, source.condition, source.requirement), `자격 조건 ${index + 1}`),
       description: stringValue(firstValue(source.message, source.description, source.detail, source.reason, source.explanation, source.source_excerpt), "근거 확인 필요"),
       status: normalizeEligibility(firstValue(source.result, source.status, source.judgement)),
+      mandatory: booleanValue(source.mandatory) ?? true,
       evidenceId: stringValue(firstValue(source.evidence_id, source.evidenceId, source.evidence_key, source.source_location), ""),
       reasonCode: stringValue(firstValue(source.reason_code, source.pass_rule_id, source.linked_review_code), ""),
     };
@@ -3188,9 +3272,10 @@
     if (Array.isArray(value)) {
       return value.map((item, index) => {
         if (typeof item === "number") return { label: `리스크 ${index + 1}`, score: clamp(item, 0, 100) };
+        const score = numberOrNull(firstValue(item?.score, item?.value));
         return {
           label: stringValue(firstValue(item?.label, item?.name, item?.axis), `리스크 ${index + 1}`),
-          score: clamp(numberOrNull(firstValue(item?.score, item?.value)) ?? 0, 0, 100),
+          score: score === null ? null : clamp(score, 0, 100),
         };
       });
     }
@@ -3203,7 +3288,10 @@
         operation: "운영 부담",
         document: "문서 품질",
       };
-      return Object.entries(value).map(([label, score]) => ({ label: labels[label] || label, score: clamp(numberOrNull(score) ?? 0, 0, 100) }));
+      return Object.entries(value).map(([label, valueScore]) => {
+        const score = numberOrNull(valueScore);
+        return { label: labels[label] || label, score: score === null ? null : clamp(score, 0, 100) };
+      });
     }
     return [];
   }
@@ -3233,6 +3321,10 @@
       urgentCount: derived.urgentCount,
       cancelledCount: numberOrNull(firstValue(kpis.cancelled_count, kpis.cancelledCount)) ?? derived.cancelledCount,
       endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? derived.endedCount,
+      resultMissingCount: numberOrNull(firstValue(
+        kpis.result_missing_count,
+        kpis.resultMissingCount,
+      )) ?? derived.resultMissingCount,
       undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
@@ -3253,7 +3345,7 @@
       newCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN").length,
       reviewCount: notices.filter(needsAnalysisOrReview).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
-      goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO").length,
+      goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO").length,
       urgentCount: notices.filter((notice) => {
         if (noticeLifecycleStatus(notice) !== "OPEN") return false;
         const days = daysUntil(notice.deadline);
@@ -3261,6 +3353,7 @@
       }).length,
       cancelledCount: notices.filter(isCancelledNotice).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
+      resultMissingCount: notices.filter((notice) => isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.resultStatus).length,
       undecidedCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length,
       lastSync: new Date().toISOString(),
       systemStatus: "online",
@@ -3282,16 +3375,17 @@
     els.kpiReview.textContent = displayNumber(data.reviewCount);
     els.kpiGo.textContent = displayNumber(data.goCount);
     els.kpiUrgent.textContent = displayNumber(data.urgentCount);
-    els.kpiEnded.textContent = displayNumber(data.endedCount);
+    els.kpiResultMissing.textContent = displayNumber(data.resultMissingCount);
+    els.kpiEnded.textContent = displayNumber(data.cancelledCount);
     els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "실시간";
-    els.kpiReviewTrend.textContent = "대기";
-    els.kpiGoTrend.textContent = "추천";
+    els.kpiReviewTrend.textContent = "처리 필요";
+    els.kpiGoTrend.textContent = "AI 판단";
   }
 
   function renderNavigationCounts() {
-    els.navNewCount.textContent = displayNumber(state.dashboard.newCount);
-    els.navReviewCount.textContent = displayNumber(state.dashboard.reviewCount);
-    els.navDecisionCount.textContent = displayNumber(state.dashboard.undecidedCount);
+    els.navNewCount.textContent = displayNumber(state.dashboard.newCount) + "건";
+    els.navReviewCount.textContent = displayNumber(state.dashboard.reviewCount) + "건";
+    els.navDecisionCount.textContent = displayNumber(state.dashboard.undecidedCount) + "건";
   }
 
   function renderDataSource() {
@@ -3299,8 +3393,8 @@
       const stored = state.prespec.stored.records.length;
       const live = state.prespec.live;
       els.dataSourceLabel.textContent = live.searched
-        ? `사전규격 · 저장 DB ${formatNumber(stored)}건 · 나라장터 ${formatNumber(live.apiCalls)}회 · AI 모델 0회`
-        : `사전규격 저장 DB ${formatNumber(stored)}건 · 저장 검색 PPS 0회 · AI 모델 0회`;
+        ? `사전규격 · 저장 자료 ${formatNumber(stored)}건 · 나라장터 조회 ${formatNumber(live.apiCalls)}회 · 문서 분석 0회`
+        : `사전규격 저장 자료 ${formatNumber(stored)}건 · 외부 조회 0회 · 문서 분석 0회`;
       return;
     }
     if (state.currentView === "closed") {
@@ -3312,15 +3406,15 @@
     if (state.currentView === "awards") {
       const data = state.companyAwards;
       els.dataSourceLabel.textContent = data.searched
-        ? `나라장터 낙찰정보 실시간 조회 · ${formatNumber(data.apiCalls)} API 호출 · PAI LOOP DB 미저장`
+        ? `나라장터 낙찰정보 실시간 조회 · 외부 조회 ${formatNumber(data.apiCalls)}회 · PAI LOOP 미저장`
         : "나라장터 낙찰정보 · 버튼 실행 시에만 외부 조회";
       return;
     }
     if (state.currentView === "performance") {
       const summary = state.performance.summary;
       els.dataSourceLabel.textContent = summary
-        ? `PUBLIC_DERIVED · ${stringValue(summary.datasetVersion, "버전 미확인")} · 비식별 공개 snapshot ${formatNumber(summary.recordCount)}건`
-        : "PUBLIC_DERIVED · 공개 실적 데이터 확인 중";
+        ? `공개·비식별 자료 · ${stringValue(summary.datasetVersion, "버전 미확인")} · 저장본 ${formatNumber(summary.recordCount)}건`
+        : "공개·비식별 실적 자료 확인 중";
       return;
     }
     if (state.source === "api") {
@@ -3329,11 +3423,11 @@
       const manualCount = state.notices.filter((notice) => notice.sourceKind === "MANUAL").length;
       const composition = `조달청 ${formatNumber(ppsCount)}건 · 수동 ${formatNumber(manualCount)}건 · 합성 ${formatNumber(syntheticCount)}건`;
       const accessLabel = state.accessMode === "PUBLIC_READ_ONLY" ? " · 공개 읽기 전용" : "";
-      els.dataSourceLabel.textContent = state.sourceReason ? `실시간 API${accessLabel} · ${composition} · ${state.sourceReason}` : `실시간 API${accessLabel} · ${composition}`;
+      els.dataSourceLabel.textContent = state.sourceReason ? `실시간 연결${accessLabel} · ${composition} · ${state.sourceReason}` : `실시간 연결${accessLabel} · ${composition}`;
     } else if (state.source === "demo") {
       els.dataSourceLabel.textContent = "데모 예시 데이터 · 실제 판정 결과가 아닙니다";
     } else if (state.source === "error") {
-      els.dataSourceLabel.textContent = "운영 API 연결 오류 · 재시도 필요";
+      els.dataSourceLabel.textContent = "운영 서버 연결 오류 · 재시도 필요";
     } else {
       els.dataSourceLabel.textContent = "데이터 출처 확인 중";
     }
@@ -3353,17 +3447,18 @@
       if (!globalSearch) {
         if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
         if (state.currentView === "review" && !needsAnalysisOrReview(notice)) return false;
-        if (state.currentView === "go" && notice.recommendation !== "GO") return false;
+        if (state.currentView === "go" && effectiveRecommendation(notice) !== "GO") return false;
         if (state.currentView === "urgent") {
           const days = daysUntil(notice.deadline);
           if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
         }
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
+        if (state.currentView === "result-missing" && (!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.resultStatus)) return false;
         if (state.currentView === "undecided" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
-      if (eligibility !== "all" && notice.eligibilityStatus !== eligibility) return false;
-      if (recommendation !== "all" && notice.recommendation !== recommendation) return false;
+      if (eligibility !== "all" && effectiveEligibilityStatus(notice) !== eligibility) return false;
+      if (recommendation !== "all" && effectiveRecommendation(notice) !== recommendation) return false;
       const searchable = `${notice.title} ${notice.agency} ${notice.noticeNumber} ${notice.noticeKey}`
         .replace(/\s+/g, " ")
         .toLocaleLowerCase("ko-KR");
@@ -3423,9 +3518,10 @@
   }
 
   function analysisPriorityRank(notice) {
-    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "PASS") return 0;
+    const eligibility = effectiveEligibilityStatus(notice);
+    if (notice.analysisState === "EVALUATED" && eligibility.startsWith("PASS")) return 0;
     if (isActionableEligibilityReview(notice)) return 1;
-    if (notice.analysisState === "EVALUATED" && notice.eligibilityStatus === "FAIL") return 3;
+    if (notice.analysisState === "EVALUATED" && eligibility === "FAIL") return 3;
     return 2;
   }
 
@@ -3450,7 +3546,7 @@
 
   function isActionableEligibilityReview(notice) {
     return notice.analysisState === "EVALUATED"
-      && notice.eligibilityStatus === "REVIEW"
+      && effectiveEligibilityStatus(notice) === "REVIEW"
       && !isDocumentQualityReview(notice);
   }
 
@@ -3527,24 +3623,26 @@
     const readiness = displayAnalyzed ? formatScore(notice.readinessScore) : "미산정";
     const readinessClass = displayAnalyzed ? scoreClass(notice.readinessScore) : "is-unknown";
     return `
-      <tr class="notice-row" data-notice-key="${escapeAttribute(notice.noticeKey)}">
+      <tr class="notice-row ${operatorDecisionClass(notice)}" data-notice-key="${escapeAttribute(notice.noticeKey)}">
         <td>
-          <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
+          <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
-            <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.agency)}</span><span class="dot-divider">${escapeHtml(formatBudget(notice.budget))}</span></span>
+            <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.demandAgency || notice.agency)}</span></span>
             ${notice.historicalAnalysis ? `<span class="notice-analysis-reason" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 120))}</span>` : analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
           ${manualAnalysisAction(notice, "table")}
         </td>
-        <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.date)}<small>${escapeHtml(deadline.relative)}</small></span></td>
+        <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}<small>${escapeHtml(deadline.date)} ${escapeHtml(deadline.time || "시각 미확인")} KST</small></span></td>
+        <td><span class="budget-cell">${escapeHtml(formatBudget(notice.budget))}</span></td>
         <td>${analysisStatusPill(notice)}</td>
-        <td><div class="score-cell ${readinessClass}"><strong class="${displayAnalyzed ? "" : "metric-pending"}">${readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${displayAnalyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
+        <td><div class="score-cell ${readinessClass}"><strong class="${displayAnalyzed ? "" : "metric-pending"}">${displayAnalyzed ? `${readiness}/100` : readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${displayAnalyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
         <td><span class="risk-score ${displayAnalyzed ? riskClass(notice.riskScore) : "is-unknown"}">${displayAnalyzed ? riskDisplayValue(notice) : "미산정"}</span></td>
         <td>${analysisRecommendationPill(notice)}</td>
+        <td>${operatorDecisionIndicator(notice)}</td>
         <td>
-          <button class="row-arrow" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+          <button class="detail-link-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">
+            전체 상세 보기
           </button>
         </td>
       </tr>`;
@@ -3558,28 +3656,26 @@
     const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const pendingLabel = notice.analysisState === "ANALYZED" ? "판단 대기 사유" : "미분석 사유";
     return `
-      <article class="notice-card" data-notice-key="${escapeAttribute(notice.noticeKey)}">
-        <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세보기">
+      <article class="notice-card ${operatorDecisionClass(notice)}" data-notice-key="${escapeAttribute(notice.noticeKey)}">
+        <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">
           <span class="notice-card__head">
             <span>${sourceKindBadge(notice)} ${noticeLifecycleBadge(notice)} ${analysisStatusPill(notice)}</span>
             <span class="notice-card__deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}</span>
           </span>
           <h3>${escapeHtml(notice.title)}</h3>
-          <p>${escapeHtml(notice.agency)} · ${escapeHtml(formatBudget(notice.budget))}</p>
+          <p>${escapeHtml(notice.demandAgency || notice.agency)} · 추정가격 ${escapeHtml(formatBudget(notice.budget))}</p>
           ${notice.historicalAnalysis ? `<span class="notice-card__analysis-reason">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 140))}</span>` : analyzed ? "" : `<span class="notice-card__analysis-reason">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 140))}</span>`}
           ${departmentPriorityBadge(notice)}
           <span class="notice-card__metrics">
-            <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 준비도" : "준비도"}</small><strong class="${displayAnalyzed ? "" : "metric-pending"}">${displayAnalyzed ? formatScore(notice.readinessScore) : "미산정"}</strong></span>
+            <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 제출 준비도" : "제출 준비도"}</small><strong class="${displayAnalyzed ? "" : "metric-pending"}">${displayAnalyzed ? `${formatScore(notice.readinessScore)}/100` : "미산정"}</strong></span>
             <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 리스크" : "리스크"}</small><strong class="${displayAnalyzed && notice.riskScore !== null ? "" : "metric-pending"}">${displayAnalyzed ? riskDisplayValue(notice) : "미산정"}</strong></span>
           </span>
         </button>
         <footer class="notice-card__foot">
-          ${analysisRecommendationPill(notice)}
+          <span class="notice-card__axes">${analysisRecommendationPill(notice)}${operatorDecisionIndicator(notice)}</span>
           <span class="notice-card__actions">
             ${manualAnalysisAction(notice, "card")}
-            <button class="recommendation-arrow" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 상세 패널 열기">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
-            </button>
+            <button class="detail-link-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">전체 상세 보기</button>
           </span>
         </footer>
       </article>`;
@@ -3635,8 +3731,8 @@
     if (state.source !== "api") {
       return unavailable(
         "API_MODE_REQUIRED",
-        "운영 API 연결 필요",
-        "운영 API에 연결된 화면에서만 공고 분석을 실행할 수 있습니다.",
+        "운영 서버 연결 필요",
+        "운영 서버에 연결된 화면에서만 공고 분석을 실행할 수 있습니다.",
       );
     }
     if (!state.manualAnalysisEnabled) {
@@ -3712,12 +3808,12 @@
       : `첨부 목록 재확인(서버 상한 ${formatNumber(policyMax)}개)`;
     const retryingReviewed = !evaluationOnly && notice.analysisAttempted;
     const usage = recomputeCurrent
-      ? "현재 첨부 감사가 완료되어 Claude 요청 없이 저장된 근거로 자격·정량 판단만 다시 계산합니다."
+      ? "현재 첨부 검증이 완료되어 문서 재분석 없이 저장된 근거로 자격·정량 판단만 다시 계산합니다."
       : evaluationOnly
-      ? "현재 첨부 감사가 완료되어 Claude 요청 없이 저장된 근거로 판단만 실행합니다."
+      ? "현재 첨부 검증이 완료되어 문서 재분석 없이 저장된 근거로 판단만 실행합니다."
       : retryingReviewed
-        ? `${knownScope} · 이미 승인된 첨부는 재사용하고, 현재 검토/실패 첨부와 미감사 첨부만 이번 요청에서 한 번씩 재검증합니다. 절대 상한은 Claude 요청 ${formatNumber(policyMax * 2)}회입니다.`
-        : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 절대 상한은 Claude 요청 ${formatNumber(policyMax * 2)}회입니다. 이미 감사됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
+        ? `${knownScope} · 이미 승인된 첨부는 재사용하고, 현재 검토/실패 첨부와 미검증 첨부만 이번 요청에서 한 번씩 재검증합니다. 문서 분석 요청 상한은 ${formatNumber(policyMax * 2)}회입니다.`
+        : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 문서 분석 요청 상한은 ${formatNumber(policyMax * 2)}회입니다. 이미 검증됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
     return window.confirm(
       `${notice.title}\n\n모든 공개 첨부를 확인한 뒤 자격·정량 판단을 갱신합니다.\n${usage}\n\n${recomputeCurrent ? "재판단" : "분석"}을 시작할까요?`,
     );
@@ -3836,18 +3932,27 @@
     els.systemStatusDot.className = "status-dot";
     if (mode === "online") {
       els.systemStatusDot.classList.add("is-online");
-      els.systemStatusText.textContent = state.accessMode === "PUBLIC_READ_ONLY" ? "온라인 · 읽기 전용" : "운영 API 연결됨";
+      els.systemStatusText.textContent = state.accessMode === "PUBLIC_READ_ONLY" ? "온라인 · 읽기 전용" : "온라인 · 운영 연결됨";
     } else if (mode === "demo") {
       els.systemStatusDot.classList.add("is-demo");
       els.systemStatusText.textContent = "데모 모드";
     } else if (mode === "error") {
       els.systemStatusDot.classList.add("is-error");
       els.systemStatusText.textContent = "연결 오류";
+    } else if (mode === "delayed") {
+      els.systemStatusDot.classList.add("is-demo");
+      els.systemStatusText.textContent = "연결 지연 · 10초 초과";
     } else {
       els.systemStatusText.textContent = "연결 확인 중";
     }
     const sync = state.dashboard.lastSync;
-    els.lastSyncText.textContent = sync ? `마지막 동기화 ${formatRelativeDateTime(sync)}` : "마지막 동기화 —";
+    const queryAt = state.lastSuccessfulQueryAt;
+    if (queryAt) {
+      const syncLabel = sync ? ` · 데이터 동기화 ${formatKstDateTime(sync)}` : "";
+      els.lastSyncText.textContent = `현재 화면: 서버 저장본 · 조회 ${formatKstDateTime(queryAt)}${syncLabel}`;
+    } else {
+      els.lastSyncText.textContent = sync ? `서버 저장본 · 데이터 동기화 ${formatKstDateTime(sync)}` : "서버 저장본 · 조회 시각 확인 중";
+    }
   }
 
   function showDemoBanner(reason) {
@@ -3902,7 +4007,7 @@
   }
 
   function isNoticeListView(view = state.currentView) {
-    const listViews = ["all", "new", "review", "go", "urgent", "ended", "undecided", "closed", "collected", "awards"];
+    const listViews = ["all", "new", "review", "go", "urgent", "ended", "result-missing", "undecided", "closed", "collected", "awards"];
     return listViews.includes(view);
   }
 
@@ -3935,6 +4040,7 @@
       go: ["GO 후보", "GO 추천 공고"],
       urgent: ["마감 임박", `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
+      "result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"],
       undecided: ["결정 관리", "승인·담당자 지정 대상"],
       prespec: ["공고 탐색", "사전규격 탐색"],
       closed: ["결과 기록", "결과가 확인된 공고"],
@@ -3945,7 +4051,7 @@
     els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];
     const navigationView = nextView === "prespec"
       ? "new"
-      : ["collected", "go", "urgent", "ended"].includes(nextView) ? "all" : nextView;
+      : ["collected", "go", "urgent", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
     const showDashboardCards = nextView === "all";
     els.navItems.forEach((item) => {
       const active = item.dataset.view === navigationView;
@@ -4053,11 +4159,12 @@
   }
 
   function handleNoticeActivation(event) {
-    const target = event.target.closest("[data-open-notice]");
-    if (!target) return;
-    const row = target.closest("[data-notice-key]");
+    if (event.target.closest("[data-manual-analysis]")) return;
+    const explicitTarget = event.target.closest("[data-open-notice]");
+    const row = event.target.closest("[data-notice-key]");
     if (!row) return;
-    openDetail(row.dataset.noticeKey, target);
+    if (!explicitTarget && event.target.closest("button, a, input, select, textarea")) return;
+    openDetail(row.dataset.noticeKey, explicitTarget || row);
   }
 
   function handleManualAnalysisActivation(event) {
@@ -4125,7 +4232,7 @@
       }
       const outcome = stringValue(payload.outcome).toUpperCase();
       const callCount = Math.max(Number(payload.openai_calls) || 0, 0);
-      const message = `${stringValue(payload.message, "분석 상태를 갱신했습니다.")} · Claude ${formatNumber(callCount)}회`;
+      const message = `${stringValue(payload.message, "분석 상태를 갱신했습니다.")} · 문서 분석 ${formatNumber(callCount)}회`;
       const reloadQuantitative = quantitativeEstimateIsVisible(noticeKey);
       await loadApplicationData({ forceApi: true });
       invalidateQuantitativeEstimate(noticeKey, { forceReload: reloadQuantitative });
@@ -4236,10 +4343,15 @@
     renderDetail(baseNotice);
     els.detailDrawer.classList.add("is-open");
     els.detailDrawer.setAttribute("aria-hidden", "false");
-    els.drawerScrim.hidden = false;
+    els.drawerScrim.hidden = true;
     document.body.classList.add("is-locked");
     selectTab("overview");
-    requestAnimationFrame(() => els.closeDetailButton.focus());
+    requestAnimationFrame(() => els.closeDetailButton.focus({ preventScroll: true }));
+    window.setTimeout(() => {
+      if (els.detailDrawer.classList.contains("is-open") && !els.detailDrawer.contains(document.activeElement)) {
+        els.closeDetailButton.focus({ preventScroll: true });
+      }
+    }, 280);
     void loadTeamsMockLogs(noticeKey);
 
     if (updateRoute) updateNoticeRoute(noticeKey);
@@ -4258,11 +4370,38 @@
       if (merged.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
       applyFilters();
     } catch (error) {
-      showToast("상세 API 연결 오류", `${humanizeError(error)} · 목록에 포함된 정보로 표시합니다.`, "warning");
+      showToast("상세정보 연결 오류", `${humanizeError(error)} · 목록에 포함된 정보로 표시합니다.`, "warning");
     } finally {
       state.detailLoading = false;
       els.drawerLoading.hidden = true;
+      requestAnimationFrame(() => {
+        if (els.detailDrawer.classList.contains("is-open") && !els.detailDrawer.contains(document.activeElement)) {
+          els.closeDetailButton.focus({ preventScroll: true });
+        }
+      });
     }
+  }
+
+  function moveDetailSelection(delta) {
+    const current = state.selectedNotice;
+    if (!current || !Number.isInteger(delta) || delta === 0) return;
+    const notices = state.filteredNotices.length ? state.filteredNotices : state.notices;
+    const currentIndex = notices.findIndex((notice) => notice.noticeKey === current.noticeKey);
+    const next = notices[currentIndex + delta];
+    if (!next) return;
+    const listTrigger = state.selectedTrigger;
+    void openDetail(next.noticeKey, listTrigger, { updateRoute: true });
+  }
+
+  function renderDetailPosition(notice) {
+    const notices = state.filteredNotices.length ? state.filteredNotices : state.notices;
+    const index = notices.findIndex((item) => item.noticeKey === notice.noticeKey);
+    const hasPosition = index >= 0;
+    els.detailPosition.textContent = hasPosition
+      ? `${formatNumber(index + 1)} / ${formatNumber(notices.length)} · J/K 이동`
+      : "현재 공고";
+    els.previousNoticeButton.disabled = !hasPosition || index === 0;
+    els.nextNoticeButton.disabled = !hasPosition || index === notices.length - 1;
   }
 
   function renderDetail(notice) {
@@ -4275,13 +4414,20 @@
     const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
     const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const qualityReview = isDocumentQualityReview(notice);
+    const effectiveEligibility = effectiveEligibilityStatus(notice);
+    const eligibilitySummaryClass = cancelled || !analyzed || qualityReview
+      ? "summary-metric--pending"
+      : `summary-metric--eligibility summary-metric--eligibility-${effectiveEligibility.toLowerCase()}`;
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
-    els.openSourceDialogButton.title = notice.sourceUrl ? "조달청 원문 링크 확인" : "공개 가능한 원문 링크 상태 확인";
+    renderDetailPosition(notice);
+    els.openSourceDialogButton.title = notice.sourceUrl ? "나라장터 원문 링크 확인" : "공개 가능한 원문 링크 상태 확인";
     renderManualAnalysisDetailAction(notice);
     els.detailTitle.textContent = notice.title;
-    els.detailAgency.textContent = [notice.agency, notice.demandAgency].filter(Boolean).join(" · ");
+    els.detailAgency.textContent = notice.demandAgency
+      ? `수요기관 ${notice.demandAgency}${notice.agency && notice.agency !== notice.demandAgency ? ` · 공고기관 ${notice.agency}` : ""}`
+      : `수요기관 ${notice.agency}`;
     els.detailTags.innerHTML = [
       `<span class="detail-tag">${escapeHtml(notice.category)}</span>`,
       `<span class="detail-tag">${escapeHtml(notice.region)}</span>`,
@@ -4290,16 +4436,19 @@
       deadline.urgent ? `<span class="detail-tag detail-tag--urgent">${escapeHtml(deadline.relative)}</span>` : "",
     ].join("");
     els.detailFacts.innerHTML = [
-      detailFact("마감일", `${deadline.date} ${deadline.time}`.trim()),
-      detailFact("사업예산", formatBudget(notice.budget)),
+      detailFact("입찰서 제출 마감", `${deadline.absolute || deadline.date} ${deadline.time}`.trim() + (deadline.time ? " KST" : "")),
+      detailFact("추정가격", formatBudget(notice.budget)),
       detailFact("계약방식", notice.method),
     ].join("");
     els.decisionSummary.innerHTML = [
-      summaryMetric("참가 자격", cancelled ? "취소 공고" : displayAnalyzed ? analysisStatusLabel(notice) : "미분석", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
-      summaryMetric(cancelled ? "준비도 / 증빙" : notice.historicalAnalysis ? "당시 준비도 / 증빙" : "준비도 / 증빙", cancelled ? "현재 판단 미제공" : qualityReview ? "근거 보완 후 산정" : displayAnalyzed ? `${formatScore(notice.readinessScore)} / ${formatScore(notice.evidenceCoverage)}` : "미산정", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
-      summaryMetric("AI 추천", analysisRecommendationLabel(notice), cancelled || !analyzed || qualityReview ? "summary-metric--pending" : "summary-metric--recommendation"),
+      summaryMetric("참가자격", cancelled ? "취소 공고" : displayAnalyzed ? analysisStatusLabel(notice) : "미분석", eligibilitySummaryClass),
+      summaryMetric("AI 판단", analysisRecommendationLabel(notice), cancelled || !analyzed || qualityReview ? "summary-metric--pending" : "summary-metric--recommendation"),
+      summaryMetric("담당자 판단", notice.decision ? DECISION_LABELS[notice.decision] : "미결정", notice.decision ? "summary-metric--operator" : "summary-metric--pending"),
+      summaryMetric(notice.historicalAnalysis ? "당시 제출 준비도" : "제출 준비도", cancelled ? "현재 판단 미제공" : qualityReview ? "근거 보완 후 산정" : displayAnalyzed ? `${formatScore(notice.readinessScore)}/100` : "미산정", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
+      summaryMetric("판정 근거", evidence.length ? `${formatNumber(evidence.length)}건 연결` : "연결 확인 필요", evidence.length ? "" : "summary-metric--pending"),
       awardHistorySummaryMetric(notice),
     ].join("");
+    renderRecommendationCondition(notice);
     els.analysisPipeline.innerHTML = renderPipeline(notice);
     els.detailSummary.textContent = cancelled
       ? `${notice.analysisReason || "취소 공고로 현재 입찰 검토와 담당자 판단 대상에서 제외되었습니다."}${notice.historicalAnalysis ? " 과거 분석은 현재 상태가 아닌 ‘당시 판정 참고’로만 제공합니다." : ""}`
@@ -4333,6 +4482,27 @@
     renderTeamsPreview(notice);
     renderExistingDecision(notice);
     els.drawerScroll.scrollTop = 0;
+  }
+
+  function renderRecommendationCondition(notice) {
+    const conditional = ["CONDITIONAL_GO", "HOLD"].includes(notice.recommendation)
+      && notice.analysisState === "EVALUATED"
+      && !isCancelledNotice(notice)
+      && !isDocumentQualityReview(notice);
+    const conditions = arrayValue(notice.recommendationConditions);
+    els.recommendationCondition.hidden = !conditional;
+    if (!conditional) {
+      els.recommendationCondition.replaceChildren();
+      return;
+    }
+    const hasPublishedCondition = conditions.length > 0;
+    const heading = hasPublishedCondition
+      ? `조건부 GO · 확인할 조건 ${formatNumber(conditions.length)}건`
+      : "권고 보류 · 조건 근거 없음";
+    const conditionContent = hasPublishedCondition
+      ? `<ul>${conditions.map((condition) => `<li>${escapeHtml(condition)}</li>`).join("")}</ul>`
+      : "<span>조건부 판단을 표시할 공개 근거가 없습니다. 담당자가 원문을 확인하세요.</span>";
+    els.recommendationCondition.innerHTML = `<strong>${escapeHtml(heading)}</strong>${conditionContent}`;
   }
 
   function renderManualAnalysisDetailAction(notice) {
@@ -4433,7 +4603,7 @@
     } else if (notice.analysisState === "EVALUATED") {
       stateLabel = "평가 완료";
       title = "문서별 구조화 요약이 제공되지 않았습니다";
-      description = "종합 평가는 완료됐지만 현재 API 응답에는 안전하게 표시할 문서별 요약이 없습니다.";
+      description = "종합 평가는 완료됐지만 현재 서버 응답에는 안전하게 표시할 문서별 요약이 없습니다.";
       els.documentAnalysisState.classList.add("is-ready");
     }
 
@@ -4556,13 +4726,15 @@
         const outcome = stringValue(item.outcome).toUpperCase();
         const publicProfileMatches = ["PASS_CURRENT", "PASS_EXCEPTION"].includes(outcome);
         const status = publicProfileMatches
-          ? aggregateAllowsPass ? "PASS" : "REVIEW"
+          ? aggregateAllowsPass ? outcome : "REVIEW"
           : outcome === "REVIEW" || item.blocking
             ? "REVIEW"
             : "UNKNOWN";
         const description = publicProfileMatches
           ? aggregateAllowsPass
-            ? "공개 정책 보조 근거상 현재 일치합니다. 공고 마감일 기준으로 최신 증빙을 다시 확인하세요."
+            ? outcome === "PASS_EXCEPTION"
+              ? "허용 예외에 따라 현재 충족합니다. 예외 적용 조건과 마감일 기준 증빙을 다시 확인하세요."
+              : "현재 회사 정보와 일치합니다. 공고 마감일 기준으로 최신 증빙을 다시 확인하세요."
             : "공개 정책 보조 근거상 현재 일치하지만 종합 판단은 확정되지 않았습니다. 공고 마감일 기준으로 다시 확인하세요."
           : stringValue(item.message, "공개 정책 보조 근거입니다. 공고 마감일 기준으로 최신 증빙을 확인하세요.");
         return {
@@ -4681,7 +4853,7 @@
     }
 
     const data = preview.data;
-    els.privateMatchBadge.textContent = data.blockingActions ? `확인 전 BLOCK ${data.blockingActions}건` : "온라인 프로필 적용";
+    els.privateMatchBadge.textContent = data.blockingActions ? `확인 전 보류 ${data.blockingActions}건` : "온라인 프로필 적용";
     els.privateMatchBadge.classList.add(data.blockingActions ? "is-review" : "is-ready");
     els.privateMatchBody.innerHTML = `
       <div class="private-match-summary" aria-label="판단 기준 4분류 요약">
@@ -4694,7 +4866,7 @@
       <div class="private-match-list">
         ${data.matches.length ? data.matches.map(renderPrivateMatchItem).join("") : '<div class="private-match-waiting"><strong>표시할 요구조건이 없습니다</strong><span>구조화 요구조건이 추가되면 4분류 판단 기준을 표시합니다.</span></div>'}
       </div>`;
-    els.privateMatchNote.textContent = "PASS 근거도 공고 마감일 기준으로 다시 확인합니다. 체크리스트와 정보는 그 자체로 참가자격 REVIEW를 만들지 않습니다.";
+    els.privateMatchNote.textContent = "충족 근거도 공고 마감일 기준으로 다시 확인합니다. 체크리스트와 정보는 그 자체로 참가자격 ‘확인 필요’를 만들지 않습니다.";
   }
 
   function privateMatchMetric(label, value, unit) {
@@ -4703,26 +4875,28 @@
 
   function renderPrivateMatchItem(item) {
     const outcomeLabels = {
-      PASS_CURRENT: "현재 PASS · 마감일 재확인",
-      PASS_EXCEPTION: "예외 PASS · 마감일 재확인",
-      BLOCK_UNTIL_CONFIRMED: "참석 확인 전 BLOCK",
+      PASS_CURRENT: "현재 충족 · 마감일 재확인",
+      PASS_EXCEPTION: "조건부 충족 · 적용조건 재확인",
+      BLOCK_UNTIL_CONFIRMED: "확인 전 보류",
       READY: "체크 준비",
       CHECK_REQUIRED: "체크 필요",
       ACKNOWLEDGED: "정보 확인",
       INFORMATION: "정보",
-      REVIEW: "REVIEW",
+      REVIEW: "확인 필요",
     };
-    const stateClass = item.blocking
+    const stateClass = ({
+      PASS_CURRENT: "is-pass_current",
+      PASS_EXCEPTION: "is-pass_exception",
+      REVIEW: "is-review",
+    })[item.outcome] || (item.blocking
       ? "is-blocking"
-      : item.outcome.startsWith("PASS")
-        ? "is-pass"
-        : item.category === "CHECKLIST"
-          ? "is-action"
-          : "is-unmapped";
+      : item.category === "CHECKLIST"
+        ? "is-action"
+        : "is-unmapped");
     const evidenceMarkup = item.evidence
-      ? `<div class="private-match-candidates"><span>공개 근거</span><span>${escapeHtml(item.evidence.name)}</span><code class="private-fact-key" title="${escapeAttribute(item.evidence.sha256)}">SHA-256 ${escapeHtml(item.evidence.sha256.slice(0, 12))}…</code><span>${escapeHtml(item.evidence.fileName)}</span></div>`
+      ? `<div class="private-match-candidates"><span>공개 근거</span><span>${escapeHtml(item.evidence.name)}</span><span>${escapeHtml(item.evidence.fileName)}</span></div>`
       : item.companyFactKey
-        ? `<div class="private-match-candidates"><span>판단 기준</span><code class="private-fact-key">${escapeHtml(item.companyFactKey)}</code></div>`
+        ? '<div class="private-match-candidates"><span>판단 기준</span><span>공개 회사정보 연결</span></div>'
         : "";
     const detailLines = item.detailLines.slice();
     if (!item.evidence && !item.companyFactKey && item.evidenceState === "NOT_REQUIRED") {
@@ -4751,6 +4925,7 @@
     const cancelled = isCancelledNotice(notice);
     const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
     const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
+    const effectiveEligibility = effectiveEligibilityStatus(notice);
     const version = notice.latestVersion;
     const extractionComplete = notice.analysisAttachmentCount > 0
       ? notice.analysisAttachmentCoverageComplete
@@ -4767,7 +4942,7 @@
     const steps = [
       { name: "공고 수집", detail: "원문 보존", status: "done" },
       { name: "첨부 추출", detail: extractionDetail, status: extractionComplete ? "done" : "review" },
-      { name: "규칙 판정", detail: cancelled ? "취소 · 현재 판단 비활성" : displayAnalyzed ? analysisStatusLabel(notice) : hasRules ? "분석 대기" : "조건 대기", status: cancelled ? "pending" : displayAnalyzed ? (notice.eligibilityStatus === "REVIEW" ? "review" : "done") : "pending" },
+      { name: "규칙 판정", detail: cancelled ? "취소 · 현재 판단 비활성" : displayAnalyzed ? analysisStatusLabel(notice) : hasRules ? "분석 대기" : "조건 대기", status: cancelled ? "pending" : displayAnalyzed ? (["REVIEW", "UNKNOWN"].includes(effectiveEligibility) ? "review" : "done") : "pending" },
       { name: "담당자 결정", detail: cancelled ? "취소 · 저장 비활성" : notice.decision ? DECISION_LABELS[notice.decision] : "미결정", status: cancelled ? "pending" : notice.decision ? "done" : "pending" },
     ];
     return steps.map((step) => `
@@ -4781,6 +4956,10 @@
     const mode = requirement.status.toLowerCase();
     const icon = requirement.status === "PASS"
       ? '<path d="m5 12 4 4L19 6" />'
+      : requirement.status === "PASS_CURRENT"
+        ? '<circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" />'
+        : requirement.status === "PASS_EXCEPTION"
+          ? '<path d="M12 7v6M12 17h.01" />'
       : requirement.status === "FAIL"
         ? '<path d="m7 7 10 10M17 7 7 17" />'
         : '<path d="M12 7v6M12 17h.01" />';
@@ -4788,6 +4967,7 @@
       <div class="requirement-item is-${escapeAttribute(mode)}">
         <span class="requirement-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${icon}</svg></span>
         <span class="requirement-copy"><strong>${escapeHtml(requirement.title)}</strong><small>${escapeHtml(requirement.description)}</small></span>
+        <span class="requirement-status">${escapeHtml(STATUS_LABELS[requirement.status] || STATUS_LABELS.UNKNOWN)}</span>
         ${requirement.evidenceId ? '<button type="button" class="evidence-jump" data-evidence-jump>근거 보기</button>' : ''}
       </div>`;
   }
@@ -4900,17 +5080,24 @@
     const cancelled = isCancelledNotice(notice);
     const analyzed = notice.historicalAnalysis || (notice.analysisState === "EVALUATED" && !cancelled);
     const risk = notice.riskScore;
+    const axes = analyzed ? notice.riskAxes : [];
+    const verifiedAxes = axes.filter((axis) => numberOrNull(axis.score) !== null).length;
+    const riskReady = risk !== null && verifiedAxes >= 4;
     els.riskTotalLabel.textContent = !analyzed
       ? "분석 전"
-      : risk === null ? "근거 부족" : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${Math.round(risk)}`;
-    const axes = analyzed ? notice.riskAxes : [];
+      : !riskReady
+        ? `산정 보류 · 확인된 축 ${verifiedAxes}/6`
+        : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${Math.round(risk)}/100`;
     els.riskBars.innerHTML = axes.length
-      ? axes.map((axis) => `
-        <div class="risk-row ${riskClass(axis.score)}">
+      ? axes.map((axis) => {
+        const score = numberOrNull(axis.score);
+        return `
+        <div class="risk-row ${score === null ? "is-unknown" : riskClass(score)}">
           <strong>${escapeHtml(axis.label)}</strong>
-          <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${Math.round(axis.score)}점"><span style="width:${clamp(axis.score, 0, 100)}%"></span></span>
-          <span>${Math.round(axis.score)}</span>
-        </div>`).join("")
+          <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${score === null ? "미확인" : `${Math.round(score)}점`}"><span style="width:${score === null ? 0 : clamp(score, 0, 100)}%"></span></span>
+          <span>${score === null ? "미확인" : Math.round(score)}</span>
+        </div>`;
+      }).join("")
       : emptyPanel(analyzed ? "리스크 근거가 아직 부족합니다" : "아직 리스크 분석 전입니다", analyzed ? "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다. 자격·실행·경쟁·수익성·운영·문서 근거 연결이 필요합니다." : "수집된 공고의 첨부·조건 분석이 완료된 뒤 실제 산정값을 표시합니다.");
   }
 
@@ -4918,8 +5105,8 @@
     const loading = status === "loading";
     els.scoreOverview.innerHTML = [
       quantSummaryCard("예상 점수 범위", "미산정", loading ? "배점표 확인 중" : "공고별 산식 필요", "score-card--readiness"),
-      quantSummaryCard("검증 커버리지", "0%", "확정 증빙 기준", "score-card--coverage"),
-      quantSummaryCard("정량 준비도", "GRAY", "참가자격과 별도", "score-card--risk"),
+      quantSummaryCard("배점 근거 확인율", "0%", "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("정량 준비도", "산정 보류", "참가자격과 별도", "score-card--risk"),
     ].join("");
     els.quantSourceStatus.className = `quant-source-status ${status === "error" ? "is-error" : "is-loading"}`;
     els.quantSourceStatus.textContent = loading ? "배점표 확인 중" : status === "error" ? "조회 오류" : "조회 대기";
@@ -4938,18 +5125,18 @@
     els.scoreOverview.innerHTML = [
       scoreCard("준비도", notice.readinessScore, "score-card--readiness", analyzed),
       scoreCard("증빙 커버리지", notice.evidenceCoverage, "score-card--coverage", analyzed),
-      quantSummaryCard("정량 데이터", "DEMO", "명시적 예시", "score-card--risk"),
+      quantSummaryCard("정량 데이터", "예시", "실제 공고 점수 아님", "score-card--risk"),
     ].join("");
     els.quantSourceStatus.className = "quant-source-status is-demo";
     els.quantSourceStatus.textContent = "명시적 데모";
     els.quantOpinion.textContent = "현재 화면은 합성 예시입니다. 실제 공고의 정량점수로 사용하지 마세요.";
-    els.quantSourceAnchor.textContent = "실제 제안요청서 원문 앵커 없음";
+    els.quantSourceAnchor.textContent = "실제 제안요청서 원문 위치 없음";
     els.quantAssumptionList.innerHTML = "<li>데모 데이터는 화면 동작 확인 전용입니다.</li>";
     els.quantTableBody.innerHTML = notice.quantitative.length
       ? notice.quantitative.map(renderQuantRow).join("")
       : `<tr><td colspan="4">${emptyPanel("정량 산식이 연결되지 않았습니다", "실제 평가표 구조화 후 확정점수 또는 예상 범위를 제공합니다.")}</td></tr>`;
     els.quantObservationList.innerHTML = emptyPanel("실제 공개 근거 없음", "명시적 데모에서는 공개 실적을 점수로 적용하지 않습니다.");
-    els.quantSeparationNote.textContent = "DEMO · 정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.";
+    els.quantSeparationNote.textContent = "예시 데이터 · 정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.";
   }
 
   function renderQuantitativeEstimate(data) {
@@ -4981,12 +5168,12 @@
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
     els.scoreOverview.innerHTML = [
       quantSummaryCard("예상 점수 범위", range, sourceDetail, "score-card--readiness"),
-      quantSummaryCard("검증 커버리지", `${formatNumber(coverage, 1)}%`, "CONFIRMED 항목 배점 기준", "score-card--coverage"),
-      quantSummaryCard("정량 준비도", data.readiness_band || "GRAY", readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
+      quantSummaryCard("배점 근거 확인율", `${formatNumber(coverage, 1)}%`, "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("정량 준비도", quantReadinessLabel(data.readiness_band), readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
     ].join("");
 
     const sourceLabels = {
-      SOURCE_VALIDATED: "원문 기계검증",
+      SOURCE_VALIDATED: "원문 검증 완료",
       REVIEW_REQUIRED: "원문 추가 확인",
       INCOMPLETE: "원문 일부",
       MISSING: "배점표 미확보",
@@ -5003,11 +5190,11 @@
     els.quantOpinion.textContent = data.opinion || "정량 의견이 없습니다.";
     const anchor = data.source_anchor;
     els.quantSourceAnchor.textContent = anchor
-      ? `${anchor.document_label} · ${anchor.page ? `PDF ${anchor.page}쪽 · ` : ""}${anchor.section} · SHA-256 ${anchor.document_sha256 ? `${anchor.document_sha256.slice(0, 12)}…` : "미확인"}`
+      ? `${anchor.document_label} · ${anchor.page ? `원문 ${anchor.page}쪽 · ` : ""}${anchor.section}`
       : sourceMissing
-        ? "연결된 정량평가표 원문 앵커 없음"
+        ? "연결된 정량평가표 원문 위치 없음"
         : sourceValidation === "SOURCE_VALIDATED"
-          ? "원문 앵커 검증 완료 · 공개 화면 비공개"
+          ? "원문 위치 검증 완료 · 공개 화면 비공개"
           : notApplicable
             ? "정량평가 비적용 확인"
             : "배점표 후보 확인 · 원문 검증 보류";
@@ -5019,8 +5206,8 @@
       BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING: "배점 구간에 공백 또는 중복이 있습니다.",
       UNIT_NOT_SOURCE_BOUND: "산정 단위를 원문 인용에서 정확히 확인할 수 없습니다.",
       BOUND_UNIT_INCONSISTENT: "배점 구간별 단위가 누락되었거나 서로 다른 환산 단위를 사용합니다.",
-      UNSUPPORTED_UNIT: "현재 결정론적 엔진이 지원하지 않는 단위입니다.",
-      UNSUPPORTED_SCORING_DSL: "현재 결정론적 엔진이 지원하지 않는 산식입니다.",
+      UNSUPPORTED_UNIT: "현재 자동 산정에서 지원하지 않는 단위입니다.",
+      UNSUPPORTED_SCORING_DSL: "현재 자동 산정에서 지원하지 않는 산식입니다.",
       AMBIGUOUS_RULE: "평가기준 문구가 여러 방식으로 해석되어 자동 계산을 보류했습니다.",
       BRACKET_COMPARATOR_MISMATCH: "배점 구간의 비교기호가 서로 일치하지 않습니다.",
       BRACKET_LITERAL_MISMATCH: "배점 구간의 기준 문구를 원문과 일치시킬 수 없습니다.",
@@ -5036,18 +5223,18 @@
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 최신 분석에 미확정 항목이 있어 점수 범위로 표시합니다.",
     };
     const activationReasons = Array.isArray(data.activation_reasons)
-      ? data.activation_reasons.map((item) => `자동 산정 보류: ${activationReasonLabels[item] || item}`)
+      ? data.activation_reasons.map((item) => `자동 산정 보류: ${activationReasonLabels[item] || "원문과 산정 규칙을 추가로 확인해야 합니다."}`)
       : [];
     const quantitativeAssumptions = [...(Array.isArray(data.assumptions) ? data.assumptions : []), ...activationReasons];
     els.quantAssumptionList.innerHTML = quantitativeAssumptions.length
       ? quantitativeAssumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
       : "<li>추가 가정 없음</li>";
     const emptyCriteria = sourceMissing
-      ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 REVIEW로 유지합니다.")
+      ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 확인 필요로 유지합니다.")
       : notApplicable
         ? emptyPanel("정량평가 비적용", "이 공고에는 회사 정량점수를 적용하지 않습니다.")
         : total !== null
-          ? emptyPanel("최신 정량 합계 스냅샷", "회사 사실값과 항목별 원문 근거는 공개하지 않고, 최신 분석의 합계와 범위만 표시합니다.")
+          ? emptyPanel("최신 정량 합계 저장본", "회사 사실값과 항목별 원문 근거는 공개하지 않고, 최신 분석의 합계와 범위만 표시합니다.")
         : emptyPanel("자동 산정 가능한 항목 없음", "배점표는 확인했지만 수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다.");
     els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
       ? data.criteria.map(renderQuantitativeEstimateRow).join("")
@@ -5071,6 +5258,10 @@
     return ({ CONFIRMED: "확정", ESTIMATED: "잠정 범위", UNSCORABLE: "산정 불가", REVIEW: "검토 필요" })[status] || "검토 필요";
   }
 
+  function quantReadinessLabel(value) {
+    return ({ GREEN: "준비됨", YELLOW: "보완 필요", RED: "위험", GRAY: "산정 보류" })[String(value || "").toUpperCase()] || "산정 보류";
+  }
+
   function renderQuantitativeEstimateRow(item) {
     const lower = numberOrNull(item.lower_points);
     const upper = numberOrNull(item.upper_points);
@@ -5079,8 +5270,8 @@
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`}점`;
     const anchor = item.source_anchor;
     const source = anchor
-      ? `${anchor.page ? `PDF ${anchor.page}쪽 · ` : ""}SHA-256 ${anchor.document_sha256 ? `${anchor.document_sha256.slice(0, 10)}…` : "미확인"}`
-      : "원문 앵커 없음";
+      ? `${anchor.page ? `원문 ${anchor.page}쪽` : "원문 위치 확인됨"}`
+      : "원문 위치 없음";
     const floor = numberOrNull(item.rule_floor_points);
     const base = numberOrNull(item.rule_base_points);
     return `<tr>
@@ -5099,7 +5290,7 @@
       <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.status === "CANDIDATE_ONLY" ? "후보 전용 · 점수 확정값 아님" : "정량점수 미적용")}</small></span>
       <strong class="quant-observation-value">${escapeHtml(value)}</strong>
       <p>${escapeHtml(item.rationale)}</p>
-      <code title="${escapeAttribute(item.evidence_key)}">${escapeHtml(String(item.evidence_key).slice(0, 48))}${String(item.evidence_key).length > 48 ? "…" : ""}</code>
+      <span class="quant-observation-evidence">${item.evidence_key ? "공개 근거 연결됨" : "근거 확인 필요"}</span>
     </article>`;
   }
 
@@ -5169,7 +5360,7 @@
       els.historyStatusLabel.classList.add("is-error");
       els.historyStatusText.textContent = items.length
         ? `저장 이력 재조회 실패 · 상세 응답의 저장본을 표시합니다. ${meta.message}`
-        : `저장 이력을 확인하지 못했습니다. 외부 API는 호출하지 않았습니다. ${meta.message}`;
+        : `저장 이력을 확인하지 못했습니다. 외부 조회는 시작하지 않았습니다. ${meta.message}`;
     } else if (status === "demo") {
       els.historyStatusLabel.textContent = items.length ? `예시 ${items.length}건` : "예시 미수집";
       els.historyStatusLabel.classList.add("is-demo");
@@ -5193,17 +5384,17 @@
     const prediction = intelligence?.prediction;
     const coverage = intelligence?.field_coverage;
     if (loading) {
-      els.historyConcentration.innerHTML = `<p class="section-kicker">WINNER CONCENTRATION</p><h4>집중도 계산 중</h4><p>저장 이력을 읽고 있습니다.</p>`;
-      els.historyPrediction.innerHTML = `<p class="section-kicker">MODEL ESTIMATE</p><h4>가격 전략 계산 중</h4><p>외부 API 호출 없이 저장값만 사용합니다.</p>`;
-      els.historyCoverage.innerHTML = `<p class="section-kicker">FIELD COVERAGE</p><h4>필드 확인 중</h4><p>누락값은 사실로 보간하지 않습니다.</p>`;
+      els.historyConcentration.innerHTML = `<p class="section-kicker">낙찰자 집중도</p><h4>집중도 계산 중</h4><p>저장 이력을 읽고 있습니다.</p>`;
+      els.historyPrediction.innerHTML = `<p class="section-kicker">가격 범위 참고</p><h4>가격 전략 계산 중</h4><p>외부 조회 없이 저장값만 사용합니다.</p>`;
+      els.historyCoverage.innerHTML = `<p class="section-kicker">확인 가능한 자료</p><h4>자료 항목 확인 중</h4><p>누락값은 사실로 보간하지 않습니다.</p>`;
       els.historyWarnings.innerHTML = "";
       return;
     }
     if (!intelligence) {
-      const note = status === "demo" ? "데모 이력에는 서버 계산 인텔리전스를 적용하지 않습니다." : "저장된 분석 결과가 없습니다.";
-      els.historyConcentration.innerHTML = `<p class="section-kicker">WINNER CONCENTRATION</p><h4>산정 불가</h4><p>${escapeHtml(note)}</p>`;
-      els.historyPrediction.innerHTML = `<p class="section-kicker">MODEL ESTIMATE</p><h4>예측 미제공</h4><p>유효 낙찰률 3건 이상과 명시적 기준금액이 필요합니다.</p>`;
-      els.historyCoverage.innerHTML = `<p class="section-kicker">FACT BOUNDARY</p><h4>확인 가능한 값만 표시</h4><p>낙찰금액과 투찰금액, 기술점수와 가격점수는 서로 대체하지 않습니다.</p>`;
+      const note = status === "demo" ? "데모 이력에는 서버 계산 결과를 적용하지 않습니다." : "저장된 분석 결과가 없습니다.";
+      els.historyConcentration.innerHTML = `<p class="section-kicker">낙찰자 집중도</p><h4>산정 불가</h4><p>${escapeHtml(note)}</p>`;
+      els.historyPrediction.innerHTML = `<p class="section-kicker">가격 범위 참고</p><h4>예측 미제공</h4><p>유효 낙찰률 3건 이상과 명시적 기준금액이 필요합니다.</p>`;
+      els.historyCoverage.innerHTML = `<p class="section-kicker">자료 적용 범위</p><h4>확인 가능한 값만 표시</h4><p>낙찰금액과 투찰금액, 기술점수와 가격점수는 서로 대체하지 않습니다.</p>`;
       els.historyWarnings.innerHTML = "";
       return;
     }
@@ -5215,11 +5406,11 @@
     const competitionBand = ({ LOW: "낮음", MODERATE: "보통", HIGH: "높음", VERY_HIGH: "매우 높음", UNKNOWN: "미산정" })[competition?.band] || "미산정";
     const participantMedian = numberOrNull(competition?.components?.participant_count?.value);
     els.historyConcentration.innerHTML = `
-      <p class="section-kicker">COMPETITION RISK · ELIGIBILITY와 별도</p><h4>경쟁·집중 리스크 ${escapeHtml(competitionBand)}</h4>
-      <strong class="history-intel-value">${competitionAvailable ? formatNumber(competition.score, 1) : "—"} <small>${competitionAvailable ? "/ 100" : "UNKNOWN"}</small></strong>
+      <p class="section-kicker">경쟁 리스크 · 참가자격과 별도</p><h4>경쟁·집중 리스크 ${escapeHtml(competitionBand)}</h4>
+      <strong class="history-intel-value">${competitionAvailable ? formatNumber(competition.score, 1) : "—"} <small>${competitionAvailable ? "/ 100" : "미산정"}</small></strong>
       <p>HHI ${hhi === null ? "미산정" : formatNumber(hhi, 0)} · 상위 수주 비중 ${top ? `${formatNumber(top.share * 100, 1)}%` : "미확인"} · 참여 중앙값 ${participantMedian === null ? "미확인" : `${formatNumber(participantMedian, 1)}곳`}</p>
       <small>${escapeHtml(competition?.rationale || "필수 사실 커버리지가 부족해 점수를 보류했습니다.")}</small>
-      <small>신뢰도 ${escapeHtml(competition?.confidence || "INSUFFICIENT")} · ${top ? `표본 상위 ${escapeHtml(top.winner_name)} ${formatNumber(top.count)}건` : "낙찰자 표본 없음"} · 법적 독점 판정 아님</small>`;
+      <small>신뢰도 ${escapeHtml(confidenceLabel(competition?.confidence))} · ${top ? `표본 상위 ${escapeHtml(top.winner_name)} ${formatNumber(top.count)}건` : "낙찰자 표본 없음"} · 법적 독점 판정 아님</small>`;
 
     const award = prediction?.award_rate;
     const submitted = prediction?.submitted_bid_rate;
@@ -5227,11 +5418,11 @@
     const pricingMethod = intelligence?.pricing_method;
     const awardAvailable = award?.status === "MODEL_ESTIMATE";
     els.historyPrediction.innerHTML = `
-      <p class="section-kicker">MODEL ESTIMATE · 의사결정 참고</p><h4>예측 낙찰률 ${awardAvailable ? `${formatNumber(award.center, 2)}%` : "미제공"}</h4>
+      <p class="section-kicker">가격 범위 참고 · 의사결정 참고</p><h4>예측 낙찰률 ${awardAvailable ? `${formatNumber(award.center, 2)}%` : "미제공"}</h4>
       <strong class="history-intel-value">${awardAvailable ? `${formatNumber(award.range_low, 2)}–${formatNumber(award.range_high, 2)}%` : "표본 부족"}</strong>
       <p>${amount ? `예상 낙찰금액 ${escapeHtml(formatBudget(amount.low))}–${escapeHtml(formatBudget(amount.high))}` : "기준/추정금액이 없거나 표본이 부족해 금액 범위를 산정하지 않았습니다."}</p>
       <p class="history-pricing-method">${pricingMethod ? `문서 근거 가격평가: ${escapeHtml(pricingMethod.method?.at_or_above_80_percent || "산식 확인")}` : "현재 공고 문서와 정확히 일치하는 가격평가 산식 근거 없음"}</p>
-      <small>신뢰도 ${escapeHtml(award?.confidence || "INSUFFICIENT")} · ${formatNumber(award?.sample_count || 0)}건 · 투찰률 ${submitted?.status === "MODEL_ESTIMATE" ? `${formatNumber(submitted.center, 2)}%` : "별도 표본 부족"}</small>
+      <small>신뢰도 ${escapeHtml(confidenceLabel(award?.confidence))} · ${formatNumber(award?.sample_count || 0)}건 · 투찰률 ${submitted?.status === "MODEL_ESTIMATE" ? `${formatNumber(submitted.center, 2)}%` : "별도 표본 부족"}</small>
       <small>${escapeHtml(award?.rationale || "유효 표본이 부족해 예측 근거를 제시하지 않습니다.")} · ${escapeHtml(award?.method || "산정 안 함")}</small>`;
 
     const coverageCell = (label, key) => {
@@ -5239,13 +5430,17 @@
       return `<span><strong>${escapeHtml(label)}</strong><small>${formatNumber(field?.available || 0)} / ${formatNumber(field?.total || intelligence.record_count || 0)}건</small></span>`;
     };
     els.historyCoverage.innerHTML = `
-      <p class="section-kicker">FIELD COVERAGE</p><h4>사실 필드 충족도</h4>
+      <p class="section-kicker">확인 가능한 자료</p><h4>사실 항목 충족도</h4>
       <div class="history-coverage-grid">${coverageCell("낙찰자", "winner")}${coverageCell("참여기관 수", "participant_count")}${coverageCell("낙찰금액", "award_amount")}${coverageCell("예정가격", "estimated_price")}${coverageCell("투찰금액", "submitted_bid_price")}${coverageCell("기술점수", "technical_score")}${coverageCell("가격점수", "price_score")}</div>`;
     const warnings = [...new Set([
       ...(Array.isArray(intelligence.warnings) ? intelligence.warnings : []),
       ...(Array.isArray(competition?.warnings) ? competition.warnings : []),
     ])];
     els.historyWarnings.innerHTML = warnings.length ? `<strong>해석 주의</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : "";
+  }
+
+  function confidenceLabel(value) {
+    return ({ HIGH: "높음", MEDIUM: "보통", LOW: "낮음", INSUFFICIENT: "근거 부족" })[String(value || "").toUpperCase()] || "근거 부족";
   }
 
   function renderHistory(item) {
@@ -5276,6 +5471,7 @@
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
     const qualityReview = isDocumentQualityReview(notice);
+    const effectiveEligibility = effectiveEligibilityStatus(notice);
     const deadline = deadlineInfo(notice.deadline);
     els.teamsMockSource.textContent = sourceKindLabel(notice, true);
     els.teamsMockTitle.textContent = notice.title;
@@ -5283,7 +5479,7 @@
     els.teamsMockStatus.textContent = cancelled
       ? "취소 공고 · 현재 검토 제외"
       : analyzed
-      ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[notice.eligibilityStatus]}`
+      ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[effectiveEligibility]}`
       : notice.analysisState === "FAILED" ? "분석 오류 · 재처리 필요" : "수집 완료 · 분석 대기";
     els.teamsMockDeadline.textContent = `${deadline.relative} · ${deadline.date}`;
     els.teamsMockReason.textContent = cancelled
@@ -5292,7 +5488,7 @@
       ? qualityReview
         ? truncateText(notice.analysisReason || "원문 근거 검증을 보완한 뒤 자격과 추천을 확정합니다.", 180)
         : truncateText(notice.summary, 180)
-      : "아직 결정론적 평가가 실행되지 않았습니다. 준비도·리스크·추천값을 임의로 생성하지 않고 분석 대기 상태만 알립니다.";
+      : "아직 규칙 기반 평가가 실행되지 않았습니다. 준비도·리스크·추천값을 임의로 생성하지 않고 분석 대기 상태만 알립니다.";
     els.teamsMockReadiness.textContent = cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정";
     els.teamsMockRisk.textContent = cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정";
     els.teamsMockRecommendation.textContent = analysisRecommendationLabel(notice);
@@ -5306,6 +5502,7 @@
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
     const qualityReview = isDocumentQualityReview(notice);
+    const effectiveEligibility = effectiveEligibilityStatus(notice);
     const deadline = deadlineInfo(notice.deadline);
     return {
       type: "AdaptiveCard",
@@ -5336,7 +5533,7 @@
         {
           type: "FactSet",
           facts: [
-            { title: "분석 상태", value: cancelled ? "취소 공고 · 현재 검토 제외" : analyzed ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[notice.eligibilityStatus]}` : "수집 완료 · 분석 대기" },
+            { title: "분석 상태", value: cancelled ? "취소 공고 · 현재 검토 제외" : analyzed ? qualityReview ? "근거 보완 · 판단 보류" : `자격 ${STATUS_LABELS[effectiveEligibility]}` : "수집 완료 · 분석 대기" },
             { title: "마감", value: `${deadline.relative} · ${deadline.date}` },
             { title: "준비도", value: cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.readinessScore)} / 100` : "미산정" },
             { title: "리스크", value: cancelled ? "과거 분석 참고" : qualityReview ? "근거 보완 후 산정" : analyzed ? `${formatScore(notice.riskScore)} / 100` : "미산정" },
@@ -5650,8 +5847,15 @@
     document.body.classList.remove("is-locked");
     if (updateRoute) clearNoticeRoute();
     const trigger = state.selectedTrigger;
+    const noticeKey = state.selectedNotice?.noticeKey;
     state.selectedNotice = null;
-    if (trigger && typeof trigger.focus === "function" && document.contains(trigger)) trigger.focus();
+    const replacement = noticeKey
+      ? [...document.querySelectorAll("[data-notice-key]")].find((node) => node.dataset.noticeKey === noticeKey)
+      : null;
+    const focusTarget = trigger && document.contains(trigger)
+      ? trigger
+      : replacement?.querySelector("[data-open-notice]") || replacement;
+    if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus();
   }
 
   function trapDrawerFocus(event) {
@@ -5661,12 +5865,15 @@
       return;
     }
     if (event.key !== "Tab") return;
-    const focusable = [...els.detailDrawer.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href]')]
+    const focusable = [...els.detailDrawer.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')]
       .filter((node) => !node.closest("[hidden]") && node.offsetParent !== null);
     if (!focusable.length) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
+    if (!focusable.includes(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -5684,20 +5891,32 @@
   }
 
   function updateDecisionButton() {
-    const selected = els.decisionInputs.some((input) => input.checked);
+    const selectedChoice = els.decisionInputs.find((input) => input.checked)?.value || "";
+    const selected = Boolean(selectedChoice);
     const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(state.selectedNotice);
-    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || !analyzed;
+    const overrideNeedsReason = selectedChoice === "GO"
+      && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(state.selectedNotice)) || effectiveRecommendation(state.selectedNotice) !== "GO");
+    const overrideReasonMissing = overrideNeedsReason && !els.decisionComment.value.trim();
+    if (overrideNeedsReason) {
+      els.commentField.hidden = false;
+      els.toggleCommentButton.setAttribute("aria-expanded", "true");
+    }
+    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || !analyzed || overrideReasonMissing;
     els.saveDecisionButton.classList.toggle("is-awaiting-selection", analyzed && !selected);
     els.saveDecisionButton.title = analyzed && !selected
-      ? "먼저 GO, 보류, NO-GO 중 담당자 최종 판단을 선택해 주세요."
-      : "";
+      ? "먼저 참여, 보류, 불참 중 담당자 판단을 선택해 주세요."
+      : overrideReasonMissing
+        ? "참가자격 또는 AI 판단과 다른 참여 결정을 기록하려면 사유가 필요합니다."
+        : "";
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
       : !canWriteDecision()
       ? "사내 로그인 후 저장 가능"
       : analyzed
-      ? selected
+      ? overrideReasonMissing
+        ? "참여 사유를 입력하세요"
+        : selected
         ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
         : "먼저 최종 판단을 선택하세요"
       : "분석 완료 후 저장 가능";
@@ -5717,12 +5936,19 @@
     }
     const decision = els.decisionInputs.find((input) => input.checked)?.value;
     if (!decision) {
-      showToast("최종 판단을 먼저 선택해 주세요", "GO, 보류, NO-GO 중 하나를 선택한 뒤 저장할 수 있습니다.", "warning");
+      showToast("담당자 판단을 먼저 선택해 주세요", "참여, 보류, 불참 중 하나를 선택한 뒤 저장할 수 있습니다.", "warning");
       els.decisionInputs[0]?.focus();
       return;
     }
+    if (decision === "GO" && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice)) || effectiveRecommendation(notice) !== "GO") && !els.decisionComment.value.trim()) {
+      els.commentField.hidden = false;
+      els.toggleCommentButton.setAttribute("aria-expanded", "true");
+      showToast("참여 사유가 필요합니다", "참가자격 또는 AI 판단과 다른 참여 결정을 기록하려면 사유를 입력해 주세요.", "warning");
+      els.decisionComment.focus();
+      return;
+    }
     if (notice.analysisState !== "EVALUATED") {
-      showToast("아직 분석 전입니다", "결정론적 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
+      showToast("아직 분석 전입니다", "규칙 기반 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
       return;
     }
     const comment = els.decisionComment.value.trim();
@@ -5840,6 +6066,19 @@
 
   function handleGlobalKeydown(event) {
     if (document.querySelector("dialog[open]")) return;
+    if (els.detailDrawer.classList.contains("is-open")) {
+      if (["Tab", "Escape"].includes(event.key)) {
+        trapDrawerFocus(event);
+        return;
+      }
+      if (isEditableTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "k") {
+        event.preventDefault();
+        moveDetailSelection(key === "j" ? 1 : -1);
+        return;
+      }
+    }
     if (event.key === "/" && !isEditableTarget(event.target)) {
       event.preventDefault();
       if (state.currentView === "closed") els.resultLearningSearchInput.focus();
@@ -5912,12 +6151,12 @@
       .join(" · ");
     els.sourceLinkDialogMessage.textContent = sourceUrl
       ? `${sourceHost}의 공식 공고를 새 탭에서 엽니다. PAI LOOP 분석 화면은 그대로 유지됩니다.`
-      : "공개 가능한 조달청 원문 링크가 아직 연결되지 않았습니다. 공고번호로 나라장터에서 다시 확인해 주세요.";
+      : "공개 가능한 나라장터 원문 링크가 아직 연결되지 않았습니다. 공고번호로 나라장터에서 다시 확인해 주세요.";
     if (sourceUrl) {
       els.sourceLinkOpenAnchor.href = sourceUrl;
       els.sourceLinkOpenAnchor.removeAttribute("aria-disabled");
       els.sourceLinkOpenAnchor.tabIndex = 0;
-      els.sourceLinkOpenAnchor.textContent = "조달청 원문 새 탭에서 열기";
+      els.sourceLinkOpenAnchor.textContent = "나라장터 원문 열기";
     } else {
       els.sourceLinkOpenAnchor.removeAttribute("href");
       els.sourceLinkOpenAnchor.setAttribute("aria-disabled", "true");
@@ -5968,25 +6207,25 @@
   }
 
   function analysisStatusPill(notice) {
-    if (isCancelledNotice(notice)) return '<span class="status-pill status-pill--pending" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
+    if (isCancelledNotice(notice)) return '<span class="analysis-state" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
     if (notice.historicalAnalysis) {
       const value = STATUS_LABELS[notice.eligibilityStatus] ? notice.eligibilityStatus : "UNKNOWN";
       return `<span class="status-pill status-pill--${value.toLowerCase()}" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 ${escapeHtml(STATUS_LABELS[value])}</span>`;
     }
-    if (isDocumentQualityReview(notice)) return '<span class="status-pill status-pill--pending" title="자격 REVIEW가 아니라 원문 근거 검증 보완 상태입니다">근거 보완</span>';
-    if (notice.analysisState === "EVALUATED") return statusPill(notice.eligibilityStatus);
-    if (notice.analysisState === "ANALYZED") return '<span class="status-pill status-pill--pending" title="첨부 분석은 완료됐지만 현재 판단이 저장되지 않았습니다">판단 대기</span>';
-    if (notice.analysisState === "FAILED") return '<span class="status-pill status-pill--fail">분석 오류</span>';
-    return '<span class="status-pill status-pill--pending">미분석</span>';
+    if (isDocumentQualityReview(notice)) return '<span class="analysis-state" title="원문 근거 검증을 보완해야 참가자격을 판단할 수 있습니다">분석 보완</span>';
+    if (notice.analysisState === "EVALUATED") return statusPill(effectiveEligibilityStatus(notice));
+    if (notice.analysisState === "ANALYZED") return '<span class="analysis-state" title="첨부 분석은 완료됐지만 현재 판단이 저장되지 않았습니다">판단 대기</span>';
+    if (notice.analysisState === "FAILED") return '<span class="analysis-state analysis-state--error">분석 오류</span>';
+    return '<span class="analysis-state">미분석</span>';
   }
 
   function analysisRecommendationPill(notice) {
-    if (isCancelledNotice(notice)) return '<span class="recommendation-pill recommendation-pill--pending" title="취소 공고로 과거 추천을 현재 판단에 사용하지 않습니다">취소 · 추천 비활성</span>';
-    if (notice.historicalAnalysis) return '<span class="recommendation-pill recommendation-pill--pending" title="현재 판단이 아닌 종료 전 당시 분석입니다">당시 판정 참고</span>';
-    if (isDocumentQualityReview(notice)) return '<span class="recommendation-pill recommendation-pill--pending">판단 보류</span>';
-    if (notice.analysisState === "EVALUATED") return recommendationPill(notice.recommendation);
-    if (notice.analysisState === "ANALYZED") return '<span class="recommendation-pill recommendation-pill--pending">판단 전</span>';
-    return '<span class="recommendation-pill recommendation-pill--pending">분석 전</span>';
+    if (isCancelledNotice(notice)) return aiJudgmentMarkup("추천 비활성", "취소 공고", "pending");
+    if (notice.historicalAnalysis) return aiJudgmentMarkup("당시 판정 참고", "현재 판단 아님", "pending");
+    if (isDocumentQualityReview(notice)) return aiJudgmentMarkup("권고 보류", "근거 보완 필요", "pending");
+    if (notice.analysisState === "EVALUATED") return recommendationPill(effectiveRecommendation(notice), notice);
+    if (notice.analysisState === "ANALYZED") return aiJudgmentMarkup("판단 전", "평가 저장 대기", "pending");
+    return aiJudgmentMarkup("분석 전", "근거 확인 전", "pending");
   }
 
   function sourceKindBadge(notice) {
@@ -5997,7 +6236,7 @@
   function sourceKindLabel(notice, detailed = false) {
     if (notice.sourceKind === "SYNTHETIC") return detailed ? "합성 회귀 데이터" : "합성";
     if (notice.sourceKind === "MANUAL") return detailed ? "수동 등록 공고" : "수동";
-    return detailed ? "조달청 실공고 · API" : "실제";
+    return detailed ? "나라장터 실공고" : "실제";
   }
 
   function noticeLifecycleStatus(notice) {
@@ -6028,8 +6267,8 @@
 
   function noticeLifecycleLabel(notice) {
     const lifecycle = noticeLifecycleStatus(notice);
-    if (lifecycle === "CANCELLED") return "취소";
-    return lifecycle === "CLOSED" ? "공고 종료" : "마감 종료";
+    if (lifecycle === "CANCELLED") return "취소공고";
+    return lifecycle === "CLOSED" ? "공고 종료" : "입찰마감 경과";
   }
 
   function noticeLifecycleBadge(notice) {
@@ -6043,10 +6282,65 @@
     return `<span class="notice-lifecycle-badge ${modifier}">${noticeLifecycleLabel(notice)}</span>`;
   }
 
-  function recommendationPill(recommendation) {
+  function recommendationPill(recommendation, notice = null) {
     const value = RECOMMENDATION_LABELS[recommendation] ? recommendation : "UNKNOWN";
-    const className = value === "GO" ? "go" : value === "CONDITIONAL_GO" || value === "HOLD" ? "conditional" : value === "NO_GO" ? "no" : "unknown";
-    return `<span class="recommendation-pill recommendation-pill--${className}">${RECOMMENDATION_LABELS[value]}</span>`;
+    const className = value === "GO" ? "go" : ["CONDITIONAL_GO", "HOLD", "DEFERRED"].includes(value) ? "conditional" : value === "NO_GO" ? "no" : "unknown";
+    const conditions = arrayValue(notice?.recommendationConditions);
+    const conditional = ["CONDITIONAL_GO", "HOLD"].includes(value);
+    const label = conditional && !conditions.length ? "권고 보류" : RECOMMENDATION_LABELS[value];
+    const evidenceCount = Math.max(0, numberOrNull(notice?.recommendationEvidenceCount) ?? 0);
+    const evidenceLabel = evidenceCount ? `근거 ${formatNumber(evidenceCount)}건` : "근거 수 확인 필요";
+    const condition = conditional && conditions.length
+      ? `${truncateText(conditions[0], 120)}${conditions.length > 1 ? ` · 외 ${formatNumber(conditions.length - 1)}건` : ""}`
+      : "";
+    return aiJudgmentMarkup(label, evidenceLabel, className, condition, conditions.join(" / "));
+  }
+
+  function effectiveEligibilityStatus(notice) {
+    const severity = { PASS: 0, PASS_CURRENT: 1, PASS_EXCEPTION: 2, REVIEW: 3, UNKNOWN: 3, FAIL: 4 };
+    const normalize = (value) => {
+      const status = String(value || "UNKNOWN").toUpperCase();
+      return STATUS_LABELS[status] ? status : "UNKNOWN";
+    };
+    const candidates = [normalize(notice?.eligibilityStatus)];
+    arrayValue(notice?.requirements).forEach((requirement) => {
+      if (requirement?.mandatory !== false) candidates.push(normalize(requirement?.status));
+    });
+    const worst = candidates.reduce((current, candidate) => (
+      severity[candidate] > severity[current] ? candidate : current
+    ), "PASS");
+    return worst === "UNKNOWN" ? "REVIEW" : worst;
+  }
+
+  function effectiveRecommendation(notice) {
+    const value = RECOMMENDATION_LABELS[notice?.recommendation] ? notice.recommendation : "UNKNOWN";
+    if (value === "GO" && ["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice))) return "DEFERRED";
+    if (["CONDITIONAL_GO", "HOLD"].includes(value) && !arrayValue(notice?.recommendationConditions).length) return "DEFERRED";
+    return value;
+  }
+
+  function aiJudgmentMarkup(label, meta, tone = "unknown", condition = "", conditionTitle = condition) {
+    const icons = {
+      go: '<path d="m5 12 4 4L19 6" />',
+      conditional: '<path d="M12 7v6M12 17h.01" />',
+      no: '<path d="m7 7 10 10M17 7 7 17" />',
+      pending: '<circle cx="12" cy="12" r="7" />',
+      unknown: '<path d="M12 7v6M12 17h.01" />',
+    };
+    return `<span class="ai-judgment ai-judgment--${escapeAttribute(tone)}"><span class="ai-judgment__main"><svg viewBox="0 0 24 24" aria-hidden="true">${icons[tone] || icons.unknown}</svg><span><small>AI 판단</small><strong>${escapeHtml(label)}</strong></span></span><small class="ai-judgment__evidence">${escapeHtml(meta)}</small>${condition ? `<small class="ai-judgment__condition" title="${escapeAttribute(conditionTitle)}">조건 · ${escapeHtml(condition)}</small>` : ""}</span>`;
+  }
+
+  function operatorDecisionIndicator(notice) {
+    const label = notice.decision ? DECISION_LABELS[notice.decision] || "보류" : "미결정";
+    const tone = notice.decision === "GO" ? "participate" : notice.decision === "NO_GO" ? "decline" : notice.decision ? "hold" : "undecided";
+    return `<span class="operator-decision operator-decision--${tone}"><small>담당자</small><strong>${escapeHtml(label)}</strong></span>`;
+  }
+
+  function operatorDecisionClass(notice) {
+    if (notice.decision === "GO") return "decision-participate";
+    if (notice.decision === "NO_GO") return "decision-decline";
+    if (notice.decision) return "decision-hold";
+    return "decision-undecided";
   }
 
   function emptyPanel(title, copy) {
@@ -6055,7 +6349,7 @@
 
   function deadlineInfo(value) {
     const date = validDate(value);
-    if (!date) return { date: "마감 미확인", time: "", relative: "일정 확인 필요", urgent: false };
+    if (!date) return { date: "마감 미확인", absolute: "마감 미확인", time: "", relative: "일정 확인 필요", urgent: false };
     const days = daysUntil(value);
     let relative = "마감됨";
     if (days === 0) relative = "오늘 마감";
@@ -6064,6 +6358,7 @@
     else if (days < 0) relative = `D+${Math.abs(days)}`;
     return {
       date: new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", weekday: "short" }).format(date),
+      absolute: new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date),
       time: new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date),
       relative,
       urgent: days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS,
@@ -6111,21 +6406,26 @@
   }
 
   function riskDisplayValue(notice) {
-    return notice.riskScore === null ? "근거 부족" : formatScore(notice.riskScore);
+    const verifiedAxes = arrayValue(notice?.riskAxes).filter((axis) => numberOrNull(axis?.score) !== null).length;
+    return notice.riskScore === null || verifiedAxes < 4
+      ? `산정 보류 · ${verifiedAxes}/6`
+      : `${formatScore(notice.riskScore)}/100`;
   }
 
   function analysisStatusLabel(notice) {
     if (isCancelledNotice(notice)) return "취소 공고";
     if (notice.historicalAnalysis) return `당시 ${STATUS_LABELS[notice.eligibilityStatus] || "미확인"}`;
     if (notice.analysisState === "ANALYZED") return "판단 대기";
-    return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[notice.eligibilityStatus];
+    return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[effectiveEligibilityStatus(notice)];
   }
 
   function analysisRecommendationLabel(notice) {
     if (isCancelledNotice(notice)) return "취소 · 추천 비활성";
     if (notice.historicalAnalysis) return "당시 판정 참고";
     if (isDocumentQualityReview(notice)) return "판단 보류";
-    if (notice.analysisState === "EVALUATED") return RECOMMENDATION_LABELS[notice.recommendation];
+    if (notice.analysisState === "EVALUATED") {
+      return RECOMMENDATION_LABELS[effectiveRecommendation(notice)];
+    }
     if (notice.analysisState === "ANALYZED") return "판단 전";
     return "분석 전";
   }
@@ -6144,6 +6444,20 @@
     const date = validDate(value);
     if (!date) return "—";
     return new Intl.DateTimeFormat("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+  }
+
+  function formatKstDateTime(value) {
+    const date = validDate(value);
+    if (!date) return "—";
+    return `${new Intl.DateTimeFormat("ko-KR", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date)} KST`;
   }
 
   function formatCalendarDate(value) {
@@ -6200,6 +6514,8 @@
 
   function normalizeEligibility(value) {
     const normalized = String(value ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+    if (["PASS_EXCEPTION", "EXCEPTION_PASS", "CONDITIONAL_PASS"].includes(normalized)) return "PASS_EXCEPTION";
+    if (["PASS_CURRENT", "CURRENT_PASS"].includes(normalized)) return "PASS_CURRENT";
     if (["PASS", "ELIGIBLE", "OK", "GREEN"].includes(normalized)) return "PASS";
     if (["REVIEW", "CONDITIONAL", "CHECK", "YELLOW", "PENDING"].includes(normalized)) return "REVIEW";
     if (["FAIL", "FAILED", "INELIGIBLE", "DEFAULT_FAIL", "RED"].includes(normalized)) return "FAIL";
@@ -6389,8 +6705,16 @@
 
   function humanizeError(error) {
     const message = error?.message || String(error || "알 수 없는 오류");
-    if (/failed to fetch|networkerror|load failed/i.test(message)) return "네트워크 또는 API 서버를 확인해 주세요";
-    return message.length > 120 ? `${message.slice(0, 117)}…` : message;
+    if (/failed to fetch|networkerror|load failed|timeout/i.test(message)) return "네트워크 연결을 확인한 뒤 다시 시도해 주세요.";
+    const status = Number(error?.status);
+    if (status === 401) return "인증 정보가 만료되었거나 올바르지 않습니다.";
+    if (status === 403) return "이 작업을 실행할 권한이 없습니다.";
+    if (status === 404) return "요청한 자료를 찾을 수 없습니다.";
+    if (status === 409) return "다른 변경사항이 먼저 저장되었습니다. 최신 상태를 불러온 뒤 다시 시도해 주세요.";
+    if (status === 422) return "입력값과 필수 항목을 다시 확인해 주세요.";
+    if (status === 429) return "요청이 많습니다. 잠시 뒤 다시 시도해 주세요.";
+    if (status >= 500) return "서버 처리에 시간이 걸리고 있습니다. 잠시 뒤 다시 시도해 주세요.";
+    return "요청을 완료하지 못했습니다. 잠시 뒤 다시 시도해 주세요.";
   }
 
   function isEditableTarget(target) {
