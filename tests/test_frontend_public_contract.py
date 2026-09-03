@@ -126,6 +126,16 @@ def test_pin_decision_reload_and_current_evaluation_frontend_contract() -> None:
     save_body = _function_body(source, "saveDecision", "renderPipelineIntoExisting")
 
     assert 'evaluationId: stringValue(firstValue(evaluation.id' in normalize_body
+    assert "source.evaluation," not in normalize_body
+    assert "options.allowLegacyCurrentProjection === true" in normalize_body
+    assert "{ allowLegacyCurrentProjection: true }" in source
+    assert '["PENDING", "REVIEW", "COLLECTED", "VERSIONED"].includes(declaredAnalysisState)' in normalize_body
+    assert "const allowCurrentProjection = hasCurrentEvaluation || allowLegacyCurrentProjection" in normalize_body
+    assert "allowCurrentProjection ? source.evaluation_id : null" in normalize_body
+    assert "allowCurrentProjection ? firstValue(source.quantitative" in normalize_body
+    assert "allowCurrentProjection ? firstValue(source.risk_dimensions" in normalize_body
+    assert "const useHistoricalEvaluation = !hasCurrentEvaluation" in normalize_body
+    assert "const displayEvaluation = useHistoricalEvaluation ? historicalEvaluation : evaluation" in normalize_body
     assert 'window.sessionStorage.getItem("pai-loop-operator-pin")' in auth_body
     assert 'window.sessionStorage.setItem("pai-loop-operator-pin"' in auth_body
     assert 'window.sessionStorage.removeItem("pai-loop-operator-pin")' in clear_body
@@ -224,8 +234,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260904-uiux-p0-v1"' in html
-    assert 'src="./app.js?v=20260904-uiux-p0-v1"' in html
+    assert 'href="./styles.css?v=20260904-uiux-p0-v2"' in html
+    assert 'src="./app.js?v=20260904-uiux-p0-v2"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:

@@ -775,7 +775,11 @@
     const payload = createDemoData();
     state.source = "demo";
     state.sourceReason = reason;
-    state.notices = payload.notices.map(normalizeNotice);
+    state.notices = payload.notices.map((item, index) => normalizeNotice(
+      item,
+      index,
+      { allowLegacyCurrentProjection: true },
+    ));
     state.dashboard = normalizeDashboard(payload.dashboard, state.notices);
     setSystemStatus("demo");
     showDemoBanner(reason);
@@ -2852,9 +2856,19 @@
     };
   }
 
-  function normalizeNotice(raw = {}, index = 0) {
+  function normalizeNotice(raw = {}, index = 0, options = {}) {
     const source = unwrapObject(raw);
-    const evaluation = firstObject(source.latest_evaluation, source.latestEvaluation, source.evaluation);
+    const declaredAnalysisState = stringValue(
+      firstValue(source.analysis_state, source.analysisState, source.ingestion_state),
+      "",
+    ).toUpperCase();
+    const evaluationCandidate = firstObject(
+      source.latest_evaluation,
+      source.latestEvaluation,
+    );
+    const evaluation = ["PENDING", "REVIEW", "COLLECTED", "VERSIONED"].includes(declaredAnalysisState)
+      ? {}
+      : evaluationCandidate;
     const historicalEvaluation = firstObject(source.historical_evaluation, source.historicalEvaluation);
     const deadline = firstValue(source.deadline, source.close_at, source.closeAt, source.bid_close_date, source.bidClseDt, null);
     const rawNoticeStatus = stringValue(firstValue(source.status, source.notice_status), "").toUpperCase();
@@ -2869,6 +2883,8 @@
       evaluation.evaluatedAt,
       evaluation.eligibility,
     ));
+    const allowLegacyCurrentProjection = options.allowLegacyCurrentProjection === true;
+    const allowCurrentProjection = hasCurrentEvaluation || allowLegacyCurrentProjection;
     const useHistoricalEvaluation = !hasCurrentEvaluation
       && endedForHistory
       && Boolean(firstValue(
@@ -2878,8 +2894,16 @@
         historicalEvaluation.eligibility,
       ));
     const displayEvaluation = useHistoricalEvaluation ? historicalEvaluation : evaluation;
-    const explanation = firstObject(displayEvaluation.explanation, source.explanation);
-    const atomicResults = arrayValue(firstValue(displayEvaluation.atomic_results, displayEvaluation.atomicResults, source.atomic_results, []));
+    const explanation = firstObject(
+      displayEvaluation.explanation,
+      allowCurrentProjection ? source.explanation : null,
+    );
+    const atomicResults = arrayValue(firstValue(
+      displayEvaluation.atomic_results,
+      displayEvaluation.atomicResults,
+      allowCurrentProjection ? source.atomic_results : null,
+      [],
+    ));
     const versions = arrayValue(firstValue(source.versions, source.notice_versions, [])).map(normalizeVersion);
     const latestVersion = versions.slice().sort((a, b) => b.versionNo - a.versionNo)[0] || null;
     const decisions = arrayValue(firstValue(source.decisions, source.decision_history, [])).map(normalizeDecisionRecord);
@@ -2933,15 +2957,17 @@
       openAt: firstValue(source.open_at, source.published_at, source.bid_begin_at, source.bidBeginDt, null),
       collectedAt,
       budget: firstValue(source.budget, source.estimated_amount, source.presmptPrce, source.asignBdgtAmt, null),
-      eligibilityStatus: normalizeEligibility(firstValue(displayEvaluation.eligibility, source.eligibility_status, source.eligibilityStatus, source.eligibility)),
-      readinessScore: numberOrNull(firstValue(displayEvaluation.readiness_score, displayEvaluation.readinessScore, source.readiness_score, source.readinessScore, source.fit_score, source.fitScore)),
-      readinessStatus: normalizeReadiness(firstValue(displayEvaluation.readiness_status, displayEvaluation.status, source.readiness_status)),
-      evidenceCoverage: numberOrNull(firstValue(displayEvaluation.evidence_coverage, displayEvaluation.evidenceCoverage, source.evidence_coverage, source.evidenceCoverage, source.coverage)),
-      riskScore: numberOrNull(firstValue(displayEvaluation.risk_score, displayEvaluation.riskScore, source.risk_score, source.riskScore, source.risk)),
-      riskBand: normalizeRecommendation(firstValue(displayEvaluation.risk_band, displayEvaluation.band, source.risk_band)),
+      eligibilityStatus: normalizeEligibility(firstValue(displayEvaluation.eligibility, allowCurrentProjection ? firstValue(source.eligibility_status, source.eligibilityStatus, source.eligibility) : null)),
+      readinessScore: numberOrNull(firstValue(displayEvaluation.readiness_score, displayEvaluation.readinessScore, allowCurrentProjection ? firstValue(source.readiness_score, source.readinessScore, source.fit_score, source.fitScore) : null)),
+      readinessStatus: normalizeReadiness(firstValue(displayEvaluation.readiness_status, displayEvaluation.status, allowCurrentProjection ? source.readiness_status : null)),
+      evidenceCoverage: numberOrNull(firstValue(displayEvaluation.evidence_coverage, displayEvaluation.evidenceCoverage, allowCurrentProjection ? firstValue(source.evidence_coverage, source.evidenceCoverage, source.coverage) : null)),
+      riskScore: numberOrNull(firstValue(displayEvaluation.risk_score, displayEvaluation.riskScore, allowCurrentProjection ? firstValue(source.risk_score, source.riskScore, source.risk) : null)),
+      riskBand: normalizeRecommendation(firstValue(displayEvaluation.risk_band, displayEvaluation.band, allowCurrentProjection ? source.risk_band : null)),
       recommendation: normalizeRecommendation(useHistoricalEvaluation
         ? firstValue(displayEvaluation.risk_band, displayEvaluation.band, displayEvaluation.recommendation)
-        : firstValue(source.recommendation, source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)),
+        : allowCurrentProjection
+          ? firstValue(source.recommendation, source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)
+          : null),
       recommendationConditions: arrayValue(firstValue(source.recommendation_conditions, source.recommendationConditions, []))
         .map((value) => stringValue(value).replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8),
       recommendationEvidenceCount: Math.max(0, numberOrNull(firstValue(
@@ -2965,12 +2991,22 @@
       requirements,
       evidence,
       awardHistory: history,
-      quantitative: arrayValue(firstValue(source.quantitative, source.quantitative_items, source.score_items, []))
+      quantitative: arrayValue(firstValue(
+        displayEvaluation.quantitative,
+        displayEvaluation.quantitative_items,
+        allowCurrentProjection ? firstValue(source.quantitative, source.quantitative_items, source.score_items) : null,
+        [],
+      ))
         .map(normalizeQuantItem),
-      riskAxes: normalizeRiskAxes(firstValue(source.risk_dimensions, source.risk_axes, source.riskAxes, source.risks, [])),
+      riskAxes: normalizeRiskAxes(firstValue(
+        displayEvaluation.risk_dimensions,
+        displayEvaluation.risk_axes,
+        allowCurrentProjection ? firstValue(source.risk_dimensions, source.risk_axes, source.riskAxes, source.risks) : null,
+        [],
+      )),
       actions: arrayValue(firstValue(source.actions, source.next_actions, source.review_actions, [])).map((value) => stringValue(value)).filter(Boolean),
       pipeline: firstValue(source.pipeline, source.analysis_pipeline, null),
-      evaluationId: stringValue(firstValue(evaluation.id, source.evaluation_id), ""),
+      evaluationId: stringValue(firstValue(evaluation.id, allowCurrentProjection ? source.evaluation_id : null), ""),
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
       historicalAnalysis: useHistoricalEvaluation,
