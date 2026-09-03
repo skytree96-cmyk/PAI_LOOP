@@ -30,6 +30,7 @@ from pai_loop.integrations.openai_extraction import (
     ExtractionOutcome,
     ExtractionPayload,
 )
+from pai_loop.integrations.pps import KST
 from pai_loop.notice_freshness import (
     latest_current_analysis_run,
     latest_current_evaluation,
@@ -357,7 +358,16 @@ def test_dashboard_counts_ended_notices_without_a_recorded_result(
             deadline=ended_at,
             status="CLOSED",
         )
-        session.add_all([missing, recorded])
+        stored_expired = Notice(
+            notice_key="SYN-RESULT-STORED-EXPIRED",
+            bid_notice_no="RESULT-STORED-EXPIRED",
+            revision_no="00",
+            title="저장 상태 만료 결과 미기록 공고",
+            agency="공공기관",
+            deadline=ended_at,
+            status="EXPIRED",
+        )
+        session.add_all([missing, recorded, stored_expired])
         session.flush()
         session.add(
             BidOutcome(
@@ -370,7 +380,24 @@ def test_dashboard_counts_ended_notices_without_a_recorded_result(
 
     dashboard = client.get("/api/v1/dashboard")
     assert dashboard.status_code == 200, dashboard.text
-    assert dashboard.json()["result_missing_count"] == 1
+    assert dashboard.json()["result_missing_count"] == 2
+    ended_rows = client.get("/api/v1/notices", params={"status": "ENDED"})
+    assert ended_rows.status_code == 200, ended_rows.text
+    result_state = {
+        item["notice_key"]: item["has_bid_outcome"]
+        for item in ended_rows.json()
+        if item["notice_key"].startswith("SYN-RESULT-")
+    }
+    assert result_state == {
+        "SYN-RESULT-MISSING": False,
+        "SYN-RESULT-RECORDED": True,
+        "SYN-RESULT-STORED-EXPIRED": False,
+    }
+    expired_rows = client.get("/api/v1/notices", params={"status": "EXPIRED"})
+    assert expired_rows.status_code == 200, expired_rows.text
+    assert "SYN-RESULT-STORED-EXPIRED" in {
+        item["notice_key"] for item in expired_rows.json()
+    }
 
 
 def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
@@ -404,24 +431,34 @@ def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
     import pai_loop.api as api_module
 
     batch_sizes: list[int] = []
+    outcome_batch_sizes: list[int] = []
     original_loader = api_module._load_notice_summary_batch
+    original_outcome_loader = api_module._bid_outcome_notice_ids
 
     def recording_loader(session, notice_ids):
         batch_sizes.append(len(notice_ids))
         return original_loader(session, notice_ids)
 
+    def recording_outcome_loader(session, notice_ids):
+        outcome_batch_sizes.append(len(notice_ids))
+        return original_outcome_loader(session, notice_ids)
+
     monkeypatch.setattr(api_module, "_load_notice_summary_batch", recording_loader)
+    monkeypatch.setattr(api_module, "_bid_outcome_notice_ids", recording_outcome_loader)
 
     page = client.get("/api/v1/notices", params={"limit": 200})
     assert page.status_code == 200, page.text
     assert len(page.json()) == 55
     assert batch_sizes and max(batch_sizes) <= 25
+    assert outcome_batch_sizes and max(outcome_batch_sizes) <= 25
 
     batch_sizes.clear()
+    outcome_batch_sizes.clear()
     dashboard = client.get("/api/v1/dashboard")
     assert dashboard.status_code == 200, dashboard.text
     assert dashboard.json()["totals"]["notices"] == 55
     assert batch_sizes and max(batch_sizes) <= 25
+    assert outcome_batch_sizes and max(outcome_batch_sizes) <= 25
 
 
 def test_synthetic_replay_is_idempotent_and_covers_three_states(client: TestClient) -> None:
@@ -596,6 +633,56 @@ def test_dashboard_deadline_soon_counts_only_open_notices(client: TestClient) ->
     assert dashboard["deadline_soon"] == 1
     assert dashboard["totals"]["active"] == 1
     assert dashboard["analysis_review_backlog_count"] == 1
+
+
+def test_dashboard_deadline_soon_uses_same_kst_calendar_window_as_ui(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pai_loop.api as api_module
+
+    fixed_now = datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(api_module, "datetime", FixedDateTime)
+    today = fixed_now.astimezone(KST).date()
+    deadlines = (
+        (
+            "MANUAL-DEADLINE-THREE-DAYS-LATE",
+            datetime.combine(
+                today + timedelta(days=3), datetime.max.time(), tzinfo=KST
+            ).astimezone(timezone.utc),
+        ),
+        (
+            "MANUAL-DEADLINE-FOUR-DAYS-EARLY",
+            datetime.combine(
+                today + timedelta(days=4), datetime.min.time(), tzinfo=KST
+            ).astimezone(timezone.utc),
+        ),
+    )
+    for notice_key, deadline in deadlines:
+        created = client.post(
+            "/api/v1/notices",
+            json={
+                "notice_key": notice_key,
+                "bid_notice_no": notice_key,
+                "title": notice_key,
+                "agency": "공공기관",
+                "deadline": deadline.isoformat(),
+                "status": "OPEN",
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    dashboard = client.get("/api/v1/dashboard")
+    assert dashboard.status_code == 200, dashboard.text
+    assert dashboard.json()["deadline_soon"] == 1
 
 
 def test_r07_evaluation_with_analyzed_documents_stays_in_review_backlog(

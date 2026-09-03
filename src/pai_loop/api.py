@@ -33,6 +33,7 @@ from .department_ranking import (
 from .integrations.awards import PpsAwardClient
 from .award_intelligence import build_award_intelligence
 from .integrations.pps import (
+    KST,
     PpsApiError,
     PpsClient,
     _has_direct_contract_marker,
@@ -480,6 +481,7 @@ def _summary(
     *,
     public_view: bool = False,
     provider_authority: PpsNoticeAuthority | None = None,
+    has_bid_outcome: bool = False,
 ) -> NoticeSummary:
     source_kind = _source_kind(notice)
     (
@@ -569,6 +571,7 @@ def _summary(
             attachment_coverage.complete if attachment_coverage else True
         ),
         analysis_attempted=analysis_reason.attempted,
+        has_bid_outcome=has_bid_outcome,
         recommendation=recommendation,
         recommendation_conditions=recommendation_conditions,
         recommendation_evidence_count=recommendation_evidence_count,
@@ -753,6 +756,7 @@ def _detail(
             notice,
             public_view=public_view,
             provider_authority=provider_authority,
+            has_bid_outcome=bool(notice.bid_outcomes),
         ).model_dump(),
         id=notice.id,
         published_at=notice.published_at,
@@ -794,6 +798,7 @@ def _load_notice(session: Session, notice_key: str) -> Notice:
             selectinload(Notice.evaluations),
             selectinload(Notice.decisions),
             selectinload(Notice.award_history),
+            selectinload(Notice.bid_outcomes),
             selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
         )
     )
@@ -837,6 +842,23 @@ def _load_notice_summary_batch(
     return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
 
 
+def _bid_outcome_notice_ids(
+    session: Session,
+    notice_ids: list[str],
+) -> set[str]:
+    """Return result-recorded notice ids without hydrating outcome payloads."""
+
+    if not notice_ids:
+        return set()
+    return set(
+        session.scalars(
+            select(BidOutcome.notice_id)
+            .where(BidOutcome.notice_id.in_(notice_ids))
+            .distinct()
+        ).all()
+    )
+
+
 def _notice_summaries_for_ids(
     session: Session,
     notice_ids: list[str],
@@ -850,16 +872,18 @@ def _notice_summaries_for_ids(
         batch_ids = notice_ids[offset : offset + _NOTICE_SUMMARY_BATCH_SIZE]
         notices = _load_notice_summary_batch(session, batch_ids)
         authorities = _pps_authorities_by_notice_id(session, notices)
+        outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         summaries.extend(
             _summary(
                 notice,
                 public_view=public_view,
                 provider_authority=authorities.get(notice.id),
+                has_bid_outcome=notice.id in outcome_notice_ids,
             )
             for notice in notices
         )
         session.expunge_all()
-        del authorities, notices
+        del authorities, outcome_notice_ids, notices
     return summaries
 
 
@@ -890,9 +914,6 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     )
     decisions_total = session.scalar(select(func.count(UserDecision.id))) or 0
     evaluation_total = session.scalar(select(func.count(Evaluation.id))) or 0
-    outcome_notice_ids = set(
-        session.scalars(select(BidOutcome.notice_id).distinct()).all()
-    )
     eligibility_counts = {item.value: 0 for item in Eligibility}
     readiness_counts = {item: 0 for item in ("GREEN", "YELLOW", "RED", "GRAY")}
     active_recommendation_counts = {item: 0 for item in ("GO", "HOLD", "NO_GO")}
@@ -902,7 +923,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     visible_ended_count = 0
     result_missing_count = 0
     analysis_review_backlog_count = 0
-    soon = now + timedelta(days=7)
+    soon_date = now.astimezone(KST).date() + timedelta(days=3)
     active_count = 0
     deadline_soon = 0
     recent_notices: list[dict[str, Any]] = []
@@ -916,6 +937,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         ]
         notices = _load_notice_summary_batch(session, batch_ids)
         authorities = _pps_authorities_by_notice_id(session, notices)
+        outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         for notice in notices:
             effective_status = _effective_notice_status(notice)
             authority = authorities.get(notice.id)
@@ -958,7 +980,8 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     active_recommendation_counts[recommendation] += 1
                 if (
                     not is_cancelled
-                    and now <= _comparable_utc(notice.deadline) <= soon
+                    and _comparable_utc(notice.deadline).astimezone(KST).date()
+                    <= soon_date
                 ):
                     deadline_soon += 1
             if len(recent_notices) < 10:
@@ -967,13 +990,14 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                         notice,
                         public_view=public_read_allowed(request),
                         provider_authority=authority,
+                        has_bid_outcome=notice.id in outcome_notice_ids,
                     ).model_dump(mode="json")
                 )
 
         # The session is read-only here.  Detaching each bounded page releases
         # large JSON extraction payloads before the next page is materialised.
         session.expunge_all()
-        del authorities, notices
+        del authorities, outcome_notice_ids, notices
 
     return {
         "generated_at": now,
@@ -1209,7 +1233,12 @@ def list_notices(
     if notice_status == "OPEN":
         statement = statement.where(Notice.status == "OPEN", Notice.deadline >= now)
     elif notice_status == "EXPIRED":
-        statement = statement.where(Notice.status == "OPEN", Notice.deadline < now)
+        statement = statement.where(
+            or_(
+                Notice.status == "EXPIRED",
+                and_(Notice.status == "OPEN", Notice.deadline < now),
+            )
+        )
     elif notice_status == "CLOSED":
         statement = statement.where(Notice.status == "CLOSED")
     elif notice_status == "ENDED":
@@ -1219,6 +1248,7 @@ def list_notices(
         statement = statement.where(
             or_(
                 Notice.status == "CLOSED",
+                Notice.status == "EXPIRED",
                 and_(Notice.status == "OPEN", Notice.deadline < now),
             )
         )
@@ -1409,6 +1439,10 @@ def list_notices(
             [item["notice"].id for item in batch_candidates],
         )
         authorities = _pps_authorities_by_notice_id(session, notices)
+        outcome_notice_ids = _bid_outcome_notice_ids(
+            session,
+            [item["notice"].id for item in batch_candidates],
+        )
         loaded_by_id = {notice.id: notice for notice in notices}
         for item in batch_candidates:
             notice = loaded_by_id.get(item["notice"].id)
@@ -1423,6 +1457,7 @@ def list_notices(
                             notice,
                             public_view=public_view,
                             provider_authority=authorities.get(notice.id),
+                            has_bid_outcome=notice.id in outcome_notice_ids,
                         ).model_dump(),
                         "department_ranking": selected_ranking,
                         "top_department_rankings": views[
@@ -1436,7 +1471,7 @@ def list_notices(
                 )
             )
         session.expunge_all()
-        del authorities, loaded_by_id, notices
+        del authorities, outcome_notice_ids, loaded_by_id, notices
     return ranked
 
 
