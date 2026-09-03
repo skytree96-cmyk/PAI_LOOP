@@ -189,6 +189,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'effectiveRecommendation(notice) !== "GO"' in filter_body
     assert 'state.currentView === "urgent"' in filter_body
     assert "URGENT_DEADLINE_DAYS" in filter_body
+    assert 'timeZone: "Asia/Seoul"' in source
     assert 'state.currentView === "ended"' in filter_body
     assert "isVisibleEndedNotice(notice)" in filter_body
     assert "urgentCount: derived.urgentCount" in dashboard_body
@@ -203,13 +204,14 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
     assert "resultMissingCount:" in derived_body
     assert (
-        "isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.resultStatus"
+        "isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome"
         in derived_body
     )
     assert "kpis.result_missing_count" in dashboard_body
     assert "els.kpiNew.textContent = displayNumber(data.totalNotices)" in source
     assert 'state.currentView === "result-missing"' in filter_body
-    assert "!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.resultStatus" in filter_body
+    assert "!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome" in filter_body
+    assert "source.has_bid_outcome" in source
     assert "effectiveRecommendation(notice) !== recommendation" in filter_body
     assert 'urgent: "/urgent"' in source
     assert '"result-missing": "/result-missing"' in source
@@ -234,8 +236,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260904-uiux-p0-v2"' in html
-    assert 'src="./app.js?v=20260904-uiux-p0-v2"' in html
+    assert 'href="./styles.css?v=20260904-uiux-p0-v3"' in html
+    assert 'src="./app.js?v=20260904-uiux-p0-v3"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:

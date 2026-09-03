@@ -4,7 +4,7 @@
 
 정량점수가 사라진 핵심 원인은 “정량적 평가 세부기준”이라는 제목을 못 찾은 문제가 아니었다. 공고 표의 `A- 이상`, `BBB- 이상 A- 미만` 같은 **문자 등급 범위**를 기존 `CASE_TABLE`의 원문 정확 일치와 계산 단계의 정확 멤버십이 동시에 처리할 수 없는 구조적 Catch-22였다. 이제 각 공고에서 추출한 원문 표를 그 공고에만 적용되는 실행 가능한 산식으로 컴파일하고, 회사 사실을 그 산식에 대입한다.
 
-코드·테스트·배포는 완료했다. 다만 프롬프트 버전 변경으로 기존 운영 분석은 현재값에서 제외됐고, 승인된 4자리 운영 PIN을 확인하지 못해 두 대표 공고의 실제 재분석 요청은 시작하지 않았다. 따라서 현재 운영 화면은 의도대로 `미분석 · 미산정`이며, 부산 공고의 최신 운영 `20/20` 표기는 아직 미검증이다.
+**코드 배포는 완료했지만 운영 인수는 미완료다.** 프롬프트 버전 변경으로 기존 운영 분석은 현재값에서 제외됐고, 승인된 4자리 운영 PIN을 확인하지 못해 두 대표 공고의 실제 재분석 요청은 시작하지 않았다. 따라서 현재 운영 화면은 의도대로 `미분석 · 미산정`이며, 부산 공고의 최신 운영 `20/20` 표기는 아직 미검증이다.
 
 ## 1. 재현된 원인
 
@@ -70,7 +70,7 @@
 | 부산 금액 6 + 건수 4 + A0 10 | Pass | `tests/test_busan_education_quantitative_e2e.py` |
 | 추출 원문 범위 보존 | Pass | `tests/test_openai_extraction.py`, `tests/test_quantitative_rule_extraction.py` |
 | 프롬프트 stale 현재 투영 차단 | Pass | `tests/test_api.py`, `tests/test_frontend_public_contract.py` |
-| 전체 저장소 테스트 | **1056 passed** | 최종 병합 코드 로컬 전체 suite |
+| 전체 저장소 테스트 | **1057 passed** | PR #77 후보 코드 로컬 전체 suite |
 | GitHub 필수 CI | Pass | PR #73~#76 |
 
 버전:
@@ -89,7 +89,8 @@
 - 수동 배포 ID: `dep-dactaju7bikc73ffd9v0`
 - 배포 소스: `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01`
 - 결과: `Deploy succeeded · Live`, 1분 15초
-- 운영 정적 자산: `styles.css?v=20260904-uiux-p0-v2`, `app.js?v=20260904-uiux-p0-v2`
+- 현재 운영 정적 자산: `styles.css?v=20260904-uiux-p0-v2`, `app.js?v=20260904-uiux-p0-v2`
+- PR #77 배포 예정 자산: `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`
 
 프롬프트 변경 전에는 대표 공고 2건의 attachment manifest/current audit/accepted가 `2/2/2`였다. 변경 후 manifest는 `2`로 보존되고 current audit/accepted는 `0/0`이 되어 `2/0/0`으로 전환됐다. PR #76 배포 전에는 이 상황에서도 과거 61/100·NO-GO가 남았으나, 배포 후 실제 Chrome에서 `미분석 · 미산정 · 분석 전`으로 바뀐 것을 확인했다.
 
@@ -118,7 +119,8 @@ X-PAI-Manual-Token: <4자리 운영 PIN>
 | 역사영상 공고 `AUTO_ACTIVE` 확인 | No | 부산 성공 뒤 순차 실행 |
 | 범위형/열거형 운영 전체 분포 집계 | No | 운영 diagnostics 권한 범위에서 별도 집계 |
 | 부산 전용 geometry guard 제거 | No | native 표 행/열 geometry 보존 전에는 오탐 방지를 위해 유지 |
-| 기준 단위 `PARTIAL_ACTIVE` 완화 | No | 표 전체 신뢰를 낮출 수 있어 별도 설계·PR 필요 |
+| 기존의 엄격한 기준 단위 `PARTIAL_ACTIVE` | Yes | 독립 검증·안전 조건을 충족한 기준만 부분 활성화하는 기존 경로와 회귀 테스트 유지 |
+| `PARTIAL_ACTIVE` 허용 범위 추가 완화 | No | 표 전체 신뢰를 낮출 수 있어 별도 설계·PR 필요 |
 | 완료 메일·PC 종료 | No | 두 공고의 실제 점수 표기 확인 전 실행 금지 |
 
 최종 완료 조건은 부산 운영 화면에서 근거별 `6/6 + 4/4 + 10/10 = 20/20`이 보이고, 참가자격·AI 판단이 별도 축으로 표시되며, 역사영상 공고에서도 범위형 표가 활성화되는 것이다.

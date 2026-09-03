@@ -2,7 +2,7 @@
 
 ## 문서 상태와 판정 경계
 
-- 운영 코드 기준: `main` 커밋 `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01` (PR #73~#76 포함)
+- 현재 운영 코드 기준: `main` 커밋 `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01` (PR #73~#76 포함). PR #77은 결과 미기록·마감 임박 모집단 일치를 추가 보강한다.
 - 기록 범위: UI/API 계약, 전체 자동화 테스트, GitHub CI, Render 수동 배포, 실제 Chrome 운영 화면 검증. 반응형 390/768/1024와 실제 운영 재분석 결과는 별도 미검증으로 남긴다.
 - 근거 우선순위: 사용자 최신 지시 → `PAI_LOOP_UIUX_Master_Handoff_Package.md` → `PAI_LOOP_UIUX_Codex_Handoff_Template.md` → PPT·채팅 증빙 → 현재 코드·테스트.
 - 화면 판정 원칙: 참가자격, 정량점수, AI 판단, 담당자 판단을 서로 대체하지 않는다. 정량 만점은 참가자격 충족이나 참여 결정을 의미하지 않는다.
@@ -51,6 +51,7 @@
 - 클릭/포커스: 행동 카드만 목록 이동 버튼으로 두고 `aria-label`, `aria-pressed`, `:focus-visible 2px #1976D2`를 적용했다. 참고 카드는 클릭 대상처럼 보이지 않게 했다.
 - 구현 위치: `src/pai_loop/static/index.html`, `src/pai_loop/static/app.js`, `src/pai_loop/static/styles.css`, `src/pai_loop/api.py`, `src/pai_loop/main.py`.
 - `결과 미기록` 카드는 전용 `/result-missing` 화면을 열며, 취소되지 않은 입찰마감 경과 공고 중 결과 기록이 없는 건과 같은 모집단을 사용한다.
+- PR #77 보강: API 요약의 `has_bid_outcome` boolean을 카드·목록이 함께 사용하고, 저장 상태 `EXPIRED`도 `ENDED` 범위에 포함한다. 마감 임박은 서버·브라우저 모두 Asia/Seoul 달력일 기준 0~3일이다.
 
 ### 4. 적용 근거
 
@@ -205,7 +206,7 @@ AI 판단 NO-GO
 | 기존 라벨 | 변경 라벨 |
 |---|---|
 | 상세 패널 닫기 | 목록으로 돌아가기 |
-| 발주기관 | 수요기관 / 값이 다를 때 공고기관 병기 |
+| 발주기관 | 수요기관(현행 API의 단일 기관 projection) |
 | AI BRIEF | 판단 요약 |
 | DOCUMENT ANALYSIS | 첨부문서 확인 |
 | EVIDENCE-GROUNDED ESTIMATE | 근거 기반 예상 |
@@ -227,6 +228,7 @@ AI 판단 NO-GO
 | 요약 문장별 [N] 원문 스니펫 연결이 완성되었는가? | No | 기존 근거 목록은 있으나 문장별 인용 계약은 후속 |
 | 배포본을 Chrome에서 전체 화면·J/K·Esc·포커스 복귀까지 확인했는가? | Yes | 운영 Chrome에서 1/268→2/268→1/268 이동과 원래 버튼 복귀 확인 |
 | 조건부 GO 실제 데이터의 조건 문구를 운영에서 확인했는가? | No | 현재 운영 목록에 확인 가능한 조건부 GO 표본이 없어 코드·회귀 테스트만 확인 |
+| 수요기관과 공고기관이 다를 때 두 값을 병기하는가? | No | 현행 PPS/API는 두 필드 중 하나를 단일 `agency`로 투영하므로 후속 스키마 보강 필요 |
 
 ---
 
@@ -350,9 +352,9 @@ Teams 알림 미리보기 · 결과 기록
 | 게이트 | Yes/No | 필요한 증빙 |
 |---|---|---|
 | `결과 미기록` 카드 숫자와 클릭 목록의 모집단 일치 | Yes | API·프런트 계약 회귀 테스트 통과 |
-| `tests/test_frontend_public_contract.py` 통과 | Yes | 전체 1056개 테스트 게이트에 포함해 통과 |
+| `tests/test_frontend_public_contract.py` 통과 | Yes | 전체 1057개 테스트 게이트에 포함해 통과 |
 | 관련 API 공개 경계 테스트 통과 | Yes | 전체 테스트에 포함해 통과 |
-| 전체 테스트 게이트 통과 | Yes | 1056 passed |
+| 전체 테스트 게이트 통과 | Yes | 1057 passed |
 | Chrome 운영 시각·키보드 검증 | Yes | 실제 Chrome 2048×962에서 홈·목록·전체 화면 상세·KST·첫 포커스·J/K·Esc 복귀 확인 |
 | PR 필수 CI 통과 | Yes | [PR #73 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33793201829/job/100774690953?pr=73), [PR #76 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33800125336/job/100797338157) |
 | Render 새 커밋 배포 확인 | Yes | 배포 `dep-dactaju7bikc73ffd9v0`, 소스 `0dcc6c1`, 2026-09-04 05:16 KST Live |
@@ -360,7 +362,7 @@ Teams 알림 미리보기 · 결과 기록
 | 운영 대표 공고 재분석 결과 확인 | No | 4자리 운영 PIN의 승인된 매핑이 없어 분석 요청을 시작하지 않음 |
 | 390/768/1024 반응형 실기기 검증 | No | 외부 Chrome viewport 제어 제한으로 미검증 |
 
-운영에서 확인한 정적 자산 버전은 `styles.css?v=20260904-uiux-p0-v2`, `app.js?v=20260904-uiux-p0-v2`다.
+현재 운영에서 확인한 정적 자산은 `v2`이며, PR #77의 P0 parity 보강 배포 자산은 `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`다.
 
 ### 배포·브라우저 증빙
 
@@ -368,6 +370,7 @@ Teams 알림 미리보기 · 결과 기록
 - 공고별 정량 산식 컴파일러: [PR #74](https://github.com/skytree96-cmyk/PAI_LOOP/pull/74)
 - 추출 계약 보강: [PR #75](https://github.com/skytree96-cmyk/PAI_LOOP/pull/75)
 - 오래된 평가 현재 투영 차단: [PR #76](https://github.com/skytree96-cmyk/PAI_LOOP/pull/76)
+- 결과 미기록·마감 임박 모집단 일치: [PR #77](https://github.com/skytree96-cmyk/PAI_LOOP/pull/77)
 - Render 수동 배포: `dep-dactaju7bikc73ffd9v0`, 커밋 `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01`, 배포 성공 시간 1분 15초.
 - Chrome 상세 키보드 검증: 첫 공고 `1/268` → `J`로 둘째 공고 `2/268` → `K`로 첫 공고 `1/268`; 각 전환 뒤 닫기 버튼 포커스 유지. `Escape` 뒤 원래 `전체 상세 보기` 버튼으로 포커스 복귀.
 
@@ -375,6 +378,7 @@ Teams 알림 미리보기 · 결과 기록
 
 - 필터 칩 개별 해제·필터 URL 공유
 - 요약 문장별 원문 스니펫 연결과 항목별 근거 바로가기
+- 수요기관·공고기관 분리 수집 및 값이 다를 때 병기
 - 390/768/1024px 반응형 및 WCAG 2.2 정식 감사
 - 조건부 GO 실제 운영 표본 검증
 - 결과 폼의 낙찰 방식·기준가·자동 비율, 실제 Teams 전송 상태

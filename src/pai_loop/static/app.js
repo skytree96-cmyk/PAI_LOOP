@@ -2979,6 +2979,8 @@
       decidedBy: stringValue(firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
       decidedAt: firstValue(latestDecision.createdAt, source.decided_at, source.decision_at, null),
       resultStatus: stringValue(firstValue(source.result_status, source.award_result, source.outcome), ""),
+      hasBidOutcome: booleanValue(firstValue(source.has_bid_outcome, source.hasBidOutcome))
+        ?? Boolean(stringValue(firstValue(source.result_status, source.award_result, source.outcome), "")),
       noticeStatus: stringValue(firstValue(source.status, source.notice_status), ""),
       providerDisposition: stringValue(firstValue(source.provider_disposition, source.providerDisposition), "").toUpperCase(),
       providerEventKind: stringValue(firstValue(source.provider_event_kind, source.providerEventKind), ""),
@@ -3389,7 +3391,7 @@
       }).length,
       cancelledCount: notices.filter(isCancelledNotice).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
-      resultMissingCount: notices.filter((notice) => isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.resultStatus).length,
+      resultMissingCount: notices.filter((notice) => isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome).length,
       undecidedCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length,
       lastSync: new Date().toISOString(),
       systemStatus: "online",
@@ -3489,7 +3491,7 @@
           if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
         }
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
-        if (state.currentView === "result-missing" && (!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.resultStatus)) return false;
+        if (state.currentView === "result-missing" && (!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome)) return false;
         if (state.currentView === "undecided" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
@@ -6404,10 +6406,18 @@
   function daysUntil(value) {
     const date = validDate(value);
     if (!date) return null;
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const end = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    return Math.round((end - start) / 86400000);
+    const kstDayNumber = (input) => {
+      const parts = Object.fromEntries(
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Seoul",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(input).map((part) => [part.type, part.value]),
+      );
+      return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)) / 86400000;
+    };
+    return kstDayNumber(date) - kstDayNumber(new Date());
   }
 
   function formatBudget(value) {

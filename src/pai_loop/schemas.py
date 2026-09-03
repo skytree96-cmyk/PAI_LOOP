@@ -217,6 +217,13 @@ class NoticeSummary(ApiModel):
     analysis_attachments_accepted: int = Field(default=0, ge=0, le=10)
     analysis_attachment_coverage_complete: bool = False
     analysis_attempted: bool = False
+    has_bid_outcome: bool = Field(
+        default=False,
+        description=(
+            "입찰 결과 레코드가 하나 이상 저장되어 있는지 여부입니다. "
+            "결과 미기록 목록과 대시보드 집계의 동일 모집단 계약에 사용합니다."
+        ),
+    )
     recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
     recommendation_conditions: list[str] = Field(
         default_factory=list,
