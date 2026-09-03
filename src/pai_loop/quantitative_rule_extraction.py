@@ -32,7 +32,7 @@ from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.11"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.12"
 
 # A global validator bump would invalidate every persisted attachment record,
 # including already-proven AVAILABLE profiles.  Instead, revision only the
@@ -809,6 +809,35 @@ def _case_row_window_matches(
         return False
     condition = "\n".join(condition_lines)
     return _case_condition_matches(candidate, case, condition)
+
+
+def _bracket_row_window_matches(
+    bracket: QuantitativeBracketLiteral,
+    window: str,
+) -> bool:
+    """Prove one split condition cell followed by its exact award cell."""
+
+    row_lines = window.splitlines()
+    if len(row_lines) < 2 or not _score_cell_matches(
+        row_lines[-1],
+        value=bracket.points,
+        percent=False,
+    ):
+        return False
+    condition_lines = row_lines[:-1]
+    if any(_is_score_cell(line) for line in condition_lines):
+        return False
+    condition = "\n".join(condition_lines)
+    values = tuple(
+        value
+        for value in (bracket.min_value, bracket.max_value)
+        if value is not None
+    )
+    return bool(
+        all(_literal_contains_number(value, condition) for value in values)
+        and Counter(_comparator_terms(condition))
+        == Counter(_expected_bracket_terms(bracket))
+    )
 
 
 def _criterion_window_matches(
@@ -2832,6 +2861,180 @@ def _rebind_candidate_table_cell_literals(
     )
 
 
+def _rebind_flat_split_table_cell_literals(
+    payload: ExtractionPayload,
+    *,
+    source: str,
+    lines: tuple[str, ...],
+) -> ExtractionPayload:
+    """Repair exact row-major HWPX cell splits without table coordinates.
+
+    HWPX extraction preserves paragraph order but does not emit the synthetic
+    ``[HWP SECTION N]`` markers used by the legacy HWP reader.  This fallback
+    therefore accepts only one table with unique, ordered criterion and row
+    anchors, and only joins an exact condition cell to the immediately
+    following exact score cell.  It never changes a structured bound, category,
+    award, maximum, or total.
+    """
+
+    if (
+        len(payload.quantitative_tables) != 1
+        or not lines
+        or any(_HWP_SECTION_LINE_RE.fullmatch(line) for line in lines)
+    ):
+        return payload
+    table = payload.quantitative_tables[0]
+    criterion_spans = [
+        _unique_anchor_line_span(lines, candidate.evidence.quote)
+        for candidate in table.criteria
+    ]
+    if (
+        not criterion_spans
+        or any(span is None for span in criterion_spans)
+        or any(
+            left is not None and right is not None and left[1] > right[0]
+            for left, right in zip(
+                criterion_spans,
+                criterion_spans[1:],
+                strict=False,
+            )
+        )
+    ):
+        return payload
+
+    resolved_criteria = [span for span in criterion_spans if span is not None]
+    protected_spans = _all_anchor_line_spans(
+        lines,
+        (
+            value
+            for candidate in table.criteria
+            for value in (
+                candidate.criterion_literal,
+                candidate.evidence.quote,
+                *(item.literal for item in candidate.brackets),
+                *(item.evidence.quote for item in candidate.brackets),
+                *(item.literal for item in candidate.cases),
+                *(item.evidence.quote for item in candidate.cases),
+                *(item.literal for item in candidate.recognition_conditions),
+                *(
+                    item.evidence.quote
+                    for item in candidate.recognition_conditions
+                ),
+            )
+        ),
+    )
+    repaired_candidates: list[QuantitativeRuleCandidate] = []
+    for candidate_index, candidate in enumerate(table.criteria):
+        criterion_span = resolved_criteria[candidate_index]
+        region_end = (
+            resolved_criteria[candidate_index + 1][0]
+            if candidate_index + 1 < len(resolved_criteria)
+            else len(lines)
+        )
+        region = (criterion_span[0], region_end)
+
+        criterion_literal = candidate.criterion_literal
+        literal_span = _unique_anchor_line_span(lines, criterion_literal)
+        if (
+            not _literal_contains_number(candidate.max_points, criterion_literal)
+            and literal_span is not None
+            and _spans_overlap(literal_span, criterion_span)
+            and _criterion_window_matches(candidate, candidate.evidence.quote)
+        ):
+            criterion_literal = candidate.evidence.quote
+
+        def repair_rows(
+            rows: list[QuantitativeBracketLiteral]
+            | list[QuantitativeCaseLiteral],
+            *,
+            is_bracket: bool,
+        ) -> list[QuantitativeBracketLiteral] | list[QuantitativeCaseLiteral]:
+            row_spans: list[tuple[int, int] | None] = []
+            for row in rows:
+                literal = _unique_anchor_line_span(lines, row.literal)
+                evidence = _unique_anchor_line_span(lines, row.evidence.quote)
+                row_spans.append(
+                    (
+                        (min(literal[0], evidence[0]), max(literal[1], evidence[1]))
+                        if literal is not None
+                        and evidence is not None
+                        and _spans_overlap(literal, evidence)
+                        else None
+                    )
+                )
+            if (
+                not row_spans
+                or any(span is None for span in row_spans)
+                or any(
+                    span is not None and not _span_inside_region(span, region)
+                    for span in row_spans
+                )
+                or any(
+                    left is not None
+                    and right is not None
+                    and left[1] > right[0]
+                    for left, right in zip(row_spans, row_spans[1:], strict=False)
+                )
+            ):
+                return rows
+
+            output = list(rows)
+            claimed_scores: list[tuple[int, int]] = []
+            for row_index, (row, row_span) in enumerate(
+                zip(rows, row_spans, strict=True)
+            ):
+                if row_span is None or row_span[1] >= region[1]:
+                    continue
+                score_span = (row_span[1], row_span[1] + 1)
+                if any(
+                    _spans_overlap(score_span, protected)
+                    for protected in protected_spans
+                ) or any(
+                    _spans_overlap(score_span, claimed)
+                    for claimed in claimed_scores
+                ):
+                    continue
+                window = "\n".join(lines[row_span[0] : score_span[1]])
+                matches = (
+                    _bracket_row_window_matches(row, window)
+                    if is_bracket
+                    else _case_row_window_matches(candidate, row, window)
+                )
+                if not matches:
+                    continue
+                claimed_scores.append(score_span)
+                output[row_index] = row.model_copy(
+                    update={
+                        "literal": window,
+                        "evidence": row.evidence.model_copy(
+                            update={"quote": window}
+                        ),
+                    }
+                )
+            return output
+
+        repaired_candidates.append(
+            candidate.model_copy(
+                update={
+                    "criterion_literal": criterion_literal,
+                    "brackets": repair_rows(
+                        list(candidate.brackets), is_bracket=True
+                    ),
+                    "cases": repair_rows(
+                        list(candidate.cases), is_bracket=False
+                    ),
+                }
+            )
+        )
+    return payload.model_copy(
+        update={
+            "quantitative_tables": [
+                table.model_copy(update={"criteria": repaired_candidates})
+            ]
+        }
+    )
+
+
 def _sourcewide_ambiguity_resolution_blocker(
     payload: ExtractionPayload,
     *,
@@ -3072,6 +3275,11 @@ def _rebind_split_table_cell_literals(
     lines = _source_lines(source)
     if not payload.quantitative_tables:
         return payload, ()
+    payload = _rebind_flat_split_table_cell_literals(
+        payload,
+        source=source,
+        lines=lines,
+    )
     if not lines or not any(
         _HWP_SECTION_LINE_RE.fullmatch(line) for line in lines
     ):

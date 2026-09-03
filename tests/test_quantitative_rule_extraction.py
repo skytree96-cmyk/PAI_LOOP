@@ -2196,9 +2196,33 @@ def test_split_hwp_amount_condition_converts_source_eok_to_candidate_won() -> No
     assert profile.available_candidates[0].cases[0].literal == "2억 원 이상\n6점"
 
 
-def test_split_cells_without_hwp_section_marker_are_not_rebound() -> None:
+def test_flat_hwpx_split_cells_are_rebound_from_exact_adjacent_score() -> None:
     source = "\n".join(
         ["수행실적 6점", "3건 이상", "6점", "정량평가 총점 6점"]
+    )
+    table = split_cell_case_table(
+        cases=[
+            split_case(
+                "3건 이상",
+                operator="GTE",
+                comparison_value=3,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=6,
+                row_order=1,
+            )
+        ]
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.available_candidates[0].cases[0].literal == "3건 이상\n6점"
+
+
+def test_flat_hwpx_split_cells_do_not_cross_an_unrelated_line() -> None:
+    source = "\n".join(
+        ["수행실적 6점", "3건 이상", "별도 설명", "6점", "정량평가 총점 6점"]
     )
     table = split_cell_case_table(
         cases=[
