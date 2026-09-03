@@ -80,6 +80,40 @@ def _latest_pps_metadata_version(notice: Notice) -> NoticeVersion | None:
     return max(metadata, key=lambda item: item.version_no) if metadata else None
 
 
+def _current_pps_attachment_audit_is_complete(notice: Notice) -> bool:
+    """Require current extraction contracts before exposing current analysis.
+
+    Evaluations and runs remain immutable history.  A prompt, schema, processing,
+    or validator bump can nevertheless invalidate every current attachment
+    attempt without creating a new PPS metadata version.  In that state an old
+    evaluation shares the latest metadata basis but is not a current result.
+
+    Empty legacy manifests retain their historical compatibility.  Once PPS
+    declares at least one attachment slot, the public current axis is available
+    only after the current all-attachment audit reaches ANALYZED.
+    """
+
+    metadata = _latest_pps_metadata_version(notice)
+    if metadata is None or not isinstance(metadata.source_payload, dict):
+        return True
+    manifest = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(manifest, list) or not manifest:
+        return True
+
+    # Local import keeps freshness primitives independent at module import
+    # time while reusing the single prompt/schema/validator-aware audit policy.
+    from .pps_enrichment import public_analysis_reason
+
+    return (
+        public_analysis_reason(
+            notice.versions,
+            evaluated=False,
+            source_kind="PPS",
+        ).state
+        == "ANALYZED"
+    )
+
+
 def analysis_basis_is_current(notice: Notice, notice_version_id: str | None) -> bool:
     """Return whether an immutable analysis basis covers current PPS material.
 
@@ -102,6 +136,8 @@ def analysis_basis_is_current(notice: Notice, notice_version_id: str | None) -> 
 
 def latest_current_evaluation(notice: Notice) -> Evaluation | None:
     has_pps_material = _latest_pps_metadata_version(notice) is not None
+    if has_pps_material and not _current_pps_attachment_audit_is_complete(notice):
+        return None
     evaluations = sorted(
         notice.evaluations,
         key=lambda item: _as_utc(item.evaluated_at),
@@ -119,6 +155,11 @@ def latest_current_evaluation(notice: Notice) -> Evaluation | None:
 
 
 def latest_current_analysis_run(notice: Notice) -> AnalysisRun | None:
+    if (
+        _latest_pps_metadata_version(notice) is not None
+        and not _current_pps_attachment_audit_is_complete(notice)
+    ):
+        return None
     runs = sorted(
         notice.analysis_runs,
         key=lambda item: _as_utc(item.generated_at),

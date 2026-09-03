@@ -24,10 +24,25 @@ from pai_loop.models import (
     UserDecision,
 )
 from pai_loop.integrations.openai_extraction import (
+    PROMPT_VERSION,
     EvidenceAnchor,
     ExtractedRequirement,
     ExtractionOutcome,
     ExtractionPayload,
+)
+from pai_loop.notice_freshness import (
+    latest_current_analysis_run,
+    latest_current_evaluation,
+)
+from pai_loop.pps_enrichment import (
+    PPS_ATTACHMENT_SOURCE,
+    PPS_METADATA_KIND,
+    PPS_METADATA_SCHEMA,
+    PPS_PROCESSING_VERSION,
+    _digest,
+)
+from pai_loop.quantitative_rule_extraction import (
+    validate_quantitative_attachment_extraction,
 )
 
 
@@ -157,6 +172,166 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     assert dashboard.json()["closed_count"] == 0
     assert dashboard.json()["expired_count"] == 0
     assert dashboard.json()["analysis_review_backlog_count"] == 0
+
+
+def test_prompt_stale_pps_audit_is_history_only_not_current_api_state(
+    client: TestClient,
+) -> None:
+    attachment = {
+        "attachment_id": "PPS-ATT-1234567890abcdef12345678",
+        "file_name": "제안요청서.pdf",
+        "media_type": "application/pdf",
+        "url": (
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+            "?bidPbancNo=R26BK-PROMPT-STALE&bidPbancOrd=00&fileSeq=1"
+        ),
+        "slot": 1,
+    }
+    manifest_sha = _digest([attachment])
+    stale_prompt_version = "pai-loop-extraction-0.5.0"
+    assert stale_prompt_version != PROMPT_VERSION
+    quantitative_record = validate_quantitative_attachment_extraction(
+        ExtractionPayload(
+            document_type="RFP",
+            requirements=[],
+            quantitative_tables=[],
+            quantitative_table_not_applicable=None,
+            missing_or_unreadable=[],
+            summary="현재 첨부 원문",
+        ),
+        source_text="현재 첨부 원문",
+        attachment_id=attachment["attachment_id"],
+        document_sha256="b" * 64,
+        manifest_sha256=manifest_sha,
+    )
+
+    with client.app.state.session_factory() as session:
+        notice = Notice(
+            notice_key="PPS-PROMPT-STALE",
+            bid_notice_no="R26BK-PROMPT-STALE",
+            revision_no="00",
+            title="추출 계약 갱신 회귀 공고",
+            agency="공공기관",
+            deadline=datetime.now(timezone.utc) + timedelta(days=7),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        metadata = NoticeVersion(
+            notice_id=notice.id,
+            version_no=1,
+            file_sha256="a" * 64,
+            document_complete=False,
+            extraction_status="METADATA",
+            extraction_confidence=1,
+            source_payload={
+                "kind": PPS_METADATA_KIND,
+                "schema_version": PPS_METADATA_SCHEMA,
+                "attachment_manifest": [attachment],
+            },
+        )
+        session.add(metadata)
+        session.flush()
+        current_attempt = NoticeVersion(
+            notice_id=notice.id,
+            version_no=2,
+            file_sha256="b" * 64,
+            document_complete=True,
+            extraction_status="ACCEPTED",
+            extraction_confidence=1,
+            source_payload={
+                "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                "source_kind": PPS_ATTACHMENT_SOURCE,
+                "attachment_id": attachment["attachment_id"],
+                "manifest_sha256": _digest(attachment),
+                "current_manifest_sha256": manifest_sha,
+                "prompt_version": PROMPT_VERSION,
+                "processing_version": PPS_PROCESSING_VERSION,
+                "status": "ACCEPTED",
+                "quantitative_validation_record": quantitative_record.model_dump(
+                    mode="json"
+                ),
+                "document_processing": {
+                    "source_read_complete": True,
+                    "analysis_input_complete": True,
+                },
+            },
+        )
+        session.add(current_attempt)
+        evaluation = Evaluation(
+            notice_id=notice.id,
+            notice_version_id=metadata.id,
+            deadline_snapshot_at=notice.deadline,
+            eligibility="PASS",
+            reason_code="PASS",
+            readiness_score=100,
+            readiness_status="GREEN",
+            evidence_coverage=100,
+            risk_score=10,
+            risk_band="GO",
+            ruleset_version="historical-before-prompt-bump",
+            atomic_results=[],
+            explanation={},
+        )
+        session.add(evaluation)
+        session.flush()
+        run = AnalysisRun(
+            notice_id=notice.id,
+            notice_version_id=metadata.id,
+            evaluation_id=evaluation.id,
+            status="COMPLETED",
+            idempotency_key="historical-before-prompt-bump",
+            input_sha256="c" * 64,
+            extraction_prompt_version=PROMPT_VERSION,
+            output_summary={"eligibility": "PASS"},
+        )
+        run.recommendations.append(
+            RecommendationSnapshot(
+                recommendation_key="bid:system",
+                rank=0,
+                recommendation="GO",
+            )
+        )
+        session.add(run)
+        session.commit()
+        current_attempt_id = current_attempt.id
+
+    current_detail = client.get("/api/v1/notices/PPS-PROMPT-STALE").json()
+    assert current_detail["analysis_state"] == "ANALYZED"
+    assert current_detail["analysis_attachments_audited"] == 1
+    assert current_detail["analysis_attachments_accepted"] == 1
+    assert current_detail["analysis_attachment_coverage_complete"] is True
+    assert current_detail["latest_evaluation"]["eligibility"] == "PASS"
+    assert current_detail["recommendation"] == "GO"
+
+    with client.app.state.session_factory() as session:
+        current_attempt = session.get(NoticeVersion, current_attempt_id)
+        assert current_attempt is not None
+        current_attempt.source_payload = {
+            **current_attempt.source_payload,
+            "prompt_version": stale_prompt_version,
+        }
+        session.commit()
+
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(
+            select(Notice).where(Notice.notice_key == "PPS-PROMPT-STALE")
+        )
+        assert notice is not None
+        assert len(notice.evaluations) == 1
+        assert len(notice.analysis_runs) == 1
+        assert latest_current_evaluation(notice) is None
+        assert latest_current_analysis_run(notice) is None
+
+    detail = client.get("/api/v1/notices/PPS-PROMPT-STALE").json()
+    assert detail["analysis_state"] == "PENDING"
+    assert detail["analysis_attachment_count"] == 1
+    assert detail["analysis_attachments_audited"] == 0
+    assert detail["analysis_attachments_accepted"] == 0
+    assert detail["analysis_attachment_coverage_complete"] is False
+    assert detail["latest_evaluation"] is None
+    assert detail["recommendation"] is None
+    assert detail["ingestion_state"] == "VERSIONED"
 
 
 def test_dashboard_counts_ended_notices_without_a_recorded_result(
