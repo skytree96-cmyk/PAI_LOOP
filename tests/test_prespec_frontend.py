@@ -21,7 +21,7 @@ def test_pre_specification_is_the_third_notice_discovery_tab_with_two_search_tra
     assert 'data-notice-search-mode="stored" aria-pressed="true" aria-controls="noticePanel"' in html
     assert 'data-notice-search-mode="pps" aria-pressed="false" aria-controls="ppsDiscoverySection"' in html
     assert 'data-notice-search-mode="prespec" aria-pressed="false" aria-controls="prespecSection"' in html
-    assert "AI 수집 공고" in html
+    assert "PAI 저장 공고" in html
     assert 'id="prespecSection"' in html
     assert 'id="prespecStoredForm"' in html
     assert 'id="prespecStoredStatusFilter"' in html
@@ -52,14 +52,15 @@ def test_pre_specification_help_explains_boundaries_and_zero_openai_search() -> 
     assert 'id="prespecHelpDialog"' in html
     for phrase in (
         "입찰공고 전 단계",
-        "검색·저장 AI 모델 0회",
+        "검색·저장 문서 분석 0회",
         "선택 저장",
         "분석은 별도 실행",
         "GO 판정 아님",
     ):
         assert phrase in html
-    assert "나라장터 API 0회 · AI 모델 0회" in html
-    assert "검색 결과는 저장되지 않으며" in html
+    assert "저장 자료 검색은 외부 조회 0회" in html
+    assert "나라장터 검색·선택 저장도 문서 분석 0회" in html
+    assert "검색 결과가 자동 저장되지 않습니다" in html
     assert "공고는 분석·판단 · 사전규격은 문서 분석" in html
 
 
@@ -85,7 +86,7 @@ def test_pre_specification_analysis_requires_explicit_cost_approval_and_bounded_
     for phrase in (
         "문서당 최대 2회",
         "사전규격 1건당 총 최대 10회",
-        "시간당 총량 제한 없음",
+        "중복 실행 잠금과 공고별 재시도 대기 적용",
         "GO 판정이 아님",
     ):
         assert phrase in source
@@ -120,8 +121,29 @@ def test_pre_specification_styles_distinguish_sources_and_cover_teams_mobile() -
 def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260827-sidebar-icons1"' in html
-    assert 'src="./app.js?v=20260827-policy3"' in html
+    assert 'href="./styles.css?v=20260904-uiux-p0-v1"' in html
+    assert 'src="./app.js?v=20260904-uiux-p0-v1"' in html
+
+
+def test_pre_specification_completion_uses_one_fail_closed_coverage_helper() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    result_start = source.index("  function renderPreSpecificationAnalysisResult")
+    helper_start = source.index("  function derivePreSpecificationCompletion")
+    status_start = source.index("  function renderPreSpecificationAnalysisStatus")
+    confirm_start = source.index("  function confirmPreSpecificationAnalysis")
+    result_body = source[result_start:helper_start]
+    helper_body = source[helper_start:status_start]
+    status_body = source[status_start:confirm_start]
+
+    assert "derivePreSpecificationCompletion({" in result_body
+    assert "derivePreSpecificationCompletion({" in status_body
+    assert "total > 0" in helper_body
+    assert "processed >= total" in helper_body
+    assert "accepted !== null" in helper_body
+    assert "accepted >= total" in helper_body
+    assert "completed: Boolean(declaredComplete && coverageComplete)" in helper_body
+    assert 'declaredComplete && !completion.coverageComplete ? "REVIEW"' in status_body
+    assert 'completion.completed ? "완료된 분석 결과" : "분석 상태 확인 필요"' in result_body
 
 
 def test_pre_specification_search_forms_use_card_safe_responsive_columns() -> None:
