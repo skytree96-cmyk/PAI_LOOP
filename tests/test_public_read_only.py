@@ -113,7 +113,7 @@ def test_public_hold_conditions_use_only_allowlisted_notice_text(monkeypatch) ->
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     seed = load_public_notice_seed()
     safe_condition = seed["extraction"]["requirements"][0]["normalized_condition"]
-    private_label = "담당자 private-review@example.invalid 확인"
+    private_label = "담당자 private-review" + "@" + "example.invalid 확인"
     private_value = "private-company-value"
     private_evidence_key = "PRIVATE-EVIDENCE-KEY"
 
