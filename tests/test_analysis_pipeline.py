@@ -247,6 +247,7 @@ def _seed_awards(session: Session, notice: Notice) -> None:
 
 def test_pipeline_merges_sources_and_persists_full_immutable_snapshot(db_session: Session) -> None:
     notice = _notice(db_session)
+    notice.deadline = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
     first = _source_version(
         notice,
         version_no=1,
@@ -435,6 +436,62 @@ def test_company_declaration_does_not_invent_an_evidence_requirement(db_session:
     assert requirement is not None
     assert requirement.fact_key == "conviction_clear"
     assert requirement.evidence_required is False
+
+
+def test_missing_industry_code_is_persisted_as_fail_not_review(db_session: Session) -> None:
+    notice = _notice(db_session, notice_key="INDUSTRY-MISSING", title="업종코드 제한 용역")
+    notice.deadline = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-INDUSTRY",
+        digest_char="9",
+        requirements=[
+            _requirement(
+                "REQ-INDUSTRY-MISSING",
+                "국내여행업(업종코드 1263) 등록업체에 한함",
+                attachment_id="ATT-INDUSTRY",
+                category="INDUSTRY_CODE",
+            )
+        ],
+    )
+    evidence = Evidence(
+        evidence_key="E-INDUSTRY-INVENTORY",
+        name="공개 업종 등록 전체 스냅샷",
+        evidence_type="PUBLIC_TEST",
+        status="VERIFIED",
+        valid_from=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        valid_until=datetime(2026, 11, 30, tzinfo=timezone.utc),
+        sha256="f" * 64,
+    )
+    db_session.add(evidence)
+    db_session.flush()
+    db_session.add(
+        CompanyFact(
+            fact_key="industry_code_inventory",
+            value=["1169", "1261"],
+            effective_from=datetime(2026, 8, 5, tzinfo=timezone.utc),
+            effective_to=datetime(2026, 11, 30, tzinfo=timezone.utc),
+            evidence_id=evidence.id,
+            verified=True,
+            source="PUBLIC_TEST",
+        )
+    )
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+    requirement_row = db_session.scalar(
+        select(AtomicRequirement).where(
+            AtomicRequirement.notice_version_id == result.notice_version_id
+        )
+    )
+
+    assert result.eligibility == "FAIL"
+    assert result.reason_code == "DF-000"
+    assert requirement_row is not None
+    assert requirement_row.fact_key == "industry_code_inventory"
+    assert requirement_row.operator == "contains"
+    assert requirement_row.required_value == "1263"
 
 
 def test_pipeline_derives_competition_and_profitability_only_from_stored_award_basis(
@@ -666,6 +723,7 @@ def test_known_non_eligibility_gap_can_release_r07_after_strict_eligibility_chec
     db_session: Session,
 ) -> None:
     notice = _notice(db_session, notice_key="PARTIAL-SAFE", title="가격표 일부 누락 교육 용역")
+    notice.deadline = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
     notice.risk_dimensions = None
     _source_version(
         notice,
@@ -719,6 +777,7 @@ def test_attachment_local_absence_is_resolved_only_by_an_accepted_sibling(
         notice_key="SIBLING-COVERAGE",
         title="공고문과 제안요청서가 분리된 공급 용역",
     )
+    notice.deadline = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
     notice.risk_dimensions = None
     _source_version(
         notice,
@@ -846,6 +905,7 @@ def test_combined_scope_and_rfp_sibling_covers_each_named_missing_document(
         notice_key="COMBINED-SIBLING-COVERAGE",
         title="과업지시서와 제안요청서가 결합된 공급 용역",
     )
+    notice.deadline = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
     notice.risk_dimensions = None
     _source_version(
         notice,
@@ -955,6 +1015,7 @@ def test_requirement_anchor_confidence_is_not_lowered_by_document_average(
         notice_key="ANCHOR-CONFIDENCE",
         title="요건 근거와 문서 평균을 분리하는 용역",
     )
+    notice.deadline = datetime(2026, 8, 5, 9, 0, tzinfo=timezone.utc)
     notice.risk_dimensions = None
     _source_version(
         notice,

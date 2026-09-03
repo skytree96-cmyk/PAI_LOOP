@@ -34,6 +34,19 @@ from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
 QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.11"
 
+# A global validator bump would invalidate every persisted attachment record,
+# including already-proven AVAILABLE profiles.  Instead, revision only the
+# fingerprint contract of legacy records carrying an issue whose proof logic
+# changed.  Their stored pre-revision digest no longer verifies, so the normal
+# attachment flow re-downloads and validates them once.  Newly validated records
+# carrying the same issue receive the revised digest and remain terminal rather
+# than retrying forever.
+_TARGETED_RECORD_FINGERPRINT_REVISIONS = {
+    "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
+        "sourcewide-structural-signature-v1"
+    ),
+}
+
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "포함되지",
     "별도 첨부",
@@ -320,8 +333,12 @@ _MAX_CRITERION_HEADER_FALLBACK_LINES = 64
 _MAX_SOURCEWIDE_HEADER_MATCHES = 64
 _MAX_SOURCEWIDE_BOUNDARY_SPANS = 512
 _HWP_SECTION_LINE_RE = re.compile(r"^\[HWP SECTION \d+\]$")
+_SOURCEWIDE_HEADING_PREFIX_PATTERN = (
+    r"(?:(?:\d+|[가-힣])\s*[.)]\s*|[❍○●■□▪▶]\s*)?"
+)
 _SOURCEWIDE_TABLE_MARKER_RE = re.compile(
-    r"^(?:[가-힣]\.\s*)?(?:정량(?:적)?\s*평가(?:\s*세부\s*기준|\s*기준|표)?|"
+    rf"^{_SOURCEWIDE_HEADING_PREFIX_PATTERN}"
+    r"(?:정량(?:적)?\s*평가(?:\s*세부\s*기준|\s*기준|표)?|"
     r"평가\s*배점표|평가\s*기준표)$"
 )
 _SOURCEWIDE_HEADER_NOUN_SUFFIX_RE = re.compile(
@@ -1104,8 +1121,9 @@ _SOURCEWIDE_SIMPLE_QUANTITATIVE_TOTAL_RE = re.compile(
 _SOURCEWIDE_QUANTITATIVE_SUMMARY_TOTAL_RE = re.compile(
     rf"^(?:❍)?정량적평가\((?P<points>{_NUM_PATTERN})점\):.+평가$"
 )
-_BUSAN_QUANTITATIVE_DETAIL_MARKER_RE = re.compile(
-    r"^[가-힣]\.\s*정량적\s*평가\s*세부\s*기준$"
+_SOURCEWIDE_QUANTITATIVE_DETAIL_MARKER_RE = re.compile(
+    rf"^{_SOURCEWIDE_HEADING_PREFIX_PATTERN}"
+    r"정량적\s*평가\s*세부\s*기준$"
 )
 _CREDIT_RATING_COLUMN_HEADER_CLUSTER = (
     "신용평가등급",
@@ -1114,11 +1132,14 @@ _CREDIT_RATING_COLUMN_HEADER_CLUSTER = (
     "기업어음",
     "기업신용평가등급",
 )
-_BUSAN_SOURCEWIDE_AMBIGUITY_SIGNATURE = (
-    ("PERFORMANCE_AMOUNT", Decimal("6")),
-    ("PERFORMANCE_COUNT", Decimal("4")),
-    ("CREDIT_RATING", Decimal("10")),
+_SOURCEWIDE_AMBIGUITY_SUPPORTED_METRICS = frozenset(
+    {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT", "CREDIT_RATING"}
 )
+# Deliberate 부산-source limitation: the flattened HWP text contains parallel
+# company-bond, commercial-paper, and enterprise-credit columns without cell
+# coordinates.  Only this exact enterprise-credit category shape plus its exact
+# terminal footnote proves column ownership.  Do not generalize it to other
+# credit tables until the extractor preserves native table row/column geometry.
 _BUSAN_ENTERPRISE_CREDIT_CATEGORY_ROWS = (
     ("AAA", "AA+", "AA0", "AA-", "A+", "A0", "A-", "BBB+", "BBB0"),
     ("BBB-", "BB+", "BB0", "BB-"),
@@ -2870,11 +2891,19 @@ def _sourcewide_ambiguity_resolution_blocker(
     if rebound_owners != expected_owners:
         return "SOURCEWIDE_AMBIGUITY_REBIND_INCOMPLETE"
 
-    signature = tuple(
-        (candidate.metric, _decimal(candidate.max_points))
-        for candidate in criteria
-    )
-    if signature != _BUSAN_SOURCEWIDE_AMBIGUITY_SIGNATURE:
+    # Resolve source-structure ambiguity from source proof, never from one
+    # notice's point signature.  Keep the exception deliberately narrow: only
+    # metrics with an independent exhaustive case census below are supported,
+    # and one canonical company fact may own at most one criterion in the
+    # ambiguous table.  All header, geometry, row, evidence, and total gates
+    # still have to succeed before the model's ambiguity can be cleared.
+    metrics = tuple(candidate.metric for candidate in criteria)
+    maxima = tuple(_decimal(candidate.max_points) for candidate in criteria)
+    if (
+        any(metric not in _SOURCEWIDE_AMBIGUITY_SUPPORTED_METRICS for metric in metrics)
+        or len(set(metrics)) != len(metrics)
+        or any(maximum is None or maximum <= 0 for maximum in maxima)
+    ):
         return "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED"
 
     if (
@@ -3003,7 +3032,7 @@ def _sourcewide_ambiguity_resolution_blocker(
     detail_markers = [
         (index, index + 1)
         for index, line in enumerate(lines)
-        if _BUSAN_QUANTITATIVE_DETAIL_MARKER_RE.fullmatch(
+        if _SOURCEWIDE_QUANTITATIVE_DETAIL_MARKER_RE.fullmatch(
             unicodedata.normalize("NFKC", line)
         )
     ]
@@ -5616,9 +5645,33 @@ def build_quantitative_candidate_profile(
     )
 
 
+def _targeted_record_fingerprint_revisions(
+    data: Mapping[str, object],
+) -> tuple[str, ...]:
+    raw_issues = data.get("issues")
+    if not isinstance(raw_issues, (list, tuple)):
+        return ()
+    issue_codes = {
+        str(item.get("code") or "")
+        for item in raw_issues
+        if isinstance(item, Mapping)
+    }
+    return tuple(
+        sorted(
+            revision
+            for code, revision in _TARGETED_RECORD_FINGERPRINT_REVISIONS.items()
+            if code in issue_codes
+        )
+    )
+
+
 def _record_fingerprint_data(data: Mapping[str, object]) -> str:
+    canonical_data = dict(data)
+    targeted_revisions = _targeted_record_fingerprint_revisions(canonical_data)
+    if targeted_revisions:
+        canonical_data["_targeted_validator_revisions"] = targeted_revisions
     canonical = json.dumps(
-        data,
+        canonical_data,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

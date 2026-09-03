@@ -64,6 +64,7 @@ def test_public_profile_contains_only_safe_evidence_metadata() -> None:
     assert {item["display_name"] for item in profile["evidence"]} == {
         "경쟁입찰참가자격등록증",
         "비영리법인 설립허가증",
+        "나라장터 인허가 증명서 모음",
     }
     assert all(re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) for item in profile["evidence"])
     assert not re.search(r"\b\d{3}-\d{2}-\d{5}\b", serialized)
@@ -84,7 +85,7 @@ def test_inchon_policy_separates_four_classes_and_keeps_one_blocking_action() ->
     result = classify_requirements(
         INCHON_REQUIREMENTS,
         profile=load_public_company_profile(),
-        deadline="2026-01-14",
+        deadline="2026-09-03",
     )
     by_id = {item["requirement_id"]: item for item in result["items"]}
 
@@ -95,14 +96,17 @@ def test_inchon_policy_separates_four_classes_and_keeps_one_blocking_action() ->
         "INFORMATION",
     }
     assert result["blocking_actions"] == 1
-    assert by_id["REQ-001"]["outcome"] == "PASS_CURRENT"
+    assert by_id["REQ-001"]["outcome"] == "REVIEW"
     assert by_id["REQ-001"]["evidence"]["display_name"] == "경쟁입찰참가자격등록증"
-    assert by_id["REQ-002"]["outcome"] == "PASS_CURRENT"
+    assert by_id["REQ-002"]["outcome"] == "REVIEW"
     assert by_id["REQ-002"]["deadline_check_required"] is True
     assert by_id["REQ-003"]["policy_class"] == "CHECKLIST"
     assert by_id["REQ-003"]["outcome"] == "READY"
     assert by_id["REQ-004"]["outcome"] == "PASS_EXCEPTION"
-    assert by_id["REQ-005"]["outcome"] == "PASS_EXCEPTION"
+    assert by_id["REQ-005"]["outcome"] == "REVIEW"
+    assert by_id["REQ-005"]["company_fact_key"] == (
+        "small_business_nonprofit_exception_scope"
+    )
     assert by_id["REQ-006"]["outcome"] == "PASS_CURRENT"
     assert by_id["REQ-008"]["policy_class"] == "INFORMATION"
     assert by_id["REQ-010"]["policy_class"] == "INFORMATION"
@@ -114,16 +118,31 @@ def test_inchon_policy_separates_four_classes_and_keeps_one_blocking_action() ->
     assert by_id["REQ-022"]["policy_class"] == "INFORMATION"
 
 
-def test_nonprofit_exception_is_not_inferred_when_notice_does_not_offer_it() -> None:
+def test_confirmed_missing_small_business_certificate_fails_without_notice_exception() -> None:
     result = classify_requirements(
         [requirement("SMALL-1", "CERTIFICATION", "소기업·소상공인 확인서를 보유해야 함.")],
         profile=load_public_company_profile(),
-        deadline="2026-09-01",
+        deadline="2026-09-03",
     )
 
     assert result["items"][0]["policy_class"] == "ELIGIBILITY"
-    assert result["items"][0]["outcome"] == "REVIEW"
+    assert result["items"][0]["outcome"] == "FAIL_CONFIRMED"
     assert result["items"][0]["blocking"] is True
+
+    future = classify_requirements(
+        [requirement("SMALL-FUTURE", "CERTIFICATION", "소기업·소상공인 확인서를 보유해야 함.")],
+        profile=load_public_company_profile(),
+        deadline="2026-09-04",
+    )["items"][0]
+    assert future["outcome"] == "REVIEW"
+    assert future["evaluation_fact_key"] == "reconfirm.small_business_certificate"
+
+    historical = classify_requirements(
+        [requirement("SMALL-HISTORICAL", "CERTIFICATION", "소기업 확인서를 보유해야 함.")],
+        profile=load_public_company_profile(),
+        deadline="2026-09-01",
+    )["items"][0]
+    assert historical["outcome"] == "REVIEW"
 
 
 def test_future_conviction_check_does_not_overextend_current_declaration() -> None:
@@ -141,6 +160,503 @@ def test_future_conviction_check_does_not_overextend_current_declaration() -> No
     assert result["blocking_items"] == 1
 
 
+def test_profile_structures_official_and_declared_company_facts_separately() -> None:
+    facts = load_public_company_profile()["facts"]
+
+    assert len(facts["industry_code_inventory"]["value"]) == 18
+    assert facts["industry_code_name_inventory"]["value"] == [
+        {"code": "1169", "name": "학술·연구용역"},
+        {"code": "1261", "name": "종합여행업"},
+        {"code": "1426", "name": "소프트웨어사업자(패키지소프트웨어개발·공급사업)"},
+        {"code": "1468", "name": "소프트웨어사업자(컴퓨터관련서비스사업)"},
+        {"code": "1469", "name": "소프트웨어사업자(디지털콘텐츠개발서비스사업)"},
+        {"code": "1470", "name": "소프트웨어사업자(데이터베이스제작및검색서비스사업)"},
+        {"code": "1517", "name": "출판사"},
+        {"code": "3156", "name": "평생교육시설(원격)"},
+        {"code": "3244", "name": "비디오물제작업"},
+        {"code": "5601", "name": "국내무료직업소개사업"},
+        {"code": "5608", "name": "직업능력개발훈련수탁기관"},
+        {"code": "5609", "name": "직업능력개발훈련시설(지정직업훈련시설)"},
+        {"code": "5720", "name": "국제회의기획업"},
+        {"code": "6529", "name": "이러닝서비스업"},
+        {"code": "6530", "name": "기타이러닝업"},
+        {"code": "6639", "name": "가족친화기업"},
+        {"code": "9901", "name": "기타자유업(행사대행업)"},
+        {"code": "9999", "name": "기타자유업종"},
+    ]
+    assert facts["direct_production_certificate"]["value"] is False
+    assert facts["small_business_certificate"]["value"] is False
+    assert facts["sme_certificate"]["value"] is False
+    assert facts["head_office_region_seoul"]["evidence_state"].startswith("VERIFIED")
+    assert facts["head_office_region_codes"]["value"] == [
+        "SEOUL",
+        "SEOUL_YEONGDEUNGPO",
+    ]
+    assert facts["registered_bidder_branch_region_codes"]["value"] == []
+    assert facts["declared_branch_region_codes"]["value"] == [
+        "DAEGU",
+        "BUSAN",
+        "DAEJEON",
+        "GWANGJU",
+        "JEJU",
+    ]
+    assert facts["declared_branch_region_codes"]["evidence_state"] == "COMPANY_DECLARATION"
+    assert facts["public_software_bid_ceiling_krw"]["value"] == 4_000_000_000
+    assert len(facts["designated_vocational_training_ncs_subclasses"]["value"]) == 12
+
+
+def test_industry_inventory_supports_single_or_and_and_confirmed_fail() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "INDUSTRY-OR",
+                "INDUSTRY_CODE",
+                "종합여행업(업종코드 1261) 또는 국내여행업(업종코드 1263) 등록업체",
+            ),
+            requirement(
+                "INDUSTRY-AND",
+                "INDUSTRY_CODE",
+                "학술연구용역(업종코드 1169) 및 종합여행업(업종코드 1261) 모두 등록",
+            ),
+            requirement(
+                "INDUSTRY-MISSING",
+                "INDUSTRY_CODE",
+                "국내여행업(업종코드 1263) 등록업체",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-08-05",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["INDUSTRY-OR"]["outcome"] == "PASS_CURRENT"
+    assert by_id["INDUSTRY-OR"]["operator"] == "contains_any"
+    assert by_id["INDUSTRY-AND"]["outcome"] == "PASS_CURRENT"
+    assert by_id["INDUSTRY-AND"]["operator"] == "contains_all"
+    assert by_id["INDUSTRY-MISSING"]["outcome"] == "FAIL_CONFIRMED"
+    assert by_id["INDUSTRY-MISSING"]["company_fact_key"] == "industry_code_inventory"
+
+
+def test_nonprofit_direct_production_exception_is_scoped_fail_closed() -> None:
+    profile = load_public_company_profile()
+    same_clause = classify_requirements(
+        [
+            requirement(
+                "COMPOUND-EXCEPTION",
+                "CERTIFICATION",
+                (
+                    "직접생산확인증명서와 중소기업확인서 조건은 비영리법인에는 적용하지 않으며 "
+                    "비영리법인은 참여 가능함."
+                ),
+            )
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )["items"][0]
+    assert same_clause["outcome"] == "PASS_EXCEPTION"
+    assert same_clause["company_fact_key"] == "nonprofit_entity"
+
+    misleading_scope = classify_requirements(
+        [
+            requirement(
+                "COMPOUND-NON-EXCEPTION",
+                "CERTIFICATION",
+                (
+                    "직접생산확인증명서와 중소기업확인서는 비영리법인도 보유해야 하며, "
+                    "지역제한은 적용하지 않아 참여 가능하다."
+                ),
+            )
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )["items"][0]
+    assert misleading_scope["outcome"] == "REVIEW"
+    assert misleading_scope["company_fact_key"] == "compound_notice_specific_qualification"
+
+    for condition in (
+        "직접생산확인증명서와 중소기업확인서는 비영리법인도 면제 대상이 아니며 모두 보유해야 한다.",
+        "직접생산확인증명서와 중소기업확인서는 비영리법인도 예외 대상이 아니며 모두 보유해야 한다.",
+        "직접생산확인증명서와 중소기업확인서를 비영리법인에 적용하지 않는 것은 아니며 모두 보유해야 한다.",
+    ):
+        negated = classify_requirements(
+            [requirement("NEGATED-EXCEPTION", "CERTIFICATION", condition)],
+            profile=profile,
+            deadline="2026-09-10",
+        )["items"][0]
+        assert negated["outcome"] == "REVIEW"
+        assert negated["company_fact_key"] == "compound_notice_specific_qualification"
+
+    for key, category, condition in (
+        (
+            "DIRECT-UNRELATED-EXCEPTION",
+            "DIRECT_PRODUCTION",
+            "직접생산확인증명서를 보유해야 하며, 지역제한은 비영리법인에 적용하지 않아 참여 가능하다.",
+        ),
+        (
+            "SME-UNRELATED-EXCEPTION",
+            "CERTIFICATION",
+            "중소기업확인서를 보유해야 하며, 지역제한은 비영리법인에 적용하지 않아 참여 가능하다.",
+        ),
+        (
+            "DIRECT-NEGATED-EXCEPTION",
+            "DIRECT_PRODUCTION",
+            "직접생산확인증명서는 비영리법인도 면제 대상이 아니며 보유해야 한다.",
+        ),
+    ):
+        single_family = classify_requirements(
+            [requirement(key, category, condition)],
+            profile=profile,
+            deadline="2026-09-03",
+        )["items"][0]
+        assert single_family["outcome"] != "PASS_EXCEPTION"
+        assert single_family["company_fact_key"] != "nonprofit_entity"
+
+    separate_scoped = classify_requirements(
+        [
+            requirement(
+                "DIRECT",
+                "DIRECT_PRODUCTION",
+                "직접생산확인증명서를 보유해야 함.",
+            ),
+            requirement(
+                "DIRECT-EXCEPTION",
+                "CERTIFICATION",
+                "직접생산확인증명서는 비영리법인에 적용하지 않으며 참여 가능함.",
+            ),
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )
+    separate_by_id = {item["requirement_id"]: item for item in separate_scoped["items"]}
+    assert separate_by_id["DIRECT"]["outcome"] == "REVIEW"
+    assert separate_by_id["DIRECT-EXCEPTION"]["outcome"] == "PASS_EXCEPTION"
+
+    separate_ambiguous = classify_requirements(
+        [
+            requirement(
+                "DIRECT",
+                "DIRECT_PRODUCTION",
+                "직접생산확인증명서를 보유해야 함.",
+            ),
+            requirement(
+                "GENERIC-EXCEPTION",
+                "ENTITY",
+                "일정 요건의 비영리법인은 참여 가능함.",
+            ),
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )
+    direct = next(item for item in separate_ambiguous["items"] if item["requirement_id"] == "DIRECT")
+    assert direct["outcome"] == "REVIEW"
+    assert direct["company_fact_key"] == "direct_production_nonprofit_exception_scope"
+
+
+def test_nonprofit_small_business_exception_is_scoped_fail_closed() -> None:
+    profile = load_public_company_profile()
+    result = classify_requirements(
+        [
+            requirement(
+                "SME-SAME-CLAUSE",
+                "CERTIFICATION",
+                "중소기업확인서 조건은 비영리법인에 적용하지 않으며 비영리법인은 참여 가능함.",
+            ),
+            requirement(
+                "SME-SEPARATE",
+                "CERTIFICATION",
+                "중소기업확인서를 보유해야 함.",
+            ),
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["SME-SAME-CLAUSE"]["outcome"] == "PASS_EXCEPTION"
+    assert by_id["SME-SAME-CLAUSE"]["company_fact_key"] == "nonprofit_entity"
+    assert by_id["SME-SEPARATE"]["outcome"] == "REVIEW"
+    assert by_id["SME-SEPARATE"]["company_fact_key"] == (
+        "small_business_nonprofit_exception_scope"
+    )
+
+
+def test_slash_industry_logic_and_training_scope_stay_fail_closed() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "INDUSTRY-SLASH",
+                "INDUSTRY_CODE",
+                "학술연구용역(업종코드 1169) / 국내여행업(업종코드 1263) 등록",
+            ),
+            requirement(
+                "NCS-HELD",
+                "CERTIFICATION",
+                "지정직업훈련시설의 NCS 세분류 04030102 기업교육을 보유한 업체",
+            ),
+            requirement(
+                "NCS-MISSING",
+                "CERTIFICATION",
+                "지정직업훈련시설의 NCS 세분류 08020101 디자인 직종을 보유한 업체",
+            ),
+            requirement(
+                "NCS-SLASH",
+                "CERTIFICATION",
+                "지정직업훈련시설 NCS 세분류 04030102 / 08020101 보유 업체",
+            ),
+            requirement(
+                "NCS-MIXED",
+                "CERTIFICATION",
+                "지정직업훈련시설 NCS 세분류 04030102 또는 08020101 및 02010101 보유 업체",
+            ),
+            requirement(
+                "NCS-UNRELATED-AND",
+                "CERTIFICATION",
+                "지정직업훈련시설 등록 및 NCS 세분류 04030102, 08020101 보유 업체",
+            ),
+            requirement(
+                "NCS-SUFFIX-ANY",
+                "CERTIFICATION",
+                "지정직업훈련시설 NCS 세분류 04030102, 08020101 중 하나 보유 업체",
+            ),
+            requirement(
+                "NCS-NAME-PREFIX",
+                "CERTIFICATION",
+                "지정직업훈련시설 NCS 훈련직종 인사관리 보유 업체",
+            ),
+            requirement(
+                "FACILITY-DATE-NOT-NCS",
+                "CERTIFICATION",
+                "지정직업훈련시설 지정일은 20260903이며 해당 시설을 보유한 업체",
+            ),
+            requirement(
+                "FACILITY-PERMIT-NOT-NCS",
+                "CERTIFICATION",
+                "지정직업훈련시설 허가번호 12345678을 보유한 업체",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["INDUSTRY-SLASH"]["outcome"] == "REVIEW"
+    assert by_id["INDUSTRY-SLASH"]["company_fact_key"] == "ambiguous_industry_code_logic"
+    assert by_id["NCS-HELD"]["outcome"] == "PASS_CURRENT"
+    assert by_id["NCS-HELD"]["company_fact_key"] == "designated_vocational_training_ncs_codes"
+    assert by_id["NCS-MISSING"]["outcome"] == "FAIL_CONFIRMED"
+    assert by_id["NCS-SLASH"]["outcome"] == "REVIEW"
+    assert by_id["NCS-MIXED"]["outcome"] == "REVIEW"
+    assert by_id["NCS-MIXED"]["company_fact_key"] == "vocational_training_scope_unparsed"
+    assert by_id["NCS-UNRELATED-AND"]["outcome"] == "REVIEW"
+    assert by_id["NCS-UNRELATED-AND"]["company_fact_key"] == "vocational_training_scope_unparsed"
+    assert by_id["NCS-SUFFIX-ANY"]["outcome"] == "PASS_CURRENT"
+    assert by_id["NCS-SUFFIX-ANY"]["operator"] == "contains_any"
+    assert by_id["NCS-NAME-PREFIX"]["outcome"] == "REVIEW"
+    assert by_id["NCS-NAME-PREFIX"]["company_fact_key"] == "vocational_training_scope_unparsed"
+    assert by_id["FACILITY-DATE-NOT-NCS"]["outcome"] == "PASS_CURRENT"
+    assert by_id["FACILITY-DATE-NOT-NCS"]["company_fact_key"] == "designated_vocational_training"
+    assert by_id["FACILITY-PERMIT-NOT-NCS"]["outcome"] == "PASS_CURRENT"
+    assert by_id["FACILITY-PERMIT-NOT-NCS"]["company_fact_key"] == "designated_vocational_training"
+
+
+def test_industry_code_parser_ignores_amounts_and_rejects_mixed_logic() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "INDUSTRY-AMOUNT",
+                "INDUSTRY_CODE",
+                "업종코드 1261 등록 및 5000만원 이상 실적을 보유한 업체",
+            ),
+            requirement(
+                "INDUSTRY-MIXED",
+                "INDUSTRY_CODE",
+                "업종코드 1261 및 업종코드 1263 또는 업종코드 7777 등록 업체",
+            ),
+            requirement(
+                "INDUSTRY-NO-OPERATOR",
+                "INDUSTRY_CODE",
+                "업종코드 1169, 1261 등록 업체",
+            ),
+            requirement(
+                "INDUSTRY-UNRELATED-AND",
+                "INDUSTRY_CODE",
+                "종합여행업 등록 및 업종코드 1261, 7777 등록 업체",
+            ),
+            requirement(
+                "INDUSTRY-SUFFIX-ALL",
+                "INDUSTRY_CODE",
+                "업종코드 1169, 1261 모두 등록 업체",
+            ),
+            requirement(
+                "INDUSTRY-SUFFIX-ANY",
+                "INDUSTRY_CODE",
+                "업종코드 1169, 1263 중 하나를 등록한 업체",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-08-05",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["INDUSTRY-AMOUNT"]["outcome"] == "PASS_CURRENT"
+    assert by_id["INDUSTRY-AMOUNT"]["required_industry_codes"] == ["1261"]
+    assert by_id["INDUSTRY-MIXED"]["outcome"] == "REVIEW"
+    assert by_id["INDUSTRY-MIXED"]["company_fact_key"] == "ambiguous_industry_code_logic"
+    assert by_id["INDUSTRY-NO-OPERATOR"]["outcome"] == "REVIEW"
+    assert by_id["INDUSTRY-UNRELATED-AND"]["outcome"] == "REVIEW"
+    assert by_id["INDUSTRY-UNRELATED-AND"]["company_fact_key"] == "ambiguous_industry_code_logic"
+    assert by_id["INDUSTRY-SUFFIX-ALL"]["outcome"] == "PASS_CURRENT"
+    assert by_id["INDUSTRY-SUFFIX-ALL"]["operator"] == "contains_all"
+    assert by_id["INDUSTRY-SUFFIX-ANY"]["outcome"] == "PASS_CURRENT"
+    assert by_id["INDUSTRY-SUFFIX-ANY"]["operator"] == "contains_any"
+
+
+def test_compound_and_multiple_permit_gates_never_reuse_one_fact() -> None:
+    result = classify_requirements(
+        [
+            requirement(
+                "TWO-NAMED-PERMITS",
+                "CERTIFICATION",
+                "종합여행업 및 국제회의기획업을 모두 등록한 업체",
+            ),
+            requirement(
+                "KNOWN-AND-OTHER-PERMIT",
+                "CERTIFICATION",
+                "종합여행업 등록업체이며 관광사업자 등록증을 보유해야 함",
+            ),
+            requirement(
+                "PERMIT-AND-INDUSTRY",
+                "INDUSTRY_CODE",
+                "종합여행업 등록 및 학술연구용역(업종코드 1169) 등록을 모두 충족한 업체",
+            ),
+            requirement(
+                "SAME-PERMIT-AND-CODE",
+                "INDUSTRY_CODE",
+                "종합여행업(업종코드 1261) 등록업체",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-08-05",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["TWO-NAMED-PERMITS"]["outcome"] == "REVIEW"
+    assert by_id["TWO-NAMED-PERMITS"]["company_fact_key"] == "compound_named_permit_qualification"
+    assert by_id["KNOWN-AND-OTHER-PERMIT"]["outcome"] == "REVIEW"
+    assert by_id["KNOWN-AND-OTHER-PERMIT"]["company_fact_key"] == "compound_named_permit_qualification"
+    assert by_id["PERMIT-AND-INDUSTRY"]["outcome"] == "REVIEW"
+    assert by_id["PERMIT-AND-INDUSTRY"]["company_fact_key"] == "compound_notice_specific_qualification"
+    assert by_id["SAME-PERMIT-AND-CODE"]["outcome"] == "PASS_CURRENT"
+    assert by_id["SAME-PERMIT-AND-CODE"]["company_fact_key"] == "industry_code_inventory"
+    assert by_id["SAME-PERMIT-AND-CODE"]["required_industry_codes"] == ["1261"]
+
+
+def test_verified_permits_and_seoul_head_office_map_but_declared_branches_do_not() -> None:
+    result = classify_requirements(
+        [
+            requirement("VIDEO", "CERTIFICATION", "비디오물제작업 신고 업체에 한함."),
+            requirement("JOB", "CERTIFICATION", "국내 무료직업소개사업 등록업체에 한함."),
+            requirement("SEOUL", "REGION", "법인등기부상 본점 소재지가 서울특별시인 업체에 한함."),
+            requirement("BUSAN-BRANCH", "REGION", "부산광역시 지점 소재 업체에 한함."),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["VIDEO"]["company_fact_key"] == "video_production"
+    assert by_id["VIDEO"]["outcome"] == "PASS_CURRENT"
+    assert by_id["JOB"]["company_fact_key"] == "free_job_placement"
+    assert by_id["JOB"]["outcome"] == "PASS_CURRENT"
+    assert by_id["SEOUL"]["company_fact_key"] == "head_office_region_seoul"
+    assert by_id["SEOUL"]["outcome"] == "REVIEW"
+    assert by_id["SEOUL"]["evaluation_fact_key"] == "reconfirm.head_office_region_seoul"
+    assert by_id["BUSAN-BRANCH"]["outcome"] == "REVIEW"
+
+    snapshot_day = classify_requirements(
+        [requirement("SEOUL-AS-OF", "REGION", "법인등기부상 본점 소재지가 서울특별시인 업체에 한함.")],
+        profile=load_public_company_profile(),
+        deadline="2026-08-05",
+    )["items"][0]
+    assert snapshot_day["outcome"] == "PASS_CURRENT"
+
+
+def test_deadline_freshness_distinguishes_recheck_and_conditional_reconfirm() -> None:
+    profile = load_public_company_profile()
+    bidder_clause = requirement(
+        "BIDDER-FRESHNESS",
+        "SUBMISSION",
+        "나라장터 경쟁입찰참가자격 등록을 완료해야 함",
+    )
+    at_snapshot = classify_requirements(
+        [bidder_clause], profile=profile, deadline="2026-08-05"
+    )["items"][0]
+    after_snapshot = classify_requirements(
+        [bidder_clause], profile=profile, deadline="2026-08-06"
+    )["items"][0]
+
+    assert at_snapshot["outcome"] == "PASS_CURRENT"
+    assert at_snapshot["evaluation_fact_key"] == "bidder_registration"
+    assert after_snapshot["outcome"] == "REVIEW"
+    assert after_snapshot["evaluation_fact_key"] == "reconfirm.bidder_registration"
+
+    ordinary_permit = classify_requirements(
+        [requirement("PERMIT-ORDINARY", "CERTIFICATION", "종합여행업 등록 업체여야 함.")],
+        profile=profile,
+        deadline="2026-09-10",
+    )["items"][0]
+    current_copy_permit = classify_requirements(
+        [
+            requirement(
+                "PERMIT-CURRENT-COPY",
+                "CERTIFICATION",
+                "유효기간 내 종합여행업 등록증을 보유한 업체여야 함.",
+            )
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )["items"][0]
+    as_of_permit = classify_requirements(
+        [
+            requirement(
+                "PERMIT-AS-OF",
+                "CERTIFICATION",
+                "공고일 현재 종합여행업 등록 업체여야 함.",
+            )
+        ],
+        profile=profile,
+        deadline="2026-09-10",
+    )["items"][0]
+
+    assert ordinary_permit["outcome"] == "PASS_CURRENT"
+    assert current_copy_permit["outcome"] == "REVIEW"
+    assert current_copy_permit["evaluation_fact_key"] == "reconfirm.general_travel_business"
+    assert as_of_permit["outcome"] == "REVIEW"
+    assert as_of_permit["evaluation_fact_key"] == "reconfirm.general_travel_business"
+
+
+def test_permit_collection_does_not_pass_before_observation_date() -> None:
+    clause = requirement(
+        "TRAVEL-PERMIT",
+        "CERTIFICATION",
+        "종합여행업 등록 업체여야 함.",
+    )
+
+    historical = classify_requirements(
+        [clause],
+        profile=load_public_company_profile(),
+        deadline="2026-09-02",
+    )["items"][0]
+    current = classify_requirements(
+        [clause],
+        profile=load_public_company_profile(),
+        deadline="2026-09-03",
+    )["items"][0]
+
+    assert historical["outcome"] == "REVIEW"
+    assert current["outcome"] == "PASS_CURRENT"
+
+
 @pytest.mark.parametrize(
     "condition",
     [
@@ -155,7 +671,7 @@ def test_live_bidder_registration_wording_allows_particles_and_spacing(
     result = classify_requirements(
         [requirement("LIVE-REGISTRATION", "SUBMISSION", condition)],
         profile=load_public_company_profile(),
-        deadline="2026-08-27",
+        deadline="2026-08-05",
     )
 
     item = result["items"][0]
@@ -187,7 +703,7 @@ def test_live_state_contract_qualification_and_restriction_map_to_distinct_facts
             ),
         ],
         profile=load_public_company_profile(),
-        deadline="2026-08-27",
+        deadline="2026-08-05",
     )
     by_id = {item["requirement_id"]: item for item in result["items"]}
 
@@ -197,6 +713,28 @@ def test_live_state_contract_qualification_and_restriction_map_to_distinct_facts
     restriction = by_id["LIVE-STATE-CONTRACT-RESTRICTION"]
     assert restriction["company_fact_key"] == "sanction_clear"
     assert restriction["outcome"] == "PASS_CURRENT"
+
+
+def test_current_sanction_snapshot_does_not_pass_before_observation_date() -> None:
+    clause = requirement(
+        "HISTORICAL-SANCTION",
+        "SANCTION",
+        "부정당업자 입찰참가자격 제한을 받고 있지 않아야 함.",
+    )
+
+    historical = classify_requirements(
+        [clause],
+        profile=load_public_company_profile(),
+        deadline="2026-08-04",
+    )["items"][0]
+    current = classify_requirements(
+        [clause],
+        profile=load_public_company_profile(),
+        deadline="2026-08-05",
+    )["items"][0]
+
+    assert historical["outcome"] == "REVIEW"
+    assert current["outcome"] == "PASS_CURRENT"
 
 
 def test_live_bid_bond_penalty_clause_is_not_sanction_clearance_pass() -> None:
@@ -352,7 +890,7 @@ def test_notice_specific_goods_qualifications_and_contract_conduct_are_separated
             ),
         ],
         profile=load_public_company_profile(),
-        deadline="2026-09-01",
+        deadline="2026-09-03",
     )
     by_id = {item["requirement_id"]: item for item in result["items"]}
 
@@ -362,7 +900,7 @@ def test_notice_specific_goods_qualifications_and_contract_conduct_are_separated
         "notice_specific_product_registration"
     )
     assert by_id["DIRECT-PRODUCTION"]["policy_class"] == "ELIGIBILITY"
-    assert by_id["DIRECT-PRODUCTION"]["outcome"] == "REVIEW"
+    assert by_id["DIRECT-PRODUCTION"]["outcome"] == "FAIL_CONFIRMED"
     assert by_id["DIRECT-PRODUCTION"]["company_fact_key"] == (
         "direct_production_certificate"
     )
@@ -459,7 +997,7 @@ def test_known_information_guards_do_not_override_embedded_eligibility() -> None
     )
     assert by_id["BIDDER-CONTRACT"]["policy_class"] == "ELIGIBILITY"
     assert by_id["BIDDER-CONTRACT"]["company_fact_key"] == "bidder_registration"
-    assert by_id["BIDDER-CONTRACT"]["outcome"] == "PASS_CURRENT"
+    assert by_id["BIDDER-CONTRACT"]["outcome"] == "REVIEW"
     assert by_id["COLLUSION-EXCLUSION"]["policy_class"] == "ELIGIBILITY"
     assert by_id["ORIGIN-CAPABILITY"]["policy_class"] == "ELIGIBILITY"
 
