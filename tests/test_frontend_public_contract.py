@@ -104,9 +104,8 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert 'id="noticeSearchHelp"' in html
     assert 'id="noticeSearchScope"' in html
     assert "공고번호 검색" in html
-    assert "공고 검색이 아닙니다" in html
-    assert "같은 판정 우선순위 안에서" in html
-    assert "다른 공고도 목록에 그대로 남습니다" in html
+    assert "관심 키워드와 가까운 공고에 정렬 가중치를 적용합니다" in html
+    assert "모든 공고는 목록에 그대로 남습니다" in html
     assert "목록 제외 없음" in source
 
 
@@ -150,12 +149,12 @@ def test_api_failure_is_explicit_and_demo_data_requires_demo_query() -> None:
     demo_body = source[source.index("  function createDemoData") : source.rindex("})();")]
 
     assert 'query.get("demo") === "1"' in load_body
-    assert "activateDemo(`서버 API 연결 실패" not in load_body
-    assert "renderApplicationError(`서버 API 연결 실패" in load_body
+    assert "activateDemo(`운영 서버 연결 실패" not in load_body
+    assert "renderApplicationError(`운영 서버 연결 실패" in load_body
     assert 'state.source = "error"' in error_body
     assert "els.errorState.hidden = false" in error_body
     assert "다시 시도" in error_body
-    assert "운영 API 연결 오류 · 재시도 필요" in source
+    assert "운영 서버 연결 오류 · 재시도 필요" in source
     assert demo_body.count('status: "OPEN"') == 5
 
 
@@ -169,15 +168,15 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
-    for view in ("collected", "review", "go", "urgent", "ended"):
+    for view in ("review", "urgent", "result-missing"):
         assert f'data-kpi-view="{view}"' in html
-    assert html.count('class="kpi-card__action"') == 5
-    assert html.count('aria-pressed="false"') >= 5
+    assert html.count('class="kpi-card__action"') == 3
+    assert html.count('aria-pressed="false"') >= 3
     assert "els.kpiViewButtons" in bind_body
     assert "setView(button.dataset.kpiView)" in bind_body
     assert "scrollIntoView" in bind_body
     assert 'state.currentView === "go"' in filter_body
-    assert 'notice.recommendation !== "GO"' in filter_body
+    assert 'effectiveRecommendation(notice) !== "GO"' in filter_body
     assert 'state.currentView === "urgent"' in filter_body
     assert "URGENT_DEADLINE_DAYS" in filter_body
     assert 'state.currentView === "ended"' in filter_body
@@ -190,12 +189,25 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "analysis_review_backlog_count" in dashboard_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
     assert "reviewCount: notices.filter(needsAnalysisOrReview).length" in derived_body
-    assert 'noticeLifecycleStatus(notice) === "OPEN" && notice.recommendation === "GO"' in derived_body
+    assert 'noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO"' in derived_body
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
+    assert "resultMissingCount:" in derived_body
+    assert (
+        "isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.resultStatus"
+        in derived_body
+    )
+    assert "kpis.result_missing_count" in dashboard_body
+    assert "els.kpiNew.textContent = displayNumber(data.totalNotices)" in source
+    assert 'state.currentView === "result-missing"' in filter_body
+    assert "!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.resultStatus" in filter_body
+    assert "effectiveRecommendation(notice) !== recommendation" in filter_body
+    assert 'urgent: "/urgent"' in source
+    assert '"result-missing": "/result-missing"' in source
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
     assert 'ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"]' in view_body
+    assert '"result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
@@ -204,15 +216,93 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'els.eligibilityFilter.value = "all"' in view_body
     assert 'els.recommendationFilter.value = "all"' in view_body
     assert ".kpi-card__action:focus-visible" in styles
-    assert "7일" in html
+    assert "3일" in html
+    assert "7일" not in html
     assert "72시간" not in html
 
 
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260827-sidebar-icons1"' in html
-    assert 'src="./app.js?v=20260827-policy3"' in html
+    assert 'href="./styles.css?v=20260904-uiux-p0-v1"' in html
+    assert 'src="./app.js?v=20260904-uiux-p0-v1"' in html
+
+
+def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    normalize_body = _function_body(source, "normalizeNotice", "mergeRequirementsAndAtomics")
+    row_body = _function_body(source, "renderNoticeRow", "renderNoticeCard")
+    detail_body = _function_body(source, "renderDetail", "renderRecommendationCondition")
+    condition_body = _function_body(
+        source, "renderRecommendationCondition", "renderManualAnalysisDetailAction"
+    )
+    open_body = _function_body(source, "openDetail", "moveDetailSelection")
+    keyboard_body = _function_body(source, "handleGlobalKeydown", "updateNoticeRoute")
+
+    assert "DECIDE WITH EVIDENCE" not in html
+    assert "확인이 필요한 공고부터 처리하세요" in html
+    assert "검토 대기" in html
+    assert "결과 미기록" in html
+    assert "저장된 전체 공고" in html
+    assert "취소공고" in html
+
+    for status, label in (
+        ("PASS", "충족"),
+        ("PASS_EXCEPTION", "조건부 충족"),
+        ("PASS_CURRENT", "현재 충족"),
+        ("REVIEW", "확인 필요"),
+        ("FAIL", "미충족"),
+    ):
+        assert f'{status}: "{label}"' in source
+        assert f'value="{status}">{label}' in html
+
+    for color in ("#0f7a3e", "#f5a524", "#b26a00", "#c42b2b"):
+        assert color in styles.lower()
+
+    assert "recommendationConditions:" in normalize_body
+    assert "recommendationEvidenceCount:" in normalize_body
+    assert "ai-judgment" in source
+    assert "operator-decision" in source
+    assert "recommendation-pill recommendation-pill" not in row_body
+    assert 'tabindex="0" role="link"' not in row_body
+    assert 'class="notice-title-button" type="button" data-open-notice' in row_body
+    assert 'class="detail-link-button" type="button" data-open-notice' in row_body
+    assert "전체 상세 보기" in row_body
+    assert "<th scope=\"col\">AI 판단</th>" in html
+    assert "<th scope=\"col\">담당자 판단</th>" in html
+    assert ">참여</span>" in html
+    assert ">보류</span>" in html
+    assert ">불참</span>" in html
+
+    assert 'summaryMetric("참가자격"' in detail_body
+    assert 'summaryMetric("AI 판단"' in detail_body
+    assert 'summaryMetric("담당자 판단"' in detail_body
+    assert "renderRecommendationCondition(notice)" in detail_body
+    assert "조건부 GO · 확인할 조건" in condition_body
+    assert "권고 보류 · 조건 근거 없음" in condition_body
+    assert "hasPublishedCondition" in condition_body
+    assert "conditions.map" in condition_body
+    assert "conditions.join" in source
+    assert "recommendation_conditions" in source
+    assert "recommendation_evidence_count" in source
+
+    assert "width: 100vw" in styles
+    assert "transform: translateY(100%)" in styles
+    assert "drawerScrim.hidden = true" in open_body
+    assert "els.closeDetailButton.focus(" in open_body
+    assert 'key === "j" || key === "k"' in keyboard_body
+    assert "moveDetailSelection" in keyboard_body
+    assert '["Tab", "Escape"].includes(event.key)' in keyboard_body
+    assert "trapDrawerFocus(event)" in keyboard_body
+
+    close_body = _function_body(source, "closeDetail", "trapDrawerFocus")
+    trap_body = _function_body(source, "trapDrawerFocus", "handleGlobalKeydown")
+    assert 'document.querySelectorAll("[data-notice-key]")' in close_body
+    assert 'replacement?.querySelector("[data-open-notice]") || replacement' in close_body
+    assert "document.contains(trigger)" in close_body
+    assert '[tabindex]:not([tabindex="-1"])' in trap_body
 
 
 def test_external_pps_discovery_and_company_awards_require_explicit_actions() -> None:
@@ -235,9 +325,9 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert 'data-notice-search-mode="stored"' in html
     assert 'data-notice-search-mode="pps"' in html
     assert 'data-notice-search-mode="prespec"' in html
-    assert "AI 수집 공고" in html
+    assert "PAI 저장 공고" in html
     assert "나라장터 용역 공고 실시간 조회" in html
-    assert "검색·저장: AI 모델 0회" in html
+    assert "검색·저장: 문서 분석 0회" in html
     assert 'apiRequest("/pps-discovery/search"' in search_body
     assert "span > 30" in search_body
     assert 'state.noticeSearchMode !== "pps"' in search_body
@@ -251,7 +341,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert "const suggestPps" in render_body
     assert "state.filteredNotices.length === 0" not in source
     assert 'apiRequest("/pps-discovery/save"' in save_body
-    assert "저장만으로 분석이나 AI 모델 호출은 시작되지 않습니다" in save_body
+    assert "저장만으로 문서 분석은 시작되지 않습니다" in save_body
     assert "/analysis/request" not in search_body
     assert "/analysis/request" not in save_body
     assert "allow_openai" not in search_body
@@ -303,7 +393,7 @@ def test_three_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert 'if (state.noticeSearchMode === "pps")' in schedule_body
     assert "renderPpsDiscovery();\n      return;" in schedule_body
 
-    for label in ("나라장터 LIVE", "PAI LOOP 저장됨", "판단 필요", "판단 완료"):
+    for label in ("나라장터 실시간", "PAI LOOP 저장됨", "판단 필요", "판단 완료"):
         assert label in card_body
     assert "data-stored-notice-link" in card_body
     assert "저장된 공고로 이동" in card_body
@@ -359,13 +449,13 @@ def test_quantitative_ui_separates_source_validation_from_activation() -> None:
     assert "source_validation_status" in app
     assert "activation_status" in app
     assert "activation_reasons" in app
-    assert 'SOURCE_VALIDATED: "원문 기계검증"' in app
+    assert 'SOURCE_VALIDATED: "원문 검증 완료"' in app
     assert 'AUTO_ACTIVE: "규칙 자동 활성"' in app
     assert 'REVIEW_REQUIRED: "자동 산정 보류"' in app
     assert "FACT_DIMENSIONS_UNMODELED" in app
     assert "점수 산출조건이 아직 구조화되지 않았습니다" in app
-    assert '"배점표 발견 · 검증 보류"' in app
-    assert '"원문 앵커 검증 완료 · 공개 화면 비공개"' in app
+    assert '"배점표 후보 확인 · 원문 검증 보류"' in app
+    assert '"원문 위치 검증 완료 · 공개 화면 비공개"' in app
     assert '"자동 산정 가능한 항목 없음"' in app
     assert "수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다" in app
     assert 'UNKNOWN_METRIC: "제안서·제품·수기평가 항목' in app
@@ -416,7 +506,7 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     badge_body = _function_body(source, "noticeLifecycleBadge", "recommendationPill")
     detail_body = _function_body(source, "renderDetail", "detailFact")
 
-    assert 'view === "ended"' in scope_body
+    assert '["ended", "result-missing"].includes(view)' in scope_body
     assert 'return "ENDED"' in scope_body
     assert "provider_disposition" in normalize_body
     assert "provider_event_kind" in normalize_body
@@ -430,7 +520,8 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     assert "isCancelledNotice(notice)" in ended_body
     assert 'notice.analysisState === "EVALUATED"' in ended_body
     assert 'lifecycle === "CANCELLED"' in label_body
-    assert 'return "취소"' in label_body
+    assert 'return "취소공고"' in label_body
+    assert 'return lifecycle === "CLOSED" ? "공고 종료" : "입찰마감 경과"' in label_body
     assert "notice-lifecycle-badge--cancelled" in badge_body
     assert ".notice-lifecycle-badge--cancelled" in styles
     assert ".detail-tag--cancelled" in styles
@@ -438,8 +529,8 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     assert "noticeLifecycleLabel(notice)" in detail_body
     assert "isCancelledNotice(notice)" in detail_body
     assert 'id="kpiEnded"' in html
-    assert "분석된 종료 · 전체 취소 공고" in html
-    assert "grid-template-columns: repeat(5, minmax(0, 1fr))" in styles
+    assert "운영 대상에서 제외된 공고" in html
+    assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in styles
 
 
 def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None:
@@ -501,7 +592,7 @@ def test_cancelled_notice_presentation_never_promotes_historical_go_as_current()
     assert recommendation_body.index(
         "isCancelledNotice(notice)"
     ) < recommendation_body.index("isDocumentQualityReview(notice)")
-    assert "취소 · 추천 비활성" in recommendation_body
+    assert 'aiJudgmentMarkup("추천 비활성", "취소 공고"' in recommendation_body
     assert "if (isCancelledNotice(notice)) return \"취소 공고\"" in status_label_body
     assert (
         "if (isCancelledNotice(notice)) return \"취소 · 추천 비활성\""
@@ -554,8 +645,9 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     assert "window.confirm" in confirm_body
     assert "state.manualAnalysisPolicy?.max_attachments" in confirm_body
     assert "policyMax * 2" in confirm_body
-    assert "Claude 요청 없이" in confirm_body
-    assert "절대 상한" in confirm_body
+    assert "문서 재분석 없이" in confirm_body
+    assert "문서 분석 요청 상한" in confirm_body
+    assert "Claude" not in confirm_body
     assert "검색" not in confirm_body
     assert "if (!confirmManualAnalysis(notice, availability)) return" in request_body
     assert request_body.index("if (!confirmManualAnalysis(notice, availability)) return") < request_body.index(
@@ -574,9 +666,9 @@ def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order(
     assert 'sort === "readiness"' in compare_body
     assert 'sort === "risk"' in compare_body
     assert "nullableDateSort(a.deadline, b.deadline)" in compare_body
-    assert 'eligibilityStatus === "PASS") return 0' in rank_body
+    assert 'eligibility.startsWith("PASS")) return 0' in rank_body
     assert "isActionableEligibilityReview(notice)) return 1" in rank_body
-    assert 'eligibilityStatus === "FAIL") return 3' in rank_body
+    assert 'eligibility === "FAIL") return 3' in rank_body
     assert "return 2" in rank_body
     assert '<option value="judgement">판정 우선 · 마감 임박순</option>' in html
     assert "판정 우선 · 부서 적합도순" in html
@@ -663,7 +755,7 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
     assert 'source: "PUBLIC_POLICY_SUPPLEMENT"' in adapter_body
     assert 'notice.analysisState === "EVALUATED"' in adapter_body
     assert 'notice.eligibilityStatus === "PASS"' in adapter_body
-    assert 'aggregateAllowsPass ? "PASS" : "REVIEW"' in adapter_body
+    assert 'aggregateAllowsPass ? outcome : "REVIEW"' in adapter_body
     assert "현재 일치하지만 종합 판단은 확정되지 않았습니다" in adapter_body
     assert "공고 마감일 기준" in adapter_body
 
@@ -757,8 +849,8 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
     assert "notice.reasonCode" not in quality_body
     assert "ATTACHMENT_COVERAGE_INCOMPLETE" in quality_body
     assert "DOCUMENT_EXTRACT_FAILED" in quality_body
-    assert "근거 보완" in status_body
-    assert "자격 REVIEW가 아니라 원문 근거 검증 보완 상태" in status_body
+    assert "분석 보완" in status_body
+    assert "원문 근거 검증을 보완해야 참가자격을 판단할 수 있습니다" in status_body
     assert 'analysisState === "EVALUATED"' in reason_body
     assert reason_body.index("ANALYSIS_REASON_LABELS[code]") < reason_body.index('analysisState === "EVALUATED"')
     assert "analysisStatusLabel(notice)" in pipeline_body
@@ -768,7 +860,7 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
     assert "근거 보완 · 판단 보류" in teams_body
     assert "근거 보완 후 산정" in teams_body
     assert 'if (isDocumentQualityReview(notice)) return "판단 보류"' in recommendation_body
-    assert "체크리스트와 정보는 그 자체로 참가자격 REVIEW를 만들지 않습니다." in source
+    assert "체크리스트와 정보는 그 자체로 참가자격 ‘확인 필요’를 만들지 않습니다." in source
     assert "자격 검토" in html
 
 
@@ -777,9 +869,65 @@ def test_missing_risk_is_labeled_as_insufficient_evidence_not_zero() -> None:
     render_body = _function_body(source, "renderRiskPanel", "renderQuantitativePending")
     display_body = _function_body(source, "riskDisplayValue", "analysisStatusLabel")
 
-    assert 'risk === null ? "근거 부족"' in render_body
+    assert "riskReady" in render_body
+    assert "산정 보류 · 확인된 축" in render_body
+    assert "score === null ? null" in source
+    assert 'score === null ? "미확인"' in render_body
     assert "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다" in render_body
-    assert 'notice.riskScore === null ? "근거 부족"' in display_body
+    assert "verifiedAxes < 4" in display_body
+    assert "산정 보류" in display_body
+
+
+def test_recommendation_filter_and_errors_fail_closed_without_raw_internal_text() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    eligibility_body = _function_body(source, "effectiveEligibilityStatus", "effectiveRecommendation")
+    effective_body = _function_body(source, "effectiveRecommendation", "aiJudgmentMarkup")
+    filter_body = _function_body(source, "applyFilters", "compareNotices")
+    error_body = _function_body(source, "humanizeError", "isEditableTarget")
+    editor_error_body = _function_body(source, "editorErrorMessage", "formatAwardBusinessNumberInput")
+
+    assert "PASS_CURRENT: 1" in eligibility_body
+    assert "PASS_EXCEPTION: 2" in eligibility_body
+    assert "FAIL: 4" in eligibility_body
+    assert "arrayValue(notice?.requirements).forEach" in eligibility_body
+    assert "requirement?.mandatory !== false" in eligibility_body
+    assert "severity[candidate] > severity[current]" in eligibility_body
+    assert 'return worst === "UNKNOWN" ? "REVIEW" : worst' in eligibility_body
+    assert 'value === "GO"' in effective_body
+    assert '["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice))' in effective_body
+    assert '["CONDITIONAL_GO", "HOLD"].includes(value)' in effective_body
+    assert '!arrayValue(notice?.recommendationConditions).length' in effective_body
+    assert 'return "DEFERRED"' in effective_body
+    assert "effectiveRecommendation(notice) !== recommendation" in filter_body
+
+    for status in (401, 403, 404, 409, 422, 429):
+        assert f"status === {status}" in error_body
+    assert "status >= 500" in error_body
+    assert "네트워크 연결을 확인한 뒤 다시 시도해 주세요" in error_body
+    assert "요청을 완료하지 못했습니다" in error_body
+    assert "return message" not in error_body
+    assert "return humanizeError(error)" in editor_error_body
+
+
+def test_connection_status_exposes_delay_and_exact_kst_last_success_time() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    load_body = _function_body(source, "loadApplicationData", "fetchNoticePages")
+    status_body = _function_body(source, "setSystemStatus", "showDemoBanner")
+    kst_body = _function_body(source, "formatKstDateTime", "formatCalendarDate")
+
+    assert "window.clearTimeout(state.connectionDelayTimer)" in load_body
+    assert "state.connectionDelayTimer = window.setTimeout" in load_body
+    assert "sequence === state.requestSequence && state.loading" in load_body
+    assert 'setSystemStatus("delayed")' in load_body
+    assert "}, 10000)" in load_body
+    assert 'mode === "delayed"' in status_body
+    assert 'els.systemStatusText.textContent = "연결 지연 · 10초 초과"' in status_body
+    assert "현재 화면: 서버 저장본 · 조회" in status_body
+    assert "데이터 동기화" in status_body
+    assert '"서버 저장본 · 조회 시각 확인 중"' in status_body
+    assert 'timeZone: "Asia/Seoul"' in kst_body
+    assert "hour12: false" in kst_body
+    assert "KST" in kst_body
 
 
 def test_pai_bot_teams_access_is_member_only_and_fails_closed_until_configured() -> None:

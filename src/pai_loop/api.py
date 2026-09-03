@@ -47,6 +47,7 @@ from .models import (
     AnalysisRun,
     AtomicRequirement,
     AwardHistoryItem,
+    BidOutcome,
     CompanyFact,
     Evaluation,
     Evidence,
@@ -55,6 +56,7 @@ from .models import (
     Notice,
     NoticeVersion,
     PpsNoticeAuthority,
+    RecommendationSnapshot,
     UserDecision,
 )
 from .notice_freshness import (
@@ -119,6 +121,29 @@ def _latest_evaluation(notice: Notice) -> Evaluation | None:
     return latest_current_evaluation(notice)
 
 
+def _latest_system_recommendation_snapshot(
+    notice: Notice,
+) -> tuple[AnalysisRun | None, RecommendationSnapshot | None]:
+    latest_run = latest_current_analysis_run(notice)
+    if latest_run is None:
+        return None, None
+    recommendation = next(
+        (
+            item
+            for item in latest_run.recommendations
+            if item.recommendation_key == "bid:system"
+        ),
+        None,
+    )
+    if recommendation is None or recommendation.recommendation not in {
+        "GO",
+        "HOLD",
+        "NO_GO",
+    }:
+        return latest_run, None
+    return latest_run, recommendation
+
+
 def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime | None]:
     """Return only the immutable advisory stored by the latest analysis run.
 
@@ -127,20 +152,177 @@ def _latest_system_recommendation(notice: Notice) -> tuple[str | None, datetime 
     the latest run has no complete ``bid:system`` snapshot.
     """
 
-    latest_run = latest_current_analysis_run(notice)
-    if latest_run is None:
+    latest_run, recommendation = _latest_system_recommendation_snapshot(notice)
+    if latest_run is None or recommendation is None:
         return None, None
-    recommendation = next(
+    return recommendation.recommendation, latest_run.generated_at
+
+
+_MAX_PUBLIC_RECOMMENDATION_CONDITIONS = 8
+
+
+def _normalised_public_condition(value: object) -> str:
+    return " ".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
+
+
+def _publication_safe_condition_labels(notice: Notice) -> dict[str, str]:
+    """Return only exact, already publication-safe requirement labels.
+
+    Materialised requirement labels can contain unreviewed extracted prose, so
+    they never cross the summary boundary on their own. A label becomes
+    eligible only when it exactly matches the redacted/allowlisted extraction
+    projection used by the public detail endpoint.
+    """
+
+    labels: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for analysis in _public_document_analyses(notice.versions):
+        requirements = analysis.get("requirements")
+        if not isinstance(requirements, list):
+            continue
+        for requirement in requirements:
+            if not isinstance(requirement, dict):
+                continue
+            label = " ".join(
+                str(requirement.get("normalized_condition") or "").split()
+            )
+            # Analysis materialisation caps labels at 500 characters. Refuse a
+            # partial-prefix match rather than presenting a truncated condition.
+            if not label or len(label) > 500:
+                continue
+            key = _normalised_public_condition(label)
+            existing = labels.get(key)
+            if existing is not None and existing != label:
+                ambiguous.add(key)
+                continue
+            labels[key] = label
+    for key in ambiguous:
+        labels.pop(key, None)
+    return labels
+
+
+def _public_recommendation_conditions(
+    notice: Notice,
+    *,
+    analysis_run: AnalysisRun | None,
+    recommendation: RecommendationSnapshot | None,
+) -> list[str]:
+    """Build bounded, publication-safe actions for a persisted HOLD opinion.
+
+    Exact notice conditions are included only through the public extraction
+    allowlist. Remaining actions are fixed copy derived from the persisted
+    recommendation basis. Company values, evidence identifiers, and free-form
+    evaluator messages are deliberately excluded.
+    """
+
+    if (
+        analysis_run is None
+        or recommendation is None
+        or recommendation.recommendation != "HOLD"
+    ):
+        return []
+
+    conditions: list[str] = []
+
+    def add(value: str) -> None:
+        if (
+            value not in conditions
+            and len(conditions) < _MAX_PUBLIC_RECOMMENDATION_CONDITIONS
+        ):
+            conditions.append(value)
+
+    evaluation = next(
         (
-            item.recommendation
-            for item in latest_run.recommendations
-            if item.recommendation_key == "bid:system"
+            item
+            for item in notice.evaluations
+            if item.id == analysis_run.evaluation_id
         ),
         None,
     )
-    if recommendation not in {"GO", "HOLD", "NO_GO"}:
-        return None, None
-    return recommendation, latest_run.generated_at
+    detail = (
+        recommendation.detail_json
+        if isinstance(recommendation.detail_json, dict)
+        else {}
+    )
+    eligibility = str(
+        detail.get("eligibility")
+        or (evaluation.eligibility if evaluation is not None else "")
+    ).upper()
+    if eligibility == "REVIEW":
+        safe_labels = _publication_safe_condition_labels(notice)
+        exact_condition_added = False
+        for atomic in evaluation.atomic_results if evaluation is not None else []:
+            if (
+                not isinstance(atomic, dict)
+                or str(atomic.get("result") or "").upper() != "REVIEW"
+            ):
+                continue
+            label = safe_labels.get(
+                _normalised_public_condition(atomic.get("label"))
+            )
+            if label is None:
+                continue
+            add(label)
+            exact_condition_added = True
+        if not exact_condition_added:
+            add("참가자격 확인 필요 항목을 검토하세요.")
+
+    readiness_status = str(detail.get("readiness_status") or "").upper()
+    if readiness_status and readiness_status != "GREEN":
+        add("제출 준비도 미완료 항목을 확인하세요.")
+
+    quantitative_status = str(detail.get("quantitative_status") or "").upper()
+    quantitative_band = str(detail.get("quantitative_band") or "").upper()
+    if quantitative_status and quantitative_status not in {"CONFIRMED", "ESTIMATED"}:
+        add("정량평가 산정에 필요한 검증 입력값을 확인하세요.")
+    elif quantitative_band and quantitative_band not in {"GREEN", "YELLOW"}:
+        add("정량평가 점수 구간과 배점 근거를 확인하세요.")
+
+    competition_band = str(detail.get("competition_band") or "").upper()
+    if competition_band == "VERY_HIGH":
+        add("경쟁 강도가 매우 높아 참여 여부 검토가 필요합니다.")
+
+    if not conditions:
+        add("조건부 판단 근거를 현재 공개 요약에서 확인할 수 없습니다.")
+    return conditions
+
+
+def _public_recommendation_evidence_count(
+    notice: Notice,
+    *,
+    analysis_run: AnalysisRun | None,
+    recommendation: RecommendationSnapshot | None,
+) -> int:
+    """Count unique, deadline-valid evidence links without publishing them.
+
+    The count is deliberately narrower than readiness or evidence coverage.
+    It includes only distinct non-empty evidence keys on atomic results whose
+    deterministic evaluation marked ``evidence_valid`` as the literal boolean
+    ``True``. Missing evidence, evidence-free declarations, score estimates,
+    hashes, and recommendation metadata do not increase the count.
+    """
+
+    if analysis_run is None or recommendation is None:
+        return 0
+    evaluation = next(
+        (
+            item
+            for item in notice.evaluations
+            if item.id == analysis_run.evaluation_id
+        ),
+        None,
+    )
+    if evaluation is None:
+        return 0
+    evidence_keys = {
+        evidence_key.strip()
+        for item in evaluation.atomic_results
+        if isinstance(item, dict)
+        and item.get("evidence_valid") is True
+        and isinstance((evidence_key := item.get("evidence_key")), str)
+        and evidence_key.strip()
+    }
+    return len(evidence_keys)
 
 
 _PPS_AUTHORITY_PROJECTION_CHUNK_SIZE = 400
@@ -323,10 +505,30 @@ def _summary(
     )
     ingestion_state = "EVALUATED" if latest else "VERSIONED" if latest_version else "COLLECTED"
     evaluation = EvaluationOut.model_validate(latest) if latest else None
-    recommendation, recommendation_updated_at = (
+    recommendation_run, recommendation_snapshot = (
         (None, None)
         if authoritative_cancelled
-        else _latest_system_recommendation(notice)
+        else _latest_system_recommendation_snapshot(notice)
+    )
+    recommendation = (
+        recommendation_snapshot.recommendation
+        if recommendation_snapshot is not None
+        else None
+    )
+    recommendation_updated_at = (
+        recommendation_run.generated_at
+        if recommendation_run is not None and recommendation_snapshot is not None
+        else None
+    )
+    recommendation_conditions = _public_recommendation_conditions(
+        notice,
+        analysis_run=recommendation_run,
+        recommendation=recommendation_snapshot,
+    )
+    recommendation_evidence_count = _public_recommendation_evidence_count(
+        notice,
+        analysis_run=recommendation_run,
+        recommendation=recommendation_snapshot,
     )
     if evaluation is not None and public_view:
         evaluation = evaluation.model_copy(
@@ -368,6 +570,8 @@ def _summary(
         ),
         analysis_attempted=analysis_reason.attempted,
         recommendation=recommendation,
+        recommendation_conditions=recommendation_conditions,
+        recommendation_evidence_count=recommendation_evidence_count,
         recommendation_updated_at=recommendation_updated_at,
         latest_evaluation=evaluation,
     )
@@ -686,6 +890,9 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     )
     decisions_total = session.scalar(select(func.count(UserDecision.id))) or 0
     evaluation_total = session.scalar(select(func.count(Evaluation.id))) or 0
+    outcome_notice_ids = set(
+        session.scalars(select(BidOutcome.notice_id).distinct()).all()
+    )
     eligibility_counts = {item.value: 0 for item in Eligibility}
     readiness_counts = {item: 0 for item in ("GREEN", "YELLOW", "RED", "GRAY")}
     active_recommendation_counts = {item: 0 for item in ("GO", "HOLD", "NO_GO")}
@@ -693,6 +900,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     analyzed_ended_count = 0
     cancelled_count = 0
     visible_ended_count = 0
+    result_missing_count = 0
     analysis_review_backlog_count = 0
     soon = now + timedelta(days=7)
     active_count = 0
@@ -728,6 +936,12 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                 visible_ended_count += 1
             elif latest and effective_status in lifecycle_counts:
                 visible_ended_count += 1
+            if (
+                not is_cancelled
+                and effective_status in lifecycle_counts
+                and notice.id not in outcome_notice_ids
+            ):
+                result_missing_count += 1
             if latest:
                 eligibility_counts[latest.eligibility] = (
                     eligibility_counts.get(latest.eligibility, 0) + 1
@@ -777,6 +991,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "analyzed_ended_count": analyzed_ended_count,
         "cancelled_count": cancelled_count,
         "visible_ended_count": visible_ended_count,
+        "result_missing_count": result_missing_count,
         "closed_count": lifecycle_counts["CLOSED"],
         "expired_count": lifecycle_counts["EXPIRED"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],

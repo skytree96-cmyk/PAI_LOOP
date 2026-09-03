@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from pai_loop.api import _publication_safe_source_url
 from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop.main import create_app
+from pai_loop.models import (
+    AnalysisRun,
+    Evaluation,
+    Notice,
+    RecommendationSnapshot,
+)
 from pai_loop.pps_enrichment import PPS_PROCESSING_VERSION
-from pai_loop.public_notice_seed import PUBLIC_NOTICE_SOURCE_KEY, import_public_notice_seed
+from pai_loop.public_notice_seed import (
+    PUBLIC_NOTICE_SOURCE_KEY,
+    import_public_notice_seed,
+    load_public_notice_seed,
+)
 
 
 SERVER_HEADERS = {"X-PAI-LOOP-API-KEY": "server-only-secret"}
@@ -93,6 +104,113 @@ def test_public_notice_response_removes_company_values_and_internal_decisions(mo
             f"/api/v1/notices/{notice_key}/decisions",
             json={"choice": "GO", "rationale": "must remain protected"},
         ).status_code == 401
+
+
+def test_public_hold_conditions_use_only_allowlisted_notice_text(monkeypatch) -> None:
+    monkeypatch.setenv("PAI_LOOP_ENV", "development")
+    monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
+    monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    seed = load_public_notice_seed()
+    safe_condition = seed["extraction"]["requirements"][0]["normalized_condition"]
+    private_label = "담당자 private-review" + "@" + "example.invalid 확인"
+    private_value = "private-company-value"
+    private_evidence_key = "PRIVATE-EVIDENCE-KEY"
+
+    with TestClient(app) as client:
+        with app.state.session_factory() as session:
+            import_public_notice_seed(session)
+            notice = session.scalar(
+                select(Notice).where(Notice.notice_key == PUBLIC_NOTICE_SOURCE_KEY)
+            )
+            assert notice is not None
+            version = max(notice.versions, key=lambda item: item.version_no)
+            evaluation = Evaluation(
+                notice_id=notice.id,
+                notice_version_id=version.id,
+                deadline_snapshot_at=notice.deadline,
+                eligibility="REVIEW",
+                reason_code="REVIEW_MATCH",
+                readiness_score=65.0,
+                readiness_status="YELLOW",
+                evidence_coverage=50.0,
+                risk_score=None,
+                risk_band="UNKNOWN",
+                ruleset_version="test-ruleset",
+                atomic_results=[
+                    {
+                        "label": safe_condition,
+                        "result": "REVIEW",
+                        "actual_value": private_value,
+                        "evidence_key": private_evidence_key,
+                        "evidence_valid": True,
+                    },
+                    {
+                        "label": private_label,
+                        "result": "REVIEW",
+                        "actual_value": private_value,
+                        "evidence_key": private_evidence_key,
+                        "evidence_valid": True,
+                    },
+                    {
+                        "label": "검증되지 않은 별도 조건",
+                        "result": "REVIEW",
+                        "actual_value": private_value,
+                        "evidence_key": "PRIVATE-INVALID-EVIDENCE",
+                        "evidence_valid": False,
+                    },
+                ],
+                explanation={"private_value": private_value},
+            )
+            session.add(evaluation)
+            session.flush()
+            run = AnalysisRun(
+                notice_id=notice.id,
+                notice_version_id=version.id,
+                evaluation_id=evaluation.id,
+                status="COMPLETED",
+                idempotency_key="public-hold-conditions-v1",
+                input_sha256="d" * 64,
+                output_summary={"eligibility": "REVIEW"},
+            )
+            run.recommendations.append(
+                RecommendationSnapshot(
+                    recommendation_key="bid:system",
+                    rank=0,
+                    recommendation="HOLD",
+                    detail_json={
+                        "eligibility": "REVIEW",
+                        "readiness_status": "YELLOW",
+                        "quantitative_status": "REVIEW_REQUIRED",
+                        "quantitative_band": "GRAY",
+                        "competition_band": "VERY_HIGH",
+                    },
+                )
+            )
+            session.add(run)
+            session.commit()
+
+        response = client.get(f"/api/v1/notices/{PUBLIC_NOTICE_SOURCE_KEY}")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["recommendation"] == "HOLD"
+        assert payload["recommendation_conditions"] == [
+            safe_condition,
+            "제출 준비도 미완료 항목을 확인하세요.",
+            "정량평가 산정에 필요한 검증 입력값을 확인하세요.",
+            "경쟁 강도가 매우 높아 참여 여부 검토가 필요합니다.",
+        ]
+        # The same valid evidence key on two atomic results is counted once;
+        # an invalid evidence link is not counted.
+        assert payload["recommendation_evidence_count"] == 1
+        assert payload["latest_evaluation"]["atomic_results"] == []
+        for private_text in (
+            private_label,
+            private_value,
+            private_evidence_key,
+            "PRIVATE-INVALID-EVIDENCE",
+        ):
+            assert private_text not in response.text
 
 
 def test_public_document_analysis_is_digest_bound_and_metadata_allowlisted(monkeypatch) -> None:

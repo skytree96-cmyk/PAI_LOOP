@@ -223,6 +223,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             "/",
             "/notices",
             "/reviews",
+            "/urgent",
+            "/result-missing",
             "/decisions",
             "/results",
             "/awards",
