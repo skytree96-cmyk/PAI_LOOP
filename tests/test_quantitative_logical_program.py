@@ -249,7 +249,20 @@ def _credit_candidate(
     section: str,
 ) -> ImmutableQuantitativeRuleCandidate:
     literal = "제안업체 경영상태 신용평가등급 10점"
-    case_literal = "AAA, AA+, AA0, AA-, A+, A0, A-, BBB+, BBB0 배점의 100%"
+    case_rows = (
+        (
+            "AAA, AA+, AA0, AA-, A+, A0, A-, BBB+, BBB0 배점의 100%",
+            ("AAA", "AA+", "AA0", "AA-", "A+", "A0", "A-", "BBB+", "BBB0"),
+            100,
+        ),
+        (
+            "BBB-, BB+, BB0, BB- 배점의 95%",
+            ("BBB-", "BB+", "BB0", "BB-"),
+            95,
+        ),
+        ("B+, B0, B- 배점의 90%", ("B+", "B0", "B-"), 90),
+        ("CCC+ 이하 배점의 70%", ("CCC+ 이하",), 70),
+    )
     return ImmutableQuantitativeRuleCandidate(
         source_attachment_id=attachment_id,
         table_id=table_id,
@@ -263,32 +276,25 @@ def _credit_candidate(
         brackets=(),
         threshold=None,
         formula_literal=None,
-        cases=(
+        cases=tuple(
             ImmutableQuantitativeCase(
                 literal=case_literal,
                 operator="IN",
                 comparison_value=None,
-                category_values=(
-                    "AAA",
-                    "AA+",
-                    "AA0",
-                    "AA-",
-                    "A+",
-                    "A0",
-                    "A-",
-                    "BBB+",
-                    "BBB0",
-                ),
+                category_values=category_values,
                 award_kind="PERCENT_OF_MAX",
-                award_value=100,
-                row_order=1,
+                award_value=award_value,
+                row_order=row_order,
                 evidence=_anchor(
                     page,
                     case_literal,
                     attachment_id=attachment_id,
                     section=section,
                 ),
-            ),
+            )
+            for row_order, (case_literal, category_values, award_value) in enumerate(
+                case_rows, start=1
+            )
         ),
         required_evidence=("company.credit_rating",),
         evidence=_anchor(

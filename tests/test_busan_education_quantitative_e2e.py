@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pytest
+
 from pai_loop.integrations.openai_extraction import (
     EvidenceAnchor,
     ExtractionPayload,
@@ -300,6 +302,93 @@ def test_busan_rfp_case_tables_score_full_twenty_from_company_data() -> None:
         "PERFORMANCE_COUNT": 4,
         "CREDIT_RATING": 10,
     }
+
+
+@pytest.mark.parametrize(
+    ("rating", "expected_points"),
+    (
+        ("A", 10),
+        ("A0", 10),
+        ("CCC+", 7),
+        ("CCC0", 7),
+        ("CCC-", 7),
+        ("D", 7),
+    ),
+)
+def test_busan_credit_range_scores_canonical_boundaries(
+    rating: str,
+    expected_points: float,
+) -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons
+    criteria = {item.metric_key: item for item in request.criteria}
+    credit = criteria["company.credit_rating"]
+    result = estimate_quantitative_score(
+        request.model_copy(
+            update={
+                "criteria": [credit],
+                "facts": [
+                    QuantitativeFact(
+                        metric_key="company.credit_rating",
+                        status="CONFIRMED",
+                        value=rating,
+                        evidence_key="company.credit_rating",
+                        fact_binding_sha256=credit.fact_binding_sha256,
+                        confidence=1,
+                        rationale="유효 신용평가등급",
+                    )
+                ],
+            }
+        )
+    )
+
+    assert result.total_max_points == 10
+    assert result.estimated_points == expected_points
+    assert result.criteria[0].estimated_points == expected_points
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    (
+        ("missing", "UNSCORABLE"),
+        ("unregistered", "REVIEW"),
+        ("wrong-binding", "UNSCORABLE"),
+    ),
+)
+def test_busan_credit_scoring_fails_closed_for_unsafe_company_facts(
+    failure: str,
+    expected_status: str,
+) -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    credit = next(
+        item for item in request.criteria if item.metric_key == "company.credit_rating"
+    )
+    facts = []
+    if failure != "missing":
+        facts = [
+            QuantitativeFact(
+                metric_key="company.credit_rating",
+                status="CONFIRMED",
+                value=("미등록등급" if failure == "unregistered" else "A0"),
+                evidence_key="company.credit_rating",
+                fact_binding_sha256=(
+                    "c" * 64
+                    if failure == "wrong-binding"
+                    else credit.fact_binding_sha256
+                ),
+                confidence=1,
+                rationale="안전 상태 회귀 입력",
+            )
+        ]
+
+    result = estimate_quantitative_score(
+        request.model_copy(update={"criteria": [credit], "facts": facts})
+    )
+
+    assert result.overall_status == expected_status
+    assert result.estimated_points is None
+    assert result.criteria[0].status == expected_status
+    assert result.criteria[0].estimated_points is None
 
 
 def test_busan_rfp_scores_twenty_through_real_performance_register_resolver() -> None:

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_private_evidence_access
 from .models import CompanyFact, Evidence, Notice
+from .quantitative_formula import parse_credit_rating
 from .quantitative_scoring import (
     _current_dynamic_quantitative_profile,
     quantitative_company_fact_payload_sha256,
@@ -33,32 +34,6 @@ _FACT_KEY = "company.credit_rating"
 _FACT_SOURCE = "PRIVATE_DOCUMENT"
 _EVIDENCE_TYPE = "QUANTITATIVE_FACT"
 _BINDING_SCHEMA = "pai-loop-private-credit-binding-1.0.0"
-_ALLOWED_RATINGS = frozenset(
-    {
-        "AAA",
-        "AA+",
-        "AA0",
-        "AA-",
-        "A+",
-        "A0",
-        "A-",
-        "BBB+",
-        "BBB0",
-        "BBB-",
-        "BB+",
-        "BB0",
-        "BB-",
-        "B+",
-        "B0",
-        "B-",
-        "CCC+",
-        "CCC0",
-        "CCC-",
-        "CC",
-        "C",
-        "D",
-    }
-)
 
 
 class PrivateCreditRatingRegistration(BaseModel):
@@ -77,8 +52,8 @@ class PrivateCreditRatingRegistration(BaseModel):
     @field_validator("rating")
     @classmethod
     def normalize_rating(cls, value: str) -> str:
-        normalized = re.sub(r"\s+", "", value).upper()
-        if normalized not in _ALLOWED_RATINGS:
+        normalized = parse_credit_rating(value)
+        if normalized is None:
             raise ValueError("지원하는 기업신용평가등급이 아닙니다.")
         return normalized
 

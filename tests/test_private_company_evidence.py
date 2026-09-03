@@ -11,7 +11,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from pai_loop.models import CompanyFact, Evidence, Notice
-from pai_loop.private_company_evidence import _credit_rating_binding_for_notice
+from pai_loop.private_company_evidence import (
+    PrivateCreditRatingRegistration,
+    _credit_rating_binding_for_notice,
+)
 from pai_loop.quantitative_formula import CategoryScore
 from pai_loop.quantitative_scoring import (
     QuantitativeCriterion,
@@ -95,7 +98,11 @@ def test_private_credit_registration_is_authenticated_idempotent_and_scoreable(
         json=_payload(),
     ).status_code == 401
 
-    created = client.post(endpoint, headers=_operator_headers(), json=_payload())
+    created = client.post(
+        endpoint,
+        headers=_operator_headers(),
+        json=_payload(rating="A"),
+    )
     assert created.status_code == 200, created.text
     assert created.headers["cache-control"] == "no-store"
     assert created.json() == {
@@ -108,7 +115,11 @@ def test_private_credit_registration_is_authenticated_idempotent_and_scoreable(
     assert DOCUMENT_SHA256 not in created.text
     assert PRIVATE_REFERENCE not in created.text
 
-    unchanged = client.post(endpoint, headers=_operator_headers(), json=_payload())
+    unchanged = client.post(
+        endpoint,
+        headers=_operator_headers(),
+        json=_payload(rating="A"),
+    )
     assert unchanged.status_code == 200, unchanged.text
     assert unchanged.json()["binding_status"] == "UNCHANGED"
 
@@ -163,6 +174,18 @@ def test_private_credit_registration_is_authenticated_idempotent_and_scoreable(
         assert len(resolved) == 1
         assert resolved[0].status == "CONFIRMED"
         assert resolved[0].value == "A0"
+
+
+@pytest.mark.parametrize("rating", ("AA", "BBB", "BB", "B", "CCC"))
+def test_private_credit_input_rejects_unmarked_grade_families(rating: str) -> None:
+    with pytest.raises(ValueError):
+        PrivateCreditRatingRegistration.model_validate(_payload(rating=rating))
+
+
+def test_private_credit_input_normalizes_unicode_minus() -> None:
+    payload = PrivateCreditRatingRegistration.model_validate(_payload(rating="A−"))
+
+    assert payload.rating == "A-"
 
 
 def test_private_credit_registration_rejects_expired_or_conflicting_metadata(
