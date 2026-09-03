@@ -28,7 +28,11 @@ from .integrations.openai_extraction import (
     SCHEMA_VERSION,
     evidence_quote_matches_source,
 )
-from .quantitative_formula import CaseTableRowLiteral, compile_case_table
+from .quantitative_formula import (
+    CaseTableRowLiteral,
+    compile_case_table,
+    normalize_credit_rating_text,
+)
 
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
@@ -374,13 +378,13 @@ _AMOUNT_ASCII_REVERSED_BOUND_RE = re.compile(
 def _normalize_case_category(value: str) -> str:
     """Match the execution DSL's NFKC/whitespace/case normalization."""
 
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
+    return re.sub(r"\s+", "", normalize_credit_rating_text(value)).casefold()
 
 
 def _case_literal_contains_exact_category(literal: str, value: str) -> bool:
     """Require a category to occupy a source token/cell, never a substring."""
 
-    source = unicodedata.normalize("NFKC", literal).casefold()
+    source = normalize_credit_rating_text(literal).casefold()
     target = _normalize_case_category(value)
     if not target:
         return False
@@ -580,13 +584,13 @@ def _flat_cell_line_spans(
     """Locate exact normalized whole-cell sequences for flat HWPX repair only."""
 
     quote_cells = tuple(
-        _normalise_anchor_text(unicodedata.normalize("NFKC", cell))
+        _normalise_anchor_text(normalize_credit_rating_text(cell))
         for cell in quote.splitlines()
     )
     if not quote_cells or any(not cell for cell in quote_cells):
         return ()
     normalized_lines = tuple(
-        _normalise_anchor_text(unicodedata.normalize("NFKC", line)) for line in lines
+        _normalise_anchor_text(normalize_credit_rating_text(line)) for line in lines
     )
     width = len(quote_cells)
     return tuple(

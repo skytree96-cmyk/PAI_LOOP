@@ -90,6 +90,12 @@ _CREDIT_RATING_INDEX = {
     for _normalize in (re.sub(r"\s+", "", value).casefold(),)
 }
 _CREDIT_RATING_ALIAS = {"a": "A0"}
+_CREDIT_DASH_TRANSLATION = str.maketrans(
+    {
+        character: "-"
+        for character in "\u02d7\u2010\u2011\u2012\u2013\u2014\u2015\u2043\u2212\ufe58\ufe63\uff0d"
+    }
+)
 _CREDIT_RANGE_RE = re.compile(
     r"(?P<grade>AAA|AA[+0-]|A[+0-]?|BBB[+0-]|BB[+0-]|B[+0-]|"
     r"CCC[+0-]|CC|C|D)\s*(?P<operator>이상|초과|이하|미만)",
@@ -206,12 +212,16 @@ def _normalize_category(value: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
 
 
+def normalize_credit_rating_text(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).translate(_CREDIT_DASH_TRANSLATION)
+
+
 def parse_credit_rating(value: str) -> str | None:
     """Return one canonical enterprise credit grade, or fail closed."""
 
     if not isinstance(value, str):
         return None
-    normalized = _normalize_category(value)
+    normalized = _normalize_category(normalize_credit_rating_text(value))
     canonical = _CREDIT_RATING_ALIAS.get(normalized)
     if canonical is not None:
         return canonical
@@ -222,8 +232,8 @@ def parse_credit_rating(value: str) -> str | None:
 def _credit_literal_contains_whole_expression(source: str, expression: str) -> bool:
     """Match one normalized grade expression without substring collisions."""
 
-    normalized_source = unicodedata.normalize("NFKC", source).casefold()
-    normalized_expression = unicodedata.normalize("NFKC", expression).casefold().strip()
+    normalized_source = normalize_credit_rating_text(source).casefold()
+    normalized_expression = normalize_credit_rating_text(expression).casefold().strip()
     if not normalized_expression:
         return False
     compact_target = re.sub(r"\s+", "", normalized_expression)
@@ -267,7 +277,7 @@ def _credit_literal_contains_whole_expression(source: str, expression: str) -> b
 def _credit_range_values(expressions: tuple[str, ...]) -> tuple[str, ...] | None:
     predicates: list[tuple[int, str]] = []
     for expression in expressions:
-        normalized = unicodedata.normalize("NFKC", expression).strip()
+        normalized = normalize_credit_rating_text(expression).strip()
         matches = tuple(_CREDIT_RANGE_RE.finditer(normalized))
         if not matches:
             return None
@@ -320,12 +330,17 @@ def compile_credit_rating_values(
         )
     ):
         return None
+    normalized_source_literal = normalize_credit_rating_text(source_literal)
+    normalized_expressions = tuple(
+        normalize_credit_rating_text(value) for value in expressions
+    )
     source_grade_tokens = tuple(
-        match.group("grade") for match in _CREDIT_GRADE_TOKEN_RE.finditer(source_literal)
+        match.group("grade")
+        for match in _CREDIT_GRADE_TOKEN_RE.finditer(normalized_source_literal)
     )
     expression_grade_tokens = tuple(
         match.group("grade")
-        for expression in expressions
+        for expression in normalized_expressions
         for match in _CREDIT_GRADE_TOKEN_RE.finditer(expression)
     )
     if (
@@ -335,11 +350,13 @@ def compile_credit_rating_values(
         != Counter(_normalize_category(value) for value in expression_grade_tokens)
     ):
         return None
-    uses_range = tuple(bool(_CREDIT_RANGE_RE.search(value)) for value in expressions)
+    uses_range = tuple(
+        bool(_CREDIT_RANGE_RE.search(value)) for value in normalized_expressions
+    )
     if any(uses_range):
         if not all(uses_range):
             return None
-        return _credit_range_values(expressions)
+        return _credit_range_values(normalized_expressions)
     canonical = tuple(parse_credit_rating(value) for value in expressions)
     if any(value is None for value in canonical):
         return None

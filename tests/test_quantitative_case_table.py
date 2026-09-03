@@ -17,6 +17,7 @@ from pai_loop.quantitative_formula import (
     CompiledCaseTable,
     case_table_points,
     compile_case_table,
+    compile_credit_rating_values,
     parse_credit_rating,
 )
 from pai_loop.quantitative_rule_extraction import validate_quantitative_rule_candidate
@@ -248,6 +249,31 @@ def test_busan_credit_range_scores_ccc0_at_seventy_percent() -> None:
     assert case_table_points(table, "미등록등급") is None
     assert parse_credit_rating("A") == "A0"
     assert parse_credit_rating("AA") is None
+
+
+@pytest.mark.parametrize(
+    ("source", "canonical"),
+    (("A−", "A-"), ("BBB−", "BBB-"), ("CCC−", "CCC-")),
+)
+def test_credit_parser_normalizes_unicode_minus_variants(
+    source: str,
+    canonical: str,
+) -> None:
+    assert parse_credit_rating(source) == canonical
+    assert compile_credit_rating_values((source,), source_literal=source) == (
+        canonical,
+    )
+
+
+def test_credit_range_compiler_normalizes_unicode_minus_in_bounds_and_source() -> None:
+    assert compile_credit_rating_values(
+        ("A-",),
+        source_literal="A−",
+    ) == ("A-",)
+    assert compile_credit_rating_values(
+        ("BBB− 이하", "CCC− 초과"),
+        source_literal="BBB− 이하\nCCC− 초과",
+    ) == ("BBB-", "BB+", "BB0", "BB-", "B+", "B0", "B-", "CCC+", "CCC0")
 
 
 @pytest.mark.parametrize(
