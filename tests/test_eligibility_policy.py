@@ -96,9 +96,17 @@ def test_inchon_policy_separates_four_classes_and_keeps_one_blocking_action() ->
         "INFORMATION",
     }
     assert result["blocking_actions"] == 1
-    assert by_id["REQ-001"]["outcome"] == "REVIEW"
+    # bidder_registration carries RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE, last
+    # verified 2026-08-05. A 2026-09-03 deadline is well inside the staleness
+    # window, so this is a confirmed PASS, not an unconditional REVIEW (see
+    # the 2026-09-03 eligibility freshness fix changelog).
+    assert by_id["REQ-001"]["outcome"] == "PASS_CURRENT"
+    assert by_id["REQ-001"]["deadline_check_required"] is True
     assert by_id["REQ-001"]["evidence"]["display_name"] == "경쟁입찰참가자격등록증"
-    assert by_id["REQ-002"]["outcome"] == "REVIEW"
+    # sanction_clear was last verified 2026-09-03 (same day as this notice's
+    # deadline), well inside the staleness window, so this is a confirmed
+    # PASS (see the 2026-09-03 eligibility freshness fix changelog).
+    assert by_id["REQ-002"]["outcome"] == "PASS_CURRENT"
     assert by_id["REQ-002"]["deadline_check_required"] is True
     assert by_id["REQ-003"]["policy_class"] == "CHECKLIST"
     assert by_id["REQ-003"]["outcome"] == "READY"
@@ -134,8 +142,12 @@ def test_confirmed_missing_small_business_certificate_fails_without_notice_excep
         profile=load_public_company_profile(),
         deadline="2026-09-04",
     )["items"][0]
-    assert future["outcome"] == "REVIEW"
-    assert future["evaluation_fact_key"] == "reconfirm.small_business_certificate"
+    # A one-day-later deadline no longer forces REVIEW on its own: the company
+    # fact (small_business_certificate=False) is still fresh (last verified
+    # 2026-09-03), so this remains a confirmed FAIL, not an unconditional
+    # REVIEW (see the 2026-09-03 eligibility freshness fix changelog).
+    assert future["outcome"] == "FAIL_CONFIRMED"
+    assert future["evaluation_fact_key"] == "small_business_certificate"
 
     historical = classify_requirements(
         [requirement("SMALL-HISTORICAL", "CERTIFICATION", "소기업 확인서를 보유해야 함.")],
@@ -146,18 +158,36 @@ def test_confirmed_missing_small_business_certificate_fails_without_notice_excep
 
 
 def test_future_conviction_check_does_not_overextend_current_declaration() -> None:
+    # A distant notice deadline no longer drives staleness by itself (see the
+    # 2026-09-03 eligibility freshness fix changelog) -- deadline is when the
+    # bid closes, not a proxy for "time since we last checked". Freshness is
+    # now judged against the evaluation clock, so we pin ``evaluation_date``
+    # to actually exercise both the fresh and the stale branch.
     result = classify_requirements(
         [requirement("SANCTION-1", "SANCTION", "조세포탈 유죄판결이 없어야 함.")],
         profile=load_public_company_profile(),
         deadline="2026-12-31",
+        evaluation_date="2026-09-03",
     )
 
     item = result["items"][0]
-    assert item["outcome"] == "REVIEW"
-    assert item["blocking"] is True
+    assert item["outcome"] == "PASS_CURRENT"
+    assert item["blocking"] is False
     assert item["deadline_check_required"] is True
     assert result["blocking_actions"] == 0
-    assert result["blocking_items"] == 1
+    assert result["blocking_items"] == 0
+
+    stale = classify_requirements(
+        [requirement("SANCTION-STALE", "SANCTION", "조세포탈 유죄판결이 없어야 함.")],
+        profile=load_public_company_profile(),
+        deadline="2026-12-31",
+        # conviction_clear was last verified 2026-09-03; push well past the
+        # 180-day staleness horizon so the declaration must be overextended.
+        evaluation_date="2027-06-01",
+    )["items"][0]
+    assert stale["outcome"] == "REVIEW"
+    assert stale["evaluation_fact_key"] == "reconfirm.conviction_clear"
+    assert stale["blocking"] is True
 
 
 def test_profile_structures_official_and_declared_company_facts_separately() -> None:
@@ -569,8 +599,12 @@ def test_verified_permits_and_seoul_head_office_map_but_declared_branches_do_not
     assert by_id["JOB"]["company_fact_key"] == "free_job_placement"
     assert by_id["JOB"]["outcome"] == "PASS_CURRENT"
     assert by_id["SEOUL"]["company_fact_key"] == "head_office_region_seoul"
-    assert by_id["SEOUL"]["outcome"] == "REVIEW"
-    assert by_id["SEOUL"]["evaluation_fact_key"] == "reconfirm.head_office_region_seoul"
+    # head_office_region_seoul was last verified 2026-08-05; a 2026-09-10
+    # deadline is inside the staleness window, so this is a confirmed PASS
+    # (see the 2026-09-03 eligibility freshness fix changelog).
+    assert by_id["SEOUL"]["outcome"] == "PASS_CURRENT"
+    assert by_id["SEOUL"]["evaluation_fact_key"] == "head_office_region_seoul"
+    assert by_id["SEOUL"]["deadline_check_required"] is True
     assert by_id["BUSAN-BRANCH"]["outcome"] == "REVIEW"
 
     snapshot_day = classify_requirements(
@@ -597,8 +631,26 @@ def test_deadline_freshness_distinguishes_recheck_and_conditional_reconfirm() ->
 
     assert at_snapshot["outcome"] == "PASS_CURRENT"
     assert at_snapshot["evaluation_fact_key"] == "bidder_registration"
-    assert after_snapshot["outcome"] == "REVIEW"
-    assert after_snapshot["evaluation_fact_key"] == "reconfirm.bidder_registration"
+    # A notice deadline one day after ``last_verified_at`` no longer forces a
+    # REVIEW on its own: every open notice's deadline is, by definition, in
+    # the future relative to a fixed verification snapshot, so gating on
+    # "deadline > last_verified_at" made this branch fire unconditionally
+    # (see the 2026-09-03 eligibility freshness fix changelog). Freshness is
+    # now judged against the evaluation clock instead.
+    assert after_snapshot["outcome"] == "PASS_CURRENT"
+    assert after_snapshot["evaluation_fact_key"] == "bidder_registration"
+    assert after_snapshot["deadline_check_required"] is True
+
+    stale_snapshot = classify_requirements(
+        [bidder_clause],
+        profile=profile,
+        deadline="2026-08-06",
+        # bidder_registration was last verified 2026-08-05; push evaluation
+        # well past the staleness horizon so the recheck gate must fire.
+        evaluation_date="2027-06-01",
+    )["items"][0]
+    assert stale_snapshot["outcome"] == "REVIEW"
+    assert stale_snapshot["evaluation_fact_key"] == "reconfirm.bidder_registration"
 
     ordinary_permit = classify_requirements(
         [requirement("PERMIT-ORDINARY", "CERTIFICATION", "종합여행업 등록 업체여야 함.")],
@@ -997,7 +1049,10 @@ def test_known_information_guards_do_not_override_embedded_eligibility() -> None
     )
     assert by_id["BIDDER-CONTRACT"]["policy_class"] == "ELIGIBILITY"
     assert by_id["BIDDER-CONTRACT"]["company_fact_key"] == "bidder_registration"
-    assert by_id["BIDDER-CONTRACT"]["outcome"] == "REVIEW"
+    # bidder_registration was last verified 2026-08-05; a 2026-09-01 deadline
+    # is inside the staleness window, so this is a confirmed PASS (see the
+    # 2026-09-03 eligibility freshness fix changelog).
+    assert by_id["BIDDER-CONTRACT"]["outcome"] == "PASS_CURRENT"
     assert by_id["COLLUSION-EXCLUSION"]["policy_class"] == "ELIGIBILITY"
     assert by_id["ORIGIN-CAPABILITY"]["policy_class"] == "ELIGIBILITY"
 

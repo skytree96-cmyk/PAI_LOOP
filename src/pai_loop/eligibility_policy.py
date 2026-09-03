@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import re
 from collections import Counter
@@ -12,7 +13,14 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.03-v6"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.03-v7"
+
+# How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
+# fact may go without a fresh verification before we stop trusting it and force REVIEW.
+# This is a placeholder default pending an explicit staleness policy from the operations
+# team (see 2026-09-03 eligibility freshness fix changelog). Codex/ops should confirm and
+# adjust this single constant rather than re-deriving the threshold ad hoc.
+_FRESHNESS_STALENESS_DAYS = 180
 
 _FORBIDDEN_KEYS = {
     "address",
@@ -848,13 +856,28 @@ def _deadline_freshness_recheck_required(
     *,
     fact: dict[str, Any],
     deadline: date | None,
+    today: date,
 ) -> bool:
     """Honor each fact's explicit deadline freshness policy.
 
-    Online snapshots and submission declarations are point-in-time facts, so a
-    later notice deadline needs a new check.  Long-lived permits use the
-    narrower current-copy policy and are rechecked only when the notice itself
-    asks for current/recent documentary proof.
+    RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY is a narrow, condition-gated
+    policy: it only forces a recheck when the notice text itself demands
+    current/recent documentary proof (see ``_CURRENT_COPY_MARKERS``).
+
+    RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE and RECONFIRM_BEFORE_EACH_SUBMISSION
+    are reminders to double-check the fact before submission -- they are not
+    proof the fact is currently wrong. A notice's own deadline is always in
+    the future relative to a fixed ``last_verified_at`` snapshot (a closed
+    notice would not be evaluated at all), so comparing the deadline against
+    ``last_verified_at`` treated every such fact as unconditionally stale and
+    forced REVIEW on essentially every open notice. This flipped the intent
+    of the policy: it should flag an *aging* verification, not a notice that
+    merely closes in the future.
+
+    We now compare ``last_verified_at`` against the evaluation clock
+    (``today``) using ``_FRESHNESS_STALENESS_DAYS`` as the staleness horizon.
+    ``deadline_check_required`` (see ``_eligibility_item``) still exposes a
+    "recheck before submission" reminder to the UI independent of this gate.
     """
 
     if deadline is None:
@@ -865,13 +888,13 @@ def _deadline_freshness_recheck_required(
     policy = str(raw_policy).upper()
     if "RECHECK" not in policy and "RECONFIRM" not in policy:
         return False
-    last_verified = _as_date(fact.get("last_verified_at"))
-    if last_verified is not None and deadline <= last_verified:
-        return False
     if policy == "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY":
         condition = _normalise(requirement.get("normalized_condition"))
         return _contains(condition, *_CURRENT_COPY_MARKERS)
-    return True
+    last_verified = _as_date(fact.get("last_verified_at"))
+    if last_verified is None:
+        return True
+    return (today - last_verified).days > _FRESHNESS_STALENESS_DAYS
 
 
 def _evidence_index(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -916,6 +939,7 @@ def _eligibility_item(
     profile: dict[str, Any],
     fact_key: str,
     deadline: date | None,
+    today: date | None = None,
     pass_outcome: str = "PASS_CURRENT",
     message: str,
     fail_on_confirmed_absence: bool = False,
@@ -936,6 +960,7 @@ def _eligibility_item(
         requirement,
         fact=fact,
         deadline=deadline,
+        today=today or date.today(),
     )
     in_effect = deadline is None or (
         (start is None or start <= deadline)
@@ -1059,16 +1084,26 @@ def classify_requirements(
     *,
     profile: dict[str, Any],
     deadline: date | datetime | str | None,
+    evaluation_date: date | datetime | str | None = None,
 ) -> dict[str, Any]:
     """Classify extracted conditions without turning every clause into eligibility.
 
     Eligibility uses only curated public facts and retains its deadline-as-of
     recheck policy. One-off participation is a blocking action. Procedural work
     and contract facts remain checklist/information even when mandatory.
+
+    ``evaluation_date`` is the freshness clock used to judge whether a
+    RECHECK/RECONFIRM-tagged company fact is stale (see
+    ``_deadline_freshness_recheck_required``). It defaults to the real
+    evaluation date; tests and audits may pin it for determinism.
     """
 
     _assert_public_safe(profile)
     as_of = _as_date(deadline)
+    today = _as_date(evaluation_date) or date.today()
+    # Bind ``today`` into every eligibility-item call below without threading
+    # it through each of the 13 call sites individually.
+    _eligibility_item_now = functools.partial(_eligibility_item, today=today)
     normalized = [_normalise(item.get("normalized_condition")) for item in requirements]
     nonprofit_exception_present = any(
         "비영리법인" in text and _contains(text, "참여 가능", "예외", "적용하지")
@@ -1105,7 +1140,7 @@ def classify_requirements(
         )
 
         if notice_specific_families > 1 and _has_explicit_nonprofit_compound_exception(text):
-            item = _eligibility_item(
+            item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key="nonprofit_entity",
@@ -1138,7 +1173,7 @@ def classify_requirements(
             )
         elif direct_production_certificate:
             if _has_explicit_nonprofit_direct_production_exception(text):
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key="nonprofit_entity",
@@ -1157,7 +1192,7 @@ def classify_requirements(
                     ),
                 )
             else:
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key="direct_production_certificate",
@@ -1180,7 +1215,7 @@ def classify_requirements(
                 )
             else:
                 required_value: Any = industry_codes[0] if operator == "contains" else industry_codes
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key="industry_code_inventory",
@@ -1205,7 +1240,7 @@ def classify_requirements(
                     message="지정직업훈련시설의 요구 NCS 직종 범위를 확정할 수 없어 원문 검토가 필요합니다.",
                 )
             else:
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key=fact_key,
@@ -1227,7 +1262,7 @@ def classify_requirements(
                 ),
             )
         elif named_permit_fact_key is not None:
-            item = _eligibility_item(
+            item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key=named_permit_fact_key,
@@ -1259,7 +1294,7 @@ def classify_requirements(
                 ),
             )
         elif _is_bidder_registration_eligibility(text):
-            item = _eligibility_item(
+            item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key="bidder_registration",
@@ -1281,7 +1316,7 @@ def classify_requirements(
                 message="납품·설치 장소 또는 입찰 범위 정보이며 업체 소재지 참가제한으로 사용하지 않습니다.",
             )
         elif _is_current_sanction_clearance(text):
-            item = _eligibility_item(
+            item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key="sanction_clear",
@@ -1289,7 +1324,7 @@ def classify_requirements(
                 message="현재 확인된 부정당 제재 사례가 없어 PASS 상태이며 마감일 기준 동적 조회를 유지합니다.",
             )
         elif _is_current_disqualification_clearance(text):
-            item = _eligibility_item(
+            item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key="disqualification_clear",
@@ -1297,7 +1332,7 @@ def classify_requirements(
                 message="현재 회사 확인값상 결격사유가 없으며 제출 전 다시 확인합니다.",
             )
         elif _contains(text, "유죄판결", "조세포탈") and not _contains(text, "서약서"):
-            item = _eligibility_item(
+            item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key="conviction_clear",
@@ -1340,7 +1375,7 @@ def classify_requirements(
                 text,
                 category=category,
             ):
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key="nonprofit_entity",
@@ -1360,7 +1395,7 @@ def classify_requirements(
                 )
             else:
                 certificate_fact_key = _small_business_fact_key(text)
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key=certificate_fact_key,
@@ -1472,7 +1507,7 @@ def classify_requirements(
             )
         elif category == "REGION" and _is_region_eligibility(text):
             if _is_seoul_head_office_gate(text, category=category):
-                item = _eligibility_item(
+                item = _eligibility_item_now(
                     requirement,
                     profile=profile,
                     fact_key="head_office_region_seoul",
