@@ -32,15 +32,11 @@ from .quantitative_formula import CaseTableRowLiteral, compile_case_table
 
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.12"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.13"
 
-# A global validator bump would invalidate every persisted attachment record,
-# including already-proven AVAILABLE profiles.  Instead, revision only the
-# fingerprint contract of legacy records carrying an issue whose proof logic
-# changed.  Their stored pre-revision digest no longer verifies, so the normal
-# attachment flow re-downloads and validates them once.  Newly validated records
-# carrying the same issue receive the revised digest and remain terminal rather
-# than retrying forever.
+# Issue-only proof changes use targeted fingerprint revisions below.  Changes to
+# executable scoring semantics, such as the credit-range DSL above, intentionally
+# bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
@@ -575,6 +571,51 @@ def _unique_anchor_line_span(
         return None
     start, end = spans[0]
     return spans[0] if _anchor_occurrence_count(quote, "\n".join(lines[start:end])) == 1 else None
+
+
+def _flat_cell_line_spans(
+    lines: tuple[str, ...],
+    quote: str,
+) -> tuple[tuple[int, int], ...]:
+    """Locate exact normalized whole-cell sequences for flat HWPX repair only."""
+
+    quote_cells = tuple(
+        _normalise_anchor_text(unicodedata.normalize("NFKC", cell))
+        for cell in quote.splitlines()
+    )
+    if not quote_cells or any(not cell for cell in quote_cells):
+        return ()
+    normalized_lines = tuple(
+        _normalise_anchor_text(unicodedata.normalize("NFKC", line)) for line in lines
+    )
+    width = len(quote_cells)
+    return tuple(
+        (start, start + width)
+        for start in range(len(lines) - width + 1)
+        if normalized_lines[start : start + width] == quote_cells
+    )
+
+
+def _unique_flat_cell_line_span(
+    lines: tuple[str, ...],
+    quote: str,
+) -> tuple[int, int] | None:
+    spans = _flat_cell_line_spans(lines, quote)
+    return spans[0] if len(spans) == 1 else None
+
+
+def _all_flat_cell_line_spans(
+    lines: tuple[str, ...],
+    values: Iterable[str],
+) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        dict.fromkeys(
+            span
+            for value in values
+            if value
+            for span in _flat_cell_line_spans(lines, value)
+        )
+    )
 
 
 def _all_anchor_line_spans(
@@ -2885,7 +2926,7 @@ def _rebind_flat_split_table_cell_literals(
         return payload
     table = payload.quantitative_tables[0]
     criterion_spans = [
-        _unique_anchor_line_span(lines, candidate.evidence.quote)
+        _unique_flat_cell_line_span(lines, candidate.evidence.quote)
         for candidate in table.criteria
     ]
     if (
@@ -2903,7 +2944,7 @@ def _rebind_flat_split_table_cell_literals(
         return payload
 
     resolved_criteria = [span for span in criterion_spans if span is not None]
-    protected_spans = _all_anchor_line_spans(
+    protected_spans = _all_flat_cell_line_spans(
         lines,
         (
             value
@@ -2934,7 +2975,7 @@ def _rebind_flat_split_table_cell_literals(
         region = (criterion_span[0], region_end)
 
         criterion_literal = candidate.criterion_literal
-        literal_span = _unique_anchor_line_span(lines, criterion_literal)
+        literal_span = _unique_flat_cell_line_span(lines, criterion_literal)
         if (
             not _literal_contains_number(candidate.max_points, criterion_literal)
             and literal_span is not None
@@ -2951,8 +2992,8 @@ def _rebind_flat_split_table_cell_literals(
         ) -> list[QuantitativeBracketLiteral] | list[QuantitativeCaseLiteral]:
             row_spans: list[tuple[int, int] | None] = []
             for row in rows:
-                literal = _unique_anchor_line_span(lines, row.literal)
-                evidence = _unique_anchor_line_span(lines, row.evidence.quote)
+                literal = _unique_flat_cell_line_span(lines, row.literal)
+                evidence = _unique_flat_cell_line_span(lines, row.evidence.quote)
                 row_spans.append(
                     (
                         (min(literal[0], evidence[0]), max(literal[1], evidence[1]))
@@ -4433,6 +4474,7 @@ def _assert_available_candidate_invariants(
                     operator=case.operator,
                     comparison_value=case.comparison_value,
                     category_values=case.category_values,
+                    source_literal=case.literal,
                     award_kind=case.award_kind,
                     award_value=case.award_value,
                 )
@@ -4856,9 +4898,11 @@ def _validate_threshold(
 
 
 def _case_value_kind(metric: KnownQuantitativeMetric) -> Literal[
-    "NUMERIC", "DISCRETE", "CATEGORICAL"
+    "NUMERIC", "DISCRETE", "CATEGORICAL", "CREDIT_RATING"
 ]:
-    if metric in {"CREDIT_RATING", "LOCAL_PRESENCE"}:
+    if metric == "CREDIT_RATING":
+        return "CREDIT_RATING"
+    if metric == "LOCAL_PRESENCE":
         return "CATEGORICAL"
     if metric in {
         "PERFORMANCE_COUNT",
@@ -5007,6 +5051,7 @@ def _validate_cases(
                 operator=case.operator,
                 comparison_value=case.comparison_value,
                 category_values=tuple(case.category_values),
+                source_literal=case.literal,
                 award_kind=case.award_kind,
                 award_value=case.award_value,
             )

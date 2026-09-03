@@ -302,6 +302,35 @@ def test_busan_rfp_case_tables_score_full_twenty_from_company_data() -> None:
     }
 
 
+def test_busan_credit_range_scores_ccc0_at_seventy_percent() -> None:
+    request = quantitative_request_from_candidate_profile(_profile())
+    assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons
+    criteria = {item.metric_key: item for item in request.criteria}
+    credit = criteria["company.credit_rating"]
+    result = estimate_quantitative_score(
+        request.model_copy(
+            update={
+                "criteria": [credit],
+                "facts": [
+                    QuantitativeFact(
+                        metric_key="company.credit_rating",
+                        status="CONFIRMED",
+                        value="CCC0",
+                        evidence_key="company.credit_rating",
+                        fact_binding_sha256=credit.fact_binding_sha256,
+                        confidence=1,
+                        rationale="유효 신용평가등급",
+                    )
+                ],
+            }
+        )
+    )
+
+    assert result.total_max_points == 10
+    assert result.estimated_points == 7
+    assert result.criteria[0].estimated_points == 7
+
+
 def test_busan_rfp_scores_twenty_through_real_performance_register_resolver() -> None:
     request = quantitative_request_from_candidate_profile(_profile())
     assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons

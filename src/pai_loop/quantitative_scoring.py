@@ -67,7 +67,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.1"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -2227,13 +2227,17 @@ def _compiled_case_table_contract(
         "FACILITY_EQUIPMENT_COUNT",
         "AWARD_COUNT",
     }:
-        value_kind: Literal["NUMERIC", "DISCRETE", "CATEGORICAL"] = "DISCRETE"
+        value_kind: Literal[
+            "NUMERIC", "DISCRETE", "CATEGORICAL", "CREDIT_RATING"
+        ] = "DISCRETE"
+    elif candidate.metric == "CREDIT_RATING":
+        value_kind = "CREDIT_RATING"
     elif str(spec.get("value_kind", "NUMERIC")) in {"CATEGORICAL", "BOOLEAN"}:
         value_kind = "CATEGORICAL"
     else:
         value_kind = "NUMERIC"
     scale = Decimal("1")
-    if value_kind != "CATEGORICAL":
+    if value_kind not in {"CATEGORICAL", "CREDIT_RATING"}:
         candidate_scale = _metric_scale(candidate)
         if candidate_scale is None:
             return None
@@ -2247,6 +2251,7 @@ def _compiled_case_table_contract(
                 else None
             ),
             category_values=item.category_values,
+            source_literal=item.literal,
             award_kind=item.award_kind,
             award_value=item.award_value,
         )

@@ -22,6 +22,8 @@ from pai_loop.pps_enrichment import (
 )
 from pai_loop.quantitative_rule_extraction import (
     ValidatedQuantitativeAttachmentRecord,
+    _rebind_flat_split_table_cell_literals,
+    _unique_flat_cell_line_span,
     build_quantitative_candidate_profile,
     merge_validated_quantitative_records,
     validate_quantitative_attachment_extraction,
@@ -1988,12 +1990,12 @@ def test_split_hwp_eq_cells_bind_the_immediately_following_award_cell() -> None:
 
 
 def test_split_hwp_categorical_percent_cells_bind_the_immediately_following_award_cell() -> None:
-    categories = ["AAA", "AA+", "AA", "AA-", "A+", "A0"]
+    categories = ["D 이상"]
     source = "\n".join(
         [
             "[HWP SECTION 0]",
             "수행실적 10점",
-            "AAA, AA+, AA, AA-, A+, A0",
+            "D 이상",
             "100%",
             "정량평가 총점 10점",
         ]
@@ -2004,7 +2006,7 @@ def test_split_hwp_categorical_percent_cells_bind_the_immediately_following_awar
         max_points=10,
         cases=[
             split_case(
-                "AAA, AA+, AA, AA-, A+, A0",
+                "D 이상",
                 operator="IN",
                 comparison_value=None,
                 category_values=categories,
@@ -2218,6 +2220,62 @@ def test_flat_hwpx_split_cells_are_rebound_from_exact_adjacent_score() -> None:
 
     assert profile.status == "AVAILABLE", issue_codes(profile)
     assert profile.available_candidates[0].cases[0].literal == "3건 이상\n6점"
+
+
+def test_flat_hwpx_whole_cell_match_does_not_confuse_bb_minus_with_bbb_minus() -> None:
+    lines = ("BBB- 미만", "BB- 미만")
+
+    assert _unique_flat_cell_line_span(lines, "BBB- 미만") == (0, 1)
+    assert _unique_flat_cell_line_span(lines, "BB- 미만") == (1, 2)
+
+
+def test_flat_hwpx_credit_repair_keeps_bb_minus_and_bbb_minus_rows_separate() -> None:
+    source = "\n".join(
+        [
+            "수행실적 10점",
+            "BBB- 미만",
+            "배점의 100%",
+            "BB- 미만",
+            "배점의 70%",
+            "정량평가 총점 10점",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="CREDIT_RATING",
+        unit="등급",
+        max_points=10,
+        cases=[
+            split_case(
+                "BBB- 미만",
+                operator="IN",
+                comparison_value=None,
+                category_values=["BBB- 미만"],
+                award_kind="PERCENT_OF_MAX",
+                award_value=100,
+                row_order=1,
+            ),
+            split_case(
+                "BB- 미만",
+                operator="IN",
+                comparison_value=None,
+                category_values=["BB- 미만"],
+                award_kind="PERCENT_OF_MAX",
+                award_value=70,
+                row_order=2,
+            ),
+        ],
+    )
+
+    repaired = _rebind_flat_split_table_cell_literals(
+        payload_with_table(table),
+        source=source,
+        lines=tuple(source.splitlines()),
+    )
+
+    assert [case.literal for case in repaired.quantitative_tables[0].criteria[0].cases] == [
+        "BBB- 미만\n배점의 100%",
+        "BB- 미만\n배점의 70%",
+    ]
 
 
 def test_flat_hwpx_split_cells_do_not_cross_an_unrelated_line() -> None:
@@ -3524,13 +3582,10 @@ def test_busan_credit_unit_repair_rejects_commercial_paper_case_cell() -> None:
     )
     request = quantitative_request_from_candidate_profile(profile)
 
-    assert record.status == "AVAILABLE", record.issues
-    assert profile.available_candidates[0].unit == "점"
+    assert record.status == "REVIEW"
+    assert profile.available_candidates == ()
+    assert "CASE_TABLE_NOT_DETERMINISTIC" in issue_codes(profile)
     assert request.activation_status == "REVIEW_REQUIRED"
-    assert request.activation_reasons == [
-        "UNSUPPORTED_SCORING_DSL",
-        "UNSUPPORTED_UNIT",
-    ]
 
 
 @pytest.mark.parametrize("payload_mutation", ("missing-row", "partial-cell"))
@@ -3568,14 +3623,11 @@ def test_busan_credit_unit_repair_requires_complete_owned_source_rows(
     )
     request = quantitative_request_from_candidate_profile(profile)
 
-    assert record.status == "AVAILABLE", record.issues
-    assert profile.status == "AVAILABLE", issue_codes(profile)
-    assert profile.available_candidates[0].unit == "점"
+    assert record.status == "REVIEW"
+    assert profile.status == "REVIEW"
+    assert profile.available_candidates == ()
+    assert "CASE_TABLE_NOT_DETERMINISTIC" in issue_codes(profile)
     assert request.activation_status == "REVIEW_REQUIRED"
-    assert request.activation_reasons == [
-        "UNSUPPORTED_SCORING_DSL",
-        "UNSUPPORTED_UNIT",
-    ]
 
 
 def busan_hwp_duplicate_summary_fixture(
@@ -5645,7 +5697,7 @@ def test_previous_split_cell_validator_record_is_rejected_as_stale() -> None:
     )
     stale = record.model_copy(
         update={
-            "validator_version": "pai-loop-quantitative-attachment-validator-0.5.0"
+            "validator_version": "pai-loop-quantitative-attachment-validator-0.6.12"
         }
     )
     stale = stale.model_copy(

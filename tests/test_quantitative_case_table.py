@@ -10,12 +10,14 @@ from pai_loop.integrations.openai_extraction import (
     QuantitativeRuleCandidate,
 )
 from pai_loop.quantitative_formula import (
+    CREDIT_RATING_ORDER,
     CaseTableAwardKind,
     CaseTableOperator,
     CaseTableRowLiteral,
     CompiledCaseTable,
     case_table_points,
     compile_case_table,
+    parse_credit_rating,
 )
 from pai_loop.quantitative_rule_extraction import validate_quantitative_rule_candidate
 from pai_loop.quantitative_scoring import (
@@ -53,6 +55,52 @@ def _category_row(
         category_values=values,
         award_kind=award_kind,
         award_value=award_value,
+    )
+
+
+def _credit_row(
+    values: tuple[str, ...],
+    award_value: float,
+    *,
+    source_literal: str | None = None,
+    award_kind: CaseTableAwardKind = "POINTS",
+) -> CaseTableRowLiteral:
+    literal = source_literal or "\n".join(values)
+    return CaseTableRowLiteral(
+        operator="IN",
+        category_values=values,
+        source_literal=literal,
+        award_kind=award_kind,
+        award_value=award_value,
+    )
+
+
+def _valid_credit_rows() -> tuple[CaseTableRowLiteral, ...]:
+    return (
+        _credit_row(
+            ("AAA", "AA+", "AA0", "AA-", "A+", "A0", "A-", "BBB+", "BBB0"),
+            100,
+            source_literal="AAA, AA+, AA0, AA-, A+, A0, A-, BBB+, BBB0 배점의 100%",
+            award_kind="PERCENT_OF_MAX",
+        ),
+        _credit_row(
+            ("BBB-", "BB+", "BB0", "BB-"),
+            95,
+            source_literal="BBB-, BB+, BB0, BB- 배점의 95%",
+            award_kind="PERCENT_OF_MAX",
+        ),
+        _credit_row(
+            ("B+", "B0", "B-"),
+            90,
+            source_literal="B+, B0, B- 배점의 90%",
+            award_kind="PERCENT_OF_MAX",
+        ),
+        _credit_row(
+            ("CCC+ 이하",),
+            70,
+            source_literal="CCC+ 이하 배점의 70%",
+            award_kind="PERCENT_OF_MAX",
+        ),
     )
 
 
@@ -144,6 +192,97 @@ def test_categorical_in_rows_convert_percent_of_max_and_remain_disjoint() -> Non
     assert case_table_points(table, " A 0 ") == 10
     assert case_table_points(table, "BBB-") == 9.5
     assert case_table_points(table, "미등록등급") is None
+
+
+def test_credit_registry_compiles_ranges_to_exact_canonical_grade_sets() -> None:
+    rows = (
+        _credit_row(("A0 이상",), 10),
+        _credit_row(("A0 미만 BBB+ 이상",), 9.8),
+        _credit_row(
+            ("BBB+ 미만", "BB- 초과"),
+            9.5,
+            source_literal="BBB+ 미만\nBB- 초과",
+        ),
+        _credit_row(
+            ("BB- 이하", "B+ 이상"),
+            9,
+            source_literal="BB- 이하\nB+ 이상",
+        ),
+        _credit_row(("B+ 미만",), 7),
+    )
+
+    table = compile_case_table(rows, value_kind="CREDIT_RATING", maximum_points=10)
+
+    assert table is not None
+    assert tuple(value for row in table.rows for value in row.category_values) == (
+        CREDIT_RATING_ORDER
+    )
+    assert table.rows[0].category_values == ("AAA", "AA+", "AA0", "AA-", "A+", "A0")
+    assert table.rows[1].category_values == ("A-", "BBB+")
+    assert table.rows[2].category_values == ("BBB0", "BBB-", "BB+", "BB0")
+    assert table.rows[3].category_values == ("BB-", "B+")
+    assert table.rows[4].category_values == (
+        "B0", "B-", "CCC+", "CCC0", "CCC-", "CC", "C", "D"
+    )
+    assert [case_table_points(table, value) for value in ("A0", "A", "A-", "BBB+", "BBB-", "BB-", "B+")] == [
+        10,
+        10,
+        9.8,
+        9.8,
+        9.5,
+        9,
+        9,
+    ]
+
+
+def test_busan_credit_range_scores_ccc0_at_seventy_percent() -> None:
+    table = compile_case_table(
+        _valid_credit_rows(),
+        value_kind="CREDIT_RATING",
+        maximum_points=10,
+    )
+
+    assert table is not None
+    assert case_table_points(table, "CCC0") == 7
+    assert case_table_points(table, "A") == case_table_points(table, "A0") == 10
+    assert case_table_points(table, "미등록등급") is None
+    assert parse_credit_rating("A") == "A0"
+    assert parse_credit_rating("AA") is None
+
+
+@pytest.mark.parametrize(
+    "rows",
+    (
+        (_credit_row(("A1",), 10),),
+        (
+            _credit_row(
+                ("A0",),
+                10,
+                source_literal="A0\nBBB0 배점의 100%",
+            ),
+        ),
+        (
+            _credit_row(("BBB- 이상",), 10),
+            _credit_row(("BBB- 이하",), 9),
+        ),
+        (
+            _credit_row(("BBB- 초과",), 10),
+            _credit_row(("BBB- 미만",), 9),
+        ),
+        (_credit_row(("BBB- 이상",), 10),),
+        (
+            *_valid_credit_rows()[:-1],
+            _credit_row(("CCC+ 이하",), 70, source_literal="CCC+ 이하\nD+"),
+        ),
+    ),
+)
+def test_credit_registry_rejects_unknown_ambiguous_overlap_gap_missing_or_extra(
+    rows: tuple[CaseTableRowLiteral, ...],
+) -> None:
+    assert (
+        compile_case_table(rows, value_kind="CREDIT_RATING", maximum_points=10)
+        is None
+    )
 
 
 def test_percent_awards_require_maximum_and_category_overlap_is_rejected() -> None:

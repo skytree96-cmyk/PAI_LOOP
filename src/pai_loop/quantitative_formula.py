@@ -4,6 +4,7 @@ import ast
 import math
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Literal
@@ -53,7 +54,51 @@ class CategoryScore(FormulaModel):
 
 CaseTableOperator = Literal["GTE", "EQ", "IN"]
 CaseTableAwardKind = Literal["POINTS", "PERCENT_OF_MAX"]
-CaseTableValueKind = Literal["NUMERIC", "DISCRETE", "CATEGORICAL"]
+CaseTableValueKind = Literal["NUMERIC", "DISCRETE", "CATEGORICAL", "CREDIT_RATING"]
+
+
+# Enterprise credit grades are ordered from strongest to weakest.  The source
+# table may spell the neutral A grade as either ``A`` or ``A0``; execution uses
+# one canonical value so the alias cannot create an overlap between bands.
+CREDIT_RATING_ORDER = (
+    "AAA",
+    "AA+",
+    "AA0",
+    "AA-",
+    "A+",
+    "A0",
+    "A-",
+    "BBB+",
+    "BBB0",
+    "BBB-",
+    "BB+",
+    "BB0",
+    "BB-",
+    "B+",
+    "B0",
+    "B-",
+    "CCC+",
+    "CCC0",
+    "CCC-",
+    "CC",
+    "C",
+    "D",
+)
+_CREDIT_RATING_INDEX = {
+    _normalize: index
+    for index, value in enumerate(CREDIT_RATING_ORDER)
+    for _normalize in (re.sub(r"\s+", "", value).casefold(),)
+}
+_CREDIT_RATING_ALIAS = {"a": "A0"}
+_CREDIT_RANGE_RE = re.compile(
+    r"(?P<grade>AAA|AA[+0-]|A[+0-]?|BBB[+0-]|BB[+0-]|B[+0-]|"
+    r"CCC[+0-]|CC|C|D)\s*(?P<operator>이상|초과|이하|미만)",
+    re.IGNORECASE,
+)
+_CREDIT_GRADE_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?P<grade>[A-D]{1,3}(?:[+0-9-])?)(?![A-Za-z0-9+_-])",
+    re.IGNORECASE,
+)
 
 
 class CaseTableRowLiteral(FormulaModel):
@@ -67,6 +112,7 @@ class CaseTableRowLiteral(FormulaModel):
     operator: CaseTableOperator
     comparison_value: float | None = None
     category_values: tuple[str, ...] = Field(default=(), max_length=100)
+    source_literal: str | None = Field(default=None, max_length=1_000)
     award_kind: CaseTableAwardKind = "POINTS"
     award_value: float = Field(ge=0)
 
@@ -158,6 +204,149 @@ def _normalize_source(value: str) -> str:
 
 def _normalize_category(value: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).casefold()
+
+
+def parse_credit_rating(value: str) -> str | None:
+    """Return one canonical enterprise credit grade, or fail closed."""
+
+    if not isinstance(value, str):
+        return None
+    normalized = _normalize_category(value)
+    canonical = _CREDIT_RATING_ALIAS.get(normalized)
+    if canonical is not None:
+        return canonical
+    index = _CREDIT_RATING_INDEX.get(normalized)
+    return CREDIT_RATING_ORDER[index] if index is not None else None
+
+
+def _credit_literal_contains_whole_expression(source: str, expression: str) -> bool:
+    """Match one normalized grade expression without substring collisions."""
+
+    normalized_source = unicodedata.normalize("NFKC", source).casefold()
+    normalized_expression = unicodedata.normalize("NFKC", expression).casefold().strip()
+    if not normalized_expression:
+        return False
+    compact_target = re.sub(r"\s+", "", normalized_expression)
+    compact_characters: list[str] = []
+    whitespace_boundaries: set[int] = set()
+    pending_whitespace = False
+    for character in normalized_source:
+        if character.isspace():
+            pending_whitespace = True
+            continue
+        if pending_whitespace and compact_characters:
+            whitespace_boundaries.add(len(compact_characters))
+        compact_characters.append(character)
+        pending_whitespace = False
+    compact_source = "".join(compact_characters)
+
+    def token_character(character: str) -> bool:
+        return character.isalnum() or character in "+_-"
+
+    starts: list[int] = []
+    offset = 0
+    while (start := compact_source.find(compact_target, offset)) >= 0:
+        end = start + len(compact_target)
+        if (
+            (
+                start == 0
+                or start in whitespace_boundaries
+                or not token_character(compact_source[start - 1])
+            )
+            and (
+                end == len(compact_source)
+                or end in whitespace_boundaries
+                or not token_character(compact_source[end])
+            )
+        ):
+            starts.append(start)
+        offset = start + 1
+    return len(starts) == 1
+
+
+def _credit_range_values(expressions: tuple[str, ...]) -> tuple[str, ...] | None:
+    predicates: list[tuple[int, str]] = []
+    for expression in expressions:
+        normalized = unicodedata.normalize("NFKC", expression).strip()
+        matches = tuple(_CREDIT_RANGE_RE.finditer(normalized))
+        if not matches:
+            return None
+        residue = _CREDIT_RANGE_RE.sub("", normalized)
+        if re.sub(r"[\s,;/·~]+", "", residue):
+            return None
+        for match in matches:
+            grade = parse_credit_rating(match.group("grade"))
+            if grade is None:
+                return None
+            predicates.append(
+                (_CREDIT_RATING_INDEX[_normalize_category(grade)], match.group("operator"))
+            )
+    if not predicates or len(predicates) > 2:
+        return None
+
+    def included(index: int) -> bool:
+        return all(
+            index <= boundary
+            if operator == "이상"
+            else index < boundary
+            if operator == "초과"
+            else index >= boundary
+            if operator == "이하"
+            else index > boundary
+            for boundary, operator in predicates
+        )
+
+    values = tuple(
+        grade for index, grade in enumerate(CREDIT_RATING_ORDER) if included(index)
+    )
+    return values or None
+
+
+def compile_credit_rating_values(
+    values: Sequence[str],
+    *,
+    source_literal: str,
+) -> tuple[str, ...] | None:
+    """Compile exact source-bound grade literals/ranges to canonical grades."""
+
+    expressions = tuple(values)
+    if (
+        not expressions
+        or not source_literal
+        or any(not isinstance(value, str) or not value.strip() for value in expressions)
+        or any(
+            not _credit_literal_contains_whole_expression(source_literal, expression)
+            for expression in expressions
+        )
+    ):
+        return None
+    source_grade_tokens = tuple(
+        match.group("grade") for match in _CREDIT_GRADE_TOKEN_RE.finditer(source_literal)
+    )
+    expression_grade_tokens = tuple(
+        match.group("grade")
+        for expression in expressions
+        for match in _CREDIT_GRADE_TOKEN_RE.finditer(expression)
+    )
+    if (
+        not source_grade_tokens
+        or any(parse_credit_rating(value) is None for value in source_grade_tokens)
+        or Counter(_normalize_category(value) for value in source_grade_tokens)
+        != Counter(_normalize_category(value) for value in expression_grade_tokens)
+    ):
+        return None
+    uses_range = tuple(bool(_CREDIT_RANGE_RE.search(value)) for value in expressions)
+    if any(uses_range):
+        if not all(uses_range):
+            return None
+        return _credit_range_values(expressions)
+    canonical = tuple(parse_credit_rating(value) for value in expressions)
+    if any(value is None for value in canonical):
+        return None
+    ordered = tuple(
+        grade for grade in CREDIT_RATING_ORDER if grade in canonical
+    )
+    return ordered if len(ordered) == len(canonical) else None
 
 
 def _parse_expression(expression: str) -> ast.Expression:
@@ -534,8 +723,9 @@ def _case_table_rows_are_safe(
     if any(point < 0 or (maximum is not None and point > maximum) for point in points):
         return False
 
-    if value_kind == "CATEGORICAL":
+    if value_kind in {"CATEGORICAL", "CREDIT_RATING"}:
         seen: set[str] = set()
+        flattened_credit_values: list[str] = []
         for row in rows:
             if (
                 row.operator != "IN"
@@ -551,6 +741,19 @@ def _case_table_rows_are_safe(
             ):
                 return False
             seen.update(normalized)
+            if value_kind == "CREDIT_RATING":
+                canonical = tuple(parse_credit_rating(value) for value in row.category_values)
+                if any(value is None for value in canonical):
+                    return False
+                flattened_credit_values.extend(value for value in canonical if value is not None)
+        if value_kind == "CREDIT_RATING":
+            return (
+                tuple(flattened_credit_values) == CREDIT_RATING_ORDER
+                and all(
+                    left >= right
+                    for left, right in zip(points, points[1:], strict=False)
+                )
+            )
         return True
 
     if value_kind not in {"NUMERIC", "DISCRETE"}:
@@ -616,11 +819,22 @@ def compile_case_table(
                 award = maximum * award / Decimal("100")
             if award < 0 or (maximum is not None and award > maximum):
                 return None
+            category_values = row.category_values
+            if value_kind == "CREDIT_RATING":
+                if row.source_literal is None:
+                    return None
+                expanded = compile_credit_rating_values(
+                    row.category_values,
+                    source_literal=row.source_literal,
+                )
+                if expanded is None:
+                    return None
+                category_values = expanded
             compiled.append(
                 CompiledCaseTableRow(
                     operator=row.operator,
                     comparison_value=row.comparison_value,
-                    category_values=row.category_values,
+                    category_values=category_values,
                     points=round(float(award), 6),
                 )
             )
@@ -639,10 +853,15 @@ def case_table_points(
 ) -> float | None:
     """Return the first explicit matching row, or ``None`` when unscorable."""
 
-    if table.value_kind == "CATEGORICAL":
+    if table.value_kind in {"CATEGORICAL", "CREDIT_RATING"}:
         if not isinstance(value, str):
             return None
         normalized = _normalize_category(value)
+        if table.value_kind == "CREDIT_RATING":
+            canonical = parse_credit_rating(value)
+            if canonical is None:
+                return None
+            normalized = _normalize_category(canonical)
         if not normalized:
             return None
         for row in table.rows:

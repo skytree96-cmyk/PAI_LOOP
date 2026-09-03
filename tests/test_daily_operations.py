@@ -762,9 +762,7 @@ def _seed_stale_analysis_snapshot(
         run = session.query(AnalysisRun).filter_by(notice_id=notice.id).one()
         stale_basis = dict(run.basis_versions or {})
         if quantitative_engine_only:
-            stale_basis["quantitative_engine"] = (
-                "pai-loop-quantitative-engine-previous"
-            )
+            stale_basis["quantitative_engine"] = "pai-loop-quantitative-engine-1.7.0"
         elif public_criteria_contract_only:
             stale_basis["pipeline"] = "analysis-pipeline-0.6.2"
             stale_basis["snapshot"] = "analysis-snapshot-0.2.0"
@@ -841,7 +839,7 @@ def test_quantitative_engine_stale_open_snapshot_enters_daily_and_backfill(
     assert snapshot["pipeline_version"] == daily_operations.PIPELINE_VERSION
     assert snapshot["policy_version"] == daily_operations.POLICY_VERSION
     assert snapshot["quantitative_engine_version"] == (
-        "pai-loop-quantitative-engine-previous"
+        "pai-loop-quantitative-engine-1.7.0"
     )
     assert body["analysis_queue"]["retryable_notice_keys"] == [notice_key]
     with client.app.state.session_factory() as session:
