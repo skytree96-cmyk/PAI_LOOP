@@ -1347,6 +1347,181 @@ def test_legacy_quantitative_validator_rebuilds_record_without_provider_call() -
     engine.dispose()
 
 
+def test_matching_extraction_version_targets_quantitative_fingerprint_revision(
+) -> None:
+    attachment_id = "PPS-ATT-TARGETED-REVISION"
+    document_sha256 = "a" * 64
+    current_manifest_sha256 = "b" * 64
+    attachment_manifest_sha256 = "c" * 64
+    threshold_literal = "5억원 이상 충족 10점 미충족 0점"
+    source = "\n".join(
+        [
+            "정량평가표",
+            "수행실적 10점",
+            threshold_literal,
+            "정량평가 총점 10점",
+        ]
+    )
+
+    def evidence(quote: str) -> dict[str, object]:
+        return {
+            "attachment_id": attachment_id,
+            "page": 1,
+            "section": "정량평가표",
+            "quote": quote,
+            "confidence": 0.99,
+        }
+
+    payload = ExtractionPayload.model_validate(
+        {
+            "document_type": "RFP",
+            "requirements": [],
+            "quantitative_tables": [
+                {
+                    "table_id": "TABLE-1",
+                    "label": "정량평가표",
+                    "criteria": [
+                        {
+                            "criterion_id": "PERFORMANCE-THRESHOLD-1",
+                            "label": "수행실적",
+                            "criterion_literal": "수행실적 10점",
+                            "max_points": 10,
+                            "scoring_method": "THRESHOLD",
+                            "metric": "PERFORMANCE_AMOUNT",
+                            "unit": "억원",
+                            "brackets": [],
+                            "threshold": {
+                                "literal": threshold_literal,
+                                "operator": "GTE",
+                                "threshold_value": 5,
+                                "points_if_met": 10,
+                                "points_if_not_met": 0,
+                                "evidence": evidence(threshold_literal),
+                            },
+                            "formula_literal": None,
+                            "required_evidence": ["company.performance.amount"],
+                            "evidence": evidence("수행실적 10점"),
+                            "ambiguity_reason": None,
+                        }
+                    ],
+                    "total_points": 10,
+                    "total_evidence": evidence("정량평가 총점 10점"),
+                    "minimum_score": None,
+                    "minimum_evidence": None,
+                    "ambiguity_reason": None,
+                }
+            ],
+            "quantitative_table_not_applicable": None,
+            "missing_or_unreadable": [],
+            "summary": "검증 가능한 정량평가표",
+        }
+    )
+    available = validate_quantitative_attachment_extraction(
+        payload,
+        source_text=source,
+        attachment_id=attachment_id,
+        document_sha256=document_sha256,
+        manifest_sha256=current_manifest_sha256,
+    )
+    assert available.status == "AVAILABLE"
+
+    available_legacy_digest = _digest(
+        available.model_dump(
+            mode="json",
+            exclude={"validation_fingerprint_sha256"},
+        )
+    )
+    unaffected_legacy = available.model_copy(
+        update={"validation_fingerprint_sha256": available_legacy_digest}
+    )
+    assert (
+        validated_quantitative_record_fingerprint(unaffected_legacy)
+        == available_legacy_digest
+    )
+
+    affected_data = available.model_dump(mode="json")
+    affected_data["status"] = "REVIEW"
+    affected_data["tables"][0]["status"] = "REVIEW"
+    affected_data["issues"] = [
+        {
+            "code": "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED",
+            "disposition": "REVIEW",
+            "message": "구조 서명의 선별 재검증이 필요합니다.",
+            "attachment_id": attachment_id,
+            "table_id": "TABLE-1",
+            "criterion_id": None,
+            "required_sibling_document_types": [],
+            "required_sibling_label_markers": [],
+            "source_gap_statement": None,
+            "source_gap_document_type": None,
+        }
+    ]
+    affected_data["validation_fingerprint_sha256"] = "0" * 64
+    affected = ValidatedQuantitativeAttachmentRecord.model_validate(affected_data)
+    affected_legacy_digest = _digest(
+        affected.model_dump(
+            mode="json",
+            exclude={"validation_fingerprint_sha256"},
+        )
+    )
+    affected_legacy = affected.model_copy(
+        update={"validation_fingerprint_sha256": affected_legacy_digest}
+    )
+    affected_revised = affected.model_copy(
+        update={
+            "validation_fingerprint_sha256": (
+                validated_quantitative_record_fingerprint(affected)
+            )
+        }
+    )
+    assert affected_revised.validation_fingerprint_sha256 != affected_legacy_digest
+
+    def version_for(
+        record: ValidatedQuantitativeAttachmentRecord,
+        *,
+        version_no: int,
+    ) -> NoticeVersion:
+        return NoticeVersion(
+            notice_id="notice",
+            version_no=version_no,
+            file_sha256=document_sha256,
+            document_complete=True,
+            extraction_status="ACCEPTED",
+            extraction_confidence=1.0,
+            source_payload={
+                "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+                "source_kind": PPS_ATTACHMENT_SOURCE,
+                "attachment_id": attachment_id,
+                "manifest_sha256": attachment_manifest_sha256,
+                "current_manifest_sha256": current_manifest_sha256,
+                "document_sha256": document_sha256,
+                "prompt_version": PROMPT_VERSION,
+                "processing_version": PPS_PROCESSING_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "status": "ACCEPTED",
+                "error_code": None,
+                "quantitative_validation_record": record.model_dump(mode="json"),
+            },
+        )
+
+    legacy_affected_version = version_for(affected_legacy, version_no=1)
+    unaffected_version = version_for(unaffected_legacy, version_no=2)
+    revised_affected_version = version_for(affected_revised, version_no=3)
+
+    def matching(versions: list[NoticeVersion]) -> NoticeVersion | None:
+        return pps_enrichment_module._matching_extraction_version(
+            versions,
+            attachment_id=attachment_id,
+            manifest_sha256=attachment_manifest_sha256,
+            current_manifest_sha256=current_manifest_sha256,
+            document_sha256=document_sha256,
+        )
+
+    assert matching([legacy_affected_version]) is None
+    assert matching([unaffected_version]) is unaffected_version
+    assert matching([revised_affected_version]) is revised_affected_version
+
+
 @pytest.mark.parametrize(
     ("changed_scope", "changed_field", "changed_value"),
     [

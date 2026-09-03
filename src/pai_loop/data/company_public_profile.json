@@ -1,6 +1,6 @@
 {
-  "profile_version": "2026.08.17-v1",
-  "published_at": "2026-08-17T00:00:00+09:00",
+  "profile_version": "2026.09.03-v3",
+  "published_at": "2026-09-03T00:00:00+09:00",
   "classification": "PUBLIC_SAFE_COMPANY_PROFILE",
   "organization": {
     "display_name": "사단법인 한국능률협회",
@@ -26,6 +26,16 @@
       "last_observed_at": "2017-08-17",
       "valid_until": null,
       "validity_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    {
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "display_name": "나라장터 인허가 증명서 모음",
+      "source_file_name": "[한국능률협회] 나라장터 인허가 증명서 모음.pdf",
+      "sha256": "2c4cc648c1fd32d14c76ed40bc49210a6ad44576dc45a1f0daeddadfc646c7d8",
+      "valid_from": "2026-09-03",
+      "last_observed_at": "2026-09-03",
+      "valid_until": null,
+      "validity_policy": "RECHECK_SOURCE_DOCUMENT_AT_EACH_NOTICE_DEADLINE"
     }
   ],
   "facts": {
@@ -37,6 +47,452 @@
       "last_verified_at": "2026-08-05",
       "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
       "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_inventory": {
+      "value": [
+        "1169", "1261", "1426", "1468", "1469", "1470", "1517", "3156", "3244",
+        "5601", "5608", "5609", "5720", "6529", "6530", "6639", "9901", "9999"
+      ],
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2026-11-30",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_name_inventory": {
+      "value": [
+        {"code": "1169", "name": "학술·연구용역"},
+        {"code": "1261", "name": "종합여행업"},
+        {"code": "1426", "name": "소프트웨어사업자(패키지소프트웨어개발·공급사업)"},
+        {"code": "1468", "name": "소프트웨어사업자(컴퓨터관련서비스사업)"},
+        {"code": "1469", "name": "소프트웨어사업자(디지털콘텐츠개발서비스사업)"},
+        {"code": "1470", "name": "소프트웨어사업자(데이터베이스제작및검색서비스사업)"},
+        {"code": "1517", "name": "출판사"},
+        {"code": "3156", "name": "평생교육시설(원격)"},
+        {"code": "3244", "name": "비디오물제작업"},
+        {"code": "5601", "name": "국내무료직업소개사업"},
+        {"code": "5608", "name": "직업능력개발훈련수탁기관"},
+        {"code": "5609", "name": "직업능력개발훈련시설(지정직업훈련시설)"},
+        {"code": "5720", "name": "국제회의기획업"},
+        {"code": "6529", "name": "이러닝서비스업"},
+        {"code": "6530", "name": "기타이러닝업"},
+        {"code": "6639", "name": "가족친화기업"},
+        {"code": "9901", "name": "기타자유업(행사대행업)"},
+        {"code": "9999", "name": "기타자유업종"}
+      ],
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2026-11-30",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1169_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1261_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1426_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1468_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1469_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1470_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_1517_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_3156_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_3244_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_5601_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_5608_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_5609_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_5720_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_6529_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_6530_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_6639_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": "2026-11-30",
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_9901_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "industry_code_9999_registration": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "direct_production_certificate": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-09-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "small_business_certificate": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-09-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "sme_certificate": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-09-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "head_office_region_seoul": {
+      "value": true,
+      "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "head_office_region_codes": {
+      "value": ["SEOUL", "SEOUL_YEONGDEUNGPO"],
+      "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "registered_bidder_branch_region_codes": {
+      "value": [],
+      "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",
+      "effective_from": "2026-08-05",
+      "effective_to": null,
+      "last_verified_at": "2026-08-05",
+      "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
+      "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE"
+    },
+    "declared_branch_region_codes": {
+      "value": ["DAEGU", "BUSAN", "DAEJEON", "GWANGJU", "JEJU"],
+      "evidence_state": "COMPANY_DECLARATION",
+      "effective_from": "2026-09-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": null,
+      "deadline_policy": "REQUIRE_OFFICIAL_BRANCH_EVIDENCE_FOR_ELIGIBILITY"
+    },
+    "general_travel_business": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2025-04-23",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "software_computer_related_services": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-05-21",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "software_package_development_supply": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-05-21",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "software_digital_content_development": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-05-21",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "software_database_production_search": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-05-21",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "publisher": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2003-02-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "remote_lifelong_education": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2006-07-25",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "video_production": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2020-12-09",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "free_job_placement": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2025-09-12",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "designated_vocational_training": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2007-01-11",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "designated_vocational_training_ncs_subclasses": {
+      "value": [
+        {"code": "02010101", "name": "경영기획"},
+        {"code": "02010102", "name": "경영평가"},
+        {"code": "02020202", "name": "노무관리"},
+        {"code": "02020201", "name": "인사"},
+        {"code": "02020301", "name": "비서"},
+        {"code": "02020302", "name": "사무행정"},
+        {"code": "20010209", "name": "빅데이터플랫폼구축"},
+        {"code": "04030101", "name": "경력지도"},
+        {"code": "04030102", "name": "기업교육"},
+        {"code": "04030103", "name": "직무분석"},
+        {"code": "02030202", "name": "세무"},
+        {"code": "02030201", "name": "회계·감사"}
+      ],
+      "evidence_state": "VERIFIED",
+      "effective_from": "2007-01-11",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "designated_vocational_training_ncs_codes": {
+      "value": [
+        "02010101", "02010102", "02020202", "02020201", "02020301", "02020302",
+        "20010209", "04030101", "04030102", "04030103", "02030202", "02030201"
+      ],
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2007-01-11",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "designated_vocational_training_ncs_names": {
+      "value": [
+        "경영기획", "경영평가", "노무관리", "인사", "비서", "사무행정",
+        "빅데이터플랫폼구축", "경력지도", "기업교육", "직무분석", "세무", "회계·감사"
+      ],
+      "evidence_state": "VERIFIED_CURRENT_COMPLETE_SNAPSHOT",
+      "effective_from": "2007-01-11",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "international_conference_planning": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2025-04-23",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "elearning_service": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-04-28",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "other_elearning": {
+      "value": true,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-04-28",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "public_software_bid_ceiling_krw": {
+      "value": 4000000000,
+      "evidence_state": "VERIFIED",
+      "effective_from": "2026-05-21",
+      "effective_to": "2099-12-31",
+      "last_verified_at": "2026-09-03",
+      "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
+      "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
+    },
+    "disqualification_clear": {
+      "value": true,
+      "evidence_state": "COMPANY_DECLARATION",
+      "effective_from": "2026-09-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
     },
     "nonprofit_entity": {
       "value": true,
@@ -50,7 +506,7 @@
     "sanction_clear": {
       "value": true,
       "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",
-      "effective_from": "2001-08-01",
+      "effective_from": "2026-08-05",
       "effective_to": null,
       "last_verified_at": "2026-08-05",
       "evidence_key": "EVIDENCE-BIDDER-REGISTRATION",
@@ -59,9 +515,9 @@
     "conviction_clear": {
       "value": true,
       "evidence_state": "COMPANY_DECLARATION",
-      "effective_from": "1977-04-20",
-      "effective_to": "2026-08-17",
-      "last_verified_at": "2026-08-17",
+      "effective_from": "2026-09-03",
+      "effective_to": null,
+      "last_verified_at": "2026-09-03",
       "evidence_key": null,
       "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
     }

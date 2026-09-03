@@ -769,8 +769,13 @@ def _seed_stale_analysis_snapshot(
             stale_basis["pipeline"] = "analysis-pipeline-0.6.2"
             stale_basis["snapshot"] = "analysis-snapshot-0.2.0"
         else:
-            stale_basis["pipeline"] = "analysis-pipeline-previous"
-            stale_basis["requirement_policy"] = "requirement-policy-previous"
+            # This is the exact public-profile/policy predecessor deployed
+            # before the 2026-09-03 company-fact refresh. Keep every other
+            # engine version current so selection proves the policy bump alone
+            # enters the deterministic refresh queue.
+            stale_basis["requirement_policy"] = (
+                "pai-loop-requirement-policy-2026.08.27-v4"
+            )
         run.basis_versions = stale_basis
         run.status = "COMPLETED"
         notice.published_at = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
@@ -847,7 +852,7 @@ def test_quantitative_engine_stale_open_snapshot_enters_daily_and_backfill(
         ) == [notice_key]
 
 
-def test_version_stale_open_snapshot_enters_daily_and_backfill_once(
+def test_requirement_policy_v4_open_snapshot_enters_daily_and_backfill_once(
     client: TestClient,
 ) -> None:
     notice_key = _seed_stale_analysis_snapshot(client)
@@ -865,10 +870,10 @@ def test_version_stale_open_snapshot_enters_daily_and_backfill_once(
     item = next(row for row in body["notices"] if row["notice_key"] == notice_key)
     assert item["analysis_snapshot"]["version_current"] is False
     assert item["analysis_snapshot"]["pipeline_version"] == (
-        "analysis-pipeline-previous"
+        daily_operations.PIPELINE_VERSION
     )
     assert item["analysis_snapshot"]["policy_version"] == (
-        "requirement-policy-previous"
+        "pai-loop-requirement-policy-2026.08.27-v4"
     )
     assert body["analysis_queue"]["retryable_notice_keys"] == [notice_key]
     with client.app.state.session_factory() as session:

@@ -867,7 +867,7 @@ def _atomic_requirement(
     if policy_class == "ACTION_REQUIRED":
         fact_key = f"action.{item.requirement_key[3:27]}.confirmed"
     else:
-        mapped_fact = policy.get("company_fact_key")
+        mapped_fact = policy.get("evaluation_fact_key") or policy.get("company_fact_key")
         fact_key = (
             str(mapped_fact)
             if isinstance(mapped_fact, str) and mapped_fact.strip()
@@ -882,8 +882,8 @@ def _atomic_requirement(
         sequence=sequence,
         label=item.requirement.normalized_condition[:500],
         fact_key=fact_key[:120],
-        operator="eq",
-        required_value=True,
+        operator=str(policy.get("operator") or "eq"),
+        required_value=policy.get("required_value", True),
         # The reviewed public policy explicitly distinguishes certificate-backed
         # facts from a current company declaration. Requiring an Evidence row for
         # the latter would incorrectly turn conviction_clear into R04 even though
@@ -894,7 +894,7 @@ def _atomic_requirement(
         mandatory=True,
         pass_rule_id=_PASS_RULE_BY_CATEGORY.get(category, "P-DOCUMENT"),
         linked_review_code=linked_review_code,
-        review_trigger_value="__MISSING__",
+        review_trigger_value=policy.get("review_trigger_value", "__MISSING__"),
         parse_confidence=_parse_confidence(item),
         source_excerpt=_source_excerpt(item),
         source_location=_source_location(item),

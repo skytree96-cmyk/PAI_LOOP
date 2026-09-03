@@ -42,7 +42,8 @@ class AtomicOperator(StrEnum):
     NEQ = "neq"
     IN = "in"
     CONTAINS = "contains"
+    CONTAINS_ANY = "contains_any"
+    CONTAINS_ALL = "contains_all"
     GTE = "gte"
     LTE = "lte"
     EXISTS = "exists"
-

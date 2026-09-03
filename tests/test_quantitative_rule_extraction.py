@@ -499,6 +499,86 @@ def test_persisted_attachment_record_has_exact_bindings_but_no_raw_source() -> N
     assert len(profile.available_candidates) == 1
 
 
+def test_targeted_fingerprint_revision_invalidates_only_affected_legacy_record() -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    canonical = record.model_dump(
+        mode="json",
+        exclude={"validation_fingerprint_sha256"},
+    )
+    legacy_digest = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert validated_quantitative_record_fingerprint(record) == legacy_digest
+    legacy_unaffected = record.model_copy(
+        update={"validation_fingerprint_sha256": legacy_digest}
+    )
+    unaffected_profile = merge_validated_quantitative_records(
+        [legacy_unaffected],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+    )
+    assert unaffected_profile.status == "AVAILABLE"
+    assert "VALIDATION_FINGERPRINT_MISMATCH" not in issue_codes(unaffected_profile)
+
+    table, source = generic_duplicate_metric_fixture()
+    affected = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="c" * 64,
+        manifest_sha256="d" * 64,
+    )
+    assert "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED" in {
+        issue.code for issue in affected.issues
+    }
+    affected_canonical = affected.model_dump(
+        mode="json",
+        exclude={"validation_fingerprint_sha256"},
+    )
+    affected_legacy_digest = hashlib.sha256(
+        json.dumps(
+            affected_canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert affected.validation_fingerprint_sha256 != affected_legacy_digest
+    assert (
+        validated_quantitative_record_fingerprint(affected)
+        == affected.validation_fingerprint_sha256
+    )
+    legacy_affected = affected.model_copy(
+        update={"validation_fingerprint_sha256": affected_legacy_digest}
+    )
+    legacy_profile = merge_validated_quantitative_records(
+        [legacy_affected],
+        expected_documents={ATTACHMENT_ID: "c" * 64},
+        manifest_sha256="d" * 64,
+    )
+    assert legacy_profile.status == "INCOMPLETE"
+    assert "VALIDATION_FINGERPRINT_MISMATCH" in issue_codes(legacy_profile)
+
+    refreshed_profile = merge_validated_quantitative_records(
+        [affected],
+        expected_documents={ATTACHMENT_ID: "c" * 64},
+        manifest_sha256="d" * 64,
+    )
+    assert "VALIDATION_FINGERPRINT_MISMATCH" not in issue_codes(refreshed_profile)
+
+
 @pytest.mark.parametrize(
     "runtime_profile",
     [
@@ -3636,6 +3716,190 @@ def test_exact_sourcewide_rebind_clears_fully_resolved_model_table_ambiguity() -
         "2) 용역수행 실적(건수, 4점)",
         "❍ 제안업체 경영상태 (10점)",
     ]
+
+
+def generic_performance_summary_fixture() -> tuple[dict, str]:
+    source = "\n".join(
+        [
+            "[HWP SECTION 0]",
+            "❍ 정량적 평가(10점): 사업부서 평가",
+            "2. 정량적 평가 세부 기준",
+            "1) 유사용역 수행실적(금액, 5점)",
+            "A. 1억 원 이상",
+            "5",
+            "B. 5천만 원 이상",
+            "3",
+            "2) 유사용역 수행실적(건수, 5점)",
+            "A. 3건 이상",
+            "5",
+            "B. 2건",
+            "3",
+        ]
+    )
+    table = split_cell_case_table(
+        metric="PERFORMANCE_AMOUNT",
+        unit="원",
+        max_points=5,
+        cases=[
+            split_case(
+                "A. 1억 원 이상",
+                operator="GTE",
+                comparison_value=100_000_000,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=5,
+                row_order=1,
+            ),
+            split_case(
+                "B. 5천만 원 이상",
+                operator="GTE",
+                comparison_value=50_000_000,
+                category_values=[],
+                award_kind="POINTS",
+                award_value=3,
+                row_order=2,
+            ),
+        ],
+    )
+    amount = table["criteria"][0]
+    amount.update(
+        {
+            "criterion_id": "GENERIC-PERFORMANCE-AMOUNT",
+            "label": "유사용역 수행실적(금액)",
+            "required_evidence": ["company.performance.amount"],
+        }
+    )
+    count = json.loads(json.dumps(amount))
+    count.update(
+        {
+            "criterion_id": "GENERIC-PERFORMANCE-COUNT",
+            "label": "유사용역 수행실적(건수)",
+            "metric": "PERFORMANCE_COUNT",
+            "unit": "건",
+            "required_evidence": ["company.performance.count"],
+            "cases": [
+                split_case(
+                    "A. 3건 이상",
+                    operator="GTE",
+                    comparison_value=3,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=5,
+                    row_order=1,
+                ),
+                split_case(
+                    "B. 2건",
+                    operator="EQ",
+                    comparison_value=2,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3,
+                    row_order=2,
+                ),
+            ],
+        }
+    )
+    table["criteria"] = [amount, count]
+    table["total_points"] = 10
+    table["total_evidence"] = anchor("❍ 정량적 평가(10점): 사업부서 평가")
+    table["ambiguity_reason"] = "HWP 셀 구조상 행 연결 검토 필요"
+    return table, source
+
+
+def generic_duplicate_metric_fixture() -> tuple[dict, str]:
+    table, source = generic_performance_summary_fixture()
+    old_summary = "❍ 정량적 평가(10점): 사업부서 평가"
+    new_summary = "❍ 정량적 평가(11점): 사업부서 평가"
+    source = source.replace(old_summary, new_summary).replace(
+        "1) 유사용역 수행실적(금액, 5점)\n"
+        "A. 1억 원 이상\n5\nB. 5천만 원 이상\n3",
+        "1) 일반용역 수행실적(건수, 6점)\n"
+        "A. 5건 이상\n6\nB. 4건\n3",
+    )
+    first = table["criteria"][0]
+    first.update(
+        {
+            "metric": "PERFORMANCE_COUNT",
+            "unit": "건",
+            "max_points": 6,
+            "required_evidence": ["company.performance.count"],
+            "cases": [
+                split_case(
+                    "A. 5건 이상",
+                    operator="GTE",
+                    comparison_value=5,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=6,
+                    row_order=1,
+                ),
+                split_case(
+                    "B. 4건",
+                    operator="EQ",
+                    comparison_value=4,
+                    category_values=[],
+                    award_kind="POINTS",
+                    award_value=3,
+                    row_order=2,
+                ),
+            ],
+        }
+    )
+    table["total_points"] = 11
+    table["total_evidence"] = anchor(new_summary)
+    return table, source
+
+
+def test_sourcewide_rebind_clears_non_busan_performance_table_ambiguity() -> None:
+    table, source = generic_performance_summary_fixture()
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert "AMBIGUOUS_TABLE" not in issue_codes(profile)
+    assert not any(
+        code.startswith("SOURCEWIDE_AMBIGUITY_") for code in issue_codes(profile)
+    )
+    assert [item.criterion_literal for item in profile.available_candidates] == [
+        "1) 유사용역 수행실적(금액, 5점)",
+        "2) 유사용역 수행실적(건수, 5점)",
+    ]
+
+
+def test_generic_sourcewide_rebind_rejects_duplicate_metric() -> None:
+    table, source = generic_duplicate_metric_fixture()
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED" in issue_codes(profile)
+
+
+def test_generic_sourcewide_rebind_rejects_unsupported_metric() -> None:
+    table, source = generic_performance_summary_fixture()
+    count = table["criteria"][1]
+    count.update(
+        {
+            "metric": "PERSONNEL_COUNT",
+            "unit": "명",
+            "required_evidence": ["company.personnel.count"],
+        }
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "AMBIGUOUS_TABLE" in issue_codes(profile)
+
+
+def test_generic_sourcewide_rebind_rejects_omitted_case_row() -> None:
+    table, source = generic_performance_summary_fixture()
+    table["criteria"][1]["cases"] = table["criteria"][1]["cases"][:1]
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "SOURCEWIDE_AMBIGUITY_CASE_CENSUS_MISMATCH" in issue_codes(profile)
 
 
 def busan_hwp_summary_before_detail_fixture() -> tuple[dict, str]:

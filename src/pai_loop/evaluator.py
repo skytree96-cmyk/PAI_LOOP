@@ -71,6 +71,11 @@ def compare(actual: Any, operator: str, expected: Any) -> bool:
         if isinstance(actual_n, (list, str)):
             return expected_n in actual_n
         return False
+    if operator in {"contains_any", "contains_all"}:
+        if not isinstance(actual_n, list) or not isinstance(expected_n, list):
+            return False
+        matches = [item in actual_n for item in expected_n]
+        return any(matches) if operator == "contains_any" else all(matches)
     if operator in {"gte", "lte"}:
         actual_number, expected_number = _as_decimal(actual), _as_decimal(expected)
         if actual_number is None or expected_number is None:

@@ -12,7 +12,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.08.27-v4"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.03-v6"
 
 _FORBIDDEN_KEYS = {
     "address",
@@ -66,6 +66,357 @@ def _contains(text: str, *tokens: str) -> bool:
     return any(token.casefold() in text for token in tokens)
 
 
+_INDUSTRY_CODE_LIST = re.compile(
+    r"업종\s*코드\s*[:：]?\s*[\[(]?\s*"
+    r"(?P<codes>\d{4}(?:\s*(?:,|·|/|또는|혹은|및)\s*\d{4})*)",
+    re.IGNORECASE,
+)
+_PARENTHESIZED_INDUSTRY_CODE = re.compile(r"[\[(]\s*(\d{4})\s*[\])]")
+_FOUR_DIGIT_CODE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
+
+
+def _required_industry_codes(text: str, *, category: str) -> list[str]:
+    """Extract only four-digit bidder industry codes, never years or NCS codes."""
+
+    explicit_marker = _contains(text, "업종코드", "업종 코드")
+    if not explicit_marker and not (
+        category == "INDUSTRY_CODE"
+        and _contains(text, "등록", "업종")
+        and re.search(r"[\[(]\s*\d{4}\s*[\])]", text)
+    ):
+        return []
+    candidates: list[str] = []
+    for match in _INDUSTRY_CODE_LIST.finditer(text):
+        candidates.extend(_FOUR_DIGIT_CODE.findall(match.group("codes")))
+    if not explicit_marker:
+        candidates.extend(_PARENTHESIZED_INDUSTRY_CODE.findall(text))
+
+    result: list[str] = []
+    for code in candidates:
+        number = int(code)
+        if 1900 <= number <= 2099 or code in result:
+            continue
+        result.append(code)
+    return result
+
+
+def _industry_code_operator(text: str, codes: list[str]) -> str | None:
+    if len(codes) == 1:
+        return "contains"
+    positions: list[tuple[int, int]] = []
+    cursor = 0
+    for code in codes:
+        pattern = (
+            re.compile(rf"(?<!\d){re.escape(code)}(?!\d)")
+            if code.isdigit()
+            else re.compile(
+                rf"(?<![0-9A-Za-z가-힣]){re.escape(code)}{_NCS_NAME_RIGHT_BOUNDARY}"
+            )
+        )
+        match = pattern.search(text, cursor)
+        if match is None:
+            return None
+        positions.append(match.span())
+        cursor = match.end()
+    connectors = [
+        text[positions[index][1] : positions[index + 1][0]]
+        for index in range(len(positions) - 1)
+    ]
+    suffix = re.split(r"[.!?。;\n]", text[positions[-1][1] :], maxsplit=1)[0][:40]
+    suffix_operator = re.match(
+        r"^\s*[)\]}]?\s*(?P<operator>중\s*하나|모두|동시|각각)",
+        suffix,
+    )
+    suffix_token = suffix_operator.group("operator") if suffix_operator else ""
+    suffix_or = bool(re.fullmatch(r"중\s*하나", suffix_token))
+    suffix_and = suffix_token in {"모두", "동시", "각각"}
+    has_or = suffix_or or any(
+        _contains(part, "또는", "혹은", " 중 하나", " or ") for part in connectors
+    )
+    has_and = suffix_and or any(
+        _contains(part, "및", "모두", "동시", "각각", " and ") for part in connectors
+    )
+    connector_missing = any(
+        not _contains(
+            part,
+            "또는",
+            "혹은",
+            " 중 하나",
+            " or ",
+            "및",
+            "모두",
+            "동시",
+            "각각",
+            " and ",
+        )
+        for part in connectors
+    ) and not (suffix_or or suffix_and)
+    if any("/" in part for part in connectors) or (has_or and has_and) or connector_missing:
+        return None
+    if has_or:
+        return "contains_any"
+    return "contains_all"
+
+
+_NCS_CODE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+_NCS_TRAINING_NAMES = (
+    "경영기획",
+    "경영평가",
+    "노무관리",
+    "인사",
+    "비서",
+    "사무행정",
+    "빅데이터플랫폼구축",
+    "경력지도",
+    "기업교육",
+    "직무분석",
+    "세무",
+    "회계·감사",
+)
+_NCS_NAME_RIGHT_BOUNDARY = r"(?=(?:은|는|이|가|을|를|과|와|도|만)?(?:$|[\s,;:/()·]))"
+
+
+def _exact_ncs_training_names(text: str) -> list[str]:
+    """Return only complete NCS labels, not prefixes of another subclass."""
+
+    return [
+        name
+        for name in _NCS_TRAINING_NAMES
+        if re.search(
+            rf"(?<![0-9A-Za-z가-힣]){re.escape(name)}{_NCS_NAME_RIGHT_BOUNDARY}",
+            text,
+        )
+    ]
+
+
+def _vocational_training_scope_requirement(
+    text: str,
+    *,
+    category: str,
+) -> tuple[str | None, str | None, Any] | None:
+    facility = _contains(text, "지정직업훈련시설", "직업능력개발훈련시설")
+    if not facility or (
+        category not in {"CERTIFICATION", "INDUSTRY_CODE"}
+        and not _has_explicit_bidder_gate(text)
+    ):
+        return None
+    has_scope_marker = _contains(text, "ncs", "훈련직종", "훈련 직종", "세분류")
+    if not has_scope_marker:
+        return None
+    codes = list(dict.fromkeys(_NCS_CODE.findall(text)))
+    names = _exact_ncs_training_names(text)
+    if codes:
+        operator = _industry_code_operator(text, codes)
+        expected: Any = codes[0] if operator == "contains" else codes
+        return "designated_vocational_training_ncs_codes", operator, expected
+    if names:
+        operator = _industry_code_operator(text, names)
+        expected = names[0] if operator == "contains" else names
+        return "designated_vocational_training_ncs_names", operator, expected
+    return None, None, None
+
+
+def _policy_value_matches(actual: Any, operator: str, expected: Any) -> bool:
+    if operator in {"contains_any", "contains_all"}:
+        if not isinstance(actual, list) or not isinstance(expected, list):
+            return False
+        actual_n = [_normalise(item) for item in actual]
+        expected_n = [_normalise(item) for item in expected]
+        matches = [item in actual_n for item in expected_n]
+        return any(matches) if operator == "contains_any" else all(matches)
+    actual_n = [_normalise(item) for item in actual] if isinstance(actual, list) else _normalise(actual)
+    expected_n = _normalise(expected)
+    if operator == "eq":
+        return actual_n == expected_n
+    if operator == "contains":
+        return isinstance(actual_n, (list, str)) and expected_n in actual_n
+    return False
+
+
+_DIRECT_PRODUCTION_CERT_PATTERN = r"직접\s*생산\s*확인(?:증명)?서"
+_SMALL_BUSINESS_CERT_PATTERN = (
+    r"(?:중소기업|소기업(?:\s*[·ㆍ]\s*소상공인)?|소상공인)\s*확인서"
+)
+
+
+def _has_scoped_nonprofit_exception(text: str, *, subject_pattern: str) -> bool:
+    negated_exception = bool(
+        re.search(r"(?:면제|예외)(?:\s*대상)?(?:이|가)?\s*아니", text)
+        or re.search(r"적용하지\s*않는\s*것(?:은|이)?\s*아니", text)
+    )
+    if negated_exception:
+        return False
+    subject_then_entity = re.search(
+        rf"(?:{subject_pattern})\s*(?:조건|요건)?(?:은|는|을|를|모두)?\s*"
+        r"비영리법인(?:에|에게)?(?:은|는|도)?\s*(?:적용하지|면제|예외)",
+        text,
+    )
+    entity_then_subject = re.search(
+        r"비영리법인(?:에|에게)?(?:은|는|도)?\s*"
+        rf"(?:{subject_pattern})\s*(?:조건|요건)?(?:은|는|을|를|모두)?\s*"
+        r"(?:적용하지|면제|예외)",
+        text,
+    )
+    return bool(subject_then_entity or entity_then_subject) and _contains(
+        text,
+        "참여 가능",
+        "참가 가능",
+        "적용하지",
+        "면제",
+        "예외",
+    )
+
+
+def _has_explicit_nonprofit_compound_exception(text: str) -> bool:
+    joint_subject = (
+        rf"(?:{_DIRECT_PRODUCTION_CERT_PATTERN}\s*(?:와|과|및|[·ㆍ])\s*"
+        rf"{_SMALL_BUSINESS_CERT_PATTERN}|"
+        rf"{_SMALL_BUSINESS_CERT_PATTERN}\s*(?:와|과|및|[·ㆍ])\s*"
+        rf"{_DIRECT_PRODUCTION_CERT_PATTERN})"
+    )
+    return (
+        _is_direct_production_certificate_eligibility(text)
+        and _is_small_business_eligibility(text, category="CERTIFICATION")
+        and _has_scoped_nonprofit_exception(text, subject_pattern=joint_subject)
+        and "비영리법인" in text
+    )
+
+
+def _has_explicit_nonprofit_direct_production_exception(text: str) -> bool:
+    return (
+        _is_direct_production_certificate_eligibility(text)
+        and "비영리법인" in text
+        and _has_scoped_nonprofit_exception(
+            text,
+            subject_pattern=_DIRECT_PRODUCTION_CERT_PATTERN,
+        )
+    )
+
+
+def _has_explicit_nonprofit_small_business_exception(text: str, *, category: str) -> bool:
+    """Accept an SME exception only when its scope is proven in this clause."""
+
+    alternative_participation = re.search(
+        r"(?:소기업\s*또는\s*소상공인)(?:이면서)?\s*확인서(?:를)?\s*"
+        r"보유해야\s*하며,?\s*"
+        r"(?:일정\s*요건의\s*)?비영리법인(?:은|는)?\s*(?:참여|참가)\s*가능",
+        text,
+    )
+    return (
+        _is_small_business_eligibility(text, category=category)
+        and "비영리법인" in text
+        and (
+            alternative_participation is not None
+            or _has_scoped_nonprofit_exception(
+                text,
+                subject_pattern=_SMALL_BUSINESS_CERT_PATTERN,
+            )
+        )
+    )
+
+
+def _named_permit_fact_keys(text: str, *, category: str) -> list[str]:
+    """Return every explicit permit family backed by the curated collection."""
+
+    if category not in {"CERTIFICATION", "INDUSTRY_CODE"} and not _has_explicit_bidder_gate(text):
+        return []
+    matches: list[str] = []
+    if "종합여행업" in text:
+        matches.append("general_travel_business")
+    if "국제회의기획업" in text:
+        matches.append("international_conference_planning")
+    if "컴퓨터관련서비스사업" in text:
+        matches.append("software_computer_related_services")
+    if "패키지소프트웨어" in text:
+        matches.append("software_package_development_supply")
+    if "디지털콘텐츠" in text:
+        matches.append("software_digital_content_development")
+    if "데이터베이스" in text and _contains(text, "검색서비스", "검색 서비스"):
+        matches.append("software_database_production_search")
+    if "출판사" in text:
+        matches.append("publisher")
+    if _contains(text, "원격평생교육", "원격 평생교육"):
+        matches.append("remote_lifelong_education")
+    if _contains(text, "비디오물제작", "비디오물 제작"):
+        matches.append("video_production")
+    if _contains(text, "무료직업소개", "무료 직업소개") and not _contains(text, "유료", "국외"):
+        matches.append("free_job_placement")
+    if _contains(text, "지정직업훈련시설", "직업능력개발훈련시설"):
+        if _vocational_training_scope_requirement(text, category=category) is None:
+            matches.append("designated_vocational_training")
+    if "기타이러닝" in text:
+        matches.append("other_elearning")
+    if _contains(text, "이러닝서비스", "이러닝 서비스"):
+        matches.append("elearning_service")
+    return list(dict.fromkeys(matches))
+
+
+def _has_additional_permit_condition(text: str) -> bool:
+    """Fail closed when one atomic clause still contains another permit gate."""
+
+    return bool(
+        re.search(
+            r"(?:과|와|및|또는|혹은|이며|이고|하고).{0,80}"
+            r"(?:등록|허가|신고|면허|인증|자격|확인서|증명서)",
+            text,
+        )
+    )
+
+
+def _named_permit_fact_key(text: str, *, category: str) -> str | None:
+    """Map only one complete permit gate; compound clauses require review."""
+
+    matches = _named_permit_fact_keys(text, category=category)
+    if len(matches) != 1 or _has_additional_permit_condition(text):
+        return None
+    return matches[0]
+
+
+_NAMED_PERMIT_INDUSTRY_CODES = {
+    "general_travel_business": "1261",
+    "software_package_development_supply": "1426",
+    "software_computer_related_services": "1468",
+    "software_digital_content_development": "1469",
+    "software_database_production_search": "1470",
+    "publisher": "1517",
+    "remote_lifelong_education": "3156",
+    "video_production": "3244",
+    "free_job_placement": "5601",
+    "designated_vocational_training": "5609",
+    "international_conference_planning": "5720",
+    "elearning_service": "6529",
+    "other_elearning": "6530",
+}
+
+
+def _unrepresented_named_permit_fact_keys(
+    fact_keys: list[str],
+    *,
+    industry_codes: list[str],
+) -> list[str]:
+    """Do not count the same named permit and its code as two gates."""
+
+    return [
+        fact_key
+        for fact_key in fact_keys
+        if _NAMED_PERMIT_INDUSTRY_CODES.get(fact_key) not in industry_codes
+    ]
+
+
+def _small_business_fact_key(text: str) -> str:
+    if "소상공인" in text or re.search(r"(?<!중)소기업", text):
+        return "small_business_certificate"
+    return "sme_certificate"
+
+
+def _is_seoul_head_office_gate(text: str, *, category: str) -> bool:
+    if category != "REGION" or not _is_region_eligibility(text):
+        return False
+    head_office = _contains(text, "법인등기부상 본점", "본점 소재지", "주된 영업소")
+    seoul = _contains(text, "서울특별시", "서울시", "서울 소재")
+    return head_office and seoul
+
+
 def _is_two_person_attendee_limit(text: str, *, category: str) -> bool:
     """Match an attendee head-count clause, never a vehicle seat count.
 
@@ -94,7 +445,7 @@ def _is_two_person_attendee_limit(text: str, *, category: str) -> bool:
 def _is_small_business_eligibility(text: str, *, category: str) -> bool:
     """Distinguish an SME participation condition from an SME lookback rule."""
 
-    if not _contains(text, "소기업", "소상공인"):
+    if not _contains(text, "중소기업", "소기업", "소상공인"):
         return False
     if category in {"ENTITY", "CERTIFICATION", "DIRECT_PRODUCTION"}:
         return True
@@ -102,6 +453,7 @@ def _is_small_business_eligibility(text: str, *, category: str) -> bool:
         text,
         "소기업확인서",
         "소상공인확인서",
+        "중소기업확인서",
         "소기업·소상공인 확인서",
         "소기업 또는 소상공인 확인서",
         "입찰참가자격",
@@ -448,6 +800,19 @@ def _is_current_sanction_clearance(text: str) -> bool:
     return sanction_context and clear_condition
 
 
+def _is_current_disqualification_clearance(text: str) -> bool:
+    if not _contains(text, "결격사유", "결격 사유"):
+        return False
+    return _contains(
+        text,
+        "해당되지 않",
+        "해당하지 않",
+        "없는 자",
+        "없는 업체",
+        "없어야",
+    )
+
+
 def _as_date(value: Any) -> date | None:
     if value is None:
         return None
@@ -459,6 +824,54 @@ def _as_date(value: Any) -> date | None:
         return date.fromisoformat(str(value)[:10])
     except ValueError:
         return None
+
+
+_CURRENT_COPY_MARKERS = (
+    "유효기간 내",
+    "유효기간이 남",
+    "현재 유효",
+    "유효한 증",
+    "유효해야",
+    "마감일 기준 유효",
+    "제출일 기준 유효",
+    "공고일 현재",
+    "마감일 현재",
+    "입찰마감일 현재",
+    "제출마감일 현재",
+    "공고일 이후 발급",
+    "최근 발급",
+)
+
+
+def _deadline_freshness_recheck_required(
+    requirement: dict[str, Any],
+    *,
+    fact: dict[str, Any],
+    deadline: date | None,
+) -> bool:
+    """Honor each fact's explicit deadline freshness policy.
+
+    Online snapshots and submission declarations are point-in-time facts, so a
+    later notice deadline needs a new check.  Long-lived permits use the
+    narrower current-copy policy and are rechecked only when the notice itself
+    asks for current/recent documentary proof.
+    """
+
+    if deadline is None:
+        return False
+    raw_policy = fact.get("deadline_policy")
+    if not raw_policy:
+        return False
+    policy = str(raw_policy).upper()
+    if "RECHECK" not in policy and "RECONFIRM" not in policy:
+        return False
+    last_verified = _as_date(fact.get("last_verified_at"))
+    if last_verified is not None and deadline <= last_verified:
+        return False
+    if policy == "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY":
+        condition = _normalise(requirement.get("normalized_condition"))
+        return _contains(condition, *_CURRENT_COPY_MARKERS)
+    return True
 
 
 def _evidence_index(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -505,28 +918,64 @@ def _eligibility_item(
     deadline: date | None,
     pass_outcome: str = "PASS_CURRENT",
     message: str,
+    fail_on_confirmed_absence: bool = False,
+    failure_message: str | None = None,
+    operator: str = "eq",
+    required_value: Any = True,
 ) -> dict[str, Any]:
     item = _base_item(requirement, "ELIGIBILITY")
     fact = dict(profile.get("facts", {}).get(fact_key) or {})
+    evidence = _public_evidence(profile, fact.get("evidence_key"))
     start = _as_date(fact.get("effective_from"))
     end = _as_date(fact.get("effective_to"))
-    effective = bool(fact.get("value")) and (
-        deadline is None
-        or ((start is None or start <= deadline) and (end is None or deadline <= end))
-    )
-    evidence = _public_evidence(profile, fact.get("evidence_key"))
+    evidence_start = _as_date(evidence.get("valid_from")) if evidence else None
+    evidence_end = _as_date(evidence.get("valid_until")) if evidence else None
     deadline_policy = str(fact.get("deadline_policy") or "RECHECK_AT_DEADLINE")
     recheck_required = "RECHECK" in deadline_policy or "RECONFIRM" in deadline_policy
+    freshness_recheck = _deadline_freshness_recheck_required(
+        requirement,
+        fact=fact,
+        deadline=deadline,
+    )
+    in_effect = deadline is None or (
+        (start is None or start <= deadline)
+        and (end is None or deadline <= end)
+        and (evidence_start is None or evidence_start <= deadline)
+        and (evidence_end is None or deadline <= evidence_end)
+    )
+    effective = (
+        _policy_value_matches(fact.get("value"), operator, required_value)
+        and in_effect
+        and not freshness_recheck
+    )
+    confirmed_absence = (
+        "value" in fact
+        and not _policy_value_matches(fact.get("value"), operator, required_value)
+        and in_effect
+        and not freshness_recheck
+        and fail_on_confirmed_absence
+        and str(fact.get("evidence_state") or "").startswith(("COMPANY_CONFIRMED", "VERIFIED"))
+    )
     item.update(
         {
-            "outcome": pass_outcome if effective else "REVIEW",
+            "outcome": pass_outcome if effective else "FAIL_CONFIRMED" if confirmed_absence else "REVIEW",
             "blocking": not effective,
             "company_fact_key": fact_key,
+            "operator": operator,
+            "required_value": required_value,
+            "review_trigger_value": "__MISSING__",
+            "evaluation_fact_key": f"reconfirm.{fact_key}" if freshness_recheck else fact_key,
             "evidence_state": fact.get("evidence_state") or "MISSING",
             "evidence": evidence,
             "deadline_as_of": deadline.isoformat() if deadline else None,
             "deadline_check_required": recheck_required,
-            "message": message if effective else "공고 마감일 기준 유효 범위를 확인할 수 없어 검토가 필요합니다.",
+            "message": (
+                message
+                if effective
+                else (failure_message or "회사 확인 결과 해당 자격을 보유하지 않습니다.")
+                if confirmed_absence
+                else "공고 마감일 기준 유효 범위를 확인할 수 없어 검토가 필요합니다."
+            ),
         }
     )
     return item
@@ -632,11 +1081,42 @@ def classify_requirements(
         product_registration = _is_product_registration_eligibility(text)
         direct_production_certificate = _is_direct_production_certificate_eligibility(text)
         small_business = _is_small_business_eligibility(text, category=category)
+        industry_codes = _required_industry_codes(text, category=category)
+        vocational_training_scope = _vocational_training_scope_requirement(
+            text,
+            category=category,
+        )
+        named_permit_fact_keys = _named_permit_fact_keys(text, category=category)
+        named_permit_fact_key = _named_permit_fact_key(text, category=category)
+        ambiguous_named_permit = bool(named_permit_fact_keys) and named_permit_fact_key is None
+        unrepresented_named_permits = _unrepresented_named_permit_fact_keys(
+            named_permit_fact_keys,
+            industry_codes=industry_codes,
+        )
         notice_specific_families = sum(
-            (product_registration, direct_production_certificate, small_business)
+            (
+                product_registration,
+                direct_production_certificate,
+                small_business,
+                bool(industry_codes),
+                vocational_training_scope is not None,
+                bool(unrepresented_named_permits),
+            )
         )
 
-        if notice_specific_families > 1:
+        if notice_specific_families > 1 and _has_explicit_nonprofit_compound_exception(text):
+            item = _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key="nonprofit_entity",
+                deadline=as_of,
+                pass_outcome="PASS_EXCEPTION",
+                message=(
+                    "공고가 직접생산·기업확인 조건 모두에 명시한 비영리법인 예외와 "
+                    "설립허가 근거가 연결되었습니다."
+                ),
+            )
+        elif notice_specific_families > 1:
             item = _unmapped_eligibility_item(
                 requirement,
                 fact_key="compound_notice_specific_qualification",
@@ -657,11 +1137,102 @@ def classify_requirements(
                 ),
             )
         elif direct_production_certificate:
+            if _has_explicit_nonprofit_direct_production_exception(text):
+                item = _eligibility_item(
+                    requirement,
+                    profile=profile,
+                    fact_key="nonprofit_entity",
+                    deadline=as_of,
+                    pass_outcome="PASS_EXCEPTION",
+                    message="직접생산 조건의 명시적 비영리법인 예외와 설립허가 근거가 연결되었습니다.",
+                )
+            elif nonprofit_exception_present:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="direct_production_nonprofit_exception_scope",
+                    deadline=as_of,
+                    message=(
+                        "비영리법인 예외 문구는 있으나 직접생산 조건에도 적용되는지 범위를 확정할 수 없어 "
+                        "원문 검토가 필요합니다."
+                    ),
+                )
+            else:
+                item = _eligibility_item(
+                    requirement,
+                    profile=profile,
+                    fact_key="direct_production_certificate",
+                    deadline=as_of,
+                    message="공고 지정 품목의 직접생산확인증명서 보유 사실이 연결되었습니다.",
+                    fail_on_confirmed_absence=True,
+                    failure_message=(
+                        "회사 확인값상 직접생산확인증명서를 보유하지 않아 이 필수조건은 충족할 수 없습니다. "
+                        "취득 시 회사 사실을 갱신한 뒤 재분석해야 합니다."
+                    ),
+                )
+        elif industry_codes:
+            operator = _industry_code_operator(text, industry_codes)
+            if operator is None:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="ambiguous_industry_code_logic",
+                    deadline=as_of,
+                    message="슬래시로 연결된 복수 업종코드의 AND/OR 관계를 확정할 수 없어 원문 검토가 필요합니다.",
+                )
+            else:
+                required_value: Any = industry_codes[0] if operator == "contains" else industry_codes
+                item = _eligibility_item(
+                    requirement,
+                    profile=profile,
+                    fact_key="industry_code_inventory",
+                    deadline=as_of,
+                    message="공고 요구 업종코드와 공식 입찰등록 전체 스냅샷이 일치합니다.",
+                    fail_on_confirmed_absence=True,
+                    failure_message=(
+                        "공식 입찰등록 전체 스냅샷에 공고 필수 업종코드가 없어 참가자격을 충족할 수 없습니다. "
+                        "업종 추가 등록 후 회사 사실을 갱신해야 합니다."
+                    ),
+                    operator=operator,
+                    required_value=required_value,
+                )
+            item["required_industry_codes"] = industry_codes
+        elif vocational_training_scope is not None:
+            fact_key, operator, required_value = vocational_training_scope
+            if fact_key is None or operator is None:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="vocational_training_scope_unparsed",
+                    deadline=as_of,
+                    message="지정직업훈련시설의 요구 NCS 직종 범위를 확정할 수 없어 원문 검토가 필요합니다.",
+                )
+            else:
+                item = _eligibility_item(
+                    requirement,
+                    profile=profile,
+                    fact_key=fact_key,
+                    deadline=as_of,
+                    message="공고 요구 NCS 훈련직종과 지정직업훈련시설 증빙 범위가 일치합니다.",
+                    fail_on_confirmed_absence=True,
+                    failure_message="지정직업훈련시설 증빙의 12개 NCS 세분류에 공고 요구 직종이 없습니다.",
+                    operator=operator,
+                    required_value=required_value,
+                )
+        elif ambiguous_named_permit:
             item = _unmapped_eligibility_item(
                 requirement,
-                fact_key="direct_production_certificate",
+                fact_key="compound_named_permit_qualification",
                 deadline=as_of,
-                message="공고 지정 품목의 유효한 직접생산확인증명서를 연결해야 합니다.",
+                message=(
+                    "복수 인허가 또는 서로 다른 등록 조건이 한 문장에 함께 있어 각각의 충족 여부를 "
+                    "분리 확인해야 합니다. 한 건의 인허가 사실로 전체 조건을 PASS하지 않습니다."
+                ),
+            )
+        elif named_permit_fact_key is not None:
+            item = _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key=named_permit_fact_key,
+                deadline=as_of,
+                message="공고가 요구한 인허가와 검증된 인허가 모음의 회사 사실이 일치합니다.",
             )
         elif _contains(text, "제안설명회") and _contains(text, "참여", "불참"):
             item = _base_item(requirement, "ACTION_REQUIRED")
@@ -717,6 +1288,14 @@ def classify_requirements(
                 deadline=as_of,
                 message="현재 확인된 부정당 제재 사례가 없어 PASS 상태이며 마감일 기준 동적 조회를 유지합니다.",
             )
+        elif _is_current_disqualification_clearance(text):
+            item = _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key="disqualification_clear",
+                deadline=as_of,
+                message="현재 회사 확인값상 결격사유가 없으며 제출 전 다시 확인합니다.",
+            )
         elif _contains(text, "유죄판결", "조세포탈") and not _contains(text, "서약서"):
             item = _eligibility_item(
                 requirement,
@@ -757,7 +1336,10 @@ def classify_requirements(
                 message="납품할 소프트웨어의 정품·활성화·호환 사양이며 회사 보유 자격으로 사용하지 않습니다.",
             )
         elif small_business:
-            if nonprofit_exception_present:
+            if _has_explicit_nonprofit_small_business_exception(
+                text,
+                category=category,
+            ):
                 item = _eligibility_item(
                     requirement,
                     profile=profile,
@@ -766,19 +1348,29 @@ def classify_requirements(
                     pass_outcome="PASS_EXCEPTION",
                     message="공고의 비영리법인 예외 경로와 설립허가 근거가 연결되어 소기업 확인서 조건을 대체합니다.",
                 )
+            elif nonprofit_exception_present:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="small_business_nonprofit_exception_scope",
+                    deadline=as_of,
+                    message=(
+                        "비영리법인 예외 문구는 있으나 이 중소·소기업 확인서 조건에도 적용되는지 "
+                        "범위를 확정할 수 없어 원문 검토가 필요합니다."
+                    ),
+                )
             else:
-                item = _base_item(requirement, "ELIGIBILITY")
-                item.update(
-                    {
-                        "outcome": "REVIEW",
-                        "blocking": True,
-                        "company_fact_key": "small_business_certificate",
-                        "evidence_state": "MISSING_OR_EXCEPTION_UNCONFIRMED",
-                        "evidence": None,
-                        "deadline_as_of": as_of.isoformat() if as_of else None,
-                        "deadline_check_required": True,
-                        "message": "비영리법인 예외가 공고 원문에 명시되었는지 확인해야 합니다.",
-                    }
+                certificate_fact_key = _small_business_fact_key(text)
+                item = _eligibility_item(
+                    requirement,
+                    profile=profile,
+                    fact_key=certificate_fact_key,
+                    deadline=as_of,
+                    message="공고가 요구한 기업 확인서 보유 사실이 연결되었습니다.",
+                    fail_on_confirmed_absence=True,
+                    failure_message=(
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 않으며, "
+                        "공고 원문에도 비영리법인 예외가 없어 필수조건을 충족할 수 없습니다."
+                    ),
                 )
         elif _contains(text, "하도급", "단독입찰"):
             item = _checklist_item(
@@ -879,12 +1471,24 @@ def classify_requirements(
                 message="계약일과 용역 종료일을 일정 정보로 표시합니다.",
             )
         elif category == "REGION" and _is_region_eligibility(text):
-            item = _unmapped_eligibility_item(
-                requirement,
-                fact_key="notice_region_eligibility",
-                deadline=as_of,
-                message="본점·사업장 소재지 등 공고별 지역제한 근거를 추가로 연결해야 합니다.",
-            )
+            if _is_seoul_head_office_gate(text, category=category):
+                item = _eligibility_item(
+                    requirement,
+                    profile=profile,
+                    fact_key="head_office_region_seoul",
+                    deadline=as_of,
+                    message="공식 입찰등록증의 서울 본점 지역 사실이 공고 제한과 일치합니다.",
+                )
+            else:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="notice_region_eligibility",
+                    deadline=as_of,
+                    message=(
+                        "본점·사업장 소재지 등 공고별 지역제한 근거를 추가로 연결해야 합니다. "
+                        "회사 선언 지점은 공식 지사 증빙 전까지 자동 PASS에 사용하지 않습니다."
+                    ),
+                )
         elif category == "ENTITY" and _is_explicit_entity_eligibility(text):
             item = _unmapped_eligibility_item(
                 requirement,
