@@ -30,7 +30,9 @@ from pai_loop.quantitative_rule_extraction import (
     validated_quantitative_record_fingerprint,
 )
 from pai_loop.quantitative_scoring import (
+    QuantitativeFact,
     _current_dynamic_quantitative_profile,
+    estimate_quantitative_score,
     quantitative_request_from_candidate_profile,
 )
 
@@ -2276,6 +2278,195 @@ def test_flat_hwpx_credit_repair_keeps_bb_minus_and_bbb_minus_rows_separate() ->
         "BBB- 미만\n배점의 100%",
         "BB- 미만\n배점의 70%",
     ]
+
+
+def test_source_bound_split_performance_and_credit_ranges_score_a0_at_full_points() -> None:
+    amount_literal = (
+        "최근 3년간 지자체, 공공기관 등 (교육, 취업, 행사) 용역 "
+        "수행완료 실적(금액, 10점) 단일용역 최고금액(1건)"
+    )
+    anchor_condition = "① ‘최근 3년간’이라 함은 입찰공고일을 기준으로 한다."
+    certificate_condition = "② 증빙서류로 용역수행실적 총괄표, 용역실적증명서를 첨부한다."
+    consortium_condition = (
+        "③ 공동계약으로 참여한 실적의 경우 공동계약 참여 비율에 따른 금액의 실적"
+    )
+    amount_rows = [
+        ("10억원 이상", 10, None, True, False, 10),
+        ("5억원 이상 10억원 미만", 5, 10, True, False, 8),
+        ("1억원 이상 5억원 미만", 1, 5, True, False, 6),
+        ("1억원 미만", None, 1, False, False, 4),
+    ]
+    credit_rows = [
+        ("A- 이상", 10),
+        ("BBB- 이상 A- 미만", 8),
+        ("BB- 이상 BBB- 미만", 6),
+        ("BB- 미만", 4),
+    ]
+    total_literal = "정량평가 총점 20점"
+    source = "\n".join(
+        [
+            amount_literal,
+            *(value for row in amount_rows for value in (row[0], f"{row[5]}점")),
+            "신용평가등급 10점",
+            *(value for row in credit_rows for value in (row[0], f"{row[1]}점")),
+            total_literal,
+            anchor_condition,
+            certificate_condition,
+            consortium_condition,
+        ]
+    )
+    table = {
+        "table_id": "REPRESENTATIVE-SPLIT-RANGE-TABLE",
+        "label": "정량평가표",
+        "criteria": [
+            {
+                "criterion_id": "PERFORMANCE-BRACKET-10",
+                "label": "수행실적",
+                "criterion_literal": amount_literal,
+                "max_points": 10,
+                "scoring_method": "BRACKET",
+                "metric": "PERFORMANCE_AMOUNT",
+                "unit": "억원",
+                "brackets": [
+                    {
+                        "label": literal,
+                        "literal": literal,
+                        "min_value": minimum,
+                        "max_value": maximum,
+                        "min_inclusive": min_inclusive,
+                        "max_inclusive": max_inclusive,
+                        "points": points,
+                        "evidence": anchor(literal),
+                    }
+                    for (
+                        literal,
+                        minimum,
+                        maximum,
+                        min_inclusive,
+                        max_inclusive,
+                        points,
+                    ) in amount_rows
+                ],
+                "threshold": None,
+                "formula_literal": None,
+                "cases": [],
+                "recognition_conditions": [
+                    {"literal": literal, "evidence": anchor(literal)}
+                    for literal in (
+                        anchor_condition,
+                        certificate_condition,
+                        consortium_condition,
+                    )
+                ],
+                "required_evidence": ["company.performance.amount"],
+                "evidence": anchor(amount_literal),
+                "ambiguity_reason": None,
+            },
+            {
+                "criterion_id": "CREDIT-RANGE-10",
+                "label": "신용평가등급",
+                "criterion_literal": "신용평가등급 10점",
+                "max_points": 10,
+                "scoring_method": "CASE_TABLE",
+                "metric": "CREDIT_RATING",
+                "unit": "등급",
+                "brackets": [],
+                "threshold": None,
+                "formula_literal": None,
+                "cases": [
+                    split_case(
+                        literal,
+                        operator="IN",
+                        comparison_value=None,
+                        category_values=[literal],
+                        award_kind="POINTS",
+                        award_value=points,
+                        row_order=row_order,
+                    )
+                    for row_order, (literal, points) in enumerate(
+                        credit_rows,
+                        start=1,
+                    )
+                ],
+                "recognition_conditions": [],
+                "required_evidence": ["company.credit_rating"],
+                "evidence": anchor("신용평가등급 10점"),
+                "ambiguity_reason": None,
+            },
+        ],
+        "total_points": 20,
+        "total_evidence": anchor(total_literal),
+        "minimum_score": None,
+        "minimum_evidence": None,
+        "ambiguity_reason": None,
+    }
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+
+    assert record.status == "AVAILABLE", record.issues
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert len(profile.available_candidates) == 2
+    candidates = {item.metric: item for item in profile.available_candidates}
+    assert set(candidates) == {"PERFORMANCE_AMOUNT", "CREDIT_RATING"}
+    assert [case.category_values for case in candidates["CREDIT_RATING"].cases] == [
+        ("A- 이상",),
+        ("BBB- 이상 A- 미만",),
+        ("BB- 이상 BBB- 미만",),
+        ("BB- 미만",),
+    ]
+
+    request = quantitative_request_from_candidate_profile(profile)
+    assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons
+    criteria = {item.metric_key: item for item in request.criteria}
+    facts = [
+        QuantitativeFact(
+            metric_key="company.performance.amount",
+            status="ESTIMATED",
+            value=1_000_000_000,
+            lower_value=1_000_000_000,
+            upper_value=1_000_000_000,
+            evidence_key="company.performance.amount",
+            fact_binding_sha256=criteria[
+                "company.performance.amount"
+            ].fact_binding_sha256,
+            confidence=0.9,
+            rationale="검증된 단일 최고 수행실적",
+        ),
+        QuantitativeFact(
+            metric_key="company.credit_rating",
+            status="CONFIRMED",
+            value="A0",
+            evidence_key="company.credit_rating",
+            fact_binding_sha256=criteria["company.credit_rating"].fact_binding_sha256,
+            confidence=1,
+            rationale="유효 신용평가등급",
+        ),
+    ]
+
+    result = estimate_quantitative_score(request.model_copy(update={"facts": facts}))
+
+    assert result.total_max_points == 20
+    assert (result.lower_points, result.upper_points, result.estimated_points) == (
+        20,
+        20,
+        20,
+    )
+    assert {item.category: item.estimated_points for item in result.criteria} == {
+        "PERFORMANCE_AMOUNT": 10,
+        "CREDIT_RATING": 10,
+    }
 
 
 def test_flat_hwpx_split_cells_do_not_cross_an_unrelated_line() -> None:

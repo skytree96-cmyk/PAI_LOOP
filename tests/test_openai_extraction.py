@@ -197,6 +197,15 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert "company.performance.amount" in user_prompt
     assert "never create a new key" in user_prompt
     assert "never reverse 이상/초과/이하/미만" in user_prompt
+    assert "copy each complete source-cell range phrase" in user_prompt
+    assert "A- 이상 or BBB- 미만" in user_prompt
+    assert "Never expand a range into implied grades" in user_prompt
+    category_description = payload_schema["$defs"]["QuantitativeCaseLiteral"][
+        "properties"
+    ]["category_values"]["description"]
+    assert "preserve each complete source-cell phrase verbatim" in category_description
+    assert "'A- 이상' or 'BBB- 미만'" in category_description
+    assert "Never expand a range into implied grades" in category_description
 
 
 def test_n8n_claude_gateway_uses_scoped_header_and_compatible_response() -> None:

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-PROMPT_VERSION = "pai-loop-extraction-0.5.0"
+PROMPT_VERSION = "pai-loop-extraction-0.5.1"
 SCHEMA_VERSION = "pai-loop-requirements-0.4.0"
 CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.6.0"
 _MAX_CORRECTIVE_FAILED_QUOTE_CHARS = 240
@@ -135,7 +135,16 @@ class QuantitativeCaseLiteral(BaseModel):
     literal: str = Field(min_length=1, max_length=1_000)
     operator: Literal["GTE", "EQ", "IN"]
     comparison_value: float | None
-    category_values: list[str] = Field(max_length=100)
+    category_values: list[str] = Field(
+        max_length=100,
+        description=(
+            "For CREDIT_RATING range rows, preserve each complete source-cell phrase "
+            "verbatim, including its Korean comparator (for example, 'A- 이상' or "
+            "'BBB- 미만'). Never expand a range into implied grades or return only its "
+            "boundary grade. If bounds are split across source cells, keep each complete "
+            "cell as a separate list item."
+        ),
+    )
     award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
     award_value: float = Field(ge=0)
     row_order: int = Field(ge=1, le=100)
@@ -955,7 +964,12 @@ class OpenAIExtractionClient:
             + ". Use CASE_TABLE when the source supplies multiple ordered cutoffs, exact discrete "
             "rows, rating/category groups, or percentage-of-maximum rows. Preserve source row order "
             "as consecutive row_order values. Use GTE only for an explicit 이상/>= row, EQ only for "
-            "an explicit discrete value row, and IN only for categories copied from that row. Store "
+            "an explicit discrete value row, and IN only for categories copied from that row. For "
+            "CREDIT_RATING range rows, copy each complete source-cell range phrase into "
+            "category_values exactly as written, including 이상/초과/이하/미만 (for example, "
+            "A- 이상 or BBB- 미만). Never expand a range into implied grades and never return only "
+            "its boundary grade. If two bounds occupy separate source cells, preserve each complete "
+            "cell as a separate category_values item. Store "
             "a literal 배점 as POINTS and a percentage such as 배점의 95% as PERCENT_OF_MAX. Never "
             "merge parallel columns that represent different fact types. For example, if one row has "
             "company-bond, commercial-paper, and enterprise-credit-rating columns, a CREDIT_RATING "
