@@ -1816,6 +1816,8 @@ svg {
 .notice-card {
   position: relative;
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   min-height: 230px;
   flex-direction: column;
   padding: 18px;
@@ -5779,7 +5781,12 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .select-field { min-width: 0; }
   .select-field--sort { min-width: 0; }
   .filter-reset { display: none; }
-  .notice-card-grid { grid-template-columns: 1fr; }
+  .notice-card-grid {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .notice-card__foot,
+  .notice-card__actions { flex-wrap: wrap; }
   .notice-card { min-height: 215px; }
   .page-footer { display: block; }
   .page-footer span { display: block; margin-top: 4px; }
