@@ -70,8 +70,8 @@
 | 부산 금액 6 + 건수 4 + A0 10 | Pass | `tests/test_busan_education_quantitative_e2e.py` |
 | 추출 원문 범위 보존 | Pass | `tests/test_openai_extraction.py`, `tests/test_quantitative_rule_extraction.py` |
 | 프롬프트 stale 현재 투영 차단 | Pass | `tests/test_api.py`, `tests/test_frontend_public_contract.py` |
-| 전체 저장소 테스트 | **1057 passed** | PR #77 후보 코드 로컬 전체 suite |
-| GitHub 필수 CI | Pass | PR #73~#76 |
+| 전체 저장소 테스트 | **1057 passed** | PR #77 병합 코드 로컬 전체 suite |
+| GitHub 필수 CI | Pass | PR #73~#77, PR #77 최종 CI 9분 34초 |
 
 버전:
 
@@ -86,11 +86,11 @@
 - [PR #75 — 추출 원문 범위 보존 계약](https://github.com/skytree96-cmyk/PAI_LOOP/pull/75)
 - [PR #76 — 오래된 분석의 현재 투영 차단](https://github.com/skytree96-cmyk/PAI_LOOP/pull/76)
 - Render 서비스: `pai-loop-demo`
-- 수동 배포 ID: `dep-dactaju7bikc73ffd9v0`
-- 배포 소스: `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01`
-- 결과: `Deploy succeeded · Live`, 1분 15초
-- 현재 운영 정적 자산: `styles.css?v=20260904-uiux-p0-v2`, `app.js?v=20260904-uiux-p0-v2`
-- PR #77 배포 예정 자산: `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`
+- 수동 배포 ID: `dep-dacu1j6q1p3s73dpvqjg`
+- 배포 소스: `f87aa9cc1f6d49ff8d76e1b54239fe3943f30f49`
+- 결과: `Deploy succeeded · Live`, 1분 14초
+- 운영 정적 자산: `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`
+- 운영 Chrome P0 대조: 결과 미기록 `388=388행`, 마감 임박 `76=76행`
 
 프롬프트 변경 전에는 대표 공고 2건의 attachment manifest/current audit/accepted가 `2/2/2`였다. 변경 후 manifest는 `2`로 보존되고 current audit/accepted는 `0/0`이 되어 `2/0/0`으로 전환됐다. PR #76 배포 전에는 이 상황에서도 과거 61/100·NO-GO가 남았으나, 배포 후 실제 Chrome에서 `미분석 · 미산정 · 분석 전`으로 바뀐 것을 확인했다.
 

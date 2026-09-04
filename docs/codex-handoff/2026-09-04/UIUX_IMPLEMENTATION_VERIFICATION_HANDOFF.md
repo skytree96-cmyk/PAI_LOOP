@@ -2,7 +2,7 @@
 
 ## 문서 상태와 판정 경계
 
-- 현재 운영 코드 기준: `main` 커밋 `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01` (PR #73~#76 포함). PR #77은 결과 미기록·마감 임박 모집단 일치를 추가 보강한다.
+- 현재 운영 코드 기준: `main` 커밋 `f87aa9cc1f6d49ff8d76e1b54239fe3943f30f49` (PR #73~#77 포함).
 - 기록 범위: UI/API 계약, 전체 자동화 테스트, GitHub CI, Render 수동 배포, 실제 Chrome 운영 화면 검증. 반응형 390/768/1024와 실제 운영 재분석 결과는 별도 미검증으로 남긴다.
 - 근거 우선순위: 사용자 최신 지시 → `PAI_LOOP_UIUX_Master_Handoff_Package.md` → `PAI_LOOP_UIUX_Codex_Handoff_Template.md` → PPT·채팅 증빙 → 현재 코드·테스트.
 - 화면 판정 원칙: 참가자격, 정량점수, AI 판단, 담당자 판단을 서로 대체하지 않는다. 정량 만점은 참가자격 충족이나 참여 결정을 의미하지 않는다.
@@ -356,13 +356,14 @@ Teams 알림 미리보기 · 결과 기록
 | 관련 API 공개 경계 테스트 통과 | Yes | 전체 테스트에 포함해 통과 |
 | 전체 테스트 게이트 통과 | Yes | 1057 passed |
 | Chrome 운영 시각·키보드 검증 | Yes | 실제 Chrome 2048×962에서 홈·목록·전체 화면 상세·KST·첫 포커스·J/K·Esc 복귀 확인 |
-| PR 필수 CI 통과 | Yes | [PR #73 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33793201829/job/100774690953?pr=73), [PR #76 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33800125336/job/100797338157) |
-| Render 새 커밋 배포 확인 | Yes | 배포 `dep-dactaju7bikc73ffd9v0`, 소스 `0dcc6c1`, 2026-09-04 05:16 KST Live |
+| PR 필수 CI 통과 | Yes | [PR #73 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33793201829/job/100774690953?pr=73), [PR #76 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33800125336/job/100797338157), [PR #77 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33804909172/job/100812943767) |
+| Render 새 커밋 배포 확인 | Yes | 배포 `dep-dacu1j6q1p3s73dpvqjg`, 소스 `f87aa9c`, 2026-09-04 06:05 KST Live |
+| P0 카드·클릭 목록 모집단 일치 | Yes | 운영 Chrome: 결과 미기록 388=388행, 마감 임박 76=76행 |
 | 운영의 과거 평가 숨김 확인 | Yes | 부산·역사영상 공고가 `미분석 · 미산정 · AI 판단 분석 전`으로 표시됨 |
 | 운영 대표 공고 재분석 결과 확인 | No | 4자리 운영 PIN의 승인된 매핑이 없어 분석 요청을 시작하지 않음 |
 | 390/768/1024 반응형 실기기 검증 | No | 외부 Chrome viewport 제어 제한으로 미검증 |
 
-현재 운영에서 확인한 정적 자산은 `v2`이며, PR #77의 P0 parity 보강 배포 자산은 `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`다.
+운영에서 확인한 정적 자산은 `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`다.
 
 ### 배포·브라우저 증빙
 
@@ -371,7 +372,8 @@ Teams 알림 미리보기 · 결과 기록
 - 추출 계약 보강: [PR #75](https://github.com/skytree96-cmyk/PAI_LOOP/pull/75)
 - 오래된 평가 현재 투영 차단: [PR #76](https://github.com/skytree96-cmyk/PAI_LOOP/pull/76)
 - 결과 미기록·마감 임박 모집단 일치: [PR #77](https://github.com/skytree96-cmyk/PAI_LOOP/pull/77)
-- Render 수동 배포: `dep-dactaju7bikc73ffd9v0`, 커밋 `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01`, 배포 성공 시간 1분 15초.
+- Render 수동 배포: `dep-dacu1j6q1p3s73dpvqjg`, 커밋 `f87aa9cc1f6d49ff8d76e1b54239fe3943f30f49`, 배포 성공 시간 1분 14초.
+- Chrome P0 모집단 검증: `결과 미기록 388건` 카드 → `전체 402건 중 388건`·표 388행, `3일 이내 76건` 카드 → `전체 268건 중 76건`·표 76행.
 - Chrome 상세 키보드 검증: 첫 공고 `1/268` → `J`로 둘째 공고 `2/268` → `K`로 첫 공고 `1/268`; 각 전환 뒤 닫기 버튼 포커스 유지. `Escape` 뒤 원래 `전체 상세 보기` 버튼으로 포커스 복귀.
 
 ### 정직하게 남긴 후속 범위
