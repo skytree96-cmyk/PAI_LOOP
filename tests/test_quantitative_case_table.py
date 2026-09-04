@@ -251,6 +251,71 @@ def test_busan_credit_range_scores_ccc0_at_seventy_percent() -> None:
     assert parse_credit_rating("AA") is None
 
 
+def test_credit_registry_compiles_single_exact_comma_list_cells() -> None:
+    rows = (
+        _credit_row(
+            ("AAA, AA+, AA0, AA-, A+, A0, A-, BBB+, BBB0",),
+            100,
+            source_literal=(
+                "AAA, AA+, AA0, AA-, A+, A0, A-, BBB+, BBB0 배점의 100%"
+            ),
+            award_kind="PERCENT_OF_MAX",
+        ),
+        _credit_row(
+            ("BBB-, BB+, BB0, BB-",),
+            95,
+            source_literal="BBB-, BB+, BB0, BB- 배점의 95%",
+            award_kind="PERCENT_OF_MAX",
+        ),
+        _credit_row(
+            ("B+, B0, B-",),
+            90,
+            source_literal="B+, B0, B- 배점의 90%",
+            award_kind="PERCENT_OF_MAX",
+        ),
+        _credit_row(
+            ("CCC+ 이하",),
+            70,
+            source_literal="CCC+ 이하 배점의 70%",
+            award_kind="PERCENT_OF_MAX",
+        ),
+    )
+
+    table = compile_case_table(rows, value_kind="CREDIT_RATING", maximum_points=10)
+
+    assert table is not None
+    assert tuple(value for row in table.rows for value in row.category_values) == (
+        CREDIT_RATING_ORDER
+    )
+    assert case_table_points(table, "A0") == 10
+    assert case_table_points(table, "BBB-") == 9.5
+    assert case_table_points(table, "B0") == 9
+    assert case_table_points(table, "CCC0") == 7
+
+
+@pytest.mark.parametrize(
+    ("expression", "source_literal"),
+    (
+        ("AAA, E", "AAA, E"),
+        ("AAA, A1", "AAA, A1"),
+        ("AAA, AAA", "AAA, AAA"),
+        ("A, A0", "A, A0"),
+        ("AAA,, AA+", "AAA,, AA+"),
+        ("AAA, AA+ 이상", "AAA, AA+ 이상"),
+        ("AAA, AA+", "AAA, AA+, AA0"),
+        ("AAA, AA+", "AAA / AA+"),
+    ),
+)
+def test_single_credit_comma_list_rejects_unknown_duplicate_range_or_source_mismatch(
+    expression: str,
+    source_literal: str,
+) -> None:
+    assert (
+        compile_credit_rating_values((expression,), source_literal=source_literal)
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "canonical"),
     (("A−", "A-"), ("BBB−", "BBB-"), ("CCC−", "CCC-")),

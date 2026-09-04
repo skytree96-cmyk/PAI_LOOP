@@ -29,14 +29,16 @@ from .integrations.openai_extraction import (
     evidence_quote_matches_source,
 )
 from .quantitative_formula import (
+    CREDIT_RATING_ORDER,
     CaseTableRowLiteral,
     compile_case_table,
+    compile_credit_rating_values,
     normalize_credit_rating_text,
 )
 
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.13"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.14"
 
 # Issue-only proof changes use targeted fingerprint revisions below.  Changes to
 # executable scoring semantics, such as the credit-range DSL above, intentionally
@@ -1209,17 +1211,11 @@ _CREDIT_RATING_COLUMN_HEADER_CLUSTER = (
 _SOURCEWIDE_AMBIGUITY_SUPPORTED_METRICS = frozenset(
     {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT", "CREDIT_RATING"}
 )
-# Deliberate 부산-source limitation: the flattened HWP text contains parallel
-# company-bond, commercial-paper, and enterprise-credit columns without cell
-# coordinates.  Only this exact enterprise-credit category shape plus its exact
-# terminal footnote proves column ownership.  Do not generalize it to other
-# credit tables until the extractor preserves native table row/column geometry.
-_BUSAN_ENTERPRISE_CREDIT_CATEGORY_ROWS = (
-    ("AAA", "AA+", "AA0", "AA-", "A+", "A0", "A-", "BBB+", "BBB0"),
-    ("BBB-", "BB+", "BB0", "BB-"),
-    ("B+", "B0", "B-"),
-    ("CCC+ 이하",),
-)
+# Deliberate flattened-HWP limitation: parallel company-bond, commercial-paper,
+# and enterprise-credit columns have no native cell coordinates.  The exact
+# enterprise header cluster, source-bound rows, terminal footnote, and complete
+# canonical rating registry below jointly prove column ownership.  Do not union
+# aliases from either neighboring instrument column.
 _BUSAN_CREDIT_RATING_FOOTNOTE_RE = re.compile(
     r"^\*등급별평점이소수점이하의숫자가있는경우"
     r"소수점다섯째자리에서반올림함[.]?$"
@@ -1465,6 +1461,118 @@ def _source_bound_count_unit(
             return None
         units.append(valid[0])
     return units[0] if units and len(set(units)) == 1 else None
+
+
+def _source_bound_amount_case_unit(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+) -> str | None:
+    """Recover only an exact, uniformly owned currency unit from CASE rows.
+
+    Claude can preserve ``2 / 1.5 / 1`` as the structured values while the
+    source rows spell ``2억 원 / 1.5억 원 / 1억 원`` and leave the criterion
+    ``unit`` null.  The numeric values are still useful, but only when every
+    ordered row independently yields the same unique allowlisted scale.  Thus
+    either ``2``+``억원`` or ``200000000``+``원`` may be proven from the same
+    exact source cell; no comparison value or operator is changed.
+    """
+
+    if (
+        candidate.metric != "PERFORMANCE_AMOUNT"
+        or candidate.scoring_method != "CASE_TABLE"
+        or not candidate.cases
+        or [case.row_order for case in candidate.cases]
+        != list(range(1, len(candidate.cases) + 1))
+    ):
+        return None
+
+    row_spans: list[tuple[int, int]] = []
+    inferred_units: list[str] = []
+    nonzero_source_units: set[str] = set()
+    zero_source_units: list[str] = []
+    for case in candidate.cases:
+        expected = _decimal(case.comparison_value)
+        literal_span = _unique_anchor_line_span(lines, case.literal)
+        evidence_span = _unique_anchor_line_span(lines, case.evidence.quote)
+        matches = [
+            (match, operator_map[match.group("op")])
+            for regex, operator_map in (
+                (_AMOUNT_KOREAN_BOUND_RE, _KOREAN_OPERATOR),
+                (_AMOUNT_ASCII_DIRECT_BOUND_RE, _DIRECT_OPERATOR),
+                (_AMOUNT_ASCII_REVERSED_BOUND_RE, _REVERSED_OPERATOR),
+            )
+            for match in regex.finditer(case.literal)
+        ]
+        if (
+            expected is None
+            or expected < 0
+            or literal_span is None
+            or evidence_span is None
+            or not _spans_overlap(literal_span, evidence_span)
+            or len(matches) != 1
+            or matches[0][1] != case.operator
+            or case.operator != "GTE"
+            or len(_COMPARATOR_MARKER_RE.findall(case.literal)) != 1
+        ):
+            return None
+        match = matches[0][0]
+        try:
+            source_number = Decimal(match.group("num").replace(",", ""))
+        except InvalidOperation:
+            return None
+        source_unit = _normalise_amount_unit(match.group("unit"))
+        source_scale = _AMOUNT_UNIT_SCALE.get(source_unit)
+        if source_scale is None or source_number < 0:
+            return None
+        if expected == 0 or source_number == 0:
+            if expected != 0 or source_number != 0:
+                return None
+            zero_source_units.append(source_unit)
+        else:
+            inferred_scale = source_number * source_scale / expected
+            matching_units = [
+                unit
+                for unit, scale in _AMOUNT_UNIT_SCALE.items()
+                if scale == inferred_scale
+            ]
+            if len(matching_units) != 1:
+                return None
+            inferred_units.append(matching_units[0])
+            nonzero_source_units.add(source_unit)
+        row_spans.append(
+            (
+                min(literal_span[0], evidence_span[0]),
+                max(literal_span[1], evidence_span[1]),
+            )
+        )
+    # A zero threshold cannot establish a scale by division.  Accept it only
+    # after at least one non-zero row proves a unique target unit and the zero
+    # row spells the same source unit as every non-zero row.
+    if (
+        not inferred_units
+        or len(set(inferred_units)) != 1
+        or (
+            zero_source_units
+            and (
+                len(nonzero_source_units) != 1
+                or any(
+                    unit not in nonzero_source_units
+                    for unit in zero_source_units
+                )
+            )
+        )
+    ):
+        return None
+
+    if (
+        any(
+            left[1] > right[0]
+            for left, right in zip(row_spans, row_spans[1:], strict=False)
+        )
+    ):
+        return None
+    return inferred_units[0]
 
 
 def _source_bound_credit_rating_case_region(
@@ -1731,6 +1839,15 @@ def _repair_source_bound_candidate_unit(
     criterion_region: tuple[int, int] | None,
 ) -> QuantitativeRuleCandidate:
     normalized = _normalise_amount_unit(candidate.unit or "")
+    if candidate.metric == "PERFORMANCE_AMOUNT":
+        if normalized in _AMOUNT_UNIT_SCALE:
+            return candidate
+        repaired = _source_bound_amount_case_unit(candidate, lines=lines)
+        return (
+            candidate.model_copy(update={"unit": repaired})
+            if repaired is not None
+            else candidate
+        )
     if candidate.metric == "PERFORMANCE_COUNT":
         if normalized in {"건", "회", "개"}:
             return candidate
@@ -2518,18 +2635,19 @@ def _sourcewide_case_census_matches(
         if owned_region is None:
             return False
         criterion_region = owned_region
-        normalized_rows = tuple(
-            tuple(
-                re.sub(
-                    r"\s+",
-                    " ",
-                    unicodedata.normalize("NFKC", value),
-                ).strip()
-                for value in case.category_values
+        normalized_rows_list: list[tuple[str, ...]] = []
+        for case in ordered_cases:
+            compiled_values = compile_credit_rating_values(
+                case.category_values,
+                source_literal=case.literal,
             )
-            for case in ordered_cases
-        )
-        if normalized_rows != _BUSAN_ENTERPRISE_CREDIT_CATEGORY_ROWS:
+            if compiled_values is None:
+                return False
+            normalized_rows_list.append(compiled_values)
+        normalized_rows = tuple(normalized_rows_list)
+        if tuple(
+            value for row in normalized_rows for value in row
+        ) != CREDIT_RATING_ORDER:
             return False
         claimed_awards = tuple(
             _unique_percent_score_line_span(
@@ -3320,6 +3438,11 @@ def _rebind_split_table_cell_literals(
     lines = _source_lines(source)
     if not payload.quantitative_tables:
         return payload, ()
+    original_units = {
+        (table_index, candidate_index): candidate.unit
+        for table_index, table in enumerate(payload.quantitative_tables)
+        for candidate_index, candidate in enumerate(table.criteria)
+    }
     payload = _rebind_flat_split_table_cell_literals(
         payload,
         source=source,
@@ -3336,6 +3459,32 @@ def _rebind_split_table_cell_literals(
             )
             for table in payload.quantitative_tables
         )
+
+    # Unitless numeric CASE rows cannot prove their condition-to-score windows
+    # until the source-unit scale is known.  Recover only units that every
+    # unique ordered row states verbatim; categorical/header-dependent repairs
+    # remain deferred until criterion regions have been fenced below.
+    early_repaired_tables: list[QuantitativeTableCandidate] = []
+    for table_index, table in enumerate(payload.quantitative_tables):
+        early_repaired_candidates: list[QuantitativeRuleCandidate] = []
+        for candidate_index, candidate in enumerate(table.criteria):
+            repaired_candidate = (
+                _repair_source_bound_candidate_unit(
+                    candidate,
+                    lines=lines,
+                    criterion_region=None,
+                )
+                if candidate.metric
+                in {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT"}
+                else candidate
+            )
+            early_repaired_candidates.append(repaired_candidate)
+        early_repaired_tables.append(
+            table.model_copy(update={"criteria": early_repaired_candidates})
+        )
+    payload = payload.model_copy(
+        update={"quantitative_tables": early_repaired_tables}
+    )
 
     hwp_section_starts = tuple(
         index
@@ -3856,6 +4005,35 @@ def _rebind_split_table_cell_literals(
                 *repaired_current_structure_spans,
             ),
         )
+
+        # The early unit repair is needed to parse and rebind split HWP rows,
+        # but it is not decision-bearing until the bounded criterion region
+        # proves that the payload exhausts every labeled source row and its
+        # independent score cell.  Restore the exact model unit and retain a
+        # criterion ambiguity when that census fails so partial/cross-section
+        # tables stay non-executable even for metrics parsed from row literals.
+        repaired_candidates = [
+            (
+                candidate.model_copy(
+                    update={
+                        "unit": original_units[(table_index, candidate_index)],
+                        "ambiguity_reason": candidate.ambiguity_reason
+                        or "원문 평가행 전체 일치 여부를 확인해야 함",
+                    }
+                )
+                if candidate.unit
+                != original_units[(table_index, candidate_index)]
+                and not _sourcewide_case_census_matches(
+                    candidate,
+                    lines=lines,
+                    criterion_region=criterion_regions[table_index][
+                        candidate_index
+                    ],
+                )
+                else candidate
+            )
+            for candidate_index, candidate in enumerate(repaired_candidates)
+        ]
 
         ambiguous_case_claim = False
         case_claims: list[

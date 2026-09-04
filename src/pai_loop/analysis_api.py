@@ -2740,6 +2740,7 @@ def _enrich_one_notice(
     notice_id: str,
     payload: AnalysisBatchRequest,
     deadline_monotonic: float,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> PpsEnrichmentResult:
     settings = request.app.state.settings
     with request.app.state.session_factory() as session:
@@ -2760,6 +2761,7 @@ def _enrich_one_notice(
             openai_timeout_seconds=DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
             openai_max_retries=0,
             deadline_monotonic=deadline_monotonic,
+            retry_reviewed_version_ids=retry_reviewed_version_ids,
         )
 
 
@@ -2768,9 +2770,15 @@ def _serialize_analysis_execution(function):
     def wrapped(
         payload: AnalysisBatchRequest,
         request: Request,
+        *,
+        retry_reviewed_version_ids: frozenset[str] = frozenset(),
     ) -> AnalysisBatchResponse:
         if not _ANALYSIS_RUNTIME_SAFETY_ENABLED:
-            return function(payload, request)
+            return function(
+                payload,
+                request,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
+            )
 
         with request.app.state.session_factory() as lock_session:
             bind = lock_session.get_bind()
@@ -2781,7 +2789,11 @@ def _serialize_analysis_execution(function):
                     {"lock_key": _ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY},
                 )
                 try:
-                    return function(payload, request)
+                    return function(
+                        payload,
+                        request,
+                        retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    )
                 finally:
                     connection.execute(
                         text("SELECT pg_advisory_unlock(:lock_key)"),
@@ -2789,16 +2801,21 @@ def _serialize_analysis_execution(function):
                     )
 
         with _ANALYSIS_EXECUTION_PROCESS_LOCK:
-            return function(payload, request)
+            return function(
+                payload,
+                request,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
+            )
 
     return wrapped
 
 
-@router.post("/notices/analysis/batch", response_model=AnalysisBatchResponse)
 @_serialize_analysis_execution
-def run_notice_analysis_batch(
+def _run_notice_analysis_batch(
     payload: AnalysisBatchRequest,
     request: Request,
+    *,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> AnalysisBatchResponse:
     """Boundedly enrich missing PPS documents, then persist analysis snapshots."""
     with request.app.state.session_factory() as session:
@@ -2829,7 +2846,12 @@ def run_notice_analysis_batch(
     if stored_response is not None:
         return stored_response
     try:
-        return _execute_notice_analysis_batch(payload, request, job_id=job_id)
+        return _execute_notice_analysis_batch(
+            payload,
+            request,
+            job_id=job_id,
+            retry_reviewed_version_ids=retry_reviewed_version_ids,
+        )
     except Exception:
         # A provider/library failure must not leave the operational audit in a
         # permanent RUNNING state. Per-notice failures are handled below and
@@ -2846,11 +2868,37 @@ def run_notice_analysis_batch(
         raise
 
 
+@router.post("/notices/analysis/batch", response_model=AnalysisBatchResponse)
+def run_notice_analysis_batch(
+    payload: AnalysisBatchRequest,
+    request: Request,
+) -> AnalysisBatchResponse:
+    """Run the server-to-server batch contract without a manual retry override."""
+
+    return _run_notice_analysis_batch(payload, request)
+
+
+def run_manual_notice_analysis_batch(
+    payload: AnalysisBatchRequest,
+    request: Request,
+    *,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
+) -> AnalysisBatchResponse:
+    """Run one manual batch with its immutable, pre-request REVIEW snapshot."""
+
+    return _run_notice_analysis_batch(
+        payload,
+        request,
+        retry_reviewed_version_ids=retry_reviewed_version_ids,
+    )
+
+
 def _execute_notice_analysis_batch(
     payload: AnalysisBatchRequest,
     request: Request,
     *,
     job_id: str,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> AnalysisBatchResponse:
     rows: list[AnalysisBatchItemOut] = []
     completed = skipped = failed = 0
@@ -3005,11 +3053,21 @@ def _execute_notice_analysis_batch(
                 enrichment_warnings.append("AUTOMATIC_NOTICE_NOT_ACTIVE")
                 continue
             try:
-                enrichment_result = _enrich_one_notice(
-                    request,
-                    notice_id=notice_id,
-                    payload=payload,
-                    deadline_monotonic=enrichment_deadline,
+                enrichment_result = (
+                    _enrich_one_notice(
+                        request,
+                        notice_id=notice_id,
+                        payload=payload,
+                        deadline_monotonic=enrichment_deadline,
+                        retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    )
+                    if retry_reviewed_version_ids
+                    else _enrich_one_notice(
+                        request,
+                        notice_id=notice_id,
+                        payload=payload,
+                        deadline_monotonic=enrichment_deadline,
+                    )
                 )
             except Exception:  # pragma: no cover - provider fail-closed boundary
                 # Exact attachment context is unavailable at this outer
