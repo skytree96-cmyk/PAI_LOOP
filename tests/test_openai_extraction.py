@@ -9,6 +9,9 @@ from pai_loop.integrations.openai_extraction import (
     CORRECTIVE_PROMPT_VERSION,
     OpenAIExtractionClient,
 )
+from pai_loop.quantitative_rule_extraction import (
+    validate_quantitative_attachment_extraction,
+)
 
 
 def valid_output(*, attachment_id: str = "ATT-1", quote: str = "부산광역시에 소재한 업체") -> dict:
@@ -192,6 +195,10 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     user_prompt = captured["input"][1]["content"][0]["text"]
     assert "normally 5-120 characters" in user_prompt
     assert "verify each quote can be found verbatim" in user_prompt
+    assert "Calibrate evidence confidence only to literal transcription fidelity" in user_prompt
+    assert "confidence 0.90 or higher" in user_prompt
+    assert "uncertainty about item binding" in user_prompt
+    assert "split across adjacent HWP cells" in user_prompt
     assert "never calculate a company score" in user_prompt
     assert "metric UNKNOWN" in user_prompt
     assert "company.performance.amount" in user_prompt
@@ -206,6 +213,229 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert "preserve each complete source-cell phrase verbatim" in category_description
     assert "'A- 이상' or 'BBB- 미만'" in category_description
     assert "Never expand a range into implied grades" in category_description
+
+
+def test_exact_quantitative_table_anchors_receive_source_attestation() -> None:
+    output = quantitative_output()
+    output["requirements"][0]["evidence"][0]["confidence"] = 0.40
+    table = output["quantitative_tables"][0]
+    criterion = table["criteria"][0]
+    criterion["evidence"]["confidence"] = 0.40
+    criterion["brackets"][0]["evidence"]["confidence"] = 0.40
+    criterion["threshold"] = {
+        "literal": "신용평가 A등급 이상 10점",
+        "operator": "GTE",
+        "threshold_value": 1,
+        "points_if_met": 10,
+        "points_if_not_met": 0,
+        "evidence": {
+            "attachment_id": "ATT-1",
+            "page": 4,
+            "section": "정량평가",
+            "quote": "신용평가 A등급 이상 10점",
+            "confidence": 0.40,
+        },
+    }
+    criterion["cases"] = [
+        {
+            "literal": "A등급 10점",
+            "operator": "IN",
+            "comparison_value": None,
+            "category_values": ["A등급"],
+            "award_kind": "POINTS",
+            "award_value": 10,
+            "row_order": 1,
+            "evidence": {
+                "attachment_id": "ATT-1",
+                "page": 4,
+                "section": "정량평가",
+                "quote": "A등급 10점",
+                "confidence": 0.40,
+            },
+        }
+    ]
+    criterion["recognition_conditions"] = [
+        {
+            "literal": "공고일 기준 유효한 신용등급",
+            "evidence": {
+                "attachment_id": "ATT-1",
+                "page": 4,
+                "section": "정량평가",
+                "quote": "공고일 기준 유효한 신용등급",
+                "confidence": 0.40,
+            },
+        }
+    ]
+    table["total_evidence"]["confidence"] = 0.40
+    table["minimum_score"] = 5
+    table["minimum_evidence"] = {
+        "attachment_id": "ATT-1",
+        "page": 4,
+        "section": "정량평가",
+        "quote": "최저점 5점",
+        "confidence": 0.40,
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_payload(output))
+
+    source = "\n".join(
+        [
+            "부산광역시에 소재한 업체",
+            "정량평가 총점 10점",
+            "신용평가 10점",
+            "A등급 10점",
+            "신용평가 A등급 이상 10점",
+            "공고일 기준 유효한 신용등급",
+            "최저점 5점",
+        ]
+    )
+    with OpenAIExtractionClient(
+        api_key="test-server-key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+    ) as client:
+        outcome = client.extract(
+            document_text=source,
+            allowed_attachment_ids={"ATT-1"},
+        )
+
+    assert outcome.status == "ACCEPTED"
+    assert outcome.data is not None
+    assert outcome.data.requirements[0].evidence[0].confidence == 0.40
+    attested_table = outcome.data.quantitative_tables[0]
+    assert attested_table.total_evidence is not None
+    assert attested_table.minimum_evidence is not None
+    assert attested_table.total_evidence.confidence == 0.90
+    assert attested_table.minimum_evidence.confidence == 0.90
+    assert attested_table.criteria[0].evidence.confidence == 0.90
+    assert attested_table.criteria[0].brackets[0].evidence.confidence == 0.90
+    assert attested_table.criteria[0].threshold is not None
+    assert attested_table.criteria[0].threshold.evidence.confidence == 0.90
+    assert attested_table.criteria[0].cases[0].evidence.confidence == 0.90
+    assert (
+        attested_table.criteria[0].recognition_conditions[0].evidence.confidence
+        == 0.90
+    )
+
+
+def test_not_applicable_evidence_keeps_provider_confidence() -> None:
+    output = valid_output()
+    output["quantitative_table_not_applicable"] = {
+        "reason_literal": "이 문서에는 정량평가표가 적용되지 않는다.",
+        "evidence": {
+            "attachment_id": "ATT-1",
+            "page": 4,
+            "section": "평가",
+            "quote": "이 문서에는 정량평가표가 적용되지 않는다.",
+            "confidence": 0.40,
+        },
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_payload(output))
+
+    with OpenAIExtractionClient(
+        api_key="test-server-key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+    ) as client:
+        outcome = client.extract(
+            document_text=(
+                "부산광역시에 소재한 업체\n"
+                "이 문서에는 정량평가표가 적용되지 않는다."
+            ),
+            allowed_attachment_ids={"ATT-1"},
+        )
+
+    assert outcome.status == "ACCEPTED"
+    assert outcome.data is not None
+    assert outcome.data.quantitative_table_not_applicable is not None
+    assert outcome.data.quantitative_table_not_applicable.evidence.confidence == 0.40
+
+
+def test_source_attested_low_provider_confidence_can_pass_deterministic_validator() -> None:
+    output = valid_output()
+    anchor = {
+        "attachment_id": "ATT-1",
+        "page": 4,
+        "section": "정량평가",
+        "confidence": 0.40,
+    }
+    output["quantitative_tables"] = [
+        {
+            "table_id": "TABLE-PERFORMANCE",
+            "label": "정량평가",
+            "criteria": [
+                {
+                    "criterion_id": "Q-PERFORMANCE-1",
+                    "label": "수행실적",
+                    "criterion_literal": "수행실적 10점",
+                    "max_points": 10,
+                    "scoring_method": "THRESHOLD",
+                    "metric": "PERFORMANCE_AMOUNT",
+                    "unit": "억원",
+                    "brackets": [],
+                    "threshold": {
+                        "literal": "5억원 이상 충족 10점 미충족 0점",
+                        "operator": "GTE",
+                        "threshold_value": 5,
+                        "points_if_met": 10,
+                        "points_if_not_met": 0,
+                        "evidence": {
+                            **anchor,
+                            "quote": "5억원 이상 충족 10점 미충족 0점",
+                        },
+                    },
+                    "formula_literal": None,
+                    "cases": [],
+                    "recognition_conditions": [],
+                    "required_evidence": ["company.performance.amount"],
+                    "evidence": {**anchor, "quote": "수행실적 10점"},
+                    "ambiguity_reason": None,
+                }
+            ],
+            "total_points": 10,
+            "total_evidence": {**anchor, "quote": "정량평가 총점 10점"},
+            "minimum_score": None,
+            "minimum_evidence": None,
+            "ambiguity_reason": None,
+        }
+    ]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_payload(output))
+
+    source = "\n".join(
+        [
+            "부산광역시에 소재한 업체",
+            "정량평가 총점 10점",
+            "수행실적 10점",
+            "5억원 이상 충족 10점 미충족 0점",
+        ]
+    )
+    with OpenAIExtractionClient(
+        api_key="test-server-key",
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.openai.test/v1",
+    ) as client:
+        outcome = client.extract(
+            document_text=source,
+            allowed_attachment_ids={"ATT-1"},
+        )
+
+    assert outcome.status == "ACCEPTED"
+    assert outcome.data is not None
+    record = validate_quantitative_attachment_extraction(
+        outcome.data,
+        source_text=source,
+        attachment_id="ATT-1",
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    assert record.status == "AVAILABLE", record.issues
+    assert len(record.available_candidates) == 1
+    assert record.review_candidates == ()
 
 
 def test_n8n_claude_gateway_uses_scoped_header_and_compatible_response() -> None:

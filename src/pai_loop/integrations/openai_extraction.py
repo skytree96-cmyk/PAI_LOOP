@@ -12,11 +12,12 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-PROMPT_VERSION = "pai-loop-extraction-0.5.1"
+PROMPT_VERSION = "pai-loop-extraction-0.5.2"
 SCHEMA_VERSION = "pai-loop-requirements-0.4.0"
 CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.6.0"
 _MAX_CORRECTIVE_FAILED_QUOTE_CHARS = 240
 _MAX_CORRECTIVE_FAILED_QUOTES = 12
+_SOURCE_ATTESTED_QUANTITATIVE_CONFIDENCE = 0.90
 
 
 class EvidenceAnchor(BaseModel):
@@ -443,6 +444,81 @@ def _iter_evidence_anchors(data: ExtractionPayload):
                 yield condition.evidence
     if data.quantitative_table_not_applicable is not None:
         yield data.quantitative_table_not_applicable.evidence
+
+
+def _attest_verified_quantitative_anchors(data: ExtractionPayload) -> ExtractionPayload:
+    """Mark exact quantitative transcriptions after the source check succeeds.
+
+    Provider confidence is an untrusted self-assessment and can be conservative
+    even when a literal quote is present in the document.  This attestation is
+    deliberately limited to positive table content whose every anchor already
+    passed ``_verified_quote_in_source``.  The deterministic quantitative
+    validator still has to prove literal binding, numeric shape, row semantics,
+    totals, registered evidence keys, and absence of unresolved ambiguity.
+
+    General eligibility evidence and a claimed ``not applicable`` statement
+    keep their provider confidence because exact transcription alone does not
+    establish those broader meanings.
+    """
+
+    def anchor(value: EvidenceAnchor) -> EvidenceAnchor:
+        return value.model_copy(
+            update={
+                "confidence": max(
+                    value.confidence,
+                    _SOURCE_ATTESTED_QUANTITATIVE_CONFIDENCE,
+                )
+            }
+        )
+
+    tables: list[QuantitativeTableCandidate] = []
+    for table in data.quantitative_tables:
+        criteria: list[QuantitativeRuleCandidate] = []
+        for criterion in table.criteria:
+            criteria.append(
+                criterion.model_copy(
+                    update={
+                        "evidence": anchor(criterion.evidence),
+                        "brackets": [
+                            item.model_copy(update={"evidence": anchor(item.evidence)})
+                            for item in criterion.brackets
+                        ],
+                        "threshold": (
+                            criterion.threshold.model_copy(
+                                update={"evidence": anchor(criterion.threshold.evidence)}
+                            )
+                            if criterion.threshold is not None
+                            else None
+                        ),
+                        "cases": [
+                            item.model_copy(update={"evidence": anchor(item.evidence)})
+                            for item in criterion.cases
+                        ],
+                        "recognition_conditions": [
+                            item.model_copy(update={"evidence": anchor(item.evidence)})
+                            for item in criterion.recognition_conditions
+                        ],
+                    }
+                )
+            )
+        tables.append(
+            table.model_copy(
+                update={
+                    "criteria": criteria,
+                    "total_evidence": (
+                        anchor(table.total_evidence)
+                        if table.total_evidence is not None
+                        else None
+                    ),
+                    "minimum_evidence": (
+                        anchor(table.minimum_evidence)
+                        if table.minimum_evidence is not None
+                        else None
+                    ),
+                }
+            )
+        )
+    return data.model_copy(update={"quantitative_tables": tables})
 
 
 def _corrective_structure_snapshot(data: ExtractionPayload) -> Any:
@@ -896,6 +972,7 @@ class OpenAIExtractionClient:
                 "모델의 근거 인용문을 원문에서 확인할 수 없습니다.",
                 **metadata,
             )
+        data = _attest_verified_quantitative_anchors(data)
         return ExtractionOutcome(
             status="ACCEPTED",
             message="스키마와 근거 앵커 검증을 통과했습니다.",
@@ -937,6 +1014,13 @@ class OpenAIExtractionClient:
             "as a short exact contiguous substring of the source, normally 5-120 characters. "
             "Do not translate, paraphrase, normalize punctuation, add ellipses, or join separate spans. "
             "Before returning, verify each quote can be found verbatim in SOURCE. "
+            "Calibrate evidence confidence only to literal transcription fidelity, not to document "
+            "layout or broader rule interpretation: use confidence 0.90 or higher after verifying that "
+            "the quote is a verbatim source-local transcription. Express uncertainty about item binding "
+            "or rule interpretation in ambiguity_reason, missing_or_unreadable, or UNKNOWN fields as "
+            "applicable instead of lowering an otherwise exact quote's transcription confidence. A table row "
+            "split across adjacent HWP cells is not by itself a reason to lower confidence for each "
+            "individually verified contiguous quote. "
             "Transcribe quantitative scoring tables as literal source rules only: never insert or "
             "apply company facts, never calculate a company score, and never decide GO/NO-GO. "
             "Emit one logical quantitative table for each actual objective scoring program even when "

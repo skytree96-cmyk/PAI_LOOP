@@ -2994,7 +2994,10 @@ def _execute_notice_analysis_batch(
         enrichment_result: PpsEnrichmentResult | None = None
         should_enrich = (
             enrichment_targeted
-            and not _has_accepted_pps_extraction(request, notice_id)
+            and (
+                bool(retry_reviewed_version_ids)
+                or not _has_accepted_pps_extraction(request, notice_id)
+            )
         )
         if enrichment_targeted and not should_enrich:
             enrichment_completed += 1

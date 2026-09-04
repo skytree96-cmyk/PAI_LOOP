@@ -625,17 +625,20 @@ def _current_manifest_attempts(
 def current_retryable_review_version_ids(
     versions: list[NoticeVersion],
 ) -> frozenset[str]:
-    """Snapshot transient rows behind each current REVIEW for one manual retry.
+    """Snapshot current rows that one explicit manual review retry may replace.
 
     The caller carries this immutable snapshot through every continuation of
     the same manual job.  A REVIEW created by that retry has a different ID and
     is therefore reused on later continuations instead of triggering another
-    provider call.  ACCEPTED rows and deterministic REVIEW markers are never
-    included.
+    provider call.  Deterministic REVIEW markers and fully validated ACCEPTED
+    rows are never included.  An ACCEPTED extraction whose current quantitative
+    record still contains review candidates is included narrowly: the document
+    extraction succeeded, but the operator-visible quantitative review did not.
     """
 
     _attachments, _invalid_count, attempts = _current_manifest_attempts(versions)
     current_retryable_attempts: dict[str, dict[str, Any]] = {}
+    retryable: set[str] = set()
     for attachment_id, version in attempts.items():
         payload = version.source_payload
         if (
@@ -645,12 +648,23 @@ def current_retryable_review_version_ids(
             not in DETERMINISTIC_REVIEW_CODES
         ):
             current_retryable_attempts[attachment_id] = payload
+        elif _accepted_quantitative_review_is_retryable(
+            version,
+            attachment_id=attachment_id,
+            current_manifest_sha256=str(
+                payload.get("current_manifest_sha256")
+                if isinstance(payload, dict)
+                else ""
+            ),
+        ):
+            # This ID anchors the pre-request version boundary. A newly
+            # persisted outcome sits beyond it and is reused by continuations.
+            retryable.add(version.id)
 
     # Include all older transient rows with the same current attachment binding.
     # Otherwise persistence could deduplicate the new result against an older
     # cooled REVIEW after skipping only the latest row, leaving the latest
     # current attempt retryable again on the next continuation.
-    retryable: set[str] = set()
     for version in versions:
         payload = version.source_payload
         attachment_id = (
@@ -701,6 +715,87 @@ def _has_valid_quantitative_record(
         and record.validation_fingerprint_sha256
         == validated_quantitative_record_fingerprint(record)
     )
+
+
+def _accepted_quantitative_review_is_retryable(
+    version: NoticeVersion,
+    *,
+    attachment_id: str,
+    current_manifest_sha256: str,
+) -> bool:
+    """Allow a paid retry only for a current accepted quantitative review.
+
+    ``ACCEPTED`` describes the document extraction boundary, not whether its
+    quantitative candidates can be activated.  Preserve ordinary accepted
+    output, no-table documents, and local-absence markers; only a valid current
+    record with explicit review candidates can cross this operator-authorised
+    retry boundary.
+    """
+
+    payload = version.source_payload
+    if (
+        not isinstance(payload, dict)
+        or payload.get("status") != "ACCEPTED"
+        or not _has_valid_quantitative_record(
+            version,
+            attachment_id=attachment_id,
+            current_manifest_sha256=current_manifest_sha256,
+        )
+    ):
+        return False
+    try:
+        record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            payload.get("quantitative_validation_record")
+        )
+    except Exception:
+        return False
+    return bool(
+        record.status in {"REVIEW", "INCOMPLETE"}
+        and record.review_candidates
+    )
+
+
+def _accepted_quantitative_review_retry_boundary(
+    versions: list[NoticeVersion],
+    *,
+    attachment_id: str,
+    manifest_sha256: str,
+    current_manifest_sha256: str,
+    retry_reviewed_version_ids: frozenset[str],
+) -> int | None:
+    """Return the immutable pre-request boundary for an accepted review retry.
+
+    The snapshot IDs are operator-authorised server state, not arbitrary rows
+    to skip independently.  Once one exact accepted quantitative review
+    qualifies, every extraction outcome for that target at or before its
+    ``version_no`` belongs to the pre-request generation.  A result appended
+    after this boundary terminates later continuations, even when it is still
+    REVIEW/INCOMPLETE.
+    """
+
+    boundaries = [
+        version.version_no
+        for version in versions
+        if version.id in retry_reviewed_version_ids
+        and isinstance(version.source_payload, dict)
+        and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+        and version.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        and version.source_payload.get("attachment_id") == attachment_id
+        and version.source_payload.get("manifest_sha256") == manifest_sha256
+        and version.source_payload.get("current_manifest_sha256")
+        == current_manifest_sha256
+        and version.source_payload.get("document_sha256")
+        == version.file_sha256.casefold()
+        and version.source_payload.get("prompt_version") == PROMPT_VERSION
+        and version.source_payload.get("processing_version")
+        == PPS_PROCESSING_VERSION
+        and _accepted_quantitative_review_is_retryable(
+            version,
+            attachment_id=attachment_id,
+            current_manifest_sha256=current_manifest_sha256,
+        )
+    ]
+    return max(boundaries, default=None)
 
 
 def _accepted_source_is_technically_complete(version: NoticeVersion) -> bool:
@@ -1694,6 +1789,13 @@ def _matching_extraction_version(
     """Reuse deterministic output; REVIEW retries are capped to once per day."""
 
     now = datetime.now(timezone.utc)
+    retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+        versions,
+        attachment_id=attachment_id,
+        manifest_sha256=manifest_sha256,
+        current_manifest_sha256=current_manifest_sha256,
+        retry_reviewed_version_ids=retry_reviewed_version_ids,
+    )
     for item in versions:
         payload = item.source_payload
         if (
@@ -1707,6 +1809,13 @@ def _matching_extraction_version(
             or payload.get("prompt_version") != PROMPT_VERSION
             or payload.get("processing_version") != PPS_PROCESSING_VERSION
         ):
+            continue
+        if (
+            retry_boundary_version_no is not None
+            and item.version_no <= retry_boundary_version_no
+        ):
+            # The accepted quantitative review snapshot authorises one new
+            # generation. Older ACCEPTED and REVIEW rows must not intercept it.
             continue
         if payload.get("status") == "ACCEPTED":
             if not _has_valid_quantitative_record(
@@ -1743,8 +1852,24 @@ def _stored_outcome_is_idempotent(
     payload: dict[str, Any],
     *,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    retry_boundary_version_no: int | None = None,
 ) -> bool:
+    if (
+        retry_boundary_version_no is not None
+        and version.version_no <= retry_boundary_version_no
+    ):
+        return False
     if payload.get("status") == "ACCEPTED":
+        if version.id in retry_reviewed_version_ids and (
+            _accepted_quantitative_review_is_retryable(
+                version,
+                attachment_id=str(payload.get("attachment_id") or ""),
+                current_manifest_sha256=str(
+                    payload.get("current_manifest_sha256") or ""
+                ),
+            )
+        ):
+            return False
         prior = version.source_payload if isinstance(version.source_payload, dict) else {}
         return (
             prior.get("current_manifest_sha256")
@@ -2154,16 +2279,25 @@ def _persist_extraction_version(
             else None
         ),
     }
-    existing_versions = list(
+    notice_versions = list(
         session.scalars(
             select(NoticeVersion)
-            .where(
-                NoticeVersion.notice_id == notice_id,
-                NoticeVersion.file_sha256 == document_sha256,
-            )
+            .where(NoticeVersion.notice_id == notice_id)
             .order_by(NoticeVersion.version_no.desc())
         ).all()
     )
+    retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+        notice_versions,
+        attachment_id=attachment["attachment_id"],
+        manifest_sha256=manifest_sha256,
+        current_manifest_sha256=current_manifest_sha256,
+        retry_reviewed_version_ids=retry_reviewed_version_ids,
+    )
+    existing_versions = [
+        version
+        for version in notice_versions
+        if version.file_sha256 == document_sha256
+    ]
     for existing in existing_versions:
         prior = existing.source_payload
         if (
@@ -2183,6 +2317,7 @@ def _persist_extraction_version(
                 existing,
                 payload,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                retry_boundary_version_no=retry_boundary_version_no,
             )
         ):
             return existing
@@ -2238,6 +2373,7 @@ def _persist_extraction_version(
                         raced,
                         payload,
                         retry_reviewed_version_ids=retry_reviewed_version_ids,
+                        retry_boundary_version_no=retry_boundary_version_no,
                     )
                 ):
                     return raced
@@ -2340,6 +2476,13 @@ def record_internal_pps_enrichment_failure(
                 warnings=[warning, "PPS_MANIFEST_CHANGED_DURING_ENRICHMENT"],
             )
 
+        retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+            versions,
+            attachment_id=attempted_attachment["attachment_id"],
+            manifest_sha256=manifest_sha256,
+            current_manifest_sha256=current_manifest_sha256,
+            retry_reviewed_version_ids=retry_reviewed_version_ids,
+        )
         accepted = next(
             (
                 item
@@ -2356,6 +2499,10 @@ def record_internal_pps_enrichment_failure(
                 and item.source_payload.get("manifest_sha256") == manifest_sha256
                 and item.source_payload.get("current_manifest_sha256")
                 == current_manifest_sha256
+                and (
+                    retry_boundary_version_no is None
+                    or item.version_no > retry_boundary_version_no
+                )
             ),
             None,
         )
@@ -2724,12 +2871,20 @@ def _enrich_selected_pps_attachment(
             warnings=sorted(set([error_code, *extraction.warnings])),
         )
 
+    retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+        versions,
+        attachment_id=attachment["attachment_id"],
+        manifest_sha256=manifest_sha256,
+        current_manifest_sha256=current_manifest_sha256,
+        retry_reviewed_version_ids=retry_reviewed_version_ids,
+    )
     prior = _matching_extraction_version(
         versions,
         attachment_id=attachment["attachment_id"],
         manifest_sha256=manifest_sha256,
         current_manifest_sha256=current_manifest_sha256,
         document_sha256=document_sha256,
+        retry_reviewed_version_ids=retry_reviewed_version_ids,
     )
     if prior is not None:
         stored = _stored_attachment_result(
@@ -2741,13 +2896,17 @@ def _enrich_selected_pps_attachment(
             return stored
 
     with session.begin():
-        duplicate_outcome = _accepted_outcome_for_duplicate_content(
-            session,
-            notice_id=notice_id,
-            attachment_id=attachment["attachment_id"],
-            document_sha256=document_sha256,
-            source_text_sha256=str(processing_audit["source_text_sha256"]),
-            analysis_input_sha256=str(processing_audit["analysis_input_sha256"]),
+        duplicate_outcome = (
+            None
+            if retry_boundary_version_no is not None
+            else _accepted_outcome_for_duplicate_content(
+                session,
+                notice_id=notice_id,
+                attachment_id=attachment["attachment_id"],
+                document_sha256=document_sha256,
+                source_text_sha256=str(processing_audit["source_text_sha256"]),
+                analysis_input_sha256=str(processing_audit["analysis_input_sha256"]),
+            )
         )
         if duplicate_outcome is not None and duplicate_outcome.data is not None:
             quantitative_record = validate_quantitative_attachment_extraction(
