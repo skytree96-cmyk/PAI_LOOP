@@ -35,7 +35,7 @@
   --radius-lg: 22px;
   --sidebar-width: 252px;
   --content-width: 1480px;
-  font-family: Pretendard, "Pretendard Variable", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  font-family: Paperlogy, Pretendard, "Pretendard Variable", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   color: var(--ink);
   background: var(--canvas);
   font-synthesis: none;
@@ -507,8 +507,8 @@ svg {
 }
 
 .pai-bot-access__note {
-  color: var(--muted);
-  font-size: 8px;
+  color: var(--ink-soft);
+  font-size: 9px;
   font-weight: 650;
   line-height: 1.2;
   white-space: nowrap;
@@ -564,7 +564,7 @@ svg {
 }
 
 .button--primary:disabled {
-  color: #9fa7a4;
+  color: #5a6663;
   background: #e7eae6;
   box-shadow: none;
 }
@@ -1290,7 +1290,7 @@ svg {
   place-items: center;
   border: 1px solid var(--line-strong);
   border-radius: 5px;
-  color: #8c9997;
+  color: #5c6866;
   background: #fff;
   font-family: inherit;
   font-size: 10px;
@@ -2271,7 +2271,7 @@ svg {
 
 .source-link-dialog__actions [aria-disabled="true"] {
   pointer-events: none;
-  color: #9fa7a4;
+  color: #5a6663;
   background: #e7eae6;
   box-shadow: none;
 }
@@ -3903,7 +3903,7 @@ svg {
 
 .button--teams:disabled {
   border: 1px solid var(--line-strong);
-  color: #7f8986;
+  color: #5a6663;
   background: #e7eae6;
   box-shadow: none;
   opacity: 0.82;
@@ -4297,7 +4297,7 @@ svg {
 }
 
 .button--pps:disabled {
-  color: #9995b5;
+  color: #5f5a80;
   background: #e8e6f3;
   box-shadow: none;
 }

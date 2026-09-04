@@ -95,7 +95,7 @@ def test_table_and_card_detail_actions_open_the_full_screen_view() -> None:
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".detail-link-button" in styles
     assert "width: 100vw" in styles
-    assert "styles.css?v=20260904-uiux-p0-v3" in html
+    assert "styles.css?v=20260904-contrast-paperlogy1" in html
     assert "app.js?v=20260904-uiux-p0-v3" in html
 
 
