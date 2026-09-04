@@ -356,7 +356,7 @@ Teams 알림 미리보기 · 결과 기록
 | 관련 API 공개 경계 테스트 통과 | Yes | 전체 테스트에 포함해 통과 |
 | 전체 테스트 게이트 통과 | Yes | 1057 passed |
 | Chrome 운영 시각·키보드 검증 | Yes | 실제 Chrome 2048×962에서 홈·목록·전체 화면 상세·KST·첫 포커스·J/K·Esc 복귀 확인 |
-| PR 필수 CI 통과 | Yes | [PR #73 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33793201829/job/100774690953?pr=73), [PR #76 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33800125336/job/100797338157), [PR #77 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33804909172/job/100812943767) |
+| PR 필수 CI 통과 | Yes | PR #73~#77 전체 통과. 대표 증빙: [PR #73 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33793201829/job/100774690953?pr=73), [PR #76 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33800125336/job/100797338157), [PR #77 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33804909172/job/100812943767) |
 | Render 새 커밋 배포 확인 | Yes | 배포 `dep-dacu1j6q1p3s73dpvqjg`, 소스 `f87aa9c`, 2026-09-04 06:05 KST Live |
 | P0 카드·클릭 목록 모집단 일치 | Yes | 운영 Chrome: 결과 미기록 388=388행, 마감 임박 76=76행 |
 | 운영의 과거 평가 숨김 확인 | Yes | 부산·역사영상 공고가 `미분석 · 미산정 · AI 판단 분석 전`으로 표시됨 |

@@ -85,6 +85,7 @@
 - [PR #74 — 신용등급 범위 컴파일러](https://github.com/skytree96-cmyk/PAI_LOOP/pull/74)
 - [PR #75 — 추출 원문 범위 보존 계약](https://github.com/skytree96-cmyk/PAI_LOOP/pull/75)
 - [PR #76 — 오래된 분석의 현재 투영 차단](https://github.com/skytree96-cmyk/PAI_LOOP/pull/76)
+- [PR #77 — P0 카드·클릭 목록 모집단 일치](https://github.com/skytree96-cmyk/PAI_LOOP/pull/77) · [최종 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33804909172/job/100812943767)
 - Render 서비스: `pai-loop-demo`
 - 수동 배포 ID: `dep-dacu1j6q1p3s73dpvqjg`
 - 배포 소스: `f87aa9cc1f6d49ff8d76e1b54239fe3943f30f49`
@@ -106,7 +107,7 @@ X-PAI-Manual-Token: <4자리 운영 PIN>
 
 이번 변경은 프롬프트 버전 상승을 포함하므로 `recompute_current:true`만으로는 처리할 수 없고 첨부 재추출이 필요하다. 비용·중복 실행을 막기 위해 부산 공고 한 건을 먼저 실행하고 완료·20/20을 확인한 뒤 역사영상 공고를 순차 실행해야 한다.
 
-로컬 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`은 4자리 PIN 형식이 아니었다. 다른 비밀값을 운영 PIN으로 추정해 전송하는 행위는 승인되지 않은 자격증명 우회이므로 중단했다. 분석 요청·provider 호출은 **0건**이며, PC도 종료하지 않았다.
+로컬 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`은 4자리 PIN 형식이 아니었다. 다른 비밀값을 운영 PIN으로 추정해 전송하는 행위는 승인되지 않은 자격증명 우회이므로 중단했다. PR #77 배포 후 대표 2건의 **신규 재분석 요청 0건·신규 provider 호출 0건**이며, PC도 종료하지 않았다.
 
 ## 7. 남은 인수 체크리스트
 
