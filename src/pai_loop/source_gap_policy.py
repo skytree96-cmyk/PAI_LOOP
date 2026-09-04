@@ -1,0 +1,480 @@
+from __future__ import annotations
+
+import re
+import unicodedata
+
+
+_LEGACY_QUALITATIVE_ONLY_EXCLUSION_RE = re.compile(
+    r"(?s)(?:가\.\s*)?평가\s*항목별\s*배점\s*표에서\s*"
+    r"매우우수/우수/보통/미흡\s*등급의\s*실제\s*점수\s*구간\s*기준이\s*"
+    r"정성\s*평가\s*항목에\s*대해\s*상세\s*서술되지\s*않음\s*"
+    r"\(\s*정성\s*평가이므로\s*정량\s*테이블에서\s*제외\s*\)\s*\.?"
+)
+_QUALITATIVE_RATING_ONLY_EXCLUSION_RE = re.compile(
+    r"(?s)정성(?:적)?\s*평가\s*"
+    r"(?:\(\s*\d+(?:\.\d+)?\s*점\s*\)\s*)?"
+    r"세부\s*평가\s*항목은\s*등급\s*척도\s*"
+    r"\(\s*매우우수\s*/\s*우수\s*/\s*보통\s*/\s*미흡\s*\)\s*만\s*"
+    r"제시되어\s*있어\s*정성\s*판단\s*항목으로\s*"
+    r"정량\s*테이블에서\s*제외(?:됨|함)\s*\.?"
+)
+_QUALITATIVE_TABLE_LOCAL_ABSENCE_RE = re.compile(
+    r"(?s)(?:제안\s*요청서(?:의|\s*내)?\s*)?"
+    r"정성(?:적)?\s*평가\s*(?:세부\s*)?(?:배점\s*)?표\s*"
+    r"(?:은|는|이|가)?\s*(?:본\s*)?(?:입찰\s*)?공고문(?:\s*본문)?에\s*"
+    r"(?:포함되어\s*있지\s*않(?:음|습니다)|"
+    r"포함되지\s*않(?:음|았습니다))\s*\.?"
+)
+_NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE = re.compile(
+    r"입찰\s*공고문?\s*\(\s*"
+    r"(?:제출|접수)\s*기한\s*등\s*(?:구체\s*)?일정\s*"
+    r"\)\s*원문은\s*본\s*첨부에\s*"
+    r"(?:포함되어\s*있지\s*않(?:음|습니다)|포함되지\s*않(?:음|았습니다))\s*\.?"
+)
+_QUANTITATIVE_TABLE_LOCAL_ABSENCE_RE = re.compile(
+    r"(?:"
+    r"(?:제안\s*요청서(?:의|\s*내)?\s*)?"
+    r"정량(?:적)?\s*(?:평가\s*)?(?:세부\s*)?"
+    r"(?:평가\s*)?(?:배점\s*)?표|"
+    r"기술\s*평가\s*세부\s*배점표\s*"
+    r"\(\s*제안\s*요청서\s*내\s*배점\s*기준\s*\)"
+    r")\s*(?:은|는|이|가)?\s*"
+    r"(?:본\s*)?(?:입찰\s*)?공고문(?:\s*본문)?에\s*"
+    r"(?:포함되어\s*있지\s*않(?:음|습니다)|"
+    r"포함되지\s*않(?:음|았습니다))\s*\.?"
+)
+_ATTACHMENT_LOCAL_ABSENCE_TERMS = (
+    "포함되지",
+    "포함되어 있지 않",
+    "별도 첨부",
+    "별도 문서",
+    "별도 제공",
+    "첨부되지",
+    "제공되지",
+    "미포함",
+)
+_QUANTITATIVE_GAP_TERMS = (
+    "정량평가표",
+    "정량 평가표",
+    "평가배점표",
+    "평가 배점표",
+    "평가표",
+    "배점표",
+)
+_UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐림")
+_PARTIAL_TABLE_GAP_TERMS = (
+    "일부",
+    "일부분",
+    "페이지",
+    "행",
+    "열",
+    "항목",
+    "기준",
+    "등급",
+    "구간",
+    "산식",
+    "점수",
+)
+_NON_TABLE_DECISION_GAP_TERMS = (
+    "참가자격",
+    "입찰참가",
+    "자격요건",
+    "세부요건",
+    "면허",
+    "사업자등록",
+    "직접생산",
+    "지역제한",
+    "제출서류",
+)
+_ATTACHMENT_LOCAL_CONTEXT_TERMS = (
+    "이 첨부",
+    "해당 첨부",
+    "공고문",
+    "본문",
+    "제안요청서",
+    "제안 요청서",
+    "과업지시서",
+    "과업 지시서",
+    "과업내용서",
+    "과업 내용서",
+    "규격서",
+    "사양서",
+    "세부사양",
+    "시방서",
+    "내역서",
+)
+_SIBLING_DOCUMENT_TARGETS = (
+    (("제안요청서", "제안 요청서"), ("RFP",)),
+    (("과업지시서", "과업 지시서", "과업내용서", "과업 내용서"), ("SCOPE",)),
+    (("입찰공고", "공고문"), ("NOTICE",)),
+    (("규격서", "사양서", "세부사양", "시방서", "내역서"), ("RFP", "SCOPE")),
+)
+_EXPLICIT_TABLE_PROVENANCE_PAREN_RE = re.compile(
+    r"\(\s*제안\s*요청서\s*내\s*배점\s*기준\s*\)"
+)
+_LOCAL_DOCUMENT_PATTERN = (
+    r"(?:"
+    r"(?:이|해당)\s*첨부(?:\s*본문)?|"
+    r"(?:별도\s*)?(?:본\s*)?(?:입찰\s*)?공고문(?:\s*본문)?|"
+    r"(?:별도\s*)?제안\s*요청서(?:\s*\(\s*붙임\s*\))?(?:\s*본문)?|"
+    r"(?:별도\s*)?과업\s*(?:지시서|내용서)(?:\s*본문)?|"
+    r"(?:별도\s*)?(?:규격서|사양서|세부사양|시방서|내역서)(?:\s*본문)?"
+    r")"
+)
+_LOCAL_TABLE_PATTERN = (
+    r"(?:"
+    r"(?:(?:별도\s*)?제안\s*요청서(?:\s*\(\s*붙임\s*\))?\s*의\s*)?"
+    r"(?:"
+    r"기술\s*평가\s*세부\s*배점표|"
+    r"(?:세부\s*)?(?:정량(?:적)?\s*(?:평가\s*)?)?평가\s*배점표|"
+    r"정량(?:적)?\s*(?:평가\s*)?(?:세부\s*)?(?:평가\s*)?"
+    r"(?:배점\s*)?표|"
+    r"평가표|배점표"
+    r")"
+    r"(?:\s*\(\s*(?:제안\s*요청서\s*내\s*배점\s*기준|"
+    r"정량(?:적)?\s*평가\s*기준)\s*\))?"
+    r")"
+)
+_LOCAL_ABSENCE_PATTERN = (
+    r"(?:"
+    r"포함되어\s*있지\s*않(?:음|습니다)|"
+    r"포함되지\s*않(?:음|았습니다)|"
+    r"제공되지\s*않(?:음|았습니다)|"
+    r"첨부되지\s*않(?:음|았습니다)|"
+    r"미포함|누락"
+    r")"
+)
+_NAMED_DOCUMENT_PATTERN = (
+    r"(?:"
+    r"(?:입찰\s*)?공고문|입찰\s*공고|"
+    r"제안\s*요청서(?:\s*\(\s*붙임\s*\))?|"
+    r"과업\s*(?:지시서|내용서)|"
+    r"규격서|사양서|세부사양|시방서|내역서"
+    r")"
+)
+_NAMED_DOCUMENT_ATOM_PATTERN = rf"(?:별도\s*)?{_NAMED_DOCUMENT_PATTERN}"
+_MISSING_DOCUMENT_LIST_THEN_TABLE_RE = re.compile(
+    rf"(?x)^\s*{_NAMED_DOCUMENT_ATOM_PATTERN}"
+    rf"(?:\s*(?:와|과|및|[,·])\s*{_NAMED_DOCUMENT_ATOM_PATTERN})*"
+    rf"\s*(?:이|가|은|는)?\s*(?:별도\s*)?"
+    rf"(?:제공|첨부|포함)되지\s*않아\s*"
+    rf"{_LOCAL_TABLE_PATTERN}\s*(?:을|를)?\s*"
+    rf"확인(?:할)?\s*수\s*없(?:음|습니다)\s*[.]?\s*$"
+)
+_OWNED_TABLE_IN_LOCAL_DOCUMENT_ABSENCE_RE = re.compile(
+    rf"(?x)^\s*{_NAMED_DOCUMENT_ATOM_PATTERN}\s*의\s*"
+    rf"{_LOCAL_TABLE_PATTERN}\s*(?:은|는|이|가)?\s*"
+    rf"{_LOCAL_DOCUMENT_PATTERN}\s*(?:에|에는|에서)?\s*"
+    rf"{_LOCAL_ABSENCE_PATTERN}\s*[.]?\s*$"
+)
+_TABLE_ONLY_LOCAL_GAP_RE = re.compile(
+    rf"(?x)^\s*(?:"
+    rf"{_LOCAL_TABLE_PATTERN}\s*(?:은|는|이|가)?\s*"
+    rf"{_LOCAL_DOCUMENT_PATTERN}\s*(?:에|에는|에서)?\s*"
+    rf"{_LOCAL_ABSENCE_PATTERN}|"
+    rf"{_LOCAL_DOCUMENT_PATTERN}\s*(?:에는|에|의|은|는|이|가)?\s*"
+    rf"{_LOCAL_TABLE_PATTERN}\s*(?:은|는|이|가|을|를)?\s*"
+    rf"{_LOCAL_ABSENCE_PATTERN}|"
+    rf"(?:{_LOCAL_DOCUMENT_PATTERN}\s*(?:에는|에|은|는)\s*)?"
+    rf"{_LOCAL_DOCUMENT_PATTERN}\s*(?:의\s*)?본문(?:은|는|이|가)?\s*"
+    rf"제공되지\s*않아\s*{_LOCAL_TABLE_PATTERN}\s*(?:을|를)?\s*"
+    rf"확인(?:할)?\s*수\s*없(?:음|습니다)"
+    rf")\s*[.]?\s*$"
+)
+_SOURCE_ABSENCE_CLAIM_RE = re.compile(
+    r"(?:"
+    r"포함되어\s*있지\s*않(?:음|습니다)|"
+    r"포함되지\s*않(?:음|았습니다)|"
+    r"제공되지\s*않(?:음|았습니다)|"
+    r"첨부되지\s*않(?:음|았습니다)|"
+    r"미포함|누락"
+    r")"
+)
+_SECONDARY_UNAVAILABLE_CLAIM_RE = re.compile(
+    r"(?:[.;]|그리고|또한|아울러)\s*\S.{0,240}?"
+    r"(?:확인(?:할)?\s*수\s*없(?:음|습니다)|정보가\s*없음|내용이\s*없음)"
+)
+
+
+def _strip_unicode_format_controls(value: str) -> str:
+    """Remove invisible format controls before matching persisted labels/gaps."""
+
+    return "".join(character for character in value if unicodedata.category(character) != "Cf")
+
+
+def normalise_source_gap(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", _strip_unicode_format_controls(value))
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _compact_document_label(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", _strip_unicode_format_controls(value))
+    return re.sub(r"\s+", "", normalized).casefold()
+
+
+def has_compound_source_absence_claim(value: str) -> bool:
+    """Reject a sibling shortcut when one gap declares another missing subject."""
+
+    gap = normalise_source_gap(value)
+    if len(tuple(_SOURCE_ABSENCE_CLAIM_RE.finditer(gap))) > 1:
+        return True
+    return bool(_SECONDARY_UNAVAILABLE_CLAIM_RE.search(gap))
+
+
+def _contains_partial_quantitative_gap_term(value: str) -> bool:
+    scan_value = _EXPLICIT_TABLE_PROVENANCE_PAREN_RE.sub("", value)
+    return any(term in scan_value for term in _PARTIAL_TABLE_GAP_TERMS)
+
+
+def _table_is_conjoined_with_another_missing_subject(
+    gap: str,
+    table_positions: list[re.Match[str]],
+) -> bool:
+    """Reject a table mention joined to any second, unproved missing subject."""
+
+    for table in table_positions:
+        prefix = gap[max(0, table.start() - 100) : table.start()]
+        suffix = gap[table.end() : min(len(gap), table.end() + 100)]
+        if re.match(r"\s*(?:와|과|및|·|,|，)\s*\S", suffix):
+            return True
+        if re.search(r"(?:와|과|및|·|,|，)\s*$", prefix) and not re.search(
+            r"평가\s*항목\s*및\s*$",
+            prefix,
+        ):
+            return True
+    return False
+
+
+def _named_quantitative_table_target_terms(
+    gap: str,
+    *,
+    absence_positions: list[re.Match[str]],
+    table_positions: list[re.Match[str]],
+) -> set[str]:
+    """Return only document names that own the missing table/body.
+
+    A container phrase such as ``공고문에는`` describes where a body was
+    expected; it is not itself the missing sibling.  Ownership is therefore
+    limited to an explicit ``DOCUMENT의 TABLE`` provenance, a named missing
+    ``DOCUMENT 본문``, or a complete list of named documents that were not
+    supplied before the table became unavailable.
+    """
+
+    named_positions = [
+        (term, match)
+        for markers, _document_types in _SIBLING_DOCUMENT_TARGETS
+        for term in markers
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    targets: set[str] = set()
+
+    if _EXPLICIT_TABLE_PROVENANCE_PAREN_RE.search(gap):
+        targets.add("제안요청서")
+
+    for term, context in named_positions:
+        for table in table_positions:
+            if context.end() > table.start():
+                continue
+            ownership_bridge = gap[context.end() : table.start()]
+            if re.fullmatch(
+                r"\s*(?:\(\s*붙임\s*\))?\s*(?:의|내)\s*(?:세부\s*)?",
+                ownership_bridge,
+            ):
+                targets.add(term)
+
+        for absence in absence_positions:
+            if context.end() > absence.start():
+                continue
+            body_bridge = gap[context.end() : absence.start()]
+            if not re.fullmatch(
+                r"\s*(?:\(\s*붙임\s*\))?\s*(?:의\s*)?"
+                r"본문(?:에는|에|이|가|은|는)?\s*",
+                body_bridge,
+            ):
+                continue
+            if any(absence.end() <= table.start() for table in table_positions):
+                targets.add(term)
+
+    if _MISSING_DOCUMENT_LIST_THEN_TABLE_RE.fullmatch(gap):
+        first_absence_start = min(
+            (match.start() for match in absence_positions),
+            default=len(gap),
+        )
+        targets.update(
+            term
+            for term, context in named_positions
+            if context.start() < first_absence_start
+        )
+
+    return targets
+
+
+def is_explicit_qualitative_only_exclusion(value: str) -> bool:
+    """Return true only for an exhaustive, explicitly non-quantitative statement."""
+
+    gap = normalise_source_gap(value)
+    return bool(
+        gap
+        and (
+            _LEGACY_QUALITATIVE_ONLY_EXCLUSION_RE.fullmatch(gap)
+            or _QUALITATIVE_RATING_ONLY_EXCLUSION_RE.fullmatch(gap)
+        )
+    )
+
+
+def is_explicit_qualitative_table_local_absence(value: str) -> bool:
+    """Recognise only an exhaustive qualitative-table local absence."""
+
+    gap = normalise_source_gap(value)
+    return bool(gap and _QUALITATIVE_TABLE_LOCAL_ABSENCE_RE.fullmatch(gap))
+
+
+def is_explicit_non_quantitative_notice_schedule_gap(value: str) -> bool:
+    """Recognise one bounded notice-schedule omission as irrelevant to scoring."""
+
+    gap = normalise_source_gap(value)
+    return bool(gap and _NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE.fullmatch(gap))
+
+
+def is_explicit_quantitative_table_local_absence(value: str) -> bool:
+    """Recognise only a quantitative-table-only local absence statement."""
+
+    gap = normalise_source_gap(value)
+    return bool(gap and _QUANTITATIVE_TABLE_LOCAL_ABSENCE_RE.fullmatch(gap))
+
+
+def quantitative_table_local_absence_targets(
+    value: str,
+) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] | None:
+    """Classify a complete table-local gap and bind every named sibling role."""
+
+    gap = normalise_source_gap(value)
+    if (
+        not gap
+        or not re.fullmatch(r"(?s).{1,1000}", gap)
+        or any(term in gap for term in _UNREADABLE_GAP_TERMS)
+        or any(term in gap for term in _NON_TABLE_DECISION_GAP_TERMS)
+        or is_explicit_qualitative_table_local_absence(gap)
+        or ("정성" in gap and "정량" not in gap)
+        or has_compound_source_absence_claim(gap)
+    ):
+        return None
+    if not (
+        _TABLE_ONLY_LOCAL_GAP_RE.fullmatch(gap)
+        or _MISSING_DOCUMENT_LIST_THEN_TABLE_RE.fullmatch(gap)
+        or _OWNED_TABLE_IN_LOCAL_DOCUMENT_ABSENCE_RE.fullmatch(gap)
+    ):
+        return None
+
+    context_positions = [
+        (term, match)
+        for term in _ATTACHMENT_LOCAL_CONTEXT_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    absence_positions = [
+        match
+        for term in _ATTACHMENT_LOCAL_ABSENCE_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    table_positions = [
+        match
+        for term in _QUANTITATIVE_GAP_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    if not context_positions or not absence_positions or not table_positions:
+        return None
+    if _table_is_conjoined_with_another_missing_subject(gap, table_positions):
+        return None
+    if any(
+        _contains_partial_quantitative_gap_term(gap[: table.start()])
+        for table in table_positions
+    ):
+        return None
+
+    qualifying_context_terms = _named_quantitative_table_target_terms(
+        gap,
+        absence_positions=absence_positions,
+        table_positions=table_positions,
+    )
+
+    if not qualifying_context_terms:
+        # The statement is still an exact attachment-local table absence, but
+        # it names no sibling that may resolve it (for example, ``이 첨부``).
+        return ()
+    compact_contexts = {
+        _compact_document_label(term) for term in qualifying_context_terms
+    }
+    targets: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    for markers, document_types in _SIBLING_DOCUMENT_TARGETS:
+        compact_markers = tuple(
+            sorted(
+                {
+                    _compact_document_label(marker)
+                    for marker in markers
+                    if _compact_document_label(marker) in compact_contexts
+                }
+            )
+        )
+        if compact_markers:
+            targets.append((document_types, compact_markers))
+    return tuple(targets)
+
+
+def source_label_document_types(value: str | None) -> tuple[str, ...]:
+    """Infer only unambiguous primary/auxiliary roles from a manifest label."""
+
+    if not isinstance(value, str) or not value.strip():
+        return ()
+    compact = _compact_document_label(value)
+    matches: set[str] = set()
+    if any(marker in compact for marker in ("입찰공고", "공고문")):
+        matches.add("NOTICE")
+    if "제안요청서" in compact:
+        matches.add("RFP")
+    if any(marker in compact for marker in ("과업지시서", "과업내용서")):
+        matches.add("SCOPE")
+    if any(
+        marker in compact
+        for marker in (
+            "작성양식",
+            "제출서식",
+            "서식",
+            "양식",
+            "별지",
+            "예시",
+            "예제",
+            "샘플",
+            "견본",
+            "template",
+            "참고",
+            "부록",
+            "초안",
+        )
+    ) or "제안요청서(안)" in compact:
+        matches.add("FORM")
+    return tuple(
+        item for item in ("NOTICE", "RFP", "SCOPE", "FORM") if item in matches
+    )
+
+
+def is_quantitative_irrelevant_gap(value: str) -> bool:
+    """Keep only source gaps that can change an objective score program."""
+
+    return bool(
+        is_explicit_qualitative_only_exclusion(value)
+        or is_explicit_qualitative_table_local_absence(value)
+        or is_explicit_non_quantitative_notice_schedule_gap(value)
+    )
+
+
+__all__ = [
+    "has_compound_source_absence_claim",
+    "is_explicit_non_quantitative_notice_schedule_gap",
+    "is_explicit_quantitative_table_local_absence",
+    "is_explicit_qualitative_only_exclusion",
+    "is_explicit_qualitative_table_local_absence",
+    "is_quantitative_irrelevant_gap",
+    "normalise_source_gap",
+    "quantitative_table_local_absence_targets",
+    "source_label_document_types",
+]

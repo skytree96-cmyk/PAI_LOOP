@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,7 +21,11 @@ from pai_loop.analysis_pipeline import (
 )
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.evaluator import evaluate_notice
-from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSION
+from pai_loop.integrations.openai_extraction import (
+    PROMPT_VERSION,
+    SCHEMA_VERSION,
+    ExtractionPayload,
+)
 from pai_loop.models import (
     AnalysisRun,
     AtomicRequirement,
@@ -38,6 +43,9 @@ from pai_loop.models import (
 from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
     PPS_PROCESSING_VERSION,
+)
+from pai_loop.quantitative_rule_extraction import (
+    validate_quantitative_attachment_extraction,
 )
 
 
@@ -118,6 +126,75 @@ def _requirement(
     }
 
 
+def _quantitative_table(attachment_id: str) -> dict[str, Any]:
+    criterion_literal = "용역수행 실적 건수 (10점)"
+    row_literal = "5건 이상 10점, 미충족 0점"
+    return {
+        "table_id": "Q-PERFORMANCE",
+        "label": "정량적 평가 세부기준",
+        "criteria": [
+            {
+                "criterion_id": "Q-PERFORMANCE-COUNT",
+                "label": "용역수행 실적 건수",
+                "criterion_literal": criterion_literal,
+                "max_points": 10,
+                "scoring_method": "THRESHOLD",
+                "metric": "PERFORMANCE_COUNT",
+                "unit": "건",
+                "brackets": [],
+                "threshold": {
+                    "literal": row_literal,
+                    "operator": "GTE",
+                    "threshold_value": 5,
+                    "points_if_met": 10,
+                    "points_if_not_met": 0,
+                    "evidence": {
+                        "attachment_id": attachment_id,
+                        "page": 33,
+                        "section": "정량적 평가 세부기준",
+                        "quote": row_literal,
+                        "confidence": 0.98,
+                    },
+                },
+                "formula_literal": None,
+                "cases": [],
+                "recognition_conditions": [],
+                "required_evidence": ["company.performance.count"],
+                "evidence": {
+                    "attachment_id": attachment_id,
+                    "page": 33,
+                    "section": "정량적 평가 세부기준",
+                    "quote": criterion_literal,
+                    "confidence": 0.98,
+                },
+                "ambiguity_reason": None,
+            }
+        ],
+        "total_points": 10,
+        "total_evidence": {
+            "attachment_id": attachment_id,
+            "page": 33,
+            "section": "정량적 평가 세부기준",
+            "quote": "정량평가 합계 10점",
+            "confidence": 0.98,
+        },
+        "minimum_score": None,
+        "minimum_evidence": None,
+        "ambiguity_reason": None,
+    }
+
+
+def _quantitative_source_text() -> str:
+    return "\n".join(
+        (
+            "정량평가표",
+            "용역수행 실적 건수 (10점)",
+            "5건 이상 10점, 미충족 0점",
+            "정량평가 합계 10점",
+        )
+    )
+
+
 def _source_version(
     notice: Notice,
     *,
@@ -133,6 +210,8 @@ def _source_version(
     document_type: str = "NOTICE",
     extraction_confidence: float | None = None,
     source_label: str | None = None,
+    quantitative_tables: list[dict[str, Any]] | None = None,
+    include_quantitative_validation_record: bool = True,
 ) -> NoticeVersion:
     digest = digest_char * 64
     result = None
@@ -144,6 +223,43 @@ def _source_version(
         }
         if include_missing_field:
             result["missing_or_unreadable"] = missing or []
+        if quantitative_tables is not None:
+            result["quantitative_tables"] = quantitative_tables
+    source_payload: dict[str, Any] = {
+        "kind": "OPENAI_REQUIREMENT_EXTRACTION",
+        "attachment_id": attachment_id,
+        "source_label": source_label,
+        "document_sha256": digest,
+        "status": status,
+        "review_code": None if status == "ACCEPTED" else "R07",
+        "error_code": None if status == "ACCEPTED" else "MODEL_REFUSAL",
+        "model": "test-extractor",
+        "prompt_version": prompt_version,
+        "schema_version": SCHEMA_VERSION,
+        "result": result,
+    }
+    if (
+        result is not None
+        and quantitative_tables is not None
+        and include_quantitative_validation_record
+    ):
+        current_manifest_sha256 = "f" * 64
+        quantitative_record = validate_quantitative_attachment_extraction(
+            ExtractionPayload.model_validate(result),
+            source_text=_quantitative_source_text(),
+            attachment_id=attachment_id,
+            document_sha256=digest,
+            manifest_sha256=current_manifest_sha256,
+        )
+        source_payload.update(
+            {
+                "manifest_sha256": current_manifest_sha256,
+                "current_manifest_sha256": current_manifest_sha256,
+                "quantitative_validation_record": quantitative_record.model_dump(
+                    mode="json"
+                ),
+            }
+        )
     version = NoticeVersion(
         notice_id=notice.id,
         version_no=version_no,
@@ -155,19 +271,7 @@ def _source_version(
             if extraction_confidence is not None
             else 0.98 if status == "ACCEPTED" else 0.0
         ),
-        source_payload={
-            "kind": "OPENAI_REQUIREMENT_EXTRACTION",
-            "attachment_id": attachment_id,
-            "source_label": source_label,
-            "document_sha256": digest,
-            "status": status,
-            "review_code": None if status == "ACCEPTED" else "R07",
-            "error_code": None if status == "ACCEPTED" else "MODEL_REFUSAL",
-            "model": "test-extractor",
-            "prompt_version": prompt_version,
-            "schema_version": SCHEMA_VERSION,
-            "result": result,
-        },
+        source_payload=source_payload,
     )
     notice.versions.append(version)
     return version
@@ -535,8 +639,8 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.3"
-    assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.0"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.4"
+    assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.1"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.3.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
     notice.risk_dimensions = None
@@ -769,7 +873,7 @@ def test_known_non_eligibility_gap_can_release_r07_after_strict_eligibility_chec
     assert business_risk.basis_json["axis_basis"]["document"]["run_status"] == "PARTIAL"
 
 
-def test_attachment_local_absence_is_resolved_only_by_an_accepted_sibling(
+def test_quantitative_absence_is_not_resolved_by_document_presence_alone(
     db_session: Session,
 ) -> None:
     notice = _notice(
@@ -810,11 +914,809 @@ def test_attachment_local_absence_is_resolved_only_by_an_accepted_sibling(
 
     result = run_analysis_pipeline(db_session, notice_id=notice.id)
 
-    assert result.status == "COMPLETED"
+    assert result.status == "PARTIAL"
     assert result.eligibility == "PASS"
     assert result.reason_code == "PASS_MATCH"
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" not in result.warnings
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+@pytest.mark.parametrize(
+    ("rfp_confidence", "expected_status", "expected_eligibility"),
+    ((None, "COMPLETED", "PASS"), (0, "PARTIAL", "REVIEW")),
+    ids=("requirement-confidence", "quantitative-anchor-confidence"),
+)
+@pytest.mark.parametrize(
+    ("gap_kind", "notice_gap"),
+    (
+        (
+            "production",
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+            "포함되어 있지 않음",
+        ),
+        (
+            "missing-body",
+            "제안요청서(붙임) 본문이 제공되지 않아 세부 평가배점표"
+            "(정량평가 기준)를 확인할 수 없음",
+        ),
+        (
+            "separate-rfp",
+            "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음",
+        ),
+    ),
+)
+def test_busan_cross_references_and_qualitative_exclusion_form_complete_closure(
+    db_session: Session,
+    rfp_confidence: float | None,
+    expected_status: str,
+    expected_eligibility: str,
+    gap_kind: str,
+    notice_gap: str,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key=(
+            f"BUSAN-CROSS-REFERENCE-CLOSURE-{expected_eligibility}-{gap_kind}"
+        ),
+        title="공고문과 제안요청서가 상호 참조하는 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-BUSAN-NOTICE",
+        digest_char="1",
+        requirements=[
+            _requirement(
+                "REQ-BUSAN-CLOSURE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-BUSAN-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문(재공고).pdf",
+        missing=[notice_gap],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-BUSAN-RFP",
+        digest_char="2",
+        requirements=[],
+        document_type="RFP",
+        source_label="2026 부산교육한마당 제안요청서.hwp",
+        extraction_confidence=rfp_confidence,
+        quantitative_tables=[_quantitative_table("ATT-BUSAN-RFP")],
+        missing=[
+            "정성적 평가(80점) 세부 평가항목은 등급 척도"
+            "(매우우수/우수/보통/미흡)만 제시되어 있어 정성 판단 항목으로 "
+            "정량 테이블에서 제외됨",
+            "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+            "포함되어 있지 않음",
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == expected_status
+    assert result.eligibility == expected_eligibility
+    if expected_eligibility == "PASS":
+        assert result.reason_code == "PASS_MATCH"
     assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" in result.warnings
     assert "AGGREGATE_GAPS_UNRESOLVED" not in result.warnings
+    if rfp_confidence == 0:
+        assert "LOW_EXTRACTION_CONFIDENCE" in result.warnings
+
+
+def test_unreadable_table_in_technical_sibling_keeps_busan_closure_incomplete(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="BUSAN-CROSS-REFERENCE-UNREADABLE",
+        title="판독 불가 표가 남은 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-BUSAN-NOTICE-UNREADABLE",
+        digest_char="3",
+        requirements=[
+            _requirement(
+                "REQ-BUSAN-UNREADABLE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-BUSAN-NOTICE-UNREADABLE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문(재공고).pdf",
+        missing=[
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-BUSAN-RFP-UNREADABLE",
+        digest_char="4",
+        requirements=[],
+        document_type="RFP",
+        source_label="2026 부산교육한마당 제안요청서.hwp",
+        quantitative_tables=[
+            _quantitative_table("ATT-BUSAN-RFP-UNREADABLE")
+        ],
+        missing=[
+            "정성적 평가(80점) 세부 평가항목은 등급 척도"
+            "(매우우수/우수/보통/미흡)만 제시되어 있어 정성 판단 항목으로 "
+            "정량 테이블에서 제외됨",
+            "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+            "포함되어 있지 않음",
+            "평가표 일부 행이 흐려 판독 불가",
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_mutually_incomplete_empty_documents_cannot_close_by_type_alone(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="EMPTY-CROSS-REFERENCE-CYCLE",
+        title="내용 없는 상호 참조 문서",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-EMPTY-NOTICE",
+        digest_char="5",
+        requirements=[
+            _requirement(
+                "REQ-EMPTY-CYCLE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-EMPTY-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[
+            "입찰공고 본문에는 제안요청서의 세부 요구사항과 정량 평가표가 "
+            "포함되어 있지 않음"
+        ],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-EMPTY-RFP",
+        digest_char="6",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[_quantitative_table("ATT-EMPTY-RFP")],
+        include_quantitative_validation_record=False,
+        missing=[
+            "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_review_quantitative_record_cannot_seed_cross_reference_closure(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="REVIEW-TABLE-CROSS-REFERENCE-CYCLE",
+        title="검토 표가 있는 상호 참조 문서",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-REVIEW-NOTICE",
+        digest_char="7",
+        requirements=[
+            _requirement(
+                "REQ-REVIEW-CYCLE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-REVIEW-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    review_table = _quantitative_table("ATT-REVIEW-RFP")
+    review_table["ambiguity_reason"] = "원문에서 적용 표를 확정할 수 없음"
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-REVIEW-RFP",
+        digest_char="8",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[review_table],
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_available_table_inside_review_record_supplies_named_rfp_gap(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="MIXED-REVIEW-TABLE-CROSS-REFERENCE",
+        title="확정 표와 검토 표가 함께 있는 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-MIXED-NOTICE",
+        digest_char="7",
+        requirements=[
+            _requirement(
+                "REQ-MIXED-REVIEW",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-MIXED-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    available_table = _quantitative_table("ATT-MIXED-RFP")
+    review_table = copy.deepcopy(available_table)
+    review_table["table_id"] = "Q-PERFORMANCE-REVIEW"
+    review_table["criteria"][0]["criterion_id"] = "Q-PERFORMANCE-COUNT-REVIEW"
+    review_table["ambiguity_reason"] = "두 평가표 중 적용 대상을 원문에서 확정할 수 없음"
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-MIXED-RFP",
+        digest_char="8",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[available_table, review_table],
+        missing=[
+            "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "COMPLETED"
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" in result.warnings
+    assert "AGGREGATE_GAPS_UNRESOLVED" not in result.warnings
+    run = db_session.get(AnalysisRun, result.analysis_run_id)
+    assert run is not None
+    quantitative = next(
+        item for item in run.scores if item.score_key == "quantitative.total"
+    )
+    assert quantitative.status == "REVIEW"
+    assert quantitative.basis_json["activation_status"] != "AUTO_ACTIVE"
+
+
+def test_exact_rfp_label_can_supply_when_extracted_type_is_other(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="OTHER-TYPE-RFP-LABEL-CLOSURE",
+        title="파일명으로 역할을 확정한 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-OTHER-NOTICE",
+        digest_char="5",
+        requirements=[
+            _requirement(
+                "REQ-OTHER-RFP",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-OTHER-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=["별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-OTHER-RFP",
+        digest_char="6",
+        requirements=[],
+        document_type="OTHER",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[_quantitative_table("ATT-OTHER-RFP")],
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "COMPLETED"
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" in result.warnings
+    assert "AGGREGATE_GAPS_UNRESOLVED" not in result.warnings
+
+
+def test_rfp_table_gap_cannot_reverse_direction_to_a_notice_supplier(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="RFP-GAP-DIRECTION-NOTICE-SUPPLIER",
+        title="결손 문서 방향을 보존하는 교육 용역",
+    )
+    notice.risk_dimensions = None
+    gap = "공고문에는 제안요청서 본문이 제공되지 않아 평가배점표를 확인할 수 없음"
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-DIRECTION-RFP",
+        digest_char="4",
+        requirements=[
+            _requirement(
+                "REQ-DIRECTION-RFP",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-DIRECTION-RFP",
+            )
+        ],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        missing=[gap],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-DIRECTION-NOTICE",
+        digest_char="5",
+        requirements=[],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        quantitative_tables=[_quantitative_table("ATT-DIRECTION-NOTICE")],
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" not in result.warnings
+
+
+def test_compound_non_quantitative_gap_cannot_close_by_notice_presence(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="COMPOUND-NON-QUANTITATIVE-GAP",
+        title="다른 누락이 함께 남은 교육 용역",
+    )
+    notice.risk_dimensions = None
+    gap = "공고문은 본 제안요청서에 포함되지 않음. 안전관리계획도 누락"
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-COMPOUND-RFP",
+        digest_char="6",
+        requirements=[
+            _requirement(
+                "REQ-COMPOUND-NON-QUANT",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-COMPOUND-RFP",
+            )
+        ],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        missing=[gap],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-COMPOUND-NOTICE",
+        digest_char="7",
+        requirements=[],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" not in result.warnings
+
+
+@pytest.mark.parametrize(
+    ("supplier_type", "supplier_label", "expected_status"),
+    (
+        ("OTHER", "제안요청\u200b서.hwp", "COMPLETED"),
+        ("RFP", "제안요청서 작성양식.hwp", "PARTIAL"),
+        ("RFP", "제안요청서(안).hwp", "PARTIAL"),
+    ),
+)
+def test_supplier_label_format_controls_and_auxiliary_rfp_roles(
+    db_session: Session,
+    supplier_type: str,
+    supplier_label: str,
+    expected_status: str,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key=f"RFP-LABEL-PROVENANCE-{expected_status}-{supplier_type}",
+        title="문서명 출처 검증 교육 용역",
+    )
+    notice.risk_dimensions = None
+    gap = "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-LABEL-NOTICE",
+        digest_char="8",
+        requirements=[
+            _requirement(
+                "REQ-LABEL-PROVENANCE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-LABEL-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[gap],
+    )
+    supplier_id = "ATT-LABEL-SUPPLIER"
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id=supplier_id,
+        digest_char="9",
+        requirements=[],
+        document_type=supplier_type,
+        source_label=supplier_label,
+        quantitative_tables=[_quantitative_table(supplier_id)],
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == expected_status
+    if expected_status == "COMPLETED":
+        assert "AGGREGATE_GAPS_UNRESOLVED" not in result.warnings
+    else:
+        assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+def test_raw_quantitative_table_cannot_seed_cross_reference_closure(
+    db_session: Session,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="RAW-TABLE-CROSS-REFERENCE",
+        title="검증 레코드 없는 표가 포함된 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-RAW-NOTICE",
+        digest_char="9",
+        requirements=[
+            _requirement(
+                "REQ-RAW-TABLE",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-RAW-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-RAW-RFP",
+        digest_char="a",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[_quantitative_table("ATT-RAW-RFP")],
+        include_quantitative_validation_record=False,
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+    assert "SOURCE_LOCAL_GAP_RESOLVED_BY_TYPED_SIBLING" not in result.warnings
+
+
+@pytest.mark.parametrize(
+    ("supplier_type", "supplier_label", "gap"),
+    (
+        (
+            "FORM",
+            "인력 배치 평가표.hwp",
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 포함되어 있지 않음",
+        ),
+        (
+            "FORM",
+            "제안요청서 서식.hwp",
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 포함되어 있지 않음",
+        ),
+        (
+            "RFP",
+            "제안요청서 서식.hwp",
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 포함되어 있지 않음",
+        ),
+        (
+            "RFP",
+            "제안요청서 참고용.hwp",
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 포함되어 있지 않음",
+        ),
+        (
+            "RFP",
+            "부록 제안요청서.hwp",
+            "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음",
+        ),
+        (
+            "RFP",
+            "제안요청서 초안.hwp",
+            "제안요청서(붙임) 본문이 제공되지 않아 세부 평가배점표"
+            "(정량평가 기준)를 확인할 수 없음",
+        ),
+        (
+            "SCOPE",
+            "과업지시서.hwp",
+            "제안 요청서의 정량 평가표는 본 공고문에 포함되어 있지 않음",
+        ),
+        (
+            "RFP",
+            "과업지시서.hwp",
+            "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 포함되어 있지 않음",
+        ),
+    ),
+)
+def test_unrelated_validated_table_cannot_satisfy_named_rfp_gap(
+    db_session: Session,
+    supplier_type: str,
+    supplier_label: str,
+    gap: str,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key=f"UNRELATED-TABLE-{supplier_type}",
+        title="다른 문서 역할의 평가표가 포함된 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id=f"ATT-UNRELATED-NOTICE-{supplier_type}",
+        digest_char="d",
+        requirements=[
+            _requirement(
+                f"REQ-UNRELATED-{supplier_type}",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id=f"ATT-UNRELATED-NOTICE-{supplier_type}",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[gap],
+    )
+    supplier_id = f"ATT-UNRELATED-{supplier_type}"
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id=supplier_id,
+        digest_char="e",
+        requirements=[],
+        document_type=supplier_type,
+        source_label=supplier_label,
+        quantitative_tables=[_quantitative_table(supplier_id)],
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+@pytest.mark.parametrize(
+    ("compound_gap", "expected_eligibility", "expected_reason"),
+    (
+        (
+            "입찰참가자격 세부요건과 정량 평가표는 제안요청서에 있어 "
+            "본 공고문에 포함되어 있지 않음",
+            "REVIEW",
+            "R07",
+        ),
+        (
+            "제안요청서 본문이 제공되지 않아 평가배점표와 수행계획을 확인할 수 없음",
+            "PASS",
+            "PASS_MATCH",
+        ),
+        (
+            "별도 제안요청서의 평가배점표와 사업일정은 이 첨부에 포함되지 않음",
+            "PASS",
+            "PASS_MATCH",
+        ),
+        (
+            "제안요청서 본문이 제공되지 않아 평가배점표 및 안전관리계획을 확인할 수 없음",
+            "PASS",
+            "PASS_MATCH",
+        ),
+    ),
+)
+def test_compound_requirement_and_table_gap_cannot_close_by_table_capability(
+    db_session: Session,
+    compound_gap: str,
+    expected_eligibility: str,
+    expected_reason: str,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key="COMPOUND-TABLE-CROSS-REFERENCE",
+        title="참가자격과 표가 함께 누락된 교육 용역",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id="ATT-COMPOUND-NOTICE",
+        digest_char="b",
+        requirements=[
+            _requirement(
+                "REQ-COMPOUND",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id="ATT-COMPOUND-NOTICE",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[compound_gap],
+    )
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id="ATT-COMPOUND-RFP",
+        digest_char="c",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[_quantitative_table("ATT-COMPOUND-RFP")],
+        missing=[],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert result.eligibility == expected_eligibility
+    assert result.reason_code == expected_reason
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
+
+
+@pytest.mark.parametrize(
+    ("suffix", "notice_gap"),
+    (
+        (
+            "COMPOUND",
+            "입찰참가자격 세부요건과 정량 평가표는 제안요청서에 있어 "
+            "본 공고문에 포함되어 있지 않음",
+        ),
+        (
+            "QUALITATIVE",
+            "제안요청서의 정성 평가표가 본 공고문에 포함되어 있지 않음",
+        ),
+    ),
+)
+def test_available_quantitative_record_covers_only_quantitative_table_gap(
+    db_session: Session,
+    suffix: str,
+    notice_gap: str,
+) -> None:
+    notice = _notice(
+        db_session,
+        notice_key=f"NON-QUANTITATIVE-CROSS-REFERENCE-{suffix}",
+        title="정량표로 대체할 수 없는 상호 참조 문서",
+    )
+    notice.risk_dimensions = None
+    _source_version(
+        notice,
+        version_no=1,
+        attachment_id=f"ATT-NON-QUANT-NOTICE-{suffix}",
+        digest_char="9",
+        requirements=[
+            _requirement(
+                f"REQ-NON-QUANT-{suffix}",
+                "경쟁입찰참가자격 등록을 완료한 업체여야 함",
+                attachment_id=f"ATT-NON-QUANT-NOTICE-{suffix}",
+            )
+        ],
+        document_type="NOTICE",
+        source_label="공고문.pdf",
+        missing=[notice_gap],
+    )
+    rfp_attachment_id = f"ATT-NON-QUANT-RFP-{suffix}"
+    _source_version(
+        notice,
+        version_no=2,
+        attachment_id=rfp_attachment_id,
+        digest_char="a",
+        requirements=[],
+        document_type="RFP",
+        source_label="제안요청서.hwp",
+        quantitative_tables=[_quantitative_table(rfp_attachment_id)],
+        missing=[
+            "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+            "포함되어 있지 않음"
+        ],
+    )
+    _verified_boolean_fact(db_session, "bidder_registration")
+    db_session.commit()
+
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+
+    assert result.status == "PARTIAL"
+    assert "AGGREGATE_GAPS_UNRESOLVED" in result.warnings
 
 
 def test_attachment_does_not_satisfy_its_own_missing_document_gap(

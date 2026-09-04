@@ -35,10 +35,18 @@ from .quantitative_formula import (
     compile_credit_rating_values,
     normalize_credit_rating_text,
 )
+from .source_gap_policy import (
+    is_explicit_qualitative_only_exclusion as _shared_qualitative_only_exclusion,
+    is_quantitative_irrelevant_gap,
+    normalise_source_gap as _shared_normalise_source_gap,
+    quantitative_table_local_absence_targets as _shared_quantitative_table_local_absence_targets,
+    source_label_document_types as _shared_source_label_document_types,
+)
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.11"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.14"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.13"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.16"
+MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 
 # Issue-only proof changes use targeted fingerprint revisions below.  Changes to
 # executable scoring semantics, such as the credit-range DSL above, intentionally
@@ -48,66 +56,6 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
         "sourcewide-structural-signature-v1"
     ),
 }
-
-_ATTACHMENT_LOCAL_ABSENCE_TERMS = (
-    "포함되지",
-    "별도 첨부",
-    "별도 문서",
-    "별도 제공",
-    "첨부되지",
-    "제공되지",
-    "미포함",
-)
-_QUANTITATIVE_GAP_TERMS = (
-    "정량평가표",
-    "정량 평가표",
-    "평가배점표",
-    "평가 배점표",
-    "평가표",
-    "배점표",
-)
-_UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐림")
-_PARTIAL_TABLE_GAP_TERMS = (
-    "일부",
-    "일부분",
-    "페이지",
-    "행",
-    "열",
-    "항목",
-    "기준",
-    "등급",
-    "구간",
-    "산식",
-    "점수",
-)
-_ATTACHMENT_LOCAL_CONTEXT_TERMS = (
-    "이 첨부",
-    "해당 첨부",
-    "공고문",
-    "본문",
-    "제안요청서",
-    "과업지시서",
-    "과업 지시서",
-    "과업내용서",
-    "과업 내용서",
-    "규격서",
-    "사양서",
-    "세부사양",
-    "시방서",
-    "내역서",
-)
-_SIBLING_DOCUMENT_TARGETS = (
-    (("제안요청서", "제안 요청서"), ("RFP",)),
-    (("과업지시서", "과업 지시서", "과업내용서", "과업 내용서"), ("SCOPE",)),
-    (("입찰공고", "공고문"), ("NOTICE",)),
-    (("규격서", "사양서", "세부사양", "시방서", "내역서"), ("RFP", "SCOPE")),
-)
-_QUALITATIVE_ONLY_EXCLUSION_RE = re.compile(
-    r"(?s)(?:가\.\s*)?평가\s*항목별\s*배점\s*표에서\s*"
-    r"매우우수/우수/보통/미흡\s*등급의\s*실제\s*점수\s*구간\s*기준이\s*"
-    r"정성\s*평가\s*항목에\s*대해\s*상세\s*서술되지\s*않음\s*"
-    r"\(\s*정성\s*평가이므로\s*정량\s*테이블에서\s*제외\s*\)\s*\.?"
-)
 
 ProfileStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE", "NOT_APPLICABLE"]
 CandidateStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE"]
@@ -340,9 +288,48 @@ _SOURCEWIDE_HEADING_PREFIX_PATTERN = (
 )
 _SOURCEWIDE_TABLE_MARKER_RE = re.compile(
     rf"^{_SOURCEWIDE_HEADING_PREFIX_PATTERN}"
-    r"(?:정량(?:적)?\s*평가(?:\s*세부\s*기준|\s*기준|표)?|"
-    r"평가\s*배점표|평가\s*기준표)$"
+    r"(?:(?:정량(?:적)?|객관(?:적)?|계량(?:적)?|계량화)\s*"
+    r"(?:지표(?:별)?\s*)?평가\s*"
+    r"(?:세부\s*(?:기준(?:표)?|배점표|평가표)|"
+    r"항목(?:별)?(?:\s*및\s*배점)?|항목별\s*배점|"
+    r"기준(?:표)?|표|배점표|평가표)|"
+    r"평가\s*배점표|평가\s*기준표)"
+    rf"(?:\s*\(\s*{_NUM_PATTERN}\s*점\s*\))?$"
 )
+
+
+def _sourcewide_table_marker_spans(
+    lines: tuple[str, ...],
+) -> tuple[tuple[int, int], ...]:
+    """Return exact objective-table headings, including split HWP cells.
+
+    HWP extraction may place ``객관적``, ``평가`` and ``세부기준`` on
+    separate physical lines. Treat at most four adjacent non-empty lines as
+    one heading so a competing table cannot disappear merely because its title
+    was split across cells. The anchored heading grammar still requires both
+    the objective-evaluation noun and a table/criteria suffix.
+    """
+
+    matches: set[tuple[int, int]] = set()
+    for start in range(len(lines)):
+        for end in range(
+            start + 1,
+            min(len(lines), start + _MAX_TABLE_CELL_WINDOW_LINES) + 1,
+        ):
+            window_lines = lines[start:end]
+            if any(not line.strip() for line in window_lines) or any(
+                _HWP_SECTION_LINE_RE.fullmatch(line.strip())
+                for line in window_lines
+            ):
+                break
+            window = "\n".join(window_lines)
+            if len(window) > _MAX_TABLE_CELL_WINDOW_CHARS:
+                break
+            if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(
+                unicodedata.normalize("NFKC", window).strip()
+            ):
+                matches.add((start, end))
+    return tuple(sorted(matches))
 _SOURCEWIDE_HEADER_NOUN_SUFFIX_RE = re.compile(
     r"(?:현황|상태|능력|실적|보유|평가|기준|항목|인력|시설|장비|경력|"
     r"재무구조|조직)$"
@@ -498,7 +485,14 @@ def _comparator_binding_issue(
 def _source_lines(source: str) -> tuple[str, ...]:
     """Return visible HWP paragraphs while preserving their exact order."""
 
-    return tuple(line.strip() for line in source.splitlines())
+    return tuple(
+        "".join(
+            character
+            for character in unicodedata.normalize("NFC", line).strip()
+            if unicodedata.category(character) != "Cf"
+        )
+        for line in source.splitlines()
+    )
 
 
 def _normalise_anchor_text(value: str) -> str:
@@ -1200,6 +1194,9 @@ _SOURCEWIDE_QUANTITATIVE_SUMMARY_TOTAL_RE = re.compile(
 _SOURCEWIDE_QUANTITATIVE_DETAIL_MARKER_RE = re.compile(
     rf"^{_SOURCEWIDE_HEADING_PREFIX_PATTERN}"
     r"정량적\s*평가\s*세부\s*기준$"
+)
+_OVERALL_POINT_BOUND_RE = re.compile(
+    rf"(?P<points>{_NUM_PATTERN})\s*점\s*(?P<op>이상|초과|이하|미만)"
 )
 _CREDIT_RATING_COLUMN_HEADER_CLUSTER = (
     "신용평가등급",
@@ -2117,13 +2114,7 @@ def _sourcewide_structural_boundary_spans(
 ) -> tuple[tuple[tuple[int, int], ...], bool]:
     """Find explicit physical table/criterion boundaries omitted by the model."""
 
-    matches: list[tuple[int, int]] = [
-        (index, index + 1)
-        for index, line in enumerate(lines)
-        if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(
-            unicodedata.normalize("NFKC", line).strip()
-        )
-    ]
+    matches: list[tuple[int, int]] = list(_sourcewide_table_marker_spans(lines))
     if len(matches) > _MAX_SOURCEWIDE_BOUNDARY_SPANS:
         return (), True
     for start in range(len(lines)):
@@ -2761,6 +2752,785 @@ def _span_inside_region(
     return region is not None and region[0] <= span[0] and span[1] <= region[1]
 
 
+def _overall_evaluation_minimum_context_matches(
+    lines: tuple[str, ...],
+    *,
+    span: tuple[int, int],
+    minimum_score: Decimal,
+    allowed_operators: tuple[str, ...] = ("이상", "초과"),
+) -> bool:
+    """Prove one minimum anchor occurrence is an overall-evaluation cutoff."""
+
+    literal = "\n".join(lines[span[0] : span[1]])
+    point_bounds: list[tuple[Decimal, str]] = []
+    for match in _OVERALL_POINT_BOUND_RE.finditer(literal):
+        try:
+            point_bounds.append(
+                (
+                    Decimal(match.group("points").replace(",", "")),
+                    match.group("op"),
+                )
+            )
+        except InvalidOperation:
+            return False
+    if (
+        len(point_bounds) != 1
+        or point_bounds[0][0] != minimum_score
+        or point_bounds[0][1] not in allowed_operators
+    ):
+        return False
+
+    def context_matches(value: str) -> bool:
+        compact = re.sub(
+            r"\s+",
+            "",
+            unicodedata.normalize("NFKC", value),
+        )
+        return bool(
+            "정량" not in compact
+            and any(
+                marker in compact
+                for marker in ("제안서평가", "기술평가", "종합평가")
+            )
+            and any(marker in compact for marker in ("적격", "선정", "협상"))
+        )
+
+    if context_matches(literal):
+        return True
+
+    # A repeated score on the following line must not borrow ``제안서 평가``
+    # or ``선정`` from the previous sentence. The only source-local
+    # continuation accepted here is the explicit two-stage procurement form
+    # used by the Busan RFP (for example, ``2단계-1단계 결과 85점 이상자 중
+    # 최저가격 제안자``). Every ownership token is therefore present on the
+    # same physical line as the bound.
+    compact_literal = re.sub(
+        r"\s+",
+        "",
+        unicodedata.normalize("NFKC", literal),
+    )
+    return bool(
+        re.fullmatch(
+            rf"\d+단계[-:]\d+단계결과{_NUM_PATTERN}점"
+            r"(?:이상|초과)(?:인)?(?:자|업체)?중최저가격(?:을)?"
+            r"(?:제안한)?제안자",
+            compact_literal,
+        )
+    )
+
+
+def _legacy_has_unclaimed_quantitative_point_language(
+    lines: tuple[str, ...],
+    *,
+    total_span: tuple[int, int],
+    overall_minimum_spans: tuple[tuple[int, int], ...],
+    minimum_score: Decimal,
+    criteria: list[QuantitativeRuleCandidate],
+) -> bool:
+    """Census cutoff language outside exact, structurally owned table claims."""
+
+    protected_lines = set(range(total_span[0], total_span[1]))
+    for index in range(len(lines)):
+        span = (index, index + 1)
+        if _overall_evaluation_minimum_context_matches(
+            lines, span=span, minimum_score=minimum_score
+        ):
+            protected_lines.add(index)
+    for span in overall_minimum_spans:
+        if _overall_evaluation_minimum_context_matches(
+            lines, span=span, minimum_score=minimum_score
+        ):
+            protected_lines.update(range(span[0], span[1]))
+
+    claimed_literals: list[str] = []
+    for candidate in criteria:
+        claimed_literals.extend((candidate.criterion_literal, candidate.evidence.quote))
+        for bracket in candidate.brackets:
+            claimed_literals.extend((bracket.literal, bracket.evidence.quote))
+        if candidate.threshold is not None:
+            claimed_literals.extend(
+                (candidate.threshold.literal, candidate.threshold.evidence.quote)
+            )
+        for case in candidate.cases:
+            claimed_literals.extend((case.literal, case.evidence.quote))
+        for condition in candidate.recognition_conditions:
+            claimed_literals.extend((condition.literal, condition.evidence.quote))
+    for literal in claimed_literals:
+        span = _unique_anchor_line_span(lines, literal)
+        if span is not None:
+            protected_lines.update(range(span[0], span[1]))
+
+    summary_markers = [
+        index
+        for index, line in enumerate(lines)
+        if re.fullmatch(
+            rf"{_SOURCEWIDE_HEADING_PREFIX_PATTERN}정량(?:적)?\s*평가\s*요약",
+            unicodedata.normalize("NFKC", line).strip(),
+        )
+    ]
+    detail_markers = [
+        index
+        for index, line in enumerate(lines)
+        if _SOURCEWIDE_QUANTITATIVE_DETAIL_MARKER_RE.fullmatch(
+            unicodedata.normalize("NFKC", line).strip()
+        )
+    ]
+    if (
+        len(summary_markers) == 1
+        and len(detail_markers) == 1
+        and summary_markers[0] < detail_markers[0]
+    ):
+        summary_start = summary_markers[0]
+        summary_end = detail_markers[0]
+
+        def semantic_key(value: str) -> str:
+            normalized = unicodedata.normalize("NFKC", value).replace("요약", "")
+            normalized = re.sub(rf"{_NUM_PATTERN}\s*점", "", normalized)
+            return re.sub(r"[^0-9A-Za-z가-힣]+", "", normalized).casefold()
+
+        summary_rows: set[int] = set()
+        summary_shape_valid = True
+        for candidate in criteria:
+            maximum = _decimal(candidate.max_points)
+            label_key = semantic_key(candidate.label)
+            matches: list[int] = []
+            for index in range(summary_start + 1, summary_end):
+                line = unicodedata.normalize("NFKC", lines[index])
+                point_values = []
+                for raw in re.findall(rf"({_NUM_PATTERN})\s*점", line):
+                    try:
+                        point_values.append(Decimal(raw.replace(",", "")))
+                    except InvalidOperation:
+                        summary_shape_valid = False
+                if (
+                    maximum is not None
+                    and point_values == [maximum]
+                    and label_key
+                    and label_key in semantic_key(line)
+                ):
+                    matches.append(index)
+            if len(matches) != 1 or matches[0] in summary_rows:
+                summary_shape_valid = False
+                break
+            summary_rows.add(matches[0])
+        unowned_summary_text = "\n".join(
+            lines[index]
+            for index in range(summary_start + 1, summary_end)
+            if index not in summary_rows
+        )
+        if re.search(
+            rf"{_NUM_PATTERN}\s*(?:점|%|퍼센트)", unowned_summary_text
+        ):
+            summary_shape_valid = False
+        if summary_shape_valid and len(summary_rows) == len(criteria):
+            protected_lines.add(summary_start)
+            protected_lines.update(summary_rows)
+
+    # Protected source claims are separators rather than deleted glue.  This
+    # prevents a normal table footnote such as "최저점으로 처리" from being
+    # paired with an unrelated score cell hundreds of characters away, while
+    # still catching split, unclaimed cutoff prose in the same local segment.
+    segments: list[list[str]] = [[]]
+    for index, line in enumerate(lines):
+        if index in protected_lines or _HWP_SECTION_LINE_RE.fullmatch(line):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(line)
+
+    score_value_pattern = rf"{_NUM_PATTERN}\s*(?:점|%|퍼센트)"
+    quantitative_score_same_line_re = re.compile(
+        rf"(?:정량[^\n]{{0,160}}?{score_value_pattern}|"
+        rf"{score_value_pattern}[^\n]{{0,160}}?정량)"
+    )
+    quantitative_score_context_re = re.compile(
+        rf"(?:정량.*?{score_value_pattern}|{score_value_pattern}.*?정량)",
+        re.DOTALL,
+    )
+    decision_term_pattern = (
+        r"(?:획득|선정|협상|도달|낮|넘|인정|후순위|제외|부적격|"
+        r"합격|통과|탈락|미달|미치|득점|적격|충족|부여|처리|"
+        r"한하여|해야|하지\s*않|못한|대상)"
+    )
+    score_decision_line_re = re.compile(
+        rf"(?:{score_value_pattern}[^\n]{{0,160}}?{decision_term_pattern}|"
+        rf"{decision_term_pattern}[^\n]{{0,160}}?{score_value_pattern})"
+    )
+    percent_bound_re = re.compile(
+        rf"{_NUM_PATTERN}\s*(?:%|퍼센트)\s*(?:이상|초과|이하|미만)"
+    )
+    cutoff_term_pattern = (
+        r"(?:최저\s*점|최소\s*점수|기준\s*점수|합격\s*선|"
+        r"통과(?:\s*기준)?|탈락|부적격|미달|못\s*미치|제외|"
+        r"득점률|득점하지\s*못)"
+    )
+    cutoff_near_score_re = re.compile(
+        rf"(?:{cutoff_term_pattern}.{{0,160}}?{score_value_pattern}|"
+        rf"{score_value_pattern}.{{0,160}}?{cutoff_term_pattern})",
+        re.DOTALL,
+    )
+    for segment in segments:
+        value = unicodedata.normalize("NFKC", "\n".join(segment))
+        if (
+            quantitative_score_same_line_re.search(value)
+            or quantitative_score_context_re.search(value)
+            or score_decision_line_re.search(value)
+            or _OVERALL_POINT_BOUND_RE.search(value)
+            or percent_bound_re.search(value)
+            or cutoff_near_score_re.search(value)
+        ):
+            return True
+    return False
+
+
+_EXTERNAL_MIN_NEXT_SECTION_RE = re.compile(
+    r"^\d+\s*[.]\s*제안서\s*평가$"
+)
+_EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE = re.compile(
+    r"(?:정량(?:적)?|객관(?:적)?|계량(?:적)?|계량화)\s*"
+    r"(?:지표(?:별)?\s*)?평가?"
+)
+_EXTERNAL_MIN_DECISION_RE = re.compile(
+    r"(?:최저\s*점|최소\s*점수|기준\s*점수|합격\s*선|과락|"
+    r"획득|취득|얻|선정|협상|도달|낮|넘|인정|유효|후순위|제외|"
+    r"부적격|합격|통과|탈락|미달|미치|득점|적격|한하여|진행|"
+    r"해야|하지\s*않|못한|대상|업체만|자만|실격|적으|밑돌|"
+    r"이르지\s*아니|채우지\s*못)"
+)
+_EXTERNAL_MIN_STRONG_CUTOFF_RE = re.compile(
+    r"(?:최저\s*점|최소\s*점수|기준\s*점수|합격\s*선|과락|미달|"
+    r"못\s*미치|득점하지\s*못)"
+)
+_EXTERNAL_MIN_SPLIT_PREFIX_RE = re.compile(
+    r"(?:(?:\d+|[가-힣])[.)]|[❍○●■□▪▶])?"
+    r"(?:정량(?:적)?|객관(?:적)?|계량(?:적)?|계량화)(?:지표(?:별)?)?평가"
+    r"(?:결과|점수|세부점수|득점|배점(?:의)?|총배점|통과기준|최저점(?:수)?|"
+    r"최소점수|기준점수|합격선|과락기준|안내|기준)?"
+    r"(?:은|는|의|이|가|을|를)?"
+)
+_EXTERNAL_MIN_SPLIT_SUFFIX_RE = re.compile(
+    r"(?:"
+    r"이상|초과|이하|미만|미달|"
+    r"(?:을|를)?(?:획득|취득|얻|득점)|"
+    r"에(?:도달|못미치|이르지아니)|보다(?:낮|적으)|"
+    r"(?:을|를)?(?:넘지못|밑돌|채우지못)|"
+    r"(?:이어야|여야|이다|인|일때|일경우|시)"
+    r")"
+)
+_EXTERNAL_MIN_ASCII_POINT_BOUND_RE = re.compile(
+    rf"(?:<=|>=|<|>)\s*{_NUM_PATTERN}\s*점"
+)
+
+
+def _external_min_split_window_is_coherent(value: str) -> bool:
+    """Accept only one syntactic cutoff split across adjacent HWP cells."""
+
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+    score_re = re.compile(rf"{_NUM_PATTERN}(?:점|%|퍼센트)")
+    scores = list(score_re.finditer(compact))
+    if len(scores) != 1:
+        return False
+    score = scores[0]
+    prefix = compact[: score.start()]
+    suffix = compact[score.end() :]
+    return bool(
+        _EXTERNAL_MIN_SPLIT_PREFIX_RE.fullmatch(prefix)
+        and (
+            not suffix
+            or _EXTERNAL_MIN_SPLIT_SUFFIX_RE.match(suffix)
+        )
+    )
+
+
+def _has_unclaimed_quantitative_point_language(
+    lines: tuple[str, ...],
+    *,
+    total_span: tuple[int, int],
+    overall_minimum_spans: tuple[tuple[int, int], ...],
+    minimum_score: Decimal,
+    criteria: list[QuantitativeRuleCandidate],
+) -> bool:
+    """Fail closed on unowned score language without scanning unrelated prose.
+
+    The source can contain a 100-point combined evaluation, qualitative rows,
+    later instructions and an appendix.  Only the detailed objective table is
+    exhaustively censused.  Outside that fenced table, a score blocks detachment
+    only when it is tied to explicit objective/cutoff language.  Exact model
+    literals are treated as untrusted: a claimed row containing an extra cutoff
+    is rejected before its physical lines can be masked.
+    """
+
+    score_value_re = re.compile(rf"{_NUM_PATTERN}\s*(?:점|%|퍼센트)")
+    point_value_re = re.compile(rf"(?P<points>{_NUM_PATTERN})\s*점")
+    percent_bound_re = re.compile(
+        rf"{_NUM_PATTERN}\s*(?:%|퍼센트)\s*(?:이상|초과|이하|미만)"
+    )
+    detail_markers = [
+        index
+        for index, line in enumerate(lines)
+        if _SOURCEWIDE_QUANTITATIVE_DETAIL_MARKER_RE.fullmatch(
+            unicodedata.normalize("NFKC", line).strip()
+        )
+    ]
+    if len(detail_markers) != 1:
+        return True
+    detail_start = detail_markers[0]
+
+    atomic_literals: list[str] = []
+    for candidate in criteria:
+        atomic_literals.append(candidate.criterion_literal)
+        atomic_literals.extend(bracket.literal for bracket in candidate.brackets)
+        if candidate.threshold is not None:
+            atomic_literals.append(candidate.threshold.literal)
+        atomic_literals.extend(case.literal for case in candidate.cases)
+        for condition in candidate.recognition_conditions:
+            normalized = unicodedata.normalize("NFKC", condition.literal)
+            if point_value_re.search(normalized) and (
+                _EXTERNAL_MIN_STRONG_CUTOFF_RE.search(normalized)
+                or (
+                    _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(normalized)
+                    and _EXTERNAL_MIN_DECISION_RE.search(normalized)
+                )
+            ):
+                return True
+            if (
+                _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(normalized)
+                and percent_bound_re.search(normalized)
+            ):
+                return True
+            atomic_literals.append(condition.literal)
+
+    protected_detail_lines: set[int] = set()
+    owned_spans: list[tuple[int, int]] = []
+    for literal in atomic_literals:
+        normalized = unicodedata.normalize("NFKC", literal)
+        if (
+            _OVERALL_POINT_BOUND_RE.search(normalized)
+            or (
+                point_value_re.search(normalized)
+                and _EXTERNAL_MIN_STRONG_CUTOFF_RE.search(normalized)
+            )
+            or (
+                _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(normalized)
+                and percent_bound_re.search(normalized)
+            )
+            or (
+                point_value_re.search(normalized)
+                and _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(normalized)
+                and _EXTERNAL_MIN_DECISION_RE.search(normalized)
+            )
+        ):
+            return True
+        span = _unique_anchor_line_span(lines, literal)
+        if span is None:
+            continue
+        owned_spans.append(span)
+        protected_detail_lines.update(range(span[0], span[1]))
+    if not owned_spans:
+        return True
+
+    last_owned_end = max(span[1] for span in owned_spans)
+    fence_candidates = [
+        index
+        for index in range(max(detail_start + 1, last_owned_end), len(lines))
+        if _EXTERNAL_MIN_NEXT_SECTION_RE.fullmatch(
+            unicodedata.normalize("NFKC", lines[index]).strip()
+        )
+        or _HWP_SECTION_LINE_RE.fullmatch(lines[index])
+    ]
+    detail_end = min(fence_candidates, default=len(lines))
+
+    # Every remaining explicit score token inside the physical objective table
+    # is unowned. This catches novel verbs as well as a cutoff smuggled beside a
+    # broad evidence anchor.
+    detail_segments: list[list[str]] = [[]]
+    for index in range(detail_start, detail_end):
+        if index in protected_detail_lines:
+            if detail_segments[-1]:
+                detail_segments.append([])
+            continue
+        detail_segments[-1].append(lines[index])
+    if any(
+        score_value_re.search(unicodedata.normalize("NFKC", "\n".join(segment)))
+        for segment in detail_segments
+        if segment
+    ):
+        return True
+
+    overall_maximum_values: set[Decimal] = set()
+
+    def overall_line_is_clean(index: int) -> bool:
+        line = unicodedata.normalize("NFKC", lines[index])
+        if re.search(rf"{_NUM_PATTERN}\s*(?:%|퍼센트)", line):
+            return False
+        matches = list(point_value_re.finditer(line))
+        if not matches:
+            return True
+        for match in matches:
+            try:
+                value = Decimal(match.group("points").replace(",", ""))
+            except InvalidOperation:
+                return False
+            tail = line[match.end() : match.end() + 20]
+            if value == minimum_score and re.match(r"\s*(?:이상|초과)", tail):
+                continue
+            if re.match(r"\s*만점", tail) and value >= minimum_score:
+                overall_maximum_values.add(value)
+                continue
+            return False
+        return True
+
+    safe_outside_lines = set(range(total_span[0], total_span[1]))
+    for index in range(len(lines)):
+        span = (index, index + 1)
+        if _overall_evaluation_minimum_context_matches(
+            lines,
+            span=span,
+            minimum_score=minimum_score,
+        ):
+            if not overall_line_is_clean(index):
+                return True
+            safe_outside_lines.add(index)
+    for span in overall_minimum_spans:
+        for index in range(span[0], span[1]):
+            if not overall_line_is_clean(index):
+                return True
+            safe_outside_lines.add(index)
+    if len(overall_maximum_values) != 1:
+        return True
+
+    quantitative_total_values = [_decimal(candidate.max_points) for candidate in criteria]
+    if any(value is None for value in quantitative_total_values):
+        return True
+    expected_quantitative_total = sum(
+        (value for value in quantitative_total_values if value is not None),
+        Decimal("0"),
+    )
+    overall_maximum = next(iter(overall_maximum_values))
+    axis_points_re = {
+        axis: re.compile(
+            rf"{axis}(?:적)?(?:평가)?(?:점수|배점)?"
+            rf"(?:은|는|이|가)?[:：(]?(?P<points>{_NUM_PATTERN})점\)?"
+        )
+        for axis in ("정량", "정성")
+    }
+
+    def overall_allocation_line(value: str) -> bool | None:
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+        if not (
+            "정량" in compact
+            and "정성" in compact
+            and any(marker in compact for marker in ("만점", "총점", "실시"))
+            and not _OVERALL_POINT_BOUND_RE.search(compact)
+            and not _EXTERNAL_MIN_STRONG_CUTOFF_RE.search(compact)
+        ):
+            return None
+        values: list[Decimal] = []
+        for match in point_value_re.finditer(compact):
+            try:
+                values.append(Decimal(match.group("points").replace(",", "")))
+            except InvalidOperation:
+                return False
+        if not values:
+            return True
+        if len(values) == 1:
+            return values[0] == overall_maximum
+        axis_values: dict[str, Decimal] = {}
+        for axis, pattern in axis_points_re.items():
+            matches = list(pattern.finditer(compact))
+            if len(matches) != 1:
+                return False
+            try:
+                axis_values[axis] = Decimal(
+                    matches[0].group("points").replace(",", "")
+                )
+            except InvalidOperation:
+                return False
+        largest = max(values, default=Decimal("0"))
+        remaining = list(values)
+        if largest in remaining:
+            remaining.remove(largest)
+        return bool(
+            remaining
+            and largest == overall_maximum
+            and largest == sum(remaining, Decimal("0"))
+            and axis_values["정량"] == expected_quantitative_total
+        )
+
+    for index, line in enumerate(lines):
+        if index < detail_start or index >= detail_end:
+            allocation_status = overall_allocation_line(line)
+            if allocation_status is False:
+                return True
+            if allocation_status is True:
+                safe_outside_lines.add(index)
+
+    # Outside the detailed table, keep exact overall/allocation lines as hard
+    # separators and inspect only bounded local windows. This avoids joining an
+    # unrelated event count to a distant word such as "탈락".
+    outside_segments: list[list[str]] = [[]]
+    for index, line in enumerate(lines):
+        if detail_start <= index < detail_end:
+            if outside_segments[-1]:
+                outside_segments.append([])
+            continue
+        if (
+            index in safe_outside_lines
+            or _HWP_SECTION_LINE_RE.fullmatch(line)
+        ):
+            if outside_segments[-1]:
+                outside_segments.append([])
+            continue
+        outside_segments[-1].append(line)
+
+    for segment in outside_segments:
+        for start in range(len(segment)):
+            for width in range(1, min(4, len(segment) - start) + 1):
+                value = unicodedata.normalize(
+                    "NFKC", "\n".join(segment[start : start + width])
+                )
+                if len(value) > _MAX_TABLE_CELL_WINDOW_CHARS:
+                    break
+                has_score = bool(score_value_re.search(value))
+                if not has_score:
+                    continue
+                if width > 1 and not _external_min_split_window_is_coherent(value):
+                    continue
+                if (
+                    _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(value)
+                    and _OVERALL_POINT_BOUND_RE.search(value)
+                ):
+                    return True
+                if (
+                    _EXTERNAL_MIN_STRONG_CUTOFF_RE.search(value)
+                    and point_value_re.search(value)
+                    and (
+                        _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(value)
+                        or (width == 1 and "정성" not in value)
+                    )
+                ):
+                    return True
+                if (
+                    width == 1
+                    and "정성" not in value
+                    and _EXTERNAL_MIN_ASCII_POINT_BOUND_RE.search(value)
+                    and _EXTERNAL_MIN_DECISION_RE.search(value)
+                ):
+                    return True
+                if (
+                    _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(value)
+                    and _EXTERNAL_MIN_DECISION_RE.search(value)
+                ):
+                    return True
+                if (
+                    _EXTERNAL_MIN_QUANTITATIVE_CONTEXT_RE.search(value)
+                    and percent_bound_re.search(value)
+                ):
+                    return True
+    return False
+
+
+def _drop_source_bound_external_overall_minimum(
+    table: QuantitativeTableCandidate,
+    *,
+    attachment_id: str,
+    table_count: int,
+    criteria: list[QuantitativeRuleCandidate],
+    lines: tuple[str, ...],
+    criterion_regions: list[tuple[int, int] | None],
+    table_region: tuple[int, int] | None,
+    hwp_section_starts: tuple[int, ...],
+) -> QuantitativeTableCandidate:
+    """Detach a whole-proposal cutoff only after proving the HWP table boundary.
+
+    A value larger than the objective subtotal is still fail-closed by default.
+    The sole normalisation is the source structure used by documents such as the
+    부산 RFP: an exact quantitative subtotal summary, a separate whole-proposal
+    eligibility sentence, then one detailed quantitative-table heading and a
+    completely enumerated table.  The raw model response remains persisted for
+    audit; only the immutable executable record drops the unrelated minimum.
+    """
+
+    if (
+        table_count != 1
+        or table.ambiguity_reason is not None
+        or table.total_points is None
+        or table.minimum_score is None
+        or table.total_evidence is None
+        or table.minimum_evidence is None
+        or table_region is None
+        or len(criteria) != len(criterion_regions)
+        or any(region is None for region in criterion_regions)
+    ):
+        return table
+    structural_anchors = [
+        table.total_evidence,
+        table.minimum_evidence,
+        *(candidate.evidence for candidate in criteria),
+        *(case.evidence for candidate in criteria for case in candidate.cases),
+        *(
+            condition.evidence
+            for candidate in criteria
+            for condition in candidate.recognition_conditions
+        ),
+    ]
+    if any(anchor.attachment_id != attachment_id for anchor in structural_anchors):
+        return table
+    total = _decimal(table.total_points)
+    minimum = _decimal(table.minimum_score)
+    if total is None or minimum is None or minimum <= total:
+        return table
+
+    resolved_regions = [region for region in criterion_regions if region is not None]
+    if not resolved_regions or not all(
+        _span_inside_region(region, table_region) for region in resolved_regions
+    ):
+        return table
+    if not all(
+        _sourcewide_case_census_matches(
+            candidate,
+            lines=lines,
+            criterion_region=region,
+        )
+        for candidate, region in zip(criteria, resolved_regions, strict=True)
+    ):
+        return table
+    maxima = [_decimal(candidate.max_points) for candidate in criteria]
+    if any(value is None or value <= 0 for value in maxima) or sum(
+        (value for value in maxima if value is not None),
+        Decimal("0"),
+    ) != total:
+        return table
+
+    total_span = _unique_anchor_line_span(lines, table.total_evidence.quote)
+    minimum_spans = _anchor_line_spans(lines, table.minimum_evidence.quote)
+    detail_markers = tuple(
+        (index, index + 1)
+        for index, line in enumerate(lines)
+        if _SOURCEWIDE_QUANTITATIVE_DETAIL_MARKER_RE.fullmatch(
+            unicodedata.normalize("NFKC", line)
+        )
+    )
+    table_markers = _sourcewide_table_marker_spans(lines)
+    simple_totals = _sourcewide_quantitative_total_candidates(lines)
+    sourcewide_point_bounds: list[tuple[tuple[int, int], Decimal]] = []
+    for index, line in enumerate(lines):
+        for match in _OVERALL_POINT_BOUND_RE.finditer(line):
+            try:
+                value = Decimal(match.group("points").replace(",", ""))
+            except InvalidOperation:
+                return table
+            if value == minimum:
+                sourcewide_point_bounds.append(((index, index + 1), value))
+            elif _overall_evaluation_minimum_context_matches(
+                lines,
+                span=(index, index + 1),
+                minimum_score=value,
+                allowed_operators=("이상", "초과", "이하", "미만"),
+            ):
+                # A second overall/technical/combined evaluation cutoff cannot
+                # be discarded as if the model's 85-point value were the only
+                # document-wide decision boundary. Unrelated training or KPI
+                # thresholds do not match this same-line ownership grammar.
+                return table
+    summary_totals: list[tuple[tuple[int, int], Decimal]] = []
+    for index, line in enumerate(lines):
+        compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+        match = _SOURCEWIDE_QUANTITATIVE_SUMMARY_TOTAL_RE.fullmatch(compact)
+        if match is None:
+            continue
+        try:
+            summary_totals.append(
+                ((index, index + 1), Decimal(match.group("points").replace(",", "")))
+            )
+        except InvalidOperation:
+            return table
+    if (
+        total_span is None
+        or not minimum_spans
+        or len(detail_markers) != 1
+        or table_markers != detail_markers
+        or simple_totals
+        or _has_unclaimed_quantitative_point_language(
+            lines,
+            total_span=total_span,
+            overall_minimum_spans=minimum_spans,
+            minimum_score=minimum,
+            criteria=criteria,
+        )
+        or len(summary_totals) != 1
+        or summary_totals[0] != (total_span, total)
+    ):
+        return table
+
+    detail_marker = detail_markers[0]
+    physical_detail_end = min(
+        (
+            index
+            for index in range(detail_marker[1], len(lines))
+            if _EXTERNAL_MIN_NEXT_SECTION_RE.fullmatch(
+                unicodedata.normalize("NFKC", lines[index]).strip()
+            )
+            or _HWP_SECTION_LINE_RE.fullmatch(lines[index])
+        ),
+        default=len(lines),
+    )
+    first_region = resolved_regions[0]
+    total_section = _hwp_section_for_span(
+        lines,
+        span=total_span,
+        hwp_section_starts=hwp_section_starts,
+    )
+    detail_section = _hwp_section_for_span(
+        lines,
+        span=detail_marker,
+        hwp_section_starts=hwp_section_starts,
+    )
+    if (
+        total_section is None
+        or total_section != detail_section
+        or detail_marker[1] != first_region[0]
+        or total_span[1] > detail_marker[0]
+        or not any(
+            total_span[1] <= span[0] < detail_marker[0]
+            and _hwp_section_for_span(
+                lines,
+                span=span,
+                hwp_section_starts=hwp_section_starts,
+            )
+            == total_section
+            for span in minimum_spans
+        )
+        or any(span[0] >= detail_marker[0] for span in minimum_spans)
+        or not all(
+            _overall_evaluation_minimum_context_matches(
+                lines,
+                span=span,
+                minimum_score=minimum,
+            )
+            for span in minimum_spans
+        )
+        or not sourcewide_point_bounds
+        or any(
+            value != minimum
+            or not _overall_evaluation_minimum_context_matches(
+                lines,
+                span=span,
+                minimum_score=minimum,
+            )
+            for span, value in sourcewide_point_bounds
+        )
+        or _OVERALL_POINT_BOUND_RE.search(
+            "\n".join(lines[detail_marker[0] : physical_detail_end])
+        )
+    ):
+        return table
+
+    return table.model_copy(
+        update={"minimum_score": None, "minimum_evidence": None}
+    )
+
+
 def _is_explicit_hwp_footnote_span(
     lines: tuple[str, ...],
     span: tuple[int, int],
@@ -3243,7 +4013,10 @@ def _sourcewide_ambiguity_resolution_blocker(
         or payload.quantitative_table_not_applicable is not None
     ):
         return "SOURCEWIDE_AMBIGUITY_SCOPE_UNSUPPORTED"
-    if payload.missing_or_unreadable:
+    if any(
+        not is_quantitative_irrelevant_gap(gap)
+        for gap in payload.missing_or_unreadable
+    ):
         return "SOURCEWIDE_AMBIGUITY_SOURCE_GAPS_PRESENT"
     if boundary_overflow:
         return "SOURCEWIDE_AMBIGUITY_BOUNDARY_SCAN_LIMIT"
@@ -3344,13 +4117,7 @@ def _sourcewide_ambiguity_resolution_blocker(
         starts = [index for index in hwp_section_starts if index < span[0]]
         return starts[-1] if starts else None
 
-    table_marker_spans = tuple(
-        (index, index + 1)
-        for index, line in enumerate(lines)
-        if _SOURCEWIDE_TABLE_MARKER_RE.fullmatch(
-            unicodedata.normalize("NFKC", line).strip()
-        )
-    )
+    table_marker_spans = _sourcewide_table_marker_spans(lines)
     owner_markers = [
         span
         for span in table_marker_spans
@@ -3429,6 +4196,7 @@ def _rebind_split_table_cell_literals(
     payload: ExtractionPayload,
     *,
     source: str,
+    attachment_id: str,
 ) -> tuple[
     ExtractionPayload,
     tuple[SourcewideAmbiguityResolutionBlocker | None, ...],
@@ -4204,12 +4972,22 @@ def _rebind_split_table_cell_literals(
         ambiguity_resolution_blockers.append(
             ambiguity_resolution_blocker if ambiguity_reason else None
         )
+        repaired_table = table.model_copy(
+            update={
+                "criteria": repaired_candidates,
+                "ambiguity_reason": ambiguity_reason,
+            }
+        )
         repaired_tables.append(
-            table.model_copy(
-                update={
-                    "criteria": repaired_candidates,
-                    "ambiguity_reason": ambiguity_reason,
-                }
+            _drop_source_bound_external_overall_minimum(
+                repaired_table,
+                attachment_id=attachment_id,
+                table_count=len(payload.quantitative_tables),
+                criteria=repaired_candidates,
+                lines=lines,
+                criterion_regions=criterion_regions[table_index],
+                table_region=table_regions[table_index],
+                hwp_section_starts=hwp_section_starts,
             )
         )
     return (
@@ -4219,14 +4997,13 @@ def _rebind_split_table_cell_literals(
 
 
 def _normalise_source_gap(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip()
+    return _shared_normalise_source_gap(value)
 
 
 def _is_explicit_qualitative_only_exclusion(value: str) -> bool:
     """Ignore only an explicit qualitative-only exclusion from quant extraction."""
 
-    gap = _normalise_source_gap(value)
-    return bool(gap and _QUALITATIVE_ONLY_EXCLUSION_RE.fullmatch(gap))
+    return _shared_qualitative_only_exclusion(value)
 
 
 def _compact_document_label(value: str) -> str:
@@ -4236,105 +5013,17 @@ def _compact_document_label(value: str) -> str:
 def _attachment_local_quantitative_table_targets(
     value: str,
 ) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] | None:
-    """Return explicit sibling targets, an empty tuple for unlinked local gaps, or None."""
+    """Delegate local-gap semantics to the shared extraction/pipeline policy."""
 
-    gap = _normalise_source_gap(value)
-    if (
-        not gap
-        or not re.fullmatch(r"(?s).{1,1000}", gap)
-        or any(term in gap for term in _UNREADABLE_GAP_TERMS)
-    ):
-        return None
-
-    context_positions = [
-        (term, match)
-        for term in _ATTACHMENT_LOCAL_CONTEXT_TERMS
-        for match in re.finditer(re.escape(term), gap)
-    ]
-    absence_positions = [
-        match
-        for term in _ATTACHMENT_LOCAL_ABSENCE_TERMS
-        for match in re.finditer(re.escape(term), gap)
-    ]
-    table_positions = [
-        match
-        for term in _QUANTITATIVE_GAP_TERMS
-        for match in re.finditer(re.escape(term), gap)
-    ]
-    if not context_positions or not absence_positions or not table_positions:
-        return None
-
-    qualifying_context_terms: set[str] = set()
-    for context_term, context in context_positions:
-        if any(
-            0 <= absence.start() - context.end() <= 120
-            and 0 <= table.start() - absence.end() <= 200
-            and not any(
-                term in gap[context.end() : table.end()]
-                for term in _PARTIAL_TABLE_GAP_TERMS
-            )
-            for absence in absence_positions
-            for table in table_positions
-        ):
-            qualifying_context_terms.add(context_term)
-
-    # Or the table itself is explicitly absent from this attachment/body. Do not
-    # promote a partial row/grade/formula gap into a sibling-resolvable absence.
-    for context_term, context in context_positions:
-        if any(
-            0 <= absence.start() - table.end() <= 160
-            and (
-                table.end() <= context.start() <= absence.start()
-                or context.end() <= table.start()
-            )
-            and not any(
-                term in gap[table.end() : absence.start()]
-                for term in _PARTIAL_TABLE_GAP_TERMS
-            )
-            for table in table_positions
-            for absence in absence_positions
-        ):
-            qualifying_context_terms.add(context_term)
-
-    if not qualifying_context_terms:
-        return None
-
-    compact_contexts = {
-        _compact_document_label(term) for term in qualifying_context_terms
-    }
-    targets: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-    for markers, document_types in _SIBLING_DOCUMENT_TARGETS:
-        compact_markers = tuple(
-            sorted(
-                {
-                    _compact_document_label(marker)
-                    for marker in markers
-                    if _compact_document_label(marker) in compact_contexts
-                }
-            )
-        )
-        if compact_markers:
-            targets.append((document_types, compact_markers))
-    return tuple(targets)
+    return _shared_quantitative_table_local_absence_targets(value)
 
 
 def _source_label_document_types(
     value: str | None,
 ) -> tuple[Literal["NOTICE", "RFP", "SCOPE", "FORM"], ...]:
-    """Return deterministic document roles declared by the manifest label."""
+    """Return deterministic roles from the shared manifest-label policy."""
 
-    if not isinstance(value, str) or not value.strip():
-        return ()
-    compact = _compact_document_label(value)
-    matches: set[Literal["NOTICE", "RFP", "SCOPE", "FORM"]] = set()
-    if any(marker in compact for marker in ("입찰공고", "공고문")):
-        matches.add("NOTICE")
-    if "제안요청서" in compact:
-        matches.add("RFP")
-    if any(marker in compact for marker in ("과업지시서", "과업내용서")):
-        matches.add("SCOPE")
-    if any(marker in compact for marker in ("작성양식", "제출서식", "서식", "양식")):
-        matches.add("FORM")
+    matches = set(_shared_source_label_document_types(value))
     return tuple(
         item for item in ("NOTICE", "RFP", "SCOPE", "FORM") if item in matches
     )
@@ -4443,6 +5132,15 @@ def _anchor_issues(
                 "CROSS_ATTACHMENT_ANCHOR",
                 "INCOMPLETE",
                 "첨부별 추출 결과가 다른 첨부의 근거를 가리킵니다.",
+                **context,
+            )
+        ]
+    if anchor.confidence < MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE:
+        return [
+            _issue(
+                "LOW_CONFIDENCE_QUANTITATIVE_EVIDENCE",
+                "INCOMPLETE",
+                "정량 산정 근거의 추출 신뢰도가 자동 적용 기준보다 낮습니다.",
                 **context,
             )
         ]
@@ -4669,6 +5367,20 @@ def _assert_available_candidate_invariants(
             raise ValueError("AVAILABLE CASE_TABLE is not deterministic")
 
 
+def _available_candidate_anchors(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> Iterable[ImmutableEvidenceAnchor]:
+    yield candidate.evidence
+    for bracket in candidate.brackets:
+        yield bracket.evidence
+    if candidate.threshold is not None:
+        yield candidate.threshold.evidence
+    for case in candidate.cases:
+        yield case.evidence
+    for condition in candidate.recognition_conditions:
+        yield condition.evidence
+
+
 def _record_anchors(
     record: ValidatedQuantitativeAttachmentRecord,
 ) -> Iterable[ImmutableEvidenceAnchor]:
@@ -4678,16 +5390,37 @@ def _record_anchors(
         if table.minimum_evidence is not None:
             yield table.minimum_evidence
     for candidate in record.available_candidates:
-        yield candidate.evidence
-        for bracket in candidate.brackets:
-            yield bracket.evidence
-        if candidate.threshold is not None:
-            yield candidate.threshold.evidence
-        for case in candidate.cases:
-            yield case.evidence
-        for condition in candidate.recognition_conditions:
-            yield condition.evidence
+        yield from _available_candidate_anchors(candidate)
     yield from record.not_applicable_evidence
+
+
+def _available_table_confidence_is_sufficient(
+    record: ValidatedQuantitativeAttachmentRecord,
+    table: ImmutableQuantitativeTable,
+) -> bool:
+    table_anchors = tuple(
+        anchor
+        for anchor in (table.total_evidence, table.minimum_evidence)
+        if anchor is not None
+    )
+    candidates = tuple(
+        candidate
+        for candidate in record.available_candidates
+        if candidate.table_id == table.table_id
+    )
+    return bool(
+        table.status == "AVAILABLE"
+        and table.total_evidence is not None
+        and all(
+            anchor.confidence >= MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE
+            for anchor in table_anchors
+        )
+        and all(
+            anchor.confidence >= MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE
+            for candidate in candidates
+            for anchor in _available_candidate_anchors(candidate)
+        )
+    )
 
 
 def _assert_validated_record_invariants(
@@ -4705,6 +5438,17 @@ def _assert_validated_record_invariants(
         raise ValueError("all persisted candidates must match record attachment_id")
     if any(issue.attachment_id != attachment_id for issue in record.issues):
         raise ValueError("all persisted issues must match record attachment_id")
+    if any(
+        table.status == "AVAILABLE"
+        and not _available_table_confidence_is_sufficient(record, table)
+        for table in record.tables
+    ):
+        raise ValueError("AVAILABLE tables require high-confidence quantitative evidence")
+    if any(
+        anchor.confidence < MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE
+        for anchor in record.not_applicable_evidence
+    ):
+        raise ValueError("NOT_APPLICABLE evidence must meet the confidence threshold")
     local_gap_groups: dict[
         tuple[str, str],
         list[tuple[tuple[str, ...], tuple[str, ...]]],
@@ -5790,11 +6534,12 @@ def build_quantitative_candidate_profile(
         payload, ambiguity_resolution_blockers = _rebind_split_table_cell_literals(
             extractions_by_attachment_id[attachment_id],
             source=source_text_by_attachment_id.get(attachment_id, ""),
+            attachment_id=attachment_id,
         )
         source_gaps = [
             gap
             for gap in payload.missing_or_unreadable
-            if not _is_explicit_qualitative_only_exclusion(gap)
+            if not is_quantitative_irrelevant_gap(gap)
         ]
         local_gap_targets = [
             (
@@ -6391,7 +7136,7 @@ def merge_validated_quantitative_records(
                 expected_generic_gap = True
             else:
                 for gap in source_gaps:
-                    if _is_explicit_qualitative_only_exclusion(gap):
+                    if is_quantitative_irrelevant_gap(gap):
                         continue
                     targets = _attachment_local_quantitative_table_targets(
                         gap,
@@ -6447,16 +7192,12 @@ def merge_validated_quantitative_records(
     supplying_attachment_ids = {
         attachment_id
         for attachment_id, record in bound_records.items()
-        if any(table.status == "AVAILABLE" for table in record.tables)
+        if record.status in {"AVAILABLE", "REVIEW"}
+        and any(
+            _available_table_confidence_is_sufficient(record, table)
+            for table in record.tables
+        )
     }
-    local_gap_issue_counts = Counter(
-        (attachment_id, item.source_gap_statement)
-        for attachment_id, record in bound_records.items()
-        for item in record.issues
-        if item.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
-        and item.source_gap_statement is not None
-    )
-
     def local_absence_is_resolved(
         issue: QuantitativeValidationIssue,
         *,
@@ -6476,29 +7217,19 @@ def merge_validated_quantitative_records(
         ):
             return False
         source_label_types = _source_label_document_types(source_binding.source_label)
-        if len(source_label_types) > 1:
+        if len(source_label_types) != 1:
             return False
-        source_effective_type = (
-            source_label_types[0]
-            if source_label_types
-            else source_binding.document_type
-        )
+        source_inferred_type = source_label_types[0]
+        # The declaring attachment may itself have been misclassified by the
+        # extractor. Its exact singleton filename role is used only to prevent
+        # self-supply; the persisted type equality above still binds the issue
+        # to the record that produced it.
+        source_effective_type = source_inferred_type
         required_sibling_types = set(issue.required_sibling_document_types)
         if source_effective_type in required_sibling_types:
-            if len(required_sibling_types) > 1:
-                required_sibling_types.discard(source_effective_type)
-            elif local_gap_issue_counts[
-                (attachment_id, issue.source_gap_statement)
-            ] > 1:
-                # A multi-role statement may name the current attachment as
-                # context (for example, "공고문에는 제안요청서 ... 없음").
-                # Suppress only that current-role issue; another explicit role
-                # from the same statement must still resolve independently.
-                return True
-            else:
-                # A single same-role gap cannot borrow an unrelated document
-                # merely because both were classified as the same type.
-                return False
+            # A local gap can never be satisfied by the document that declared
+            # it, even when the prose repeats that document's role.
+            return False
         if not required_sibling_types:
             return False
         for sibling_id in supplying_attachment_ids - {attachment_id}:
@@ -6516,14 +7247,53 @@ def merge_validated_quantitative_records(
             if not label_matches:
                 continue
             label_types = _source_label_document_types(binding.source_label)
-            if len(label_types) > 1:
+            if len(label_types) != 1:
                 continue
+            inferred_type = label_types[0]
             effective_type = binding.document_type
-            if effective_type in {None, "OTHER"} and label_types:
-                effective_type = label_types[0]
+            if effective_type in {None, "OTHER"}:
+                effective_type = inferred_type
+            if effective_type != inferred_type:
+                continue
             if effective_type in required_sibling_types:
                 return True
         return False
+
+    # Grow table capability only from independent AVAILABLE/REVIEW seeds.
+    # A record whose sole hard issues are local absences may join after those
+    # absences are satisfied by the current seed set. Batch updates make this a
+    # monotone fixed point: valid A <- B <- C chains resolve, while two mutually
+    # incomplete records can never bootstrap one another without a seed.
+    while True:
+        newly_supplying: set[str] = set()
+        for attachment_id, record in bound_records.items():
+            if attachment_id in supplying_attachment_ids or not any(
+                _available_table_confidence_is_sufficient(record, table)
+                for table in record.tables
+            ):
+                continue
+            local_issues = tuple(
+                item
+                for item in record.issues
+                if item.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+            )
+            has_other_hard_issue = any(
+                item.disposition == "INCOMPLETE"
+                and item.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+                for item in record.issues
+            )
+            if (
+                local_issues
+                and not has_other_hard_issue
+                and all(
+                    local_absence_is_resolved(item, attachment_id=attachment_id)
+                    for item in local_issues
+                )
+            ):
+                newly_supplying.add(attachment_id)
+        if not newly_supplying:
+            break
+        supplying_attachment_ids.update(newly_supplying)
 
     for attachment_id, record in sorted(bound_records.items()):
         resolved_local_absence = any(

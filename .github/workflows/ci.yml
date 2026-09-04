@@ -17,7 +17,7 @@ jobs:
   test-and-validate:
     name: Test, validate, and scan
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository

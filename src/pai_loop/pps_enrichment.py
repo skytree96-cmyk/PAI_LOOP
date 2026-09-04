@@ -2063,6 +2063,34 @@ def persist_pps_metadata_version(
     raise PpsEnrichmentError("NOTICE_VERSION_RACE")
 
 
+def _extraction_evidence_confidences(data: ExtractionPayload) -> list[float]:
+    """Collect confidence from every extracted claim, including quantitative tables."""
+
+    values = [
+        anchor.confidence
+        for requirement in data.requirements
+        for anchor in requirement.evidence
+    ]
+    for table in data.quantitative_tables:
+        values.extend(
+            anchor.confidence
+            for anchor in (table.total_evidence, table.minimum_evidence)
+            if anchor is not None
+        )
+        for criterion in table.criteria:
+            values.append(criterion.evidence.confidence)
+            values.extend(item.evidence.confidence for item in criterion.brackets)
+            if criterion.threshold is not None:
+                values.append(criterion.threshold.evidence.confidence)
+            values.extend(item.evidence.confidence for item in criterion.cases)
+            values.extend(
+                item.evidence.confidence for item in criterion.recognition_conditions
+            )
+    if data.quantitative_table_not_applicable is not None:
+        values.append(data.quantitative_table_not_applicable.evidence.confidence)
+    return values
+
+
 def _persist_extraction_version(
     session: Session,
     *,
@@ -2092,11 +2120,11 @@ def _persist_extraction_version(
             "openai_telemetry": outcome.openai_telemetry.model_dump(mode="json"),
         }
     data = outcome.data.model_dump(mode="json") if accepted and outcome and outcome.data else None
-    confidence_values = [
-        anchor.confidence
-        for requirement in (outcome.data.requirements if accepted and outcome and outcome.data else [])
-        for anchor in requirement.evidence
-    ]
+    confidence_values = (
+        _extraction_evidence_confidences(outcome.data)
+        if accepted and outcome and outcome.data
+        else []
+    )
     confidence = sum(confidence_values) / len(confidence_values) if confidence_values else 0.0
     payload = {
         "kind": "OPENAI_REQUIREMENT_EXTRACTION",

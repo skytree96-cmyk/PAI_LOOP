@@ -69,6 +69,20 @@ from .quantitative_scoring import (
     estimate_for_notice,
     load_quantitative_profile_catalog,
 )
+from .quantitative_rule_extraction import (
+    QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
+    ValidatedQuantitativeAttachmentRecord,
+    validated_quantitative_record_fingerprint,
+)
+from .source_gap_policy import (
+    has_compound_source_absence_claim,
+    is_explicit_qualitative_only_exclusion,
+    is_explicit_qualitative_table_local_absence,
+    is_quantitative_irrelevant_gap,
+    normalise_source_gap,
+    quantitative_table_local_absence_targets,
+    source_label_document_types,
+)
 from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_SCHEMA,
@@ -77,8 +91,8 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.3"
-MATERIALIZATION_VERSION = "atomic-materializer-0.3.0"
+PIPELINE_VERSION = "analysis-pipeline-0.6.4"
+MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
 MATERIALIZED_KIND = "ANALYSIS_PIPELINE_MATERIALIZATION"
@@ -1114,7 +1128,7 @@ _TYPED_SIBLING_GAP_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _SIBLING_DOCUMENT_GAP_MARKERS: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
-    (("제안요청서",), frozenset({"RFP"})),
+    (("제안요청서", "제안 요청서"), frozenset({"RFP"})),
     (("과업지시서", "과업 지시서", "과업내용서", "과업 내용서"), frozenset({"SCOPE"})),
     (("입찰공고", "공고문", "입찰 제출서류"), frozenset({"NOTICE"})),
     (
@@ -1126,6 +1140,7 @@ _SIBLING_DOCUMENT_GAP_MARKERS: tuple[tuple[tuple[str, ...], frozenset[str]], ...
 _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "본문에 포함되지",
     "포함되지",
+    "포함되어 있지 않",
     "본문에 없음",
     "정보가 없음",
     "내용이 없음",
@@ -1140,6 +1155,13 @@ _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "누락",
 )
 _UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐림")
+_QUANTITATIVE_TABLE_GAP_TERMS = (
+    "정량",
+    "평가표",
+    "배점표",
+    "평가배점",
+    "평점산식",
+)
 
 
 def _gap_is_covered_by_aggregate_sources(
@@ -1148,14 +1170,18 @@ def _gap_is_covered_by_aggregate_sources(
     current_document_type: str,
     available_types: set[str],
     sibling_document_labels: set[str],
-    quantitative_table_available: bool,
+    validated_quantitative_supplier_roles: set[tuple[str, str]],
 ) -> bool:
     """Resolve an attachment-local absence only when a sibling supplies it."""
 
+    if is_explicit_qualitative_only_exclusion(gap):
+        return True
     if not _contains_any(gap, _ATTACHMENT_LOCAL_ABSENCE_TERMS) or _contains_any(
         gap,
         _UNREADABLE_GAP_TERMS,
     ):
+        return False
+    if has_compound_source_absence_claim(gap):
         return False
 
     referenced_document_groups = [
@@ -1164,6 +1190,45 @@ def _gap_is_covered_by_aggregate_sources(
         if any(marker in gap for marker in markers)
         and current_document_type not in allowed_types
     ]
+
+    # A table omission is a capability claim, not proof that a named document
+    # merely exists. Close it only with an independently validated AVAILABLE
+    # record and only for the exact table-local absence shape. Compound gaps
+    # (for example, eligibility requirements plus a table) remain open. When
+    # the gap names a source role, the validated supplier must also satisfy
+    # that role instead of lending an unrelated FORM/SCOPE table.
+    if (
+        _contains_any(gap, _QUANTITATIVE_TABLE_GAP_TERMS)
+        and not is_explicit_qualitative_table_local_absence(gap)
+    ):
+        local_targets = quantitative_table_local_absence_targets(gap)
+        if not local_targets:
+            return False
+        supplier_roles = validated_quantitative_supplier_roles
+        if not supplier_roles:
+            return False
+        required_targets = [
+            (frozenset(required_types) - {current_document_type}, label_markers)
+            for required_types, label_markers in local_targets
+            if frozenset(required_types) - {current_document_type}
+        ]
+        if not required_targets:
+            return False
+        return bool(
+            all(
+                any(
+                    _validated_supplier_matches_target(
+                        supplier_type,
+                        supplier_label,
+                        required_types=required_types,
+                        label_markers=label_markers,
+                    )
+                    for supplier_type, supplier_label in supplier_roles
+                )
+                for required_types, label_markers in required_targets
+            )
+        )
+
     if referenced_document_groups and all(
         bool(available_types & allowed_types)
         or any(
@@ -1173,14 +1238,35 @@ def _gap_is_covered_by_aggregate_sources(
         for markers, allowed_types in referenced_document_groups
     ):
         return True
-    return bool(
-        quantitative_table_available
-        and _contains_any(gap, ("정량", "평가표", "배점표", "평가배점", "평점산식"))
-    )
+    return False
 
 
 def _contains_any(text: str, terms: Sequence[str]) -> bool:
     return any(term in text for term in terms)
+
+
+def _validated_supplier_matches_target(
+    supplier_type: str,
+    supplier_label: str,
+    *,
+    required_types: frozenset[str],
+    label_markers: Sequence[str],
+) -> bool:
+    inferred_types = source_label_document_types(supplier_label)
+    compact_label = re.sub(
+        r"\s+", "", normalise_source_gap(supplier_label)
+    ).casefold()
+    if len(inferred_types) != 1:
+        return False
+    inferred_type = inferred_types[0]
+    effective_type = (
+        inferred_type if supplier_type in {"", "OTHER"} else supplier_type
+    )
+    return bool(
+        effective_type in required_types
+        and effective_type == inferred_type
+        and any(marker in compact_label for marker in label_markers)
+    )
 
 
 def _gap_is_covered_by_siblings(
@@ -1188,6 +1274,7 @@ def _gap_is_covered_by_siblings(
     *,
     source: _SourceDocument,
     sibling_sources: Sequence[_SourceDocument],
+    quantitative_supplier_sources: Sequence[_SourceDocument] = (),
 ) -> bool:
     available_types = {
         candidate.data.document_type
@@ -1195,15 +1282,30 @@ def _gap_is_covered_by_siblings(
         if candidate.data is not None
     }
     sibling_document_labels = {
-        _normalise_text(candidate.version.source_payload.get("source_label"))
+        normalise_source_gap(
+            _normalise_text(candidate.version.source_payload.get("source_label"))
+        )
         for candidate in sibling_sources
         if isinstance(candidate.version.source_payload, dict)
         and candidate.version.source_payload.get("source_label")
     }
-    quantitative_table_available = any(
-        candidate.data is not None and bool(candidate.data.quantitative_tables)
-        for candidate in sibling_sources
-    )
+    quantitative_suppliers = {
+        candidate.version.id: candidate
+        for candidate in (*sibling_sources, *quantitative_supplier_sources)
+        if _source_supplies_quantitative_table(candidate)
+    }.values()
+    validated_quantitative_supplier_roles = {
+        (
+            candidate.data.document_type,
+            normalise_source_gap(
+                _normalise_text(candidate.version.source_payload.get("source_label"))
+            ),
+        )
+        for candidate in quantitative_suppliers
+        if candidate.data is not None
+        if isinstance(candidate.version.source_payload, dict)
+        and candidate.version.source_payload.get("source_label")
+    }
     matched_type = next(
         (
             document_type
@@ -1219,7 +1321,9 @@ def _gap_is_covered_by_siblings(
             current_document_type=source.data.document_type,
             available_types=available_types,
             sibling_document_labels=sibling_document_labels,
-            quantitative_table_available=quantitative_table_available,
+            validated_quantitative_supplier_roles=(
+                validated_quantitative_supplier_roles
+            ),
         )
     )
 
@@ -1228,6 +1332,7 @@ def _source_can_join_effective_closure(
     source: _SourceDocument,
     *,
     sibling_sources: Sequence[_SourceDocument],
+    quantitative_supplier_sources: Sequence[_SourceDocument] = (),
 ) -> bool:
     if not source.materializable or source.data is None:
         return False
@@ -1245,8 +1350,97 @@ def _source_can_join_effective_closure(
             gap,
             source=source,
             sibling_sources=sibling_sources,
+            quantitative_supplier_sources=quantitative_supplier_sources,
         )
         for gap in source_gaps
+    )
+
+
+def _source_supplies_quantitative_table(source: _SourceDocument) -> bool:
+    """Prove a usable table capability without treating an incomplete type as complete.
+
+    This narrow capability seed breaks a legitimate NOTICE/RFP cross-reference
+    cycle: an RFP may contain the quantitative table while its only remaining
+    gap is the notice schedule.  It must not let two empty, mutually incomplete
+    documents prove one another complete merely because their types are present.
+    """
+
+    if (
+        not source.materializable
+        or source.data is None
+        or not source.version.document_complete
+        or set(source.warnings)
+        - {"SOURCE_MISSING_OR_UNREADABLE", "LOW_EXTRACTION_CONFIDENCE"}
+    ):
+        return False
+    payload = (
+        source.version.source_payload
+        if isinstance(source.version.source_payload, dict)
+        else {}
+    )
+    raw_record = payload.get("quantitative_validation_record")
+    current_manifest_sha256 = payload.get("current_manifest_sha256")
+    if not isinstance(raw_record, dict) or not isinstance(
+        current_manifest_sha256, str
+    ):
+        return False
+    try:
+        record = ValidatedQuantitativeAttachmentRecord.model_validate(raw_record)
+        fingerprint_valid = (
+            record.validation_fingerprint_sha256
+            == validated_quantitative_record_fingerprint(record)
+        )
+    except (ValidationError, TypeError, ValueError):
+        return False
+    raw_table_ids = {table.table_id for table in source.data.quantitative_tables}
+    available_tables = [table for table in record.tables if table.status == "AVAILABLE"]
+    quantitative_anchors = [
+        *(table.total_evidence for table in available_tables if table.total_evidence),
+        *(table.minimum_evidence for table in available_tables if table.minimum_evidence),
+        *(candidate.evidence for candidate in record.available_candidates),
+        *(
+            bracket.evidence
+            for candidate in record.available_candidates
+            for bracket in candidate.brackets
+        ),
+        *(
+            candidate.threshold.evidence
+            for candidate in record.available_candidates
+            if candidate.threshold is not None
+        ),
+        *(
+            case.evidence
+            for candidate in record.available_candidates
+            for case in candidate.cases
+        ),
+        *(
+            condition.evidence
+            for candidate in record.available_candidates
+            for condition in candidate.recognition_conditions
+        ),
+    ]
+    if not (
+        record.status in {"AVAILABLE", "REVIEW"}
+        and record.attachment_id == source.attachment_id
+        and record.document_sha256 == source.document_sha256
+        and record.manifest_sha256 == current_manifest_sha256
+        and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
+        and record.prompt_version == source.prompt_version
+        and record.extraction_schema_version == source.schema_version
+        and fingerprint_valid
+        and available_tables
+        and quantitative_anchors
+        and all(anchor.confidence >= 0.90 for anchor in quantitative_anchors)
+        and all(
+            table.table_id in raw_table_ids and bool(table.available_criterion_ids)
+            for table in available_tables
+        )
+    ):
+        return False
+    return not any(
+        not is_quantitative_irrelevant_gap(gap)
+        and _contains_any(_normalise_text(gap), _QUANTITATIVE_TABLE_GAP_TERMS)
+        for gap in source.data.missing_or_unreadable
     )
 
 
@@ -1256,6 +1450,9 @@ def _aggregate_source_gaps(
     """Resolve only exact document-presence gaps using accepted typed siblings."""
     effective_source_ids = {
         source.version.id for source in sources if source.complete
+    }
+    quantitative_supplier_ids = {
+        source.version.id for source in sources if _source_supplies_quantitative_table(source)
     }
     while True:
         newly_effective: set[str] = set()
@@ -1268,9 +1465,16 @@ def _aggregate_source_gaps(
                 if candidate is not source
                 and candidate.version.id in effective_source_ids
             ]
+            quantitative_supplier_sources = [
+                candidate
+                for candidate in sources
+                if candidate is not source
+                and candidate.version.id in quantitative_supplier_ids
+            ]
             if _source_can_join_effective_closure(
                 source,
                 sibling_sources=sibling_sources,
+                quantitative_supplier_sources=quantitative_supplier_sources,
             ):
                 newly_effective.add(source.version.id)
         if not newly_effective:
@@ -1288,12 +1492,19 @@ def _aggregate_source_gaps(
             if candidate is not source
             and candidate.version.id in effective_source_ids
         ]
+        quantitative_supplier_sources = [
+            candidate
+            for candidate in sources
+            if candidate is not source
+            and candidate.version.id in quantitative_supplier_ids
+        ]
         for raw_gap in source.data.missing_or_unreadable:
             gap = _normalise_text(raw_gap)
             if _gap_is_covered_by_siblings(
                 gap,
                 source=source,
                 sibling_sources=sibling_sources,
+                quantitative_supplier_sources=quantitative_supplier_sources,
             ):
                 resolved.append(gap)
             else:
