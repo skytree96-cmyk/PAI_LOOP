@@ -835,7 +835,7 @@ def test_official_notice_link_opens_an_accessible_confirmation_dialog() -> None:
     assert 'removeAttribute("href")' in open_body
     assert "window.location" not in open_body
     assert ".source-link-dialog::backdrop" in styles
-    assert '<span>공고 원문</span>' in html
+    assert '<span>나라장터 원문 열기</span>' in html
 
 
 def test_document_quality_review_is_not_presented_as_eligibility_review() -> None:

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#102b2a" />
+    <meta name="theme-color" content="#0f4c81" />
     <meta name="color-scheme" content="light" />
     <meta
       name="description"
@@ -731,11 +731,11 @@
         <div class="drawer-header__actions">
           <button class="button button--primary manual-analysis-detail" type="button" id="manualAnalyzeButton" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><path d="m5.6 5.6 2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1" /><circle cx="12" cy="12" r="3.5" /></svg>
-            <span>이 공고 분석</span>
+            <span>문서 분석 실행</span>
           </button>
-          <button class="button button--secondary source-dialog-button" type="button" id="openSourceDialogButton" aria-label="공고 원문 링크 확인">
+          <button class="button button--secondary source-dialog-button" type="button" id="openSourceDialogButton" aria-label="나라장터 원문 링크 확인">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6" /><path d="m20 4-9 9" /><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" /></svg>
-            <span>공고 원문</span>
+            <span>나라장터 원문 열기</span>
           </button>
           <button class="icon-button" type="button" id="copyLinkButton" aria-label="공고 링크 복사">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1" /><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1" /></svg>
@@ -756,10 +756,10 @@
         <div class="analysis-pipeline" id="analysisPipeline" aria-label="분석 진행 단계"></div>
 
         <div class="detail-tabs" role="tablist" aria-label="공고 상세 정보">
-          <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-tab="overview">종합 판단</button>
+          <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-tab="overview">요약</button>
           <button type="button" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" data-tab="evidence">근거 <span id="evidenceCount">0</span></button>
           <button type="button" role="tab" id="tab-quant" aria-controls="panel-quant" aria-selected="false" data-tab="quant">정량·리스크</button>
-          <button type="button" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" data-tab="history">3년 이력</button>
+          <button type="button" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" data-tab="history">최근 3년 낙찰</button>
           <button type="button" role="tab" id="tab-teams" aria-controls="panel-teams" aria-selected="false" data-tab="teams">Teams 알림</button>
         </div>
 
@@ -768,7 +768,7 @@
             <div class="card-title-row">
               <div>
                 <p class="section-kicker">판단 요약</p>
-                <h3>공고 핵심 요약</h3>
+                <h3>검토 요약</h3>
               </div>
               <span class="verified-label" id="briefEvidenceLabel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>근거 연결</span>
             </div>
@@ -942,7 +942,7 @@
       <form class="decision-dock" id="decisionForm">
         <div class="decision-dock__head">
           <div>
-            <span>담당자 최종 판단</span>
+            <span>담당자 결정</span>
             <small id="decisionExisting">아직 결정되지 않았습니다.</small>
           </div>
           <button class="text-button" type="button" id="toggleCommentButton" aria-expanded="false">의견 남기기</button>
@@ -952,14 +952,14 @@
           <label class="decision-option decision-option--hold"><input type="radio" name="decision" value="HOLD" /><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" /></svg>보류</span></label>
           <label class="decision-option decision-option--no"><input type="radio" name="decision" value="NO_GO" /><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>불참</span></label>
         </div>
-        <p class="decision-selection-guide" id="decisionSelectionGuide">1. 최종 판단 선택 → 2. 근거 입력(선택) → 3. 판단 저장</p>
+        <p class="decision-selection-guide" id="decisionSelectionGuide">결정을 선택하고 필요한 근거를 입력한 뒤 저장하세요.</p>
         <div class="comment-field" id="commentField" hidden>
           <label for="decisionComment">판단 근거 또는 후속 조치</label>
-          <textarea id="decisionComment" rows="3" maxlength="500" placeholder="예: 직접생산확인증명서 대체 가능 여부를 발주처에 문의"></textarea>
+          <textarea id="decisionComment" rows="3" maxlength="500" placeholder="예: 직접생산확인증명서 대체 가능 여부를 수요기관에 문의"></textarea>
           <span><span id="commentCount">0</span>/500</span>
         </div>
         <button class="button button--primary button--wide" type="submit" id="saveDecisionButton" aria-describedby="decisionSelectionGuide" disabled>판단 저장</button>
-        <p class="decision-disclaimer">AI 판단은 참고 정보이며, 담당자 판단과 별도로 기록됩니다.</p>
+        <p class="decision-disclaimer">최종 입찰 여부는 담당자가 결정합니다.</p>
       </form>
     </aside>
 
