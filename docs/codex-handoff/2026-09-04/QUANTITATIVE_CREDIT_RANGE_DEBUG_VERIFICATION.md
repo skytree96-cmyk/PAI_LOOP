@@ -70,8 +70,8 @@
 | 부산 금액 6 + 건수 4 + A0 10 | Pass | `tests/test_busan_education_quantitative_e2e.py` |
 | 추출 원문 범위 보존 | Pass | `tests/test_openai_extraction.py`, `tests/test_quantitative_rule_extraction.py` |
 | 프롬프트 stale 현재 투영 차단 | Pass | `tests/test_api.py`, `tests/test_frontend_public_contract.py` |
-| 전체 저장소 테스트 | **1057 passed** | PR #77 후보 코드 로컬 전체 suite |
-| GitHub 필수 CI | Pass | PR #73~#76 |
+| 전체 저장소 테스트 | **1057 passed** | PR #77 병합 코드 로컬 전체 suite |
+| GitHub 필수 CI | Pass | PR #73~#77, PR #77 최종 CI 9분 34초 |
 
 버전:
 
@@ -85,12 +85,13 @@
 - [PR #74 — 신용등급 범위 컴파일러](https://github.com/skytree96-cmyk/PAI_LOOP/pull/74)
 - [PR #75 — 추출 원문 범위 보존 계약](https://github.com/skytree96-cmyk/PAI_LOOP/pull/75)
 - [PR #76 — 오래된 분석의 현재 투영 차단](https://github.com/skytree96-cmyk/PAI_LOOP/pull/76)
+- [PR #77 — P0 카드·클릭 목록 모집단 일치](https://github.com/skytree96-cmyk/PAI_LOOP/pull/77) · [최종 CI](https://github.com/skytree96-cmyk/PAI_LOOP/actions/runs/33804909172/job/100812943767)
 - Render 서비스: `pai-loop-demo`
-- 수동 배포 ID: `dep-dactaju7bikc73ffd9v0`
-- 배포 소스: `0dcc6c150ef5afe9cd2d32caae9f10faa0fbfb01`
-- 결과: `Deploy succeeded · Live`, 1분 15초
-- 현재 운영 정적 자산: `styles.css?v=20260904-uiux-p0-v2`, `app.js?v=20260904-uiux-p0-v2`
-- PR #77 배포 예정 자산: `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`
+- 수동 배포 ID: `dep-dacu1j6q1p3s73dpvqjg`
+- 배포 소스: `f87aa9cc1f6d49ff8d76e1b54239fe3943f30f49`
+- 결과: `Deploy succeeded · Live`, 1분 14초
+- 운영 정적 자산: `styles.css?v=20260904-uiux-p0-v3`, `app.js?v=20260904-uiux-p0-v3`
+- 운영 Chrome P0 대조: 결과 미기록 `388=388행`, 마감 임박 `76=76행`
 
 프롬프트 변경 전에는 대표 공고 2건의 attachment manifest/current audit/accepted가 `2/2/2`였다. 변경 후 manifest는 `2`로 보존되고 current audit/accepted는 `0/0`이 되어 `2/0/0`으로 전환됐다. PR #76 배포 전에는 이 상황에서도 과거 61/100·NO-GO가 남았으나, 배포 후 실제 Chrome에서 `미분석 · 미산정 · 분석 전`으로 바뀐 것을 확인했다.
 
@@ -106,7 +107,7 @@ X-PAI-Manual-Token: <4자리 운영 PIN>
 
 이번 변경은 프롬프트 버전 상승을 포함하므로 `recompute_current:true`만으로는 처리할 수 없고 첨부 재추출이 필요하다. 비용·중복 실행을 막기 위해 부산 공고 한 건을 먼저 실행하고 완료·20/20을 확인한 뒤 역사영상 공고를 순차 실행해야 한다.
 
-로컬 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`은 4자리 PIN 형식이 아니었다. 다른 비밀값을 운영 PIN으로 추정해 전송하는 행위는 승인되지 않은 자격증명 우회이므로 중단했다. 분석 요청·provider 호출은 **0건**이며, PC도 종료하지 않았다.
+로컬 `PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_TOKEN`은 4자리 PIN 형식이 아니었다. 다른 비밀값을 운영 PIN으로 추정해 전송하는 행위는 승인되지 않은 자격증명 우회이므로 중단했다. PR #77 배포 후 대표 2건의 **신규 재분석 요청 0건·신규 provider 호출 0건**이며, PC도 종료하지 않았다.
 
 ## 7. 남은 인수 체크리스트
 
