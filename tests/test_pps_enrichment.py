@@ -1425,6 +1425,9 @@ def test_matching_extraction_version_targets_quantitative_fingerprint_revision(
         manifest_sha256=current_manifest_sha256,
     )
     assert available.status == "AVAILABLE"
+    confidence_values = pps_enrichment_module._extraction_evidence_confidences(payload)
+    assert confidence_values
+    assert set(confidence_values) == {0.99}
 
     available_legacy_digest = _digest(
         available.model_dump(

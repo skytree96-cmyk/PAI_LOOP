@@ -36,6 +36,11 @@ from pai_loop.quantitative_scoring import (
     estimate_quantitative_score,
     quantitative_request_from_candidate_profile,
 )
+from pai_loop.source_gap_policy import (
+    is_explicit_quantitative_table_local_absence,
+    quantitative_table_local_absence_targets,
+    source_label_document_types,
+)
 
 
 ATTACHMENT_ID = "ATT-QUANT-1"
@@ -270,6 +275,38 @@ def test_valid_literal_table_becomes_immutable_available_candidate_profile() -> 
     assert profile.review_candidates == ()
     with pytest.raises(ValidationError):
         profile.status = "REVIEW"  # type: ignore[misc]
+
+
+def test_low_confidence_quantitative_anchor_never_auto_activates() -> None:
+    table = valid_table()
+    table["criteria"][0]["brackets"][0]["evidence"]["confidence"] = 0.0
+
+    candidate_profile = build(payload_with_table(table))
+
+    assert candidate_profile.status == "INCOMPLETE"
+    assert "LOW_CONFIDENCE_QUANTITATIVE_EVIDENCE" in issue_codes(
+        candidate_profile
+    )
+
+    manifest_sha = "1" * 64
+    document_sha = "2" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    merged = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(merged)
+
+    assert record.status == "INCOMPLETE"
+    assert merged.status == "INCOMPLETE"
+    assert request.activation_status != "AUTO_ACTIVE"
 
 
 def test_exact_quote_mismatch_is_incomplete_and_never_available() -> None:
@@ -714,6 +751,360 @@ def test_explicit_qualitative_only_omission_does_not_block_quantitative_table() 
     }
 
 
+def table_for_attachment(attachment_id: str, suffix: str) -> dict:
+    table = json.loads(json.dumps(valid_table()))
+    table["table_id"] = f"QUANT-TABLE-{suffix}"
+    table["criteria"][0]["criterion_id"] = f"PERFORMANCE-AMOUNT-{suffix}"
+
+    def bind(value: object) -> None:
+        if isinstance(value, dict):
+            if "attachment_id" in value:
+                value["attachment_id"] = attachment_id
+            for nested in value.values():
+                bind(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                bind(nested)
+
+    bind(table)
+    return table
+
+
+def test_explicit_qualitative_table_absence_does_not_block_quantitative_table() -> None:
+    gap = "제안요청서의 정성 평가표가 본 공고문에 포함되어 있지 않음"
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(gap, table=valid_table(), document_type="NOTICE"),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+
+    assert record.status == "AVAILABLE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" not in {
+        issue.code for issue in record.issues
+    }
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" not in {
+        issue.code for issue in record.issues
+    }
+
+
+@pytest.mark.parametrize(
+    "gap",
+    (
+        "제안요청서의 정량 평가표는 본 공고문에 포함되어 있지 않음",
+        "제안요청서의 정량적 평가표는 본 공고문에 포함되어 있지 않음",
+        "제안 요청서의 정량평가표는 본 공고문에 포함되어 있지 않음",
+        "제안요청서의 정량 평가 배점표는 본 공고문에 포함되어 있지 않음",
+    ),
+)
+def test_common_quantitative_table_local_absence_wording_is_recognised(
+    gap: str,
+) -> None:
+    assert is_explicit_quantitative_table_local_absence(gap) is True
+
+
+def test_compound_quantitative_table_gap_is_not_treated_as_local_absence() -> None:
+    gap = (
+        "제안요청서의 정량 평가표는 본 공고문에 포함되어 있지 않으며 "
+        "입찰참가자격 세부요건도 확인할 수 없음"
+    )
+
+    assert is_explicit_quantitative_table_local_absence(gap) is False
+
+
+@pytest.mark.parametrize(
+    "gap",
+    (
+        "제안요청서(붙임) 본문이 제공되지 않아 세부 평가배점표"
+        "(정량평가 기준)를 확인할 수 없음",
+        "공고문에는 제안요청서 본문이 제공되지 않아 평가배점표를 확인할 수 없음",
+        "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음",
+    ),
+)
+def test_shared_local_table_policy_accepts_only_complete_rfp_absence(
+    gap: str,
+) -> None:
+    targets = quantitative_table_local_absence_targets(gap)
+
+    assert targets is not None
+    assert any(document_types == ("RFP",) for document_types, _markers in targets)
+
+
+@pytest.mark.parametrize(
+    "gap",
+    (
+        "제안요청서 본문이 제공되지 않아 평가배점표와 수행계획을 확인할 수 없음",
+        "별도 제안요청서의 평가배점표와 사업일정은 이 첨부에 포함되지 않음",
+        "제안요청서 본문이 제공되지 않아 평가배점표 및 안전관리계획을 확인할 수 없음",
+        "제안요청서 본문이 제공되지 않아 평가배점표를 확인할 수 없음. "
+        "수행계획도 확인할 수 없음",
+    ),
+)
+def test_shared_local_table_policy_rejects_compound_missing_subjects(
+    gap: str,
+) -> None:
+    assert quantitative_table_local_absence_targets(gap) is None
+
+
+@pytest.mark.parametrize(
+    "qualifier",
+    ("참고용", "부록", "초안", "예제", "별지 제1호"),
+)
+def test_source_label_policy_marks_auxiliary_rfp_names_ambiguous(
+    qualifier: str,
+) -> None:
+    assert source_label_document_types(f"{qualifier} 제안요청서.hwp") == (
+        "RFP",
+        "FORM",
+    )
+
+
+@pytest.mark.parametrize(
+    "source_label",
+    (
+        "제안요청서 작성양식.hwp",
+        "제안요청서(안).hwp",
+        "제안요청\u200b서(안).hwp",
+    ),
+)
+def test_source_label_policy_marks_rfp_form_variants_auxiliary(
+    source_label: str,
+) -> None:
+    assert source_label_document_types(source_label) == ("RFP", "FORM")
+
+
+def test_source_label_policy_removes_unicode_format_controls() -> None:
+    assert source_label_document_types("제안요청\u200b서.hwp") == ("RFP",)
+
+
+def test_current_busan_semantic_gaps_are_scoped_to_their_documents() -> None:
+    manifest_sha = "9" * 64
+    notice_attachment_id = "ATT-BUSAN-PRODUCTION-NOTICE"
+    rfp_attachment_id = ATTACHMENT_ID
+    notice_gap = (
+        "기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+        "포함되어 있지 않음"
+    )
+    rfp_gaps = [
+        "정성적 평가(80점) 세부 평가항목은 등급 척도"
+        "(매우우수/우수/보통/미흡)만 제시되어 있어 정성 판단 항목으로 "
+        "정량 테이블에서 제외됨",
+        "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+        "포함되어 있지 않음",
+    ]
+    notice_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(notice_gap, document_type="NOTICE"),
+        source_text="입찰공고 일반사항",
+        attachment_id=notice_attachment_id,
+        document_sha256="8" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    rfp_payload = payload_with_table().model_copy(
+        update={"missing_or_unreadable": rfp_gaps}
+    )
+    rfp_record = validate_quantitative_attachment_extraction(
+        rfp_payload,
+        source_text=VALID_SOURCE,
+        attachment_id=rfp_attachment_id,
+        document_sha256="7" * 64,
+        manifest_sha256=manifest_sha,
+    )
+
+    assert notice_record.status == "INCOMPLETE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" in {
+        issue.code for issue in notice_record.issues
+    }
+    assert "EXTRACTION_DECLARED_INCOMPLETE" not in {
+        issue.code for issue in notice_record.issues
+    }
+    assert rfp_record.status == "AVAILABLE"
+    profile = merge_validated_quantitative_records(
+        [notice_record, rfp_record],
+        expected_documents={
+            notice_attachment_id: "8" * 64,
+            rfp_attachment_id: "7" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            notice_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "공고문(재공고).pdf",
+                "missing_or_unreadable": [notice_gap],
+            },
+            rfp_attachment_id: {
+                "document_type": "RFP",
+                "source_label": "2026 부산교육한마당 제안요청서.hwp",
+                "missing_or_unreadable": rfp_gaps,
+            },
+        },
+    )
+
+    assert profile.status == "AVAILABLE", profile.issues
+    assert "EXTRACTION_DECLARED_INCOMPLETE" not in issue_codes(profile)
+
+
+def test_mutually_incomplete_table_records_cannot_supply_each_other() -> None:
+    manifest_sha = "6" * 64
+    notice_attachment_id = "ATT-MUTUAL-NOTICE"
+    rfp_attachment_id = "ATT-MUTUAL-RFP"
+    notice_gap = "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"
+    rfp_gap = "별도 공고문의 평가배점표는 이 첨부에 포함되지 않음"
+
+    notice_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            notice_gap,
+            table=table_for_attachment(notice_attachment_id, "NOTICE"),
+            document_type="NOTICE",
+        ),
+        source_text=VALID_SOURCE,
+        attachment_id=notice_attachment_id,
+        document_sha256="7" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    rfp_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            rfp_gap,
+            table=table_for_attachment(rfp_attachment_id, "RFP"),
+            document_type="RFP",
+        ),
+        source_text=VALID_SOURCE,
+        attachment_id=rfp_attachment_id,
+        document_sha256="8" * 64,
+        manifest_sha256=manifest_sha,
+    )
+
+    assert notice_record.status == "INCOMPLETE"
+    assert rfp_record.status == "INCOMPLETE"
+    assert all(
+        any(table.status == "AVAILABLE" for table in record.tables)
+        for record in (notice_record, rfp_record)
+    )
+    profile = merge_validated_quantitative_records(
+        [notice_record, rfp_record],
+        expected_documents={
+            notice_attachment_id: "7" * 64,
+            rfp_attachment_id: "8" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            notice_attachment_id: {
+                "document_type": "NOTICE",
+                "source_label": "공고문.pdf",
+                "missing_or_unreadable": [notice_gap],
+            },
+            rfp_attachment_id: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [rfp_gap],
+            },
+        },
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" in issue_codes(profile)
+
+
+def test_local_table_capability_closure_supports_only_seeded_chains() -> None:
+    manifest_sha = "0" * 64
+    rfp_id = "ATT-CHAIN-RFP"
+    notice_id = "ATT-CHAIN-NOTICE"
+    scope_id = "ATT-CHAIN-SCOPE"
+    notice_gap = "별도 제안요청서의 평가배점표는 이 첨부에 포함되지 않음"
+    scope_gap = "별도 공고문의 평가배점표는 이 첨부에 포함되지 않음"
+
+    rfp_record = validate_quantitative_attachment_extraction(
+        payload_with_table(table_for_attachment(rfp_id, "CHAIN-RFP")),
+        source_text=VALID_SOURCE,
+        attachment_id=rfp_id,
+        document_sha256="1" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    notice_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            notice_gap,
+            table=table_for_attachment(notice_id, "CHAIN-NOTICE"),
+            document_type="NOTICE",
+        ),
+        source_text=VALID_SOURCE,
+        attachment_id=notice_id,
+        document_sha256="2" * 64,
+        manifest_sha256=manifest_sha,
+    )
+    scope_record = validate_quantitative_attachment_extraction(
+        payload_with_gap(
+            scope_gap,
+            table=table_for_attachment(scope_id, "CHAIN-SCOPE"),
+            document_type="SCOPE",
+        ),
+        source_text=VALID_SOURCE,
+        attachment_id=scope_id,
+        document_sha256="3" * 64,
+        manifest_sha256=manifest_sha,
+    )
+
+    profile = merge_validated_quantitative_records(
+        [scope_record, notice_record, rfp_record],
+        expected_documents={
+            rfp_id: "1" * 64,
+            notice_id: "2" * 64,
+            scope_id: "3" * 64,
+        },
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            rfp_id: {
+                "document_type": "RFP",
+                "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [],
+            },
+            notice_id: {
+                "document_type": "NOTICE",
+                "source_label": "공고문.pdf",
+                "missing_or_unreadable": [notice_gap],
+            },
+            scope_id: {
+                "document_type": "SCOPE",
+                "source_label": "과업지시서.hwp",
+                "missing_or_unreadable": [scope_gap],
+            },
+        },
+    )
+
+    assert profile.status == "AVAILABLE", profile.issues
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" not in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        (
+            "정성적 평가(80점) 세부 평가항목은 등급 척도"
+            "(매우우수/우수/보통/미흡)만 제시되어 있어 정성 판단 항목으로 "
+            "정량 테이블에서 제외됨. 경영상태 일부 행 판독 불가"
+        ),
+        (
+            "입찰공고문(제출기한 등 구체 일정) 원문은 본 첨부에 "
+            "포함되어 있지 않음. 일부 흐려 판독 불가"
+        ),
+    ],
+)
+def test_busan_irrelevant_gap_exceptions_remain_exact_and_fail_closed(
+    gap: str,
+) -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(gap, table=valid_table()),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="6" * 64,
+        manifest_sha256="5" * 64,
+    )
+
+    assert record.status == "INCOMPLETE"
+    assert "EXTRACTION_DECLARED_INCOMPLETE" in {
+        issue.code for issue in record.issues
+    }
+
+
 def test_local_quantitative_table_absence_resolves_only_with_available_sibling() -> None:
     manifest_sha = "c" * 64
     local_attachment_id = "ATT-PDF-2"
@@ -1115,10 +1506,7 @@ def test_current_document_label_is_not_mistaken_for_a_required_sibling() -> None
             issue.required_sibling_label_markers,
         )
         for issue in local_issues
-    } == {
-        (("NOTICE",), ("공고문",)),
-        (("RFP",), ("제안요청서",)),
-    }
+    } == {(("RFP",), ("제안요청서",))}
 
 
 def test_manifest_label_recovers_multi_role_gap_from_misclassified_source() -> None:
@@ -1431,6 +1819,10 @@ def test_unreadable_quantitative_gap_is_not_resolved_by_available_sibling() -> N
         "공고문 본문의 정량평가표 점수 구간이 제공되지 않음",
         "제안요청서의 배점 기준이 제공되지 않아 정량평가표를 완성할 수 없음",
         "이 첨부에는 일부 페이지가 포함되지 않아 정량평가표를 확인할 수 없음",
+        (
+            "일부 기술평가 세부 배점표(제안요청서 내 배점기준)는 본 공고문에 "
+            "포함되어 있지 않음"
+        ),
     ],
 )
 def test_partial_quantitative_table_gap_is_not_resolved_by_available_sibling(
@@ -5211,6 +5603,578 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
         len(item.recognition_conditions)
         for item in bounded_profile.available_candidates
     ] == [2, 2, 0]
+
+
+def busan_hwp_external_overall_minimum_fixture(
+    *,
+    minimum_quote: str,
+) -> tuple[dict, str]:
+    table, source, _footnote_block = busan_hwp_production_partial_anchor_fixture()
+    summary_total = "❍ 정량적 평가(20점): 부산광역시교육청 사업부서 평가"
+    overall_minimum = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    source = source.replace(
+        "[HWP SECTION 0]\n",
+        (
+            "[HWP SECTION 0]\n"
+            "선정방법: 1단계-제안서 평가(100점 만점, 85점 이상 적격)\n"
+            "2단계-1단계 결과 85점 이상자 중 최저가격 제안자\n"
+            f"{summary_total}\n"
+            f"{overall_minimum}\n"
+        ),
+        1,
+    ).replace(
+        "1) 용역수행 실적(금액)\n(6점)",
+        "나. 정량적 평가 세부기준\n1) 용역수행 실적(금액)\n(6점)",
+        1,
+    ).replace("\n총점 20점", "", 1)
+    table["total_evidence"] = anchor(summary_total)
+    table["minimum_score"] = 85
+    table["minimum_evidence"] = anchor(minimum_quote)
+    return table, source
+
+
+@pytest.mark.parametrize(
+    "minimum_quote",
+    (
+        "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다.",
+        "85점 이상",
+    ),
+    ids=("full-overall-sentence", "repeated-short-anchor"),
+)
+def test_busan_hwp_detaches_source_proven_external_overall_minimum(
+    minimum_quote: str,
+) -> None:
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=minimum_quote
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.tables[0].minimum_score is None
+    assert profile.tables[0].minimum_evidence is None
+    manifest_sha = "4" * 64
+    document_sha = "3" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    runtime_profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(runtime_profile)
+
+    assert record.status == "AVAILABLE", record.issues
+    assert request.activation_status == "AUTO_ACTIVE"
+    assert request.activation_reasons == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "inside-table-copy",
+        "quantitative-context",
+        "quantitative-bound-before-summary",
+        "quantitative-minimum-below",
+        "quantitative-minimum-label",
+        "quantitative-failure-wording",
+        "quantitative-split-bound",
+        "same-value-operator-conflict",
+        "quantitative-table-minimum",
+        "quantitative-percent-cutoff",
+        "quantitative-long-split-cutoff",
+        "quantitative-score-miss-wording",
+        "quantitative-score-below-wording",
+        "quantitative-pass-line-wording",
+        "unexpected-quantitative-bound",
+        "quantitative-bound-after-table",
+        "competing-table-other-section",
+        "competing-pointed-table",
+        "competing-detailed-score-table",
+        "competing-unnamed-total",
+        "cross-attachment-minimum",
+        "missing-detail-heading",
+    ),
+)
+def test_external_overall_minimum_detachment_fails_closed_without_full_proof(
+    mutation: str,
+) -> None:
+    full_sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=full_sentence
+    )
+    if mutation == "inside-table-copy":
+        source = source.replace(
+            "A. 2억 원 이상",
+            f"A. 2억 원 이상\n{full_sentence}",
+            1,
+        )
+    elif mutation == "quantitative-context":
+        quantitative_sentence = "❍ 적격자는 정량적 평가 결과 85점 이상인 자를 선정한다."
+        source = source.replace(full_sentence, quantitative_sentence, 1)
+        table["minimum_evidence"] = anchor(quantitative_sentence)
+    elif mutation == "unexpected-quantitative-bound":
+        source = source.replace(
+            "나. 정량적 평가 세부기준",
+            (
+                "❍ 정량적 평가 결과 15점 이상인 자만 통과한다.\n"
+                "나. 정량적 평가 세부기준"
+            ),
+            1,
+        )
+    elif mutation == "same-value-operator-conflict":
+        source = source.replace(
+            "2단계-1단계 결과 85점 이상자 중 최저가격 제안자",
+            "2단계-1단계 결과 85점 미만자는 부적격으로 제외",
+            1,
+        )
+    elif mutation == "quantitative-table-minimum":
+        source = source.replace(
+            "나. 정량적 평가 세부기준",
+            "나. 정량적 평가 세부기준\n정량적 평가 최저점은 15점이다.",
+            1,
+        )
+    elif mutation == "quantitative-percent-cutoff":
+        source = source.replace(
+            "나. 정량적 평가 세부기준",
+            "정량적 평가 득점률이 75% 미만이면 탈락한다.\n나. 정량적 평가 세부기준",
+            1,
+        )
+    elif mutation == "quantitative-long-split-cutoff":
+        source = source.replace(
+            "나. 정량적 평가 세부기준",
+            "정량적 평가 통과 기준\n15\n점\n미만인 자는 제외한다.\n나. 정량적 평가 세부기준",
+            1,
+        )
+    elif mutation in {
+        "quantitative-score-miss-wording",
+        "quantitative-score-below-wording",
+        "quantitative-pass-line-wording",
+    }:
+        alternate_rule = {
+            "quantitative-score-miss-wording": (
+                "정량적 평가 점수가 15점 미달이면 제외한다."
+            ),
+            "quantitative-score-below-wording": (
+                "정량적 평가 점수가 15점에 못 미치면 제외한다."
+            ),
+            "quantitative-pass-line-wording": "정량적 평가의 합격선은 15점이다.",
+        }[mutation]
+        source = source.replace(
+            "나. 정량적 평가 세부기준",
+            f"{alternate_rule}\n나. 정량적 평가 세부기준",
+            1,
+        )
+    elif mutation == "quantitative-bound-before-summary":
+        summary = "❍ 정량적 평가(20점): 부산광역시교육청 사업부서 평가"
+        source = source.replace(
+            summary,
+            f"❍ 정량적 평가 결과 15점 이상인 자만 통과한다.\n{summary}",
+            1,
+        )
+    elif mutation in {
+        "quantitative-minimum-below",
+        "quantitative-minimum-label",
+        "quantitative-failure-wording",
+        "quantitative-split-bound",
+    }:
+        alternate_rule = {
+            "quantitative-minimum-below": (
+                "정량적 평가 결과 15점 미만인 자는 탈락한다."
+            ),
+            "quantitative-minimum-label": "정량적 평가 최저점은 15점이다.",
+            "quantitative-failure-wording": (
+                "정량적 평가에서 15점을 득점하지 못하면 탈락한다."
+            ),
+            "quantitative-split-bound": (
+                "정량적 평가 결과\n15점\n이상인 자만 통과한다."
+            ),
+        }[mutation]
+        summary = "❍ 정량적 평가(20점): 부산광역시교육청 사업부서 평가"
+        source = source.replace(summary, f"{alternate_rule}\n{summary}", 1)
+    elif mutation == "quantitative-bound-after-table":
+        source += (
+            "\n[HWP SECTION 1]\n"
+            "별표: 정량적 평가 결과 15점 이상인 자만 통과한다."
+        )
+    elif mutation == "competing-table-other-section":
+        source += (
+            "\n[HWP SECTION 1]\n정량적 평가표\n"
+            "가격경쟁력 (30점)\n총점 30점"
+        )
+    elif mutation == "competing-pointed-table":
+        source += "\n[HWP SECTION 1]\n다. 정량적 평가표(30점)\n가격경쟁력 (30점)"
+    elif mutation == "competing-detailed-score-table":
+        source += "\n[HWP SECTION 1]\n정량평가 세부배점표\n가격경쟁력 (30점)"
+    elif mutation == "competing-unnamed-total":
+        source += "\n[HWP SECTION 1]\n가격경쟁력 (30점)\n총점 30점"
+    elif mutation == "cross-attachment-minimum":
+        table["minimum_evidence"]["attachment_id"] = "ATT-OTHER"
+    else:
+        source = source.replace("나. 정량적 평가 세부기준\n", "", 1)
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    (
+        "정량적 평가에서 15점을 획득한 자에 한하여 협상대상자로 선정한다.",
+        "정량적 평가점수 15점에 도달해야 한다.",
+        "정량적 평가점수가 15점보다 낮으면 협상대상으로 인정하지 않는다.",
+        "정량적 평가점수가 15점을 넘지 못한 자는 후순위로 한다.",
+        "정량적 평가 안내\n15점을 획득한 자에 한하여 협상대상자로 선정한다.",
+        "정량적 평가 안내\n15점을 얻은 업체만 유효하다.",
+        "정량적 평가 안내\n15점 취득 시 다음 단계로 진행한다.",
+        "정량적 평가 세부 점수\n15점\n미만인 자는 탈락한다.",
+        "정량적 평가 총배점\n15점\n미만인 자는 탈락한다.",
+        "정량적 평가 점수가\n15점\n미만인 자는 탈락한다.",
+        "객관적 평가 점수를\n15점\n미만 취득하면 탈락한다.",
+        "정량적 평가 점수는 15점 미만",
+        "객관평가 기준은 15점 이상",
+        "계량평가 15점 이하",
+        "정량적 평가 배점의 기준: 15점 초과",
+        "정량적 평가 점수가 15점보다 적으면 실격 처리한다.",
+        "정량적 평가 점수가 15점을 밑돌면 실격 처리한다.",
+        "정량적 평가 점수가 15점에 이르지 아니하면 실격 처리한다.",
+        "정량적 평가 점수를 15점 채우지 못하면 실격 처리한다.",
+        "< 15점: 실격",
+        "정량적 평가 배점의 75퍼센트 이상인 자만 인정한다.",
+        "정량적 평가 배점의 75 퍼센트에 도달한 자를 선정한다.",
+    ),
+)
+def test_external_minimum_detachment_rejects_unclaimed_quantitative_score_line(
+    rule: str,
+) -> None:
+    full_sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=full_sentence
+    )
+    source = source.replace(
+        "나. 정량적 평가 세부기준",
+        f"{rule}\n나. 정량적 평가 세부기준",
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "heading",
+    (
+        "객관적 평가 세부기준",
+        "객관적 평가 배점표",
+        "객관적 지표 평가항목",
+        "객관적 평가항목 및 배점",
+        "객관적 평가 세부기준표",
+        "계량 평가 세부기준",
+        "계량지표별 평가기준",
+        "계량적 평가 세부기준",
+        "계량화 평가 세부기준",
+        "정량평가 항목별 배점",
+    ),
+)
+def test_external_minimum_detachment_rejects_competing_table_heading_variants(
+    heading: str,
+) -> None:
+    full_sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=full_sentence
+    )
+    source += f"\n[HWP SECTION 1]\n{heading}\n가격경쟁력 (30점)"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_minimum_rejects_same_section_competing_table_after_fence() -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source += "\n3. 제안서 평가\n객관적 지표 평가항목\n가격경쟁력 (30점)"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_minimum_rejects_conflicting_quantitative_allocation() -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    conflicting = (
+        "총점 100점 만점으로 정량적 평가(15점) 및 "
+        "정성적 평가(85점)를 실시한다."
+    )
+    source = source.replace(
+        "나. 정량적 평가 세부기준",
+        f"{conflicting}\n나. 정량적 평가 세부기준",
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_minimum_rejects_cutoff_smuggled_in_owned_case_literal() -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    case = table["criteria"][0]["cases"][0]
+    original = case["literal"]
+    smuggled = f"{original}\n정량평가 15점을 얻은 업체만 유효하다."
+    source = source.replace(original, smuggled, 1)
+    case["literal"] = smuggled
+    case["evidence"] = anchor(smuggled)
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "heading",
+    (
+        "객관적\n평가 세부기준",
+        "객관적\n지표별\n평가\n세부기준",
+        "정량적\n평가\n세부\n기준",
+        "계량적\n평가\n배점표",
+        "계량화\n평가\n세부기준",
+        "객관평가\n세부기준",
+    ),
+)
+def test_external_minimum_rejects_split_hwp_competing_table_heading(
+    heading: str,
+) -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source += f"\n3. 제안서 평가\n{heading}\n가격경쟁력 (30점)"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        "경영상태 평점은 배점의 50% 미만이면 탈락",
+        "경영상태 평점은 50퍼센트 미만이면 탈락",
+        "객관평가 배점의 50% 미만이면 과락",
+    ),
+)
+def test_external_minimum_rejects_percentage_cutoff_on_overall_line(
+    extra: str,
+) -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source = source.replace(sentence, f"{sentence} {extra}", 1)
+    table["minimum_evidence"] = anchor(f"{sentence} {extra}")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_minimum_rejects_zero_width_operator_conflict() -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source = source.replace(
+        "2단계-1단계 결과 85점 이상자 중 최저가격 제안자",
+        "2단계-1단계 결과 85\u200b점 미만자는 부적격으로 제외",
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+@pytest.mark.parametrize(
+    "unrelated",
+    (
+        "안전교육 이수평가에서 85점 이상이어야 수료한다.",
+        "정성적 평가 결과 85점 이상이면 합격한다.",
+        "가격평가 85점 이상 업체를 우대한다.",
+        "별도 과업시험에서 85점 이상이어야 통과한다.",
+    ),
+)
+def test_external_minimum_rejects_repeated_unrelated_same_score(
+    unrelated: str,
+) -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source = source.replace(sentence, f"{sentence}\n{unrelated}", 1)
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+@pytest.mark.parametrize("overall_maximum", (20, 50, 80))
+def test_external_minimum_rejects_maximum_not_above_cutoff(
+    overall_maximum: int,
+) -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source = source.replace(
+        "100점 만점",
+        f"{overall_maximum}점 만점",
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_minimum_does_not_join_quantitative_and_qualitative_sentences() -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    benign_block = "\n".join(
+        (
+            "정량적 평가는 사업부서가 평가한다.",
+            "정성적 평가(80점)는 위원회가 평가한다.",
+            "정성적 평가는 최고점과 최저점을 제외해 평균한다.",
+        )
+    )
+    source = source.replace(
+        "나. 정량적 평가 세부기준",
+        f"{benign_block}\n나. 정량적 평가 세부기준",
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.tables[0].minimum_score is None
+
+
+@pytest.mark.parametrize(
+    "unrelated",
+    (
+        "안전교육 시험은 60점 이상이면 통과한다.",
+        "만족도 조사는 5점 척도에서 4점 이상을 목표로 한다.",
+        "교육생 사후평가 70점 이상일 때 수료한다.",
+    ),
+)
+def test_external_minimum_ignores_unrelated_different_score_bound(
+    unrelated: str,
+) -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source += f"\n3. 제안서 평가\n{unrelated}"
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.tables[0].minimum_score is None
+
+
+@pytest.mark.parametrize(
+    "competing_cutoff",
+    (
+        "❍ 제안서 평가 결과 90점 이상인 자를 선정한다.",
+        "기술평가 결과 70점 이상이면 협상대상으로 선정한다.",
+        "종합평가 결과 60점 미만이면 부적격으로 처리한다.",
+    ),
+)
+def test_external_minimum_rejects_different_overall_evaluation_cutoff(
+    competing_cutoff: str,
+) -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    source = source.replace(sentence, f"{sentence}\n{competing_cutoff}", 1)
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_minimum_rejects_cutoff_smuggled_in_owned_recognition_line() -> None:
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=sentence
+    )
+    original = "④ 자체 합산표 및 증빙서류를 제출하지 않은 경우에는 최저점으로 처리한다."
+    smuggled = (
+        "④ 자체 합산표 및 증빙서류를 제출하지 않은 경우에는 최저점으로 "
+        "처리하며 정량평가 최저점은 15점이다."
+    )
+    source = source.replace(original, smuggled, 1)
+    table["criteria"][0]["recognition_conditions"] = [
+        {
+            "literal": smuggled,
+            "evidence": anchor(smuggled),
+        }
+    ]
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_external_overall_minimum_keeps_owned_percentage_recognition_rule() -> None:
+    full_sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote=full_sentence
+    )
+    source = source.replace(
+        "③ 공동계약으로 참여한 실적의 경우 공동계약 참여 비율에 따른 금액의 실적",
+        (
+            "③ 공동계약으로 참여한 실적의 경우 공동계약 참여 비율에 따른 "
+            "금액의 실적 (참여 비율 50% 이상)"
+        ),
+        1,
+    )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    assert profile.tables[0].minimum_score is None
 
 
 @pytest.mark.parametrize(
