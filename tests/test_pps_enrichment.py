@@ -1044,17 +1044,154 @@ class _SemanticGapExtractionClient(_CountingExtractionClient):
         )
 
 
+_QUANTITATIVE_RETRY_SOURCE = """정량평가표
+수행실적 10점
+5억원 이상 충족 10점 미충족 0점
+정량평가 총점 10점
+"""
+
+
+def _quantitative_confidence_payload(
+    attachment_id: str,
+    *,
+    confidence: float,
+) -> ExtractionPayload:
+    return ExtractionPayload.model_validate(
+        {
+            "document_type": "RFP",
+            "requirements": [],
+            "quantitative_tables": [
+                {
+                    "table_id": "QUANT-RETRY-TABLE",
+                    "label": "정량평가표",
+                    "criteria": [
+                        {
+                            "criterion_id": "QUANT-RETRY-PERFORMANCE",
+                            "label": "수행실적",
+                            "criterion_literal": "수행실적 10점",
+                            "max_points": 10,
+                            "scoring_method": "THRESHOLD",
+                            "metric": "PERFORMANCE_AMOUNT",
+                            "unit": "억원",
+                            "brackets": [],
+                            "threshold": {
+                                "literal": "5억원 이상 충족 10점 미충족 0점",
+                                "operator": "GTE",
+                                "threshold_value": 5,
+                                "points_if_met": 10,
+                                "points_if_not_met": 0,
+                                "evidence": {
+                                    "attachment_id": attachment_id,
+                                    "page": 1,
+                                    "section": "정량평가표",
+                                    "quote": "5억원 이상 충족 10점 미충족 0점",
+                                    "confidence": 0.99,
+                                },
+                            },
+                            "formula_literal": None,
+                            "cases": [],
+                            "recognition_conditions": [],
+                            "required_evidence": ["company.performance.amount"],
+                            "evidence": {
+                                "attachment_id": attachment_id,
+                                "page": 1,
+                                "section": "정량평가표",
+                                "quote": "수행실적 10점",
+                                "confidence": confidence,
+                            },
+                            "ambiguity_reason": None,
+                        }
+                    ],
+                    "total_points": 10,
+                    "total_evidence": {
+                        "attachment_id": attachment_id,
+                        "page": 1,
+                        "section": "정량평가표",
+                        "quote": "정량평가 총점 10점",
+                        "confidence": 0.99,
+                    },
+                    "minimum_score": None,
+                    "minimum_evidence": None,
+                    "ambiguity_reason": None,
+                }
+            ],
+            "quantitative_table_not_applicable": None,
+            "missing_or_unreadable": [],
+            "summary": "정량평가표 추출",
+        }
+    )
+
+
+class _QuantitativeConfidenceRetryClient:
+    calls = 0
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> "_QuantitativeConfidenceRetryClient":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def extract(
+        self,
+        *,
+        document_text: str,
+        allowed_attachment_ids: set[str],
+    ) -> ExtractionOutcome:
+        type(self).calls += 1
+        assert _QUANTITATIVE_RETRY_SOURCE.strip() in document_text
+        attachment_id = next(iter(allowed_attachment_ids))
+        return ExtractionOutcome(
+            status="ACCEPTED",
+            message="validated",
+            api_calls=1,
+            data=_quantitative_confidence_payload(
+                attachment_id,
+                confidence=0.80 if type(self).calls == 1 else 0.99,
+            ),
+        )
+
+
+class _PersistentQuantitativeReviewClient(_QuantitativeConfidenceRetryClient):
+    calls = 0
+
+    def extract(
+        self,
+        *,
+        document_text: str,
+        allowed_attachment_ids: set[str],
+    ) -> ExtractionOutcome:
+        type(self).calls += 1
+        assert _QUANTITATIVE_RETRY_SOURCE.strip() in document_text
+        attachment_id = next(iter(allowed_attachment_ids))
+        return ExtractionOutcome(
+            status="ACCEPTED",
+            message="validated with quantitative review",
+            api_calls=1,
+            data=_quantitative_confidence_payload(
+                attachment_id,
+                confidence=0.80,
+            ),
+        )
+
+
 def _single_hwpx_reuse_case(
     *,
     notice_key: str,
+    source_text: str = (
+        "교육 컨설팅 수행실적을 제출해야 합니다.\n마감일까지 제출합니다."
+    ),
 ) -> tuple[Engine, sessionmaker[Session], str, httpx.MockTransport]:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("mimetype", "application/hwp+zip")
         archive.writestr(
             "Contents/section0.xml",
-            "<s><p>교육 컨설팅 수행실적을 제출해야 합니다.</p>"
-            "<p>마감일까지 제출합니다.</p></s>",
+            "<s>"
+            + "".join(f"<p>{line}</p>" for line in source_text.splitlines())
+            + "</s>",
         )
     content = buffer.getvalue()
     transport = httpx.MockTransport(
@@ -1094,6 +1231,44 @@ def _single_hwpx_reuse_case(
         session.commit()
         notice_id = notice.id
     return engine, factory, notice_id, transport
+
+
+def _append_extraction_history_version(
+    session: Session,
+    template: NoticeVersion,
+    *,
+    status: str,
+    error_code: str | None = None,
+) -> NoticeVersion:
+    payload = json.loads(json.dumps(template.source_payload, ensure_ascii=False))
+    payload["status"] = status
+    if status == "REVIEW":
+        payload.update(
+            {
+                "review_code": "R07",
+                "error_code": error_code,
+                "message": "pre-request review history",
+                "result": None,
+                "quantitative_validation_record": None,
+            }
+        )
+    existing = list(
+        session.scalars(
+            select(NoticeVersion).where(NoticeVersion.notice_id == template.notice_id)
+        ).all()
+    )
+    version = NoticeVersion(
+        notice_id=template.notice_id,
+        version_no=max(item.version_no for item in existing) + 1,
+        file_sha256=template.file_sha256,
+        document_complete=template.document_complete if status == "ACCEPTED" else False,
+        extraction_status=status,
+        extraction_confidence=template.extraction_confidence if status == "ACCEPTED" else 0.0,
+        source_payload=payload,
+    )
+    session.add(version)
+    session.flush()
+    return version
 
 
 def test_corrected_accepted_extraction_reports_two_calls_and_reuses_without_openai() -> None:
@@ -2061,6 +2236,215 @@ def test_explicit_review_retry_never_bypasses_accepted_version() -> None:
     assert reused.version_id == accepted.version_id
     assert reused.openai_calls == 0
     assert _CountingExtractionClient.calls == 1
+    engine.dispose()
+
+
+def test_explicit_review_retry_reextracts_only_accepted_quantitative_review_once() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-EXPLICIT-QUANTITATIVE-REVIEW-RETRY",
+        source_text=_QUANTITATIVE_RETRY_SOURCE,
+    )
+    _QuantitativeConfidenceRetryClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_QuantitativeConfidenceRetryClient,
+        )
+    with factory() as session:
+        first_version = session.get(NoticeVersion, first.version_id)
+        notice = session.get(Notice, notice_id)
+        assert first_version is not None
+        assert notice is not None
+        first_record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            first_version.source_payload["quantitative_validation_record"]
+        )
+        retry_version_ids = current_retryable_review_version_ids(
+            list(notice.versions)
+        )
+        assert first_record.status == "INCOMPLETE"
+        assert first_record.review_candidates
+        assert retry_version_ids == frozenset({first.version_id})
+        assert has_current_accepted_pps_extraction(session, notice_id) is True
+
+    with factory() as session:
+        retried = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_QuantitativeConfidenceRetryClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+    with factory() as session:
+        continued = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_QuantitativeConfidenceRetryClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+        retried_version = session.get(NoticeVersion, retried.version_id)
+        assert retried_version is not None
+        retried_record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            retried_version.source_payload["quantitative_validation_record"]
+        )
+
+    assert first.status == retried.status == "COMPLETED"
+    assert continued.status == "REUSED"
+    assert retried.version_id != first.version_id
+    assert continued.version_id == retried.version_id
+    assert first.openai_calls == retried.openai_calls == 1
+    assert continued.openai_calls == 0
+    assert retried_record.status == "AVAILABLE"
+    assert retried_record.review_candidates == ()
+    assert _QuantitativeConfidenceRetryClient.calls == 2
+    assert "DUPLICATE_CONTENT_REUSED" not in retried.warnings
+    engine.dispose()
+
+
+def test_accepted_quantitative_retry_does_not_dedupe_to_older_accepted_history() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-QUANTITATIVE-RETRY-OLDER-ACCEPTED",
+        source_text=_QUANTITATIVE_RETRY_SOURCE,
+    )
+    _PersistentQuantitativeReviewClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_PersistentQuantitativeReviewClient,
+        )
+    with factory() as session:
+        first_version = session.get(NoticeVersion, first.version_id)
+        assert first_version is not None
+        latest_before_request = _append_extraction_history_version(
+            session,
+            first_version,
+            status="ACCEPTED",
+        )
+        session.commit()
+        latest_before_request_id = latest_before_request.id
+    with factory() as session:
+        notice = session.get(Notice, notice_id)
+        assert notice is not None
+        retry_version_ids = current_retryable_review_version_ids(list(notice.versions))
+    assert retry_version_ids == frozenset({latest_before_request_id})
+
+    with factory() as session:
+        retried = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_PersistentQuantitativeReviewClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+    with factory() as session:
+        continued = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_PersistentQuantitativeReviewClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+
+    assert retried.version_id not in {first.version_id, latest_before_request_id}
+    assert continued.version_id == retried.version_id
+    assert retried.openai_calls == 1
+    assert continued.openai_calls == 0
+    assert _PersistentQuantitativeReviewClient.calls == 2
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "older_error_code",
+    ["INCOMPLETE_RESPONSE", "UNSUPPORTED_ATTACHMENT_TYPE"],
+)
+def test_accepted_quantitative_retry_ignores_all_pre_request_review_history(
+    older_error_code: str,
+) -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key=f"PPS-QUANTITATIVE-RETRY-OLDER-{older_error_code}",
+        source_text=_QUANTITATIVE_RETRY_SOURCE,
+    )
+    _PersistentQuantitativeReviewClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_PersistentQuantitativeReviewClient,
+        )
+    with factory() as session:
+        first_version = session.get(NoticeVersion, first.version_id)
+        assert first_version is not None
+        older_review = _append_extraction_history_version(
+            session,
+            first_version,
+            status="REVIEW",
+            error_code=older_error_code,
+        )
+        latest_before_request = _append_extraction_history_version(
+            session,
+            first_version,
+            status="ACCEPTED",
+        )
+        session.commit()
+        pre_request_ids = {
+            first.version_id,
+            older_review.id,
+            latest_before_request.id,
+        }
+        latest_before_request_id = latest_before_request.id
+    with factory() as session:
+        notice = session.get(Notice, notice_id)
+        assert notice is not None
+        retry_version_ids = current_retryable_review_version_ids(list(notice.versions))
+    assert retry_version_ids == frozenset({latest_before_request_id})
+
+    _RetryableReviewClient.calls = 0
+    with factory() as session:
+        retried = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+    with factory() as session:
+        continued = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+
+    assert retried.status == continued.status == "REVIEW"
+    assert retried.version_id not in pre_request_ids
+    assert continued.version_id == retried.version_id
+    assert retried.openai_calls == 1
+    assert continued.openai_calls == 0
+    assert _RetryableReviewClient.calls == 1
     engine.dispose()
 
 

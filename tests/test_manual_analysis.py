@@ -358,6 +358,10 @@ def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
         "pai_loop.manual_analysis.latest_current_evaluation",
         lambda _notice: object(),
     )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._has_complete_current_attachment_audit",
+        lambda _request, _notice: True,
+    )
 
     def should_not_run(*_args, **_kwargs):  # pragma: no cover - assertion helper
         raise AssertionError("already analysed notice must not execute a batch")
@@ -376,6 +380,54 @@ def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
         assert response.json()["outcome"] == "ALREADY_ANALYZED"
         assert response.json()["analysis_attempted"] is True
         assert response.json()["request_id"] is None
+
+
+def test_analysed_notice_with_stale_extraction_contract_can_reextract(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="ANALYZED",
+            reason_code="ANALYZED",
+            reason="현재 공고 버전의 분석이 완료되었습니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: object(),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._has_complete_current_attachment_audit",
+        lambda _request, _notice: False,
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._manual_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fake_batch(payload, request, *, retry_reviewed_version_ids=frozenset()):
+        calls.append((payload, request, retry_reviewed_version_ids))
+        return _review_batch("batch-job-stale-extraction-contract")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": True, "retry_reviewed": True},
+        )
+
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["outcome"] == "QUEUED"
+    assert len(calls) == 1
+    assert calls[0][0].enrich_missing is True
+    assert calls[0][2] == frozenset()
 
 
 def test_current_analysis_can_be_recomputed_from_stored_evidence(
@@ -491,6 +543,108 @@ def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
             job = session.get(IngestionJob, queued.json()["request_id"])
             assert job is not None
             assert job.request_json["retry_reviewed"] is True
+
+
+def test_explicit_review_retry_can_reextract_accepted_quantitative_review(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+    calls = []
+    retry_version_ids = frozenset({"accepted-quantitative-review-before-request"})
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="ANALYZED",
+            reason_code="ANALYZED",
+            reason="첨부 추출은 완료됐지만 정량표 재검증이 필요합니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: object(),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._manual_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.current_retryable_review_version_ids",
+        lambda _versions: retry_version_ids,
+    )
+
+    def fake_batch(payload, request, *, retry_reviewed_version_ids=frozenset()):
+        calls.append((payload, request, retry_reviewed_version_ids))
+        return _review_batch("batch-job-accepted-quantitative-retry")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": True, "retry_reviewed": True},
+        )
+
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["outcome"] == "QUEUED"
+    assert len(calls) == 1
+    assert calls[0][0].enrich_missing is True
+    assert calls[0][2] == retry_version_ids
+
+
+def test_explicit_quantitative_retry_wins_over_evaluation_only_without_current_result(
+    monkeypatch,
+) -> None:
+    app = _app(monkeypatch)
+    calls = []
+    retry_version_ids = frozenset({"accepted-quantitative-review-before-request"})
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._reason",
+        lambda _notice: PublicAnalysisReason(
+            state="ANALYZED",
+            reason_code="ANALYZED",
+            reason="첨부 추출은 완료됐지만 현재 판단은 없습니다.",
+            attachment_count=1,
+            attempted=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.latest_current_evaluation",
+        lambda _notice: None,
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._has_complete_current_attachment_audit",
+        lambda _request, _notice: True,
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis._manual_jobs_since",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.current_retryable_review_version_ids",
+        lambda _versions: retry_version_ids,
+    )
+
+    def fake_batch(payload, request, *, retry_reviewed_version_ids=frozenset()):
+        calls.append((payload, request, retry_reviewed_version_ids))
+        return _review_batch("batch-job-quantitative-retry-without-evaluation")
+
+    monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        queued = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=SAME_ORIGIN_HEADERS,
+            json={"run_extraction": True, "retry_reviewed": True},
+        )
+
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["outcome"] == "QUEUED"
+    assert len(calls) == 1
+    assert calls[0][0].enrich_missing is True
+    assert calls[0][2] == retry_version_ids
 
 
 def test_accepted_attachment_without_current_evaluation_continues_pipeline(

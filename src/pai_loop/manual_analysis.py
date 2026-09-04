@@ -1137,22 +1137,29 @@ def request_manual_notice_analysis(
             raise HTTPException(status_code=409, detail="마감 또는 종료된 공고는 분석할 수 없습니다.")
 
         reason = _reason(notice)
+        retry_reviewed_version_ids = (
+            current_retryable_review_version_ids(notice.versions)
+            if caller_intent.retry_reviewed
+            else frozenset()
+        )
         # Attachment extraction and a current evaluation are separate durable
         # stages.  Accepted attachment text without a current evaluation must
         # continue into the deterministic scoring pipeline (normally with
         # zero new model calls), while a genuinely current completed result
         # is reused idempotently.
         current_evaluation = latest_current_evaluation(notice)
-        if (
-            reason.state == "ANALYZED"
-            and current_evaluation is not None
-            and not caller_intent.recompute_current
-        ):
-            return _already_analysed(notice, reason)
         complete_current_audit = bool(
             reason.state == "ANALYZED"
             and _has_complete_current_attachment_audit(request, notice)
         )
+        if (
+            reason.state == "ANALYZED"
+            and current_evaluation is not None
+            and complete_current_audit
+            and not caller_intent.recompute_current
+            and not retry_reviewed_version_ids
+        ):
+            return _already_analysed(notice, reason)
         if caller_intent.recompute_current and (
             current_evaluation is None or not complete_current_audit
         ):
@@ -1169,6 +1176,7 @@ def request_manual_notice_analysis(
                 reason.state == "ANALYZED"
                 and current_evaluation is None
                 and complete_current_audit
+                and not retry_reviewed_version_ids
             )
         )
         if not evaluation_only and not caller_intent.run_extraction:
@@ -1228,11 +1236,6 @@ def request_manual_notice_analysis(
             evaluation_only=evaluation_only,
             recompute_current=caller_intent.recompute_current,
             retry_reviewed=caller_intent.retry_reviewed,
-        )
-        retry_reviewed_version_ids = (
-            current_retryable_review_version_ids(notice.versions)
-            if caller_intent.retry_reviewed
-            else frozenset()
         )
         background_tasks.add_task(
             _execute_reserved_manual_job,

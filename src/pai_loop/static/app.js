@@ -3789,9 +3789,11 @@
         recomputeCurrent: false,
       };
     }
+    const quantitativeRetry = quantitativeRuleRetryRequired(notice);
     const recomputeCurrent = notice.analysisState === "EVALUATED"
       && notice.analysisAttachmentCoverageComplete
-      && !isDocumentQualityReview(notice);
+      && !isDocumentQualityReview(notice)
+      && !quantitativeRetry;
     if (recomputeCurrent) {
       return {
         enabled: true,
@@ -3799,6 +3801,15 @@
         label: "저장 근거 재판단",
         reason: "현재 저장된 첨부 근거를 다시 사용해 자격·정량 판단을 갱신합니다.",
         recomputeCurrent: true,
+      };
+    }
+    if (quantitativeRetry) {
+      return {
+        enabled: true,
+        code: "QUANTITATIVE_RETRY",
+        label: "정량 근거 재검증",
+        reason: "첨부는 확인됐지만 공고별 정량표 근거가 검토 상태라 해당 추출을 한 번 다시 확인합니다.",
+        recomputeCurrent: false,
       };
     }
     return {
@@ -3813,6 +3824,7 @@
   function manualAnalysisLabel(notice, running = false) {
     // Previous embedded-client labels: "판단 실행", "첨부 전체 재분석".
     if (running) return "첨부 분석 중…";
+    if (quantitativeRuleRetryRequired(notice)) return "정량 근거 재검증";
     if (
       notice.analysisState === "EVALUATED"
       && notice.analysisAttachmentCoverageComplete
@@ -3840,6 +3852,7 @@
     const evaluationOnly = recomputeCurrent || (
       notice.analysisState === "ANALYZED"
       && notice.analysisAttachmentCoverageComplete
+      && !quantitativeRuleRetryRequired(notice)
     );
     const knownScope = pending
       ? `현재 남은 첨부 ${formatNumber(pending)}개`
@@ -3861,6 +3874,7 @@
     return availability.recomputeCurrent || (
       notice.analysisState === "ANALYZED"
       && notice.analysisAttachmentCoverageComplete
+      && !quantitativeRuleRetryRequired(notice)
     );
   }
 
@@ -4224,6 +4238,13 @@
         showToast("분석 요청 불가", `저장된 공고 상태를 확인하지 못했습니다 · ${humanizeError(error)}`, "error");
         return;
       }
+    }
+    if (
+      state.source === "api"
+      && ["ANALYZED", "EVALUATED"].includes(notice?.analysisState)
+      && notice.analysisAttachmentCoverageComplete
+    ) {
+      await loadQuantitativeEstimate(noticeKey, { force: true });
     }
     const availability = manualAnalysisAvailability(notice);
     if (!availability.enabled) {
@@ -5070,6 +5091,13 @@
   function quantitativeEstimateIsVisible(noticeKey) {
     return state.selectedNotice?.noticeKey === noticeKey
       && els.tabButtons.some((button) => button.dataset.tab === "quant" && button.getAttribute("aria-selected") === "true");
+  }
+
+  function quantitativeRuleRetryRequired(notice) {
+    if (!notice?.noticeKey || !notice.analysisAttachmentCoverageComplete) return false;
+    const result = state.quantitativeEstimates[notice.noticeKey]?.data;
+    return stringValue(result?.rule_source_status).toUpperCase() === "INCOMPLETE"
+      && stringValue(result?.activation_status).toUpperCase() === "REVIEW_REQUIRED";
   }
 
   function invalidateQuantitativeEstimate(noticeKey, { forceReload = false } = {}) {
