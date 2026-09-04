@@ -17,7 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
-from .analysis_api import AnalysisBatchRequest, run_notice_analysis_batch
+from .analysis_api import (
+    AnalysisBatchRequest,
+    run_manual_notice_analysis_batch as run_notice_analysis_batch,
+)
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import IngestionJob, Notice
 from .notice_freshness import (
@@ -29,6 +32,7 @@ from .pps_enrichment import (
     PPS_ATTACHMENT_SOURCE,
     PublicAnalysisReason,
     _current_manifest_attempts,
+    current_retryable_review_version_ids,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
 )
@@ -1225,12 +1229,18 @@ def request_manual_notice_analysis(
             recompute_current=caller_intent.recompute_current,
             retry_reviewed=caller_intent.retry_reviewed,
         )
+        retry_reviewed_version_ids = (
+            current_retryable_review_version_ids(notice.versions)
+            if caller_intent.retry_reviewed
+            else frozenset()
+        )
         background_tasks.add_task(
             _execute_reserved_manual_job,
             request,
             request_id,
             notice.notice_key,
             evaluation_only,
+            retry_reviewed_version_ids,
         )
         return ManualAnalysisResponse(
             request_id=request_id,
@@ -1253,6 +1263,7 @@ def _execute_reserved_manual_job(
     request_id: str,
     notice_key: str,
     evaluation_only: bool = False,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> None:
     with _manual_execution_slot(request, blocking=True):
         payload = AnalysisBatchRequest(
@@ -1272,7 +1283,15 @@ def _execute_reserved_manual_job(
             # continuation contract until the complete current manifest is
             # audited; completed units are reused with zero additional calls.
             for _round in range(MAX_ATTACHMENTS_IN_MANIFEST):
-                batch = run_notice_analysis_batch(payload, request)
+                batch = (
+                    run_notice_analysis_batch(
+                        payload,
+                        request,
+                        retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    )
+                    if retry_reviewed_version_ids
+                    else run_notice_analysis_batch(payload, request)
+                )
                 total_openai_calls += batch.openai_calls
                 total_openai_telemetry = merge_openai_telemetry(
                     total_openai_telemetry,

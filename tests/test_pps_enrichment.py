@@ -21,6 +21,7 @@ from pai_loop.pps_enrichment import (
     _digest,
     build_attachment_manifest,
     build_notice_metadata,
+    current_retryable_review_version_ids,
     download_public_attachment,
     department_keyword_coverage_count,
     extract_document_text,
@@ -1960,6 +1961,164 @@ def test_retryable_review_creates_fresh_attempt_after_cooldown_then_reuses() -> 
     assert first.openai_calls == second.openai_calls == 1
     assert third.openai_calls == 0
     assert _RetryableReviewClient.calls == 2
+    engine.dispose()
+
+
+def test_explicit_review_retry_is_scoped_to_preexisting_transient_version() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-EXPLICIT-REVIEW-RETRY",
+    )
+    _RetryableReviewClient.calls = 0
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+        )
+    with factory() as session:
+        first_version = session.get(NoticeVersion, first.version_id)
+        assert first_version is not None
+        first_version.created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        session.commit()
+    with factory() as session:
+        recent = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+        )
+    with factory() as session:
+        notice = session.get(Notice, notice_id)
+        assert notice is not None
+        retry_version_ids = current_retryable_review_version_ids(list(notice.versions))
+    assert retry_version_ids == frozenset({first.version_id, recent.version_id})
+
+    with factory() as session:
+        retried = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+    with factory() as session:
+        continued = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_RetryableReviewClient,
+            retry_reviewed_version_ids=retry_version_ids,
+        )
+
+    assert first.status == recent.status == retried.status == continued.status == "REVIEW"
+    assert len({first.version_id, recent.version_id, retried.version_id}) == 3
+    assert continued.version_id == retried.version_id
+    assert first.openai_calls == recent.openai_calls == retried.openai_calls == 1
+    assert continued.openai_calls == 0
+    assert _RetryableReviewClient.calls == 3
+    engine.dispose()
+
+
+def test_explicit_review_retry_never_bypasses_accepted_version() -> None:
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-EXPLICIT-ACCEPTED-REUSE",
+    )
+    _CountingExtractionClient.calls = 0
+    with factory() as session:
+        accepted = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+        )
+    with factory() as session:
+        reused = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            transport=transport,
+            openai_client_factory=_CountingExtractionClient,
+            retry_reviewed_version_ids=frozenset({accepted.version_id}),
+        )
+
+    assert accepted.status == "COMPLETED"
+    assert reused.status == "REUSED"
+    assert reused.version_id == accepted.version_id
+    assert reused.openai_calls == 0
+    assert _CountingExtractionClient.calls == 1
+    engine.dispose()
+
+
+def test_explicit_review_retry_never_bypasses_deterministic_review() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    with factory() as session:
+        notice = Notice(
+            notice_key="PPS-EXPLICIT-DETERMINISTIC-REUSE",
+            bid_notice_no="R26BK00000003",
+            revision_no="000",
+            title="교육 컨설팅 용역",
+            agency="공공기관",
+            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            status="OPEN",
+        )
+        session.add(notice)
+        session.flush()
+        persist_pps_metadata_version(
+            session,
+            notice,
+            raw_item={
+                "bidNtceNo": "R26BK00000003",
+                "bidNtceOrd": "000",
+                "ntceSpecFileNm1": "참고자료.txt",
+                "ntceSpecDocUrl1": G2B_DOWNLOAD.replace(
+                    "R26BK00000001", "R26BK00000003"
+                ),
+            },
+            search_keywords=["교육"],
+            dry_run=False,
+        )
+        session.commit()
+        notice_id = notice.id
+
+    with factory() as session:
+        first = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+        )
+    with factory() as session:
+        notice = session.get(Notice, notice_id)
+        assert notice is not None
+        assert current_retryable_review_version_ids(list(notice.versions)) == frozenset()
+        session.rollback()
+        reused = enrich_notice_from_pps(
+            session,
+            notice_id=notice_id,
+            openai_api_key="test-key",
+            openai_model="test-model",
+            retry_reviewed_version_ids=frozenset({first.version_id}),
+        )
+
+    assert first.status == "REVIEW"
+    assert "UNSUPPORTED_ATTACHMENT_TYPE" in first.warnings
+    assert reused.status == "REVIEW"
+    assert reused.version_id == first.version_id
+    assert reused.openai_calls == 0
     engine.dispose()
 
 

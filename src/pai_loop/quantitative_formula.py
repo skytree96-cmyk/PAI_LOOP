@@ -312,6 +312,25 @@ def _credit_range_values(expressions: tuple[str, ...]) -> tuple[str, ...] | None
     return values or None
 
 
+def _credit_comma_list_values(expression: str) -> tuple[str, ...] | None:
+    """Expand one exact comma-delimited grade cell, or fail closed."""
+
+    normalized = normalize_credit_rating_text(expression).strip()
+    if "," not in normalized or _CREDIT_RANGE_RE.search(normalized):
+        return None
+    tokens = tuple(token.strip() for token in normalized.split(","))
+    if len(tokens) < 2 or any(not token for token in tokens):
+        return None
+    canonical = tuple(parse_credit_rating(token) for token in tokens)
+    if any(grade is None for grade in canonical):
+        return None
+    exact_grades = tuple(grade for grade in canonical if grade is not None)
+    if len(set(exact_grades)) != len(exact_grades):
+        return None
+    ordered = tuple(grade for grade in CREDIT_RATING_ORDER if grade in exact_grades)
+    return ordered if len(ordered) == len(exact_grades) else None
+
+
 def compile_credit_rating_values(
     values: Sequence[str],
     *,
@@ -357,6 +376,8 @@ def compile_credit_rating_values(
         if not all(uses_range):
             return None
         return _credit_range_values(normalized_expressions)
+    if len(expressions) == 1 and "," in normalized_expressions[0]:
+        return _credit_comma_list_values(normalized_expressions[0])
     canonical = tuple(parse_credit_rating(value) for value in expressions)
     if any(value is None for value in canonical):
         return None

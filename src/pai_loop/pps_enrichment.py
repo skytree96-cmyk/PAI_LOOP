@@ -622,6 +622,61 @@ def _current_manifest_attempts(
     return attachments, invalid_count, attempts
 
 
+def current_retryable_review_version_ids(
+    versions: list[NoticeVersion],
+) -> frozenset[str]:
+    """Snapshot transient rows behind each current REVIEW for one manual retry.
+
+    The caller carries this immutable snapshot through every continuation of
+    the same manual job.  A REVIEW created by that retry has a different ID and
+    is therefore reused on later continuations instead of triggering another
+    provider call.  ACCEPTED rows and deterministic REVIEW markers are never
+    included.
+    """
+
+    _attachments, _invalid_count, attempts = _current_manifest_attempts(versions)
+    current_retryable_attempts: dict[str, dict[str, Any]] = {}
+    for attachment_id, version in attempts.items():
+        payload = version.source_payload
+        if (
+            isinstance(payload, dict)
+            and payload.get("status") == "REVIEW"
+            and str(payload.get("error_code") or "")
+            not in DETERMINISTIC_REVIEW_CODES
+        ):
+            current_retryable_attempts[attachment_id] = payload
+
+    # Include all older transient rows with the same current attachment binding.
+    # Otherwise persistence could deduplicate the new result against an older
+    # cooled REVIEW after skipping only the latest row, leaving the latest
+    # current attempt retryable again on the next continuation.
+    retryable: set[str] = set()
+    for version in versions:
+        payload = version.source_payload
+        attachment_id = (
+            str(payload.get("attachment_id") or "")
+            if isinstance(payload, dict)
+            else ""
+        )
+        current = current_retryable_attempts.get(attachment_id)
+        if (
+            current is not None
+            and isinstance(payload, dict)
+            and payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+            and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and payload.get("status") == "REVIEW"
+            and str(payload.get("error_code") or "")
+            not in DETERMINISTIC_REVIEW_CODES
+            and payload.get("manifest_sha256") == current.get("manifest_sha256")
+            and payload.get("current_manifest_sha256")
+            == current.get("current_manifest_sha256")
+            and payload.get("prompt_version") == PROMPT_VERSION
+            and payload.get("processing_version") == PPS_PROCESSING_VERSION
+        ):
+            retryable.add(version.id)
+    return frozenset(retryable)
+
+
 def _has_valid_quantitative_record(
     version: NoticeVersion,
     *,
@@ -1634,6 +1689,7 @@ def _matching_extraction_version(
     manifest_sha256: str,
     current_manifest_sha256: str,
     document_sha256: str,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> NoticeVersion | None:
     """Reuse deterministic output; REVIEW retries are capped to once per day."""
 
@@ -1663,6 +1719,11 @@ def _matching_extraction_version(
         error_code = str(payload.get("error_code") or "")
         if error_code in DETERMINISTIC_REVIEW_CODES:
             return item
+        if item.id in retry_reviewed_version_ids:
+            # This exact transient REVIEW existed when the caller explicitly
+            # started the manual retry. Skip it once. A newly persisted REVIEW
+            # owns a new ID and is reused by subsequent continuation rounds.
+            continue
         if (
             error_code == "UNVERIFIED_QUOTE"
             and payload.get("correction_prompt_version")
@@ -1677,7 +1738,12 @@ def _matching_extraction_version(
     return None
 
 
-def _stored_outcome_is_idempotent(version: NoticeVersion, payload: dict[str, Any]) -> bool:
+def _stored_outcome_is_idempotent(
+    version: NoticeVersion,
+    payload: dict[str, Any],
+    *,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
+) -> bool:
     if payload.get("status") == "ACCEPTED":
         prior = version.source_payload if isinstance(version.source_payload, dict) else {}
         return (
@@ -1688,6 +1754,8 @@ def _stored_outcome_is_idempotent(version: NoticeVersion, payload: dict[str, Any
         )
     if str(payload.get("error_code") or "") in DETERMINISTIC_REVIEW_CODES:
         return True
+    if version.id in retry_reviewed_version_ids:
+        return False
     if str(payload.get("error_code") or "") == "UNVERIFIED_QUOTE":
         prior = version.source_payload if isinstance(version.source_payload, dict) else {}
         correction_prompt_version = payload.get("correction_prompt_version")
@@ -2007,6 +2075,7 @@ def _persist_extraction_version(
     error_code: str | None,
     processing_audit: dict[str, Any] | None = None,
     quantitative_validation_record: ValidatedQuantitativeAttachmentRecord | None = None,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> NoticeVersion:
     if not _manifest_binding_is_current(
         session,
@@ -2082,7 +2151,11 @@ def _persist_extraction_version(
             and prior.get("processing_version") == payload["processing_version"]
             and prior.get("status") == payload["status"]
             and prior.get("error_code") == payload["error_code"]
-            and _stored_outcome_is_idempotent(existing, payload)
+            and _stored_outcome_is_idempotent(
+                existing,
+                payload,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
+            )
         ):
             return existing
 
@@ -2133,7 +2206,11 @@ def _persist_extraction_version(
                     and prior.get("prompt_version") == payload["prompt_version"]
                     and prior.get("processing_version") == payload["processing_version"]
                     and prior.get("status") == payload["status"]
-                    and _stored_outcome_is_idempotent(raced, payload)
+                    and _stored_outcome_is_idempotent(
+                        raced,
+                        payload,
+                        retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    )
                 ):
                     return raced
     raise PpsEnrichmentError("NOTICE_VERSION_RACE")
@@ -2147,6 +2224,7 @@ def record_internal_pps_enrichment_failure(
     manifest_sha256: str,
     current_manifest_sha256: str,
     attachments_discovered: int,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> PpsEnrichmentResult:
     """Persist a public-safe attempt marker after an unexpected enrichment error.
 
@@ -2284,6 +2362,7 @@ def record_internal_pps_enrichment_failure(
                 "warnings": [warning],
                 "member_issues": [],
             },
+            retry_reviewed_version_ids=retry_reviewed_version_ids,
         )
     return PpsEnrichmentResult(
         status="REVIEW",
@@ -2445,11 +2524,16 @@ def _stored_attachment_result(
     version: NoticeVersion,
     *,
     attachments_discovered: int,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> PpsEnrichmentResult | None:
     """Project a current terminal attempt so continuation never repeats work."""
 
     payload = version.source_payload
-    if not isinstance(payload, dict) or not _stored_outcome_is_idempotent(version, payload):
+    if not isinstance(payload, dict) or not _stored_outcome_is_idempotent(
+        version,
+        payload,
+        retry_reviewed_version_ids=retry_reviewed_version_ids,
+    ):
         return None
     processing = (
         payload.get("document_processing")
@@ -2509,6 +2593,7 @@ def _enrich_selected_pps_attachment(
     download_timeout_seconds: float,
     openai_timeout_seconds: float,
     openai_max_retries: int,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
@@ -2533,6 +2618,7 @@ def _enrich_selected_pps_attachment(
             manifest_sha256=manifest_sha256,
             current_manifest_sha256=current_manifest_sha256,
             document_sha256=document_sha256,
+            retry_reviewed_version_ids=retry_reviewed_version_ids,
         )
         if prior is not None:
             return PpsEnrichmentResult(
@@ -2563,6 +2649,7 @@ def _enrich_selected_pps_attachment(
                 outcome=None,
                 error_code=error_code,
                 processing_audit=processing_audit,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
@@ -2595,6 +2682,7 @@ def _enrich_selected_pps_attachment(
                 outcome=None,
                 error_code=error_code,
                 processing_audit=processing_audit,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
@@ -2619,6 +2707,7 @@ def _enrich_selected_pps_attachment(
         stored = _stored_attachment_result(
             prior,
             attachments_discovered=attachments_discovered,
+            retry_reviewed_version_ids=retry_reviewed_version_ids,
         )
         if stored is not None:
             return stored
@@ -2653,6 +2742,7 @@ def _enrich_selected_pps_attachment(
                 error_code=None,
                 processing_audit=processing_audit,
                 quantitative_validation_record=quantitative_record,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
             duplicate_complete = _accepted_source_is_technically_complete(version)
             duplicate_semantic_warnings = (
@@ -2691,6 +2781,7 @@ def _enrich_selected_pps_attachment(
                 outcome=None,
                 error_code="OPENAI_KEY_MISSING",
                 processing_audit=processing_audit,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
@@ -2747,6 +2838,7 @@ def _enrich_selected_pps_attachment(
                 error_code=outcome.error_code,
                 processing_audit=processing_audit,
                 quantitative_validation_record=quantitative_record,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
     except Exception as exc:
         raise PpsPostOpenAIProcessingError(outcome) from exc
@@ -2917,6 +3009,7 @@ def enrich_notice_from_pps(
     openai_timeout_seconds: float = DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS,
     openai_max_retries: int = 0,
     deadline_monotonic: float | None = None,
+    retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> PpsEnrichmentResult:
     """Audit and analyse every valid attachment in the current PPS manifest."""
 
@@ -3014,6 +3107,7 @@ def enrich_notice_from_pps(
             _stored_attachment_result(
                 stored_version,
                 attachments_discovered=discovered,
+                retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
             if stored_version is not None
             else None
@@ -3101,6 +3195,7 @@ def enrich_notice_from_pps(
                     download_timeout_seconds=download_timeout_seconds,
                     openai_timeout_seconds=openai_timeout_seconds,
                     openai_max_retries=openai_max_retries,
+                    retry_reviewed_version_ids=retry_reviewed_version_ids,
                 )
             except PpsPostOpenAIProcessingError as exc:
                 # The provider already processed a paid request.  Even if a
@@ -3114,6 +3209,7 @@ def enrich_notice_from_pps(
                     manifest_sha256=_digest(attachment),
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
+                    retry_reviewed_version_ids=retry_reviewed_version_ids,
                 )
                 item_result = replace(
                     item_result,
@@ -3131,6 +3227,7 @@ def enrich_notice_from_pps(
                     manifest_sha256=_digest(attachment),
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
+                    retry_reviewed_version_ids=retry_reviewed_version_ids,
                 )
                 item_result = replace(
                     item_result,

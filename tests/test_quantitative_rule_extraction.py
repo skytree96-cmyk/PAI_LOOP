@@ -20,6 +20,7 @@ from pai_loop.pps_enrichment import (
     PPS_METADATA_SCHEMA,
     PPS_PROCESSING_VERSION,
 )
+from pai_loop.quantitative_formula import CREDIT_RATING_ORDER
 from pai_loop.quantitative_rule_extraction import (
     ValidatedQuantitativeAttachmentRecord,
     _rebind_flat_split_table_cell_literals,
@@ -5210,6 +5211,339 @@ def test_busan_hwp_sourcewide_headers_repair_production_partial_anchors() -> Non
         len(item.recognition_conditions)
         for item in bounded_profile.available_candidates
     ] == [2, 2, 0]
+
+
+@pytest.mark.parametrize(
+    ("values", "expected_unit"),
+    (
+        ((2, 1.5, 1), "억원"),
+        ((200_000_000, 150_000_000, 100_000_000), "원"),
+    ),
+    ids=("source-scale-values", "canonical-values"),
+)
+def test_busan_hwp_source_bound_unitless_amount_rows_keep_extracted_values(
+    values: tuple[float, float, float],
+    expected_unit: str,
+) -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    amount = table["criteria"][0]
+    amount["unit"] = None
+    for case, value in zip(amount["cases"], values, strict=True):
+        case["comparison_value"] = value
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    repaired_amount = next(
+        item
+        for item in profile.available_candidates
+        if item.metric == "PERFORMANCE_AMOUNT"
+    )
+    assert repaired_amount.unit == expected_unit
+    assert [case.comparison_value for case in repaired_amount.cases] == list(values)
+    assert [case.award_value for case in repaired_amount.cases] == [6, 5.5, 5]
+    assert [case.operator for case in repaired_amount.cases] == [
+        "GTE",
+        "GTE",
+        "GTE",
+    ]
+    assert [case.literal for case in repaired_amount.cases] == [
+        "A. 2억 원 이상\n6",
+        "B. 1.5억 원 이상\n5.5",
+        "C. 1억 원 이상\n5",
+    ]
+
+
+def test_source_bound_unitless_amount_repair_accepts_zero_after_nonzero_scale() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    amount = table["criteria"][0]
+    amount["unit"] = None
+    for case, value in zip(amount["cases"], (2, 1.5, 0), strict=True):
+        case["comparison_value"] = value
+    source = source.replace("C. 1억 원 이상", "C. 0억 원 이상", 1)
+    amount["cases"][2]["literal"] = "C. 0억 원 이상"
+    amount["cases"][2]["evidence"] = anchor("C. 0억 원 이상")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    repaired_amount = next(
+        item
+        for item in profile.available_candidates
+        if item.metric == "PERFORMANCE_AMOUNT"
+    )
+    assert repaired_amount.unit == "억원"
+    assert [case.comparison_value for case in repaired_amount.cases] == [
+        2,
+        1.5,
+        0,
+    ]
+
+
+def test_source_bound_unitless_amount_repair_rejects_omitted_source_row() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    table["ambiguity_reason"] = None
+    amount = table["criteria"][0]
+    amount["unit"] = None
+    for case, value in zip(amount["cases"], (2, 1.5, 1), strict=True):
+        case["comparison_value"] = value
+    amount["cases"].pop(1)
+    amount["cases"][1]["row_order"] = 2
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    amount_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-AMOUNT"
+    )
+    assert "AMBIGUOUS_RULE" in amount_review.issue_codes
+    assert "CASE_COMPARATOR_MISMATCH" in amount_review.issue_codes
+    assert "CASE_NUMBER_MISMATCH" in amount_review.issue_codes
+
+
+def test_late_unit_repair_rejects_omitted_source_count_row() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    table["ambiguity_reason"] = None
+    count = table["criteria"][1]
+    count["unit"] = None
+    count["cases"].pop(1)
+    for row_order, case in enumerate(count["cases"], start=1):
+        case["row_order"] = row_order
+    count["cases"][-1]["literal"] = "2.8"
+    count["cases"][-1]["evidence"] = anchor("E. 1건")
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    count_review = next(
+        item
+        for item in profile.review_candidates
+        if item.criterion_id == "BUSAN-DUPLICATE-COUNT"
+    )
+    assert "AMBIGUOUS_RULE" in count_review.issue_codes
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("converted-value", "mixed-source-unit", "disjoint-evidence", "duplicate-row"),
+)
+def test_source_bound_unitless_amount_repair_fails_closed_without_unique_rows(
+    mutation: str,
+) -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    amount = table["criteria"][0]
+    amount["unit"] = None
+    for case, value in zip(amount["cases"], (2, 1.5, 1), strict=True):
+        case["comparison_value"] = value
+    if mutation == "converted-value":
+        amount["cases"][0]["comparison_value"] = 200_000_000
+    elif mutation == "mixed-source-unit":
+        source = source.replace("B. 1.5억 원 이상", "B. 150백만 원 이상", 1)
+        amount["cases"][1]["literal"] = "B. 150백만 원 이상"
+        amount["cases"][1]["evidence"] = anchor("B. 150백만 원 이상")
+        amount["cases"][1]["comparison_value"] = 150
+    elif mutation == "disjoint-evidence":
+        amount["cases"][1]["evidence"] = anchor("C. 1억 원 이상")
+    else:
+        source = source.replace(
+            "B. 1.5억 원 이상\n5.5",
+            "B. 1.5억 원 이상\n5.5\nB. 1.5억 원 이상\n5.5",
+            1,
+        )
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "CASE_COMPARATOR_MISMATCH" in issue_codes(profile)
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
+
+
+def test_busan_hwp_production_shape_rebinds_without_mutating_rule_values() -> None:
+    table, source, footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    amount, count, credit = table["criteria"]
+    amount["unit"] = None
+    for case, value in zip(amount["cases"], (2, 1.5, 1), strict=True):
+        case["comparison_value"] = value
+    count["unit"] = None
+    shared_conditions = busan_hwp_production_raw_performance_conditions(
+        footnote_block
+    )
+    for candidate in (amount, count):
+        candidate["recognition_conditions"] = json.loads(
+            json.dumps(shared_conditions)
+        )
+
+    # The live diagnostic reports one category expression per enterprise-credit
+    # row.  Keep those extracted expressions byte-for-byte: source-bound repair
+    # may rebind a split literal/evidence span, but must not split or expand a
+    # persisted category into grades that the model did not return.
+    credit_category_expressions = [
+        "AAA, AA+, AA0, AA-, A+, A0, A-, BBB+, BBB0",
+        "BBB-, BB+, BB0, BB-",
+        "B+, B0, B-",
+        "CCC+ 이하",
+    ]
+    for case, category in zip(
+        credit["cases"], credit_category_expressions, strict=True
+    ):
+        case["category_values"] = [category]
+
+    profile = build(payload_with_table(table), source=source)
+
+    numeric_issue_codes = {
+        issue.code
+        for issue in profile.issues
+        if issue.criterion_id in {amount["criterion_id"], count["criterion_id"]}
+    }
+    assert "CASE_COMPARATOR_MISMATCH" not in numeric_issue_codes
+    assert "CASE_NUMBER_MISMATCH" not in numeric_issue_codes
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    candidates = {item.metric: item for item in profile.available_candidates}
+    assert [case.category_values for case in candidates["CREDIT_RATING"].cases] == [
+        (category,) for category in credit_category_expressions
+    ]
+    assert [case.comparison_value for case in candidates["PERFORMANCE_AMOUNT"].cases] == [
+        2,
+        1.5,
+        1,
+    ]
+    assert [case.award_value for case in candidates["PERFORMANCE_AMOUNT"].cases] == [
+        6,
+        5.5,
+        5,
+    ]
+    assert [case.operator for case in candidates["PERFORMANCE_COUNT"].cases] == [
+        "GTE",
+        "EQ",
+        "EQ",
+        "EQ",
+        "EQ",
+    ]
+
+    manifest_sha = "a" * 64
+    document_sha = "b" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    runtime_profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+    )
+    request = quantitative_request_from_candidate_profile(runtime_profile)
+
+    assert record.status == "AVAILABLE", record.issues
+    assert request.activation_status == "AUTO_ACTIVE", request.activation_reasons
+    criteria = {item.metric_key: item for item in request.criteria}
+    credit_table = criteria["company.credit_rating"].case_table
+    assert credit_table is not None
+    assert tuple(
+        value
+        for row in credit_table.rows
+        for value in row.category_values
+    ) == CREDIT_RATING_ORDER
+    facts = [
+        QuantitativeFact(
+            metric_key="company.performance.amount",
+            status="ESTIMATED",
+            value=200_000_000,
+            lower_value=200_000_000,
+            upper_value=200_000_000,
+            evidence_key="company.performance.amount",
+            fact_binding_sha256=criteria[
+                "company.performance.amount"
+            ].fact_binding_sha256,
+            confidence=0.9,
+            rationale="검증된 단일 최고 수행실적",
+        ),
+        QuantitativeFact(
+            metric_key="company.performance.count",
+            status="ESTIMATED",
+            value=5,
+            lower_value=5,
+            upper_value=5,
+            evidence_key="company.performance.count",
+            fact_binding_sha256=criteria[
+                "company.performance.count"
+            ].fact_binding_sha256,
+            confidence=0.9,
+            rationale="검증된 수행실적 건수",
+        ),
+        QuantitativeFact(
+            metric_key="company.credit_rating",
+            status="CONFIRMED",
+            value="A0",
+            evidence_key="company.credit_rating",
+            fact_binding_sha256=criteria[
+                "company.credit_rating"
+            ].fact_binding_sha256,
+            confidence=1,
+            rationale="유효 신용평가등급",
+        ),
+    ]
+
+    result = estimate_quantitative_score(
+        request.model_copy(update={"facts": facts})
+    )
+
+    assert (result.total_max_points, result.estimated_points) == (20, 20)
+    assert {item.category: item.estimated_points for item in result.criteria} == {
+        "PERFORMANCE_AMOUNT": 6,
+        "PERFORMANCE_COUNT": 4,
+        "CREDIT_RATING": 10,
+    }
+
+
+def test_source_bound_single_expression_credit_census_requires_full_registry() -> None:
+    table, source, _footnote_block = (
+        busan_hwp_production_partial_anchor_fixture()
+    )
+    credit = table["criteria"][2]
+    expressions = [
+        "AAA, AA+, AA0, AA-, A+, A0, A-, BBB+",
+        "BBB-, BB+, BB0, BB-",
+        "B+, B0, B-",
+        "CCC+ 이하",
+    ]
+    source = source.replace(
+        "A+, A0, A-, BBB+, BBB0\n배점의 100%",
+        "A+, A0, A-, BBB+\n배점의 100%",
+        1,
+    )
+    credit["cases"][0]["literal"] = (
+        "AAA, AA+, AA0, AA-\nA+, A0, A-, BBB+"
+    )
+    credit["cases"][0]["evidence"] = anchor(
+        credit["cases"][0]["literal"]
+    )
+    for case, expression in zip(credit["cases"], expressions, strict=True):
+        case["category_values"] = [expression]
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status != "AVAILABLE"
+    assert "CASE_TABLE_NOT_DETERMINISTIC" in issue_codes(profile)
+    assert [case["category_values"] for case in credit["cases"]] == [
+        [expression] for expression in expressions
+    ]
 
 
 @pytest.mark.parametrize(

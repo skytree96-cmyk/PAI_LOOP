@@ -437,6 +437,7 @@ def test_current_analysis_can_be_recomputed_from_stored_evidence(
 def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
     app = _app(monkeypatch)
     calls = []
+    retry_version_ids = frozenset({"review-version-before-manual-request"})
     monkeypatch.setattr(
         "pai_loop.manual_analysis._reason",
         lambda _notice: PublicAnalysisReason(
@@ -451,10 +452,18 @@ def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
         "pai_loop.manual_analysis._manual_jobs_since",
         lambda *_args, **_kwargs: [],
     )
+    monkeypatch.setattr(
+        "pai_loop.manual_analysis.current_retryable_review_version_ids",
+        lambda _versions: retry_version_ids,
+    )
+    batches = [
+        _review_batch("batch-job-explicit-reviewed-retry-1", continuation=True),
+        _review_batch("batch-job-explicit-reviewed-retry-2"),
+    ]
 
-    def fake_batch(payload, request):
-        calls.append((payload, request))
-        return _review_batch("batch-job-explicit-reviewed-retry")
+    def fake_batch(payload, request, *, retry_reviewed_version_ids=frozenset()):
+        calls.append((payload, request, retry_reviewed_version_ids))
+        return batches.pop(0)
 
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
@@ -474,8 +483,9 @@ def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
         )
         assert queued.status_code == 200, queued.text
         assert queued.json()["outcome"] == "QUEUED"
-        assert len(calls) == 1
+        assert len(calls) == 2
         assert calls[0][0].enrich_missing is True
+        assert [call[2] for call in calls] == [retry_version_ids, retry_version_ids]
 
         with app.state.session_factory() as session:
             job = session.get(IngestionJob, queued.json()["request_id"])
