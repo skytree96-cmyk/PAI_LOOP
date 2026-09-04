@@ -831,6 +831,36 @@ def test_shared_local_table_policy_accepts_only_complete_rfp_absence(
     assert any(document_types == ("RFP",) for document_types, _markers in targets)
 
 
+def test_production_source_local_rfp_gap_has_one_exact_rfp_target() -> None:
+    gap = (
+        "제안요청서 원문(붙임)이 본 SOURCE에 포함되지 않아 "
+        "세부 기술평가 배점표를 확인할 수 없음"
+    )
+
+    assert quantitative_table_local_absence_targets(gap) == (
+        (("RFP",), ("제안요청서",)),
+    )
+
+
+@pytest.mark.parametrize(
+    "gap",
+    (
+        (
+            "제안요청서 원문(붙임)이 본 SOURCE에 포함되지 않아 "
+            "세부 기술평가 배점표를 확인할 수 없음. "
+            "안전관리계획도 확인할 수 없음"
+        ),
+        (
+            "제안요청서 원문(붙임)에 본 SOURCE가 포함되지 않아 "
+            "세부 기술평가 배점표를 확인할 수 없음"
+        ),
+    ),
+    ids=("compound-missing-subject", "reversed-document-direction"),
+)
+def test_production_source_local_rfp_gap_variants_fail_closed(gap: str) -> None:
+    assert quantitative_table_local_absence_targets(gap) is None
+
+
 @pytest.mark.parametrize(
     "gap",
     (
@@ -1105,13 +1135,25 @@ def test_busan_irrelevant_gap_exceptions_remain_exact_and_fail_closed(
     }
 
 
-def test_local_quantitative_table_absence_resolves_only_with_available_sibling() -> None:
+@pytest.mark.parametrize(
+    "local_gap",
+    (
+        (
+            "제안요청서(붙임) 본문이 제공되지 않아 세부 평가배점표"
+            "(정량평가 기준)를 확인할 수 없음"
+        ),
+        (
+            "제안요청서 원문(붙임)이 본 SOURCE에 포함되지 않아 "
+            "세부 기술평가 배점표를 확인할 수 없음"
+        ),
+    ),
+    ids=("canonical", "production-source-wording"),
+)
+def test_local_quantitative_table_absence_resolves_only_with_available_sibling(
+    local_gap: str,
+) -> None:
     manifest_sha = "c" * 64
     local_attachment_id = "ATT-PDF-2"
-    local_gap = (
-        "제안요청서(붙임) 본문이 제공되지 않아 세부 평가배점표"
-        "(정량평가 기준)를 확인할 수 없음"
-    )
     local_record = validate_quantitative_attachment_extraction(
         payload_with_gap(local_gap, document_type="NOTICE"),
         source_text="입찰공고 일반사항",
@@ -1755,6 +1797,35 @@ def test_local_quantitative_table_absence_cannot_resolve_from_self() -> None:
             ATTACHMENT_ID: {
                 "document_type": "RFP",
                 "source_label": "제안요청서.hwp",
+                "missing_or_unreadable": [local_gap],
+            }
+        },
+    )
+
+    assert profile.status == "INCOMPLETE"
+    assert "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT" in issue_codes(profile)
+
+
+def test_production_source_local_rfp_gap_cannot_resolve_from_self() -> None:
+    local_gap = (
+        "제안요청서 원문(붙임)이 본 SOURCE에 포함되지 않아 "
+        "세부 기술평가 배점표를 확인할 수 없음"
+    )
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(local_gap, table=valid_table(), document_type="NOTICE"),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    profile = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: "a" * 64},
+        manifest_sha256="b" * 64,
+        attachment_profiles={
+            ATTACHMENT_ID: {
+                "document_type": "NOTICE",
+                "source_label": "공고문.pdf",
                 "missing_or_unreadable": [local_gap],
             }
         },
@@ -6474,6 +6545,47 @@ def test_busan_hwp_production_shape_rebinds_without_mutating_rule_values() -> No
         "PERFORMANCE_COUNT": 4,
         "CREDIT_RATING": 10,
     }
+
+
+def test_busan_live_explanatory_notes_do_not_block_source_proven_table() -> None:
+    table, source, _footnote_block = busan_hwp_production_partial_anchor_fixture()
+    amount, count, credit = table["criteria"]
+    table["ambiguity_reason"] = (
+        "정량적 평가 20점은 용역수행실적(10점=금액6점+건수4점)과 "
+        "경영상태(10점)로 세분화되며, 요약행과 상세행이 동일 소계를 "
+        "가지므로 상세행만 채점항목으로 반영함"
+    )
+    amount["ambiguity_reason"] = (
+        "표 상 최저구간(1억원 미만)에 대한 점수/등급이 명시되지 않아 "
+        "하한 규칙은 확인 불가"
+    )
+    count["ambiguity_reason"] = "1건 미만(0건)에 대한 점수 규정은 표에 없음"
+    credit["ambiguity_reason"] = (
+        "표 열이 회사채/기업어음/기업신용평가등급 3개 항목으로 병렬 "
+        "구성되어 있어, 본 항목은 기업신용평가등급 열만 반영함"
+    )
+    credit["cases"][0]["category_values"] = [
+        "AAA, AA+, AA0, AA-,",
+        "A+, A0, A-, BBB+, BBB0",
+    ]
+    for case, expression in zip(
+        credit["cases"][1:],
+        ("BBB-, BB+, BB0, BB-", "B+, B0, B-", "CCC+ 이하"),
+        strict=True,
+    ):
+        case["category_values"] = [expression]
+
+    profile = build(payload_with_table(table), source=source)
+
+    assert profile.status == "AVAILABLE", [
+        (item.criterion_id, item.issue_codes) for item in profile.review_candidates
+    ]
+    assert profile.review_candidates == ()
+    assert not {
+        "AMBIGUOUS_RULE",
+        "AMBIGUOUS_TABLE",
+        "CASE_TABLE_NOT_DETERMINISTIC",
+    } & issue_codes(profile)
 
 
 def test_source_bound_single_expression_credit_census_requires_full_registry() -> None:

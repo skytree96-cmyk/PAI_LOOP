@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-PROMPT_VERSION = "pai-loop-extraction-0.5.2"
+PROMPT_VERSION = "pai-loop-extraction-0.5.3"
 SCHEMA_VERSION = "pai-loop-requirements-0.4.0"
 CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.6.0"
 _MAX_CORRECTIVE_FAILED_QUOTE_CHARS = 240
@@ -143,7 +143,9 @@ class QuantitativeCaseLiteral(BaseModel):
             "verbatim, including its Korean comparator (for example, 'A- 이상' or "
             "'BBB- 미만'). Never expand a range into implied grades or return only its "
             "boundary grade. If bounds are split across source cells, keep each complete "
-            "cell as a separate list item."
+            "cell as a separate list item. For a comma-delimited category row continued "
+            "across adjacent cells or lines, likewise preserve every exact fragment as a "
+            "separate list item, including a non-final fragment's trailing comma."
         ),
     )
     award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
@@ -196,7 +198,15 @@ class QuantitativeRuleCandidate(BaseModel):
     )
     required_evidence: list[str] = Field(max_length=30)
     evidence: EvidenceAnchor
-    ambiguity_reason: str | None = Field(max_length=1_000)
+    ambiguity_reason: str | None = Field(
+        max_length=1_000,
+        description=(
+            "Use only for an unresolved, decision-bearing alternative in this criterion. "
+            "Return null after faithfully transcribing every printed row when the only note "
+            "is an unprinted lower/default row, or when the enterprise-credit column is "
+            "explicitly selected from parallel rating columns."
+        ),
+    )
 
 
 class QuantitativeTableCandidate(BaseModel):
@@ -209,7 +219,14 @@ class QuantitativeTableCandidate(BaseModel):
     total_evidence: EvidenceAnchor | None
     minimum_score: float | None = Field(ge=0)
     minimum_evidence: EvidenceAnchor | None
-    ambiguity_reason: str | None = Field(max_length=1_000)
+    ambiguity_reason: str | None = Field(
+        max_length=1_000,
+        description=(
+            "Use only for an unresolved, decision-bearing choice between scoring tables. "
+            "Return null when a summary subtotal is fully and consistently expanded by the "
+            "selected leaf detail rows."
+        ),
+    )
 
 
 class QuantitativeTableNotApplicable(BaseModel):
@@ -1026,7 +1043,8 @@ class OpenAIExtractionClient:
             "Emit one logical quantitative table for each actual objective scoring program even when "
             "its detail rows continue across pages or physical subtables. When a summary row is fully "
             "expanded by later detail rows with the same subtotal, emit the leaf detail criteria only; "
-            "do not duplicate both summary and detail as scored rows. Exclude qualitative/judgment rows "
+            "do not duplicate both summary and detail as scored rows, and leave table ambiguity_reason "
+            "null unless a decision-bearing choice still remains. Exclude qualitative/judgment rows "
             "from quantitative criteria and bind total_points to the objective subtotal, not the whole "
             "proposal score. "
             "Use metric UNKNOWN when the stated metric does not exactly fit a known enum. Copy every "
@@ -1053,13 +1071,19 @@ class OpenAIExtractionClient:
             "category_values exactly as written, including 이상/초과/이하/미만 (for example, "
             "A- 이상 or BBB- 미만). Never expand a range into implied grades and never return only "
             "its boundary grade. If two bounds occupy separate source cells, preserve each complete "
-            "cell as a separate category_values item. Store "
+            "cell as a separate category_values item. If a comma-delimited category row continues "
+            "across adjacent source cells or lines, preserve each exact fragment as a separate item, "
+            "including the trailing comma on a non-final fragment. Store "
             "a literal 배점 as POINTS and a percentage such as 배점의 95% as PERCENT_OF_MAX. Never "
             "merge parallel columns that represent different fact types. For example, if one row has "
             "company-bond, commercial-paper, and enterprise-credit-rating columns, a CREDIT_RATING "
             "candidate must use only the enterprise-credit-rating column and its award; anchor the "
             "selected column values and do not union aliases from the other instruments. Never "
-            "invent an ELSE/default row or a score below the last explicit row. Set "
+            "invent an ELSE/default row or a score below the last explicit row. Use ambiguity_reason "
+            "only for an unresolved alternative that could change scoring. Do not use it merely to "
+            "explain a correct summary/detail de-duplication, an explicitly selected enterprise-credit "
+            "column, or the absence of an unprinted lower/default row. If every printed row has been "
+            "transcribed, leave ambiguity_reason null; unmatched values remain unscorable downstream. Set "
             "quantitative_table_not_applicable only when SOURCE explicitly states that no quantitative "
             "table applies and anchor that statement; ordinary absence is null. Do not invent "
             "required_evidence placeholders. Always return quantitative_tables (possibly []) and "
