@@ -1152,7 +1152,6 @@ _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "제공되지",
     "제시되지",
     "기재되지",
-    "명시되지",
     "미포함",
     "누락",
 )
@@ -1178,6 +1177,9 @@ def _gap_is_covered_by_aggregate_sources(
 
     if is_explicit_qualitative_only_exclusion(gap):
         return True
+    if is_explicit_non_quantitative_notice_schedule_gap(gap):
+        return current_document_type != "NOTICE" and "NOTICE" in available_types
+
     if not _contains_any(gap, _ATTACHMENT_LOCAL_ABSENCE_TERMS) or _contains_any(
         gap,
         _UNREADABLE_GAP_TERMS,
@@ -1185,9 +1187,6 @@ def _gap_is_covered_by_aggregate_sources(
         return False
     if has_compound_source_absence_claim(gap):
         return False
-
-    if is_explicit_non_quantitative_notice_schedule_gap(gap):
-        return current_document_type != "NOTICE" and "NOTICE" in available_types
 
     referenced_document_groups = [
         (markers, allowed_types)
