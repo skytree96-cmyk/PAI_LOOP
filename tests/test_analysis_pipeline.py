@@ -2384,3 +2384,4 @@ def test_exact_notice_date_reference_requires_effective_notice_sibling(supplier:
         )
     assert covered(gap) is (supplier == "NOTICE")
     assert covered(gap + ". 참가자격도 확인할 수 없음") is False
+    assert covered("직접생산 자격이 명시되지 않아 공고문 확인 필요") is False
