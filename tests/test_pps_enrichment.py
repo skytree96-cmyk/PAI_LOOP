@@ -2686,3 +2686,77 @@ def test_internal_failure_does_not_bind_concurrently_replaced_manifest() -> None
         assert reason.reason_code == "NOT_SELECTED"
         assert reason.attempted is False
     engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("extension", "error", "status", "expected_state", "expected_code"),
+    (
+        (".pdf", None, "REVIEW", "PENDING", "ATTACHMENT_COVERAGE_INCOMPLETE"),
+        (".hwpx", "HWPX_XML_INVALID", "REVIEW", "REVIEW", "HWPX_EXTRACT_FAILED"),
+        (".pdf", "UNVERIFIED_QUOTE", "REVIEW", "REVIEW", "QUOTE_UNVERIFIED"),
+        (".pdf", "SYN-PRIVATE-PROVIDER-ERROR", "REVIEW", "REVIEW", "OPENAI_REVIEW"),
+        (".pdf", None, "ACCEPTED", "ANALYZED", "ANALYZED"),
+    ),
+)
+def test_public_attachment_cards_include_failures_without_raw_errors(
+    extension: str, error: str | None, status: str, expected_state: str, expected_code: str,
+) -> None:
+    from pai_loop.pps_enrichment import public_attachment_analysis_statuses
+    versions = _analysis_versions(extension, error_code=error, status=status)
+    if len(versions) > 1:
+        versions[-1].source_payload["provider_response_id"] = "SYN-PRIVATE-RESPONSE"
+        versions[-1].source_payload["source_text"] = "SYN-PRIVATE-SOURCE"
+    rows = public_attachment_analysis_statuses(versions)
+    assert len(rows) == 1
+    assert rows[0]["document_name"] == f"제안요청서{extension}"
+    assert rows[0]["state"] == expected_state
+    assert rows[0]["reason_code"] == expected_code
+    assert set(rows[0]) == {"document_name", "state", "reason_code", "reason"}
+    assert "SYN-PRIVATE" not in json.dumps(rows)
+    assert "http" not in json.dumps(rows)
+
+
+def test_attachment_cards_use_current_manifest_and_current_attempt_only() -> None:
+    from pai_loop.pps_enrichment import public_attachment_analysis_statuses
+    versions = _analysis_versions(".pdf", error_code="UNVERIFIED_QUOTE")
+    assert public_attachment_analysis_statuses(versions)[0]["state"] == "REVIEW"
+    versions[-1].source_payload["prompt_version"] = "SYN-OLD-PROMPT"
+    assert public_attachment_analysis_statuses(versions)[0]["state"] == "PENDING"
+    versions[0].source_payload["schema_version"] = "SYN-OLD-SCHEMA"
+    rows = public_attachment_analysis_statuses(versions)
+    assert rows[-1]["document_name"] == "첨부 목록 확인 필요"
+    assert rows[-1]["state"] == "REVIEW"
+
+
+@pytest.mark.parametrize("error, expected", (
+    ("SCHEMA_VALIDATION_ERROR", "MODEL_SCHEMA_INVALID"),
+    ("NETWORK_ERROR", "MODEL_NETWORK_FAILED"),
+    ("HTTP_ERROR", "MODEL_HTTP_FAILED"),
+    ("INCOMPLETE_RESPONSE", "MODEL_RESPONSE_INCOMPLETE"),
+))
+def test_public_notice_detail_exposes_only_fixed_attachment_failure_reasons(monkeypatch, error, expected) -> None:
+    from fastapi.testclient import TestClient
+    from pai_loop.main import create_app
+    monkeypatch.setenv("PAI_LOOP_ENV", "development")
+    monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    monkeypatch.setenv("PAI_LOOP_API_KEY", "SYN-server-only-secret")
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with TestClient(app) as client:
+        with app.state.session_factory() as session:
+            notice = Notice(notice_key="SYN-CARD-API", bid_notice_no="SYN-CARD-API", title="합성 첨부 검사", agency="합성 기관", status="OPEN",
+                            deadline=datetime(2027, 1, 1, tzinfo=timezone.utc))
+            session.add(notice)
+            session.flush()
+            for version in _analysis_versions(".pdf", error_code=error):
+                version.notice_id = notice.id
+                version.source_payload["private_error"] = "SYN-PRIVATE-ERROR"
+                session.add(version)
+            session.commit()
+        response = client.get("/api/v1/notices/SYN-CARD-API")
+        assert response.status_code == 200, response.text
+        row, = response.json()["attachment_analysis_statuses"]
+        assert row["state"] == "REVIEW"
+        assert row["reason_code"] == expected
+        assert row["document_name"] == "제안요청서.pdf"
+        assert "SYN-PRIVATE" not in response.text
+        assert "source_payload" not in response.text
