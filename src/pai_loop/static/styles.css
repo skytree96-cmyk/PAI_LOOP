@@ -6277,6 +6277,7 @@ body {
 }
 
 @media (max-width: 980px) {
+  .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .kpi-card--action,
   .kpi-card--reference { grid-column: auto; }
   .notice-table { min-width: 1180px; }
