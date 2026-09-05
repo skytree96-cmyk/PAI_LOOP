@@ -236,7 +236,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260904-uiux-p0-v3"' in html
+    assert 'href="./styles.css?v=20260904-contrast-paperlogy1"' in html
     assert 'src="./app.js?v=20260904-uiux-p0-v3"' in html
 
 
