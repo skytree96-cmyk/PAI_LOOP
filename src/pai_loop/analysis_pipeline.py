@@ -77,6 +77,7 @@ from .quantitative_rule_extraction import (
 from .source_gap_policy import (
     has_compound_source_absence_claim,
     is_explicit_qualitative_only_exclusion,
+    is_explicit_non_quantitative_notice_schedule_gap,
     is_explicit_qualitative_table_local_absence,
     is_quantitative_irrelevant_gap,
     normalise_source_gap,
@@ -1151,6 +1152,7 @@ _ATTACHMENT_LOCAL_ABSENCE_TERMS = (
     "제공되지",
     "제시되지",
     "기재되지",
+    "명시되지",
     "미포함",
     "누락",
 )
@@ -1183,6 +1185,9 @@ def _gap_is_covered_by_aggregate_sources(
         return False
     if has_compound_source_absence_claim(gap):
         return False
+
+    if is_explicit_non_quantitative_notice_schedule_gap(gap):
+        return current_document_type != "NOTICE" and "NOTICE" in available_types
 
     referenced_document_groups = [
         (markers, allowed_types)
