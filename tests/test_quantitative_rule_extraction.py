@@ -7525,3 +7525,75 @@ def test_minimum_cutoff_proof_invalidates_only_affected_record_fingerprint() -> 
         [record], expected_documents={ATTACHMENT_ID: "a" * 64}, manifest_sha256="b" * 64,
     )
     assert "VALIDATION_FINGERPRINT_MISMATCH" not in issue_codes(current_profile)
+
+
+_NOTICE_TABLE_REFERENCE_GAP = (
+    "기술입찰제안서 평가결과 85점 이상 득점 시 적격자로 선정한다는 임계값만 제시되어 있으며, "
+    "세부 배점 항목·배점표는 본 공고문에 포함되어 있지 않고 별도 제안요청서를 참조하도록 "
+    "되어 있어 정량평가표를 전사할 수 없음"
+)
+_NOTICE_DATE_REFERENCE_GAP = (
+    "제안서 제출기한의 구체적 날짜는 본문에 명시되지 않고 '공고문 명시'로만 "
+    "표기되어 있어 실제 마감일자는 확인 불가"
+)
+
+
+def test_explicit_notice_table_reference_requires_available_rfp() -> None:
+    test_local_quantitative_table_absence_resolves_only_with_available_sibling(
+        _NOTICE_TABLE_REFERENCE_GAP
+    )
+    assert quantitative_table_local_absence_targets(
+        _NOTICE_TABLE_REFERENCE_GAP.replace("85점", "72점")
+    ) == ((("RFP",), ("제안요청서",)),)
+
+
+@pytest.mark.parametrize("suffix", ("", ". 배점표 일부 행 판독 불가", ". 참가자격 확인 불가"))
+def test_notice_date_reference_only_excludes_the_exact_schedule_gap(suffix: str) -> None:
+    record = validate_quantitative_attachment_extraction(
+        payload_with_gap(_NOTICE_DATE_REFERENCE_GAP + suffix, table=valid_table()),
+        source_text=VALID_SOURCE, attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64, manifest_sha256="b" * 64,
+    )
+    assert (record.status == "AVAILABLE") is (not suffix)
+
+
+@pytest.mark.parametrize("mutation", ("extra-subject", "reverse-source", "unreadable"))
+def test_notice_table_reference_rejects_compound_or_reversed_claim(mutation: str) -> None:
+    gap = _NOTICE_TABLE_REFERENCE_GAP
+    if mutation == "extra-subject":
+        gap += ". 참가자격도 확인할 수 없음"
+    elif mutation == "reverse-source":
+        gap = gap.replace("본 공고문에", "본 제안요청서에").replace("별도 제안요청서를", "별도 공고문을")
+    else:
+        gap += ". 신용등급 일부 판독 불가"
+    assert quantitative_table_local_absence_targets(gap) is None
+
+
+@pytest.mark.parametrize("mutation", ("none", "duplicate-header", "unknown-cutoff", "missing-case"))
+def test_overall_minimum_with_exact_inner_cell_criterion_anchors(mutation: str) -> None:
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote="적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    )
+    table["ambiguity_reason"] = None
+    inner = (
+        "최근 3년간 지자체, 공공기관 등\n(교육, 취업, 행사) 용역 수행완료 실적 (6점)",
+        "최근 3년간 지자체, 공공기관 등\n(교육,취업,행사)용역\n수행완료 실적 (4점)",
+    )
+    for candidate, literal in zip(table["criteria"][:2], inner, strict=True):
+        assert literal in source
+        candidate["criterion_literal"] = literal
+        candidate["evidence"] = anchor(literal)
+    if mutation == "duplicate-header":
+        source = source.replace("세부 항목", "1) 용역수행 실적(금액)\n(6점)\n세부 항목", 1)
+    elif mutation == "unknown-cutoff":
+        source = source.replace("세부 항목", "정량평가 15점 미만 탈락\n세부 항목", 1)
+    elif mutation == "missing-case":
+        table["criteria"][0]["cases"].pop()
+    profile = build(payload_with_table(table), source=source)
+    if mutation == "none":
+        assert profile.status == "AVAILABLE", issue_codes(profile)
+        assert [c.criterion_literal for c in profile.available_candidates[:2]] == list(inner)
+        assert profile.tables[0].minimum_score is None
+    else:
+        assert profile.status != "AVAILABLE"
+        assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
