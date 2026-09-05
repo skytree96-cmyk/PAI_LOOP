@@ -44,8 +44,8 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.14"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.17"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.18"
 MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 
 # Issue-only proof changes use targeted fingerprint revisions below.  Changes to
@@ -3702,7 +3702,12 @@ def _drop_source_bound_external_overall_minimum(
                 hwp_section_starts=hwp_section_starts,
             )
             == total_section
-            for span in minimum_spans
+            # The model may quote the same whole-proposal cutoff from the
+            # document overview. Its own anchor is still checked below; the
+            # independent source census must also prove that cutoff between
+            # the objective subtotal and the detailed table in this section.
+            for span, value in sourcewide_point_bounds
+            if value == minimum
         )
         or any(span[0] >= detail_marker[0] for span in minimum_spans)
         or not all(
