@@ -542,31 +542,49 @@ def _anchor_line_spans(
 ) -> tuple[tuple[int, int], ...]:
     """Locate every minimal bounded line span containing the exact anchor."""
 
-    matches: list[tuple[int, int, str]] = []
+    # Normalizing every overlapping window for every anchor made long HWP
+    # documents spend minutes in Unicode processing. Normalization is separable
+    # across newline boundaries, so normalize each line and the anchor once.
+    # Keep the original character/window bounds and the exact same contiguous
+    # and >=8-character whitespace-free matching rules as the shared predicate.
+    normalized_quote = _normalise_anchor_text(quote)
+    if not normalized_quote:
+        return ()
+    compact_quote = "".join(normalized_quote.split())
+    normalized_lines = tuple(_normalise_anchor_text(line) for line in lines)
+    compact_lines = tuple("".join(line.split()) for line in normalized_lines)
+    matches: list[tuple[int, int]] = []
     for start in range(len(lines)):
+        raw_length = 0
+        normalized_window = ""
+        compact_window = ""
         for end in range(
             start + 1,
             min(len(lines), start + _MAX_TABLE_CELL_WINDOW_LINES) + 1,
         ):
-            window = "\n".join(lines[start:end])
-            if len(window) > _MAX_TABLE_CELL_WINDOW_CHARS:
+            index = end - 1
+            raw_length += len(lines[index]) + (1 if index > start else 0)
+            if raw_length > _MAX_TABLE_CELL_WINDOW_CHARS:
                 break
-            if evidence_quote_matches_source(quote, window):
-                matches.append((start, end, window))
+            line = normalized_lines[index]
+            if line:
+                normalized_window += (" " if normalized_window else "") + line
+            compact_window += compact_lines[index]
+            if normalized_quote in normalized_window or (
+                len(compact_quote) >= 8 and compact_quote in compact_window
+            ):
+                matches.append((start, end))
                 break
-    if not matches:
-        return ()
-    minimal = [
-        (start, end)
-        for start, end, _window in matches
-        if not any(
-            other_start >= start
-            and other_end <= end
-            and (other_start, other_end) != (start, end)
-            for other_start, other_end, _other_window in matches
-        )
-    ]
-    return tuple(minimal)
+    # One earliest-ending match per start, in ascending start order. A match
+    # is nonminimal exactly when a later start has an equal or smaller end.
+    minimal: list[tuple[int, int]] = []
+    smallest_end = len(lines) + 1
+    for start, end in reversed(matches):
+        if end < smallest_end:
+            minimal.append((start, end))
+            smallest_end = end
+    return tuple(reversed(minimal))
+
 
 
 def _unique_anchor_line_span(

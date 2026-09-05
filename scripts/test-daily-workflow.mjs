@@ -313,7 +313,7 @@ assert.equal(manualAudit.outcomeFeedback.requestAttempted, false);
 assert.equal(manualAudit.externalCalls.outcome_feedback, 0);
 assert.equal(manualAudit.externalCalls.outcome_feedback_provider_calls, 0);
 
-assert.equal(continuationNodes.get("Every 15 Minutes Continue Active Queue").parameters.rule.interval[0].expression, "*/15 * * * *");
+assert.equal(continuationNodes.get("Every Minute Continue Active Queue").parameters.rule.interval[0].expression, "* * * * *");
 assert.match(continuationNodes.get("Build Scheduled Continuation Runtime").parameters.jsCode, /queueName: 'ANY'/);
 assert.match(continuationNodes.get("Build Scheduled Continuation Runtime").parameters.jsCode, /resumeOnly: true/);
 assert.match(continuationNodes.get("Reserve or Resume Backfill Plan").parameters.body, /resume_only:/);
@@ -321,9 +321,9 @@ assert.deepEqual(targets(continuation, "Backfill Has Remaining Chunks?", 1), ["N
 const continuationRuntime = one(continuationNodes, "Build Scheduled Continuation Runtime", {}, { env: {} }).runtime;
 const recoveryRuntime = one(continuationNodes, "Build Fail-Closed Backfill Runtime", {}, { env: {} }).runtime;
 assert.equal(recoveryRuntime.includeRetryable, true);
-assert.equal(recoveryRuntime.executionLimit, 5);
+assert.equal(recoveryRuntime.executionLimit, 30);
 assert.equal(recoveryRuntime.maxContinuations, 768);
-assert.equal(continuationRuntime.executionLimit, 5);
+assert.equal(continuationRuntime.executionLimit, 30);
 assert.equal(continuationRuntime.maxContinuations, 768);
 assert.equal(recoveryRuntime.maxTotal, 3000);
 const continuationPlan = one(continuationNodes, "Validate Backfill Plan", {

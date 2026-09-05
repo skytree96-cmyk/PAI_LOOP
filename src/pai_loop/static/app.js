@@ -4776,25 +4776,29 @@
     // class policy preview remains in its own section below.
     const preview = state.privateMatchPreviews[notice?.noticeKey];
     if (preview?.status !== "ready") return [];
-    const aggregateAllowsPass = notice.analysisState === "EVALUATED"
-      && !isDocumentQualityReview(notice)
-      && notice.eligibilityStatus === "PASS";
+    // A failed AND condition must not erase independently satisfied conditions.
+    // Keep incomplete/stale document projections provisional, independently of
+    // the persisted aggregate verdict (which this adapter never changes).
+    const currentEvidence = notice.analysisState === "EVALUATED"
+      && !isDocumentQualityReview(notice);
     return arrayValue(preview.data?.matches)
       .filter((item) => item?.category === "ELIGIBILITY")
       .map((item, index) => {
         const outcome = stringValue(item.outcome).toUpperCase();
         const publicProfileMatches = ["PASS_CURRENT", "PASS_EXCEPTION"].includes(outcome);
         const status = publicProfileMatches
-          ? aggregateAllowsPass ? outcome : "REVIEW"
-          : outcome === "REVIEW" || item.blocking
+          ? currentEvidence ? outcome : "REVIEW"
+          : outcome === "FAIL_CONFIRMED" && currentEvidence
+            ? "FAIL"
+            : outcome === "REVIEW" || item.blocking
             ? "REVIEW"
             : "UNKNOWN";
         const description = publicProfileMatches
-          ? aggregateAllowsPass
+          ? currentEvidence
             ? outcome === "PASS_EXCEPTION"
               ? "허용 예외에 따라 현재 충족합니다. 예외 적용 조건과 마감일 기준 증빙을 다시 확인하세요."
               : "현재 회사 정보와 일치합니다. 공고 마감일 기준으로 최신 증빙을 다시 확인하세요."
-            : "공개 정책 보조 근거상 현재 일치하지만 종합 판단은 확정되지 않았습니다. 공고 마감일 기준으로 다시 확인하세요."
+            : "공개 회사정보와 일치하지만 현재 첨부 검증이 완료되지 않았습니다. 공고 마감일 기준으로 다시 확인하세요."
           : stringValue(item.message, "공개 정책 보조 근거입니다. 공고 마감일 기준으로 최신 증빙을 확인하세요.");
         return {
           id: stringValue(item.requirementId, `public-eligibility-${index + 1}`),
@@ -4936,6 +4940,7 @@
     const outcomeLabels = {
       PASS_CURRENT: "현재 충족 · 마감일 재확인",
       PASS_EXCEPTION: "조건부 충족 · 적용조건 재확인",
+      FAIL_CONFIRMED: "미충족",
       BLOCK_UNTIL_CONFIRMED: "확인 전 보류",
       READY: "체크 준비",
       CHECK_REQUIRED: "체크 필요",
@@ -4946,6 +4951,7 @@
     const stateClass = ({
       PASS_CURRENT: "is-pass_current",
       PASS_EXCEPTION: "is-pass_exception",
+      FAIL_CONFIRMED: "is-blocking",
       REVIEW: "is-review",
     })[item.outcome] || (item.blocking
       ? "is-blocking"
@@ -5130,6 +5136,7 @@
 
   function renderQuantAndRisk(notice) {
     renderRiskPanel(notice);
+    renderQuantitativeDiagnosticsControl(notice);
     if (state.source !== "api") {
       renderLegacyQuantitative(notice);
       return;
@@ -5140,6 +5147,46 @@
       return;
     }
     renderQuantitativePending(meta?.status || "idle", meta?.message || "");
+  }
+
+  function renderQuantitativeDiagnosticsControl(notice) {
+    document.getElementById("quantitativeDiagnosticsControl")?.remove();
+    if (state.source !== "api" || !state.manualAnalysisEnabled) return;
+    const noticeKey = notice.noticeKey;
+    const container = document.createElement("details");
+    container.id = "quantitativeDiagnosticsControl";
+    const summary = document.createElement("summary");
+    summary.textContent = "운영자 정량 진단";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-secondary";
+    button.textContent = "정량 검증 사유 확인";
+    const output = document.createElement("pre");
+    output.style.whiteSpace = "pre-wrap";
+    output.style.overflowWrap = "anywhere";
+    output.setAttribute("aria-live", "polite");
+    container.append(summary, button, output);
+    els.quantSeparationNote.insertAdjacentElement("afterend", container);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const headers = await manualAnalysisAuthHeaders();
+        if (!headers) return;
+        output.textContent = "현재 첨부와 배점표 검증 상태를 확인하고 있습니다.";
+        const data = await apiRequest(
+          `/notices/${encodeURIComponent(noticeKey)}/analysis/quantitative-diagnostics`,
+          { method: "POST", headers },
+        );
+        if (!container.isConnected || state.selectedNotice?.noticeKey !== noticeKey) return;
+        // The PIN-only endpoint returns bounded, redacted structural facts.
+        // Render as text, never HTML, and do not persist diagnostics locally.
+        output.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        if (container.isConnected) output.textContent = humanizeError(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
   }
 
   function renderRiskPanel(notice) {
