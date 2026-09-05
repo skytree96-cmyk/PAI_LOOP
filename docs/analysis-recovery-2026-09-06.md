@@ -1,0 +1,11 @@
+# Analysis recovery — 2026-09-06
+
+This change separates individual public company-policy results from the aggregate eligibility verdict. A current PASS_CURRENT or PASS_EXCEPTION remains visible when another mandatory condition fails; a current FAIL_CONFIRMED is displayed as FAIL. Incomplete or stale document projections remain provisional. The stored overall decision is unchanged.
+
+Exact quantitative anchor lookup now normalizes each paragraph once per lookup and removes nonminimal spans in source order. It preserves the original Unicode normalization, minimum compact-anchor length, raw character/window bounds, duplicate locations and fail-closed validation. Differential tests compare against the previous exhaustive predicate, including formatting controls and duplicate anchors. No notice identifier, score threshold, rating, or company value is introduced.
+
+The existing same-origin, PIN-protected quantitative diagnostic route declares its operator header in OpenAPI so an authorized operator can use the browser API documentation. Authentication, redaction and no-store handling remain in force. The quantitative tab also offers an operator diagnostic disclosure using the existing scoped PIN flow, renders the response as text, and does not store it locally.
+
+W11 continuation polls every minute and permits 30 notices per execution instead of five. Each leased HTTP chunk still contains one notice and uses the existing serial loop, idempotency and overlap protection. The 3,000-notice durable plan already covers the observed OPEN population; it is not a per-run completion promise. Existing parent plans can retain their stored segment limit until completed. The schedule resumes active queues and is quiet when no work is claimable.
+
+Validation: focused quantitative extraction, operator diagnostics and frontend contracts; differential anchor tests; full Python coverage gate; workflow deployment, credential-preservation, daily/continuation, Teams and Claude gateway checks. Production acceptance must separately record deployed commit, live workflow publication, actual queue results and remaining missing evidence. DRAFT performance records remain excluded from scoring until their evidence is validated.
