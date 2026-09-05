@@ -44,14 +44,15 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.18"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.14"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.17"
 MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 
 # Issue-only proof changes use targeted fingerprint revisions below.  Changes to
 # executable scoring semantics, such as the credit-range DSL above, intentionally
 # bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
+    "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v1",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
     ),
