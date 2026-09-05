@@ -5869,8 +5869,10 @@ def busan_hwp_external_overall_minimum_fixture(
     (
         "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다.",
         "85점 이상",
+        "선정방법: 1단계-제안서 평가(100점 만점, 85점 이상 적격)",
+        "2단계-1단계 결과 85점 이상자 중 최저가격 제안자",
     ),
-    ids=("full-overall-sentence", "repeated-short-anchor"),
+    ids=("full-overall-sentence", "repeated-short-anchor", "overview-anchor", "overview-stage-anchor"),
 )
 def test_busan_hwp_detaches_source_proven_external_overall_minimum(
     minimum_quote: str,
@@ -7477,3 +7479,20 @@ def test_previous_split_cell_validator_record_is_rejected_as_stale() -> None:
 
     assert profile.status == "INCOMPLETE"
     assert "VALIDATOR_VERSION_MISMATCH" in issue_codes(profile)
+
+
+@pytest.mark.parametrize("mutation", ("absent", "other-section", "conflicting-value"))
+def test_overview_minimum_requires_matching_cutoff_in_own_summary_section(mutation: str) -> None:
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote="선정방법: 1단계-제안서 평가(100점 만점, 85점 이상 적격)"
+    )
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    if mutation == "absent":
+        source = source.replace(sentence, "SYN-추가 안내")
+    elif mutation == "other-section":
+        source = source.replace(sentence, "[HWP SECTION 1]\n" + sentence)
+    else:
+        source = source.replace(sentence, sentence.replace("85점", "80점"))
+    profile = build(payload_with_table(table), source=source)
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
