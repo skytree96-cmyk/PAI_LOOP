@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -766,9 +767,9 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
     assert '.filter((item) => item?.category === "ELIGIBILITY")' in adapter_body
     assert 'source: "PUBLIC_POLICY_SUPPLEMENT"' in adapter_body
     assert 'notice.analysisState === "EVALUATED"' in adapter_body
-    assert 'notice.eligibilityStatus === "PASS"' in adapter_body
-    assert 'aggregateAllowsPass ? outcome : "REVIEW"' in adapter_body
-    assert "현재 일치하지만 종합 판단은 확정되지 않았습니다" in adapter_body
+    assert 'notice.eligibilityStatus === "PASS"' not in adapter_body
+    assert 'currentEvidence ? outcome : "REVIEW"' in adapter_body
+    assert "현재 첨부 검증이 완료되지 않았습니다" in adapter_body
     assert "공고 마감일 기준" in adapter_body
 
     assert "analysisStatusPill(notice)" in panel_body
@@ -785,6 +786,46 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
         assert label in preview_body
     assert "data.matches.map(renderPrivateMatchItem)" in preview_body
     assert "unavailable:" in preview_body
+
+
+def test_mixed_eligibility_results_preserve_individual_verdicts() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    adapter = "function eligibilityRequirementsForDisplay" + _function_body(
+        source, "eligibilityRequirementsForDisplay", "publicEligibilityPolicyPending"
+    )
+    script = r'''
+const assert = require("node:assert/strict");
+const arrayValue = value => Array.isArray(value) ? value : [];
+const stringValue = (value, fallback = "") => value == null ? fallback : String(value);
+const isDocumentQualityReview = notice => Boolean(notice.documentQualityReview);
+const state = { privateMatchPreviews: { "SYN-MIXED": { status: "ready", data: {
+  matches: [
+    { category: "ELIGIBILITY", outcome: "PASS_CURRENT" },
+    { category: "ELIGIBILITY", outcome: "PASS_EXCEPTION" },
+    { category: "ELIGIBILITY", outcome: "FAIL_CONFIRMED", blocking: true },
+    { category: "ELIGIBILITY", outcome: "REVIEW", blocking: true },
+    { category: "CHECKLIST", outcome: "CHECK_REQUIRED" },
+    { category: "INFORMATION", outcome: "INFORMATION" },
+  ]
+} } } };
+const notice = { noticeKey: "SYN-MIXED", analysisState: "EVALUATED", eligibilityStatus: "FAIL" };
+const before = JSON.stringify(notice);
+assert.deepEqual(eligibilityRequirementsForDisplay(notice).map(x => x.status),
+  ["PASS_CURRENT", "PASS_EXCEPTION", "FAIL", "REVIEW"]);
+assert.equal(JSON.stringify(notice), before);
+for (const incomplete of [
+  { ...notice, analysisState: "PENDING" },
+  { ...notice, documentQualityReview: true },
+]) {
+  assert.deepEqual(eligibilityRequirementsForDisplay(incomplete).map(x => x.status),
+    ["REVIEW", "REVIEW", "REVIEW", "REVIEW"]);
+}
+const stored = [{ status: "FAIL", source: "STORED" }];
+assert.equal(eligibilityRequirementsForDisplay({ ...notice, requirements: stored }), stored);
+state.privateMatchPreviews[notice.noticeKey].status = "loading";
+assert.deepEqual(eligibilityRequirementsForDisplay(notice), []);
+'''
+    subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
 
 
 def test_unanalysed_reason_adapter_maps_document_failure_codes_to_korean() -> None:
