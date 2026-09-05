@@ -631,7 +631,7 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     continuation.config.contractVersion === "analysis-backfill-1.2"
-      && continuationSerialised.includes("executionLimit: 5")
+      && continuationSerialised.includes("executionLimit: 30")
       && continuationSerialised.includes("maxTotal: 3000")
       && continuationSerialised.includes("includeRetryable: true")
       && continuationSerialised.includes("maxContinuations: 768")
@@ -657,8 +657,8 @@ function validateRepositorySafetyContracts(definitions) {
   );
   assert(
     continuationSchedules.length === 1
-      && continuationSchedules[0].parameters?.rule?.interval?.[0]?.expression === "*/15 * * * *",
-    "workflow 11 continuation schedule must poll every 15 minutes",
+      && continuationSchedules[0].parameters?.rule?.interval?.[0]?.expression === "* * * * *",
+    "workflow 11 continuation schedule must poll every minute",
   );
 
   const preservationProbe = preserveRemoteNodeCredentials(
