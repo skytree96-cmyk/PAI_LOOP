@@ -5136,6 +5136,7 @@
 
   function renderQuantAndRisk(notice) {
     renderRiskPanel(notice);
+    renderQuantitativeDiagnosticsControl(notice);
     if (state.source !== "api") {
       renderLegacyQuantitative(notice);
       return;
@@ -5146,6 +5147,46 @@
       return;
     }
     renderQuantitativePending(meta?.status || "idle", meta?.message || "");
+  }
+
+  function renderQuantitativeDiagnosticsControl(notice) {
+    document.getElementById("quantitativeDiagnosticsControl")?.remove();
+    if (state.source !== "api" || !state.manualAnalysisEnabled) return;
+    const noticeKey = notice.noticeKey;
+    const container = document.createElement("details");
+    container.id = "quantitativeDiagnosticsControl";
+    const summary = document.createElement("summary");
+    summary.textContent = "운영자 정량 진단";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-secondary";
+    button.textContent = "정량 검증 사유 확인";
+    const output = document.createElement("pre");
+    output.style.whiteSpace = "pre-wrap";
+    output.style.overflowWrap = "anywhere";
+    output.setAttribute("aria-live", "polite");
+    container.append(summary, button, output);
+    els.quantSeparationNote.insertAdjacentElement("afterend", container);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const headers = await manualAnalysisAuthHeaders();
+        if (!headers) return;
+        output.textContent = "현재 첨부와 배점표 검증 상태를 확인하고 있습니다.";
+        const data = await apiRequest(
+          `/notices/${encodeURIComponent(noticeKey)}/analysis/quantitative-diagnostics`,
+          { method: "POST", headers },
+        );
+        if (!container.isConnected || state.selectedNotice?.noticeKey !== noticeKey) return;
+        // The PIN-only endpoint returns bounded, redacted structural facts.
+        // Render as text, never HTML, and do not persist diagnostics locally.
+        output.textContent = JSON.stringify(data, null, 2);
+      } catch (error) {
+        if (container.isConnected) output.textContent = humanizeError(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
   }
 
   function renderRiskPanel(notice) {
