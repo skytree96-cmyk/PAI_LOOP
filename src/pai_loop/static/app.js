@@ -5130,7 +5130,10 @@
       state.quantitativeEstimates[noticeKey] = { status: "error", data: null, message: humanizeError(error), requestToken };
     } finally {
       if (state.quantitativeEstimates[noticeKey]?.requestToken !== requestToken) return;
-      if (state.selectedNotice?.noticeKey === noticeKey) renderQuantAndRisk(state.selectedNotice);
+      if (state.selectedNotice?.noticeKey === noticeKey) {
+        renderQuantAndRisk(state.selectedNotice);
+        renderManualAnalysisDetailAction(state.selectedNotice);
+      }
     }
   }
 
@@ -5161,11 +5164,23 @@
     button.type = "button";
     button.className = "btn btn-secondary";
     button.textContent = "정량 검증 사유 확인";
+    const retryButton = document.createElement("button");
+    retryButton.type = "button";
+    retryButton.className = "btn btn-secondary";
+    retryButton.textContent = "검토 중인 정량 첨부 재추출";
+    retryButton.hidden = true;
+    const retryNotice = document.createElement("p");
+    retryNotice.textContent = "재추출은 현재 검토 대상만 한 번씩 다시 분석합니다. 공고당 문서 분석 요청은 최대 20회이며, 실행 후 새 결과를 확인하세요.";
+    retryNotice.hidden = true;
+    const statisticsButton = document.createElement("button");
+    statisticsButton.type = "button";
+    statisticsButton.className = "btn btn-secondary";
+    statisticsButton.textContent = "전체 공고 분석 통계 조회";
     const output = document.createElement("pre");
     output.style.whiteSpace = "pre-wrap";
     output.style.overflowWrap = "anywhere";
     output.setAttribute("aria-live", "polite");
-    container.append(summary, button, output);
+    container.append(summary, button, statisticsButton, retryNotice, retryButton, output);
     els.quantSeparationNote.insertAdjacentElement("afterend", container);
     button.addEventListener("click", async () => {
       button.disabled = true;
@@ -5181,12 +5196,175 @@
         // The PIN-only endpoint returns bounded, redacted structural facts.
         // Render as text, never HTML, and do not persist diagnostics locally.
         output.textContent = JSON.stringify(data, null, 2);
+        const retryable = data.review_candidate_count > 0
+          && notice.analysisAttachmentCoverageComplete
+          && noticeLifecycleStatus(notice) === "OPEN";
+        retryButton.hidden = !retryable;
+        retryNotice.hidden = !retryable;
       } catch (error) {
         if (container.isConnected) output.textContent = humanizeError(error);
       } finally {
         button.disabled = false;
       }
     });
+    retryButton.addEventListener("click", async () => {
+      retryButton.disabled = true;
+      button.disabled = true;
+      statisticsButton.disabled = true;
+      try {
+        const headers = await manualAnalysisAuthHeaders();
+        if (!headers) return;
+        output.textContent = "검토 중인 정량 첨부의 재추출을 요청합니다.";
+        let result = await apiRequest(
+          `/notices/${encodeURIComponent(noticeKey)}/analysis/request`,
+          { method: "POST", headers, body: JSON.stringify({ run_extraction: true, retry_reviewed: true }) },
+        );
+        for (let poll = 0; result.outcome === "QUEUED" && poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1) {
+          output.textContent = "첨부를 재추출하고 검증하고 있습니다. 요청을 중복 실행하지 마세요.";
+          await new Promise((resolve) => window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS));
+          result = await apiRequest(
+            `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(result.request_id)}`,
+            { headers },
+          );
+        }
+        if (!container.isConnected) return;
+        output.textContent = JSON.stringify(result, null, 2);
+        // Keep the completed operator response visible; refresh the ordinary
+        // estimate on the next explicit tab visit instead of destroying it.
+        invalidateQuantitativeEstimate(noticeKey);
+      } catch (error) {
+        if (container.isConnected) output.textContent = humanizeError(error);
+      } finally {
+        retryButton.disabled = false;
+        button.disabled = false;
+        statisticsButton.disabled = false;
+      }
+    });
+    statisticsButton.addEventListener("click", async () => {
+      statisticsButton.disabled = true;
+      button.disabled = true;
+      retryButton.disabled = true;
+      try {
+        const headers = await manualAnalysisAuthHeaders();
+        if (!headers) return;
+        const report = await collectAnalysisStatistics(headers, (message) => {
+          if (container.isConnected) output.textContent = message;
+        });
+        if (container.isConnected) output.textContent = JSON.stringify(report, null, 2);
+      } catch (error) {
+        if (container.isConnected) output.textContent = humanizeError(error);
+      } finally {
+        statisticsButton.disabled = false;
+        button.disabled = false;
+        retryButton.disabled = false;
+      }
+    });
+  }
+
+  async function collectAnalysisStatistics(headers, onProgress) {
+    const startedAt = new Date().toISOString();
+    const stored = new Map();
+    for (let offset = 0; ; offset += 200) {
+      onProgress(`저장 공고 ${stored.size}건 확인 · 통계 조회는 문서 분석 API를 실행하지 않습니다.`);
+      const page = await apiRequest(`/notices?limit=200&offset=${offset}`, { timeoutMs: NOTICE_REQUEST_TIMEOUT_MS });
+      if (!Array.isArray(page)) throw new Error("공고 목록 응답을 확인할 수 없습니다.");
+      for (const item of page) stored.set(item.notice_key, item);
+      if (page.length < 200) break;
+    }
+    const notices = [...stored.values()].filter((item) => item.status === "OPEN"
+      && item.provider_disposition !== "CANCELLED" && new Date(item.deadline).getTime() >= Date.now());
+    const rows = [];
+    for (const notice of notices) {
+      onProgress(`진행 공고 ${rows.length}/${notices.length}건 집계 · 첨부·자격·정량 검증 상태를 조회합니다.`);
+      const row = {
+        notice_key: notice.notice_key,
+        title: notice.title,
+        analysis_state: notice.analysis_state,
+        analysis_reason_code: notice.analysis_reason_code,
+        analysis_attempted: notice.analysis_attempted,
+        expected_attachments: notice.analysis_attachment_count,
+        audited_attachments: notice.analysis_attachments_audited,
+        accepted_attachments: notice.analysis_attachments_accepted,
+        attachment_coverage_complete: notice.analysis_attachment_coverage_complete,
+        eligibility: notice.latest_evaluation?.eligibility || "NOT_EVALUATED",
+        profile_status: "NOT_QUERIED",
+        activation_status: "NOT_QUERIED",
+        score_status: "NOT_QUERIED",
+        available_candidates: 0,
+        review_candidates: 0,
+        issues: [],
+        read_errors: [],
+      };
+      // The notice list already proves that unattempted rows have no current
+      // attachment analysis. Avoid hundreds of redundant detail reads.
+      if (notice.analysis_attempted) {
+        try {
+          const estimate = await apiRequest(`/notices/${encodeURIComponent(notice.notice_key)}/quantitative-estimate`);
+          row.activation_status = estimate.activation_status;
+          row.score_status = estimate.overall_status;
+          row.estimated_points = estimate.estimated_points;
+          row.lower_points = estimate.lower_points;
+          row.upper_points = estimate.upper_points;
+          row.total_max_points = estimate.total_max_points;
+          row.evidence_coverage_pct = estimate.evidence_coverage_pct;
+          row.criteria_count = estimate.criteria.length;
+        } catch (_error) {
+          row.read_errors.push("QUANTITATIVE_ESTIMATE_READ_FAILED");
+        }
+        try {
+          const diagnostic = await apiRequest(
+            `/notices/${encodeURIComponent(notice.notice_key)}/analysis/quantitative-diagnostics`,
+            { method: "POST", headers },
+          );
+          row.profile_status = diagnostic.profile_status;
+          row.available_candidates = diagnostic.available_candidate_count;
+          row.review_candidates = diagnostic.review_candidate_count;
+          row.issues = diagnostic.issues;
+        } catch (_error) {
+          row.read_errors.push("QUANTITATIVE_DIAGNOSTIC_READ_FAILED");
+        }
+      }
+      rows.push(row);
+    }
+    return summarizeAnalysisStatistics(rows, {
+      started_at: startedAt, finished_at: new Date().toISOString(), stored_notice_count: stored.size,
+    });
+  }
+
+  function summarizeAnalysisStatistics(rows, metadata) {
+    const counts = (key) => rows.reduce((result, row) => {
+      const value = String(row[key] ?? "UNKNOWN");
+      result[value] = (result[value] || 0) + 1;
+      return result;
+    }, {});
+    const sum = (key) => rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
+    const issueNotices = {};
+    for (const row of rows) {
+      for (const code of new Set(row.issues.map((issue) => issue.code))) {
+        issueNotices[code] = (issueNotices[code] || 0) + 1;
+      }
+    }
+    return {
+      ...metadata,
+      scope: "진행 중인 현재 공고 · 조회 시간 구간 동안의 관측값이며 단일 DB 스냅샷이 아닙니다.",
+      open_notice_count: rows.length,
+      attempted_notice_count: rows.filter((row) => row.analysis_attempted).length,
+      complete_attachment_notice_count: rows.filter((row) => row.attachment_coverage_complete).length,
+      expected_attachment_count: sum("expected_attachments"),
+      audited_attachment_count: sum("audited_attachments"),
+      accepted_attachment_count: sum("accepted_attachments"),
+      analysis_states: counts("analysis_state"),
+      analysis_reasons: counts("analysis_reason_code"),
+      eligibility: counts("eligibility"),
+      quantitative_profiles: counts("profile_status"),
+      quantitative_activation: counts("activation_status"),
+      quantitative_score_status: counts("score_status"),
+      available_candidate_count: sum("available_candidates"),
+      review_candidate_count: sum("review_candidates"),
+      quantitative_issue_notice_counts: issueNotices,
+      read_error_notice_count: rows.filter((row) => row.read_errors.length).length,
+      rows,
+    };
   }
 
   function renderRiskPanel(notice) {
