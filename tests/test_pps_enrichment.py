@@ -1938,7 +1938,12 @@ def test_paid_usage_survives_post_openai_persistence_failure(monkeypatch) -> Non
     engine.dispose()
 
 
-def test_five_attachments_persist_and_resume_two_plus_two_plus_one() -> None:
+@pytest.mark.parametrize("request_limit", [2, 10])
+def test_five_attachments_persist_and_resume_with_configured_limit(monkeypatch, request_limit) -> None:
+    from pai_loop import pps_enrichment
+
+    assert pps_enrichment.MAX_NEW_ATTACHMENTS_PER_REQUEST == 10
+    monkeypatch.setattr(pps_enrichment, "MAX_NEW_ATTACHMENTS_PER_REQUEST", request_limit)
     def hwpx_bytes(sequence: int) -> bytes:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -2011,16 +2016,17 @@ def test_five_attachments_persist_and_resume_two_plus_two_plus_one() -> None:
                 )
             )
 
-    assert [item.status for item in results] == [
-        "SKIPPED",
-        "SKIPPED",
-        "COMPLETED",
-        "REUSED",
-    ]
-    assert [item.attachments_attempted for item in results] == [2, 4, 5, 5]
-    assert [item.openai_calls for item in results] == [4, 4, 2, 0]
-    assert "ATTACHMENT_CONTINUATION_REQUIRED" in results[0].warnings
-    assert "ATTACHMENT_CONTINUATION_REQUIRED" in results[1].warnings
+    if request_limit == 2:
+        assert [item.status for item in results] == ["SKIPPED", "SKIPPED", "COMPLETED", "REUSED"]
+        assert [item.attachments_attempted for item in results] == [2, 4, 5, 5]
+        assert [item.openai_calls for item in results] == [4, 4, 2, 0]
+        assert "ATTACHMENT_CONTINUATION_REQUIRED" in results[0].warnings
+        assert "ATTACHMENT_CONTINUATION_REQUIRED" in results[1].warnings
+    else:
+        assert [item.status for item in results] == ["COMPLETED", "REUSED", "REUSED", "REUSED"]
+        assert [item.attachments_attempted for item in results] == [5, 5, 5, 5]
+        assert [item.openai_calls for item in results] == [10, 0, 0, 0]
+        assert "ATTACHMENT_CONTINUATION_REQUIRED" not in results[0].warnings
     assert "ATTACHMENT_CONTINUATION_REQUIRED" not in results[2].warnings
     assert _CountingExtractionClient.calls == 5
 
