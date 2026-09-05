@@ -7569,7 +7569,7 @@ def test_notice_table_reference_rejects_compound_or_reversed_claim(mutation: str
     assert quantitative_table_local_absence_targets(gap) is None
 
 
-@pytest.mark.parametrize("mutation", ("none", "duplicate-header", "unknown-cutoff", "missing-case"))
+@pytest.mark.parametrize("mutation", ("none", "duplicate-header", "unknown-cutoff", "header-cutoff", "missing-case"))
 def test_overall_minimum_with_exact_inner_cell_criterion_anchors(mutation: str) -> None:
     table, source = busan_hwp_external_overall_minimum_fixture(
         minimum_quote="적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
@@ -7587,6 +7587,8 @@ def test_overall_minimum_with_exact_inner_cell_criterion_anchors(mutation: str) 
         source = source.replace("세부 항목", "1) 용역수행 실적(금액)\n(6점)\n세부 항목", 1)
     elif mutation == "unknown-cutoff":
         source = source.replace("세부 항목", "정량평가 15점 미만 탈락\n세부 항목", 1)
+    elif mutation == "header-cutoff":
+        source = source.replace("1) 용역수행 실적(금액)\n(6점)", "1) 용역수행 실적(금액)\n(6점) 미만 탈락", 1)
     elif mutation == "missing-case":
         table["criteria"][0]["cases"].pop()
     profile = build(payload_with_table(table), source=source)
