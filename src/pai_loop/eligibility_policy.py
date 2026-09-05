@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import hashlib
 import json
 import re
 from collections import Counter
@@ -13,7 +14,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.03-v7"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.06-v8"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -746,11 +747,54 @@ def _is_bid_bond_clause(text: str) -> bool:
     return bool(re.search(r"입찰\s*보증금", text))
 
 
+_STATUTORY_QUALIFICATION_AND_SANCTION = re.compile(
+    r"(?P<registration>(?:지방\s*계약\s*법|지방자치단체를\s*당사자로\s*하는\s*계약에\s*관한\s*법률)"
+    r"\s*시행령\s*제?\s*13조\s*[·,및]\s*시행규칙\s*제?\s*14조(?:의|에\s*따른)\s*"
+    r"자격\s*요건\s*을\s*(?:구비하고|갖추고))\s*,?\s*"
+    r"(?P<sanction>시행령\s*제?\s*92조\s*\(\s*부정당업자\s*(?:제재|입찰참가자격\s*제한)\s*\)\s*"
+    r"(?:해당사항이\s*없는|에\s*해당하지\s*않는|에\s*해당되지\s*않는)\s*"
+    r"(?:업체|자)(?:여야\s*함|이어야\s*함|여야\s*한다|이어야\s*한다))\s*[.]?"
+)
+
+
+def expand_statutory_qualification_requirements(
+    requirements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Split only a complete recognized AND clause, keeping original evidence.
+
+    Unknown tails, OR alternatives and ambiguous extra requirements are not
+    discarded. Part conditions are exact substrings of normalized source prose.
+    """
+    expanded: list[dict[str, Any]] = []
+    for requirement in requirements:
+        text = _normalise(requirement.get("normalized_condition"))
+        match = _STATUTORY_QUALIFICATION_AND_SANCTION.fullmatch(text)
+        if (
+            match is None
+            or requirement.get("ambiguity_reason")
+            or str(requirement.get("logic") or "SINGLE") not in {"SINGLE", "AND"}
+        ):
+            expanded.append(requirement)
+            continue
+        original_id = str(requirement.get("requirement_id") or "requirement")
+        for part, category in (("registration", "ENTITY"), ("sanction", "SANCTION")):
+            condition = match.group(part)
+            digest = hashlib.sha256((original_id + "\n" + part + "\n" + condition).encode()).hexdigest()[:32]
+            expanded.append({
+                **requirement,
+                "requirement_id": f"ai-{digest}",
+                "category": category,
+                "logic": "SINGLE",
+                "normalized_condition": condition,
+            })
+    return expanded
+
+
 def _is_bidder_registration_eligibility(text: str) -> bool:
     """Match registration and narrow statutory bidder-qualification clauses."""
 
     # A restriction clause is evidence about sanctions, not registration.
-    if re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text):
+    if re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text) or "부정당" in text:
         return False
 
     # Allow particles and spacing used in live notices.
@@ -765,30 +809,33 @@ def _is_bidder_registration_eligibility(text: str) -> bool:
     if "경쟁입찰참가자격" in text:
         return True
 
-    # A general State Contracts Act clause is mapped only when it also says
+    # A general statutory qualification clause is mapped only when it also says
     # that the bidder must possess the relevant qualifications. Merely citing
     # the Act (for a bond, contract term, etc.) is intentionally insufficient.
-    national_contract_law = bool(
+    contract_qualification_law = bool(
         re.search(
             r"(?:국가\s*를\s*당사자로\s*하는\s*계약"
-            r"(?:\s*에\s*관한\s*법률)?|국가\s*계약\s*법)",
+            r"(?:\s*에\s*관한\s*법률)?|국가\s*계약\s*법|지방\s*계약\s*법|"
+            r"지방자치단체를\s*당사자로\s*하는\s*계약에\s*관한\s*법률)",
             text,
         )
     )
     qualification_possession = bool(
         re.search(
             r"(?:입찰\s*참가\s*)?자격(?:\s*요건)?\s*(?:을|를)?\s*"
-            r"(?:갖춘|갖추어야|구비한|충족한|보유한)",
+            r"(?:갖춘|갖추어야|갖추고|구비한|구비하고|충족한|보유한)",
             text,
         )
     )
-    return national_contract_law and qualification_possession
+    return contract_qualification_law and qualification_possession
 
 
 def _is_current_sanction_clearance(text: str) -> bool:
     """Match a present no-restriction condition, not a future penalty."""
 
-    if _is_bid_bond_clause(text):
+    if _is_bid_bond_clause(text) or re.search(
+        r"자격(?:\s*요건)?\s*(?:을|를)?\s*(?:갖추|갖춘|구비|보유|충족)", text
+    ):
         return False
     sanction_context = "부정당" in text or bool(
         re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text)
@@ -799,6 +846,7 @@ def _is_current_sanction_clearance(text: str) -> bool:
         "받지 않",
         "해당되지 않",
         "해당하지 않",
+        "해당사항이 없는",
         "지정되지 않",
         "제한되지 않",
         "제재 중이지 않",
@@ -1104,6 +1152,7 @@ def classify_requirements(
     # Bind ``today`` into every eligibility-item call below without threading
     # it through each of the 13 call sites individually.
     _eligibility_item_now = functools.partial(_eligibility_item, today=today)
+    requirements = expand_statutory_qualification_requirements(requirements)
     normalized = [_normalise(item.get("normalized_condition")) for item in requirements]
     nonprofit_exception_present = any(
         "비영리법인" in text and _contains(text, "참여 가능", "예외", "적용하지")
@@ -1314,6 +1363,16 @@ def classify_requirements(
                 profile=profile,
                 capability_key=None,
                 message="납품·설치 장소 또는 입찰 범위 정보이며 업체 소재지 참가제한으로 사용하지 않습니다.",
+            )
+        elif "부정당" in text and _contains(text, "부도", "파산", "금융신용", "금융 신용"):
+            item = _unmapped_eligibility_item(
+                requirement,
+                fact_key="compound_sanction_and_financial_qualification",
+                deadline=as_of,
+                message=(
+                    "부정당 제재 여부와 부도·파산·금융신용 조건을 각각 확인해야 합니다. "
+                    "제재가 없다는 회사 사실만으로 재무 관련 조건까지 충족한 것으로 판단하지 않습니다."
+                ),
             )
         elif _is_current_sanction_clearance(text):
             item = _eligibility_item_now(
