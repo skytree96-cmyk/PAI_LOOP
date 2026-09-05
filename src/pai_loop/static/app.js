@@ -5452,7 +5452,7 @@
     const loading = status === "loading";
     els.scoreOverview.innerHTML = [
       quantSummaryCard("예상 점수 범위", "미산정", loading ? "배점표 확인 중" : "공고별 산식 필요", "score-card--readiness"),
-      quantSummaryCard("배점 근거 확인율", "0%", "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("회사 증빙 확정률", "0%", "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
       quantSummaryCard("정량 준비도", "산정 보류", "참가자격과 별도", "score-card--risk"),
     ].join("");
     els.quantSourceStatus.className = `quant-source-status ${status === "error" ? "is-error" : "is-loading"}`;
@@ -5515,7 +5515,7 @@
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
     els.scoreOverview.innerHTML = [
       quantSummaryCard("예상 점수 범위", range, sourceDetail, "score-card--readiness"),
-      quantSummaryCard("배점 근거 확인율", `${formatNumber(coverage, 1)}%`, "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("회사 증빙 확정률", `${formatNumber(coverage, 1)}%`, "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
       quantSummaryCard("정량 준비도", quantReadinessLabel(data.readiness_band), readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
     ].join("");
 
@@ -5533,7 +5533,10 @@
       NOT_APPLICABLE: "산정 비적용",
     };
     els.quantSourceStatus.className = `quant-source-status is-${String(activation).toLowerCase().replaceAll("_", "-")}`;
-    els.quantSourceStatus.textContent = `${sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${quantStatusLabel(data.overall_status)}`;
+    const scoreStatusLabel = data.overall_status === "UNSCORABLE" && lower !== null && upper !== null
+      ? "일부 항목 미산정"
+      : quantStatusLabel(data.overall_status);
+    els.quantSourceStatus.textContent = `${sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${scoreStatusLabel}`;
     els.quantOpinion.textContent = data.opinion || "정량 의견이 없습니다.";
     const anchor = data.source_anchor;
     els.quantSourceAnchor.textContent = anchor
@@ -5583,12 +5586,13 @@
         : total !== null
           ? emptyPanel("최신 정량 합계 저장본", "회사 사실값과 항목별 원문 근거는 공개하지 않고, 최신 분석의 합계와 범위만 표시합니다.")
         : emptyPanel("자동 산정 가능한 항목 없음", "배점표는 확인했지만 수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다.");
+    const publicEvidenceHidden = !sourceMissing && (
+      data.ruleset_version === "public-quantitative-summary-v1"
+      || (Array.isArray(data.assumptions) && data.assumptions.some((item) => String(item).includes("공개 화면")))
+    );
     els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
-      ? data.criteria.map(renderQuantitativeEstimateRow).join("")
+      ? data.criteria.map((item) => renderQuantitativeEstimateRow(item, { publicEvidenceHidden })).join("")
       : `<tr><td colspan="4">${emptyCriteria}</td></tr>`;
-    const publicEvidenceHidden = !sourceMissing && (Array.isArray(data.assumptions)
-      ? data.assumptions.some((item) => String(item).includes("공개 화면"))
-      : false);
     els.quantObservationList.innerHTML = Array.isArray(data.evidence_observations) && data.evidence_observations.length
       ? data.evidence_observations.map(renderQuantObservation).join("")
       : publicEvidenceHidden
@@ -5609,7 +5613,7 @@
     return ({ GREEN: "준비됨", YELLOW: "보완 필요", RED: "위험", GRAY: "산정 보류" })[String(value || "").toUpperCase()] || "산정 보류";
   }
 
-  function renderQuantitativeEstimateRow(item) {
+  function renderQuantitativeEstimateRow(item, { publicEvidenceHidden = false } = {}) {
     const lower = numberOrNull(item.lower_points);
     const upper = numberOrNull(item.upper_points);
     const range = lower === null || upper === null
@@ -5618,7 +5622,7 @@
     const anchor = item.source_anchor;
     const source = anchor
       ? `${anchor.page ? `원문 ${anchor.page}쪽` : "원문 위치 확인됨"}`
-      : "원문 위치 없음";
+      : publicEvidenceHidden ? "원문 위치 세부 비공개" : "원문 위치 없음";
     const floor = numberOrNull(item.rule_floor_points);
     const base = numberOrNull(item.rule_base_points);
     return `<tr>
