@@ -6,7 +6,7 @@ import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -27,6 +27,7 @@ from .department_ranking import (
 from .eligibility_policy import (
     POLICY_VERSION,
     classify_requirements,
+    expand_statutory_qualification_requirements,
     load_public_company_profile,
 )
 from .evaluator import (
@@ -578,6 +579,20 @@ def _policy_items(
     notice: Notice,
     profile: dict[str, Any],
 ) -> list[tuple[_MergedRequirement, dict[str, Any]]]:
+    expanded: list[_MergedRequirement] = []
+    for item in merged:
+        original = {**item.requirement.model_dump(mode="json"), "requirement_id": item.requirement_key}
+        parts = expand_statutory_qualification_requirements([original])
+        for part in parts:
+            if part is original:
+                expanded.append(item)
+            else:
+                expanded.append(replace(
+                    item,
+                    requirement_key=part["requirement_id"],
+                    requirement=ExtractedRequirement.model_validate(part),
+                ))
+    merged = expanded
     requirements = [
         {
             **item.requirement.model_dump(mode="json"),

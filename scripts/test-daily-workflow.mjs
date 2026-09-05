@@ -344,6 +344,18 @@ const noActive = one(continuationNodes, "Validate Backfill Plan", {
   notice_keys: [], chunks: [], chunk_indices: [], continuation_round: 0,
 }, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
 assert.equal(noActive.operation.status, "NO_ACTIVE");
+assert.equal(noActive.operation.pauseReason, "NO_ACTIVE_OPERATION");
+const deploymentPaused = one(continuationNodes, "Validate Backfill Plan", {
+  ...operationResponse, job_id: null, segment_id: null, status: "NO_ACTIVE", queue_name: "ANY",
+  planned: 0, attempted: 0, remaining: 0, in_flight: 0, offered: 0,
+  notice_keys: [], chunks: [], chunk_indices: [], continuation_round: 0,
+  warnings: ["ANALYSIS_DEPLOYMENT_GRACE", "SYN-PRIVATE-WARNING"], note: "SYN-PRIVATE-NOTE",
+}, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
+const pauseOutput = one(continuationNodes, "No Active or Claimable Continuation", deploymentPaused);
+assert.equal(pauseOutput.pauseReason, "ANALYSIS_DEPLOYMENT_GRACE");
+assert.equal(pauseOutput.externalCallsAfterPlan, 0);
+assert.doesNotMatch(JSON.stringify(pauseOutput), /SYN-PRIVATE/);
+
 const correctiveChunkResponse = responseFor(["backlog-1"], "98");
 correctiveChunkResponse.openai_calls = 2;
 correctiveChunkResponse.enrichment.openai_calls = 2;
