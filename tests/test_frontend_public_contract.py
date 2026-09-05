@@ -655,15 +655,20 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     assert 'notice.analysisState === "ANALYZED"' in label_body
     assert "판단 실행" in label_body
     assert "첨부 전체 재분석" in label_body
-    assert "window.confirm" in confirm_body
+    assert "requestAnalysisConfirmation(" in confirm_body
+    assert "window.confirm" not in confirm_body
+    assert 'dialog.setAttribute("aria-label", "공고 분석 실행 확인")' in confirm_body
+    assert 'form.method = "dialog"' in confirm_body
+    assert 'dialog.returnValue === "confirm"' in confirm_body
+    assert "description.textContent = message" in confirm_body
     assert "state.manualAnalysisPolicy?.max_attachments" in confirm_body
     assert "policyMax * 2" in confirm_body
     assert "문서 재분석 없이" in confirm_body
     assert "문서 분석 요청 상한" in confirm_body
     assert "Claude" not in confirm_body
     assert "검색" not in confirm_body
-    assert "if (!confirmManualAnalysis(notice, availability)) return" in request_body
-    assert request_body.index("if (!confirmManualAnalysis(notice, availability)) return") < request_body.index(
+    assert "if (!await confirmManualAnalysis(notice, availability)) return" in request_body
+    assert request_body.index("if (!await confirmManualAnalysis(notice, availability)) return") < request_body.index(
         'state.manualAnalysisRequests.set(noticeKey, "running")'
     )
 
@@ -1012,6 +1017,7 @@ def test_pai_bot_teams_access_is_member_only_and_fails_closed_until_configured()
     assert 'url.hostname.toLowerCase() === "teams.microsoft.com"' in source
     assert ".pai-bot-access__note" in styles
     assert ".button--teams:disabled" in styles
+
 
 def test_operator_quantitative_diagnostics_is_scoped_and_rendered_as_text() -> None:
     source = APP_JS.read_text(encoding="utf-8")
