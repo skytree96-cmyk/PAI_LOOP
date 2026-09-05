@@ -1351,3 +1351,73 @@ def test_policy_api_requires_accepted_extraction(client: TestClient) -> None:
 
     response = client.get("/api/v1/notices/NO-EXTRACTION/analysis/requirement-policy")
     assert response.status_code == 422
+
+
+_STATUTORY_AND_CLAUSE = (
+    "지방계약법 시행령 제13조·시행규칙 제14조의 자격요건을 구비하고 "
+    "시행령 제92조(부정당업자 제재) 해당사항이 없는 업체여야 함"
+)
+
+
+@pytest.mark.parametrize("missing", (None, "bidder_registration", "sanction_clear"))
+def test_statutory_and_clause_checks_both_independent_facts(missing) -> None:
+    profile = load_public_company_profile()
+    if missing:
+        profile["facts"].pop(missing)
+    original = requirement("SYN-STATUTORY-AND", "ENTITY", _STATUTORY_AND_CLAUSE)
+    original["evidence"] = [{"quote": _STATUTORY_AND_CLAUSE}]
+    result = classify_requirements([original], profile=profile, deadline="2026-09-06", evaluation_date="2026-09-06")
+    items = result["items"]
+    assert len(items) == 2
+    assert {item["company_fact_key"] for item in items} == {"bidder_registration", "sanction_clear"}
+    assert all(item["outcome"] == "PASS_CURRENT" for item in items) is (missing is None)
+    assert result["blocking_items"] == (1 if missing else 0)
+    assert original["normalized_condition"] == _STATUTORY_AND_CLAUSE
+    assert len({item["requirement_id"] for item in items}) == 2
+
+
+@pytest.mark.parametrize("mutation", ("extra-qualification", "or", "future-penalty"))
+def test_unrecognized_statutory_compounds_never_pass_on_one_fact(mutation) -> None:
+    clause = _STATUTORY_AND_CLAUSE
+    if mutation == "extra-qualification":
+        clause += ". 별도 허가증을 보유해야 함"
+    elif mutation == "or":
+        clause = clause.replace("구비하고", "구비하거나")
+    else:
+        clause = clause.replace("해당사항이 없는 업체여야 함", "대상이 될 수 있음")
+    items = classify_requirements(
+        [requirement("SYN-STATUTORY-MUTATION", "ENTITY", clause)],
+        profile=load_public_company_profile(), deadline="2026-09-06", evaluation_date="2026-09-06",
+    )["items"]
+    assert len(items) == 1
+    assert not items[0]["outcome"].startswith("PASS")
+
+
+def test_statutory_split_preserves_original_source_evidence_and_is_idempotent() -> None:
+    from pai_loop.eligibility_policy import expand_statutory_qualification_requirements
+    original = requirement("SYN-STATUTORY-EVIDENCE", "ENTITY", _STATUTORY_AND_CLAUSE)
+    original["evidence"] = [{"quote": _STATUTORY_AND_CLAUSE, "page": 2}]
+    split = expand_statutory_qualification_requirements([original])
+    assert len(split) == 2
+    assert all(item["evidence"] == original["evidence"] for item in split)
+    assert all(item["normalized_condition"] in _STATUTORY_AND_CLAUSE for item in split)
+    assert expand_statutory_qualification_requirements(split) == split
+
+
+
+def test_sanction_fact_does_not_prove_financial_solvency() -> None:
+    clause = "입찰등록마감일 현재 부정당업자로 지정되지 않았으며, 부도·파산·금융신용 부실로 영업활동에 지장이 없는 업체"
+    item = classify_requirements(
+        [requirement("SYN-FINANCIAL-COMPOUND", "SANCTION", clause)],
+        profile=load_public_company_profile(), deadline="2026-09-06", evaluation_date="2026-09-06",
+    )["items"][0]
+    assert item["outcome"] == "REVIEW"
+    assert item["company_fact_key"] == "compound_sanction_and_financial_qualification"
+    assert item["blocking"] is True
+
+
+def test_ambiguous_statutory_clause_remains_unsplit() -> None:
+    from pai_loop.eligibility_policy import expand_statutory_qualification_requirements
+    item = requirement("SYN-AMBIGUOUS-STATUTORY", "ENTITY", _STATUTORY_AND_CLAUSE)
+    item["ambiguity_reason"] = "추가 자격조건 적용 대상 확인 필요"
+    assert expand_statutory_qualification_requirements([item]) == [item]
