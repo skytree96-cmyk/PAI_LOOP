@@ -621,6 +621,44 @@ def test_targeted_fingerprint_revision_invalidates_only_affected_legacy_record()
     assert "VALIDATION_FINGERPRINT_MISMATCH" not in issue_codes(refreshed_profile)
 
 
+def test_recognition_condition_mismatch_record_is_revalidated_after_the_proof_change() -> None:
+    table = valid_table()
+    table["criteria"][0]["recognition_conditions"] = [
+        {
+            "literal": "실적은 최근 3년 이내 완료분만 인정함.",
+            "evidence": anchor("실적은 최근 3년 이내 완료분만 인정함"),
+        }
+    ]
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="e" * 64,
+        manifest_sha256="f" * 64,
+    )
+
+    assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in {
+        issue.code for issue in record.issues
+    }
+    legacy_digest = hashlib.sha256(
+        json.dumps(
+            record.model_dump(mode="json", exclude={"validation_fingerprint_sha256"}),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    # A record persisted before the source-anchor proof cannot silently survive.
+    assert record.validation_fingerprint_sha256 != legacy_digest
+    legacy_profile = merge_validated_quantitative_records(
+        [record.model_copy(update={"validation_fingerprint_sha256": legacy_digest})],
+        expected_documents={ATTACHMENT_ID: "e" * 64},
+        manifest_sha256="f" * 64,
+    )
+    assert "VALIDATION_FINGERPRINT_MISMATCH" in issue_codes(legacy_profile)
+
+
 @pytest.mark.parametrize(
     "runtime_profile",
     [
@@ -3165,6 +3203,111 @@ def test_split_hwp_recognition_extends_exact_window_but_rejects_paraphrase() -> 
     assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in issue_codes(paraphrase)
 
 
+# The provider regularly transcribes a whole source clause into the recognition
+# condition literal but cites it without its terminal punctuation, so the anchor
+# is a shorter contiguous part of the literal instead of its container. A flat
+# source without HWP section markers cannot use the split-cell window repair, so
+# these cases exercise the deterministic validator directly.
+RECOGNITION_SOURCE_CLAUSE = "가. 실적은 최근 3년 이내 완료분만 인정한다."
+
+
+def recognition_condition_payload(
+    literal: str,
+    quote: str,
+    *,
+    extra_source_lines: tuple[str, ...] = (),
+) -> tuple[ExtractionPayload, str]:
+    table = valid_table()
+    table["criteria"][0]["recognition_conditions"] = [
+        {"literal": literal, "evidence": anchor(quote)}
+    ]
+    source = "".join(
+        [
+            VALID_SOURCE,
+            f"{RECOGNITION_SOURCE_CLAUSE}\n",
+            *(f"{line}\n" for line in extra_source_lines),
+        ]
+    )
+    return payload_with_table(table), source
+
+
+def test_recognition_anchor_may_quote_part_of_an_exact_unique_source_literal() -> None:
+    payload, source = recognition_condition_payload(
+        RECOGNITION_SOURCE_CLAUSE,
+        RECOGNITION_SOURCE_CLAUSE[:-1],
+    )
+
+    profile = build(payload, source=source)
+
+    assert profile.status == "AVAILABLE", issue_codes(profile)
+    condition = profile.available_candidates[0].recognition_conditions[0]
+    # The model's own anchor is preserved exactly; nothing is rewritten.
+    assert condition.literal == RECOGNITION_SOURCE_CLAUSE
+    assert condition.evidence.quote == RECOGNITION_SOURCE_CLAUSE[:-1]
+
+
+def test_recognition_anchor_part_survives_the_persisted_record_invariants() -> None:
+    payload, source = recognition_condition_payload(
+        RECOGNITION_SOURCE_CLAUSE,
+        RECOGNITION_SOURCE_CLAUSE[:-1],
+    )
+    document_sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    manifest_sha = hashlib.sha256(b"recognition-anchor-manifest").hexdigest()
+
+    record = validate_quantitative_attachment_extraction(
+        payload,
+        source_text=source,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+
+    assert record.status == "AVAILABLE"
+    assert record.available_candidates[0].recognition_conditions[0].literal == (
+        RECOGNITION_SOURCE_CLAUSE
+    )
+
+
+@pytest.mark.parametrize(
+    ("literal", "quote", "extra_source_lines"),
+    (
+        # A literal the attachment never states stays unprovable.
+        (
+            "실적은 최근 3년 이내 완료분만 인정함.",
+            "실적은 최근 3년 이내 완료분만 인정함",
+            (),
+        ),
+        # A quote that is not contiguous inside the literal proves nothing.
+        (
+            RECOGNITION_SOURCE_CLAUSE,
+            "10억원 이상 20점",
+            (),
+        ),
+        # A repeated literal cannot identify the one place it came from.
+        (
+            RECOGNITION_SOURCE_CLAUSE,
+            RECOGNITION_SOURCE_CLAUSE[:-1],
+            (RECOGNITION_SOURCE_CLAUSE,),
+        ),
+    ),
+)
+def test_recognition_anchor_part_still_fails_closed_without_a_source_proof(
+    literal: str,
+    quote: str,
+    extra_source_lines: tuple[str, ...],
+) -> None:
+    payload, source = recognition_condition_payload(
+        literal,
+        quote,
+        extra_source_lines=extra_source_lines,
+    )
+
+    profile = build(payload, source=source)
+
+    assert profile.status == "INCOMPLETE"
+    assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in issue_codes(profile)
+
+
 def test_split_hwp_rejects_exact_line_anchor_with_a_second_longer_substring_match() -> None:
     source = "\n".join(
         [
@@ -5511,9 +5654,27 @@ def test_busan_hwp_preserves_cross_attachment_count_share_claim() -> None:
     assert "UNKNOWN_ATTACHMENT" in issue_codes(profile)
 
 
-@pytest.mark.parametrize("evidence_shape", ("broad", "disjoint"))
+@pytest.mark.parametrize(
+    ("evidence_shape", "expected_codes"),
+    (
+        # A broader anchor still contains the literal it supports, and the
+        # remaining period-dropped anchors are provable from the source, so the
+        # unbounded share claim alone keeps the table non-activatable.
+        ("broad", ("SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION",)),
+        # A disjoint anchor quotes a different row, which no source proof
+        # covers, so the literal binding also stays unproven.
+        (
+            "disjoint",
+            (
+                "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION",
+                "RECOGNITION_CONDITION_LITERAL_MISMATCH",
+            ),
+        ),
+    ),
+)
 def test_busan_hwp_preserves_unbounded_count_share_claim(
     evidence_shape: str,
+    expected_codes: tuple[str, ...],
 ) -> None:
     table, source, footnote_block = (
         busan_hwp_production_partial_anchor_fixture()
@@ -5536,8 +5697,7 @@ def test_busan_hwp_preserves_unbounded_count_share_claim(
     profile = build(payload_with_table(table), source=source)
 
     assert profile.status != "AVAILABLE"
-    assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
-    assert "RECOGNITION_CONDITION_LITERAL_MISMATCH" in issue_codes(profile)
+    assert set(expected_codes) <= issue_codes(profile)
 
 
 @pytest.mark.parametrize("owner_mutation", ("ambiguous", "invalid-row-order"))

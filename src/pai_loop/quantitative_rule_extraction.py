@@ -55,6 +55,13 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
     ),
+    # A recognition condition whose anchor quotes only part of its own exact
+    # source literal is now provable, so a record that stored this issue must be
+    # revalidated. Records without the issue keep their fingerprint and remain
+    # reusable, and no executable scoring semantics change.
+    "RECOGNITION_CONDITION_LITERAL_MISMATCH": (
+        "recognition-condition-source-anchor-v1"
+    ),
 }
 
 ProfileStatus = Literal["AVAILABLE", "REVIEW", "INCOMPLETE", "NOT_APPLICABLE"]
@@ -5279,6 +5286,38 @@ def _literal_is_anchored(literal: str, anchor: EvidenceAnchor, source: str) -> b
     ) and evidence_quote_matches_source(literal, anchor.quote)
 
 
+def _literal_owns_its_source_anchor(
+    literal: str,
+    anchor: EvidenceAnchor,
+    source: str,
+) -> bool:
+    """Prove a literal whose anchor quotes only part of that same source text.
+
+    ``_literal_is_anchored`` requires the cited quote to contain the literal.
+    Providers frequently transcribe a complete source clause into ``literal``
+    but cite it without its terminal punctuation, so the anchor becomes a
+    contiguous part of the literal instead of its container. Both strings are
+    then exact attachment text pointing at one place, which is a complete
+    source proof rather than a relaxation: the literal must appear verbatim in
+    the attachment, the quote must appear verbatim inside that literal, and
+    both must occur exactly once so the anchor identifies a single location.
+
+    A paraphrased literal, a literal that is absent from the attachment, a
+    repeated literal or quote, and a quote taken from a different row all keep
+    failing closed. No punctuation list, edit distance, or notice-specific
+    token is involved, and no extracted value is altered.
+    """
+
+    # The literal-scoped check runs first so an unrelated anchor never pays for
+    # a full-document scan of a large attachment.
+    return (
+        evidence_quote_matches_source(anchor.quote, literal)
+        and evidence_quote_matches_source(literal, source)
+        and _anchor_occurrence_count(literal, source) == 1
+        and _anchor_occurrence_count(anchor.quote, source) == 1
+    )
+
+
 def _anchor_issues(
     anchor: EvidenceAnchor,
     *,
@@ -5407,9 +5446,17 @@ def _assert_available_candidate_invariants(
         raise ValueError("AVAILABLE candidate literal is not bound to its anchor")
     condition_keys: set[tuple[str, str]] = set()
     for condition in candidate.recognition_conditions:
+        # A persisted record is also revalidated without its attachment text,
+        # so this guard can only assert that the qualifier and its anchor are
+        # the same contiguous text. Either containment direction satisfies
+        # that; the source-side proof (verbatim, single occurrence) stays in
+        # ``_validate_recognition_conditions`` where the attachment is known.
         if not evidence_quote_matches_source(
             condition.literal,
             condition.evidence.quote,
+        ) and not evidence_quote_matches_source(
+            condition.evidence.quote,
+            condition.literal,
         ):
             raise ValueError("AVAILABLE recognition condition is not bound to its anchor")
         key = (
@@ -6233,7 +6280,15 @@ def _validate_recognition_conditions(
                 criterion_id=candidate.criterion_id,
             )
         )
-        if not _literal_is_anchored(condition.literal, condition.evidence, source):
+        # A recognition condition is a source-quoted qualifier, not a scoring
+        # row: accepting the inverse containment proven above never changes an
+        # operator, threshold, award, or maximum. The exact HWP window repair
+        # still runs first and remains the preferred anchor.
+        if not _literal_is_anchored(
+            condition.literal, condition.evidence, source
+        ) and not _literal_owns_its_source_anchor(
+            condition.literal, condition.evidence, source
+        ):
             issues.append(
                 _issue(
                     "RECOGNITION_CONDITION_LITERAL_MISMATCH",
