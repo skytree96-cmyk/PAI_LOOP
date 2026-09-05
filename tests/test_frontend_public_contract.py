@@ -1012,3 +1012,18 @@ def test_pai_bot_teams_access_is_member_only_and_fails_closed_until_configured()
     assert 'url.hostname.toLowerCase() === "teams.microsoft.com"' in source
     assert ".pai-bot-access__note" in styles
     assert ".button--teams:disabled" in styles
+
+def test_operator_quantitative_diagnostics_is_scoped_and_rendered_as_text() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    body = _function_body(source, "renderQuantitativeDiagnosticsControl", "renderRiskPanel")
+    assert "!state.manualAnalysisEnabled" in body
+    assert "await manualAnalysisAuthHeaders()" in body
+    assert 'method: "POST", headers' in body
+    assert "encodeURIComponent(noticeKey)" in body
+    assert "state.selectedNotice?.noticeKey !== noticeKey" in body
+    assert "!container.isConnected" in body
+    assert "output.textContent = JSON.stringify(data, null, 2)" in body
+    assert "innerHTML" not in body
+    assert "sessionStorage" not in body
+    assert "localStorage" not in body
+    assert "API-KEY" not in body
