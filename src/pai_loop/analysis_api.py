@@ -1162,6 +1162,23 @@ def _matching_active_backfill(
             == payload.retry_cooldown_hours
         ):
             compatible.append(candidate)
+    def waiting_for_another_execution(candidate: IngestionJob) -> bool:
+        # ANY must not repeatedly select a busy DAILY parent while a BACKFILL
+        # parent is ready. Exact response-loss replay still sorts first below.
+        # This changes selection only; existing segment and notice claims remain
+        # authoritative and are rechecked under the same transaction lock.
+        if payload.queue_name != "ANY":
+            return False
+        config = candidate.request_json if isinstance(candidate.request_json, dict) else {}
+        if not isinstance(config.get("lease_id"), str):
+            return False
+        try:
+            started = _utc(datetime.fromisoformat(config["lease_started_at"]))
+            ttl = int(config.get("reservation_ttl_hours", payload.reservation_ttl_hours))
+        except (KeyError, TypeError, ValueError):
+            return False
+        return started >= now - timedelta(hours=ttl)
+
     compatible.sort(
         key=lambda candidate: (
             # Exact response-loss recovery owns its lease regardless of ANY's
@@ -1173,6 +1190,7 @@ def _matching_active_backfill(
             and candidate.request_json.get("lease_request_token")
             == payload.request_token
             else 1,
+            waiting_for_another_execution(candidate),
             0
             if payload.queue_name == "ANY"
             and isinstance(candidate.request_json, dict)
