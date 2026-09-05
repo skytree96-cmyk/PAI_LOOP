@@ -2385,3 +2385,48 @@ def test_exact_notice_date_reference_requires_effective_notice_sibling(supplier:
     assert covered(gap) is (supplier == "NOTICE")
     assert covered(gap + ". 참가자격도 확인할 수 없음") is False
     assert covered("직접생산 자격이 명시되지 않아 공고문 확인 필요") is False
+
+
+
+def test_statutory_compound_materializes_two_anchored_and_gates() -> None:
+    from pai_loop.analysis_pipeline import _MergedRequirement, _policy_items, _atomic_requirement
+    from pai_loop.eligibility_policy import load_public_company_profile
+    from pai_loop.integrations.openai_extraction import ExtractedRequirement
+    clause = ("지방계약법 시행령 제13조·시행규칙 제14조의 자격요건을 구비하고 "
+              "시행령 제92조(부정당업자 제재) 해당사항이 없는 업체여야 함")
+    extracted = ExtractedRequirement.model_validate(_requirement("SYN-STATUTORY", clause, attachment_id="SYN-ATTACHMENT"))
+    extracted.evidence[0].quote = clause
+    merged = _MergedRequirement(requirement_key="ai-synthetic-statutory", requirement=extracted,
+                                attachment_ids={"SYN-ATTACHMENT"}, source_document_sha256s={"a" * 64},
+                                anchors=list(extracted.evidence), source_confidences=[0.98])
+    notice = Notice(notice_key="SYN-STATUTORY-NOTICE", bid_notice_no="SYN-STATUTORY-NOTICE",
+                    title="합성 자격 조건", agency="합성 기관", deadline=datetime(2026, 9, 6, tzinfo=timezone.utc))
+    pairs = _policy_items([merged], notice=notice, profile=load_public_company_profile())
+    atomics = [_atomic_requirement(item, policy, sequence=i) for i, (item, policy) in enumerate(pairs, 1)]
+    assert len(atomics) == 2
+    assert {item.fact_key for item in atomics} == {"bidder_registration", "sanction_clear"}
+    assert all(item.mandatory and item.path_key == "PATH-PRIMARY" for item in atomics)
+    assert len({item.requirement_key for item in atomics}) == 2
+    assert len({item.group_key for item in atomics}) == 2
+    assert all(item.source_excerpt == clause for item in atomics)
+    assert all(item.source_location == "SYN-ATTACHMENT#page=2:입찰참가자격" for item in atomics)
+    assert all(item.anchors == merged.anchors for item, _policy in pairs)
+
+
+
+@pytest.mark.parametrize("sanction_present", (True, False))
+def test_statutory_compound_pipeline_cannot_pass_without_both_facts(db_session: Session, sanction_present: bool) -> None:
+    notice = _notice(db_session, notice_key="SYN-STATUTORY-PIPELINE", title="합성 복합 자격 검증")
+    notice.deadline = datetime(2026, 9, 6, tzinfo=timezone.utc)
+    clause = ("지방계약법 시행령 제13조·시행규칙 제14조의 자격요건을 구비하고 "
+              "시행령 제92조(부정당업자 제재) 해당사항이 없는 업체여야 함")
+    extracted = _requirement("SYN-STATUTORY-PIPELINE-REQ", clause, attachment_id="SYN-STATUTORY-ATT")
+    extracted["evidence"][0]["quote"] = clause
+    _source_version(notice, version_no=1, attachment_id="SYN-STATUTORY-ATT", digest_char="a", requirements=[extracted])
+    _verified_boolean_fact(db_session, "bidder_registration")
+    if sanction_present:
+        _verified_boolean_fact(db_session, "sanction_clear")
+    db_session.commit()
+    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+    assert result.materialized_requirement_count == 2
+    assert (result.eligibility == "PASS") is sanction_present
