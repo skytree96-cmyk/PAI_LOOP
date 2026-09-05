@@ -3036,6 +3036,7 @@
       latestVersion,
       decisions,
       documentAnalyses,
+      attachmentAnalysisStatuses: arrayValue(source.attachment_analysis_statuses),
       departmentRanking,
       topDepartmentRankings,
       departmentReviewCandidates,
@@ -4654,17 +4655,32 @@
   }
 
   function renderDocumentAnalyses(notice) {
-    const analyses = notice.documentAnalyses;
+    const statuses = arrayValue(notice.attachmentAnalysisStatuses);
+    const currentNames = new Set(statuses.filter((item) => item.state === "ANALYZED").map((item) => item.document_name));
+    const analyses = [
+      ...notice.documentAnalyses.filter((item) => !statuses.length || currentNames.has(item.documentName)),
+      ...statuses.filter((item) => item.state !== "ANALYZED").map((item, index) => normalizeDocumentAnalysis({
+        document_name: item.document_name,
+        status: item.state,
+        summary: item.reason,
+        needs_review: item.state === "REVIEW",
+      }, index)),
+    ];
     const reviewCount = analyses.filter((item) => item.needsReview).length;
+    const pendingCount = analyses.filter((item) => item.status === "PENDING").length;
     const pointInTime = notice.historicalAnalysis ? "당시 " : "";
     els.documentAnalysisState.className = "document-analysis-state";
     renderPrivateMatchPreview(notice);
 
     if (analyses.length) {
-      els.documentAnalysisState.textContent = reviewCount ? `${pointInTime}${reviewCount}건 검토 필요` : `${pointInTime}구조화 완료`;
-      els.documentAnalysisState.classList.add(reviewCount ? "is-review" : "is-ready");
+      els.documentAnalysisState.textContent = reviewCount || pendingCount
+        ? `${pointInTime}검토 ${reviewCount}건 · 분석 대기 ${pendingCount}건`
+        : `${pointInTime}구조화 완료`;
+      els.documentAnalysisState.classList.add(reviewCount || pendingCount ? "is-review" : "is-ready");
       els.documentAnalysisList.innerHTML = analyses.map((item) => {
-        const statusLabel = item.needsReview
+        const statusLabel = item.status === "PENDING"
+          ? `${pointInTime}분석 대기`
+          : item.needsReview
           ? `${pointInTime}검토 필요`
           : ["FAILED", "ERROR"].includes(item.status) ? `${pointInTime}분석 오류` : `${pointInTime}분석 완료`;
         const requirementLabel = item.requirementCount === null ? "미확인" : `${formatNumber(item.requirementCount)}건`;
