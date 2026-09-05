@@ -193,7 +193,10 @@ def test_strict_store_false_request_and_anchor_validation() -> None:
     assert "never translate or paraphrase a quote" in system_prompt
     assert "Keep those derived fields concise" in system_prompt
     user_prompt = captured["input"][1]["content"][0]["text"]
-    assert "normally 5-120 characters" in user_prompt
+    assert "Normally use 5-120 characters" in user_prompt
+    assert "entire clause or scoring row" in user_prompt
+    assert "these two strings must be identical" in user_prompt
+    assert "excluded qualitative criteria into missing_or_unreadable" in user_prompt
     assert "verify each quote can be found verbatim" in user_prompt
     assert "Calibrate evidence confidence only to literal transcription fidelity" in user_prompt
     assert "confidence 0.90 or higher" in user_prompt
@@ -642,7 +645,8 @@ def test_unverified_quote_gets_one_bounded_corrective_retry() -> None:
     assert "FINAL CORRECTIVE RETRY" in corrective_text
     assert json.dumps([failed_quote], ensure_ascii=False) in corrective_text
     assert "UNTRUSTED MODEL OUTPUT" in corrective_text
-    assert "8-80 character" in corrective_text
+    assert "8-500 character" in corrective_text
+    assert "complete literal as its quote" in corrective_text
     assert "adjacent source lines or table cells" in corrective_text
     assert "Do not insert units (for example 점)" in corrective_text
     assert "do not omit intervening text" in corrective_text
