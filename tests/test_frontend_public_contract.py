@@ -1076,3 +1076,37 @@ renderDocumentAnalyses(notice);
 assert.match(els.documentAnalysisList.innerHTML, /STALE_SUCCESS/);
 """
     subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
+
+
+
+def test_public_score_evidence_is_hidden_not_missing_and_range_is_partial() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    adapter = "function renderQuantitativeEstimate" + _function_body(source, "renderQuantitativeEstimate", "quantSummaryCard")
+    adapter += "\nfunction renderQuantitativeEstimateRow" + _function_body(source, "renderQuantitativeEstimateRow", "renderQuantObservation")
+    script = r"""
+const assert = require("node:assert/strict");
+const els = new Proxy({}, {get(target, key) {return target[key] ||= {};}});
+const numberOrNull = x => x == null ? null : Number(x);
+const formatNumber = x => String(x);
+const escapeHtml = x => String(x);
+const escapeAttribute = escapeHtml;
+const emptyPanel = (a,b) => `${a}|${b}`;
+const quantSummaryCard = (label,value) => `${label}:${value}`;
+const quantStatusLabel = x => x;
+const quantReadinessLabel = x => x;
+const criterion = {label:"SYN-credit",max_points:10,lower_points:0,upper_points:10,status:"UNSCORABLE",formula:"비공개 산식"};
+const data = {ruleset_version:"public-quantitative-summary-v1", rule_source_status:"AVAILABLE",
+ source_validation_status:"SOURCE_VALIDATED",activation_status:"AUTO_ACTIVE",overall_status:"UNSCORABLE",
+ total_max_points:20,lower_points:10,upper_points:20,evidence_coverage_pct:0,criteria:[criterion],
+ assumptions:["저장된 최신 분석 스냅샷에서 공개 가능한 배점·범위·상태만 표시합니다."]};
+renderQuantitativeEstimate(data);
+assert.match(els.scoreOverview.innerHTML,/회사 증빙 확정률:0%/);
+assert.match(els.quantSourceStatus.textContent,/원문 검증 완료.*일부 항목 미산정/);
+assert.match(els.quantTableBody.innerHTML,/원문 위치 세부 비공개/);
+assert.doesNotMatch(els.quantTableBody.innerHTML,/원문 위치 없음/);
+assert.match(els.quantObservationList.innerHTML,/내부 검증 근거 보존/);
+renderQuantitativeEstimate({...data, ruleset_version:"SYN-internal", assumptions:[]});
+assert.match(els.quantTableBody.innerHTML,/원문 위치 없음/);
+assert.match(renderQuantitativeEstimateRow({...criterion,source_anchor:{page:2}}, {publicEvidenceHidden:true}),/원문 2쪽/);
+"""
+    subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
