@@ -1176,8 +1176,8 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
                     **common_anchor,
                     "quote": "정량적 평가\n20점",
                 },
-                "minimum_score": None,
-                "minimum_evidence": None,
+                "minimum_score": 85,
+                "minimum_evidence": {**common_anchor, "quote": "SYN-전체 제안서 평가 85점 이상"},
                 "ambiguity_reason": None,
             }
         ],
@@ -1264,6 +1264,7 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
 
     payload = _quantitative_diagnostics(notice).model_dump(mode="json")
 
+    assert "SYN-전체 제안서 평가" not in str(payload)
     assert payload["available_candidate_shapes"] == []
     assert payload["review_candidate_shapes"] == [
         {
@@ -1284,6 +1285,10 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
             "max_points_within_safe_range": True,
             "scoring_method": "CASE_TABLE",
             "metric": "PERFORMANCE_AMOUNT",
+            "table_total_points": 20.0,
+            "table_minimum_score": 85.0,
+            "minimum_evidence_character_count": len("SYN-전체 제안서 평가 85점 이상"),
+            "minimum_evidence_point_values": [85.0],
             "unit_present": True,
             "bracket_count": 0,
             "threshold_present": False,
