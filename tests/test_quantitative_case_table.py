@@ -293,6 +293,68 @@ def test_credit_registry_compiles_single_exact_comma_list_cells() -> None:
     assert case_table_points(table, "CCC0") == 7
 
 
+def test_credit_registry_compiles_ordered_comma_list_continuation_cells() -> None:
+    values = (
+        "AAA, AA+, AA0, AA-,",
+        "A+, A0, A-, BBB+, BBB0",
+    )
+    source_literal = "\n".join(values)
+
+    assert compile_credit_rating_values(
+        values,
+        source_literal=source_literal,
+    ) == CREDIT_RATING_ORDER[:9]
+
+
+@pytest.mark.parametrize(
+    ("values", "source_literal"),
+    (
+        (
+            ("AAA, AA+,", "", "AA0, AA-"),
+            "AAA, AA+,\n\nAA0, AA-",
+        ),
+        (
+            ("AAA, AA+,", "AA0, AA-,"),
+            "AAA, AA+,\nAA0, AA-,",
+        ),
+        (
+            ("AAA, AA+,", "AA+, AA0"),
+            "AAA, AA+,\nAA+, AA0",
+        ),
+        (
+            ("AA0, AA-", "AAA, AA+"),
+            "AAA, AA+\nAA0, AA-",
+        ),
+        (
+            ("AAA, A1,", "AA0, AA-"),
+            "AAA, A1,\nAA0, AA-",
+        ),
+        (
+            ("AAA, AA+,", "AA0 이상"),
+            "AAA, AA+,\nAA0 이상",
+        ),
+        (
+            ("AAA, AA+,", "AA0, AA-"),
+            "AAA, AA+,\nAA0, AA-\nA+",
+        ),
+    ),
+    ids=(
+        "empty-middle-fragment",
+        "final-trailing-delimiter",
+        "duplicate-across-fragments",
+        "out-of-order-fragments",
+        "unknown-grade",
+        "mixed-list-and-range",
+        "source-counter-mismatch",
+    ),
+)
+def test_credit_registry_rejects_invalid_comma_list_continuation_cells(
+    values: tuple[str, ...],
+    source_literal: str,
+) -> None:
+    assert compile_credit_rating_values(values, source_literal=source_literal) is None
+
+
 @pytest.mark.parametrize(
     ("expression", "source_literal"),
     (

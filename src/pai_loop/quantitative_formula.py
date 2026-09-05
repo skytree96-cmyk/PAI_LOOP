@@ -328,7 +328,30 @@ def _credit_comma_list_values(expression: str) -> tuple[str, ...] | None:
     if len(set(exact_grades)) != len(exact_grades):
         return None
     ordered = tuple(grade for grade in CREDIT_RATING_ORDER if grade in exact_grades)
-    return ordered if len(ordered) == len(exact_grades) else None
+    return exact_grades if exact_grades == ordered else None
+
+
+def _credit_explicit_fragment_values(
+    expression: str,
+    *,
+    allow_trailing_comma: bool,
+) -> tuple[str, ...] | None:
+    """Compile one exact grade/list cell while preserving continuation order."""
+
+    normalized = normalize_credit_rating_text(expression).strip()
+    if not normalized or _CREDIT_RANGE_RE.search(normalized):
+        return None
+    trailing_comma = normalized.endswith(",")
+    if trailing_comma:
+        if not allow_trailing_comma:
+            return None
+        normalized = normalized[:-1].rstrip()
+        if not normalized:
+            return None
+    if "," in normalized:
+        return _credit_comma_list_values(normalized)
+    grade = parse_credit_rating(normalized)
+    return (grade,) if grade is not None else None
 
 
 def compile_credit_rating_values(
@@ -376,15 +399,25 @@ def compile_credit_rating_values(
         if not all(uses_range):
             return None
         return _credit_range_values(normalized_expressions)
-    if len(expressions) == 1 and "," in normalized_expressions[0]:
-        return _credit_comma_list_values(normalized_expressions[0])
-    canonical = tuple(parse_credit_rating(value) for value in expressions)
-    if any(value is None for value in canonical):
-        return None
-    ordered = tuple(
-        grade for grade in CREDIT_RATING_ORDER if grade in canonical
+    fragments = tuple(
+        _credit_explicit_fragment_values(
+            expression,
+            allow_trailing_comma=index < len(normalized_expressions) - 1,
+        )
+        for index, expression in enumerate(normalized_expressions)
     )
-    return ordered if len(ordered) == len(canonical) else None
+    if any(fragment is None for fragment in fragments):
+        return None
+    flattened = tuple(
+        grade
+        for fragment in fragments
+        if fragment is not None
+        for grade in fragment
+    )
+    if not flattened or len(set(flattened)) != len(flattened):
+        return None
+    ordered = tuple(grade for grade in CREDIT_RATING_ORDER if grade in flattened)
+    return flattened if flattened == ordered else None
 
 
 def _parse_expression(expression: str) -> ast.Expression:
