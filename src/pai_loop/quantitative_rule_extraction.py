@@ -44,8 +44,8 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.13"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.16"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.14"
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.17"
 MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 
 # Issue-only proof changes use targeted fingerprint revisions below.  Changes to
@@ -1207,6 +1207,25 @@ _CREDIT_RATING_COLUMN_HEADER_CLUSTER = (
 )
 _SOURCEWIDE_AMBIGUITY_SUPPORTED_METRICS = frozenset(
     {"PERFORMANCE_AMOUNT", "PERFORMANCE_COUNT", "CREDIT_RATING"}
+)
+_SOURCEWIDE_RESOLVED_SUMMARY_DETAIL_REASON_RE = re.compile(
+    rf"^정량적평가(?P<total>{_NUM_PATTERN})점은"
+    rf"용역수행실적\((?P<performance>{_NUM_PATTERN})점="
+    rf"금액(?P<amount>{_NUM_PATTERN})점\+건수(?P<count>{_NUM_PATTERN})점\)과"
+    rf"경영상태\((?P<credit>{_NUM_PATTERN})점\)로세분화되며[,]?"
+    r"요약행과상세행이동일소계를가지므로"
+    r"상세행만채점항목으로반영함[.]?$"
+)
+_SOURCEWIDE_RESOLVED_AMOUNT_LOWER_DOMAIN_REASON = (
+    "표상최저구간(1억원미만)에대한점수/등급이명시되지않아"
+    "하한규칙은확인불가"
+)
+_SOURCEWIDE_RESOLVED_COUNT_LOWER_DOMAIN_REASON = (
+    "1건미만(0건)에대한점수규정은표에없음"
+)
+_SOURCEWIDE_RESOLVED_ENTERPRISE_CREDIT_COLUMN_REASON = (
+    "표열이회사채/기업어음/기업신용평가등급3개항목으로병렬구성되어있어"
+    ",본항목은기업신용평가등급열만반영함"
 )
 # Deliberate flattened-HWP limitation: parallel company-bond, commercial-paper,
 # and enterprise-credit columns have no native cell coordinates.  The exact
@@ -2727,6 +2746,91 @@ def _sourcewide_case_census_matches(
     return tuple(claimed_rows) == tuple(source_rows)
 
 
+def _compact_ambiguity_reason(reason: str | None) -> str:
+    normalized = unicodedata.normalize("NFKC", reason or "")
+    visible = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    return re.sub(r"\s+", "", visible).strip()
+
+
+def _sourcewide_candidate_ambiguity_is_resolved(
+    candidate: QuantitativeRuleCandidate,
+    *,
+    lines: tuple[str, ...],
+    criterion_region: tuple[int, int] | None,
+) -> bool:
+    """Clear only non-decision notes backed by an exhaustive source census.
+
+    The model sometimes records a faithful description of an unprinted lower
+    domain or of the explicitly selected enterprise-credit column as an
+    ``ambiguity_reason``.  Neither note creates a score/default or a competing
+    interpretation.  They can be removed from the repaired copy only when the
+    bounded HWP proof independently establishes every printed row.  Values
+    outside those rows remain unscorable in the deterministic evaluator.
+    """
+
+    if not candidate.ambiguity_reason or not _sourcewide_case_census_matches(
+        candidate,
+        lines=lines,
+        criterion_region=criterion_region,
+    ):
+        return False
+
+    compact = _compact_ambiguity_reason(candidate.ambiguity_reason)
+    ordered_cases = sorted(candidate.cases, key=lambda item: item.row_order)
+    if candidate.metric == "PERFORMANCE_AMOUNT":
+        return bool(
+            compact == _SOURCEWIDE_RESOLVED_AMOUNT_LOWER_DOMAIN_REASON
+            and candidate.scoring_method == "CASE_TABLE"
+            and len(ordered_cases) == 3
+            and all(case.operator == "GTE" for case in ordered_cases)
+            and re.search(
+                r"1\s*억\s*원\s*이상",
+                ordered_cases[-1].literal,
+            )
+        )
+    if candidate.metric == "PERFORMANCE_COUNT":
+        return bool(
+            compact == _SOURCEWIDE_RESOLVED_COUNT_LOWER_DOMAIN_REASON
+            and candidate.scoring_method == "CASE_TABLE"
+            and [case.operator for case in ordered_cases]
+            == ["GTE", "EQ", "EQ", "EQ", "EQ"]
+            and [
+                _decimal(case.comparison_value)
+                for case in ordered_cases
+            ]
+            == [
+                Decimal("5"),
+                Decimal("4"),
+                Decimal("3"),
+                Decimal("2"),
+                Decimal("1"),
+            ]
+        )
+    if candidate.metric == "CREDIT_RATING":
+        cluster_size = len(_CREDIT_RATING_COLUMN_HEADER_CLUSTER)
+        cluster_count = 0
+        if criterion_region is not None:
+            for start in range(
+                criterion_region[0],
+                criterion_region[1] - cluster_size + 1,
+            ):
+                observed = tuple(
+                    re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+                    for line in lines[start : start + cluster_size]
+                )
+                if observed == _CREDIT_RATING_COLUMN_HEADER_CLUSTER:
+                    cluster_count += 1
+        return bool(
+            compact == _SOURCEWIDE_RESOLVED_ENTERPRISE_CREDIT_COLUMN_REASON
+            and cluster_count == 1
+        )
+    return False
+
+
 def _sourcewide_ambiguity_is_structural(reason: str | None) -> bool:
     """Allow only ambiguity text that the exact HWP rebind can resolve."""
 
@@ -2735,10 +2839,58 @@ def _sourcewide_ambiguity_is_structural(reason: str | None) -> bool:
         " ",
         unicodedata.normalize("NFKC", reason or ""),
     ).strip()
-    return normalized in {
+    if normalized in {
         "HWP 셀 구조상 행 연결 검토 필요",
         "요약 배점과 상세 배점 중 적용 표를 확인해야 함",
+    }:
+        return True
+    return bool(
+        _SOURCEWIDE_RESOLVED_SUMMARY_DETAIL_REASON_RE.fullmatch(
+            _compact_ambiguity_reason(reason)
+        )
+    )
+
+
+def _sourcewide_structural_reason_totals_match(
+    reason: str | None,
+    *,
+    table: QuantitativeTableCandidate,
+    criteria: list[QuantitativeRuleCandidate],
+) -> bool:
+    """Bind the production summary/detail explanation to this table's maxima."""
+
+    match = _SOURCEWIDE_RESOLVED_SUMMARY_DETAIL_REASON_RE.fullmatch(
+        _compact_ambiguity_reason(reason)
+    )
+    if match is None:
+        return True
+    try:
+        stated = {
+            name: Decimal(value.replace(",", ""))
+            for name, value in match.groupdict().items()
+        }
+    except InvalidOperation:
+        return False
+    maxima = {
+        candidate.metric: _decimal(candidate.max_points)
+        for candidate in criteria
     }
+    total = _decimal(table.total_points)
+    amount = maxima.get("PERFORMANCE_AMOUNT")
+    count = maxima.get("PERFORMANCE_COUNT")
+    credit = maxima.get("CREDIT_RATING")
+    return bool(
+        total is not None
+        and amount is not None
+        and count is not None
+        and credit is not None
+        and stated["total"] == total
+        and stated["amount"] == amount
+        and stated["count"] == count
+        and stated["credit"] == credit
+        and stated["performance"] == amount + count
+        and stated["total"] == stated["performance"] + credit
+    )
 
 
 def _recognition_key(literal: str, quote: str) -> tuple[str, str]:
@@ -4006,6 +4158,12 @@ def _sourcewide_ambiguity_resolution_blocker(
         return None
     if not _sourcewide_ambiguity_is_structural(table.ambiguity_reason):
         return "SOURCEWIDE_AMBIGUITY_REASON_NOT_STRUCTURAL"
+    if not _sourcewide_structural_reason_totals_match(
+        table.ambiguity_reason,
+        table=table,
+        criteria=criteria,
+    ):
+        return "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED"
     if (
         len(payload.quantitative_tables) != 1
         or table_index != 0
@@ -4792,6 +4950,24 @@ def _rebind_split_table_cell_literals(
                 if candidate.unit
                 != original_units[(table_index, candidate_index)]
                 and not _sourcewide_case_census_matches(
+                    candidate,
+                    lines=lines,
+                    criterion_region=criterion_regions[table_index][
+                        candidate_index
+                    ],
+                )
+                else candidate
+            )
+            for candidate_index, candidate in enumerate(repaired_candidates)
+        ]
+
+        # A model note is not automatically an unresolved scoring rule.  Clear
+        # only the three source-proven, non-decision explanations supported by
+        # the bounded row census; every other free-text reason stays fail-closed.
+        repaired_candidates = [
+            (
+                candidate.model_copy(update={"ambiguity_reason": None})
+                if _sourcewide_candidate_ambiguity_is_resolved(
                     candidate,
                     lines=lines,
                     criterion_region=criterion_regions[table_index][

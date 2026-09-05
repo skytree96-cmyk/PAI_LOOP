@@ -161,6 +161,13 @@ _MISSING_DOCUMENT_LIST_THEN_TABLE_RE = re.compile(
     rf"{_LOCAL_TABLE_PATTERN}\s*(?:을|를)?\s*"
     rf"확인(?:할)?\s*수\s*없(?:음|습니다)\s*[.]?\s*$"
 )
+_PRODUCTION_RFP_SOURCE_LOCAL_TECHNICAL_TABLE_GAP_RE = re.compile(
+    r"(?x)^\s*"
+    r"제안\s*요청서\s*원문\s*\(\s*붙임\s*\)\s*"
+    r"(?:이|가|은|는)\s*본\s*SOURCE\s*(?:에|에는)\s*"
+    r"포함되지\s*않아\s*세부\s*기술\s*평가\s*배점표\s*"
+    r"(?:을|를)\s*확인(?:할)?\s*수\s*없(?:음|습니다)\s*[.]?\s*$"
+)
 _OWNED_TABLE_IN_LOCAL_DOCUMENT_ABSENCE_RE = re.compile(
     rf"(?x)^\s*{_NAMED_DOCUMENT_ATOM_PATTERN}\s*의\s*"
     rf"{_LOCAL_TABLE_PATTERN}\s*(?:은|는|이|가)?\s*"
@@ -359,6 +366,8 @@ def quantitative_table_local_absence_targets(
         or has_compound_source_absence_claim(gap)
     ):
         return None
+    if _PRODUCTION_RFP_SOURCE_LOCAL_TECHNICAL_TABLE_GAP_RE.fullmatch(gap):
+        return ((("RFP",), ("제안요청서",)),)
     if not (
         _TABLE_ONLY_LOCAL_GAP_RE.fullmatch(gap)
         or _MISSING_DOCUMENT_LIST_THEN_TABLE_RE.fullmatch(gap)
