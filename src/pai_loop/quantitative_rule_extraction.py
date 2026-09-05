@@ -3269,6 +3269,14 @@ def _minimum_scope_source_headers(
             return None
         matches: list[tuple[int, int]] = []
         for header in headers:
+            header_text = "\n".join(lines[header[0]:header[1]])
+            if (
+                not re.search(r"점\s*\)?\s*$", header_text)
+                or _COMPARATOR_MARKER_RE.search(header_text)
+                or _EXTERNAL_MIN_STRONG_CUTOFF_RE.search(header_text)
+                or _EXTERNAL_MIN_DECISION_RE.search(header_text)
+            ):
+                continue
             region = _bounded_header_candidate_region(
                 lines, header_span=header, boundary_spans=(*boundaries, *all_headers),
                 table_fences=(), next_blank_or_section=next_boundary,
