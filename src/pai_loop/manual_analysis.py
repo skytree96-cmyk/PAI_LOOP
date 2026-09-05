@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -1073,6 +1073,11 @@ def get_manual_quantitative_diagnostics(
     notice_key: str,
     request: Request,
     response: Response,
+    _operator_pin: str | None = Header(
+        default=None,
+        alias="X-PAI-Manual-Token",
+        description="운영 PIN. 서버의 동일 출처 및 운영자 인증 검증이 적용됩니다.",
+    ),
 ) -> ManualQuantitativeDiagnosticsResponse:
     """Return PIN-only codes and bounded public-table candidate shapes."""
 
