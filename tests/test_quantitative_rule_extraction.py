@@ -5869,8 +5869,10 @@ def busan_hwp_external_overall_minimum_fixture(
     (
         "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다.",
         "85점 이상",
+        "선정방법: 1단계-제안서 평가(100점 만점, 85점 이상 적격)",
+        "2단계-1단계 결과 85점 이상자 중 최저가격 제안자",
     ),
-    ids=("full-overall-sentence", "repeated-short-anchor"),
+    ids=("full-overall-sentence", "repeated-short-anchor", "overview-anchor", "overview-stage-anchor"),
 )
 def test_busan_hwp_detaches_source_proven_external_overall_minimum(
     minimum_quote: str,
@@ -7477,3 +7479,49 @@ def test_previous_split_cell_validator_record_is_rejected_as_stale() -> None:
 
     assert profile.status == "INCOMPLETE"
     assert "VALIDATOR_VERSION_MISMATCH" in issue_codes(profile)
+
+
+@pytest.mark.parametrize("mutation", ("absent", "other-section", "conflicting-value"))
+def test_overview_minimum_requires_matching_cutoff_in_own_summary_section(mutation: str) -> None:
+    table, source = busan_hwp_external_overall_minimum_fixture(
+        minimum_quote="선정방법: 1단계-제안서 평가(100점 만점, 85점 이상 적격)"
+    )
+    sentence = "❍ 적격자는 제안서 평가 결과 85점 이상인 자를 선정한다."
+    if mutation == "absent":
+        source = source.replace(sentence, "SYN-추가 안내")
+    elif mutation == "other-section":
+        source = source.replace(sentence, "[HWP SECTION 1]\n" + sentence)
+    else:
+        source = source.replace(sentence, sentence.replace("85점", "80점"))
+    profile = build(payload_with_table(table), source=source)
+    assert profile.status != "AVAILABLE"
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_minimum_cutoff_proof_invalidates_only_affected_record_fingerprint() -> None:
+    table = valid_table()
+    sentence = "SYN-전체 제안서 평가 결과 85점 이상 적격"
+    table["minimum_score"] = 85
+    table["minimum_evidence"] = anchor(sentence)
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=VALID_SOURCE + "\n" + sentence,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in {item.code for item in record.issues}
+    legacy_digest = hashlib.sha256(json.dumps(
+        record.model_dump(mode="json", exclude={"validation_fingerprint_sha256"}),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    assert record.validation_fingerprint_sha256 != legacy_digest
+    stale_profile = merge_validated_quantitative_records(
+        [record.model_copy(update={"validation_fingerprint_sha256": legacy_digest})],
+        expected_documents={ATTACHMENT_ID: "a" * 64}, manifest_sha256="b" * 64,
+    )
+    assert "VALIDATION_FINGERPRINT_MISMATCH" in issue_codes(stale_profile)
+    current_profile = merge_validated_quantitative_records(
+        [record], expected_documents={ATTACHMENT_ID: "a" * 64}, manifest_sha256="b" * 64,
+    )
+    assert "VALIDATION_FINGERPRINT_MISMATCH" not in issue_codes(current_profile)

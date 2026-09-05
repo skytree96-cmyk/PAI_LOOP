@@ -178,6 +178,10 @@ class QuantitativeDiagnosticCandidateShape(BaseModel):
         "LOCAL_PRESENCE",
         "UNKNOWN",
     ]
+    table_total_points: float | None = Field(default=None, ge=0, le=100)
+    table_minimum_score: float | None = Field(default=None, ge=0, le=100)
+    minimum_evidence_character_count: int = Field(default=0, ge=0, le=500)
+    minimum_evidence_point_values: list[float] = Field(default_factory=list, max_length=12)
     unit_present: bool
     bracket_count: int = Field(ge=0, le=100)
     threshold_present: bool
@@ -958,6 +962,14 @@ def _quantitative_candidate_shapes(
                         max_points_within_safe_range=max_points_safe,
                         scoring_method=candidate.scoring_method,
                         metric=candidate.metric,
+                        table_total_points=_safe_diagnostic_score(table.total_points)[0],
+                        table_minimum_score=_safe_diagnostic_score(table.minimum_score)[0],
+                        minimum_evidence_character_count=(
+                            len(table.minimum_evidence.quote) if table.minimum_evidence else 0
+                        ),
+                        minimum_evidence_point_values=_diagnostic_point_values(
+                            table.minimum_evidence.quote if table.minimum_evidence else ""
+                        ),
                         unit_present=candidate.unit is not None,
                         bracket_count=len(candidate.brackets),
                         threshold_present=candidate.threshold is not None,

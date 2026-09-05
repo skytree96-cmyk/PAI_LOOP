@@ -52,6 +52,7 @@ MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 # executable scoring semantics, such as the credit-range DSL above, intentionally
 # bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
+    "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v1",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
     ),
@@ -3702,7 +3703,12 @@ def _drop_source_bound_external_overall_minimum(
                 hwp_section_starts=hwp_section_starts,
             )
             == total_section
-            for span in minimum_spans
+            # The model may quote the same whole-proposal cutoff from the
+            # document overview. Its own anchor is still checked below; the
+            # independent source census must also prove that cutoff between
+            # the objective subtotal and the detailed table in this section.
+            for span, value in sourcewide_point_bounds
+            if value == minimum
         )
         or any(span[0] >= detail_marker[0] for span in minimum_spans)
         or not all(
