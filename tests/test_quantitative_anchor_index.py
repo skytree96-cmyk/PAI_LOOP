@@ -8,6 +8,7 @@ from pai_loop.quantitative_rule_extraction import (
     _MAX_TABLE_CELL_WINDOW_CHARS,
     _MAX_TABLE_CELL_WINDOW_LINES,
     _anchor_line_spans,
+    _SourceLines,
 )
 
 
@@ -37,7 +38,11 @@ def test_anchor_index_preserves_unicode_boundaries_and_duplicate_locations() -> 
         start = rng.randrange(len(lines))
         quote = "\n".join(lines[start:start + rng.randint(1, 5)])
         for candidate in (quote, quote.replace(" ", ""), "SYN-존재하지않는인용", "", "6"):
-            assert _anchor_line_spans(lines, candidate) == reference_spans(lines, candidate)
+            expected = reference_spans(lines, candidate)
+            assert _anchor_line_spans(lines, candidate) == expected
+            indexed = _SourceLines(lines)
+            assert _anchor_line_spans(indexed, candidate) == expected
+            assert _anchor_line_spans(indexed, candidate) == expected
 
 
 def test_anchor_index_keeps_original_raw_character_and_line_limits() -> None:
@@ -46,3 +51,26 @@ def test_anchor_index_keeps_original_raw_character_and_line_limits() -> None:
     lines = ("SYN-시작",) + ("",) * _MAX_TABLE_CELL_WINDOW_LINES + ("SYN-끝",)
     assert _anchor_line_spans(lines, "SYN-시작 SYN-끝") == ()
     assert _anchor_line_spans(("동일", "동일"), "동일") == ((0, 1), (1, 2))
+
+
+def test_document_local_cache_is_bounded_and_does_not_cross_sources() -> None:
+    first = _SourceLines(("SYN-first",))
+    second = _SourceLines(("SYN-second",))
+    assert _anchor_line_spans(first, "SYN-first") == ((0, 1),)
+    assert _anchor_line_spans(second, "SYN-first") == ()
+    for index in range(300):
+        assert _anchor_line_spans(first, f"SYN-missing-{index}") == ()
+    assert len(first.anchor_spans) == 256
+    assert first.cached_span_count <= 4096
+
+
+def test_document_local_cache_retains_window_bounds(monkeypatch) -> None:
+    from pai_loop import quantitative_rule_extraction as rules
+
+    lines = _SourceLines(("SYN-first", "SYN-second"))
+    assert _anchor_line_spans(lines, "SYN-first SYN-second") == ((0, 2),)
+    monkeypatch.setattr(rules, "_MAX_TABLE_CELL_WINDOW_LINES", 1)
+    assert _anchor_line_spans(lines, "SYN-first SYN-second") == ()
+    monkeypatch.setattr(rules, "_MAX_TABLE_CELL_WINDOW_LINES", 2)
+    monkeypatch.setattr(rules, "_MAX_TABLE_CELL_WINDOW_CHARS", 4)
+    assert _anchor_line_spans(lines, "SYN-first SYN-second") == ()

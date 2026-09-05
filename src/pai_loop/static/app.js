@@ -3865,9 +3865,49 @@
       : retryingReviewed
         ? `${knownScope} · 이미 승인된 첨부는 재사용하고, 현재 검토/실패 첨부와 미검증 첨부만 이번 요청에서 한 번씩 재검증합니다. 문서 분석 요청 상한은 ${formatNumber(policyMax * 2)}회입니다.`
         : `${knownScope} · 실행 중 첨부 목록이 갱신되는 경우까지 포함해 문서 분석 요청 상한은 ${formatNumber(policyMax * 2)}회입니다. 이미 검증됐거나 재사용 가능한 문서는 실제 요청이 더 적거나 0회일 수 있습니다.`;
-    return window.confirm(
-      `${notice.title}\n\n모든 공개 첨부를 확인한 뒤 자격·정량 판단을 갱신합니다.\n${usage}\n\n${recomputeCurrent ? "재판단" : "분석"}을 시작할까요?`,
+    return requestAnalysisConfirmation(
+      `${notice.title}\n\n모든 공개 첨부를 확인한 뒤 자격·정량 판단을 갱신합니다.\n${usage}`,
+      recomputeCurrent ? "재판단 시작" : "분석 시작",
     );
+  }
+
+  function requestAnalysisConfirmation(message, actionLabel) {
+    if (document.getElementById("manualAnalysisConfirmationDialog")) return Promise.resolve(false);
+    const dialog = document.createElement("dialog");
+    dialog.id = "manualAnalysisConfirmationDialog";
+    dialog.setAttribute("aria-label", "공고 분석 실행 확인");
+    const form = document.createElement("form");
+    form.method = "dialog";
+    const description = document.createElement("p");
+    description.style.whiteSpace = "pre-wrap";
+    description.textContent = message;
+    const cancel = document.createElement("button");
+    cancel.type = "submit";
+    cancel.value = "cancel";
+    cancel.textContent = "취소";
+    cancel.className = "btn btn-secondary";
+    const confirm = document.createElement("button");
+    confirm.type = "submit";
+    confirm.value = "confirm";
+    confirm.textContent = actionLabel;
+    confirm.className = "btn btn-primary";
+    form.append(description, cancel, confirm);
+    dialog.append(form);
+    document.body.append(dialog);
+    return new Promise((resolve) => {
+      dialog.addEventListener("close", () => {
+        const accepted = dialog.returnValue === "confirm";
+        dialog.remove();
+        resolve(accepted);
+      }, { once: true });
+      if (typeof dialog.showModal !== "function") {
+        dialog.remove();
+        resolve(false);
+        return;
+      }
+      dialog.showModal();
+      cancel.focus();
+    });
   }
 
   function evaluationOnlyManualAnalysis(notice, availability = manualAnalysisAvailability(notice)) {
@@ -4251,7 +4291,7 @@
       showToast("분석 요청 불가", availability.reason, "warning");
       return;
     }
-    if (!confirmManualAnalysis(notice, availability)) return;
+    if (!await confirmManualAnalysis(notice, availability)) return;
     const authHeaders = await manualAnalysisAuthHeaders();
     if (!authHeaders) {
       showToast("분석 요청 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
