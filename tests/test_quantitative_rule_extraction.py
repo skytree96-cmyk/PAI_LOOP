@@ -7496,3 +7496,32 @@ def test_overview_minimum_requires_matching_cutoff_in_own_summary_section(mutati
     profile = build(payload_with_table(table), source=source)
     assert profile.status != "AVAILABLE"
     assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def test_minimum_cutoff_proof_invalidates_only_affected_record_fingerprint() -> None:
+    table = valid_table()
+    sentence = "SYN-전체 제안서 평가 결과 85점 이상 적격"
+    table["minimum_score"] = 85
+    table["minimum_evidence"] = anchor(sentence)
+    record = validate_quantitative_attachment_extraction(
+        payload_with_table(table),
+        source_text=VALID_SOURCE + "\n" + sentence,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+    )
+    assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in {item.code for item in record.issues}
+    legacy_digest = hashlib.sha256(json.dumps(
+        record.model_dump(mode="json", exclude={"validation_fingerprint_sha256"}),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    assert record.validation_fingerprint_sha256 != legacy_digest
+    stale_profile = merge_validated_quantitative_records(
+        [record.model_copy(update={"validation_fingerprint_sha256": legacy_digest})],
+        expected_documents={ATTACHMENT_ID: "a" * 64}, manifest_sha256="b" * 64,
+    )
+    assert "VALIDATION_FINGERPRINT_MISMATCH" in issue_codes(stale_profile)
+    current_profile = merge_validated_quantitative_records(
+        [record], expected_documents={ATTACHMENT_ID: "a" * 64}, manifest_sha256="b" * 64,
+    )
+    assert "VALIDATION_FINGERPRINT_MISMATCH" not in issue_codes(current_profile)
