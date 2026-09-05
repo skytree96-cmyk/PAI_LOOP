@@ -1067,6 +1067,54 @@ def select_preferred_attachments(
     return supported[:limit], warnings
 
 
+def _public_attachment_failure_reason_code(
+    attachment: dict[str, Any], error_code: str,
+) -> AnalysisReasonCode:
+    extension = PurePath(str(attachment.get("file_name") or "")).suffix.casefold()
+    if error_code == "UNVERIFIED_QUOTE":
+        return "QUOTE_UNVERIFIED"
+    elif error_code in {"HWP_ONLY_UNSUPPORTED_R07", "HWP_BINARY_UNSUPPORTED"}:
+        return "HWP_ONLY_UNSUPPORTED"
+    elif error_code == "UNSUPPORTED_ATTACHMENT_TYPE":
+        return "UNSUPPORTED_ATTACHMENT"
+    elif extension == ".hwpx" and (
+        error_code.startswith("HWPX_")
+        or error_code.startswith("ATTACHMENT_")
+        or error_code in {
+            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+            "DOCUMENT_TEXT_TOO_LARGE",
+            "DOCUMENT_PROCESSING_INCOMPLETE",
+            "INVALID_CONTENT_LENGTH",
+            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+        }
+    ):
+        return "HWPX_EXTRACT_FAILED"
+    elif extension == ".pdf" and (
+        error_code.startswith("PDF_")
+        or error_code.startswith("ATTACHMENT_")
+        or error_code in {
+            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+            "DOCUMENT_TEXT_TOO_LARGE",
+            "DOCUMENT_PROCESSING_INCOMPLETE",
+            "INVALID_CONTENT_LENGTH",
+            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+        }
+    ):
+        return "PDF_EXTRACT_FAILED"
+    elif extension in {".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"} and (
+        error_code.startswith(("HWP_", "XLSX_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
+        or error_code in {
+            "DOCUMENT_TEXT_EMPTY_OR_SHORT",
+            "DOCUMENT_TEXT_TOO_LARGE",
+            "INVALID_CONTENT_LENGTH",
+            "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
+        }
+    ):
+        return "DOCUMENT_EXTRACT_FAILED"
+    else:
+        return "OPENAI_REVIEW"
+
+
 def public_analysis_reason(
     versions: list[NoticeVersion],
     *,
@@ -1178,51 +1226,10 @@ def public_analysis_reason(
             attempted=True,
         )
 
-    codes: set[AnalysisReasonCode] = set()
-    for attachment, _latest, error_code in failures:
-        extension = PurePath(str(attachment.get("file_name") or "")).suffix.casefold()
-        if error_code == "UNVERIFIED_QUOTE":
-            codes.add("QUOTE_UNVERIFIED")
-        elif error_code in {"HWP_ONLY_UNSUPPORTED_R07", "HWP_BINARY_UNSUPPORTED"}:
-            codes.add("HWP_ONLY_UNSUPPORTED")
-        elif error_code == "UNSUPPORTED_ATTACHMENT_TYPE":
-            codes.add("UNSUPPORTED_ATTACHMENT")
-        elif extension == ".hwpx" and (
-            error_code.startswith("HWPX_")
-            or error_code.startswith("ATTACHMENT_")
-            or error_code in {
-                "DOCUMENT_TEXT_EMPTY_OR_SHORT",
-                "DOCUMENT_TEXT_TOO_LARGE",
-                "DOCUMENT_PROCESSING_INCOMPLETE",
-                "INVALID_CONTENT_LENGTH",
-                "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
-            }
-        ):
-            codes.add("HWPX_EXTRACT_FAILED")
-        elif extension == ".pdf" and (
-            error_code.startswith("PDF_")
-            or error_code.startswith("ATTACHMENT_")
-            or error_code in {
-                "DOCUMENT_TEXT_EMPTY_OR_SHORT",
-                "DOCUMENT_TEXT_TOO_LARGE",
-                "DOCUMENT_PROCESSING_INCOMPLETE",
-                "INVALID_CONTENT_LENGTH",
-                "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
-            }
-        ):
-            codes.add("PDF_EXTRACT_FAILED")
-        elif extension in {".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"} and (
-            error_code.startswith(("HWP_", "XLSX_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
-            or error_code in {
-                "DOCUMENT_TEXT_EMPTY_OR_SHORT",
-                "DOCUMENT_TEXT_TOO_LARGE",
-                "INVALID_CONTENT_LENGTH",
-                "UNEXPECTED_ATTACHMENT_CONTENT_TYPE",
-            }
-        ):
-            codes.add("DOCUMENT_EXTRACT_FAILED")
-        else:
-            codes.add("OPENAI_REVIEW")
+    codes = {
+        _public_attachment_failure_reason_code(attachment, error_code)
+        for attachment, _latest, error_code in failures
+    }
     # Stable worst-current ordering: incomplete binary/source extraction is
     # more fundamental than quote/schema review, but every sibling success is
     # still retained in the materialised source set.
@@ -1771,6 +1778,67 @@ def safe_public_live_extraction(payload: Any) -> dict[str, Any] | None:
         "requirements": data["requirements"],
         "missing_or_unreadable": data["missing_or_unreadable"],
     }
+
+
+_PUBLIC_ATTACHMENT_FAILURE_DETAILS = {
+    "SCHEMA_VALIDATION_ERROR": ("MODEL_SCHEMA_INVALID", "모델 출력이 분석 형식 검증을 통과하지 못했습니다. 재분석이 필요합니다."),
+    "NETWORK_ERROR": ("MODEL_NETWORK_FAILED", "문서 분석 API 연결이 실패했습니다. 재시도가 필요합니다."),
+    "HTTP_ERROR": ("MODEL_HTTP_FAILED", "문서 분석 API가 오류를 반환했습니다. 재시도가 필요합니다."),
+    "INVALID_JSON": ("MODEL_RESPONSE_INVALID", "문서 분석 API 응답 형식이 올바르지 않습니다."),
+    "INVALID_RESPONSE": ("MODEL_RESPONSE_INVALID", "문서 분석 API 응답 형식이 올바르지 않습니다."),
+    "INCOMPLETE_RESPONSE": ("MODEL_RESPONSE_INCOMPLETE", "모델 응답이 완료되기 전에 종료되었습니다. 재분석이 필요합니다."),
+    "MISSING_OUTPUT": ("MODEL_OUTPUT_MISSING", "모델 응답에 구조화된 분석 결과가 없습니다."),
+    "MODEL_REFUSAL": ("MODEL_REQUEST_DECLINED", "모델이 문서 분석 요청을 처리하지 못했습니다. 원문 검토가 필요합니다."),
+    "CALL_BUDGET_EXHAUSTED": ("MODEL_ATTEMPT_LIMIT", "이번 요청의 모델 호출 한도에 도달했습니다. 후속 분석이 필요합니다."),
+    "INTERNAL_ENRICHMENT_ERROR": ("ANALYSIS_INTERNAL_FAILED", "첨부 분석 처리 중 내부 오류가 발생했습니다. 재시도 후에도 반복되면 운영 점검이 필요합니다."),
+    "OPENAI_KEY_MISSING": ("MODEL_CONFIGURATION_MISSING", "문서 분석 API 설정을 확인해야 합니다."),
+}
+
+
+def public_attachment_analysis_statuses(versions: list[NoticeVersion]) -> list[dict[str, str]]:
+    """Expose every current manifest slot, including failed or pending attempts.
+
+    Only a redacted public filename and fixed state/reason labels are emitted.
+    Provider prose, response identifiers, URLs and source payloads stay private.
+    """
+    attachments, invalid_count, attempts = _current_manifest_attempts(versions)
+    rows: list[dict[str, str]] = []
+    for index, attachment in enumerate(attachments):
+        version = attempts.get(attachment["attachment_id"])
+        payload = version.source_payload if version is not None else {}
+        if version is None:
+            state, code = "PENDING", "ATTACHMENT_COVERAGE_INCOMPLETE"
+        elif (
+            payload.get("status") == "ACCEPTED"
+            and version.extraction_status in {"ACCEPTED", "COMPLETE"}
+            and _accepted_source_is_technically_complete(version)
+        ):
+            state, code = "ANALYZED", "ANALYZED"
+        else:
+            error_code = str(payload.get("error_code") or "")
+            if payload.get("status") == "ACCEPTED":
+                error_code = "DOCUMENT_PROCESSING_INCOMPLETE"
+            state = "REVIEW"
+            code = _public_attachment_failure_reason_code(attachment, error_code)
+        reason = _PUBLIC_ANALYSIS_MESSAGES[code]
+        if state == "REVIEW":
+            # Match only fixed known codes; arbitrary provider prose never escapes.
+            code, reason = _PUBLIC_ATTACHMENT_FAILURE_DETAILS.get(error_code, (code, reason))
+        label = _redact_public_text(str(attachment.get("file_name") or ""))
+        rows.append({
+            "document_name": label or f"첨부문서 {index + 1}",
+            "state": state,
+            "reason_code": code,
+            "reason": reason,
+        })
+    if invalid_count:
+        rows.append({
+            "document_name": "첨부 목록 확인 필요",
+            "state": "REVIEW",
+            "reason_code": "ATTACHMENT_COVERAGE_INCOMPLETE",
+            "reason": "현재 첨부 목록에 검증되지 않은 항목이 있어 원문 확인이 필요합니다.",
+        })
+    return rows
 
 
 def _as_utc(value: datetime) -> datetime:
