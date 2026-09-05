@@ -489,10 +489,26 @@ def _comparator_binding_issue(
     )
 
 
+class _SourceLines(tuple):
+    """An immutable paragraph sequence with bounded, validation-local indexes.
+
+    The object is owned by one document validation and is never stored in a
+    process-global cache. Cached answers retain every original source bound.
+    """
+
+    def __new__(cls, values: Iterable[str]):
+        instance = super().__new__(cls, values)
+        instance.normalized = tuple(_normalise_anchor_text(line) for line in instance)
+        instance.compact = tuple("".join(line.split()) for line in instance.normalized)
+        instance.anchor_spans = {}
+        instance.cached_span_count = 0
+        return instance
+
+
 def _source_lines(source: str) -> tuple[str, ...]:
     """Return visible HWP paragraphs while preserving their exact order."""
 
-    return tuple(
+    return _SourceLines(
         "".join(
             character
             for character in unicodedata.normalize("NFC", line).strip()
@@ -550,9 +566,15 @@ def _anchor_line_spans(
     normalized_quote = _normalise_anchor_text(quote)
     if not normalized_quote:
         return ()
+    cache_key = (_MAX_TABLE_CELL_WINDOW_LINES, _MAX_TABLE_CELL_WINDOW_CHARS, normalized_quote)
+    indexed = isinstance(lines, _SourceLines)
+    if indexed:
+        cached = lines.anchor_spans.get(cache_key)
+        if cached is not None:
+            return cached
     compact_quote = "".join(normalized_quote.split())
-    normalized_lines = tuple(_normalise_anchor_text(line) for line in lines)
-    compact_lines = tuple("".join(line.split()) for line in normalized_lines)
+    normalized_lines = lines.normalized if indexed else tuple(_normalise_anchor_text(line) for line in lines)
+    compact_lines = lines.compact if indexed else tuple("".join(line.split()) for line in normalized_lines)
     matches: list[tuple[int, int]] = []
     for start in range(len(lines)):
         raw_length = 0
@@ -583,7 +605,11 @@ def _anchor_line_spans(
         if end < smallest_end:
             minimal.append((start, end))
             smallest_end = end
-    return tuple(reversed(minimal))
+    result = tuple(reversed(minimal))
+    if indexed and len(lines.anchor_spans) < 256 and lines.cached_span_count + len(result) <= 4096:
+        lines.anchor_spans[cache_key] = result
+        lines.cached_span_count += len(result)
+    return result
 
 
 
