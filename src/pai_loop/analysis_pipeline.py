@@ -77,6 +77,7 @@ from .quantitative_rule_extraction import (
 from .source_gap_policy import (
     has_compound_source_absence_claim,
     is_explicit_qualitative_only_exclusion,
+    is_explicit_non_quantitative_notice_schedule_gap,
     is_explicit_qualitative_table_local_absence,
     is_quantitative_irrelevant_gap,
     normalise_source_gap,
@@ -1176,6 +1177,9 @@ def _gap_is_covered_by_aggregate_sources(
 
     if is_explicit_qualitative_only_exclusion(gap):
         return True
+    if is_explicit_non_quantitative_notice_schedule_gap(gap):
+        return current_document_type != "NOTICE" and "NOTICE" in available_types
+
     if not _contains_any(gap, _ATTACHMENT_LOCAL_ABSENCE_TERMS) or _contains_any(
         gap,
         _UNREADABLE_GAP_TERMS,

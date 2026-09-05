@@ -2368,3 +2368,20 @@ def test_accepted_extraction_status_is_valid_evaluator_input() -> None:
     evaluated = evaluate_notice(notice, version, [requirement], [fact])
     assert evaluated.eligibility.value == "PASS"
     assert evaluated.explanation["document_quality_ok"] is True
+
+
+@pytest.mark.parametrize("supplier", ("NOTICE", "RFP", "FORM", None))
+def test_exact_notice_date_reference_requires_effective_notice_sibling(supplier: str | None) -> None:
+    from pai_loop.analysis_pipeline import _gap_is_covered_by_aggregate_sources
+    gap = (
+        "제안서 제출기한의 구체적 날짜는 본문에 명시되지 않고 '공고문 명시'로만 "
+        "표기되어 있어 실제 마감일자는 확인 불가"
+    )
+    def covered(value: str) -> bool:
+        return _gap_is_covered_by_aggregate_sources(
+            value, current_document_type="RFP", available_types={supplier} if supplier else set(),
+            sibling_document_labels=set(), validated_quantitative_supplier_roles=set(),
+        )
+    assert covered(gap) is (supplier == "NOTICE")
+    assert covered(gap + ". 참가자격도 확인할 수 없음") is False
+    assert covered("직접생산 자격이 명시되지 않아 공고문 확인 필요") is False

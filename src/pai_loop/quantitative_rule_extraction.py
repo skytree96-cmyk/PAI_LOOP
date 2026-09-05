@@ -52,7 +52,8 @@ MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 # executable scoring semantics, such as the credit-range DSL above, intentionally
 # bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
-    "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v1",
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v1",
+    "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
     ),
@@ -3246,6 +3247,54 @@ def _external_min_split_window_is_coherent(value: str) -> bool:
     )
 
 
+def _minimum_scope_source_headers(
+    lines: tuple[str, ...],
+    criteria: list[QuantitativeRuleCandidate],
+) -> tuple[tuple[int, int], ...] | None:
+    """Prove original inner-cell anchors belong to unique metric/max headers.
+
+    Used only to establish whole-proposal minimum ownership. Original literals,
+    recognition conditions and executable criteria remain untouched.
+    """
+    boundaries, overflow = _sourcewide_structural_boundary_spans(lines)
+    if overflow:
+        return None
+    header_groups = [_candidate_metric_max_header_spans(lines, item) for item in criteria]
+    all_headers = tuple(span for spans in header_groups for span in spans)
+    next_boundary = _next_blank_or_section_boundaries(lines)
+    owners: list[tuple[int, int]] = []
+    for candidate, headers in zip(criteria, header_groups, strict=True):
+        anchor_span = _unique_anchor_line_span(lines, candidate.evidence.quote)
+        if anchor_span is None:
+            return None
+        matches: list[tuple[int, int]] = []
+        for header in headers:
+            header_text = "\n".join(lines[header[0]:header[1]])
+            if (
+                not re.search(r"점\s*\)?\s*$", header_text)
+                or _COMPARATOR_MARKER_RE.search(header_text)
+                or _EXTERNAL_MIN_STRONG_CUTOFF_RE.search(header_text)
+                or _EXTERNAL_MIN_DECISION_RE.search(header_text)
+            ):
+                continue
+            region = _bounded_header_candidate_region(
+                lines, header_span=header, boundary_spans=(*boundaries, *all_headers),
+                table_fences=(), next_blank_or_section=next_boundary,
+            )
+            if (
+                region is not None
+                and _span_inside_region(anchor_span, region)
+                and _sourcewide_case_census_matches(candidate, lines=lines, criterion_region=region)
+            ):
+                matches.append(header)
+        if len(matches) != 1:
+            return None
+        owners.append(matches[0])
+    if any(left[1] > right[0] for left, right in zip(owners, owners[1:])):
+        return None
+    return tuple(owners)
+
+
 def _has_unclaimed_quantitative_point_language(
     lines: tuple[str, ...],
     *,
@@ -3253,6 +3302,7 @@ def _has_unclaimed_quantitative_point_language(
     overall_minimum_spans: tuple[tuple[int, int], ...],
     minimum_score: Decimal,
     criteria: list[QuantitativeRuleCandidate],
+    proven_header_spans: tuple[tuple[int, int], ...] = (),
 ) -> bool:
     """Fail closed on unowned score language without scanning unrelated prose.
 
@@ -3304,7 +3354,9 @@ def _has_unclaimed_quantitative_point_language(
                 return True
             atomic_literals.append(condition.literal)
 
-    protected_detail_lines: set[int] = set()
+    protected_detail_lines: set[int] = {
+        index for span in proven_header_spans for index in range(span[0], span[1])
+    }
     owned_spans: list[tuple[int, int]] = []
     for literal in atomic_literals:
         normalized = unicodedata.normalize("NFKC", literal)
@@ -3590,15 +3642,6 @@ def _drop_source_bound_external_overall_minimum(
         _span_inside_region(region, table_region) for region in resolved_regions
     ):
         return table
-    if not all(
-        _sourcewide_case_census_matches(
-            candidate,
-            lines=lines,
-            criterion_region=region,
-        )
-        for candidate, region in zip(criteria, resolved_regions, strict=True)
-    ):
-        return table
     maxima = [_decimal(candidate.max_points) for candidate in criteria]
     if any(value is None or value <= 0 for value in maxima) or sum(
         (value for value in maxima if value is not None),
@@ -3606,6 +3649,9 @@ def _drop_source_bound_external_overall_minimum(
     ) != total:
         return table
 
+    proven_headers = _minimum_scope_source_headers(lines, criteria)
+    if not proven_headers:
+        return table
     total_span = _unique_anchor_line_span(lines, table.total_evidence.quote)
     minimum_spans = _anchor_line_spans(lines, table.minimum_evidence.quote)
     detail_markers = tuple(
@@ -3661,6 +3707,7 @@ def _drop_source_bound_external_overall_minimum(
             overall_minimum_spans=minimum_spans,
             minimum_score=minimum,
             criteria=criteria,
+            proven_header_spans=proven_headers,
         )
         or len(summary_totals) != 1
         or summary_totals[0] != (total_span, total)
@@ -3693,7 +3740,7 @@ def _drop_source_bound_external_overall_minimum(
     if (
         total_section is None
         or total_section != detail_section
-        or detail_marker[1] != first_region[0]
+        or detail_marker[1] != proven_headers[0][0]
         or total_span[1] > detail_marker[0]
         or not any(
             total_span[1] <= span[0] < detail_marker[0]
