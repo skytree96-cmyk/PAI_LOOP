@@ -73,6 +73,7 @@ from .pps_enrichment import (
     persist_pps_metadata_version,
     pps_attachment_coverage,
     public_analysis_reason,
+    public_attachment_analysis_statuses,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
 )
@@ -785,6 +786,7 @@ def _detail(
             if public_view
             else _latest_document_analyses(notice.versions)
         ),
+        attachment_analysis_statuses=public_attachment_analysis_statuses(notice.versions),
         award_history=notice.award_history,
     )
 
