@@ -368,6 +368,13 @@ class AwardIntelligenceOut(ApiModel):
     warnings: list[str]
 
 
+class AttachmentAnalysisStatusOut(ApiModel):
+    document_name: str = Field(max_length=255)
+    state: Literal["ANALYZED", "REVIEW", "PENDING"]
+    reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,80}$")
+    reason: str = Field(max_length=300)
+
+
 class NoticeDetail(NoticeSummary):
     id: str
     published_at: datetime | None
@@ -378,6 +385,7 @@ class NoticeDetail(NoticeSummary):
     requirements: list[dict[str, Any]]
     decisions: list[DecisionOut]
     document_analyses: list[dict[str, Any]] = Field(default_factory=list)
+    attachment_analysis_statuses: list[AttachmentAnalysisStatusOut] = Field(default_factory=list, max_length=11)
     award_history: list[AwardHistoryItemOut] = Field(default_factory=list)
 
 
