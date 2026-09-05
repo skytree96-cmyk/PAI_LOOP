@@ -10,4 +10,4 @@ Two exact typed gap grammars also recognize a notice that explicitly refers its 
 
 Revalidation is targeted to MINIMUM_SCORE_EXCEEDS_TOTAL and EXTRACTION_DECLARED_INCOMPLETE records. Global prompt and validator versions do not change. Current-digest cached extraction can be revalidated without new provider calls when the normal cache proofs succeed.
 
-Validation: 467 focused tests passed across quantitative rules, analysis pipeline, manual analysis and PPS enrichment. Real-source reconstruction with inner-cell anchors and the date-reference gap produced three AVAILABLE candidates; this is not a captured production model response or a verified company score. Full CI and live revalidation remain required.
+Validation: 468 focused tests passed across quantitative rules, analysis pipeline, manual analysis and PPS enrichment. Real-source reconstruction with inner-cell anchors and the date-reference gap produced three AVAILABLE candidates; this is not a captured production model response or a verified company score. Full CI and live revalidation remain required.
