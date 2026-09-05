@@ -8,6 +8,6 @@ The existing source-wide proof now looks for the same cutoff between the objecti
 
 Bounded operator diagnostics now expose the table subtotal, minimum and minimum-anchor length/point tokens alongside candidate metadata. They never return the source quote or private evidence.
 
-The quantitative record validator version advances to 0.6.18. Existing current-prompt extraction can be revalidated through the established duplicate-content path after downloading and checking the same source digest, without another model call. Historical records remain append-only. The extraction prompt version stays unchanged.
+Only records carrying MINIMUM_SCORE_EXCEEDS_TOTAL receive the new targeted fingerprint revision. Unaffected records retain their current fingerprints; global validator and prompt versions stay unchanged. Existing current-prompt extraction can be revalidated through the established duplicate-content path after downloading and checking the same source digest, without another model call. Historical records remain append-only. The extraction prompt version stays unchanged.
 
 Validate the updated full CI before merge, then revalidate current attachments and inspect live table diagnostics. Remaining source gaps or missing company evidence must remain visible and continue blocking unsupported scores.
