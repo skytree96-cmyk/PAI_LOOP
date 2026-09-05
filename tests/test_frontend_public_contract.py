@@ -1033,3 +1033,46 @@ def test_operator_quantitative_diagnostics_is_scoped_and_rendered_as_text() -> N
     assert "sessionStorage" not in body
     assert "localStorage" not in body
     assert "API-KEY" not in body
+
+
+
+def test_failed_and_pending_attachments_remain_visible_beside_successful_documents() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    adapter = "function renderDocumentAnalyses" + _function_body(source, "renderDocumentAnalyses", "loadPrivateMatchPreview")
+    adapter += "\nfunction normalizeDocumentAnalysis" + _function_body(source, "normalizeDocumentAnalysis", "normalizeDecisionRecord")
+    script = r"""
+const assert = require("node:assert/strict");
+const arrayValue = x => Array.isArray(x) ? x : [];
+const firstValue = (...xs) => xs.find(x => x !== undefined && x !== null);
+const firstObject = (...xs) => xs.find(x => x && typeof x === "object") || {};
+const stringValue = (x, fallback="") => x == null ? fallback : String(x);
+const booleanValue = x => typeof x === "boolean" ? x : null;
+const numberOrNull = x => x == null ? null : Number(x);
+const normalizeConfidence = () => null;
+const renderPrivateMatchPreview = () => {};
+const escapeHtml = x => String(x).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escapeAttribute = escapeHtml;
+const truncateText = x => x;
+const formatNumber = x => String(x);
+const els = {documentAnalysisState: {classList: {add() {}}}, documentAnalysisList: {}};
+const notice = {versions: [], documentAnalyses: [
+  normalizeDocumentAnalysis({document_name: "SYN-notice.pdf", status: "ACCEPTED", summary: "성공한 현재 공고문"}, 0),
+  normalizeDocumentAnalysis({document_name: "SYN-rfp.pdf", status: "ACCEPTED", summary: "STALE_SUCCESS"}, 1)
+], attachmentAnalysisStatuses: [
+  {document_name: "SYN-notice.pdf", state: "ANALYZED", reason: "완료"},
+  {document_name: "SYN-rfp.pdf", state: "REVIEW", reason: "모델 형식 검증 실패"},
+  {document_name: "SYN-<form>.pdf", state: "PENDING", reason: "분석 대기"},
+]};
+renderDocumentAnalyses(notice);
+assert.match(els.documentAnalysisState.textContent, /검토 1건 · 분석 대기 1건/);
+assert.doesNotMatch(els.documentAnalysisState.textContent, /구조화 완료/);
+assert.equal((els.documentAnalysisList.innerHTML.match(/<article /g)||[]).length, 3);
+assert.match(els.documentAnalysisList.innerHTML, /성공한 현재 공고문/);
+assert.match(els.documentAnalysisList.innerHTML, /모델 형식 검증 실패/);
+assert.match(els.documentAnalysisList.innerHTML, /SYN-&lt;form&gt;.pdf/);
+assert.doesNotMatch(els.documentAnalysisList.innerHTML, /STALE_SUCCESS/);
+notice.attachmentAnalysisStatuses = [];
+renderDocumentAnalyses(notice);
+assert.match(els.documentAnalysisList.innerHTML, /STALE_SUCCESS/);
+"""
+    subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
