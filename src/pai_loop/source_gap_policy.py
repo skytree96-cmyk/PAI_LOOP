@@ -31,6 +31,18 @@ _NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE = re.compile(
     r"\)\s*원문은\s*본\s*첨부에\s*"
     r"(?:포함되어\s*있지\s*않(?:음|습니다)|포함되지\s*않(?:음|았습니다))\s*\.?"
 )
+_NOTICE_THRESHOLD_TABLE_REFERENCE_RE = re.compile(
+    r"(?:기술입찰제안서|제안서)\s*평가결과\s*\d{1,3}(?:\.\d+)?점\s*이상\s*"
+    r"득점\s*시\s*적격자로\s*선정한다는\s*임계값만\s*제시되어\s*있으며,\s*"
+    r"세부\s*배점\s*항목[·ㆍ,]배점표는\s*본\s*공고문에\s*포함되어\s*있지\s*않고\s*"
+    r"별도\s*제안\s*요청서를\s*참조하도록\s*되어\s*있어\s*정량평가표를\s*전사할\s*수\s*없음\s*[.]?"
+)
+_NOTICE_REFERENCED_SUBMISSION_DATE_RE = re.compile(
+    r"제안서\s*제출기한의\s*구체적\s*날짜는\s*본문에\s*명시되지\s*않고\s*"
+    r"['‘]공고문\s*명시['’]로만\s*표기되어\s*있어\s*실제\s*마감일자는\s*확인\s*불가\s*[.]?"
+)
+
+
 _QUANTITATIVE_TABLE_LOCAL_ABSENCE_RE = re.compile(
     r"(?:"
     r"(?:제안\s*요청서(?:의|\s*내)?\s*)?"
@@ -340,7 +352,10 @@ def is_explicit_non_quantitative_notice_schedule_gap(value: str) -> bool:
     """Recognise one bounded notice-schedule omission as irrelevant to scoring."""
 
     gap = normalise_source_gap(value)
-    return bool(gap and _NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE.fullmatch(gap))
+    return bool(gap and (
+        _NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE.fullmatch(gap)
+        or _NOTICE_REFERENCED_SUBMISSION_DATE_RE.fullmatch(gap)
+    ))
 
 
 def is_explicit_quantitative_table_local_absence(value: str) -> bool:
@@ -366,7 +381,10 @@ def quantitative_table_local_absence_targets(
         or has_compound_source_absence_claim(gap)
     ):
         return None
-    if _PRODUCTION_RFP_SOURCE_LOCAL_TECHNICAL_TABLE_GAP_RE.fullmatch(gap):
+    if (
+        _PRODUCTION_RFP_SOURCE_LOCAL_TECHNICAL_TABLE_GAP_RE.fullmatch(gap)
+        or _NOTICE_THRESHOLD_TABLE_REFERENCE_RE.fullmatch(gap)
+    ):
         return ((("RFP",), ("제안요청서",)),)
     if not (
         _TABLE_ONLY_LOCAL_GAP_RE.fullmatch(gap)
