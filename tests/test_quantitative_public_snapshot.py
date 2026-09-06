@@ -721,3 +721,42 @@ def test_public_endpoint_falls_back_when_snapshot_predates_newer_pps_metadata(
     assert PRIVATE_RULESET not in response.text
     assert "SYN-FALLBACK-PRIVATE-RULESET" not in response.text
 
+
+
+def test_dashboard_score_counts_use_latest_snapshot_and_exclude_ended_notices(monkeypatch) -> None:
+    app = _public_app(monkeypatch)
+    now = datetime.now(timezone.utc)
+    with TestClient(app) as client:
+        with app.state.session_factory() as session:
+            notice = _notice(notice_key="PPS-TEST-PROGRESS-SNAPSHOT")
+            basis = _version(notice, version_no=1, kind="TEST_SOURCE", digest_character="e")
+            run = _run(notice, basis, label="progress", generated_at=now,
+                       score=_quantitative_snapshot(value=None, lower=10, upper=20,
+                           status="UNSCORABLE", band="RED", confirmed=0, coverage=0))
+            session.add(run)
+            session.commit()
+            notice_id, version_id = notice.id, basis.id
+        response = client.get("/api/v1/dashboard")
+        assert response.status_code == 200
+        stats = response.json()["analysis_statistics"]
+        assert stats["notice_count"] == 1
+        assert stats["score_range_notice_count"] == 1
+        assert stats["score_counts"]["UNSCORABLE"] == 1
+        assert stats["eligibility_counts"]["NOT_EVALUATED"] == 1
+        for secret in (PRIVATE_BASIS_MARKER, PRIVATE_INPUT_SHA256, PRIVATE_OUTPUT_SHA256, PRIVATE_RULESET):
+            assert secret not in response.text
+        with app.state.session_factory() as session:
+            session.add(AnalysisRun(notice_id=notice_id, notice_version_id=version_id,
+                status="FAILED", idempotency_key="SYN-progress-superseding-failure",
+                input_sha256="f" * 64, generated_at=now + timedelta(seconds=1), output_summary={}))
+            session.commit()
+        stats = client.get("/api/v1/dashboard").json()["analysis_statistics"]
+        assert stats["score_range_notice_count"] == 0
+        assert stats["score_counts"]["NOT_EVALUATED"] == 1
+        with app.state.session_factory() as session:
+            notice = session.get(Notice, notice_id)
+            notice.status = "CLOSED"
+            session.commit()
+        stats = client.get("/api/v1/dashboard").json()["analysis_statistics"]
+        assert stats["notice_count"] == 0
+        assert sum(stats["score_counts"].values()) == 0

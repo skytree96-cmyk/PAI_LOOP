@@ -173,6 +173,10 @@ def test_health_and_empty_dashboard(client: TestClient) -> None:
     assert dashboard.json()["closed_count"] == 0
     assert dashboard.json()["expired_count"] == 0
     assert dashboard.json()["analysis_review_backlog_count"] == 0
+    stats = dashboard.json()["analysis_statistics"]
+    assert stats["scope"] == "OPEN_PPS_NOT_CANCELLED"
+    assert stats["notice_count"] == stats["attachment_count"] == 0
+    assert sum(stats["score_counts"].values()) == 0
 
 
 def test_prompt_stale_pps_audit_is_history_only_not_current_api_state(
@@ -304,6 +308,11 @@ def test_prompt_stale_pps_audit_is_history_only_not_current_api_state(
     assert current_detail["analysis_attachment_coverage_complete"] is True
     assert current_detail["latest_evaluation"]["eligibility"] == "PASS"
     assert current_detail["recommendation"] == "GO"
+    stats = client.get("/api/v1/dashboard").json()["analysis_statistics"]
+    assert stats["notice_count"] == 1
+    assert stats["accepted_attachment_count"] == 1
+    assert stats["eligibility_counts"] == {"PASS": 1, "FAIL": 0, "REVIEW": 0, "NOT_EVALUATED": 0}
+    assert stats["score_range_notice_count"] == 0
 
     with client.app.state.session_factory() as session:
         current_attempt = session.get(NoticeVersion, current_attempt_id)
@@ -333,6 +342,13 @@ def test_prompt_stale_pps_audit_is_history_only_not_current_api_state(
     assert detail["latest_evaluation"] is None
     assert detail["recommendation"] is None
     assert detail["ingestion_state"] == "VERSIONED"
+    stats = client.get("/api/v1/dashboard").json()["analysis_statistics"]
+    assert stats["notice_count"] == 1
+    assert stats["attachment_count"] == 1
+    assert stats["accepted_attachment_count"] == stats["audited_attachment_count"] == 0
+    assert stats["analysis_state_counts"] == {"ANALYZED": 0, "REVIEW": 0, "PENDING": 1}
+    assert stats["eligibility_counts"] == {"PASS": 0, "FAIL": 0, "REVIEW": 0, "NOT_EVALUATED": 1}
+    assert stats["score_counts"]["NOT_EVALUATED"] == 1
 
 
 def test_dashboard_counts_ended_notices_without_a_recorded_result(
@@ -435,9 +451,9 @@ def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
     original_loader = api_module._load_notice_summary_batch
     original_outcome_loader = api_module._bid_outcome_notice_ids
 
-    def recording_loader(session, notice_ids):
+    def recording_loader(session, notice_ids, **kwargs):
         batch_sizes.append(len(notice_ids))
-        return original_loader(session, notice_ids)
+        return original_loader(session, notice_ids, **kwargs)
 
     def recording_outcome_loader(session, notice_ids):
         outcome_batch_sizes.append(len(notice_ids))
