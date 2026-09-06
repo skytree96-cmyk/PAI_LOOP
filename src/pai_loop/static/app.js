@@ -639,7 +639,7 @@
       state.quantitativeEstimates = {};
       const list = extractList(noticesResult.value);
       state.notices = list.map(normalizeNotice).filter((notice) => notice.noticeKey);
-      state.dashboard = deriveDashboard(state.notices);
+      state.dashboard = dashboardWithoutGlobalTotals(state.notices);
       state.source = "api";
       state.sourceReason = "";
       state.lastSuccessfulQueryAt = new Date().toISOString();
@@ -673,7 +673,7 @@
       state.dashboard = normalizeDashboard(dashboardResult.value, state.notices);
       state.sourceReason = "";
     } else {
-      state.sourceReason = "일부 운영 지표는 공고 데이터에서 계산했습니다.";
+      state.sourceReason = "전체 집계 조회가 지연되었습니다. 공고 목록은 조회됐으며 전체 통계는 새로고침이 필요합니다.";
     }
     setSystemStatus("online");
     renderAll();
@@ -690,16 +690,7 @@
         // of replacing the whole dashboard with an incomplete local shape.
       }
     }
-    const derived = deriveDashboard(state.notices);
-    state.dashboard = {
-      ...state.dashboard,
-      ...derived,
-      totalNotices: numberOrNull(state.dashboard?.totalNotices) ?? state.notices.length,
-      totalEvaluations: numberOrNull(state.dashboard?.totalEvaluations)
-        ?? state.notices.filter((notice) => notice.evaluationId).length,
-      totalDecisions: numberOrNull(state.dashboard?.totalDecisions)
-        ?? state.notices.filter((notice) => notice.decision).length,
-    };
+    state.dashboard = dashboardWithoutGlobalTotals(state.notices, state.dashboard);
   }
 
   function renderApplicationError(reason) {
@@ -3378,6 +3369,18 @@
     };
   }
 
+  function dashboardWithoutGlobalTotals(notices, previous = {}) {
+    // A filtered board cannot prove whole-database counts. Retain an observed
+    // aggregate after a mutation, or show unavailable until the API responds.
+    const result = deriveDashboard(notices);
+    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "cancelledCount", "endedCount", "resultMissingCount"]) {
+      result[key] = numberOrNull(previous[key]);
+    }
+    result.analysisStatistics = previous.analysisStatistics || null;
+    result.lastSync = previous.lastSync || null;
+    return result;
+  }
+
   function deriveDashboard(notices) {
     return {
       totalNotices: notices.length,
@@ -3439,9 +3442,13 @@
     const eligibility = stats.eligibility_counts || {};
     const scores = stats.score_counts || {};
     const analysis = stats.analysis_state_counts || {};
-    els.analysisProgressScope.textContent = `진행 중인 나라장터 공고 ${formatNumber(n)}건 · 취소 제외 · ${formatNumber(count(stats.attempted_notice_count))}건 분석 시도 · 대기 ${formatNumber(count(analysis.PENDING))}건 · ${formatKstDateTime(state.dashboard.lastSync)} 기준`;
+    const recordedNotices = stats.recorded_attempt_notice_count;
+    const recordedFiles = stats.recorded_attempt_attachment_count;
+    const history = Number.isInteger(recordedNotices) && Number.isInteger(recordedFiles)
+      ? `누적 처리 ${formatNumber(count(recordedNotices))}개 공고·${formatNumber(count(recordedFiles))}개 파일 · ` : "";
+    els.analysisProgressScope.textContent = `진행 중인 나라장터 공고 ${formatNumber(n)}건 · 취소 제외 · ${history}현재 기준 분석 시도 ${formatNumber(count(stats.attempted_notice_count))}건 · 현재 기준 대기 ${formatNumber(count(analysis.PENDING))}건 · ${formatKstDateTime(state.dashboard.lastSync)} 기준`;
     els.analysisAttachmentValue.textContent = ratio(count(stats.accepted_attachment_count), count(stats.attachment_count));
-    els.analysisAttachmentDetail.textContent = `파일 ${formatNumber(count(stats.audited_attachment_count))}개 처리 · 전체 첨부 성공 ${formatNumber(count(analysis.ANALYZED))}개 공고 · 첨부 검토 ${formatNumber(count(analysis.REVIEW))}개 공고`;
+    els.analysisAttachmentDetail.textContent = `현재 기준 파일 ${formatNumber(count(stats.audited_attachment_count))}개 검증 · 전체 첨부 성공 ${formatNumber(count(analysis.ANALYZED))}개 공고 · 첨부 검토 ${formatNumber(count(analysis.REVIEW))}개 공고`;
     els.analysisEligibilityValue.textContent = ratio(count(eligibility.PASS) + count(eligibility.FAIL), n);
     els.analysisEligibilityDetail.textContent = `PASS ${count(eligibility.PASS)} · FAIL ${count(eligibility.FAIL)} · 검토 ${count(eligibility.REVIEW)} · 미평가 ${count(eligibility.NOT_EVALUATED)}`;
     els.analysisScoreValue.textContent = ratio(count(stats.score_range_notice_count), n);
