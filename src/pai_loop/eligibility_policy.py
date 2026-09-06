@@ -14,7 +14,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.06-v9"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.06-v10"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -796,6 +796,12 @@ def _is_bidder_registration_eligibility(text: str) -> bool:
     # A restriction clause is evidence about sanctions, not registration.
     if re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text) or "부정당" in text:
         return False
+
+    # A requested copy of a registration certificate is a submission task.
+    # Remove only that document name before looking for a separate actual
+    # registration obligation in the same clause.
+    if re.search(r"제출|첨부|사본|\d+\s*부", text):
+        text = re.sub(r"(?:경쟁\s*)?입찰\s*참가\s*자격\s*등록증", "", text)
 
     # Allow particles and spacing used in live notices.
     if re.search(
