@@ -52,8 +52,10 @@ MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 # executable scoring semantics, such as the credit-range DSL above, intentionally
 # bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
-    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v1",
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v2",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
+    "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
+    "BRACKET_NUMBER_MISMATCH": "bracket-percent-award-proof-v1",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
     ),
@@ -5575,12 +5577,12 @@ def _assert_available_candidate_invariants(
         for bracket in candidate.brackets:
             if not evidence_quote_matches_source(bracket.literal, bracket.evidence.quote):
                 raise ValueError("AVAILABLE bracket literal is not bound to its anchor")
-            values = [bracket.points]
+            values = []
             if bracket.min_value is not None:
                 values.append(bracket.min_value)
             if bracket.max_value is not None:
                 values.append(bracket.max_value)
-            if any(
+            if not _bracket_points_match_literal(candidate, bracket) or any(
                 not _literal_contains_number(value, bracket.literal)
                 for value in values
             ):
@@ -5921,6 +5923,42 @@ def _assert_validated_record_invariants(
         raise ValueError("INCOMPLETE record lacks an incomplete nested signal")
 
 
+def _criterion_literal_with_own_maximum(
+    candidate: QuantitativeRuleCandidate, source: str,
+) -> QuantitativeRuleCandidate:
+    """Extend a label only by its own exact, immediately following maximum."""
+    if _literal_contains_number(candidate.max_points, candidate.criterion_literal):
+        return candidate
+    if not _literal_is_anchored(candidate.criterion_literal, candidate.evidence, source):
+        return candidate
+    compact = lambda value: re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+    literal, quote = compact(candidate.criterion_literal), compact(candidate.evidence.quote)
+    if not literal or not quote.startswith(literal):
+        return candidate
+    suffix = quote[len(literal):].removesuffix("점")
+    if _NUMBER_RE.fullmatch(suffix) and Decimal(suffix.replace(",", "")) == _decimal(candidate.max_points):
+        return candidate.model_copy(update={"criterion_literal": candidate.evidence.quote})
+    return candidate
+
+
+def _bracket_points_match_literal(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
+) -> bool:
+    literal = unicodedata.normalize("NFKC", bracket.literal)
+    if re.search(r"배점\s*의", literal):
+        awards = list(re.finditer(r"배점\s*의\s*(\d+(?:\.\d+)?)\s*(?:%|퍼센트)\s*$", literal))
+        if len(awards) != 1 or len(re.findall(r"배점\s*의", literal)) != 1:
+            return False
+        award = awards[0]
+        rate = Decimal(award.group(1))
+        maximum, points = _decimal(candidate.max_points), _decimal(bracket.points)
+        return bool(literal[:award.start()].strip() and rate is not None
+                    and Decimal(0) <= rate <= Decimal(100) and maximum is not None
+                    and points == maximum * rate / Decimal(100))
+    return _literal_contains_number(bracket.points, bracket.literal)
+
+
 def _validate_brackets(
     candidate: QuantitativeRuleCandidate,
     *,
@@ -5957,12 +5995,14 @@ def _validate_brackets(
                     **context,
                 )
             )
-        values = [bracket.points]
+        values = []
         if bracket.min_value is not None:
             values.append(bracket.min_value)
         if bracket.max_value is not None:
             values.append(bracket.max_value)
-        if any(not _literal_contains_number(value, bracket.literal) for value in values):
+        if not _bracket_points_match_literal(candidate, bracket) or any(
+            not _literal_contains_number(value, bracket.literal) for value in values
+        ):
             issues.append(
                 _issue(
                     "BRACKET_NUMBER_MISMATCH",
@@ -6433,6 +6473,7 @@ def validate_quantitative_rule_candidate(
 
     expected = set(expected_attachment_ids)
     source = source_text_by_attachment_id.get(source_attachment_id, "")
+    candidate = _criterion_literal_with_own_maximum(candidate, source)
     context = {
         "attachment_id": source_attachment_id,
         "table_id": table_id,
@@ -7164,13 +7205,20 @@ def _targeted_record_fingerprint_revisions(
         for item in raw_issues
         if isinstance(item, Mapping)
     }
-    return tuple(
-        sorted(
-            revision
-            for code, revision in _TARGETED_RECORD_FINGERPRINT_REVISIONS.items()
-            if code in issue_codes
+    revisions = {
+        revision for code, revision in _TARGETED_RECORD_FINGERPRINT_REVISIONS.items()
+        if code in issue_codes
+    }
+    candidates = data.get("available_candidates")
+    if isinstance(candidates, (list, tuple)) and any(
+        isinstance(candidate, Mapping) and any(
+            isinstance(row, Mapping) and re.search(r"배점\s*의", str(row.get("literal") or ""))
+            for row in (candidate.get("brackets") or ())
         )
-    )
+        for candidate in candidates
+    ):
+        revisions.add("bracket-percent-award-proof-v1")
+    return tuple(sorted(revisions))
 
 
 def _record_fingerprint_data(data: Mapping[str, object]) -> str:

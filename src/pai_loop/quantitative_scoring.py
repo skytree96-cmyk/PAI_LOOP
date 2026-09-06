@@ -4286,7 +4286,20 @@ def _stored_public_quantitative_projection(
     )
     if len(scores) != 1:
         return None
-    score = scores[0]
+    return public_quantitative_snapshot_projection(analysis_run, scores[0])
+
+
+def public_quantitative_snapshot_projection(
+    analysis_run: AnalysisRun,
+    score: ScoreSnapshot,
+) -> QuantitativeEstimateResult | None:
+    """Validate one aggregate using the same contract as the public detail.
+
+    Callers must first select the latest current run; this function performs
+    no database reads and never searches older snapshots for a success.
+    """
+    if score.score_key != "quantitative.total" or score.analysis_run_id != analysis_run.id:
+        return None
     basis_versions = analysis_run.basis_versions
     basis = score.basis_json
     if (

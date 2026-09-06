@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -1291,6 +1293,7 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
             "minimum_evidence_point_values": [85.0],
             "unit_present": True,
             "bracket_count": 0,
+            "brackets": [],
             "threshold_present": False,
             "formula_present": False,
             "recognition_condition_count": 0,
@@ -1302,6 +1305,7 @@ def test_quantitative_diagnostics_returns_only_bounded_current_review_shapes(
                     "operator": "GTE",
                     "comparison_value_present": True,
                     "category_value_count": 0,
+                    "category_interpretations": [],
                     "award_kind": "POINTS",
                     "award_value": 6.0,
                     "award_value_within_safe_range": True,
@@ -1709,3 +1713,30 @@ def test_quantitative_diagnostic_metric_token_check_marks_unsupported_metrics() 
     assert _diagnostic_has_metric_tokens("PERFORMANCE_AMOUNT", "실적 금액 6점") is True
     assert _diagnostic_has_metric_tokens("PERFORMANCE_AMOUNT", "실적 10점") is False
     assert _diagnostic_has_metric_tokens("PERSONNEL_COUNT", "전문인력 5명") is None
+
+
+def test_bracket_diagnostics_hide_literals_and_bounds() -> None:
+    from pai_loop.integrations.openai_extraction import QuantitativeBracketLiteral
+    from pai_loop.manual_analysis import _diagnostic_bracket_shape
+    bracket = QuantitativeBracketLiteral.model_validate({
+        "label": "SYN-PRIVATE-LABEL", "literal": "98765 이상 3점", "min_value": 98765,
+        "max_value": None, "min_inclusive": False, "max_inclusive": False, "points": 3,
+        "evidence": {"attachment_id": "SYN-PRIVATE-ATTACHMENT", "page": 1, "section": "SYN-PRIVATE-SECTION", "quote": "98765 이상 3점", "confidence": 0.99},
+    })
+    result = _diagnostic_bracket_shape(bracket, 1).model_dump()
+    assert result["expected_operators"] == ["GT"]
+    assert result["parsed_operators"] == ["GTE"]
+    assert result["comparator_values_match"] is True
+    assert result["literal_matches_evidence"] is True
+    assert result["parsed_operator_count"] == 1
+    assert result["operator_scan_truncated"] is False
+    serialized = str(result)
+    assert "98765" not in serialized
+    assert "SYN-PRIVATE" not in serialized
+    assert "이상" not in serialized
+
+
+@pytest.mark.parametrize(("value", "expected"), (("실적 없음", "NONE"), ("1건 이하", "COUNT_BOUND"), ("2건", "EXACT_COUNT"), ("SYN-PRIVATE-CATEGORY", "OTHER"), ("없음. 별도 조건", "OTHER")))
+def test_category_diagnostics_return_only_fixed_codes(value: str, expected: str) -> None:
+    from pai_loop.manual_analysis import _diagnostic_category_interpretation
+    assert _diagnostic_category_interpretation(value) == expected

@@ -58,6 +58,7 @@ from .models import (
     NoticeVersion,
     PpsNoticeAuthority,
     RecommendationSnapshot,
+    ScoreSnapshot,
     UserDecision,
 )
 from .notice_freshness import (
@@ -78,6 +79,7 @@ from .pps_enrichment import (
     safe_public_live_extraction,
 )
 from .pricing_profiles import pricing_profile_for_document
+from .quantitative_scoring import public_quantitative_snapshot_projection
 from .public_notice_seed import load_public_notice_seed
 from .schemas import (
     AtomicRequirementCreate,
@@ -830,15 +832,22 @@ def _notice_summary_relationships(statement):
 def _load_notice_summary_batch(
     session: Session,
     notice_ids: list[str],
+    *,
+    include_quantitative_scores: bool = False,
 ) -> list[Notice]:
     if not notice_ids:
         return []
-    loaded = list(
-        session.scalars(
-            _notice_summary_relationships(
-                select(Notice).where(Notice.id.in_(notice_ids))
+    statement = _notice_summary_relationships(
+        select(Notice).where(Notice.id.in_(notice_ids))
+    )
+    if include_quantitative_scores:
+        statement = statement.options(
+            selectinload(Notice.analysis_runs).selectinload(
+                AnalysisRun.scores.and_(ScoreSnapshot.score_key == "quantitative.total")
             )
-        ).all()
+        )
+    loaded = list(
+        session.scalars(statement).all()
     )
     by_id = {notice.id: notice for notice in loaded}
     return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
@@ -929,6 +938,18 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     active_count = 0
     deadline_soon = 0
     recent_notices: list[dict[str, Any]] = []
+    analysis_statistics = {
+        "scope": "OPEN_PPS_NOT_CANCELLED",
+        "notice_count": 0,
+        "attempted_notice_count": 0,
+        "attachment_count": 0,
+        "audited_attachment_count": 0,
+        "accepted_attachment_count": 0,
+        "analysis_state_counts": {"ANALYZED": 0, "REVIEW": 0, "PENDING": 0},
+        "eligibility_counts": {"PASS": 0, "FAIL": 0, "REVIEW": 0, "NOT_EVALUATED": 0},
+        "score_counts": {"CONFIRMED": 0, "ESTIMATED": 0, "UNSCORABLE": 0, "REVIEW": 0, "NOT_EVALUATED": 0},
+        "score_range_notice_count": 0,
+    }
 
     # Keep the dashboard exact while bounding peak memory.  A version payload
     # can contain a complete extracted document, so loading every relationship
@@ -937,7 +958,9 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         batch_ids = notice_ids[
             batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
         ]
-        notices = _load_notice_summary_batch(session, batch_ids)
+        notices = _load_notice_summary_batch(
+            session, batch_ids, include_quantitative_scores=True
+        )
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         for notice in notices:
@@ -953,6 +976,28 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
             if effective_status in lifecycle_counts:
                 lifecycle_counts[effective_status] += 1
             latest = None if is_cancelled else _latest_evaluation(notice)
+            if effective_status == "OPEN" and not is_cancelled and _source_kind(notice) == "PPS":
+                stats = analysis_statistics
+                reason = public_analysis_reason(notice.versions, evaluated=latest is not None)
+                coverage = pps_attachment_coverage(list(reversed(notice.versions)))
+                stats["notice_count"] += 1
+                stats["attempted_notice_count"] += int(reason.attempted)
+                stats["attachment_count"] += coverage.discovered
+                stats["audited_attachment_count"] += coverage.audited
+                stats["accepted_attachment_count"] += coverage.accepted
+                stats["analysis_state_counts"][reason.state] += 1
+                stats["eligibility_counts"][latest.eligibility if latest else "NOT_EVALUATED"] += 1
+                run = latest_current_analysis_run(notice)
+                totals = [s for s in run.scores if s.score_key == "quantitative.total"] if run else []
+                estimate = (
+                    public_quantitative_snapshot_projection(run, totals[0])
+                    if run is not None and len(totals) == 1 else None
+                )
+                stats["score_counts"][estimate.overall_status if estimate else "NOT_EVALUATED"] += 1
+                stats["score_range_notice_count"] += int(
+                    estimate is not None and estimate.lower_points is not None
+                    and estimate.upper_points is not None
+                )
             if latest and effective_status in lifecycle_counts:
                 analyzed_ended_count += 1
             if is_cancelled:
@@ -1003,6 +1048,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
 
     return {
         "generated_at": now,
+        "analysis_statistics": analysis_statistics,
         "totals": {
             "notices": len(notice_ids),
             "active": active_count,

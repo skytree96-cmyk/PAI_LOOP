@@ -78,3 +78,35 @@ def test_quantitative_retry_is_explicit_pin_scoped_and_generation_bounded() -> N
     assert "run_extraction: true, retry_reviewed: true" in body
     assert "MANUAL_ANALYSIS_MAX_POLLS" in body
     assert "force: true" not in body
+
+
+def test_home_progress_uses_global_counts_and_does_not_turn_missing_into_zero() -> None:
+    source = APP.read_text(encoding="utf-8")
+    start = source.index("  function renderAnalysisProgress(")
+    end = source.index("  function renderNavigationCounts(", start)
+    setup = """
+const els = Object.fromEntries(['analysisProgress','analysisProgressScope','analysisAttachmentValue','analysisAttachmentDetail','analysisEligibilityValue','analysisEligibilityDetail','analysisScoreValue','analysisScoreDetail'].map(id=>[id,{textContent:''}]));
+const state = {dashboard:{lastSync:'2026-09-06T02:38:00Z'}};
+const formatNumber = n => String(n);
+const formatKstDateTime = n => n;
+"""
+    script = setup + source[start:end] + """
+renderAnalysisProgress({scope:'OPEN_PPS_NOT_CANCELLED', notice_count:282, attempted_notice_count:93,
+attachment_count:941, audited_attachment_count:264, accepted_attachment_count:196,
+analysis_state_counts:{ANALYZED:35,REVIEW:58,PENDING:189},
+eligibility_counts:{PASS:0,FAIL:19,REVIEW:16,NOT_EVALUATED:247},
+score_counts:{CONFIRMED:0,ESTIMATED:0,UNSCORABLE:1,REVIEW:34,NOT_EVALUATED:247}, score_range_notice_count:1});
+const loaded = JSON.parse(JSON.stringify(els));
+renderAnalysisProgress(null);
+console.log(JSON.stringify({loaded,missing:els}));
+"""
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
+    output = json.loads(result.stdout)
+    loaded = output["loaded"]
+    assert loaded["analysisAttachmentValue"]["textContent"] == "196 / 941 · 20.8%"
+    assert loaded["analysisEligibilityValue"]["textContent"] == "19 / 282 · 6.7%"
+    assert loaded["analysisScoreValue"]["textContent"] == "1 / 282 · 0.4%"
+    assert "미평가 247" in loaded["analysisEligibilityDetail"]["textContent"]
+    assert "일부 미산정 1" in loaded["analysisScoreDetail"]["textContent"]
+    assert output["missing"]["analysisScoreValue"]["textContent"] == "—"
+    assert "조회 대기" in output["missing"]["analysisProgressScope"]["textContent"]

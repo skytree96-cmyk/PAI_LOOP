@@ -7599,3 +7599,87 @@ def test_overall_minimum_with_exact_inner_cell_criterion_anchors(mutation: str) 
     else:
         assert profile.status != "AVAILABLE"
         assert "MINIMUM_SCORE_EXCEEDS_TOTAL" in issue_codes(profile)
+
+
+def _percentage_award_candidate():
+    table = valid_table()
+    candidate = table["criteria"][0]
+    candidate["criterion_literal"] = "수행실적"
+    candidate["evidence"] = anchor("수행실적 20점")
+    for row, rate, points in zip(candidate["brackets"], (100, 75, 50), (20, 15, 10), strict=True):
+        condition = row["literal"].rsplit(" ", 1)[0]
+        row["literal"] = f"{condition} 배점의 {rate}%"
+        row["points"] = points
+        row["evidence"] = anchor(row["literal"])
+    source = "수행실적 20점\n" + "\n".join(row["literal"] for row in candidate["brackets"])
+    return payload_with_table(table).quantitative_tables[0].criteria[0], source
+
+
+def test_percent_bracket_awards_and_own_maximum_suffix_are_source_proved() -> None:
+    from pai_loop.quantitative_rule_extraction import validate_quantitative_rule_candidate
+    candidate, source = _percentage_award_candidate()
+    available, review, issues = validate_quantitative_rule_candidate(candidate,
+        source_attachment_id=ATTACHMENT_ID, table_id="SYN-PERCENT-AWARD",
+        source_text_by_attachment_id={ATTACHMENT_ID: source}, expected_attachment_ids=[ATTACHMENT_ID])
+    assert issues == ()
+    assert review is None
+    assert available is not None
+    assert available.criterion_literal == "수행실적 20점"
+    assert [row.points for row in available.brackets] == [20, 15, 10]
+    assert candidate.criterion_literal == "수행실적"
+
+
+@pytest.mark.parametrize("literal,points", [
+    ("5억원 이상 10억원 미만 배점의 75%", 10),
+    ("5억원 이상 10억원 미만 배점의 75% 또는 배점의 50%", 10),
+    ("5억원 이상 10억원 미만 배점의 120%", 10),
+    ("5억원 이상 10억원 미만 배점의 75% 미만", 10),
+])
+def test_percent_award_does_not_borrow_threshold_number_or_ambiguous_rate(literal, points) -> None:
+    from pai_loop.quantitative_rule_extraction import validate_quantitative_rule_candidate
+    candidate, source = _percentage_award_candidate()
+    old = candidate.brackets[1]
+    replacement = old.model_copy(update={"literal": literal, "points": points,
+        "evidence": old.evidence.model_copy(update={"quote": literal})})
+    candidate = candidate.model_copy(update={"brackets": [candidate.brackets[0], replacement, candidate.brackets[2]]})
+    source = source.replace(old.literal, literal)
+    available, review, issues = validate_quantitative_rule_candidate(candidate,
+        source_attachment_id=ATTACHMENT_ID, table_id="SYN-PERCENT-AWARD",
+        source_text_by_attachment_id={ATTACHMENT_ID: source}, expected_attachment_ids=[ATTACHMENT_ID])
+    assert available is None
+    assert review is not None
+    assert "BRACKET_NUMBER_MISMATCH" in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize("quote", ["수행실적 다른 항목 20점", "수행실적 20점 30점", "수행실적 30점"])
+def test_maximum_suffix_cannot_borrow_another_field(quote) -> None:
+    from pai_loop.quantitative_rule_extraction import validate_quantitative_rule_candidate
+    candidate, source = _percentage_award_candidate()
+    candidate = candidate.model_copy(update={"evidence": candidate.evidence.model_copy(update={"quote": quote})})
+    source = source.replace("수행실적 20점", quote)
+    available, _review, issues = validate_quantitative_rule_candidate(candidate,
+        source_attachment_id=ATTACHMENT_ID, table_id="SYN-PERCENT-AWARD",
+        source_text_by_attachment_id={ATTACHMENT_ID: source}, expected_attachment_ids=[ATTACHMENT_ID])
+    assert available is None
+    assert "MAX_POINTS_LITERAL_MISMATCH" in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize("gap", [
+    "정성적 평가(사업이해도 등 8개 항목, 배점 70점)는 판단·서술형 평가요소로서 정량적 채점표 규칙이 아니어서 별도 정량 테이블로 전사하지 않음",
+    "정성평가 항목(사업수행역량, 사업수행계획, 후속지원 등 60점)은 판단/서술형 배점으로 정량 기준표에서 제외되어 세부 채점기준이 원문에 제시되지 않음",
+])
+def test_narrative_qualitative_exclusion_does_not_hide_another_missing_subject(gap) -> None:
+    from pai_loop.source_gap_policy import is_explicit_qualitative_only_exclusion
+    assert is_explicit_qualitative_only_exclusion(gap)
+    assert not is_explicit_qualitative_only_exclusion(gap + ". 정량 실적 배점도 누락됨")
+    assert not is_explicit_qualitative_only_exclusion(gap.replace("사업이해도", "신용등급").replace("사업수행역량", "재무비율"))
+
+
+@pytest.mark.parametrize("gap", [
+    "평가 항목 및 배점 기준은 '제안요청서 참조'로만 안내되어 있어 본 공고문에는 실제 정량평가 배점표(기술능력평가 세부항목/배점)가 수록되어 있지 않음",
+    "평가 항목 및 배점 기준(정량 평가표)은 본 공고문에 포함되어 있지 않고 '제안요청서 참조'로만 명시되어 있어 세부 배점표를 확인할 수 없음",
+])
+def test_notice_table_reference_requires_a_verified_rfp_sibling(gap) -> None:
+    assert quantitative_table_local_absence_targets(gap) == ((("RFP",), ("제안요청서",)),)
+    assert quantitative_table_local_absence_targets(gap + ". 신용등급 기준도 불명확") is None
+    assert quantitative_table_local_absence_targets(gap.replace("제안요청서 참조", "다른 문서 참조")) is None

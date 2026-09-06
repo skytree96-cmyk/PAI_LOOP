@@ -14,7 +14,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.06-v8"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.06-v9"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -823,7 +823,7 @@ def _is_bidder_registration_eligibility(text: str) -> bool:
     qualification_possession = bool(
         re.search(
             r"(?:입찰\s*참가\s*)?자격(?:\s*요건)?\s*(?:을|를)?\s*"
-            r"(?:갖춘|갖추어야|갖추고|구비한|구비하고|충족한|보유한)",
+            r"(?:갖춘|갖출|갖추어야|갖추고|구비한|구비하고|충족한|보유한)",
             text,
         )
     )

@@ -18,6 +18,19 @@ _QUALITATIVE_RATING_ONLY_EXCLUSION_RE = re.compile(
     r"제시되어\s*있어\s*정성\s*판단\s*항목으로\s*"
     r"정량\s*테이블에서\s*제외(?:됨|함)\s*\.?"
 )
+_QUALITATIVE_NARRATIVE_ONLY_EXCLUSION_RE = re.compile(
+    r"정성(?:적)?\s*평가\s*(?:항목\s*)?"
+    r"\((?P<subjects>[^()]{1,160})\)(?:은|는)\s*판단[·/ㆍ]\s*서술형\s*"
+    r"(?:평가요소로서\s*정량적\s*채점표\s*규칙이\s*아니어서\s*별도\s*정량\s*테이블로\s*전사하지\s*않음|"
+    r"배점으로\s*정량\s*기준표에서\s*제외되어\s*세부\s*채점기준이\s*원문에\s*제시되지\s*않음)\s*[.]?"
+)
+_NOTICE_REFERENCED_QUANTITATIVE_TABLE_GAP_RE = re.compile(
+    r"평가\s*항목\s*및\s*배점\s*기준(?:은\s*['‘]제안요청서\s*참조['’]로만\s*"
+    r"안내되어\s*있어\s*본\s*공고문에는\s*실제\s*정량평가\s*배점표"
+    r"\(기술능력평가\s*세부항목/배점\)가\s*수록되어\s*있지\s*않음|"
+    r"\(정량\s*평가표\)은\s*본\s*공고문에\s*포함되어\s*있지\s*않고\s*"
+    r"['‘]제안요청서\s*참조['’]로만\s*명시되어\s*있어\s*세부\s*배점표를\s*확인할\s*수\s*없음)\s*[.]?"
+)
 _QUALITATIVE_TABLE_LOCAL_ABSENCE_RE = re.compile(
     r"(?s)(?:제안\s*요청서(?:의|\s*내)?\s*)?"
     r"정성(?:적)?\s*평가\s*(?:세부\s*)?(?:배점\s*)?표\s*"
@@ -332,11 +345,16 @@ def is_explicit_qualitative_only_exclusion(value: str) -> bool:
     """Return true only for an exhaustive, explicitly non-quantitative statement."""
 
     gap = normalise_source_gap(value)
+    narrative = _QUALITATIVE_NARRATIVE_ONLY_EXCLUSION_RE.fullmatch(gap)
+    narrative_only = bool(narrative and not re.search(
+        r"정량|신용|실적|재무|자격|입찰|필수", narrative.group("subjects")
+    ))
     return bool(
         gap
         and (
             _LEGACY_QUALITATIVE_ONLY_EXCLUSION_RE.fullmatch(gap)
             or _QUALITATIVE_RATING_ONLY_EXCLUSION_RE.fullmatch(gap)
+            or narrative_only
         )
     )
 
@@ -384,6 +402,7 @@ def quantitative_table_local_absence_targets(
     if (
         _PRODUCTION_RFP_SOURCE_LOCAL_TECHNICAL_TABLE_GAP_RE.fullmatch(gap)
         or _NOTICE_THRESHOLD_TABLE_REFERENCE_RE.fullmatch(gap)
+        or _NOTICE_REFERENCED_QUANTITATIVE_TABLE_GAP_RE.fullmatch(gap)
     ):
         return ((("RFP",), ("제안요청서",)),)
     if not (

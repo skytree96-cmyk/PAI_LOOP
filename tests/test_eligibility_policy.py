@@ -1421,3 +1421,24 @@ def test_ambiguous_statutory_clause_remains_unsplit() -> None:
     item = requirement("SYN-AMBIGUOUS-STATUTORY", "ENTITY", _STATUTORY_AND_CLAUSE)
     item["ambiguity_reason"] = "추가 자격조건 적용 대상 확인 필요"
     assert expand_statutory_qualification_requirements([item]) == [item]
+
+
+@pytest.mark.parametrize("law", ("국가계약법 시행령 제12조 및 시행규칙 제14조", "지방계약법 시행령 제13조 및 시행규칙 제14조"))
+def test_statutory_qualification_future_possession_form_uses_registration(law) -> None:
+    clause = law + "에 의한 입찰참가자격을 갖출 것"
+    item = classify_requirements(
+        [requirement("SYN-STATUTORY-POSSESSION", "ENTITY", clause)],
+        profile=load_public_company_profile(), deadline="2026-09-06", evaluation_date="2026-09-06",
+    )["items"][0]
+    assert item["company_fact_key"] == "bidder_registration"
+    assert item["outcome"] == "PASS_CURRENT"
+
+
+def test_statutory_possession_form_does_not_imply_registration_evidence() -> None:
+    profile = load_public_company_profile()
+    profile["facts"].pop("bidder_registration")
+    item = classify_requirements(
+        [requirement("SYN-STATUTORY-NO-FACT", "ENTITY", "국가계약법에 의한 입찰참가자격을 갖출 것")],
+        profile=profile, deadline="2026-09-06", evaluation_date="2026-09-06",
+    )["items"][0]
+    assert item["outcome"] == "REVIEW"

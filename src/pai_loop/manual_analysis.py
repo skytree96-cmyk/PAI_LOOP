@@ -83,6 +83,22 @@ class QuantitativeDiagnosticIssue(BaseModel):
     count: int = Field(ge=1)
 
 
+class QuantitativeDiagnosticBracketShape(BaseModel):
+    """Bounded comparator metadata; source literals and numeric bounds stay private."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_order: int = Field(ge=1, le=100)
+    literal_character_count: int = Field(ge=0, le=1000)
+    evidence_character_count: int = Field(ge=0, le=500)
+    literal_matches_evidence: bool
+    expected_operators: list[Literal["GTE", "GT", "LTE", "LT", "EQ"]] = Field(max_length=2)
+    parsed_operators: list[Literal["GTE", "GT", "LTE", "LT", "EQ"]] = Field(max_length=12)
+    parsed_operator_count: int = Field(ge=0)
+    operator_scan_truncated: bool
+    comparator_values_match: bool
+
+
 class QuantitativeDiagnosticCaseShape(BaseModel):
     """Non-text structural shape of one extracted score row."""
 
@@ -92,6 +108,7 @@ class QuantitativeDiagnosticCaseShape(BaseModel):
     operator: Literal["GTE", "EQ", "IN"]
     comparison_value_present: bool
     category_value_count: int = Field(ge=0, le=100)
+    category_interpretations: list[Literal["NONE", "COUNT_BOUND", "EXACT_COUNT", "OTHER"]] = Field(default_factory=list, max_length=12)
     award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
     award_value: float | None = Field(default=None, ge=0, le=1000)
     award_value_within_safe_range: bool
@@ -184,6 +201,7 @@ class QuantitativeDiagnosticCandidateShape(BaseModel):
     minimum_evidence_point_values: list[float] = Field(default_factory=list, max_length=12)
     unit_present: bool
     bracket_count: int = Field(ge=0, le=100)
+    brackets: list[QuantitativeDiagnosticBracketShape] = Field(default_factory=list, max_length=12)
     threshold_present: bool
     formula_present: bool
     recognition_condition_count: int = Field(ge=0, le=20)
@@ -714,6 +732,36 @@ def _safe_diagnostic_score(value: object) -> tuple[float | None, bool]:
     return (score, True) if 0 <= score <= 1000 else (None, False)
 
 
+def _diagnostic_category_interpretation(value: str) -> str:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+    if re.fullmatch(r"(?:실적없음|없음|해당없음|무실적)", compact):
+        return "NONE"
+    if re.fullmatch(r"\d+건(?:이하|미만|이상|초과)", compact):
+        return "COUNT_BOUND"
+    if re.fullmatch(r"\d+건", compact):
+        return "EXACT_COUNT"
+    return "OTHER"
+
+
+def _diagnostic_bracket_shape(bracket: object, row_order: int) -> QuantitativeDiagnosticBracketShape:
+    from .integrations.openai_extraction import evidence_quote_matches_source
+    from .quantitative_rule_extraction import _comparator_terms, _expected_bracket_terms
+
+    expected = _expected_bracket_terms(bracket)
+    parsed = _comparator_terms(bracket.literal)
+    return QuantitativeDiagnosticBracketShape(
+        row_order=row_order,
+        literal_character_count=len(bracket.literal),
+        evidence_character_count=len(bracket.evidence.quote),
+        literal_matches_evidence=evidence_quote_matches_source(bracket.literal, bracket.evidence.quote),
+        expected_operators=[operator for _value, operator in expected],
+        parsed_operators=[operator for _value, operator in parsed[:12]],
+        parsed_operator_count=len(parsed),
+        operator_scan_truncated=len(parsed) > 12,
+        comparator_values_match=Counter(value for value, _operator in expected) == Counter(value for value, _operator in parsed),
+    )
+
+
 def _quantitative_candidate_shapes(
     notice: Notice,
     profile: object,
@@ -799,6 +847,7 @@ def _quantitative_candidate_shapes(
                                 item.comparison_value is not None
                             ),
                             category_value_count=len(item.category_values),
+                            category_interpretations=[_diagnostic_category_interpretation(value) for value in item.category_values[:12]],
                             award_kind=item.award_kind,
                             award_value=award_value,
                             award_value_within_safe_range=award_value_safe,
@@ -972,6 +1021,7 @@ def _quantitative_candidate_shapes(
                         ),
                         unit_present=candidate.unit is not None,
                         bracket_count=len(candidate.brackets),
+                        brackets=[_diagnostic_bracket_shape(bracket, index) for index, bracket in enumerate(candidate.brackets[:12], start=1)],
                         threshold_present=candidate.threshold is not None,
                         formula_present=bool(candidate.formula_literal),
                         recognition_condition_count=len(
