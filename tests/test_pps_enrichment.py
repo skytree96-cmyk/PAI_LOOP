@@ -2789,3 +2789,72 @@ def test_recorded_attempt_count_separates_not_selected_from_a_file_failure():
     assert pps_recorded_attachment_attempt_count(versions) == 1
     versions[0].source_payload["attachment_manifest"][0]["file_name"] = "replacement.pdf"
     assert pps_recorded_attachment_attempt_count(versions) == 0
+
+
+@pytest.mark.parametrize("newest_status", ["ACCEPTED", "REVIEW", "INVALID_RECORD"])
+def test_current_attempt_scan_skips_superseded_record_validation(monkeypatch, newest_status):
+    from copy import deepcopy
+    import pai_loop.pps_enrichment as enrichment
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    template = versions[-1]
+    for number in range(3, 82):
+        versions.append(NoticeVersion(
+            notice_id="SYN-NOTICE-HISTORY", version_no=number,
+            file_sha256=template.file_sha256, document_complete=True,
+            extraction_status="ACCEPTED", extraction_confidence=1,
+            source_payload=deepcopy(template.source_payload),
+        ))
+    if newest_status == "REVIEW":
+        versions[-1].source_payload.update(status="REVIEW", error_code="UNVERIFIED_QUOTE")
+        versions[-1].extraction_status = "REVIEW"
+    elif newest_status == "INVALID_RECORD":
+        versions[-1].source_payload["quantitative_validation_record"] = {}
+    checked = []
+    original = enrichment._validate_quantitative_record_binding
+    def track(version, **kwargs):
+        checked.append(version.version_no)
+        return original(version, **kwargs)
+    monkeypatch.setattr(enrichment, "_validate_quantitative_record_binding", track)
+    _, _, attempts = enrichment._current_manifest_attempts(list(reversed(versions)))
+    selected, = attempts.values()
+    assert selected.version_no == (80 if newest_status == "INVALID_RECORD" else 81)
+    assert checked == ({"ACCEPTED": [81], "REVIEW": [], "INVALID_RECORD": [81, 80]}[newest_status])
+
+
+def test_read_projection_reuses_validation_and_revalidates_after_source_change(monkeypatch):
+    import pai_loop.pps_enrichment as enrichment
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    checked = []
+    original = enrichment._validate_quantitative_record_binding
+    def track(version, **kwargs):
+        checked.append(version.version_no)
+        return original(version, **kwargs)
+    monkeypatch.setattr(enrichment, "_validate_quantitative_record_binding", track)
+    with enrichment.pps_attachment_audit_read_scope():
+        assert public_analysis_reason(versions).state == "ANALYZED"
+        with enrichment.pps_attachment_audit_read_scope():
+            assert pps_attachment_coverage(versions).accepted == 1
+        assert public_analysis_reason(versions).state == "ANALYZED"
+    assert checked == [2]
+    # A later database read must recheck every source binding and fingerprint.
+    versions[-1].source_payload["quantitative_validation_record"]["document_sha256"] = "f" * 64
+    with enrichment.pps_attachment_audit_read_scope():
+        assert public_analysis_reason(versions).state == "PENDING"
+        assert pps_attachment_coverage(versions).accepted == 0
+    assert checked == [2, 2]
+    assert enrichment._attachment_validation_read_cache.get() is None
+
+
+def test_read_projection_scope_clears_on_exception_and_isolates_threads(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import pai_loop.pps_enrichment as enrichment
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    with pytest.raises(RuntimeError, match="SYN-interrupted"):
+        with enrichment.pps_attachment_audit_read_scope():
+            assert public_analysis_reason(versions).state == "ANALYZED"
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                assert executor.submit(enrichment._attachment_validation_read_cache.get).result() is None
+            raise RuntimeError("SYN-interrupted")
+    assert enrichment._attachment_validation_read_cache.get() is None
+    versions[-1].file_sha256 = "f" * 64
+    assert public_analysis_reason(versions).state == "PENDING"
