@@ -22,7 +22,8 @@ binding; it is not a new claim of human review. The existing workbook's completi
 VAT, certificate and recognized-share attestation is checked and preserved.
 
 A request contains an opaque UUID idempotency key, source SHA, sheet name,
-`explicit-performance-period-v1` algorithm version and at most 100 distinct rows.
+an explicit `explicit-performance-period-v1` or `explicit-performance-period-v2`
+algorithm version and at most 100 distinct rows.
 Each row supplies its record UUID, full row key, source row, expected revision,
 `expected_state_sha256` and bounded `source_period`. The canonical hash helper
 `performance_normalization_state_sha256` accepts either a database record or its
@@ -58,3 +59,24 @@ can still make performance scores estimated or require review.
 Synthetic tests cover parser boundaries, source and revision conflicts, atomic
 rollback, concurrent replay, private access and redaction, preservation of prior
 scores, continued import/PATCH immutability, and unresolved data after correction.
+
+
+## Versioned comma separator support
+
+The v1 contract remains unchanged and is the parser helper's default. It does not
+accept comma-separated date components. An operator can explicitly request v2
+when the exact source has one comma between a four-digit year and month inside
+an otherwise complete two-date interval. Each boundary must spell its full year,
+month and day; month/day separators must be dots, both dates must be valid, and
+the end must not precede the start. Only one comma is allowed, in either boundary.
+Prose commas, partial dates, abbreviated comma intervals, malformed years and
+additional content are rejected. V2 otherwise retains the v1 interval contract.
+
+The batch receipt records the requested algorithm version and the revision still
+hashes the exact original period literal, including its comma. The source SHA,
+row anchor, expected revision and full before-state hash checks are unchanged.
+No new migration, source rebind, monetary update or human attestation is added.
+An existing successful receipt remains bound to its original version and request;
+changing the version under its idempotency key fails. A rejected transaction has
+no receipt, so a corrected explicit version can be submitted after confirming
+that the failed attempt made no change.
