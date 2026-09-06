@@ -29,6 +29,7 @@ from .department_ranking import (
 )
 from .integrations.openai_extraction import (
     CORRECTIVE_PROMPT_VERSION,
+    SCHEMA_CORRECTIVE_PROMPT_VERSION,
     PROMPT_VERSION,
     SCHEMA_VERSION,
     ExtractionOutcome,
@@ -2063,8 +2064,13 @@ def _matching_extraction_version(
             continue
         if (
             error_code == "UNVERIFIED_QUOTE"
-            and payload.get("correction_prompt_version")
-            != CORRECTIVE_PROMPT_VERSION
+            and not (
+                payload.get("correction_prompt_version") == CORRECTIVE_PROMPT_VERSION
+                or (
+                    payload.get("correction_prompt_version") == SCHEMA_CORRECTIVE_PROMPT_VERSION
+                    and classify_attempt_header(payload) == "CURRENT"
+                )
+            )
         ):
             # A new corrective prompt is the recovery mechanism for this
             # exact failure.  Do not let a recent result from the superseded
@@ -2113,7 +2119,13 @@ def _stored_outcome_is_idempotent(
         prior = version.source_payload if isinstance(version.source_payload, dict) else {}
         correction_prompt_version = payload.get("correction_prompt_version")
         if (
-            correction_prompt_version != CORRECTIVE_PROMPT_VERSION
+            not (
+                correction_prompt_version == CORRECTIVE_PROMPT_VERSION
+                or (
+                    correction_prompt_version == SCHEMA_CORRECTIVE_PROMPT_VERSION
+                    and classify_attempt_header(payload) == "CURRENT"
+                )
+            )
             or prior.get("error_code") != "UNVERIFIED_QUOTE"
             or prior.get("correction_prompt_version") != correction_prompt_version
         ):
