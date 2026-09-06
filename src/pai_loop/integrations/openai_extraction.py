@@ -264,6 +264,41 @@ for _strict_rule_field in ("cases", "recognition_conditions"):
     _rule_schema["properties"][_strict_rule_field].pop("default", None)
 
 
+_SCHEMA_DIAGNOSTIC_FIELDS = frozenset(EXTRACTION_SCHEMA["properties"]) | frozenset(
+    field
+    for definition in EXTRACTION_SCHEMA.get("$defs", {}).values()
+    for field in definition.get("properties", {})
+)
+_SCHEMA_DIAGNOSTIC_TYPES = frozenset({
+    "missing", "extra_forbidden", "literal_error", "string_type",
+    "string_too_long", "string_too_short", "list_type", "dict_type",
+    "model_type", "int_type", "int_parsing", "int_from_float", "float_type",
+    "float_parsing", "bool_type", "bool_parsing", "finite_number",
+    "greater_than", "greater_than_equal", "less_than", "less_than_equal",
+    "too_long", "too_short", "value_error",
+})
+
+
+def _safe_schema_error_summary(error: ValidationError) -> str:
+    """Keep only bounded schema field paths and known types, never model data."""
+    summaries: list[str] = []
+    for item in error.errors(include_url=False, include_context=False, include_input=False):
+        path = ".".join(
+            "[]" if isinstance(part, int) else (
+                part if part in _SCHEMA_DIAGNOSTIC_FIELDS else "*"
+            )
+            for part in item.get("loc", ())[:12]
+        )[:180] or "$"
+        kind = item.get("type")
+        kind = kind if kind in _SCHEMA_DIAGNOSTIC_TYPES else "validation_error"
+        summary = f"{path}:{kind}"
+        if summary not in summaries:
+            summaries.append(summary)
+        if len(summaries) == 8:
+            break
+    return "; ".join(summaries) or "$:validation_error"
+
+
 class OpenAIProviderUsage(BaseModel):
     """Sanitised token counters returned by one Responses API attempt.
 
@@ -950,16 +985,37 @@ class OpenAIExtractionClient:
             )
         try:
             raw_data = json.loads(text)
-            if not isinstance(raw_data, dict) or not {
-                "quantitative_tables",
-                "quantitative_table_not_applicable",
-            }.issubset(raw_data):
-                raise ValueError("strict quantitative extraction fields are missing")
-            data = ExtractionPayload.model_validate(raw_data)
-        except (ValidationError, ValueError):
+        except ValueError:
             return self._review(
                 "SCHEMA_VALIDATION_ERROR",
-                "모델 출력이 고정 스키마를 통과하지 못했습니다.",
+                "모델 출력이 고정 스키마를 통과하지 못했습니다. $:invalid_json",
+                **metadata,
+            )
+        if not isinstance(raw_data, dict):
+            return self._review(
+                "SCHEMA_VALIDATION_ERROR",
+                "모델 출력이 고정 스키마를 통과하지 못했습니다. $:object_required",
+                **metadata,
+            )
+        required_quantitative_fields = {
+                "quantitative_tables",
+                "quantitative_table_not_applicable",
+        }
+        missing_fields = sorted(required_quantitative_fields.difference(raw_data))
+        if missing_fields:
+            return self._review(
+                "SCHEMA_VALIDATION_ERROR",
+                "모델 출력이 고정 스키마를 통과하지 못했습니다. "
+                + "; ".join(f"{field}:missing" for field in missing_fields),
+                **metadata,
+            )
+        try:
+            data = ExtractionPayload.model_validate(raw_data)
+        except ValidationError as error:
+            return self._review(
+                "SCHEMA_VALIDATION_ERROR",
+                "모델 출력이 고정 스키마를 통과하지 못했습니다. "
+                + _safe_schema_error_summary(error),
                 **metadata,
             )
 
