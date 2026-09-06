@@ -39,6 +39,7 @@ from .integrations.openai_extraction import (
     merge_openai_telemetry,
 )
 from .models import Notice, NoticeVersion
+from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
 from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
     quantitative_record_contract_is_usable,
@@ -703,8 +704,9 @@ def current_retryable_review_version_ids(
     is therefore reused on later continuations instead of triggering another
     provider call.  Deterministic REVIEW markers and fully validated ACCEPTED
     rows are never included.  An ACCEPTED extraction whose current quantitative
-    record still contains review candidates is included narrowly: the document
-    extraction succeeded, but the operator-visible quantitative review did not.
+    record still contains review candidates or a blocking generic source gap is
+    included narrowly: the document extraction succeeded, but its quantitative
+    review did not. Resolvable local-absence markers alone remain reusable.
     """
 
     _attachments, _invalid_count, attempts = _current_manifest_attempts(versions)
@@ -842,9 +844,9 @@ def _accepted_quantitative_review_is_retryable(
 
     ``ACCEPTED`` describes the document extraction boundary, not whether its
     quantitative candidates can be activated.  Preserve ordinary accepted
-    output, no-table documents, and local-absence markers; only a valid current
-    record with explicit review candidates can cross this operator-authorised
-    retry boundary.
+    output, no-table documents, and local-absence markers. A valid current
+    record needs explicit review candidates or both a persisted generic gap
+    issue and a non-benign source gap to cross this authorised retry boundary.
     """
 
     payload = version.source_payload
@@ -864,9 +866,25 @@ def _accepted_quantitative_review_is_retryable(
         )
     except Exception:
         return False
-    return bool(
-        record.status in {"REVIEW", "INCOMPLETE"}
-        and record.review_candidates
+    if record.status not in {"REVIEW", "INCOMPLETE"}:
+        return False
+    if record.review_candidates:
+        return True
+    if not any(
+        issue.code == "EXTRACTION_DECLARED_INCOMPLETE"
+        and issue.disposition == "INCOMPLETE"
+        for issue in record.issues
+    ):
+        # A local absence may already be supplied by a current sibling table.
+        # This attachment-only predicate cannot decide that aggregate boundary.
+        return False
+    try:
+        original = ExtractionPayload.model_validate(payload.get("result"))
+    except (TypeError, ValueError):
+        return False
+    return any(
+        normalise_source_gap(gap) and not is_quantitative_irrelevant_gap(gap)
+        for gap in original.missing_or_unreadable
     )
 
 
