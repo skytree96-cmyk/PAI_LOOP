@@ -56,6 +56,7 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
     "BRACKET_NUMBER_MISMATCH": "bracket-percent-award-proof-v1",
+    "BRACKET_COMPARATOR_MISMATCH": "inline-binary-bracket-proof-v1",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
     ),
@@ -5574,6 +5575,9 @@ def _assert_available_candidate_invariants(
             or candidate.cases
         ):
             raise ValueError("AVAILABLE BRACKET candidate shape is invalid")
+        inline_binary = _uses_inline_binary_brackets(candidate)
+        if inline_binary and not _inline_binary_bracket_proof(candidate):
+            raise ValueError("AVAILABLE inline binary brackets are not completely source bound")
         for bracket in candidate.brackets:
             if not evidence_quote_matches_source(bracket.literal, bracket.evidence.quote):
                 raise ValueError("AVAILABLE bracket literal is not bound to its anchor")
@@ -5595,7 +5599,7 @@ def _assert_available_candidate_invariants(
                 and bracket.min_value >= bracket.max_value
             ):
                 raise ValueError("AVAILABLE bracket bounds are invalid")
-            if Counter(_comparator_terms(bracket.literal)) != Counter(
+            if not inline_binary and Counter(_comparator_terms(bracket.literal)) != Counter(
                 _expected_bracket_terms(bracket)
             ):
                 raise ValueError("AVAILABLE bracket comparator binding is invalid")
@@ -5818,6 +5822,8 @@ def _assert_validated_record_invariants(
 
     for candidate in record.available_candidates:
         _assert_available_candidate_invariants(candidate)
+        if _inline_binary_bracket_claim_conflict(candidate, record.available_candidates):
+            raise ValueError("AVAILABLE inline binary clause has multiple criterion owners")
 
     for table in record.tables:
         available = [
@@ -5941,6 +5947,147 @@ def _criterion_literal_with_own_maximum(
     return candidate
 
 
+def _has_inline_binary_bracket_marker(literal: str) -> bool:
+    # Detection is deliberately broader than acceptance: malformed or partial
+    # two-arm clauses must not fall back to a one-arm number-membership check.
+    return bool(re.search(
+        r"점\s*[,;]\s*(?:이상|초과|이하|미만)",
+        unicodedata.normalize("NFKC", literal),
+    ))
+
+
+def _uses_inline_binary_brackets(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    return any(_has_inline_binary_bracket_marker(row.literal) for row in candidate.brackets)
+
+
+def _inline_binary_bracket_proof(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    """Prove both unchanged comparator/award pairs in one owned ratio clause.
+
+    This proof is shared by initial validation and persisted-record invariants.
+    Attachment uniqueness is checked separately while source text is available.
+    """
+    if (candidate.scoring_method != "BRACKET" or candidate.metric != "FINANCIAL_RATIO"
+            or candidate.unit != "%" or len(candidate.brackets) != 2):
+        return False
+    literal = candidate.brackets[0].literal
+    if literal.splitlines() != [literal]:
+        return False
+    if any(row.literal != literal or row.evidence.quote != literal for row in candidate.brackets):
+        return False
+    number = r"(?:[0-9]+(?:\.[0-9]+)?)"
+    match = re.fullmatch(
+        rf"(?:기준비율\s*)?(?P<bound>{number})\s*%\s*"
+        rf"(?P<first>이상|초과|이하|미만)\s*(?P<first_points>{number})\s*점\s*,\s*"
+        rf"(?P<second>이상|초과|이하|미만)\s*(?P<second_points>{number})\s*점",
+        unicodedata.normalize("NFKC", literal).strip(),
+    )
+    if match is None:
+        return False
+    first, second = match.group("first", "second")
+    if {first, second} not in ({"이상", "미만"}, {"초과", "이하"}):
+        return False
+    bound = Decimal(match.group("bound"))
+    expected = Counter((
+        (((bound, _KOREAN_OPERATOR[first]),), Decimal(match.group("first_points"))),
+        (((bound, _KOREAN_OPERATOR[second]),), Decimal(match.group("second_points"))),
+    ))
+    actual = Counter((_expected_bracket_terms(row), _decimal(row.points)) for row in candidate.brackets)
+    if actual != expected:
+        return False
+    criterion = candidate.criterion_literal
+    if criterion.splitlines() != [criterion]:
+        return False
+    if _normalise_anchor_text(criterion) != _normalise_anchor_text(candidate.evidence.quote):
+        return False
+    # The full clause must end its own criterion, immediately after that
+    # criterion's explicit maximum and colon. Never borrow a sibling's clause.
+    normalized = unicodedata.normalize("NFKC", criterion).strip()
+    clause = unicodedata.normalize("NFKC", literal).strip()
+    if not normalized.endswith(clause) or normalized.count(clause) != 1:
+        return False
+    prefix = normalized[:-len(clause)]
+    maximum = re.search(rf"(?:\(\s*)?(?P<points>{number})\s*점\s*\)?\s*:\s*$", prefix)
+    return bool(maximum and Decimal(maximum.group("points")) == _decimal(candidate.max_points))
+
+
+def _inline_binary_bracket_source_owned(
+    candidate: QuantitativeRuleCandidate,
+    source: str,
+) -> bool:
+    if not _inline_binary_bracket_proof(candidate):
+        return False
+    lines = _source_lines(source)
+    span = _unique_anchor_line_span(lines, candidate.criterion_literal)
+    return bool(
+        span is not None and span[1] - span[0] == 1
+        and _normalise_anchor_text(lines[span[0]]) == _normalise_anchor_text(candidate.criterion_literal)
+        and _anchor_occurrence_count(candidate.brackets[0].literal, source) == 1
+    )
+
+
+def _inline_binary_bracket_claim_conflict(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    others: Iterable[QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate],
+) -> bool:
+    if not _uses_inline_binary_brackets(candidate):
+        return False
+    literals = {row.literal for row in candidate.brackets if _has_inline_binary_bracket_marker(row.literal)}
+
+    def quoted_claim_overlaps_criterion(claimed: str, quote: str) -> bool:
+        # Align the claimed arm inside both the quote and its owning criterion.
+        # A quote may start in a preceding paragraph or end in a following one;
+        # the whole intersecting span must still agree. Matching only the arm
+        # would also reject a separate criterion with the same numbers.
+        values = tuple(_normalise_anchor_text(value) for value in
+                       (candidate.criterion_literal, quote, claimed))
+        for compact in (False, True):
+            owner, quoted, claim = (
+                tuple("".join(value.split()) for value in values) if compact else values
+            )
+            if not claim:
+                continue
+            owner_positions = [match.start() for match in re.finditer(
+                f"(?={re.escape(claim)})", owner)]
+            quote_positions = [match.start() for match in re.finditer(
+                f"(?={re.escape(claim)})", quoted)]
+            for owner_position in owner_positions:
+                for quote_position in quote_positions:
+                    offset = owner_position - quote_position
+                    start, end = max(0, offset), min(len(owner), offset + len(quoted))
+                    # Preserve the shared anchor predicate's minimum length
+                    # when only whitespace-free matching establishes overlap.
+                    if compact and end - start < 8:
+                        continue
+                    if owner[start:end] == quoted[start - offset:end - offset]:
+                        return True
+        return False
+
+    for other in others:
+        if other is candidate:
+            continue
+        claims = [(other.criterion_literal, other.evidence.quote)]
+        claims.extend((row.literal, row.evidence.quote) for row in other.brackets)
+        claims.extend((row.literal, row.evidence.quote) for row in other.cases)
+        claims.extend((row.literal, row.evidence.quote) for row in other.recognition_conditions)
+        if other.threshold is not None:
+            claims.append((other.threshold.literal, other.threshold.evidence.quote))
+        if other.formula_literal:
+            claims.append((other.formula_literal, other.evidence.quote))
+        for literal in literals:
+            for claimed, quote in claims:
+                if (evidence_quote_matches_source(literal, claimed)
+                        or evidence_quote_matches_source(literal, quote)
+                        or (evidence_quote_matches_source(claimed, literal)
+                            and quoted_claim_overlaps_criterion(claimed, quote))):
+                    return True
+    return False
+
+
+
 def _bracket_points_match_literal(
     candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
     bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
@@ -5975,6 +6122,14 @@ def _validate_brackets(
         "table_id": table_id,
         "criterion_id": candidate.criterion_id,
     }
+    inline_binary = _uses_inline_binary_brackets(candidate)
+    inline_proved = inline_binary and _inline_binary_bracket_source_owned(candidate, source)
+    if inline_binary and not inline_proved:
+        issues.append(_issue(
+            "BRACKET_COMPARATOR_MISMATCH", "INCOMPLETE",
+            "한 문장의 두 구간·배점과 단일 평가항목의 원문 소유권이 일치하지 않습니다.",
+            **context,
+        ))
     for bracket in candidate.brackets:
         issues.extend(
             _anchor_issues(
@@ -6033,7 +6188,7 @@ def _validate_brackets(
                     **context,
                 )
             )
-        comparator_issue = _comparator_binding_issue(
+        comparator_issue = None if inline_binary else _comparator_binding_issue(
             literal=bracket.literal,
             expected=_expected_bracket_terms(bracket),
             mismatch_code="BRACKET_COMPARATOR_MISMATCH",
@@ -6989,6 +7144,9 @@ def build_quantitative_candidate_profile(
                 )
             )
 
+        attachment_candidates = tuple(
+            candidate for table in payload.quantitative_tables for candidate in table.criteria
+        )
         for table_index, table in enumerate(payload.quantitative_tables):
             table_key = (attachment_id, table.table_id)
             table_issues = _validate_table_metadata(
@@ -7033,11 +7191,14 @@ def build_quantitative_candidate_profile(
                     source_text_by_attachment_id=source_text_by_attachment_id,
                     expected_attachment_ids=expected,
                 )
-                if candidate.criterion_id in seen_criterion_ids:
+                repeated_id = candidate.criterion_id in seen_criterion_ids
+                inline_claim_conflict = _inline_binary_bracket_claim_conflict(candidate, attachment_candidates)
+                if repeated_id or inline_claim_conflict:
                     duplicate = _issue(
-                        "DUPLICATE_CRITERION_ID",
+                        "DUPLICATE_CRITERION_ID" if repeated_id else "INLINE_BRACKET_CLAIM_COLLISION",
                         "INCOMPLETE",
-                        "같은 표 안에서 평가항목 ID가 중복되었습니다.",
+                        ("같은 표 안에서 평가항목 ID가 중복되었습니다." if repeated_id else
+                         "동일한 이진 구간 원문을 서로 다른 평가항목이 함께 소유합니다."),
                         attachment_id=attachment_id,
                         table_id=table.table_id,
                         criterion_id=candidate.criterion_id,
@@ -7210,6 +7371,14 @@ def _targeted_record_fingerprint_revisions(
         if code in issue_codes
     }
     candidates = data.get("available_candidates")
+    if isinstance(candidates, (list, tuple)) and any(
+        isinstance(candidate, Mapping) and any(
+            isinstance(row, Mapping) and _has_inline_binary_bracket_marker(str(row.get("literal") or ""))
+            for row in (candidate.get("brackets") or ())
+        )
+        for candidate in candidates
+    ):
+        revisions.add("inline-binary-bracket-proof-v1")
     if isinstance(candidates, (list, tuple)) and any(
         isinstance(candidate, Mapping) and any(
             isinstance(row, Mapping) and re.search(r"배점\s*의", str(row.get("literal") or ""))
