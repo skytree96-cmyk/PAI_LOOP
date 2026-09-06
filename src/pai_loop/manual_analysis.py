@@ -106,7 +106,7 @@ class QuantitativeDiagnosticCaseShape(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     row_order: int = Field(ge=1, le=100)
-    operator: Literal["GTE", "EQ", "IN"]
+    operator: Literal["GTE", "EQ", "IN", "LTE", "LT"]
     comparison_value_present: bool
     category_value_count: int = Field(ge=0, le=100)
     category_interpretations: list[Literal["NONE", "COUNT_BOUND", "EXACT_COUNT", "OTHER"]] = Field(default_factory=list, max_length=12)

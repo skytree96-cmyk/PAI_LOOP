@@ -52,7 +52,7 @@ class CategoryScore(FormulaModel):
         return self
 
 
-CaseTableOperator = Literal["GTE", "EQ", "IN"]
+CaseTableOperator = Literal["GTE", "EQ", "IN", "LTE", "LT"]
 CaseTableAwardKind = Literal["POINTS", "PERCENT_OF_MAX"]
 CaseTableValueKind = Literal["NUMERIC", "DISCRETE", "CATEGORICAL", "CREDIT_RATING"]
 
@@ -131,7 +131,7 @@ class CaseTableRowLiteral(FormulaModel):
 
     @model_validator(mode="after")
     def validate_row_shape(self) -> "CaseTableRowLiteral":
-        if self.operator in {"GTE", "EQ"}:
+        if self.operator in {"GTE", "EQ", "LTE", "LT"}:
             if self.comparison_value is None or self.category_values:
                 raise ValueError("numeric case rows require only comparison_value")
         elif self.comparison_value is not None or not self.category_values:
@@ -838,9 +838,31 @@ def _case_table_rows_are_safe(
         comparisons = [_decimal(row.comparison_value) for row in rows]
     except ValueError:
         return False
-    if not _strictly_descending(comparisons):
-        return False
     if any(right > left for left, right in zip(points, points[1:], strict=False)):
+        return False
+
+    if any(row.operator in {"LTE", "LT"} for row in rows):
+        # A source-explicit lower count row is not an ELSE. Restrict the new
+        # grammar to one final, nonempty integer interval below an otherwise
+        # unchanged leading-GTE/exact-count program. Gaps remain unscorable.
+        if (
+            value_kind != "DISCRETE"
+            or len(rows) < 2
+            or rows[0].operator != "GTE"
+            or rows[-1].operator not in {"LTE", "LT"}
+            or any(row.operator in {"LTE", "LT"} for row in rows[:-1])
+            or any(value < 0 or value != value.to_integral_value() for value in comparisons)
+        ):
+            return False
+        last_integer = comparisons[-1] - (1 if rows[-1].operator == "LT" else 0)
+        return bool(
+            0 <= last_integer < comparisons[-2]
+            and _case_table_rows_are_safe(
+                rows[:-1], value_kind=value_kind, maximum_points=maximum_points
+            )
+        )
+
+    if not _strictly_descending(comparisons):
         return False
 
     if value_kind == "NUMERIC":
@@ -948,11 +970,20 @@ def case_table_points(
         return None
     if table.value_kind == "DISCRETE" and actual != actual.to_integral_value():
         return None
+    # Only the new lower-tail grammar introduces a match below the smallest
+    # cutoff. It must never turn a missing or invalid negative count into a
+    # score. Preserve the execution of legacy GTE/EQ/IN-only programs.
+    if actual < 0 and table.rows[-1].operator in {"LTE", "LT"}:
+        return None
     for row in table.rows:
         assert row.comparison_value is not None
         comparison = _decimal(row.comparison_value)
         if row.operator == "GTE" and actual >= comparison:
             return row.points
         if row.operator == "EQ" and actual == comparison:
+            return row.points
+        if row.operator == "LTE" and actual <= comparison:
+            return row.points
+        if row.operator == "LT" and actual < comparison:
             return row.points
     return None

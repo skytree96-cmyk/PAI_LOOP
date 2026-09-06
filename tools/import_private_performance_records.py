@@ -410,6 +410,16 @@ def parse_date(value: object) -> date | None:
     return _date_from_match(match) if match else None
 
 
+def _explicit_year_month_comma_period(text: str) -> str | None:
+    """Normalize one year/month comma only inside two fully explicit dates."""
+    full_date = r"20\d{2}\s*[.,]\s*\d{1,2}\s*\.\s*\d{1,2}\.?"
+    if text.count(",") != 1 or re.fullmatch(
+        rf"{full_date}(?:\s*[~〜∼～–—-]\s*|\s+){full_date}", text
+    ) is None:
+        return None
+    return text.replace(",", ".")
+
+
 def _explicit_period_dates(text: str) -> tuple[date | None, date | None] | None:
     """Parse two explicit boundaries without joining adjacent date tokens.
 
@@ -417,6 +427,13 @@ def _explicit_period_dates(text: str) -> tuple[date | None, date | None] | None:
     A single date, duration, month-only range or malformed year is not proof
     of an exact interval and remains subject to the existing strict parser.
     """
+    if "," in text:
+        normalized = _explicit_year_month_comma_period(text)
+        # Never send comma-bearing prose or incomplete dates to the legacy
+        # token-search fallback, which could discard the unsupported content.
+        if normalized is None:
+            return None, None
+        text = normalized
     full = r"(?:20\d{2}|\d{2})\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{1,2}\.?|20\d{6}"
     end = rf"(?:{full}|\d{{1,2}}\s*[./-]\s*\d{{1,2}}\.?)"
     match = re.fullmatch(

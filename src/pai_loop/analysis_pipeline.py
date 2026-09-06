@@ -62,6 +62,7 @@ from .models import (
     ScoreSnapshot,
 )
 from .notice_freshness import authoritative_pps_notice_is_cancelled
+from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
@@ -74,6 +75,7 @@ from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
     ValidatedQuantitativeAttachmentRecord,
     validated_quantitative_record_fingerprint,
+    quantitative_record_contract_is_usable,
 )
 from .source_gap_policy import (
     has_compound_source_absence_claim,
@@ -90,10 +92,12 @@ from .pps_enrichment import (
     PPS_METADATA_SCHEMA,
     PPS_PROCESSING_VERSION,
     _validated_manifest_attachments,
+    _current_manifest_attempts,
+    _has_valid_quantitative_record,
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.4"
+PIPELINE_VERSION = "analysis-pipeline-0.6.6"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -348,7 +352,6 @@ def _select_source_versions(
                 for version in reversed(versions)
                 if isinstance(version.source_payload, dict)
                 and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"
-                and isinstance(version.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -357,9 +360,8 @@ def _select_source_versions(
                 latest_metadata.source_payload.get("schema_version")
                 == PPS_METADATA_SCHEMA
             )
-            raw_manifest_values = list(
-                latest_metadata.source_payload.get("attachment_manifest", [])
-            )
+            stored_manifest = latest_metadata.source_payload.get("attachment_manifest")
+            raw_manifest_values = stored_manifest if isinstance(stored_manifest, list) else []
             raw_manifest = [
                 dict(item)
                 for item in raw_manifest_values
@@ -390,6 +392,12 @@ def _select_source_versions(
                 )
             ]
 
+    latest_pps_numbers: dict[str, int] = {}
+    for version in versions:
+        payload = version.source_payload
+        if isinstance(payload, dict) and payload.get("kind") == SOURCE_KIND and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
+            aid = _attachment_identity(payload, version)
+            latest_pps_numbers[aid] = max(latest_pps_numbers.get(aid, -1), version.version_no)
     latest_by_attachment: dict[str, NoticeVersion] = {}
     for version in versions:
         payload = version.source_payload
@@ -403,7 +411,19 @@ def _select_source_versions(
             payload,
             prompt_version=prompt_version,
         )
-        if payload.get("prompt_version") != prompt_version and not legacy_curated_public:
+        if (
+            payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and classify_attempt_header(payload) == "LEGACY_CASE_V1"
+            and version.version_no < latest_pps_numbers.get(_attachment_identity(payload, version), -1)
+        ):
+            # Even an unsupported newer header prevents legacy-success fallback.
+            continue
+        compatible_pps = (
+            prompt_version == PROMPT_VERSION
+            and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and classify_attempt_header(payload) != "UNSUPPORTED"
+        )
+        if payload.get("prompt_version") != prompt_version and not (legacy_curated_public or compatible_pps):
             if source_version_ids is not None and version.id in requested:
                 raise AnalysisPipelineSourceError(
                     "an explicitly selected source has a different prompt version"
@@ -419,6 +439,21 @@ def _select_source_versions(
                 )
             continue
         attachment_id = _attachment_identity(payload, version)
+        if payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
+            contract_kind = classify_attempt_header(payload)
+            if contract_kind == "UNSUPPORTED" or (
+                contract_kind == "LEGACY_CASE_V1"
+                and payload.get("status") == "ACCEPTED"
+                and not _has_valid_quantitative_record(
+                    version, attachment_id=attachment_id,
+                    current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
+                )
+            ):
+                if source_version_ids is not None and version.id in requested:
+                    raise AnalysisPipelineSourceError(
+                        "an explicitly selected PPS source lacks a supported extraction proof"
+                    )
+                continue
         previous = latest_by_attachment.get(attachment_id)
         if previous is None or previous.version_no < version.version_no:
             latest_by_attachment[attachment_id] = version
@@ -428,7 +463,10 @@ def _select_source_versions(
     )
 
 
-def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocument:
+def _parse_source(
+    version: NoticeVersion, *, prompt_version: str,
+    allow_compatible_pps: bool = False,
+) -> _SourceDocument:
     payload = version.source_payload if isinstance(version.source_payload, dict) else {}
     attachment_id = _attachment_identity(payload, version)
     document_sha256 = str(payload.get("document_sha256") or version.file_sha256).casefold()
@@ -443,11 +481,20 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         prompt_version=prompt_version,
     )
 
+    compatible_pps = bool(
+        allow_compatible_pps and prompt_version == PROMPT_VERSION
+        and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        and classify_attempt_header(payload) == "LEGACY_CASE_V1"
+        and _has_valid_quantitative_record(
+            version, attachment_id=attachment_id,
+            current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
+        )
+    )
     if document_sha256 != version.file_sha256.casefold():
         warnings.append("DOCUMENT_SHA_MISMATCH")
-    if stored_prompt != prompt_version and not legacy_curated_public:
+    if stored_prompt != prompt_version and not (legacy_curated_public or compatible_pps):
         warnings.append("PROMPT_VERSION_MISMATCH")
-    if schema_version != SCHEMA_VERSION and not legacy_curated_public:
+    if schema_version != SCHEMA_VERSION and not (legacy_curated_public or compatible_pps):
         warnings.append("UNSUPPORTED_SCHEMA_VERSION")
     if (
         payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
@@ -508,8 +555,8 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         and status == "ACCEPTED"
         and version.extraction_status in {"ACCEPTED", "COMPLETE"}
         and document_sha256 == version.file_sha256.casefold()
-        and (stored_prompt == prompt_version or legacy_curated_public)
-        and (schema_version == SCHEMA_VERSION or legacy_curated_public)
+        and (stored_prompt == prompt_version or legacy_curated_public or compatible_pps)
+        and (schema_version == SCHEMA_VERSION or legacy_curated_public or compatible_pps)
         and anchor_identity_ok
     )
     complete = (
@@ -605,8 +652,12 @@ def _policy_items(
         profile=profile,
         deadline=notice.deadline,
     )
-    by_key = {str(item.get("requirement_id")): item for item in classified["items"]}
-    return [(item, by_key[item.requirement_key]) for item in merged]
+    classified_items = classified["items"]
+    expected_keys = [item.requirement_key for item in merged]
+    actual_keys = [str(item.get("requirement_id")) for item in classified_items]
+    if actual_keys != expected_keys or len(set(actual_keys)) != len(actual_keys):
+        raise AnalysisPipelineSourceError("Requirement policy expansion changed source pairing")
+    return list(zip(merged, classified_items, strict=True))
 
 
 def _source_location(item: _MergedRequirement) -> str | None:
@@ -704,13 +755,61 @@ def _known_non_eligibility_gaps_only(sources: Sequence[_SourceDocument]) -> bool
     )
 
 
+def _current_complete_pps_evidence(
+    sources: Sequence[_SourceDocument],
+    manifest_basis: dict[str, Any] | None,
+) -> bool:
+    """Prove full source coverage without treating its mean as every clause's confidence.
+
+    This capability is limited to the exact current PPS attempts whose complete
+    extraction records already passed manifest, document and validator checks.
+    An unrelated weak anchor remains weak; it cannot revoke an independently
+    verified mandatory clause, nor can this path fill any missing source.
+    """
+
+    if not sources or manifest_basis is None or not manifest_basis["coverage_complete"]:
+        return False
+    expected = manifest_basis["expected_attachment_ids"]
+    if (
+        not expected
+        or manifest_basis["accepted_attachment_ids"] != expected
+        or {source.version.id for source in sources}
+        != set(manifest_basis["selected_attempt_ids"])
+    ):
+        return False
+    complete = all(
+        source.materializable
+        and source.version.document_complete
+        and source.data is not None
+        and not source.data.missing_or_unreadable
+        and not (set(source.warnings) - {"LOW_EXTRACTION_CONFIDENCE"})
+        for source in sources
+    )
+    return complete and any(
+        source.version.extraction_confidence < MIN_EXTRACTION_CONFIDENCE
+        or any(
+            anchor.confidence < MIN_EXTRACTION_CONFIDENCE
+            for requirement in source.data.requirements
+            for anchor in requirement.evidence
+        )
+        for source in sources
+    )
+
+
 def _partial_gate_candidate_keys(
     *,
     run_status: str,
     sources: Sequence[_SourceDocument],
     policy_items: Sequence[tuple[_MergedRequirement, dict[str, Any]]],
+    pps_manifest_basis: dict[str, Any] | None = None,
 ) -> tuple[frozenset[str], frozenset[str]]:
-    if run_status != "PARTIAL" or not _known_non_eligibility_gaps_only(sources):
+    complete_pps_evidence = (
+        run_status in {"COMPLETED", "PARTIAL"}
+        and _current_complete_pps_evidence(sources, pps_manifest_basis)
+    )
+    if not complete_pps_evidence and (
+        run_status != "PARTIAL" or not _known_non_eligibility_gaps_only(sources)
+    ):
         return frozenset(), frozenset()
 
     eligibility_items = [
@@ -718,13 +817,14 @@ def _partial_gate_candidate_keys(
         for item, policy in policy_items
         if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
     ]
-    if not eligibility_items or not all(_has_reviewable_anchor(item) for item in eligibility_items):
+    anchor_check = _has_verified_anchor if complete_pps_evidence else _has_reviewable_anchor
+    if not eligibility_items or not all(anchor_check(item) for item in eligibility_items):
         return frozenset(), frozenset()
 
     verified_materialized_keys = frozenset(
         item.requirement_key
         for item, policy in policy_items
-        if _is_materialized_policy_item(item, policy) and _has_reviewable_anchor(item)
+        if _is_materialized_policy_item(item, policy) and anchor_check(item)
     )
     return verified_materialized_keys, frozenset(
         item.requirement_key for item in eligibility_items
@@ -1053,13 +1153,14 @@ def _current_pps_manifest_basis(
             for version in sorted(versions, key=lambda item: item.version_no, reverse=True)
             if isinstance(version.source_payload, dict)
             and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"
-            and isinstance(version.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is None or not isinstance(metadata.source_payload, dict):
         return None
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    stored_manifest = metadata.source_payload.get("attachment_manifest")
+    manifest_shape_valid = isinstance(stored_manifest, list)
+    raw_manifest_values = stored_manifest if manifest_shape_valid else []
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -1068,7 +1169,7 @@ def _current_pps_manifest_basis(
     current_manifest_sha256 = _digest(raw_manifest_values)
     validated_manifest, invalid_count = _validated_manifest_attachments(raw_manifest)
     invalid_count += len(raw_manifest_values) - len(raw_manifest)
-    if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
+    if not manifest_shape_valid or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
         invalid_count = max(1, invalid_count)
     expected = [
         {
@@ -1078,22 +1179,12 @@ def _current_pps_manifest_basis(
         for item in validated_manifest
     ]
     expected_by_id = {item["attachment_id"]: item["manifest_sha256"] for item in expected}
-    attempts: dict[str, NoticeVersion] = {}
-    for version in sorted(versions, key=lambda item: item.version_no):
-        payload = version.source_payload
-        if (
-            not isinstance(payload, dict)
-            or payload.get("kind") != SOURCE_KIND
-            or payload.get("source_kind") != "PPS_PUBLIC_ATTACHMENT"
-            or payload.get("prompt_version") != prompt_version
-            or payload.get("processing_version") != PPS_PROCESSING_VERSION
-            or payload.get("current_manifest_sha256") != current_manifest_sha256
-        ):
-            continue
-        attachment_id = str(payload.get("attachment_id") or "")
-        if payload.get("manifest_sha256") != expected_by_id.get(attachment_id):
-            continue
-        attempts[attachment_id] = version
+    if prompt_version == PROMPT_VERSION and manifest_shape_valid:
+        _attachments, _invalid, attempts = _current_manifest_attempts(
+            list(versions), validate_accepted=False,
+        )
+    else:
+        attempts = {}
     accepted_ids = sorted(
         attachment_id
         for attachment_id, version in attempts.items()
@@ -1101,6 +1192,10 @@ def _current_pps_manifest_basis(
         and version.source_payload.get("status") == "ACCEPTED"
         and version.extraction_status in {"ACCEPTED", "COMPLETE"}
         and version.document_complete
+        and _has_valid_quantitative_record(
+            version, attachment_id=attachment_id,
+            current_manifest_sha256=current_manifest_sha256,
+        )
     )
     audited_ids = sorted(attempts)
     expected_ids = sorted(expected_by_id)
@@ -1121,6 +1216,7 @@ def _current_pps_manifest_basis(
         "expected_attachment_ids": expected_ids,
         "audited_attachment_ids": audited_ids,
         "accepted_attachment_ids": accepted_ids,
+        "selected_attempt_ids": sorted(version.id for version in attempts.values()),
         "processing_version": PPS_PROCESSING_VERSION,
         "coverage_complete": coverage_complete,
     }
@@ -1443,7 +1539,11 @@ def _source_supplies_quantitative_table(source: _SourceDocument) -> bool:
         and record.attachment_id == source.attachment_id
         and record.document_sha256 == source.document_sha256
         and record.manifest_sha256 == current_manifest_sha256
-        and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
+        and quantitative_record_contract_is_usable(
+            record, source_payload=payload, attachment_id=source.attachment_id,
+            document_sha256=source.document_sha256,
+            manifest_sha256=current_manifest_sha256,
+        )
         and record.prompt_version == source.prompt_version
         and record.extraction_schema_version == source.schema_version
         and fingerprint_valid
@@ -1568,6 +1668,7 @@ def _pricing_profile_for_versions(versions: Sequence[NoticeVersion]) -> dict[str
                 for version in versions
                 if isinstance(version.source_payload, dict)
                 and version.source_payload.get("kind") == SOURCE_KIND
+                and version.id in set(manifest_basis["selected_attempt_ids"])
                 and version.source_payload.get("attachment_id") in accepted_ids
                 and version.source_payload.get("manifest_sha256")
                 == {
@@ -1688,7 +1789,10 @@ def run_analysis_pipeline(
                 source_version_ids=source_version_ids,
             )
             sources = [
-                _parse_source(version, prompt_version=prompt_version)
+                _parse_source(
+                    version, prompt_version=prompt_version,
+                    allow_compatible_pps=True,
+                )
                 for version in selected_versions
             ]
             merged = _merge_requirements(sources)
@@ -1713,6 +1817,22 @@ def run_analysis_pipeline(
                     )
                 ).all()
             )
+            # A declared performance bidder gate whose recognition scope has
+            # not been bound cannot consume a generic or fabricated Boolean
+            # fact. Keep only those pending keys absent so the existing linked
+            # missing-evidence REVIEW path applies; other facts and AND/OR
+            # evaluation remain unchanged.
+            pending_performance_fact_keys = {
+                atomic.fact_key
+                for atomic, (_item, policy) in zip(
+                    prospective_atomics, materialized_policy_items, strict=True,
+                )
+                if policy.get("requires_performance_scope_binding") is True
+            }
+            eligibility_company_facts = [
+                fact for fact in company_facts
+                if fact.fact_key not in pending_performance_fact_keys
+            ]
             fact_manifest = _selected_fact_manifest(
                 company_facts,
                 fact_keys=(
@@ -1905,6 +2025,7 @@ def run_analysis_pipeline(
                 run_status=run_status,
                 sources=sources,
                 policy_items=policy_items,
+                pps_manifest_basis=pps_manifest_basis,
             )
 
             confidence_values = [
@@ -1980,24 +2101,31 @@ def run_analysis_pipeline(
                 notice,
                 materialized_version,
                 prospective_atomics,
-                company_facts,
+                eligibility_company_facts,
                 verified_document_requirement_keys=gate_candidate_keys,
                 no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions={},
             )
-            # A known non-eligibility gap (for example a missing score table) must
-            # not erase a separately verified eligibility clause.  Once every
-            # mandatory eligibility anchor is verified, evaluate those clauses
-            # against the company profile even when the result is REVIEW because
-            # a company fact is missing.  Unknown gaps and unverified anchors stay
-            # fail-closed in ``_partial_gate_candidate_keys``.
+            # A known non-eligibility gap or an unrelated weak anchor must not
+            # erase an independently verified eligibility clause. The complete
+            # PPS path proves every current source before using per-clause
+            # confidence; missing source and weak mandatory clauses still fail
+            # closed in ``_partial_gate_candidate_keys``. Company evidence is
+            # evaluated normally and may still require REVIEW or produce FAIL.
             eligibility_gate_applied = bool(gate_candidate_keys)
             verified_requirement_keys = (
                 gate_candidate_keys if eligibility_gate_applied else frozenset()
             )
             if eligibility_gate_applied:
+                confidence_gate_applied = _current_complete_pps_evidence(
+                    sources, pps_manifest_basis,
+                )
                 warnings = sorted(
-                    set(warnings) | {"NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"}
+                    set(warnings) | {
+                        "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED"
+                        if confidence_gate_applied
+                        else "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"
+                    }
                 )
                 materialized_version.source_payload = {
                     **(materialized_version.source_payload or {}),
@@ -2022,7 +2150,7 @@ def run_analysis_pipeline(
                 notice,
                 materialized_version,
                 prospective_atomics,
-                company_facts,
+                eligibility_company_facts,
                 verified_document_requirement_keys=verified_requirement_keys,
                 no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions=derived_risk_dimensions,
@@ -2139,6 +2267,10 @@ def run_analysis_pipeline(
                     "requirement_policy": POLICY_VERSION,
                     "extraction_prompt": prompt_version,
                     "extraction_schema": SCHEMA_VERSION,
+                    "extraction_read_policy": EXTRACTION_READ_POLICY_VERSION,
+                    "source_extraction_contracts": sorted({
+                        (source.prompt_version, source.schema_version) for source in sources
+                    }),
                     "company_profile": profile_version,
                     "department_profile": str(department_catalog["version"]),
                     "quantitative_profile": quantitative_profile_basis,
@@ -2255,6 +2387,12 @@ def run_analysis_pipeline(
                             ),
                             "attachment_ids": sorted(item.attachment_ids),
                             "policy_outcome": policy.get("outcome"),
+                            "performance_scope_binding_pending": (
+                                policy.get("requires_performance_scope_binding") is True
+                            ),
+                            "performance_relation_unresolved": (
+                                policy.get("performance_relation_unresolved") is True
+                            ),
                             "parse_confidence": _parse_confidence(item),
                         },
                     )

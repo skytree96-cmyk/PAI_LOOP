@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -639,7 +640,7 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.4"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.6"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.1"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.3.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -2430,3 +2431,229 @@ def test_statutory_compound_pipeline_cannot_pass_without_both_facts(db_session: 
     result = run_analysis_pipeline(db_session, notice_id=notice.id)
     assert result.materialized_requirement_count == 2
     assert (result.eligibility == "PASS") is sanction_present
+
+
+@contextmanager
+def _current_pps_confidence_source(*, eligibility_confidence=0.98, other_confidence=0.72,
+                                   missing=None, company_fact=True, other_eligibility=False):
+    """Persist a real current-contract extraction using only synthetic local transports."""
+    import httpx
+    import json
+    from types import SimpleNamespace
+    from test_pps_enrichment import _single_hwpx_reuse_case
+    from pai_loop.integrations.openai_extraction import OpenAIExtractionClient, OpenAITelemetry
+    from pai_loop.pps_enrichment import enrich_notice_from_pps
+
+    lines = ["경쟁입찰참가자격 등록을 완료한 업체여야 함",
+             "경쟁입찰참가자격을 등록한 업체여야 함" if other_eligibility
+             else "제안서 분량은 20페이지 내외를 권장한다"]
+    class SyntheticClient:
+        calls = 0
+        def __init__(self, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def extract(self, *, document_text, allowed_attachment_ids):
+            type(self).calls += 1
+            attachment_id = next(iter(allowed_attachment_ids))
+            requirements = []
+            for index, (condition, category, mandatory, confidence) in enumerate([
+                (lines[0], "ENTITY", True, eligibility_confidence),
+                (lines[1], "ENTITY" if other_eligibility else "OTHER", other_eligibility, other_confidence),
+            ]):
+                requirements.append({
+                    "requirement_id": f"SYN-CONFIDENCE-{index}", "category": category,
+                    "logic": "SINGLE", "normalized_condition": condition,
+                    "mandatory": mandatory, "deadline_basis": "입찰 마감일",
+                    "evidence": [{"attachment_id": attachment_id, "page": 1,
+                                  "section": "합성 공고", "quote": condition,
+                                  "confidence": confidence}], "ambiguity_reason": None,
+                })
+            data = {"document_type": "NOTICE", "requirements": requirements,
+                    "quantitative_tables": [], "quantitative_table_not_applicable": None,
+                    "missing_or_unreadable": missing or [], "summary": "합성 추출 검증"}
+            def forbidden_network(request):
+                raise AssertionError("Provider transport must never execute")
+            with OpenAIExtractionClient(
+                api_key="synthetic-only", provider="openai",
+                transport=httpx.MockTransport(forbidden_network),
+            ) as boundary:
+                return boundary._validate_response(
+                    {"status": "completed", "output_text": json.dumps(data, ensure_ascii=False)},
+                    document_text=document_text, allowed_attachment_ids=allowed_attachment_ids,
+                    api_calls=1, openai_telemetry=OpenAITelemetry(),
+                )
+
+    engine, factory, notice_id, transport = _single_hwpx_reuse_case(
+        notice_key="PPS-SYN-CONFIDENCE-GATE", source_text="\n".join(lines),
+    )
+    try:
+        with factory() as session:
+            if company_fact is not None:
+                _verified_boolean_fact(session, "bidder_registration")
+                session.flush()
+                fact = session.scalar(select(CompanyFact).where(CompanyFact.fact_key == "bidder_registration"))
+                fact.value = company_fact
+                session.commit()
+        with factory() as session:
+            extracted = enrich_notice_from_pps(
+                session, notice_id=notice_id, openai_api_key="synthetic-only",
+                openai_model="synthetic", transport=transport,
+                openai_client_factory=SyntheticClient,
+            )
+        with factory() as session:
+            yield SimpleNamespace(session=session, notice_id=notice_id,
+                                  source_id=extracted.version_id, client=SyntheticClient)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("other_confidence", [0.1, 0.72, 0.89])
+def test_current_pps_eligibility_uses_own_confidence_without_paid_redo(other_confidence):
+    with _current_pps_confidence_source(other_confidence=other_confidence) as case:
+        source = case.session.get(NoticeVersion, case.source_id)
+        stored_payload = copy.deepcopy(source.source_payload)
+        source_confidence = source.extraction_confidence
+        case.session.commit()
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        evaluation = case.session.get(Evaluation, result.evaluation_id)
+        assert result.eligibility == "PASS"
+        assert {item["reason_code"] for item in evaluation.atomic_results} == {"P-ENTITY"}
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" in result.warnings
+        assert source.source_payload == stored_payload
+        assert source.extraction_confidence == source_confidence
+        assert source.document_complete is True
+        assert case.client.calls == 1
+        case.session.commit()
+        assert run_analysis_pipeline(case.session, notice_id=case.notice_id).reused is True
+        assert case.client.calls == 1
+
+
+def test_normal_current_pps_success_does_not_gain_confidence_gate_warning():
+    with _current_pps_confidence_source(other_confidence=0.98) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.status == "COMPLETED"
+        assert result.eligibility == "PASS"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" not in result.warnings
+        assert "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED" not in result.warnings
+
+
+@pytest.mark.parametrize("confidence", [0, 0.79, 0.85, 0.899])
+def test_current_pps_weak_mandatory_eligibility_remains_r07(confidence):
+    with _current_pps_confidence_source(eligibility_confidence=confidence) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" not in result.warnings
+        evaluation = case.session.get(Evaluation, result.evaluation_id)
+        assert {item["reason_code"] for item in evaluation.atomic_results} == {"R07"}
+
+
+@pytest.mark.parametrize("fact,expected", [(False, "FAIL"), (None, "REVIEW")])
+def test_confidence_gate_never_invents_company_qualification(fact, expected):
+    with _current_pps_confidence_source(company_fact=fact) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == expected
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" in result.warnings
+
+
+@pytest.mark.parametrize("mutation", ["incomplete", "bad_fingerprint", "bad_document_digest", "foreign_anchor", "empty_anchor"])
+def test_confidence_gate_rejects_unproven_or_incomplete_current_source(mutation):
+    with _current_pps_confidence_source() as case:
+        version = case.session.get(NoticeVersion, case.source_id)
+        payload = copy.deepcopy(version.source_payload)
+        if mutation == "incomplete":
+            version.document_complete = False
+        elif mutation == "bad_fingerprint":
+            payload["quantitative_validation_record"]["validation_fingerprint_sha256"] = "f" * 64
+        elif mutation == "bad_document_digest":
+            payload["document_sha256"] = "f" * 64
+        elif mutation == "foreign_anchor":
+            payload["result"]["requirements"][0]["evidence"][0]["attachment_id"] = "SYN-FOREIGN-ATTACHMENT"
+        else:
+            payload["result"]["requirements"][0]["evidence"] = []
+        version.source_payload = payload
+        case.session.commit()
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" not in result.warnings
+
+
+@pytest.mark.parametrize("missing", [["입찰참가자격 원문 일부 누락"], ["일부 내용을 읽을 수 없음"]])
+def test_confidence_gate_cannot_close_actual_or_unknown_source_gap(missing):
+    with _current_pps_confidence_source(missing=missing) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" not in result.warnings
+
+
+def test_confidence_fix_recalculates_old_pipeline_run_once_without_extraction(monkeypatch):
+    import pai_loop.analysis_pipeline as pipeline_module
+    with _current_pps_confidence_source() as case:
+        with monkeypatch.context() as old:
+            old.setattr(pipeline_module, "PIPELINE_VERSION", "analysis-pipeline-0.6.4")
+            old.setattr(pipeline_module, "_current_complete_pps_evidence", lambda *args: False)
+            previous = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert previous.eligibility == "REVIEW"
+        current = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert current.eligibility == "PASS"
+        assert current.analysis_run_id != previous.analysis_run_id
+        assert not current.reused
+        assert run_analysis_pipeline(case.session, notice_id=case.notice_id).reused
+        assert case.client.calls == 1
+        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.6"
+
+
+@pytest.mark.parametrize("malformed", [None, {}, "invalid", "__MISSING__"])
+def test_latest_malformed_pps_manifest_never_restores_older_source(malformed):
+    from pai_loop.analysis_pipeline import _current_pps_manifest_basis, _select_source_versions
+    with _current_pps_confidence_source() as case:
+        notice = case.session.get(Notice, case.notice_id)
+        metadata = next(v for v in notice.versions if v.source_payload.get("kind") == "PPS_NOTICE_METADATA")
+        payload = copy.deepcopy(metadata.source_payload)
+        if malformed == "__MISSING__":
+            payload.pop("attachment_manifest")
+        else:
+            payload["attachment_manifest"] = malformed
+        newest = NoticeVersion(notice_id=notice.id, version_no=max(v.version_no for v in notice.versions)+1,
+                               file_sha256=_digest(payload), document_complete=False,
+                               extraction_status="COMPLETE", extraction_confidence=1, source_payload=payload)
+        case.session.add(newest); case.session.commit()
+        versions = list(case.session.scalars(select(NoticeVersion).where(NoticeVersion.notice_id == notice.id)).all())
+        basis = _current_pps_manifest_basis(versions, prompt_version=PROMPT_VERSION)
+        assert basis["metadata_version_id"] == newest.id
+        assert basis["coverage_complete"] is False
+        assert basis["accepted_attachment_ids"] == basis["selected_attempt_ids"] == []
+        assert _select_source_versions(case.session, notice_id=case.notice_id,
+                                       prompt_version=PROMPT_VERSION, source_version_ids=None) == []
+        explicit = _select_source_versions(case.session, notice_id=case.notice_id,
+                                           prompt_version=PROMPT_VERSION,
+                                           source_version_ids=[case.source_id])
+        assert [row.id for row in explicit] == [case.source_id]
+        case.session.commit()
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" not in result.warnings
+
+
+def test_confidence_gate_keeps_exact_existing_threshold():
+    with _current_pps_confidence_source(eligibility_confidence=0.90) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "PASS"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" in result.warnings
+
+
+def test_another_weak_mandatory_eligibility_clause_cannot_hide_behind_strong_one():
+    with _current_pps_confidence_source(other_eligibility=True) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
+        assert "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED" not in result.warnings
+
+
+@pytest.mark.parametrize("gaps", [[], ["가격산정 세부표 일부"]])
+def test_irrelevant_gap_no_longer_determines_strong_eligibility_outcome(gaps):
+    with _current_pps_confidence_source(missing=gaps) as case:
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "PASS"
+        assert case.client.calls == 1

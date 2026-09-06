@@ -1260,6 +1260,8 @@ def _schema_diagnostic_outcome(output):
         ),
         base_url="https://api.openai.test/v1",
         max_retries=0,
+        # Isolate one response; default-budget recovery has separate tests.
+        max_total_api_calls=1,
     ) as client:
         return client.extract(
             document_text="부산광역시에 소재한 업체", allowed_attachment_ids={"ATT-1"}

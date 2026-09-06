@@ -25,6 +25,7 @@ from pai_loop.models import (
 )
 from pai_loop.integrations.openai_extraction import (
     PROMPT_VERSION,
+    SCHEMA_VERSION,
     EvidenceAnchor,
     ExtractedRequirement,
     ExtractionOutcome,
@@ -251,6 +252,7 @@ def test_prompt_stale_pps_audit_is_history_only_not_current_api_state(
                 "manifest_sha256": _digest(attachment),
                 "current_manifest_sha256": manifest_sha,
                 "prompt_version": PROMPT_VERSION,
+                "schema_version": SCHEMA_VERSION,
                 "processing_version": PPS_PROCESSING_VERSION,
                 "status": "ACCEPTED",
                 "quantitative_validation_record": quantitative_record.model_dump(

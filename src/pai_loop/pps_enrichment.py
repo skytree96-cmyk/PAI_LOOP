@@ -29,6 +29,7 @@ from .department_ranking import (
 )
 from .integrations.openai_extraction import (
     CORRECTIVE_PROMPT_VERSION,
+    SCHEMA_CORRECTIVE_PROMPT_VERSION,
     PROMPT_VERSION,
     SCHEMA_VERSION,
     ExtractionOutcome,
@@ -38,8 +39,10 @@ from .integrations.openai_extraction import (
     merge_openai_telemetry,
 )
 from .models import Notice, NoticeVersion
+from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
 from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
+    quantitative_record_contract_is_usable,
     ValidatedQuantitativeAttachmentRecord,
     validate_quantitative_attachment_extraction,
     validated_quantitative_record_fingerprint,
@@ -80,7 +83,11 @@ from .document_extraction import (
     ExtractionLimits,
     extract_document_content,
 )
-PPS_PROCESSING_VERSION = "pps-document-processing-0.5.0"
+from .extraction_contracts import (
+    CURRENT_EXTRACTION_CONTRACT, EXTRACTION_READ_POLICY_VERSION, classify_attempt_header,
+)
+
+PPS_PROCESSING_VERSION = CURRENT_EXTRACTION_CONTRACT.processing
 MAX_PDF_PAGES = 120
 MAX_HWPX_ENTRIES = 240
 MAX_HWPX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
@@ -564,7 +571,7 @@ def department_keyword_coverage_count(
 
 
 def _current_manifest_attempts(
-    versions: list[NoticeVersion],
+    versions: list[NoticeVersion], *, validate_accepted: bool = True,
 ) -> tuple[
     list[dict[str, Any]],
     int,
@@ -578,13 +585,17 @@ def _current_manifest_attempts(
             for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
             if isinstance(item.source_payload, dict)
             and item.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(item.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is None:
         return [], 0, {}
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    # The newest metadata is authoritative even when its manifest is malformed.
+    # Returning an invalid boundary prevents reuse of any older attachment.
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return [], 1, {}
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -602,14 +613,13 @@ def _current_manifest_attempts(
         for attachment in attachments
     }
     attempts: dict[str, NoticeVersion] = {}
+    current_generation_seen: set[str] = set()
     for version in sorted(versions, key=lambda item: item.version_no, reverse=True):
         payload = version.source_payload
         if (
             not isinstance(payload, dict)
             or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
             or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
-            or payload.get("prompt_version") != PROMPT_VERSION
-            or payload.get("processing_version") != PPS_PROCESSING_VERSION
             or payload.get("current_manifest_sha256") != current_manifest_sha256
         ):
             continue
@@ -622,7 +632,17 @@ def _current_manifest_attempts(
         # through to the same older current-contract candidate as before.
         if attachment_id in attempts:
             continue
-        if payload.get("status") == "ACCEPTED" and not _has_valid_quantitative_record(
+        contract_kind = classify_attempt_header(payload)
+        if contract_kind == "UNSUPPORTED":
+            current_generation_seen.add(attachment_id)
+            continue
+        if contract_kind == "CURRENT":
+            current_generation_seen.add(attachment_id)
+        elif attachment_id in current_generation_seen:
+            # A new-contract attempt is an authoritative generation barrier.
+            # An invalid new ACCEPTED must not resurrect a legacy score.
+            continue
+        if validate_accepted and payload.get("status") == "ACCEPTED" and not _has_valid_quantitative_record(
             version,
             attachment_id=attachment_id,
             current_manifest_sha256=current_manifest_sha256,
@@ -643,13 +663,14 @@ def pps_recorded_attachment_attempt_count(versions: list[NoticeVersion]) -> int:
     metadata = next(
         (item for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
          if isinstance(item.source_payload, dict)
-         and item.source_payload.get("kind") == PPS_METADATA_KIND
-         and isinstance(item.source_payload.get("attachment_manifest"), list)),
+         and item.source_payload.get("kind") == PPS_METADATA_KIND),
         None,
     )
     if metadata is None or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
         return 0
-    raw_manifest = metadata.source_payload["attachment_manifest"]
+    raw_manifest = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_manifest, list):
+        return 0
     attachments, _invalid_count = _validated_manifest_attachments(
         [dict(item) for item in raw_manifest if isinstance(item, dict)]
     )
@@ -683,8 +704,9 @@ def current_retryable_review_version_ids(
     is therefore reused on later continuations instead of triggering another
     provider call.  Deterministic REVIEW markers and fully validated ACCEPTED
     rows are never included.  An ACCEPTED extraction whose current quantitative
-    record still contains review candidates is included narrowly: the document
-    extraction succeeded, but the operator-visible quantitative review did not.
+    record still contains review candidates or a blocking generic source gap is
+    included narrowly: the document extraction succeeded, but its quantitative
+    review did not. Resolvable local-absence markers alone remain reusable.
     """
 
     _attachments, _invalid_count, attempts = _current_manifest_attempts(versions)
@@ -735,8 +757,7 @@ def current_retryable_review_version_ids(
             and payload.get("manifest_sha256") == current.get("manifest_sha256")
             and payload.get("current_manifest_sha256")
             == current.get("current_manifest_sha256")
-            and payload.get("prompt_version") == PROMPT_VERSION
-            and payload.get("processing_version") == PPS_PROCESSING_VERSION
+            and classify_attempt_header(payload) != "UNSUPPORTED"
         ):
             retryable.add(version.id)
     return frozenset(retryable)
@@ -782,7 +803,7 @@ def _has_valid_quantitative_record(
     key = (
         version, id(version.source_payload), version.file_sha256, attachment_id,
         current_manifest_sha256, QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
-        PROMPT_VERSION, SCHEMA_VERSION,
+        PROMPT_VERSION, SCHEMA_VERSION, EXTRACTION_READ_POLICY_VERSION,
     )
     if key not in cache:
         cache[key] = _validate_quantitative_record_binding(
@@ -806,15 +827,10 @@ def _validate_quantitative_record_binding(
         record = ValidatedQuantitativeAttachmentRecord.model_validate(raw)
     except Exception:
         return False
-    return bool(
-        record.attachment_id == attachment_id
-        and record.document_sha256 == version.file_sha256.casefold()
-        and record.manifest_sha256 == current_manifest_sha256
-        and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
-        and record.prompt_version == PROMPT_VERSION
-        and record.extraction_schema_version == SCHEMA_VERSION
-        and record.validation_fingerprint_sha256
-        == validated_quantitative_record_fingerprint(record)
+    return quantitative_record_contract_is_usable(
+        record, source_payload=payload, attachment_id=attachment_id,
+        document_sha256=version.file_sha256.casefold(),
+        manifest_sha256=current_manifest_sha256,
     )
 
 
@@ -828,9 +844,9 @@ def _accepted_quantitative_review_is_retryable(
 
     ``ACCEPTED`` describes the document extraction boundary, not whether its
     quantitative candidates can be activated.  Preserve ordinary accepted
-    output, no-table documents, and local-absence markers; only a valid current
-    record with explicit review candidates can cross this operator-authorised
-    retry boundary.
+    output, no-table documents, and local-absence markers. A valid current
+    record needs explicit review candidates or both a persisted generic gap
+    issue and a non-benign source gap to cross this authorised retry boundary.
     """
 
     payload = version.source_payload
@@ -850,9 +866,25 @@ def _accepted_quantitative_review_is_retryable(
         )
     except Exception:
         return False
-    return bool(
-        record.status in {"REVIEW", "INCOMPLETE"}
-        and record.review_candidates
+    if record.status not in {"REVIEW", "INCOMPLETE"}:
+        return False
+    if record.review_candidates:
+        return True
+    if not any(
+        issue.code == "EXTRACTION_DECLARED_INCOMPLETE"
+        and issue.disposition == "INCOMPLETE"
+        for issue in record.issues
+    ):
+        # A local absence may already be supplied by a current sibling table.
+        # This attachment-only predicate cannot decide that aggregate boundary.
+        return False
+    try:
+        original = ExtractionPayload.model_validate(payload.get("result"))
+    except (TypeError, ValueError):
+        return False
+    return any(
+        normalise_source_gap(gap) and not is_quantitative_irrelevant_gap(gap)
+        for gap in original.missing_or_unreadable
     )
 
 
@@ -887,9 +919,7 @@ def _accepted_quantitative_review_retry_boundary(
         == current_manifest_sha256
         and version.source_payload.get("document_sha256")
         == version.file_sha256.casefold()
-        and version.source_payload.get("prompt_version") == PROMPT_VERSION
-        and version.source_payload.get("processing_version")
-        == PPS_PROCESSING_VERSION
+        and classify_attempt_header(version.source_payload) != "UNSUPPORTED"
         and _accepted_quantitative_review_is_retryable(
             version,
             attachment_id=attachment_id,
@@ -959,7 +989,6 @@ def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> boo
         for item in versions
         if isinstance(item.source_payload, dict)
         and item.source_payload.get("kind") == PPS_METADATA_KIND
-        and isinstance(item.source_payload.get("attachment_manifest"), list)
     )
     current_manifest_sha256 = _digest(
         list(metadata.source_payload.get("attachment_manifest", []))
@@ -1013,13 +1042,16 @@ def pps_attachment_coverage(
             for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
             if isinstance(item.source_payload, dict)
             and item.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(item.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is None or not isinstance(metadata.source_payload, dict):
         return PpsAttachmentCoverage()
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        # Unknown current slots are not zero successful reads or old slots.
+        return PpsAttachmentCoverage()
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -1180,6 +1212,7 @@ def _public_attachment_failure_reason_code(
         error_code.startswith("HWPX_")
         or error_code.startswith("ATTACHMENT_")
         or error_code in {
+            "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
             "DOCUMENT_TEXT_TOO_LARGE",
             "DOCUMENT_PROCESSING_INCOMPLETE",
@@ -1192,6 +1225,7 @@ def _public_attachment_failure_reason_code(
         error_code.startswith("PDF_")
         or error_code.startswith("ATTACHMENT_")
         or error_code in {
+            "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
             "DOCUMENT_TEXT_TOO_LARGE",
             "DOCUMENT_PROCESSING_INCOMPLETE",
@@ -1203,6 +1237,7 @@ def _public_attachment_failure_reason_code(
     elif extension in {".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"} and (
         error_code.startswith(("HWP_", "XLSX_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
         or error_code in {
+            "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
             "DOCUMENT_TEXT_TOO_LARGE",
             "INVALID_CONTENT_LENGTH",
@@ -1256,7 +1291,6 @@ def public_analysis_reason(
             for item in reversed(ordered)
             if isinstance(item.source_payload, dict)
             and item.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(item.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
@@ -1267,7 +1301,10 @@ def public_analysis_reason(
             return result("ANALYZED", "ANALYZED", attempted=True)
         return result("REVIEW", "ATTACHMENT_NONE")
 
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return result("REVIEW", "ATTACHMENT_COVERAGE_INCOMPLETE")
+    raw_manifest_values = list(raw_values)
     manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -1823,10 +1860,52 @@ def _redact_public_extraction(data: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-def safe_public_live_extraction(payload: Any) -> dict[str, Any] | None:
+def safe_public_bound_extraction(
+    payload: Any, versions: list[NoticeVersion],
+) -> dict[str, Any] | None:
+    """Publish predecessor evidence only from its selected current manifest."""
+    if not isinstance(payload, dict):
+        return None
+    if classify_attempt_header(payload) != "LEGACY_CASE_V1":
+        return safe_public_live_extraction(payload)
+    attachments, invalid_count, attempts = _current_manifest_attempts(versions)
+    if invalid_count:
+        return None
+    attachment_id = str(payload.get("attachment_id") or "")
+    selected = attempts.get(attachment_id)
+    attachment = next(
+        (item for item in attachments if item["attachment_id"] == attachment_id), None,
+    )
+    if selected is None or selected.source_payload is not payload or attachment is None:
+        return None
+    return safe_public_live_extraction(
+        payload, version=selected,
+        current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
+        attachment_manifest_sha256=_digest(attachment),
+    )
+
+
+def safe_public_live_extraction(
+    payload: Any, *, version: NoticeVersion | None = None,
+    current_manifest_sha256: str | None = None,
+    attachment_manifest_sha256: str | None = None,
+) -> dict[str, Any] | None:
     """Strictly publish a validated PPS extraction without operational metadata."""
 
     if not isinstance(payload, dict):
+        return None
+    contract_kind = classify_attempt_header(payload)
+    if contract_kind == "LEGACY_CASE_V1" and not (
+        version is not None and version.source_payload is payload
+        and current_manifest_sha256 is not None
+        and attachment_manifest_sha256 is not None
+        and payload.get("manifest_sha256") == attachment_manifest_sha256
+        and payload.get("current_manifest_sha256") == current_manifest_sha256
+        and _has_valid_quantitative_record(
+            version, attachment_id=str(payload.get("attachment_id") or ""),
+            current_manifest_sha256=current_manifest_sha256,
+        )
+    ):
         return None
     attachment_id = payload.get("attachment_id")
     source_label = payload.get("source_label")
@@ -1839,9 +1918,7 @@ def safe_public_live_extraction(payload: Any) -> dict[str, Any] | None:
         payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
         or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
         or payload.get("status") != "ACCEPTED"
-        or payload.get("prompt_version") != PROMPT_VERSION
-        or payload.get("processing_version") != PPS_PROCESSING_VERSION
-        or payload.get("schema_version") != SCHEMA_VERSION
+        or contract_kind == "UNSUPPORTED"
         or not isinstance(attachment_id, str)
         or not _ATTACHMENT_ID_PATTERN.fullmatch(attachment_id)
         or not isinstance(source_label, str)
@@ -1976,6 +2053,7 @@ def _matching_extraction_version(
             or payload.get("current_manifest_sha256") != current_manifest_sha256
             or payload.get("document_sha256") != document_sha256
             or payload.get("prompt_version") != PROMPT_VERSION
+            or payload.get("schema_version") != SCHEMA_VERSION
             or payload.get("processing_version") != PPS_PROCESSING_VERSION
         ):
             continue
@@ -2004,8 +2082,13 @@ def _matching_extraction_version(
             continue
         if (
             error_code == "UNVERIFIED_QUOTE"
-            and payload.get("correction_prompt_version")
-            != CORRECTIVE_PROMPT_VERSION
+            and not (
+                payload.get("correction_prompt_version") == CORRECTIVE_PROMPT_VERSION
+                or (
+                    payload.get("correction_prompt_version") == SCHEMA_CORRECTIVE_PROMPT_VERSION
+                    and classify_attempt_header(payload) == "CURRENT"
+                )
+            )
         ):
             # A new corrective prompt is the recovery mechanism for this
             # exact failure.  Do not let a recent result from the superseded
@@ -2054,7 +2137,13 @@ def _stored_outcome_is_idempotent(
         prior = version.source_payload if isinstance(version.source_payload, dict) else {}
         correction_prompt_version = payload.get("correction_prompt_version")
         if (
-            correction_prompt_version != CORRECTIVE_PROMPT_VERSION
+            not (
+                correction_prompt_version == CORRECTIVE_PROMPT_VERSION
+                or (
+                    correction_prompt_version == SCHEMA_CORRECTIVE_PROMPT_VERSION
+                    and classify_attempt_header(payload) == "CURRENT"
+                )
+            )
             or prior.get("error_code") != "UNVERIFIED_QUOTE"
             or prior.get("correction_prompt_version") != correction_prompt_version
         ):
@@ -2096,7 +2185,6 @@ def _manifest_binding_is_current(
                 ).all()
                 if isinstance(item.source_payload, dict)
                 and item.source_payload.get("kind") == PPS_METADATA_KIND
-                and isinstance(item.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -2104,7 +2192,10 @@ def _manifest_binding_is_current(
         return False
     if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
         return False
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return False
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -2408,6 +2499,16 @@ def _persist_extraction_version(
     ):
         raise PpsEnrichmentError("PPS_MANIFEST_CHANGED_DURING_ENRICHMENT")
     accepted = outcome is not None and outcome.status == "ACCEPTED" and outcome.data is not None
+    if outcome is not None and (
+        outcome.prompt_version != PROMPT_VERSION or outcome.schema_version != SCHEMA_VERSION
+    ):
+        raise PpsEnrichmentError("EXTRACTION_WRITE_CONTRACT_MISMATCH")
+    if quantitative_validation_record is not None and (
+        quantitative_validation_record.prompt_version != CURRENT_EXTRACTION_CONTRACT.prompt
+        or quantitative_validation_record.extraction_schema_version != CURRENT_EXTRACTION_CONTRACT.schema
+        or quantitative_validation_record.validator_version != CURRENT_EXTRACTION_CONTRACT.validator
+    ):
+        raise PpsEnrichmentError("EXTRACTION_WRITE_CONTRACT_MISMATCH")
     if outcome is not None and processing_audit is not None:
         processing_audit = {
             **processing_audit,
@@ -2479,6 +2580,7 @@ def _persist_extraction_version(
             == payload["current_manifest_sha256"]
             and prior.get("document_sha256") == payload["document_sha256"]
             and prior.get("prompt_version") == payload["prompt_version"]
+            and prior.get("schema_version") == payload["schema_version"]
             and prior.get("processing_version") == payload["processing_version"]
             and prior.get("status") == payload["status"]
             and prior.get("error_code") == payload["error_code"]
@@ -2536,6 +2638,7 @@ def _persist_extraction_version(
                     and prior.get("current_manifest_sha256")
                     == payload["current_manifest_sha256"]
                     and prior.get("prompt_version") == payload["prompt_version"]
+                    and prior.get("schema_version") == payload["schema_version"]
                     and prior.get("processing_version") == payload["processing_version"]
                     and prior.get("status") == payload["status"]
                     and _stored_outcome_is_idempotent(
@@ -2595,7 +2698,6 @@ def record_internal_pps_enrichment_failure(
                 for item in versions
                 if isinstance(item.source_payload, dict)
                 and item.source_payload.get("kind") == PPS_METADATA_KIND
-                and isinstance(item.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -2603,6 +2705,7 @@ def record_internal_pps_enrichment_failure(
             metadata is None
             or not isinstance(metadata.source_payload, dict)
             or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA
+            or not isinstance(metadata.source_payload.get("attachment_manifest"), list)
         ):
             return PpsEnrichmentResult(
                 status="REVIEW",
@@ -2942,6 +3045,8 @@ def _enrich_selected_pps_attachment(
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
 
+    content: bytes | None = None
+    document_sha256: str | None = None
     try:
         content = download_public_attachment(
             attachment,
@@ -2953,9 +3058,13 @@ def _enrich_selected_pps_attachment(
         extraction = extract_pps_document_content(attachment["file_name"], content)
     except PpsEnrichmentError as exc:
         error_code = str(exc)
-        document_sha256 = _digest(
-            {"manifest": manifest_sha256, "error": error_code}
-        )
+        # A parser failure does not erase the successfully downloaded source.
+        # Only a failed download needs a synthetic marker; historical markers
+        # are retained and never reinterpreted as hashes of source bytes.
+        if document_sha256 is None:
+            document_sha256 = _digest(
+                {"manifest": manifest_sha256, "error": error_code}
+            )
         prior = _matching_extraction_version(
             versions,
             attachment_id=attachment["attachment_id"],
@@ -2973,6 +3082,11 @@ def _enrich_selected_pps_attachment(
             )
         processing_audit = {
             "processing_version": PPS_PROCESSING_VERSION,
+            "download_complete": content is not None,
+            "downloaded_bytes": len(content) if content is not None else 0,
+            "document_digest_basis": (
+                "DOWNLOADED_BYTES" if content is not None else "FAILED_DOWNLOAD_MARKER"
+            ),
             "source_read_complete": False,
             "analysis_input_complete": False,
             "source_characters": 0,
@@ -2998,6 +3112,7 @@ def _enrich_selected_pps_attachment(
         return PpsEnrichmentResult(
             status="REVIEW",
             attachments_discovered=attachments_discovered,
+            downloaded_bytes=len(content) if content is not None else 0,
             version_id=version.id,
             warnings=[error_code],
         )
@@ -3392,7 +3507,6 @@ def enrich_notice_from_pps(
                 for item in versions
                 if isinstance(item.source_payload, dict)
                 and item.source_payload.get("kind") == PPS_METADATA_KIND
-                and isinstance(item.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -3401,9 +3515,13 @@ def enrich_notice_from_pps(
                 status="SKIPPED",
                 warnings=["PPS_ATTACHMENT_MANIFEST_MISSING"],
             )
-        raw_manifest_values = list(
-            metadata.source_payload.get("attachment_manifest", [])
-        )
+        raw_values = metadata.source_payload.get("attachment_manifest")
+        if not isinstance(raw_values, list):
+            return PpsEnrichmentResult(
+                status="REVIEW",
+                warnings=["INVALID_ATTACHMENT_MANIFEST", "ATTACHMENT_COVERAGE_INCOMPLETE"],
+            )
+        raw_manifest_values = list(raw_values)
         manifest = [
             dict(item) for item in raw_manifest_values if isinstance(item, dict)
         ]

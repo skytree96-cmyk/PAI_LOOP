@@ -686,3 +686,19 @@ def test_period_parser_preserves_explicit_mixed_and_abbreviated_boundaries(perio
 def test_period_parser_keeps_incomplete_or_malformed_source_dates_unresolved(period):
     start, end = parse_period(period)
     assert start is None or end is None or end < start
+
+
+@pytest.mark.parametrize("period,expected", [
+    ('2024,01.02.~2024.12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+    ('2024.01.02 ~ 2024,12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+    ('2024, 2.29. ∼ 2025.1.2.', (date(2024, 2, 29), date(2025, 1, 2))),
+    ('2024,01.02\n2024.12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+    ('2024, 01.02\xa0—\xa02024.12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+])
+def test_period_parser_normalizes_one_year_month_comma_only_between_full_dates(period, expected):
+    assert parse_period(period) == expected
+
+
+@pytest.mark.parametrize("period", ['2024,01~2024.12.31', '2024,01.02~2024.12', '2024,01.02~12.31', '24,01.02~2024.12.31', '2024,01.02~24.12.31', '20244,01.02~2024.12.31', '2024.01,02~2024.12.31', '2024.01.02~2024.12,31', '2024,01.02~2024,12.31', '2024,02.30~2024.12.31', '2023,02.29~2024.12.31', '2024,13.01~2024.12.31', '2024,12.31~2024.01.02', '2024,01.02,~2024.12.31', '2024,01.02~2024.12.31,', 'SYN note, 2024.01.02~2024.12.31', 'SYN note 2024,01.02~2024.12.31', '2024,01.02~2024.12.31 SYN note', '2024,01.02~2024.12.31 2025.01.02', '20240102,20241231', '2024,01.02', '365 days,', '2024,01.02~2024/12/31'])
+def test_period_parser_rejects_comma_prose_incomplete_and_invalid_boundaries(period):
+    assert parse_period(period) == (None, None)
