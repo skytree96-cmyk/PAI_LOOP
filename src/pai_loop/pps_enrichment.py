@@ -583,13 +583,17 @@ def _current_manifest_attempts(
             for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
             if isinstance(item.source_payload, dict)
             and item.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(item.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is None:
         return [], 0, {}
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    # The newest metadata is authoritative even when its manifest is malformed.
+    # Returning an invalid boundary prevents reuse of any older attachment.
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return [], 1, {}
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -657,13 +661,14 @@ def pps_recorded_attachment_attempt_count(versions: list[NoticeVersion]) -> int:
     metadata = next(
         (item for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
          if isinstance(item.source_payload, dict)
-         and item.source_payload.get("kind") == PPS_METADATA_KIND
-         and isinstance(item.source_payload.get("attachment_manifest"), list)),
+         and item.source_payload.get("kind") == PPS_METADATA_KIND),
         None,
     )
     if metadata is None or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
         return 0
-    raw_manifest = metadata.source_payload["attachment_manifest"]
+    raw_manifest = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_manifest, list):
+        return 0
     attachments, _invalid_count = _validated_manifest_attachments(
         [dict(item) for item in raw_manifest if isinstance(item, dict)]
     )
@@ -965,7 +970,6 @@ def has_current_accepted_pps_extraction(session: Session, notice_id: str) -> boo
         for item in versions
         if isinstance(item.source_payload, dict)
         and item.source_payload.get("kind") == PPS_METADATA_KIND
-        and isinstance(item.source_payload.get("attachment_manifest"), list)
     )
     current_manifest_sha256 = _digest(
         list(metadata.source_payload.get("attachment_manifest", []))
@@ -1019,13 +1023,16 @@ def pps_attachment_coverage(
             for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
             if isinstance(item.source_payload, dict)
             and item.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(item.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is None or not isinstance(metadata.source_payload, dict):
         return PpsAttachmentCoverage()
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        # Unknown current slots are not zero successful reads or old slots.
+        return PpsAttachmentCoverage()
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -1186,6 +1193,7 @@ def _public_attachment_failure_reason_code(
         error_code.startswith("HWPX_")
         or error_code.startswith("ATTACHMENT_")
         or error_code in {
+            "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
             "DOCUMENT_TEXT_TOO_LARGE",
             "DOCUMENT_PROCESSING_INCOMPLETE",
@@ -1198,6 +1206,7 @@ def _public_attachment_failure_reason_code(
         error_code.startswith("PDF_")
         or error_code.startswith("ATTACHMENT_")
         or error_code in {
+            "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
             "DOCUMENT_TEXT_TOO_LARGE",
             "DOCUMENT_PROCESSING_INCOMPLETE",
@@ -1209,6 +1218,7 @@ def _public_attachment_failure_reason_code(
     elif extension in {".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"} and (
         error_code.startswith(("HWP_", "XLSX_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
         or error_code in {
+            "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
             "DOCUMENT_TEXT_TOO_LARGE",
             "INVALID_CONTENT_LENGTH",
@@ -1262,7 +1272,6 @@ def public_analysis_reason(
             for item in reversed(ordered)
             if isinstance(item.source_payload, dict)
             and item.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(item.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
@@ -1273,7 +1282,10 @@ def public_analysis_reason(
             return result("ANALYZED", "ANALYZED", attempted=True)
         return result("REVIEW", "ATTACHMENT_NONE")
 
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return result("REVIEW", "ATTACHMENT_COVERAGE_INCOMPLETE")
+    raw_manifest_values = list(raw_values)
     manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -2143,7 +2155,6 @@ def _manifest_binding_is_current(
                 ).all()
                 if isinstance(item.source_payload, dict)
                 and item.source_payload.get("kind") == PPS_METADATA_KIND
-                and isinstance(item.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -2151,7 +2162,10 @@ def _manifest_binding_is_current(
         return False
     if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
         return False
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return False
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -2654,7 +2668,6 @@ def record_internal_pps_enrichment_failure(
                 for item in versions
                 if isinstance(item.source_payload, dict)
                 and item.source_payload.get("kind") == PPS_METADATA_KIND
-                and isinstance(item.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -2662,6 +2675,7 @@ def record_internal_pps_enrichment_failure(
             metadata is None
             or not isinstance(metadata.source_payload, dict)
             or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA
+            or not isinstance(metadata.source_payload.get("attachment_manifest"), list)
         ):
             return PpsEnrichmentResult(
                 status="REVIEW",
@@ -3001,6 +3015,8 @@ def _enrich_selected_pps_attachment(
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
 
+    content: bytes | None = None
+    document_sha256: str | None = None
     try:
         content = download_public_attachment(
             attachment,
@@ -3012,9 +3028,13 @@ def _enrich_selected_pps_attachment(
         extraction = extract_pps_document_content(attachment["file_name"], content)
     except PpsEnrichmentError as exc:
         error_code = str(exc)
-        document_sha256 = _digest(
-            {"manifest": manifest_sha256, "error": error_code}
-        )
+        # A parser failure does not erase the successfully downloaded source.
+        # Only a failed download needs a synthetic marker; historical markers
+        # are retained and never reinterpreted as hashes of source bytes.
+        if document_sha256 is None:
+            document_sha256 = _digest(
+                {"manifest": manifest_sha256, "error": error_code}
+            )
         prior = _matching_extraction_version(
             versions,
             attachment_id=attachment["attachment_id"],
@@ -3032,6 +3052,11 @@ def _enrich_selected_pps_attachment(
             )
         processing_audit = {
             "processing_version": PPS_PROCESSING_VERSION,
+            "download_complete": content is not None,
+            "downloaded_bytes": len(content) if content is not None else 0,
+            "document_digest_basis": (
+                "DOWNLOADED_BYTES" if content is not None else "FAILED_DOWNLOAD_MARKER"
+            ),
             "source_read_complete": False,
             "analysis_input_complete": False,
             "source_characters": 0,
@@ -3057,6 +3082,7 @@ def _enrich_selected_pps_attachment(
         return PpsEnrichmentResult(
             status="REVIEW",
             attachments_discovered=attachments_discovered,
+            downloaded_bytes=len(content) if content is not None else 0,
             version_id=version.id,
             warnings=[error_code],
         )
@@ -3451,7 +3477,6 @@ def enrich_notice_from_pps(
                 for item in versions
                 if isinstance(item.source_payload, dict)
                 and item.source_payload.get("kind") == PPS_METADATA_KIND
-                and isinstance(item.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -3460,9 +3485,13 @@ def enrich_notice_from_pps(
                 status="SKIPPED",
                 warnings=["PPS_ATTACHMENT_MANIFEST_MISSING"],
             )
-        raw_manifest_values = list(
-            metadata.source_payload.get("attachment_manifest", [])
-        )
+        raw_values = metadata.source_payload.get("attachment_manifest")
+        if not isinstance(raw_values, list):
+            return PpsEnrichmentResult(
+                status="REVIEW",
+                warnings=["INVALID_ATTACHMENT_MANIFEST", "ATTACHMENT_COVERAGE_INCOMPLETE"],
+            )
+        raw_manifest_values = list(raw_values)
         manifest = [
             dict(item) for item in raw_manifest_values if isinstance(item, dict)
         ]
