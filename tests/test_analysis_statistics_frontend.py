@@ -92,6 +92,7 @@ const formatKstDateTime = n => n;
 """
     script = setup + source[start:end] + """
 renderAnalysisProgress({scope:'OPEN_PPS_NOT_CANCELLED', notice_count:282, attempted_notice_count:93,
+recorded_attempt_notice_count:176, recorded_attempt_attachment_count:400,
 attachment_count:941, audited_attachment_count:264, accepted_attachment_count:196,
 analysis_state_counts:{ANALYZED:35,REVIEW:58,PENDING:189},
 eligibility_counts:{PASS:0,FAIL:19,REVIEW:16,NOT_EVALUATED:247},
@@ -103,6 +104,9 @@ console.log(JSON.stringify({loaded,missing:els}));
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
     output = json.loads(result.stdout)
     loaded = output["loaded"]
+    assert "누적 처리 176개 공고·400개 파일" in loaded["analysisProgressScope"]["textContent"]
+    assert "현재 기준 분석 시도 93건" in loaded["analysisProgressScope"]["textContent"]
+    assert "현재 기준 파일 264개 검증" in loaded["analysisAttachmentDetail"]["textContent"]
     assert loaded["analysisAttachmentValue"]["textContent"] == "196 / 941 · 20.8%"
     assert loaded["analysisEligibilityValue"]["textContent"] == "19 / 282 · 6.7%"
     assert loaded["analysisScoreValue"]["textContent"] == "1 / 282 · 0.4%"
@@ -110,3 +114,29 @@ console.log(JSON.stringify({loaded,missing:els}));
     assert "일부 미산정 1" in loaded["analysisScoreDetail"]["textContent"]
     assert output["missing"]["analysisScoreValue"]["textContent"] == "—"
     assert "조회 대기" in output["missing"]["analysisProgressScope"]["textContent"]
+
+
+def test_dashboard_timeout_never_labels_filtered_board_size_as_database_total() -> None:
+    source = APP.read_text(encoding="utf-8")
+    start = source.index("  function dashboardWithoutGlobalTotals(")
+    end = source.index("  function deriveDashboard(", start)
+    script = """
+const deriveDashboard = rows => ({totalNotices: rows.length, cancelledCount:0, resultMissingCount:0, reviewCount:2, lastSync:'invented-now'});
+const numberOrNull = n => Number.isFinite(n) ? n : null;
+""" + source[start:end] + """
+const rows = [{},{}];
+const pending = dashboardWithoutGlobalTotals(rows);
+const previous = {totalNotices:740,cancelledCount:15,resultMissingCount:443,lastSync:'observed-time',analysisStatistics:{notice_count:282}};
+const retained = dashboardWithoutGlobalTotals(rows, previous);
+console.log(JSON.stringify({pending,retained,previous}));
+"""
+    output = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
+    result = json.loads(output.stdout)
+    for key in ("totalNotices", "cancelledCount", "resultMissingCount", "lastSync", "analysisStatistics"):
+        assert result["pending"][key] is None
+    assert result["pending"]["reviewCount"] == 2
+    assert result["retained"]["totalNotices"] == 740
+    assert result["retained"]["cancelledCount"] == 15
+    assert result["retained"]["resultMissingCount"] == 443
+    assert result["retained"]["lastSync"] == "observed-time"
+    assert result["retained"]["analysisStatistics"] == {"notice_count":282}

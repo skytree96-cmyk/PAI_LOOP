@@ -624,6 +624,47 @@ def _current_manifest_attempts(
     return attachments, invalid_count, attempts
 
 
+def pps_recorded_attachment_attempt_count(versions: list[NoticeVersion]) -> int:
+    """Count current-manifest processing history, independently of rule validity.
+
+    This observational count never supplies reusable extraction or active rules.
+    A prompt/validator upgrade cannot erase a recorded attempt, while replacing
+    the authoritative manifest does invalidate the old attachment binding.
+    Deterministic file failures count as processing, not as paid model calls.
+    """
+    metadata = next(
+        (item for item in sorted(versions, key=lambda value: value.version_no, reverse=True)
+         if isinstance(item.source_payload, dict)
+         and item.source_payload.get("kind") == PPS_METADATA_KIND
+         and isinstance(item.source_payload.get("attachment_manifest"), list)),
+        None,
+    )
+    if metadata is None or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
+        return 0
+    raw_manifest = metadata.source_payload["attachment_manifest"]
+    attachments, _invalid_count = _validated_manifest_attachments(
+        [dict(item) for item in raw_manifest if isinstance(item, dict)]
+    )
+    manifest_sha256 = _digest(raw_manifest)
+    attachment_digests = {item["attachment_id"]: _digest(item) for item in attachments}
+    recorded: set[str] = set()
+    for version in versions:
+        payload = version.source_payload
+        if not isinstance(payload, dict):
+            continue
+        attachment_id = str(payload.get("attachment_id") or "")
+        if (
+            payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+            and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and attachment_id in attachment_digests
+            and payload.get("manifest_sha256") == attachment_digests[attachment_id]
+            and payload.get("current_manifest_sha256") == manifest_sha256
+            and (payload.get("status") == "ACCEPTED" or payload.get("error_code"))
+        ):
+            recorded.add(attachment_id)
+    return len(recorded)
+
+
 def current_retryable_review_version_ids(
     versions: list[NoticeVersion],
 ) -> frozenset[str]:

@@ -95,8 +95,8 @@ def test_table_and_card_detail_actions_open_the_full_screen_view() -> None:
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".detail-link-button" in styles
     assert "width: 100vw" in styles
-    assert "styles.css?v=20260906-progress-v1" in html
-    assert "app.js?v=20260906-progress-v1" in html
+    assert "styles.css?v=20260906-history-v1" in html
+    assert "app.js?v=20260906-history-v1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:

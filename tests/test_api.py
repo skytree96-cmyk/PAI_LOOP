@@ -346,6 +346,9 @@ def test_prompt_stale_pps_audit_is_history_only_not_current_api_state(
     assert stats["notice_count"] == 1
     assert stats["attachment_count"] == 1
     assert stats["accepted_attachment_count"] == stats["audited_attachment_count"] == 0
+    assert stats["attempted_notice_count"] == 0
+    assert stats["recorded_attempt_notice_count"] == 1
+    assert stats["recorded_attempt_attachment_count"] == 1
     assert stats["analysis_state_counts"] == {"ANALYZED": 0, "REVIEW": 0, "PENDING": 1}
     assert stats["eligibility_counts"] == {"PASS": 0, "FAIL": 0, "REVIEW": 0, "NOT_EVALUATED": 1}
     assert stats["score_counts"]["NOT_EVALUATED"] == 1

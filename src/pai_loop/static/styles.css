@@ -816,6 +816,7 @@ svg {
 .analysis-progress { margin: 0 18px 28px; }
 .analysis-progress__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .analysis-progress .kpi-value { font-size: clamp(1.25rem, 2vw, 2rem); }
+.analysis-progress .kpi-value::after { content: none; }
 .analysis-progress .kpi-card p { line-height: 1.7; }
 @media (max-width: 760px) { .analysis-progress__grid { grid-template-columns: 1fr; } }
 

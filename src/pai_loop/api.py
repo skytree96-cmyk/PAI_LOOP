@@ -73,6 +73,7 @@ from .pps_enrichment import (
     department_keyword_coverage_count,
     persist_pps_metadata_version,
     pps_attachment_coverage,
+    pps_recorded_attachment_attempt_count,
     public_analysis_reason,
     public_attachment_analysis_statuses,
     resolve_ingestion_keywords,
@@ -942,6 +943,8 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "scope": "OPEN_PPS_NOT_CANCELLED",
         "notice_count": 0,
         "attempted_notice_count": 0,
+        "recorded_attempt_notice_count": 0,
+        "recorded_attempt_attachment_count": 0,
         "attachment_count": 0,
         "audited_attachment_count": 0,
         "accepted_attachment_count": 0,
@@ -982,6 +985,9 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                 coverage = pps_attachment_coverage(list(reversed(notice.versions)))
                 stats["notice_count"] += 1
                 stats["attempted_notice_count"] += int(reason.attempted)
+                recorded_attempts = pps_recorded_attachment_attempt_count(notice.versions)
+                stats["recorded_attempt_notice_count"] += int(recorded_attempts > 0)
+                stats["recorded_attempt_attachment_count"] += recorded_attempts
                 stats["attachment_count"] += coverage.discovered
                 stats["audited_attachment_count"] += coverage.audited
                 stats["accepted_attachment_count"] += coverage.accepted
