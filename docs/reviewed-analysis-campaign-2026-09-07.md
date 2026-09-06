@@ -1,0 +1,42 @@
+# Durable reviewed-analysis campaigns
+
+The existing protected backfill planner can create one explicitly authorized re-extraction campaign. The public manual-analysis route, same-origin/PIN checks, backend API-key requirements, worker lock, attachment limits, and existing queue lease protocol are unchanged. There is no new endpoint or database migration.
+
+## Creation and replay contract
+
+POST `/api/v1/operations/analysis-backfills/plan` with `queue_name: BACKFILL`, an ordered unique `notice_keys` list, `retry_reviewed: true`, and a stable `review_campaign_key`. Existing bounds remain required: chunk size 1, up to 10 manifest attachments, at most 30 offered notices per execution, and at most 768 parent continuation segments. This operation only plans work; it does not call the provider.
+
+The campaign identity contains every normalized planning field except the transport lease owner (`request_token`) and resume controls. Reusing the campaign key with the same ordered selection and policy returns the same parent, including after completion or dead-letter. Changing the scope, dry-run mode, or any policy/bound under that key returns 409. A dry-run campaign and the later live campaign therefore need different keys. A new execution may use a new `request_token`; that never creates a new campaign. Concurrent creation is serialized by the existing planner advisory/process lock.
+
+The entire requested scope must initially be eligible OPEN, unexpired PPS notices with a stored PPS metadata manifest and no conflicting active reservation. Missing, cancelled, manual-only, expired, or reserved keys make the whole initial request fail with 409; it never silently selects a smaller denominator. Existing generic backfills and DAILY plans retain their existing selection rules. A campaign cannot be appended to, upgraded from an older ordinary parent, or supplied with caller-chosen extraction version IDs. Unknown planner and batch fields are rejected rather than ignored.
+
+The response includes `review_policy: FROZEN_REVIEW_RETRY_V1` and the exact `review_campaign_key`. A new campaign launcher must verify these values before dispatching any child. Older servers ignored unknown input fields; the response echo prevents mistaking such a server's ordinary backfill for an authorized reviewed retry. Verify the deployed OpenAPI contract first.
+
+## Frozen extraction boundary
+
+At first creation, the server stores each notice's source boundary and the IDs returned by the existing `current_retryable_review_version_ids` validator. Fully valid accepted results and deterministic review markers are not added. An empty list is a valid frozen snapshot, never a request to recalculate it later. Missing attachments may still use the existing bounded enrichment path.
+
+The source boundary hashes the notice key, provider number, status, deadline, and newest PPS metadata identity/digest/full payload. It excludes analysis output versions and `updated_at`, so the campaign cannot invalidate its own source by appending an extraction result. Attachment histories are read one notice at a time and released; only IDs and hashes persist on the parent. No document text or company values are added to the campaign audit.
+
+Every child receives the original parent snapshot under the existing parent row lock. Orphan recovery can increment its operational work generation but cannot select newly produced REVIEW rows again. The extraction prompt/schema/validator/processing tuple is also frozen. A changed tuple or source produces a terminal failed child with `REVIEW_CAMPAIGN_CONTRACT_CHANGED` or `REVIEW_CAMPAIGN_SOURCE_CHANGED`, requiring a separately authorized new campaign. Checks occur before execution, immediately before provider dispatch, and before pipeline materialization. A provider call already in flight cannot be cancelled by a later source update; its usage/audit remains visible and that child's pipeline is blocked. Existing manifest validation still governs every extracted result.
+
+## Resume, bounded retries, and accounting
+
+The published W11 workflow may continue the parent through its existing `queue_name: ANY, resume_only: true` calls with no new retry fields. The server inherits the stored policy. Explicitly supplying `retry_reviewed: false` on that parent or attempting a scope append returns 409. Child requests retain the existing operation ID, segment ID, chunk index, exact single key, `enrich_missing: true`, and parent dry-run mode. Changing those modes is rejected before cached result replay.
+
+The existing global analysis execution lock keeps provider execution serial. A durable parent counter admits at most 10 execution attempts per notice. Each newly executable child or failed/no-result exact reopen consumes a slot before provider work; a cached HTTP response replay consumes none. A crash after reservation conservatively consumes a slot. Once the tenth result still requests attachment continuation, the queue marks that notice failed and does not requeue it. Reopening a failed claim after all slots are consumed returns a recorded `REVIEW_RETRY_CONTINUATION_LIMIT` result with no provider call. The original frozen extraction IDs remain unchanged throughout.
+
+The 10 execution-attempt cap differs from the 10-attachment manifest bound and the parent segment cap. Base/corrective attempts, HTTP failure before provider accounting persists, and source changes must not be summarized as an exact provider-call total without complete telemetry. Unknown crash usage remains unknown. A terminal queue outcome means work has stopped; it does not mean qualification PASS, automatic scoring activation, or confirmed company points.
+
+All selected notices remain in `planned`. Source changes, later cancellation/expiry, and exhausted retries contribute terminal failure/partial outcomes rather than disappearing. At every completed segment, `planned = attempted + remaining`; completed/partial/failed partition attempted. Use a fresh read-only census to report extraction coverage, qualification PASS/FAIL/REVIEW, scoring activation, and criterion fact bindings separately.
+
+## Operator sequence
+
+1. Finish or explicitly inspect the existing ordinary parent before creating a campaign. Poll its protected GET status; a queued or running child is not completion. A timeout pauses orchestration and retains its parent ID, never creates another parent.
+2. Deploy the reviewed-campaign API after the extraction contract fixes. Confirm the new OpenAPI fields and response policy echo.
+3. Take a fresh OPEN/PPS/unexpired key census and review the exact unique scope. For an operator-requested dry-run, use a separate campaign key; check the denominator and zero provider calls. Then execute every leased child and complete each segment with `dry_run: true` until that parent is terminal. The scheduled W11 live poll does not finish a dry-run parent, and an active dry-run reservation blocks creation of the overlapping live campaign. Retain both parent IDs. A dry-run is an operational choice, not a newly added authorization requirement.
+4. Create the authorized live campaign once with a new stable campaign key. Let the existing W11 lease/chunk/complete flow resume it. For a lost initial response, resend the exact same campaign identity. For a lost child response, resend only its exact operation/segment/chunk/key identity or resume its stored parent; do not launch a fresh generic batch.
+5. Any temporary manual n8n launcher must have Manual Trigger only, no schedule/webhook, inactive status, and manual/success/error execution saving plus progress saving off. Select the existing backend Header Auth credential in the UI; never embed a credential ID or secret in exported JSON. Persist checkpoints in the server audit, not manual execution static data. The launcher must stop on invalid policy echo or uncertain scope and emit only sanitized progress fields.
+6. Inspect terminal failures and run a new read census using the same key set. Report elapsed scope times, denominator, terminal outcomes, remaining work, extraction/qualification/score coverage, and incomplete provider accounting explicitly.
+
+Validation uses synthetic notices and mocked provider boundaries. SQLite thread tests exercise the process arbitration path; they do not prove PostgreSQL advisory-lock behavior or the live n8n/Render deployment. Production operation remains a separate, browser-controlled verification step.
