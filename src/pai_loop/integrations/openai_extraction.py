@@ -10,10 +10,12 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-PROMPT_VERSION = "pai-loop-extraction-0.5.4"
-SCHEMA_VERSION = "pai-loop-requirements-0.4.0"
+from ..extraction_contracts import CURRENT_EXTRACTION_CONTRACT
+
+PROMPT_VERSION = CURRENT_EXTRACTION_CONTRACT.prompt
+SCHEMA_VERSION = CURRENT_EXTRACTION_CONTRACT.schema
 CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.6.1"
 _MAX_CORRECTIVE_FAILED_QUOTE_CHARS = 240
 _MAX_CORRECTIVE_FAILED_QUOTES = 12
@@ -134,7 +136,7 @@ class QuantitativeCaseLiteral(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     literal: str = Field(min_length=1, max_length=1_000)
-    operator: Literal["GTE", "EQ", "IN"]
+    operator: Literal["GTE", "EQ", "IN", "LTE", "LT"]
     comparison_value: float | None
     category_values: list[str] = Field(
         max_length=100,
@@ -153,9 +155,16 @@ class QuantitativeCaseLiteral(BaseModel):
     row_order: int = Field(ge=1, le=100)
     evidence: EvidenceAnchor
 
+    @field_validator("comparison_value", "award_value", mode="before")
+    @classmethod
+    def reject_boolean_case_numbers(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("CASE numeric fields cannot be booleans")
+        return value
+
     @model_validator(mode="after")
     def validate_case_shape(self) -> "QuantitativeCaseLiteral":
-        if self.operator in {"GTE", "EQ"}:
+        if self.operator in {"GTE", "EQ", "LTE", "LT"}:
             if self.comparison_value is None or self.category_values:
                 raise ValueError("numeric CASE rows require only comparison_value")
         elif self.comparison_value is not None or not self.category_values:
@@ -1127,7 +1136,13 @@ class OpenAIExtractionClient:
             + ". Use CASE_TABLE when the source supplies multiple ordered cutoffs, exact discrete "
             "rows, rating/category groups, or percentage-of-maximum rows. Preserve source row order "
             "as consecutive row_order values. Use GTE only for an explicit 이상/>= row, EQ only for "
-            "an explicit discrete value row, and IN only for categories copied from that row. For "
+            "an explicit discrete value row, and IN only for categories copied from that row. "
+            "For an explicit final lower-tail row in a discrete count table, use LTE for 이하/<= "
+            "and LT for 미만/< with the exact numeric comparison_value and no category_values. "
+            "For example, 1건 이하 1점 is LTE 1 with POINTS 1; 2건 미만 1점 is LT 2. "
+            "Never encode a numeric count comparison as an IN category. Lower-tail LTE/LT "
+            "is supported only as the final row after descending GTE and optional EQ count rows; "
+            "do not invent missing rows or use it for amounts, ratios, years or categories. For "
             "CREDIT_RATING range rows, copy each complete source-cell range phrase into "
             "category_values exactly as written, including 이상/초과/이하/미만 (for example, "
             "A- 이상 or BBB- 미만). Never expand a range into implied grades and never return only "
