@@ -65,12 +65,12 @@
 }
 
 html {
-  min-width: 320px;
+  min-width: 280px;
   scroll-behavior: smooth;
 }
 
 body {
-  min-width: 320px;
+  min-width: 280px;
   min-height: 100vh;
   margin: 0;
   background: var(--canvas);
