@@ -97,7 +97,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.5"
+PIPELINE_VERSION = "analysis-pipeline-0.6.6"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
