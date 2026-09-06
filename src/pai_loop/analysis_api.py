@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import uuid
 import time
 import threading
@@ -32,6 +34,7 @@ from .daily_analysis_scope import (
     validated_source_material_scope,
 )
 from .eligibility_policy import POLICY_VERSION
+from .extraction_contracts import CURRENT_EXTRACTION_CONTRACT
 from .integrations.openai_extraction import OpenAITelemetry, merge_openai_telemetry
 from .models import AnalysisRun, IngestionJob, Notice, NoticeVersion
 from .notice_freshness import (
@@ -49,6 +52,7 @@ from .pps_enrichment import (
     MAX_OPENAI_CALLS_PER_ATTACHMENT,
     PpsEnrichmentResult,
     current_pps_attachment_coverage,
+    current_retryable_review_version_ids,
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
@@ -93,6 +97,7 @@ class ApiModel(BaseModel):
 
 
 class AnalysisBatchRequest(ApiModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
     notice_keys: list[str] = Field(min_length=1, max_length=20)
     dry_run: bool = False
     force: Literal[False] = False
@@ -232,6 +237,14 @@ class AnalysisBatchResponse(ApiModel):
 
 
 class AnalysisBackfillPlanRequest(ApiModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+    # An explicitly authorized, immutable server-to-server retry campaign.
+    # IDs and source boundaries are derived by the server, never caller supplied.
+    retry_reviewed: bool = False
+    review_campaign_key: str | None = Field(
+        default=None, min_length=1, max_length=120,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$",
+    )
     queue_name: Literal["BACKFILL", "DAILY", "ANY"] = "BACKFILL"
     # 3,000 is the upstream daily ingestion hard bound. A daily operation may
     # append a bounded backlog behind that exact created+updated union while the
@@ -315,6 +328,14 @@ class AnalysisBackfillPlanRequest(ApiModel):
 
     @model_validator(mode="after")
     def validate_resume_mode(self) -> "AnalysisBackfillPlanRequest":
+        if self.retry_reviewed:
+            if (self.queue_name != "BACKFILL" or not self.notice_keys
+                or self.review_campaign_key is None or self.resume_only
+                or self.refresh_notice_keys or self.retry_notice_keys
+                or self.include_retryable):
+                raise ValueError("review retry requires an explicit BACKFILL campaign")
+        elif self.review_campaign_key is not None:
+            raise ValueError("review_campaign_key requires retry_reviewed")
         if self.queue_name == "ANY" and (
             self.notice_keys
             or self.refresh_notice_keys
@@ -356,6 +377,8 @@ class AnalysisBackfillPlanRequest(ApiModel):
 
 
 class AnalysisBackfillPlanResponse(ApiModel):
+    review_policy: Literal["FROZEN_REVIEW_RETRY_V1"] | None = None
+    review_campaign_key: str | None = None
     job_id: str | None
     segment_id: str | None
     status: Literal["RUNNING", "COMPLETED", "PARTIAL", "DEAD_LETTER", "NO_ACTIVE"]
@@ -480,6 +503,189 @@ def get_session(request: Request):
 DbSession = Annotated[Session, Depends(get_session)]
 
 
+# A failed/reopened execution also consumes a slot. Cached HTTP result replay does
+# not. This caps recoveries without ever extending the original extraction boundary.
+REVIEW_CAMPAIGN_MAX_EXECUTIONS_PER_NOTICE = 10
+_REVIEW_CAMPAIGN_POLICY = "FROZEN_REVIEW_RETRY_V1"
+
+
+def _review_campaign_identity(payload: AnalysisBackfillPlanRequest) -> dict[str, Any]:
+    return payload.model_dump(mode="json", exclude={
+        "request_token", "resume_job_id", "resume_only", "resume_active",
+    })
+
+
+def _review_source_boundary(notice: Notice) -> str:
+    metadata = max(
+        (version for version in notice.versions
+         if isinstance(version.source_payload, dict)
+         and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"),
+        key=lambda version: version.version_no, default=None,
+    )
+    # Analysis appends extraction rows and may touch updated_at; neither is a new
+    # provider source. The full metadata digest also detects in-place mutation.
+    source = {
+        "notice_key": notice.notice_key, "status": notice.status,
+        "deadline": _utc(notice.deadline).isoformat(),
+        "bid_notice_no": notice.bid_notice_no,
+        "metadata": None if metadata is None else {
+            "id": metadata.id, "file_sha256": metadata.file_sha256,
+            "payload": metadata.source_payload,
+        },
+    }
+    return hashlib.sha256(json.dumps(source, sort_keys=True, ensure_ascii=False,
+                                    separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _matching_review_campaign(
+    session: Session, payload: AnalysisBackfillPlanRequest,
+) -> IngestionJob | None:
+    if not payload.retry_reviewed:
+        return None
+    candidates = list(session.scalars(select(IngestionJob).where(
+        IngestionJob.source == "ANALYSIS_BACKFILL",
+        IngestionJob.request_json["review_campaign_key"].as_string()
+        == payload.review_campaign_key,
+    ).with_for_update()).all())
+    if len(candidates) > 1:
+        raise HTTPException(status_code=409, detail="review campaign audit is ambiguous")
+    parent = candidates[0] if candidates else None
+    if parent is not None and (parent.request_json or {}).get("review_request") != _review_campaign_identity(payload):
+        raise HTTPException(status_code=409, detail="review campaign request is immutable")
+    return parent
+
+
+def _validate_review_campaign_resume(
+    parent: IngestionJob, payload: AnalysisBackfillPlanRequest,
+) -> None:
+    config = parent.request_json or {}
+    if payload.retry_reviewed:
+        if (config.get("review_policy") != _REVIEW_CAMPAIGN_POLICY
+            or config.get("review_request") != _review_campaign_identity(payload)):
+            raise HTTPException(status_code=409, detail="review campaign request is immutable")
+    elif config.get("review_policy"):
+        # W11 may inherit stored policy only through a pure continuation request.
+        if (not payload.resume_only or payload.notice_keys or payload.refresh_notice_keys
+            or payload.retry_notice_keys or "retry_reviewed" in payload.model_fields_set
+            or payload.dry_run != (parent.mode == "DRY_RUN")):
+            raise HTTPException(status_code=409, detail="review campaign requires pure resume")
+
+
+def _review_campaign_snapshot(session: Session, keys: list[str]) -> dict[str, Any]:
+    snapshots: dict[str, Any] = {}
+    # Keep full attachment histories bounded to one notice at a time.
+    for key in keys:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == key))
+        assert notice is not None  # selected eligibility was validated in this transaction
+        metadata = max(
+            (version for version in notice.versions
+             if isinstance(version.source_payload, dict)
+             and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"),
+            key=lambda version: version.version_no, default=None,
+        )
+        if metadata is None or not isinstance(metadata.source_payload.get("attachment_manifest"), list):
+            raise HTTPException(status_code=409, detail="review campaign requires a stored PPS manifest")
+        snapshots[key] = {
+            "source_boundary": _review_source_boundary(notice),
+            "version_ids": sorted(current_retryable_review_version_ids(notice.versions)),
+        }
+        # Do not clear shared session identity state or expire planner rows.
+        for version in list(notice.versions):
+            session.expunge(version)
+        session.expire(notice, ["versions"])
+        session.expunge(notice)
+    return {
+        "review_policy": _REVIEW_CAMPAIGN_POLICY,
+        "review_contract": list(CURRENT_EXTRACTION_CONTRACT),
+        "review_snapshots": snapshots,
+        "review_execution_counts": {key: 0 for key in keys},
+    }
+
+
+def _reserve_review_execution(parent: IngestionJob, key: str) -> dict[str, Any]:
+    config = dict(parent.request_json or {})
+    if not config.get("review_policy"):
+        return {}
+    snapshots = config.get("review_snapshots")
+    counts = config.get("review_execution_counts")
+    snapshot = snapshots.get(key) if isinstance(snapshots, dict) else None
+    count = counts.get(key) if isinstance(counts, dict) else None
+    if (config.get("review_policy") != _REVIEW_CAMPAIGN_POLICY
+        or not isinstance(snapshot, dict)
+        or not isinstance(snapshot.get("source_boundary"), str)
+        or not isinstance(snapshot.get("version_ids"), list)
+        or any(not isinstance(value, str) for value in snapshot["version_ids"])
+        or type(count) is not int or not 0 <= count <= REVIEW_CAMPAIGN_MAX_EXECUTIONS_PER_NOTICE):
+        raise HTTPException(status_code=409, detail="review campaign audit is malformed")
+    exhausted = count >= REVIEW_CAMPAIGN_MAX_EXECUTIONS_PER_NOTICE
+    if not exhausted:
+        counts = dict(counts)
+        count += 1
+        counts[key] = count
+        config["review_execution_counts"] = counts
+        parent.request_json = config
+    return {
+        "review_policy": _REVIEW_CAMPAIGN_POLICY,
+        "review_snapshot": snapshot,
+        "review_contract": config.get("review_contract"),
+        "review_execution_ordinal": count,
+        "review_execution_exhausted": exhausted,
+    }
+
+
+def _review_child_context(
+    request: Request, payload: AnalysisBatchRequest, job_id: str,
+) -> tuple[frozenset[str], str | None]:
+    if payload.operation_id is None:
+        return frozenset(), None
+    with request.app.state.session_factory() as session:
+        child = session.get(IngestionJob, job_id)
+        parent = session.get(IngestionJob, payload.operation_id)
+        config = child.request_json if child is not None else {}
+        parent_config = parent.request_json if parent is not None else {}
+        if not isinstance(config, dict) or not isinstance(parent_config, dict):
+            return frozenset(), "REVIEW_CAMPAIGN_AUDIT_INVALID"
+        if not parent_config.get("review_policy") and not config.get("review_policy"):
+            return frozenset(), None
+        snapshot = config.get("review_snapshot")
+        parent_snapshots = parent_config.get("review_snapshots")
+        key = payload.notice_keys[0]
+        if (config.get("review_policy") != _REVIEW_CAMPAIGN_POLICY
+            or parent_config.get("review_policy") != _REVIEW_CAMPAIGN_POLICY
+            or not isinstance(snapshot, dict) or not isinstance(parent_snapshots, dict)
+            or snapshot != parent_snapshots.get(key)
+            or not isinstance(snapshot.get("version_ids"), list)
+            or any(not isinstance(value, str) for value in snapshot["version_ids"])):
+            return frozenset(), "REVIEW_CAMPAIGN_AUDIT_INVALID"
+        if (config.get("review_contract") != list(CURRENT_EXTRACTION_CONTRACT)
+            or parent_config.get("review_contract") != config.get("review_contract")):
+            return frozenset(), "REVIEW_CAMPAIGN_CONTRACT_CHANGED"
+        if config.get("review_execution_exhausted"):
+            return frozenset(), "REVIEW_RETRY_CONTINUATION_LIMIT"
+        if manual_only_notice_keys(session, [key]):
+            return frozenset(), "REVIEW_CAMPAIGN_MANUAL_ONLY"
+        notice = session.scalar(select(Notice).where(Notice.notice_key == key))
+        if notice is None or _review_source_boundary(notice) != snapshot.get("source_boundary"):
+            return frozenset(), "REVIEW_CAMPAIGN_SOURCE_CHANGED"
+        return frozenset(snapshot["version_ids"]), None
+
+
+def _review_stopped_response(
+    payload: AnalysisBatchRequest, job_id: str, reason: str,
+) -> AnalysisBatchResponse:
+    return AnalysisBatchResponse(
+        job_id=job_id, status="PARTIAL", dry_run=payload.dry_run,
+        requested=1, processed=1, completed=0, skipped=0, failed=1,
+        document_materialized=0, evaluations_created=0, snapshots_refreshed=0,
+        openai_calls=0, warnings=[reason],
+        results=[AnalysisBatchItemOut(
+            notice_key=payload.notice_keys[0], status="FAILED", document_status=reason,
+            evaluation_status="NOT_RUN", snapshot_status="NOT_RUN", warnings=[reason],
+        )],
+        enrichment=AnalysisEnrichmentOut(requested=1, attempted=1, failed=1, warnings=[reason]),
+    )
+
+
 def _create_batch_job(
     request: Request,
     payload: AnalysisBatchRequest,
@@ -504,7 +710,9 @@ def _create_batch_job(
             # Re-check the durable marker at the execution boundary so that
             # stale planner state can never trigger an OpenAI call. Direct
             # user analysis has no operation_id and remains permitted.
-            if manual_only_notice_keys(session, payload.notice_keys):
+            if manual_only_notice_keys(session, payload.notice_keys) and not (
+                isinstance(parent.request_json, dict) and parent.request_json.get("review_policy")
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail="manual-only notice requires an explicit user analysis request",
@@ -512,6 +720,10 @@ def _create_batch_job(
             parent_config = (
                 parent.request_json if isinstance(parent.request_json, dict) else {}
             )
+            if parent_config.get("review_policy") and (
+                not payload.enrich_missing or payload.dry_run != (parent.mode == "DRY_RUN")
+            ):
+                raise HTTPException(status_code=409, detail="review campaign batch mode mismatch")
             parent_generations = _parent_work_generations(parent)
             claim_generations = {
                 key: parent_generations.get(key, 0) for key in payload.notice_keys
@@ -607,6 +819,7 @@ def _create_batch_job(
                         # finalisation. Re-open this exact claim; replay reuses
                         # every prior attachment outcome and safely continues.
                         child_config.pop("requeue_notice_keys", None)
+                        child_config.update(_reserve_review_execution(parent, payload.notice_keys[0]))
                         child.request_json = child_config
                         child.status = "RUNNING"
                         child.error_code = None
@@ -650,6 +863,7 @@ def _create_batch_job(
             request_json["segment_id"] = payload.segment_id
             request_json["chunk_index"] = payload.chunk_index
             request_json["work_generations"] = claim_generations
+            request_json.update(_reserve_review_execution(parent, payload.notice_keys[0]))
         session.add(
             IngestionJob(
                 id=job_id,
@@ -677,8 +891,30 @@ def _store_batch_response(
         if job is None:  # pragma: no cover - database invariant
             raise RuntimeError("analysis batch audit job disappeared")
         request_json = dict(job.request_json or {})
+        continuation = "ATTACHMENT_CONTINUATION_REQUIRED" in response.enrichment.warnings
+        limit_reached = (
+            request_json.get("review_policy") == _REVIEW_CAMPAIGN_POLICY
+            and int(request_json.get("review_execution_ordinal", 0))
+            >= REVIEW_CAMPAIGN_MAX_EXECUTIONS_PER_NOTICE
+        )
+        if continuation and limit_reached:
+            reason = "REVIEW_RETRY_CONTINUATION_LIMIT"
+            response.status = "PARTIAL"
+            response.warnings = sorted(set([*response.warnings, reason]))
+            response.enrichment.warnings = sorted(set([*response.enrichment.warnings, reason]))
+            for item in response.results:
+                if item.status == "COMPLETED":
+                    response.completed -= 1
+                elif item.status == "SKIPPED":
+                    response.skipped -= 1
+                else:
+                    continue
+                item.status = "FAILED"
+                item.warnings = sorted(set([*item.warnings, reason]))
+                response.failed += 1
+            request_json.pop("requeue_notice_keys", None)
         request_json["result_json"] = response.model_dump(mode="json")
-        if "ATTACHMENT_CONTINUATION_REQUIRED" in response.enrichment.warnings:
+        if continuation and not limit_reached:
             # A bounded request persisted all completed attachment attempts but
             # intentionally stopped before the next worst-case unit. Retain the
             # child as an audit row while making its notice key non-terminal so
@@ -1142,6 +1378,10 @@ def _matching_active_backfill(
         if candidate.status not in {"RUNNING", "PARTIAL"} or candidate.completed_at is not None:
             continue
         config = candidate.request_json if isinstance(candidate.request_json, dict) else {}
+        if payload.retry_reviewed:
+            continue  # selected only by the immutable campaign key, including terminal rows
+        if config.get("review_policy") and not payload.resume_only:
+            continue
         if (
             (
                 payload.queue_name == "ANY"
@@ -1709,6 +1949,8 @@ def _backfill_status(
         queue_name = "BACKFILL"
     return AnalysisBackfillPlanResponse(
         job_id=parent.id,
+        review_policy=config.get("review_policy"),
+        review_campaign_key=config.get("review_campaign_key"),
         segment_id=segment_id,
         status=response_status,
         queue_name=queue_name,
@@ -1790,7 +2032,7 @@ def plan_analysis_backfill(
 
     now = datetime.now(timezone.utc)
     source_binding = _daily_source_binding(session, payload, now=now)
-    parent: IngestionJob | None = None
+    parent: IngestionJob | None = _matching_review_campaign(session, payload)
     planner_mutated = False
     if payload.resume_job_id is not None:
         parent = session.scalar(
@@ -1800,9 +2042,14 @@ def plan_analysis_backfill(
         )
         if parent is None or parent.source != "ANALYSIS_BACKFILL":
             raise HTTPException(status_code=404, detail="analysis backfill not found")
-        if parent.status not in {"RUNNING", "PARTIAL", "COMPLETED"}:
+        review_terminal_replay = (
+            parent.status == "DEAD_LETTER" and parent.completed_at is not None
+            and isinstance(parent.request_json, dict)
+            and parent.request_json.get("review_policy") == _REVIEW_CAMPAIGN_POLICY
+        )
+        if parent.status not in {"RUNNING", "PARTIAL", "COMPLETED"} and not review_terminal_replay:
             raise HTTPException(status_code=409, detail="analysis backfill cannot be resumed")
-    else:
+    elif parent is None:
         if source_binding:
             parent = _matching_terminal_daily_source_parent(
                 session,
@@ -1839,6 +2086,17 @@ def plan_analysis_backfill(
                     parent = None
         if parent is None:
             parent = _matching_active_backfill(session, payload, now=now)
+
+    if parent is not None:
+        _validate_review_campaign_resume(parent, payload)
+        if parent.completed_at is not None and (parent.request_json or {}).get("review_policy"):
+            config = parent.request_json
+            return _backfill_status(
+                session, parent, chunk_size=1,
+                stale_after_hours=int(config["reservation_ttl_hours"]),
+                execution_limit=int(config["execution_limit"]),
+                max_continuations=int(config["max_continuations"]),
+            )
 
     if parent is None and payload.resume_only:
         return AnalysisBackfillPlanResponse(
@@ -1940,7 +2198,21 @@ def plan_analysis_backfill(
                 status_code=409,
                 detail="analysis scope exceeds max_total; increase the explicit durable plan bound",
             )
-        work_tokens = _notice_work_tokens(session, notice_keys)
+        if payload.retry_reviewed and (
+            notice_keys != payload.notice_keys
+            or any(not key.upper().startswith("PPS-") for key in notice_keys)
+        ):
+            raise HTTPException(status_code=409, detail="review campaign scope contains unavailable or reserved notices")
+        review_config = (
+            {**_review_campaign_snapshot(session, notice_keys),
+             "review_campaign_key": payload.review_campaign_key,
+             "review_request": _review_campaign_identity(payload)}
+            if payload.retry_reviewed else {}
+        )
+        work_tokens = (
+            {key: snapshot["source_boundary"] for key, snapshot in review_config["review_snapshots"].items()}
+            if payload.retry_reviewed else _notice_work_tokens(session, notice_keys)
+        )
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
             mode="DRY_RUN" if payload.dry_run else "LIVE",
@@ -1969,6 +2241,7 @@ def plan_analysis_backfill(
                     if payload.retry_epoch is not None
                 },
                 **source_binding,
+                **review_config,
             },
             matched=len(notice_keys),
             notice_keys=notice_keys,
@@ -2002,7 +2275,7 @@ def plan_analysis_backfill(
         # An intermediate commit would reopen the complete-vs-plan race.
         session.flush()
         planner_mutated = True
-    elif payload.notice_keys and parent.completed_at is None:
+    elif payload.notice_keys and parent.completed_at is None and not payload.retry_reviewed:
         # A 08:00 daily run may discover new/updated keys while a prior day's
         # continuation is still active. Append them ahead of the old remaining
         # queue but never re-add child-audited keys.
@@ -2156,7 +2429,7 @@ def plan_analysis_backfill(
         else stored_execution_limit
     )
     execution_limit = max(1, min(30, effective_execution_limit))
-    if config.get("execution_limit") != execution_limit:
+    if not config.get("review_policy") and config.get("execution_limit") != execution_limit:
         config["execution_limit"] = execution_limit
         parent.request_json = config
         planner_mutated = True
@@ -2165,9 +2438,9 @@ def plan_analysis_backfill(
     )
     # Upgrade only shipped workflow bounds. Explicit smaller bounds remain
     # meaningful for fail-closed tests and operator-created jobs.
-    if configured_continuations in {96, 128} and payload.max_continuations >= 768:
+    if not config.get("review_policy") and configured_continuations in {96, 128} and payload.max_continuations >= 768:
         configured_continuations = 768
-    elif configured_continuations == 96 and payload.max_continuations >= 128:
+    elif not config.get("review_policy") and configured_continuations == 96 and payload.max_continuations >= 128:
         configured_continuations = 128
     max_continuations = max(1, min(768, configured_continuations))
     if config.get("max_continuations") != max_continuations:
@@ -2864,6 +3137,12 @@ def _run_notice_analysis_batch(
     if stored_response is not None:
         return stored_response
     try:
+        if payload.operation_id is not None:
+            retry_reviewed_version_ids, stop_reason = _review_child_context(request, payload, job_id)
+            if stop_reason:
+                response = _review_stopped_response(payload, job_id, stop_reason)
+                _store_batch_response(request, job_id=job_id, response=response)
+                return response
         return _execute_notice_analysis_batch(
             payload,
             request,
@@ -3073,6 +3352,12 @@ def _execute_notice_analysis_batch(
                 enrichment_skipped += 1
                 enrichment_warnings.append("AUTOMATIC_NOTICE_NOT_ACTIVE")
                 continue
+            if payload.operation_id is not None:
+                _, stop_reason = _review_child_context(request, payload, job_id)
+                if stop_reason:
+                    response = _review_stopped_response(payload, job_id, stop_reason)
+                    _store_batch_response(request, job_id=job_id, response=response)
+                    return response
             try:
                 enrichment_result = (
                     _enrich_one_notice(
@@ -3137,6 +3422,20 @@ def _execute_notice_analysis_batch(
                 enrichment_skipped += 1
             else:
                 enrichment_failed += 1
+
+        if payload.operation_id is not None:
+            _, stop_reason = _review_child_context(request, payload, job_id)
+            if stop_reason:
+                rows.append(AnalysisBatchItemOut(
+                    notice_key=notice_key, status="FAILED", document_status=stop_reason,
+                    evaluation_status="NOT_RUN", snapshot_status="NOT_RUN",
+                    warnings=sorted(set([stop_reason, *item_enrichment_warnings])),
+                ))
+                failed += 1
+                # Preserve all paid telemetry, but never continue a changed source.
+                enrichment_warnings = [value for value in enrichment_warnings
+                                       if value != "ATTACHMENT_CONTINUATION_REQUIRED"]
+                continue
 
         if payload.dry_run:
             item = _dry_run_item(request, notice_key)
@@ -3226,6 +3525,19 @@ def _execute_notice_analysis_batch(
                 )
                 skipped += 1
                 continue
+            if payload.operation_id is not None:
+                _, stop_reason = _review_child_context(request, payload, job_id)
+                if stop_reason:
+                    rows.append(AnalysisBatchItemOut(
+                        notice_key=notice_key, status="FAILED", document_status=stop_reason,
+                        evaluation_status="NOT_RUN", snapshot_status="NOT_RUN",
+                        warnings=sorted(set([stop_reason, *item_enrichment_warnings])),
+                    ))
+                    failed += 1
+                    # A changed source is terminal for this frozen campaign.
+                    enrichment_warnings = [value for value in enrichment_warnings
+                                           if value != "ATTACHMENT_CONTINUATION_REQUIRED"]
+                    continue
             try:
                 result = run_analysis_pipeline(session, notice_id=notice_id)
             except AnalysisPipelineError as exc:
