@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, load_only, selectinload
+from sqlalchemy.orm import Session, load_only, raiseload, selectinload
 
 from .daily_analysis_scope import material_scope_fields
 from .analysis_pipeline import _select_source_versions
@@ -856,6 +856,89 @@ def _load_notice_summary_batch(
     return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
 
 
+
+def _load_dashboard_notice_batch(
+    session: Session,
+    notice_ids: list[str],
+) -> list[Notice]:
+    """Read counter inputs without historical evaluation/output payloads.
+
+    This graph must never enter full summary serialization or a write path.
+    Source versions remain complete so current manifest/binding gates are
+    exactly the same as the ordinary summary contract.
+    """
+
+    if not notice_ids:
+        return []
+    loaded = list(session.scalars(
+        select(Notice).where(Notice.id.in_(notice_ids)).options(
+            load_only(
+                Notice.id, Notice.notice_key, Notice.bid_notice_no, Notice.revision_no,
+                Notice.title, Notice.status, Notice.published_at, Notice.deadline,
+                Notice.created_at, raiseload=True,
+            ),
+            selectinload(Notice.versions),
+            selectinload(Notice.evaluations).load_only(
+                Evaluation.id, Evaluation.notice_id, Evaluation.notice_version_id,
+                Evaluation.evaluated_at, Evaluation.deadline_snapshot_at,
+                Evaluation.eligibility, Evaluation.readiness_status, raiseload=True,
+            ),
+            selectinload(Notice.analysis_runs).load_only(
+                AnalysisRun.id, AnalysisRun.notice_id, AnalysisRun.notice_version_id,
+                AnalysisRun.generated_at, AnalysisRun.input_sha256,
+                AnalysisRun.basis_versions, raiseload=True,
+            ),
+            raiseload("*"),
+        )
+    ).all())
+    by_id = {notice.id: notice for notice in loaded}
+    return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
+
+
+def _load_dashboard_run_snapshots(
+    session: Session,
+    run_ids: set[str],
+) -> tuple[dict[str, list[ScoreSnapshot]], dict[str, list[RecommendationSnapshot]]]:
+    """Read only selected current runs; never search older output for success."""
+
+    scores: dict[str, list[ScoreSnapshot]] = {}
+    recommendations: dict[str, list[RecommendationSnapshot]] = {}
+    if not run_ids:
+        return scores, recommendations
+    for score in session.scalars(
+        select(ScoreSnapshot).where(
+            ScoreSnapshot.analysis_run_id.in_(run_ids),
+            ScoreSnapshot.score_key == "quantitative.total",
+        ).options(
+            load_only(
+                ScoreSnapshot.id, ScoreSnapshot.analysis_run_id, ScoreSnapshot.score_key,
+                ScoreSnapshot.score_type, ScoreSnapshot.value, ScoreSnapshot.lower_value,
+                ScoreSnapshot.upper_value, ScoreSnapshot.unit, ScoreSnapshot.status,
+                ScoreSnapshot.band, ScoreSnapshot.confidence, ScoreSnapshot.method_version,
+                ScoreSnapshot.basis_json, raiseload=True,
+            ),
+            raiseload("*"),
+        )
+    ).all():
+        scores.setdefault(score.analysis_run_id, []).append(score)
+    for recommendation in session.scalars(
+        select(RecommendationSnapshot).where(
+            RecommendationSnapshot.analysis_run_id.in_(run_ids),
+            RecommendationSnapshot.recommendation_key == "bid:system",
+        ).order_by(RecommendationSnapshot.rank).options(
+            load_only(
+                RecommendationSnapshot.id, RecommendationSnapshot.analysis_run_id,
+                RecommendationSnapshot.recommendation_key,
+                RecommendationSnapshot.recommendation, RecommendationSnapshot.rank,
+                raiseload=True,
+            ),
+            raiseload("*"),
+        )
+    ).all():
+        recommendations.setdefault(recommendation.analysis_run_id, []).append(recommendation)
+    return scores, recommendations
+
+
 def _bid_outcome_notice_ids(
     session: Session,
     notice_ids: list[str],
@@ -963,11 +1046,18 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         batch_ids = notice_ids[
             batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
         ]
-        notices = _load_notice_summary_batch(
-            session, batch_ids, include_quantitative_scores=True
+        # Full summaries need their existing evaluation/condition projections.
+        # Keep only the initial summary-bearing batch full; subsequent batches
+        # are counter-only graphs whose deferred fields fail closed on access.
+        notices = (
+            _load_notice_summary_batch(session, batch_ids)
+            if len(recent_notices) < 10
+            else _load_dashboard_notice_batch(session, batch_ids)
         )
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
+        open_runs: list[AnalysisRun | None] = []
+        quantitative_runs: list[AnalysisRun | None] = []
         for notice in notices:
             with pps_attachment_audit_read_scope():
                 effective_status = _effective_notice_status(notice)
@@ -982,6 +1072,9 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                 if effective_status in lifecycle_counts:
                     lifecycle_counts[effective_status] += 1
                 latest = None if is_cancelled else _latest_evaluation(notice)
+                run = latest_current_analysis_run(notice) if effective_status == "OPEN" else None
+                if effective_status == "OPEN":
+                    open_runs.append(run)
                 if effective_status == "OPEN" and not is_cancelled and _source_kind(notice) == "PPS":
                     stats = analysis_statistics
                     reason = public_analysis_reason(notice.versions, evaluated=latest is not None)
@@ -996,17 +1089,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     stats["accepted_attachment_count"] += coverage.accepted
                     stats["analysis_state_counts"][reason.state] += 1
                     stats["eligibility_counts"][latest.eligibility if latest else "NOT_EVALUATED"] += 1
-                    run = latest_current_analysis_run(notice)
-                    totals = [s for s in run.scores if s.score_key == "quantitative.total"] if run else []
-                    estimate = (
-                        public_quantitative_snapshot_projection(run, totals[0])
-                        if run is not None and len(totals) == 1 else None
-                    )
-                    stats["score_counts"][estimate.overall_status if estimate else "NOT_EVALUATED"] += 1
-                    stats["score_range_notice_count"] += int(
-                        estimate is not None and estimate.lower_points is not None
-                        and estimate.upper_points is not None
-                    )
+                    quantitative_runs.append(run)
                 if latest and effective_status in lifecycle_counts:
                     analyzed_ended_count += 1
                 if is_cancelled:
@@ -1031,9 +1114,6 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     active_count += 1
                     if not is_cancelled and _needs_analysis_or_review(notice, latest):
                         analysis_review_backlog_count += 1
-                    recommendation, _updated_at = _latest_system_recommendation(notice)
-                    if recommendation is not None:
-                        active_recommendation_counts[recommendation] += 1
                     if (
                         not is_cancelled
                         and _comparable_utc(notice.deadline).astimezone(KST).date()
@@ -1050,10 +1130,31 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                         ).model_dump(mode="json")
                     )
 
+        scores_by_run, recommendations_by_run = _load_dashboard_run_snapshots(
+            session, {run.id for run in open_runs if run is not None}
+        )
+        for run in quantitative_runs:
+            totals = scores_by_run.get(run.id, []) if run is not None else []
+            estimate = (
+                public_quantitative_snapshot_projection(run, totals[0])
+                if run is not None and len(totals) == 1 else None
+            )
+            analysis_statistics["score_counts"][estimate.overall_status if estimate else "NOT_EVALUATED"] += 1
+            analysis_statistics["score_range_notice_count"] += int(
+                estimate is not None and estimate.lower_points is not None
+                and estimate.upper_points is not None
+            )
+        for run in open_runs:
+            recommendations = recommendations_by_run.get(run.id, []) if run is not None else []
+            recommendation = recommendations[0].recommendation if recommendations else None
+            if recommendation in active_recommendation_counts:
+                active_recommendation_counts[recommendation] += 1
+
         # The session is read-only here.  Detaching each bounded page releases
         # large JSON extraction payloads before the next page is materialised.
         session.expunge_all()
         del authorities, outcome_notice_ids, notices
+        del open_runs, quantitative_runs, scores_by_run, recommendations_by_run
 
     return {
         "generated_at": now,
