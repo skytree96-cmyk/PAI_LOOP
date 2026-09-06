@@ -652,8 +652,12 @@ def _policy_items(
         profile=profile,
         deadline=notice.deadline,
     )
-    by_key = {str(item.get("requirement_id")): item for item in classified["items"]}
-    return [(item, by_key[item.requirement_key]) for item in merged]
+    classified_items = classified["items"]
+    expected_keys = [item.requirement_key for item in merged]
+    actual_keys = [str(item.get("requirement_id")) for item in classified_items]
+    if actual_keys != expected_keys or len(set(actual_keys)) != len(actual_keys):
+        raise AnalysisPipelineSourceError("Requirement policy expansion changed source pairing")
+    return list(zip(merged, classified_items, strict=True))
 
 
 def _source_location(item: _MergedRequirement) -> str | None:
@@ -1813,6 +1817,22 @@ def run_analysis_pipeline(
                     )
                 ).all()
             )
+            # A declared performance bidder gate whose recognition scope has
+            # not been bound cannot consume a generic or fabricated Boolean
+            # fact. Keep only those pending keys absent so the existing linked
+            # missing-evidence REVIEW path applies; other facts and AND/OR
+            # evaluation remain unchanged.
+            pending_performance_fact_keys = {
+                atomic.fact_key
+                for atomic, (_item, policy) in zip(
+                    prospective_atomics, materialized_policy_items, strict=True,
+                )
+                if policy.get("requires_performance_scope_binding") is True
+            }
+            eligibility_company_facts = [
+                fact for fact in company_facts
+                if fact.fact_key not in pending_performance_fact_keys
+            ]
             fact_manifest = _selected_fact_manifest(
                 company_facts,
                 fact_keys=(
@@ -2081,7 +2101,7 @@ def run_analysis_pipeline(
                 notice,
                 materialized_version,
                 prospective_atomics,
-                company_facts,
+                eligibility_company_facts,
                 verified_document_requirement_keys=gate_candidate_keys,
                 no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions={},
@@ -2130,7 +2150,7 @@ def run_analysis_pipeline(
                 notice,
                 materialized_version,
                 prospective_atomics,
-                company_facts,
+                eligibility_company_facts,
                 verified_document_requirement_keys=verified_requirement_keys,
                 no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions=derived_risk_dimensions,
@@ -2367,6 +2387,12 @@ def run_analysis_pipeline(
                             ),
                             "attachment_ids": sorted(item.attachment_ids),
                             "policy_outcome": policy.get("outcome"),
+                            "performance_scope_binding_pending": (
+                                policy.get("requires_performance_scope_binding") is True
+                            ),
+                            "performance_relation_unresolved": (
+                                policy.get("performance_relation_unresolved") is True
+                            ),
                             "parse_confidence": _parse_confidence(item),
                         },
                     )
