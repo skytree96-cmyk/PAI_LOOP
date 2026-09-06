@@ -44,8 +44,10 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.14"
-QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = "pai-loop-quantitative-attachment-validator-0.6.17"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
+from .extraction_contracts import CURRENT_EXTRACTION_CONTRACT, classify_record_contract
+
+QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = CURRENT_EXTRACTION_CONTRACT.validator
 MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 
 # Issue-only proof changes use targeted fingerprint revisions below.  Changes to
@@ -149,7 +151,7 @@ class ImmutableQuantitativeThreshold(FrozenModel):
 
 class ImmutableQuantitativeCase(FrozenModel):
     literal: str
-    operator: Literal["GTE", "EQ", "IN"]
+    operator: Literal["GTE", "EQ", "IN", "LTE", "LT"]
     comparison_value: float | None
     category_values: tuple[str, ...]
     award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
@@ -835,14 +837,14 @@ def _case_condition_matches(
     case: QuantitativeCaseLiteral,
     condition: str,
 ) -> bool:
-    if case.operator == "GTE":
-        if candidate.metric == "PERFORMANCE_AMOUNT":
+    if case.operator in {"GTE", "LTE", "LT"}:
+        if case.operator == "GTE" and candidate.metric == "PERFORMANCE_AMOUNT":
             return _amount_gte_condition_matches(candidate, case, condition)
         comparison = _decimal(case.comparison_value)
         return bool(
             comparison is not None
             and Counter(_comparator_terms(condition))
-            == Counter(((comparison, "GTE"),))
+            == Counter(((comparison, case.operator),))
         )
     if case.operator == "EQ":
         return bool(
@@ -875,14 +877,14 @@ def _case_comparison_matches(
         )
         else literal
     )
-    if case.operator == "GTE":
-        if candidate.metric == "PERFORMANCE_AMOUNT":
+    if case.operator in {"GTE", "LTE", "LT"}:
+        if case.operator == "GTE" and candidate.metric == "PERFORMANCE_AMOUNT":
             return _amount_gte_condition_matches(candidate, case, condition)
         comparison = _decimal(case.comparison_value)
         return bool(
             comparison is not None
             and Counter(_comparator_terms(condition))
-            == Counter(((comparison, "GTE"),))
+            == Counter(((comparison, case.operator),))
         )
     return _literal_contains_number(case.comparison_value, condition)
 
@@ -6439,11 +6441,11 @@ def _validate_cases(
                         **context,
                     )
                 )
-        elif case.operator == "GTE" and case.comparison_value is not None:
+        elif case.operator in {"GTE", "LTE", "LT"} and case.comparison_value is not None:
             comparison = _decimal(case.comparison_value)
             comparator_issue = _comparator_binding_issue(
                 literal=case.literal,
-                expected=((comparison, "GTE"),) if comparison is not None else (),
+                expected=((comparison, case.operator),) if comparison is not None else (),
                 mismatch_code="CASE_COMPARATOR_MISMATCH",
                 mismatch_message="CASE_TABLE 원문의 비교 연산자와 구조화한 조건이 일치하지 않습니다.",
                 context=context,
@@ -7435,6 +7437,8 @@ def validate_quantitative_attachment_extraction(
     storing the raw document again.
     """
 
+    if prompt_version != PROMPT_VERSION or extraction_schema_version != SCHEMA_VERSION:
+        raise ValueError("new quantitative validation requires the current extraction contract")
     binding = AttachmentDocumentBinding(
         attachment_id=attachment_id,
         document_sha256=document_sha256,
@@ -7491,6 +7495,144 @@ def validate_quantitative_attachment_extraction(
     )
 
 
+def quantitative_record_contract_is_usable(
+    record: ValidatedQuantitativeAttachmentRecord,
+    *,
+    source_payload: Mapping[str, object] | None,
+    attachment_id: str,
+    document_sha256: str,
+    manifest_sha256: str,
+) -> bool:
+    """Check stored proof integrity and one exact predecessor feature contract.
+
+    This rechecks the stored proof, not absent original document text. Legacy
+    REVIEW candidates omit their CASE rows, so their original extraction is
+    mandatory: checking only executable AVAILABLE candidates would be unsafe.
+    """
+    if not (
+        record.attachment_id == attachment_id
+        and record.document_sha256 == document_sha256
+        and record.manifest_sha256 == manifest_sha256
+        and record.validation_fingerprint_sha256
+        == validated_quantitative_record_fingerprint(record)
+    ):
+        return False
+    raw = record.model_dump(mode="json")
+    if source_payload is None:
+        # Preserve detached current-record callers. A legacy record always
+        # needs its original extraction context; never synthesize that proof.
+        return (
+            record.prompt_version == PROMPT_VERSION
+            and record.extraction_schema_version == SCHEMA_VERSION
+            and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
+        )
+    if source_payload.get("source_kind") != "PPS_PUBLIC_ATTACHMENT":
+        return (
+            record.prompt_version == PROMPT_VERSION
+            and record.extraction_schema_version == SCHEMA_VERSION
+            and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
+        )
+    kind = classify_record_contract(source_payload, raw)
+    if kind == "UNSUPPORTED":
+        return False
+    if kind == "CURRENT":
+        # Existing current records are validated against caller-owned bindings;
+        # optional redundant payload digest fields do not change that contract.
+        return True
+    if not (
+        source_payload.get("attachment_id") == attachment_id
+        and source_payload.get("document_sha256") == document_sha256
+        and source_payload.get("current_manifest_sha256") == manifest_sha256
+    ):
+        return False
+    if not (
+        source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+        and source_payload.get("source_kind") == "PPS_PUBLIC_ATTACHMENT"
+        and source_payload.get("status") == "ACCEPTED"
+        and isinstance(source_payload.get("result"), dict)
+        and isinstance(source_payload.get("quantitative_validation_record"), dict)
+    ):
+        return False
+    try:
+        original = ExtractionPayload.model_validate(source_payload["result"])
+        original_record = ValidatedQuantitativeAttachmentRecord.model_validate(
+            source_payload["quantitative_validation_record"]
+        )
+    except (ValidationError, TypeError, ValueError):
+        return False
+    if original_record != record:
+        return False
+    original_candidates = {
+        (table.table_id, candidate.criterion_id): candidate
+        for table in original.quantitative_tables for candidate in table.criteria
+    }
+    original_keys = [
+        (table.table_id, candidate.criterion_id)
+        for table in original.quantitative_tables for candidate in table.criteria
+    ]
+    stored_keys = [
+        (candidate.table_id, candidate.criterion_id)
+        for candidate in (*record.available_candidates, *record.review_candidates)
+    ]
+    if (
+        len(original_keys) != len(set(original_keys))
+        or Counter(original_keys) != Counter(stored_keys)
+        or Counter(table.table_id for table in original.quantitative_tables)
+        != Counter(table.table_id for table in record.tables)
+    ):
+        return False
+
+    def old_case_shape(case: QuantitativeCaseLiteral | ImmutableQuantitativeCase) -> bool:
+        if case.operator in {"GTE", "EQ"}:
+            return case.comparison_value is not None and not case.category_values
+        return (
+            case.operator == "IN" and case.comparison_value is None
+            and bool(case.category_values)
+        )
+
+    if any(
+        not old_case_shape(case)
+        for candidate in original_candidates.values() for case in candidate.cases
+    ) or any(
+        not old_case_shape(case)
+        for candidate in record.available_candidates for case in candidate.cases
+    ):
+        return False
+    # Source repair can expand an anchor or recover a missing source unit; it
+    # cannot change extracted CASE operators, values, awards, or row order.
+    for candidate in record.available_candidates:
+        prior = original_candidates[(candidate.table_id, candidate.criterion_id)]
+        if (
+            (candidate.metric, candidate.scoring_method, candidate.max_points)
+            != (prior.metric, prior.scoring_method, prior.max_points)
+            or len(candidate.cases) != len(prior.cases)
+        ):
+            return False
+        for current_case, prior_case in zip(candidate.cases, prior.cases):
+            if (
+                current_case.operator, current_case.comparison_value,
+                tuple(current_case.category_values), current_case.award_kind,
+                current_case.award_value, current_case.row_order,
+            ) != (
+                prior_case.operator, prior_case.comparison_value,
+                tuple(prior_case.category_values), prior_case.award_kind,
+                prior_case.award_value, prior_case.row_order,
+            ):
+                return False
+
+    def anchors_belong(value: object) -> bool:
+        if isinstance(value, dict):
+            return (
+                ("attachment_id" not in value or value["attachment_id"] == attachment_id)
+                and all(anchors_belong(item) for item in value.values())
+            )
+        if isinstance(value, list):
+            return all(anchors_belong(item) for item in value)
+        return True
+
+    return anchors_belong(original.model_dump(mode="json"))
+
+
 def merge_validated_quantitative_records(
     records: Iterable[
         ValidatedQuantitativeAttachmentRecord | Mapping[str, object]
@@ -7500,6 +7642,7 @@ def merge_validated_quantitative_records(
     manifest_sha256: str,
     incomplete_attachment_ids: Iterable[str] = (),
     attachment_profiles: Mapping[str, Mapping[str, object]] | None = None,
+    source_payloads: Mapping[str, Mapping[str, object]] | None = None,
 ) -> QuantitativeCandidateProfile:
     """Merge persisted per-file records against the exact current manifest."""
 
@@ -7631,7 +7774,12 @@ def merge_validated_quantitative_records(
                     attachment_id=attachment_id,
                 )
             )
-        if record.validator_version != QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION:
+        contract_usable = quantitative_record_contract_is_usable(
+            record, source_payload=(source_payloads or {}).get(attachment_id),
+            attachment_id=attachment_id, document_sha256=document_sha256,
+            manifest_sha256=manifest_sha256,
+        )
+        if not contract_usable and record.validator_version != QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION:
             binding_errors.append(
                 _issue(
                     "VALIDATOR_VERSION_MISMATCH",
@@ -7640,8 +7788,9 @@ def merge_validated_quantitative_records(
                     attachment_id=attachment_id,
                 )
             )
-        if record.prompt_version != PROMPT_VERSION or (
-            record.extraction_schema_version != SCHEMA_VERSION
+        if not contract_usable and (
+            record.prompt_version != PROMPT_VERSION
+            or record.extraction_schema_version != SCHEMA_VERSION
         ):
             binding_errors.append(
                 _issue(
@@ -7651,6 +7800,12 @@ def merge_validated_quantitative_records(
                     attachment_id=attachment_id,
                 )
             )
+        if not contract_usable and source_payloads is not None:
+            binding_errors.append(_issue(
+                "EXTRACTION_CONTRACT_PROOF_INVALID", "INCOMPLETE",
+                "정량 검증 record의 원본 추출 계약 또는 기능 근거를 확인할 수 없습니다.",
+                attachment_id=attachment_id,
+            ))
         source_gaps = source_gaps_by_attachment_id.get(attachment_id)
         gap_issue_codes = {
             item.code

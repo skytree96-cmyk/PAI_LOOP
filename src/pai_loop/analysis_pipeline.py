@@ -62,6 +62,7 @@ from .models import (
     ScoreSnapshot,
 )
 from .notice_freshness import authoritative_pps_notice_is_cancelled
+from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
@@ -74,6 +75,7 @@ from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
     ValidatedQuantitativeAttachmentRecord,
     validated_quantitative_record_fingerprint,
+    quantitative_record_contract_is_usable,
 )
 from .source_gap_policy import (
     has_compound_source_absence_claim,
@@ -90,6 +92,8 @@ from .pps_enrichment import (
     PPS_METADATA_SCHEMA,
     PPS_PROCESSING_VERSION,
     _validated_manifest_attachments,
+    _current_manifest_attempts,
+    _has_valid_quantitative_record,
 )
 
 
@@ -390,6 +394,12 @@ def _select_source_versions(
                 )
             ]
 
+    latest_pps_numbers: dict[str, int] = {}
+    for version in versions:
+        payload = version.source_payload
+        if isinstance(payload, dict) and payload.get("kind") == SOURCE_KIND and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
+            aid = _attachment_identity(payload, version)
+            latest_pps_numbers[aid] = max(latest_pps_numbers.get(aid, -1), version.version_no)
     latest_by_attachment: dict[str, NoticeVersion] = {}
     for version in versions:
         payload = version.source_payload
@@ -403,7 +413,19 @@ def _select_source_versions(
             payload,
             prompt_version=prompt_version,
         )
-        if payload.get("prompt_version") != prompt_version and not legacy_curated_public:
+        if (
+            payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and classify_attempt_header(payload) == "LEGACY_CASE_V1"
+            and version.version_no < latest_pps_numbers.get(_attachment_identity(payload, version), -1)
+        ):
+            # Even an unsupported newer header prevents legacy-success fallback.
+            continue
+        compatible_pps = (
+            prompt_version == PROMPT_VERSION
+            and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and classify_attempt_header(payload) != "UNSUPPORTED"
+        )
+        if payload.get("prompt_version") != prompt_version and not (legacy_curated_public or compatible_pps):
             if source_version_ids is not None and version.id in requested:
                 raise AnalysisPipelineSourceError(
                     "an explicitly selected source has a different prompt version"
@@ -419,6 +441,21 @@ def _select_source_versions(
                 )
             continue
         attachment_id = _attachment_identity(payload, version)
+        if payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
+            contract_kind = classify_attempt_header(payload)
+            if contract_kind == "UNSUPPORTED" or (
+                contract_kind == "LEGACY_CASE_V1"
+                and payload.get("status") == "ACCEPTED"
+                and not _has_valid_quantitative_record(
+                    version, attachment_id=attachment_id,
+                    current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
+                )
+            ):
+                if source_version_ids is not None and version.id in requested:
+                    raise AnalysisPipelineSourceError(
+                        "an explicitly selected PPS source lacks a supported extraction proof"
+                    )
+                continue
         previous = latest_by_attachment.get(attachment_id)
         if previous is None or previous.version_no < version.version_no:
             latest_by_attachment[attachment_id] = version
@@ -428,7 +465,10 @@ def _select_source_versions(
     )
 
 
-def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocument:
+def _parse_source(
+    version: NoticeVersion, *, prompt_version: str,
+    allow_compatible_pps: bool = False,
+) -> _SourceDocument:
     payload = version.source_payload if isinstance(version.source_payload, dict) else {}
     attachment_id = _attachment_identity(payload, version)
     document_sha256 = str(payload.get("document_sha256") or version.file_sha256).casefold()
@@ -443,11 +483,20 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         prompt_version=prompt_version,
     )
 
+    compatible_pps = bool(
+        allow_compatible_pps and prompt_version == PROMPT_VERSION
+        and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        and classify_attempt_header(payload) == "LEGACY_CASE_V1"
+        and _has_valid_quantitative_record(
+            version, attachment_id=attachment_id,
+            current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
+        )
+    )
     if document_sha256 != version.file_sha256.casefold():
         warnings.append("DOCUMENT_SHA_MISMATCH")
-    if stored_prompt != prompt_version and not legacy_curated_public:
+    if stored_prompt != prompt_version and not (legacy_curated_public or compatible_pps):
         warnings.append("PROMPT_VERSION_MISMATCH")
-    if schema_version != SCHEMA_VERSION and not legacy_curated_public:
+    if schema_version != SCHEMA_VERSION and not (legacy_curated_public or compatible_pps):
         warnings.append("UNSUPPORTED_SCHEMA_VERSION")
     if (
         payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
@@ -508,8 +557,8 @@ def _parse_source(version: NoticeVersion, *, prompt_version: str) -> _SourceDocu
         and status == "ACCEPTED"
         and version.extraction_status in {"ACCEPTED", "COMPLETE"}
         and document_sha256 == version.file_sha256.casefold()
-        and (stored_prompt == prompt_version or legacy_curated_public)
-        and (schema_version == SCHEMA_VERSION or legacy_curated_public)
+        and (stored_prompt == prompt_version or legacy_curated_public or compatible_pps)
+        and (schema_version == SCHEMA_VERSION or legacy_curated_public or compatible_pps)
         and anchor_identity_ok
     )
     complete = (
@@ -1078,22 +1127,12 @@ def _current_pps_manifest_basis(
         for item in validated_manifest
     ]
     expected_by_id = {item["attachment_id"]: item["manifest_sha256"] for item in expected}
-    attempts: dict[str, NoticeVersion] = {}
-    for version in sorted(versions, key=lambda item: item.version_no):
-        payload = version.source_payload
-        if (
-            not isinstance(payload, dict)
-            or payload.get("kind") != SOURCE_KIND
-            or payload.get("source_kind") != "PPS_PUBLIC_ATTACHMENT"
-            or payload.get("prompt_version") != prompt_version
-            or payload.get("processing_version") != PPS_PROCESSING_VERSION
-            or payload.get("current_manifest_sha256") != current_manifest_sha256
-        ):
-            continue
-        attachment_id = str(payload.get("attachment_id") or "")
-        if payload.get("manifest_sha256") != expected_by_id.get(attachment_id):
-            continue
-        attempts[attachment_id] = version
+    if prompt_version == PROMPT_VERSION:
+        _attachments, _invalid, attempts = _current_manifest_attempts(
+            list(versions), validate_accepted=False,
+        )
+    else:
+        attempts = {}
     accepted_ids = sorted(
         attachment_id
         for attachment_id, version in attempts.items()
@@ -1101,6 +1140,10 @@ def _current_pps_manifest_basis(
         and version.source_payload.get("status") == "ACCEPTED"
         and version.extraction_status in {"ACCEPTED", "COMPLETE"}
         and version.document_complete
+        and _has_valid_quantitative_record(
+            version, attachment_id=attachment_id,
+            current_manifest_sha256=current_manifest_sha256,
+        )
     )
     audited_ids = sorted(attempts)
     expected_ids = sorted(expected_by_id)
@@ -1121,6 +1164,7 @@ def _current_pps_manifest_basis(
         "expected_attachment_ids": expected_ids,
         "audited_attachment_ids": audited_ids,
         "accepted_attachment_ids": accepted_ids,
+        "selected_attempt_ids": sorted(version.id for version in attempts.values()),
         "processing_version": PPS_PROCESSING_VERSION,
         "coverage_complete": coverage_complete,
     }
@@ -1443,7 +1487,11 @@ def _source_supplies_quantitative_table(source: _SourceDocument) -> bool:
         and record.attachment_id == source.attachment_id
         and record.document_sha256 == source.document_sha256
         and record.manifest_sha256 == current_manifest_sha256
-        and record.validator_version == QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION
+        and quantitative_record_contract_is_usable(
+            record, source_payload=payload, attachment_id=source.attachment_id,
+            document_sha256=source.document_sha256,
+            manifest_sha256=current_manifest_sha256,
+        )
         and record.prompt_version == source.prompt_version
         and record.extraction_schema_version == source.schema_version
         and fingerprint_valid
@@ -1568,6 +1616,7 @@ def _pricing_profile_for_versions(versions: Sequence[NoticeVersion]) -> dict[str
                 for version in versions
                 if isinstance(version.source_payload, dict)
                 and version.source_payload.get("kind") == SOURCE_KIND
+                and version.id in set(manifest_basis["selected_attempt_ids"])
                 and version.source_payload.get("attachment_id") in accepted_ids
                 and version.source_payload.get("manifest_sha256")
                 == {
@@ -1688,7 +1737,10 @@ def run_analysis_pipeline(
                 source_version_ids=source_version_ids,
             )
             sources = [
-                _parse_source(version, prompt_version=prompt_version)
+                _parse_source(
+                    version, prompt_version=prompt_version,
+                    allow_compatible_pps=True,
+                )
                 for version in selected_versions
             ]
             merged = _merge_requirements(sources)
@@ -2139,6 +2191,10 @@ def run_analysis_pipeline(
                     "requirement_policy": POLICY_VERSION,
                     "extraction_prompt": prompt_version,
                     "extraction_schema": SCHEMA_VERSION,
+                    "extraction_read_policy": EXTRACTION_READ_POLICY_VERSION,
+                    "source_extraction_contracts": sorted({
+                        (source.prompt_version, source.schema_version) for source in sources
+                    }),
                     "company_profile": profile_version,
                     "department_profile": str(department_catalog["version"]),
                     "quantitative_profile": quantitative_profile_basis,

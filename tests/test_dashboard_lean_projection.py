@@ -9,7 +9,7 @@ from sqlalchemy import event, inspect, select
 from sqlalchemy.exc import InvalidRequestError
 
 from pai_loop import api as api_module
-from pai_loop.integrations.openai_extraction import ExtractionPayload, PROMPT_VERSION
+from pai_loop.integrations.openai_extraction import ExtractionPayload, PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop.models import AnalysisRun, Evaluation, Notice, NoticeVersion, PpsNoticeAuthority, RecommendationSnapshot, ScoreSnapshot
 from pai_loop.notice_freshness import latest_current_analysis_run
 from pai_loop.pps_enrichment import PPS_ATTACHMENT_SOURCE, PPS_METADATA_KIND, PPS_METADATA_SCHEMA, PPS_PROCESSING_VERSION, _digest
@@ -82,7 +82,7 @@ def _seed_history(client, count=55, *, depth=3, blob_size=0):
                         "attachment_id": attachment["attachment_id"], "manifest_sha256": _digest(attachment),
                         "current_manifest_sha256": manifest_sha,
                         "prompt_version": "SYN-stale-prompt" if index % 7 == 0 else PROMPT_VERSION,
-                        "processing_version": PPS_PROCESSING_VERSION, "status": "ACCEPTED",
+                        "schema_version": SCHEMA_VERSION, "processing_version": PPS_PROCESSING_VERSION, "status": "ACCEPTED",
                         "quantitative_validation_record": record.model_dump(mode="json"),
                         "document_processing": {"source_read_complete": True, "analysis_input_complete": True},
                         "result": {"summary": "SYN complete raw payload retained", "blob": "y" * blob_size},
