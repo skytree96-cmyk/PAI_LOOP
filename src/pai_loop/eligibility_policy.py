@@ -14,7 +14,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.06-v10"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.07-v11"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -520,6 +520,55 @@ def _has_explicit_bidder_gate(text: str) -> bool:
     return exact_terms or actor_gate or participation_gate or capability_gate
 
 
+def _is_explicit_performance_eligibility(text: str) -> bool:
+    """Recognize complete bidder restrictions with direct performance ownership.
+
+    The finite subject grammar cannot borrow possession of a registration or
+    certificate from an adjacent scoring description. Complete clause endings
+    keep negated/historical participation statements out of the positive gate.
+    No threshold, recognition scope, or company value is inferred here.
+    """
+
+    if len(text) > 2_000 or "실적" not in text:
+        return False
+    subject = (
+        r"실적\s*(?:(?:금액|건수|합계|누계)\s*)?"
+        r"(?:\d+(?:[.,]\d+)*\s*(?:건|천만원|백만원|억원|만원|천원|원)"
+        r"\s*(?:이상|초과|이하|미만)?\s*)?(?:을|를|이)?\s*"
+    )
+    actor = r"(?:업체|사업자|법인|자)"
+    possessed = subject + r"(?:보유한|갖춘|보유하고\s*있는|있는)\s*" + actor
+    duty = subject + r"(?:보유해야|보유하여야|갖추어야|있어야)\s*(?:한다|합니다|함)"
+    allowed = r"(?:할\s*수\s*있(?:다|습니다|음)|\s*가능(?:하다|합니다|함)?)"
+    forbidden = r"(?:할\s*수\s*없(?:다|습니다|음)|\s*(?:불가|금지)(?:하다|합니다|함)?)"
+    for clause in re.split(r"[!?。;]|\.(?!\d)", text):
+        clause = clause.strip()
+        if "실적" not in clause:
+            continue
+        if re.fullmatch(
+            r"(?:(?:경쟁\s*)?입찰\s*)?참가\s*자격(?:\s*요건)?\s*(?:은|는|:|으로)?"
+            r".{0,180}?" + rf"(?:{possessed}|{duty})", clause,
+        ):
+            return True
+        if re.search(
+            possessed + r"\s*만\s*(?:입찰(?:에)?\s*)?"
+            r"(?:참가|참여|입찰)" + allowed + r"\s*$", clause,
+        ):
+            return True
+        if re.search(
+            r"(?:입찰(?:에)?\s*참가|입찰)\s*(?:하려는|하고자\s*하는)\s*"
+            + actor + r"(?:은|는)?\s*.{0,120}?" + duty + r"\s*$", clause,
+        ):
+            return True
+        if re.search(
+            subject + r"(?:없는|미보유|미충족)\s*" + actor
+            + r"(?:은|는)?\s*(?:입찰(?:에)?\s*)?(?:참가|참여|입찰)"
+            + forbidden + r"\s*$", clause,
+        ):
+            return True
+    return False
+
+
 def _is_descriptive_entity_clause(text: str, *, category: str) -> bool:
     """Return true for subject/contractor descriptions, not bidder criteria."""
 
@@ -757,6 +806,99 @@ _STATUTORY_QUALIFICATION_AND_SANCTION = re.compile(
 )
 
 
+def _clause_depths(text: str) -> list[int] | None:
+    """Locate top-level connectives without treating parenthetical OR as AND."""
+    pairs = {"(": ")", "[": "]", "{": "}", "（": "）"}
+    stack: list[str] = []
+    depths: list[int] = []
+    for char in text:
+        depths.append(len(stack))
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in pairs.values():
+            if not stack or stack.pop() != char:
+                return None
+    return None if stack else depths
+
+
+def _known_bidder_and_prefix(text: str) -> tuple[str, str] | None:
+    """Retain an existing qualification only with directly owned positive duty.
+
+    The established helpers select its company-fact family. A bounded positive
+    predicate must immediately follow that family's actual source subject; an
+    adjacent registration, scoring description, negation or submission cannot
+    supply possession of a different certificate.
+    """
+    if "실적" in text or re.search(
+        r"아니|않|없|미보유|미등록|과거|종전|이전에는|예외|면제|제출|첨부|평가|가점|배점|참고", text,
+    ):
+        return None
+    families = [
+        ("registration", "ENTITY",
+         _is_bidder_registration_eligibility(text) and not _registration_mapping_is_only_a_performance_heading(text),
+         r"(?:경쟁\s*)?입찰\s*참가\s*자격\s*등록(?:증)?", r"(?:완료|보유|등록)"),
+        ("direct-production", "CERTIFICATION", _is_direct_production_certificate_eligibility(text),
+         _DIRECT_PRODUCTION_CERT_PATTERN, r"보유"),
+        ("business-certificate", "CERTIFICATION", _is_small_business_eligibility(text, category="CERTIFICATION"),
+         r"(?:중소기업|소기업(?:\s*(?:또는|[·ㆍ])\s*소상공인)?|소상공인)\s*확인서", r"보유"),
+    ]
+    matched = [(name, category, subject, verb)
+               for name, category, recognized, subject, verb in families if recognized]
+    if len(matched) != 1:
+        return None
+    name, category, subject, verb = matched[0]
+    # This grammatical tail is independent of the certificate's spelling and
+    # of notice/provider identifiers. It does not infer a new company fact.
+    tail = (
+        r"\s*(?:[（(][^()（）]{1,160}[)）]\s*)?(?:을|를)?\s*"
+        + r"(?:(?:반드시|모두|각각)\s*)*" + verb
+        + r"(?:하여야|해야)?(?:\s*(?:한다|합니다|함))?"
+        + r"(?:한\s*(?:업체|사업자|법인|자))?\s*$"
+    )
+    owned = list(re.finditer(subject, text))
+    if len(owned) != 1 or not re.fullmatch(tail, text[owned[0].end():]):
+        return None
+    return name, category
+
+
+def _performance_qualification_and_parts(
+    text: str,
+) -> list[tuple[str, str, str]] | None:
+    """Split a proven top-level AND; preserve exact source parts and anchors."""
+    depths = _clause_depths(text)
+    if depths is None:
+        return None
+    # `소기업 또는 소상공인 확인서` names one existing fact family. An
+    # alternative between complete bidder paths must never become an AND.
+    certificate_alternatives = [match.span() for match in re.finditer(
+        r"소기업\s*또는\s*소상공인\s*확인서", text,
+    )]
+    for alternative in re.finditer(r"또는|혹은|하거나|이거나|중\s*(?:하나|어느)", text):
+        if depths[alternative.start()] == 0 and not any(
+            start <= alternative.start() < end for start, end in certificate_alternatives
+        ):
+            return None
+    connector_pattern = (
+        r"(?:하고|하며)\s+(?!있는(?:\s|업체|사업자|법인))"
+        r"|[.!?。;]\s*또한\s+"
+        r"|(?P<actor>업체|사업자|법인|자)로서\s+"
+        r"|\s+및\s+"
+    )
+    found: list[list[tuple[str, str, str]]] = []
+    for connector in re.finditer(connector_pattern, text):
+        if any(depths[index] != 0 for index in range(connector.start(), connector.end())):
+            continue
+        boundary = connector.start() + len(connector.group("actor") or "")
+        before = text[:boundary].strip()
+        after = text[connector.end():].strip()
+        known = _known_bidder_and_prefix(before)
+        if known is None or not _is_explicit_performance_eligibility(after):
+            continue
+        name, category = known
+        found.append([(name, category, before), ("performance", "PERFORMANCE", after)])
+    return found[0] if len(found) == 1 else None
+
+
 def expand_statutory_qualification_requirements(
     requirements: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -768,17 +910,25 @@ def expand_statutory_qualification_requirements(
     expanded: list[dict[str, Any]] = []
     for requirement in requirements:
         text = _normalise(requirement.get("normalized_condition"))
-        match = _STATUTORY_QUALIFICATION_AND_SANCTION.fullmatch(text)
         if (
-            match is None
-            or requirement.get("ambiguity_reason")
+            requirement.get("ambiguity_reason")
             or str(requirement.get("logic") or "SINGLE") not in {"SINGLE", "AND"}
         ):
             expanded.append(requirement)
             continue
+        match = _STATUTORY_QUALIFICATION_AND_SANCTION.fullmatch(text)
+        parts = (
+            [(name, category, match.group(name))
+             for name, category in (("registration", "ENTITY"), ("sanction", "SANCTION"))]
+            if match is not None else
+            _performance_qualification_and_parts(text)
+            if bool(requirement.get("mandatory", True)) else None
+        )
+        if parts is None:
+            expanded.append(requirement)
+            continue
         original_id = str(requirement.get("requirement_id") or "requirement")
-        for part, category in (("registration", "ENTITY"), ("sanction", "SANCTION")):
-            condition = match.group(part)
+        for part, category, condition in parts:
             digest = hashlib.sha256((original_id + "\n" + part + "\n" + condition).encode()).hexdigest()[:32]
             expanded.append({
                 **requirement,
@@ -834,6 +984,19 @@ def _is_bidder_registration_eligibility(text: str) -> bool:
         )
     )
     return contract_qualification_law and qualification_possession
+
+
+def _registration_mapping_is_only_a_performance_heading(text: str) -> bool:
+    """A generic eligibility heading cannot prove bidder registration."""
+    remainder, removed = re.subn(
+        r"^(?:(?:경쟁\s*)?입찰\s*)?참가\s*자격(?:\s*요건)?\s*(?:은|는|:|으로)?\s*",
+        "", text, count=1,
+    )
+    return bool(
+        removed
+        and not _is_bidder_registration_eligibility(remainder)
+        and not re.search(r"등록|(?:국가|지방)\s*계약|법률|시행령|시행규칙", remainder)
+    )
 
 
 def _is_current_sanction_clearance(text: str) -> bool:
@@ -1638,6 +1801,37 @@ def classify_requirements(
                 capability_key=None,
                 message="참가자격과 분리된 공고 정보로 표시합니다.",
             )
+        if bool(requirement.get("mandatory", True)) and _is_explicit_performance_eligibility(text):
+            heading_only_registration = (
+                item.get("company_fact_key") == "bidder_registration"
+                and _registration_mapping_is_only_a_performance_heading(text)
+            )
+            if item.get("evaluation_fact_key") and not heading_only_registration:
+                # An unsupported relationship must not replace an existing
+                # mapped condition, including a DB-only explicit FALSE. Only
+                # the proven AND expander may add a new performance atom.
+                item["performance_relation_unresolved"] = True
+                item["message"] += (
+                    " 함께 적힌 실적 조건의 관계·인정범위는 아직 분리 검증되지 않았으며, "
+                    "기존 자격 판정은 그 실적 조건의 충족을 증명하지 않습니다."
+                )
+            else:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="notice_performance_eligibility",
+                    deadline=as_of,
+                    message=(
+                        "원문은 실적을 필수 입찰참가 조건으로 요구합니다. 인정기간·유사범위·"
+                        "완료·금액/VAT·증빙 조건과 검증 실적대장의 연결이 아직 없어 검토가 "
+                        "필요합니다. 등록된 실적 총수나 일반 회사 사실로 충족을 대신하지 않습니다."
+                    ),
+                )
+                # The untrusted provider ID cannot select a company-fact key. A
+                # separate source-scoped binding must exist before this pending gate
+                # may consume any company fact; the marker remains explicit.
+                condition_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                item["evaluation_fact_key"] = f"eligibility.performance.unbound.{condition_digest[:32]}"
+                item["requires_performance_scope_binding"] = True
         items.append(item)
 
     counts = Counter(item["policy_class"] for item in items)
