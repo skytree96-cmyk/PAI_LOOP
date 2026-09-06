@@ -16,7 +16,7 @@ from pai_loop.models import (
 )
 from pai_loop.performance_records import PRIVATE_IMPORT_ATTESTATION
 from pai_loop.private_performance_normalization import (
-    ALGORITHM_VERSION, parse_explicit_performance_period,
+    ALGORITHM_VERSION, PERIOD_COMMA_ALGORITHM_VERSION, parse_explicit_performance_period,
     performance_normalization_state, performance_normalization_state_sha256,
 )
 from pai_loop.quantitative_performance import PerformanceRecognitionScope, derive_performance_value
@@ -352,4 +352,101 @@ def test_wrong_source_metadata_and_unauthorized_non_date_state_cannot_promote(cl
         evidence.metadata_json = {**evidence.metadata_json, "verification_attestation": "SYN incorrect attestation"}
         session.commit()
     assert client.post(PATH, headers=HEADERS, json=request).status_code == 409
+    assert _counts(client) == (1, 0, 0)
+
+
+@pytest.mark.parametrize("period,expected", [
+    ('2024,01.02.~2024.12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+    ('2024.01.02 ~ 2024,12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+    ('2024, 2.29. ∼ 2025.1.2.', (date(2024, 2, 29), date(2025, 1, 2))),
+    ('2024,01.02\n2024.12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+    ('2024, 01.02\xa0—\xa02024.12.31', (date(2024, 1, 2), date(2024, 12, 31))),
+])
+def test_comma_dates_require_the_version_two_contract(period, expected):
+    assert parse_explicit_performance_period(period) is None
+    assert parse_explicit_performance_period(period, algorithm_version=ALGORITHM_VERSION) is None
+    assert parse_explicit_performance_period(period, algorithm_version=PERIOD_COMMA_ALGORITHM_VERSION) == expected
+
+
+@pytest.mark.parametrize("period", ['2024,01~2024.12.31', '2024,01.02~2024.12', '2024,01.02~12.31', '24,01.02~2024.12.31', '2024,01.02~24.12.31', '20244,01.02~2024.12.31', '2024.01,02~2024.12.31', '2024.01.02~2024.12,31', '2024,01.02~2024,12.31', '2024,02.30~2024.12.31', '2023,02.29~2024.12.31', '2024,13.01~2024.12.31', '2024,12.31~2024.01.02', '2024,01.02,~2024.12.31', '2024,01.02~2024.12.31,', 'SYN note, 2024.01.02~2024.12.31', 'SYN note 2024,01.02~2024.12.31', '2024,01.02~2024.12.31 SYN note', '2024,01.02~2024.12.31 2025.01.02', '20240102,20241231', '2024,01.02', '365 days,', '2024,01.02~2024/12/31'])
+def test_version_two_comma_parser_keeps_unsupported_source_unresolved(period):
+    assert parse_explicit_performance_period(period, algorithm_version=PERIOD_COMMA_ALGORITHM_VERSION) is None
+
+
+@pytest.mark.parametrize("period,expected", [
+    ("24.04.11~09.20", (date(2024, 4, 11), date(2024, 9, 20))),
+    ("20240411 ~ 2025/06/20", (date(2024, 4, 11), date(2025, 6, 20))),
+])
+def test_version_two_preserves_non_comma_version_one_intervals(period, expected):
+    assert parse_explicit_performance_period(period) == expected
+    assert parse_explicit_performance_period(period, algorithm_version=PERIOD_COMMA_ALGORITHM_VERSION) == expected
+
+
+def test_server_parser_rejects_unknown_algorithm_without_inference():
+    assert parse_explicit_performance_period(
+        "2024.01.02~2024.12.31", algorithm_version="SYN-unsupported-algorithm"
+    ) is None
+
+
+def test_version_two_normalization_audits_raw_period_and_exact_receipt_replay(client):
+    imported = _seed(client)
+    request = _request(client, imported)
+    raw_period = "2024,01.02.~2024.12.31"
+    request["records"][0]["source_period"] = raw_period
+    # The original version cannot silently acquire a new parser interpretation.
+    rejected = client.post(PATH, headers=HEADERS, json=request)
+    assert rejected.status_code == 422
+    assert _counts(client) == (1, 0, 0)
+    request["algorithm_version"] = PERIOD_COMMA_ALGORITHM_VERSION
+    with client.app.state.session_factory() as session:
+        before = performance_normalization_state(session.get(
+            CompanyPerformanceRecord, request["records"][0]["record_id"]
+        ))
+    applied = client.post(PATH, headers=HEADERS, json=request)
+    assert applied.status_code == 200
+    assert applied.json() == {"status": "APPLIED", "normalized": 1, "activated": 1, "unchanged": 0}
+    with client.app.state.session_factory() as session:
+        record = session.get(CompanyPerformanceRecord, request["records"][0]["record_id"])
+        after = performance_normalization_state(record)
+        allowed = {"start_date", "end_date", "record_status", "revision", "updated_by"}
+        assert {k: v for k, v in before.items() if k not in allowed} == {
+            k: v for k, v in after.items() if k not in allowed
+        }
+        assert (record.start_date, record.end_date) == (date(2024, 1, 2), date(2024, 12, 31))
+        receipt = session.scalar(select(PerformanceNormalizationBatch))
+        revision = session.scalar(select(PerformanceNormalizationRevision))
+        assert receipt.algorithm_version == PERIOD_COMMA_ALGORITHM_VERSION
+        assert revision.source_period_sha256 == hashlib.sha256(raw_period.encode()).hexdigest()
+        assert revision.before_state == before
+        assert revision.after_state == after
+    replay = client.post(PATH, headers=HEADERS, json=request)
+    assert replay.status_code == 200
+    assert replay.json() == {"status": "UNCHANGED", "normalized": 0, "activated": 0, "unchanged": 1}
+    assert _counts(client) == (1, 1, 1)
+    request["algorithm_version"] = ALGORITHM_VERSION
+    assert client.post(PATH, headers=HEADERS, json=request).status_code == 409
+
+
+def test_version_two_invalid_later_comma_period_rolls_back_entire_batch(client):
+    imported = _seed(client, count=2)
+    request = _request(client, imported)
+    request["algorithm_version"] = PERIOD_COMMA_ALGORITHM_VERSION
+    request["records"][0]["source_period"] = "2024,01.02~2024.12.31"
+    request["records"][1]["source_period"] = "2024,01~2024.12.31"
+    response = client.post(PATH, headers=HEADERS, json=request)
+    assert response.status_code == 422
+    assert _counts(client) == (2, 0, 0)
+    with client.app.state.session_factory() as session:
+        records = session.scalars(select(CompanyPerformanceRecord)).all()
+        assert all(row.start_date is None and row.end_date is None and row.revision == 2 for row in records)
+
+
+def test_unknown_algorithm_request_is_redacted_and_does_not_write(client):
+    imported = _seed(client)
+    request = _request(client, imported)
+    request["algorithm_version"] = "SYN-PRIVATE-UNKNOWN-ALGORITHM"
+    response = client.post(PATH, headers=HEADERS, json=request)
+    assert response.status_code == 422
+    assert "SYN-PRIVATE-UNKNOWN-ALGORITHM" not in response.text
+    assert response.headers["cache-control"] == "no-store"
     assert _counts(client) == (1, 0, 0)
