@@ -1740,3 +1740,79 @@ def test_bracket_diagnostics_hide_literals_and_bounds() -> None:
 def test_category_diagnostics_return_only_fixed_codes(value: str, expected: str) -> None:
     from pai_loop.manual_analysis import _diagnostic_category_interpretation
     assert _diagnostic_category_interpretation(value) == expected
+
+
+@pytest.mark.parametrize(("age_minutes", "worker_busy", "initial_status", "expected_status"), [
+    (30, False, "RUNNING", "FAILED"),
+    (30, True, "RUNNING", "RUNNING"),
+    (1, False, "RUNNING", "RUNNING"),
+    (30, False, "COMPLETED", "COMPLETED"),
+])
+def test_manual_poll_recovers_only_old_idle_reservations(
+    monkeypatch, age_minutes, worker_busy, initial_status, expected_status,
+):
+    from datetime import timedelta
+    import pai_loop.manual_analysis as manual
+    app = _app(monkeypatch)
+    job_id = "SYN-INTERRUPTED-MANUAL"
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        with app.state.session_factory() as session:
+            session.add(IngestionJob(
+                id=job_id, source="MANUAL_ANALYSIS", mode="LIVE", status=initial_status,
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=age_minutes),
+                notice_keys=["PPS-MANUAL-001"], api_calls=3,
+                window_json={}, request_json={"evaluation_only": True}, warnings=["SYN-EXISTING-AUDIT"],
+            ))
+            session.commit()
+        if worker_busy:
+            assert manual._PUBLIC_MANUAL_PROCESS_LOCK.acquire(blocking=False)
+        try:
+            response = client.get(
+                f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{job_id}",
+                headers=SAME_ORIGIN_HEADERS,
+            )
+        finally:
+            if worker_busy:
+                manual._PUBLIC_MANUAL_PROCESS_LOCK.release()
+        assert response.status_code == 200, response.text
+        assert (response.json()["outcome"] == "QUEUED") == (expected_status == "RUNNING")
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, job_id)
+            assert job.status == expected_status
+            assert job.api_calls == 3
+            assert "SYN-EXISTING-AUDIT" in job.warnings
+            if expected_status == "FAILED":
+                assert job.completed_at is not None
+                assert "MANUAL_WORKER_INTERRUPTED" in job.warnings
+                assert job.request_json["openai_telemetry"]["accounting_complete"] is False
+                assert response.json()["openai_telemetry"]["accounting_complete"] is False
+        if expected_status == "FAILED":
+            calls = []
+            monkeypatch.setattr(manual, "run_notice_analysis_batch", lambda *_a, **_k: calls.append(1))
+            manual._execute_reserved_manual_job(SimpleNamespace(app=app), job_id, "PPS-MANUAL-001", True)
+            assert calls == []
+            # Repeated polling leaves the same terminal audit untouched.
+            again = client.get(f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{job_id}", headers=SAME_ORIGIN_HEADERS)
+            assert again.json()["outcome"] == "REVIEW"
+
+
+def test_manual_recovery_rejects_wrong_notice_or_missing_origin(monkeypatch):
+    from datetime import timedelta
+    app = _app(monkeypatch)
+    with TestClient(app) as client:
+        _create_open_pps_notice(client)
+        with app.state.session_factory() as session:
+            session.add(IngestionJob(
+                id="SYN-BOUND-MANUAL", source="MANUAL_ANALYSIS", mode="LIVE", status="RUNNING",
+                window_json={}, request_json={},
+                created_at=datetime.now(timezone.utc) - timedelta(hours=1),
+                notice_keys=["PPS-MANUAL-001"],
+            ))
+            session.commit()
+        url = "/api/v1/notices/PPS-MANUAL-001/analysis/requests/SYN-BOUND-MANUAL"
+        assert client.get(url).status_code == 403
+        wrong = client.get(url.replace("PPS-MANUAL-001", "PPS-SYN-WRONG"), headers=SAME_ORIGIN_HEADERS)
+        assert wrong.status_code == 404
+        with app.state.session_factory() as session:
+            assert session.get(IngestionJob, "SYN-BOUND-MANUAL").status == "RUNNING"
