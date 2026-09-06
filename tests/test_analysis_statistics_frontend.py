@@ -99,7 +99,11 @@ eligibility_counts:{PASS:0,FAIL:19,REVIEW:16,NOT_EVALUATED:247},
 score_counts:{CONFIRMED:0,ESTIMATED:0,UNSCORABLE:1,REVIEW:34,NOT_EVALUATED:247}, score_range_notice_count:1});
 const loaded = JSON.parse(JSON.stringify(els));
 renderAnalysisProgress(null);
-console.log(JSON.stringify({loaded,missing:els}));
+const missing = JSON.parse(JSON.stringify(els));
+state.source = 'api';
+state.sourceReason = 'SYN-dashboard-unavailable';
+renderAnalysisProgress(null);
+console.log(JSON.stringify({loaded,missing,failed:els}));
 """
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
     output = json.loads(result.stdout)
@@ -114,6 +118,10 @@ console.log(JSON.stringify({loaded,missing:els}));
     assert "일부 미산정 1" in loaded["analysisScoreDetail"]["textContent"]
     assert output["missing"]["analysisScoreValue"]["textContent"] == "—"
     assert "조회 대기" in output["missing"]["analysisProgressScope"]["textContent"]
+    assert "조회 실패" in output["failed"]["analysisProgressScope"]["textContent"]
+    assert "공고 목록은 조회됐습니다" in output["failed"]["analysisProgressScope"]["textContent"]
+    for key in ("analysisAttachmentValue", "analysisEligibilityValue", "analysisScoreValue"):
+        assert output["failed"][key]["textContent"] == "—"
 
 
 def test_dashboard_timeout_never_labels_filtered_board_size_as_database_total() -> None:

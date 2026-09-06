@@ -237,8 +237,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260906-uxui-v1"' in html
-    assert 'src="./app.js?v=20260906-uxui-v1"' in html
+    assert 'href="./styles.css?v=20260907-uxui-v2"' in html
+    assert 'src="./app.js?v=20260907-uxui-v2"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -566,8 +566,10 @@ def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None
     assert "input.disabled = cancelled ||" in existing_body
     assert "els.toggleCommentButton.disabled = cancelled ||" in existing_body
     assert "els.decisionComment.disabled = cancelled ||" in existing_body
-    assert "과거 판단 기록(참고용)" in existing_body
-    assert "담당자 판단을 새로 저장할 수 없습니다" in existing_body
+    decision_text_body = _function_body(source, "operatorDecisionDetailText", "updateOperatorDecisionReadState")
+    assert "operatorDecisionDetailText(notice)" in existing_body
+    assert "과거 판단 기록(참고용)" in decision_text_body
+    assert "담당자 판단을 새로 저장할 수 없습니다" in decision_text_body
     assert "if (isCancelledNotice(state.selectedNotice)) return" in toggle_body
     assert "const cancelled = isCancelledNotice(state.selectedNotice)" in button_body
     assert "els.saveDecisionButton.disabled = cancelled ||" in button_body
@@ -1153,7 +1155,7 @@ const notice = (id, days, eligibility, decision=null, status="OPEN") => ({
   deadline:new Date(Date.now()+days*86400000).toISOString(), collectedAt:null,
   analysisState:eligibility === "UNKNOWN" ? "PENDING" : "EVALUATED",
   sourceKind:"PPS", analysisAttachmentCoverageComplete:true,
-  eligibility, eligibilityStatus:eligibility, recommendation:"GO", decision,
+  eligibility, eligibilityStatus:eligibility, recommendation:"GO", decision, decisionReadStatus:"KNOWN",
   topDepartmentRankings:[], departmentReviewCandidates:[], hasBidOutcome:false, raw:{decisions:[]},
 });
 const notices = [notice("SYN-eight",8,"PASS"), notice("SYN-review",1,"REVIEW","GO"),
@@ -1216,7 +1218,7 @@ assert.equal(state.filteredNotices.length,6);
 assert.deepEqual(state.dashboard,{totalNotices:800,totalDecisions:90});
 assert.equal(JSON.stringify(notices),original);
 state.accessMode="SERVER_AUTHENTICATED";
-state.notices=notices.map(x => ({...x,raw:{}}));
+state.notices=notices.map(x => ({...x,raw:{},decisionReadStatus:"UNKNOWN"}));
 els.operatorDecisionFilter.value="UNDECIDED";
 applyFilters();
 assert.equal(els.operatorDecisionFilter.disabled,true);
@@ -1226,6 +1228,133 @@ assert.match(els.operatorDecisionFilterHelp.textContent,/담당자 판단 목록
 """
     subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
 
+
+
+def test_operator_decision_read_state_preserves_history_without_inventing_undecided() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    script = r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const source = require("node:fs").readFileSync(0,"utf8");
+const storage = new Map([["pai-loop-operator-pin","SYN-test-pin"]]);
+let pendingResponse;
+const context = vm.createContext({
+  document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
+  window:{matchMedia(){return {matches:false};},setTimeout,clearTimeout,
+    sessionStorage:{getItem:key=>storage.get(key),removeItem:key=>storage.delete(key)}},
+  Headers,AbortController,URL,URLSearchParams,
+  fetch:()=>new Promise(resolve=>{pendingResponse=resolve;}),
+});
+const exported = `globalThis.ui={state,els,normalizeNotice,operatorDecisionReadStatus,
+  operatorDecisionLabel,operatorDecisionDetailText,operatorDecisionIndicator,operatorDecisionClass,
+  operatorDecisionListAvailable,preserveOperatorDecision,hydrateOperatorDecisions,
+  deriveDashboard,normalizeDashboard,renderPipeline,renderExistingDecision,renderNavigationCounts};`;
+vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
+const u=context.ui;
+const field=()=>({value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,
+  attributes:{},setAttribute(key,value){this.attributes[key]=value;},classList:{toggle(){}}});
+for(const key of ["navNewCount","navReviewCount","navDecisionCount","decisionExisting",
+  "analysisPipeline","decisionComment","commentCount","commentField","toggleCommentButton",
+  "saveDecisionButton","decisionDockBody","decisionDockToggle"]) u.els[key]=field();
+const summary=field();
+u.els.decisionSummary={querySelector:()=>summary};
+u.els.decisionInputs=[{value:"GO",checked:false},{value:"HOLD",checked:true},{value:"NO_GO",checked:false}];
+Object.assign(u.state,{source:"api",accessMode:"PUBLIC_READ_ONLY",operatorDecisionEnabled:true,
+  writeControlsEnabled:false,loading:true,dashboard:{},manualAnalysisAuthRequired:true});
+const raw={notice_key:"SYN-decision-read-state",title:"SYN 판단 상태 공고",agency:"SYN 기관",
+  deadline:"2099-09-09T08:00:00Z",status:"OPEN",analysis_state:"PENDING",decisions:[]};
+let notice=u.normalizeNotice(raw);
+u.state.notices=[notice];
+u.state.selectedNotice=notice;
+u.els.decisionComment.value="작성 중인 의견";
+assert.equal(u.operatorDecisionReadStatus(notice),"UNKNOWN");
+assert.equal(u.operatorDecisionReadStatus(u.normalizeNotice({...raw,decision:"GO"})),"UNKNOWN");
+assert.equal(u.operatorDecisionLabel(notice),"판단 조회 필요");
+assert.match(u.operatorDecisionIndicator(notice),/판단 조회 필요/);
+assert.equal(u.operatorDecisionClass(notice),"");
+assert.match(u.renderPipeline(notice),/판단 조회 필요/);
+assert.equal(u.deriveDashboard([notice]).undecidedCount,null);
+assert.equal(u.normalizeDashboard({kpis:{undecided_count:42}},[notice]).undecidedCount,null);
+u.renderNavigationCounts();
+assert.equal(u.els.navDecisionCount.textContent,"—");
+const respond=(status,payload)=>pendingResponse({ok:status>=200&&status<300,status,
+  headers:{get:()=>"application/json"},json:async()=>payload});
+(async()=>{
+  let request=u.hydrateOperatorDecisions(notice);
+  assert.equal(u.operatorDecisionReadStatus(u.state.selectedNotice),"LOADING");
+  assert.match(u.els.decisionExisting.textContent,/판단 확인 중/);
+  assert.equal(summary.textContent,"판단 확인 중");
+  assert.equal(u.els.decisionComment.value,"작성 중인 의견");
+  assert.equal(u.els.decisionInputs[1].checked,true);
+  respond(200,[{id:"SYN-decision",choice:"HOLD",actor_label:"SYN 담당자",
+    rationale:"추가 확인 후 검토",created_at:"2026-09-01T03:00:00Z",evaluation_id:"SYN-evaluation"}]);
+  notice=await request;
+  assert.equal(u.operatorDecisionReadStatus(notice),"KNOWN");
+  assert.equal(notice.decision,"HOLD");
+  assert.equal(u.operatorDecisionLabel(notice),"보류");
+  assert.match(summary.textContent,/보류/);
+  assert.equal(u.operatorDecisionListAvailable(),false,"individual PIN read is not a complete public list");
+  assert.equal(u.els.navDecisionCount.textContent,"—");
+  assert.equal(u.els.decisionComment.value,"작성 중인 의견");
+
+  // A public/AI refresh can hide history; retain the last saved judgment as explicitly stale.
+  notice=u.preserveOperatorDecision(u.normalizeNotice({...raw,recommendation:"GO"}),notice);
+  assert.equal(notice.decision,"HOLD");
+  assert.equal(u.operatorDecisionReadStatus(notice),"UNKNOWN");
+  assert.match(u.operatorDecisionLabel(notice),/보류.*최신 확인 필요/);
+  assert.equal(notice.raw.decisions.length,0);
+  u.state.notices=[notice];u.state.selectedNotice=notice;
+  request=u.hydrateOperatorDecisions(notice);
+  assert.match(summary.textContent,/보류.*확인 중/);
+  respond(401,{detail:"SYN expired PIN"});
+  notice=await request;
+  assert.equal(u.state.manualAnalysisToken,"");
+  assert.equal(storage.has("pai-loop-operator-pin"),false);
+  assert.equal(u.operatorDecisionReadStatus(notice),"ERROR");
+  assert.equal(notice.decision,"HOLD");
+  assert.match(u.operatorDecisionIndicator(notice),/보류.*재조회 실패/);
+  assert.match(u.operatorDecisionDetailText(notice),/저장된 판단: 보류.*재조회 실패/);
+  assert.match(u.renderPipeline(notice),/보류.*재조회 실패/);
+  assert.equal(u.els.decisionComment.value,"작성 중인 의견");
+  u.renderExistingDecision(notice);
+  assert.match(u.els.decisionExisting.textContent,/저장된 판단: 보류/);
+  assert.match(u.els.decisionExisting.textContent,/현재 공고 분석 전/);
+  assert.equal(u.els.saveDecisionButton.disabled,true);
+  assert.equal(u.els.decisionInputs.every(input=>input.disabled),true);
+  const cancelled={...notice,providerDisposition:"CANCELLED"};
+  u.state.selectedNotice=cancelled;
+  u.renderExistingDecision(cancelled);
+  assert.match(u.els.decisionExisting.textContent,/취소 공고.*과거 판단 기록.*보류/);
+  assert.equal(u.els.saveDecisionButton.disabled,true);
+
+  // An authenticated empty history, unlike redacted public [], really does mean undecided.
+  storage.set("pai-loop-operator-pin","SYN-test-pin");
+  notice={...notice,raw:{...notice.raw,decision:"HOLD"}};
+  u.state.notices=[notice];u.state.selectedNotice=notice;
+  request=u.hydrateOperatorDecisions(notice);
+  respond(200,[]);
+  notice=await request;
+  assert.equal(u.operatorDecisionReadStatus(notice),"KNOWN");
+  assert.equal(notice.decision,"");
+  assert.equal(u.operatorDecisionLabel(notice),"미결정");
+  assert.equal(u.operatorDecisionListAvailable(),false);
+  request=u.hydrateOperatorDecisions(notice);
+  respond(200,{unexpected:"not a history list"});
+  notice=await request;
+  assert.equal(u.operatorDecisionReadStatus(notice),"ERROR");
+  assert.equal(u.operatorDecisionLabel(notice),"판단 조회 실패");
+  assert.equal(u.deriveDashboard([notice]).undecidedCount,null);
+
+  u.state.accessMode="SERVER_AUTHENTICATED";
+  const authenticated=u.normalizeNotice(raw);
+  assert.equal(u.operatorDecisionReadStatus(authenticated),"KNOWN");
+  assert.equal(u.deriveDashboard([authenticated]).undecidedCount,1);
+  assert.equal(u.deriveDashboard([authenticated,notice]).undecidedCount,null);
+  u.state.notices=[authenticated];u.renderNavigationCounts();
+  assert.equal(u.els.navDecisionCount.textContent,"1건");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    subprocess.run(["node", "-e", script], input=source, text=True, encoding="utf-8", check=True)
 
 
 def test_decision_dock_preserves_drafts_and_opens_for_required_input() -> None:
