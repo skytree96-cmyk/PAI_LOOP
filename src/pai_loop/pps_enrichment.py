@@ -7,7 +7,9 @@ import re
 import time
 import unicodedata
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -600,7 +602,7 @@ def _current_manifest_attempts(
         for attachment in attachments
     }
     attempts: dict[str, NoticeVersion] = {}
-    for version in sorted(versions, key=lambda item: item.version_no):
+    for version in sorted(versions, key=lambda item: item.version_no, reverse=True):
         payload = version.source_payload
         if (
             not isinstance(payload, dict)
@@ -613,6 +615,12 @@ def _current_manifest_attempts(
             continue
         attachment_id = str(payload.get("attachment_id") or "")
         if payload.get("manifest_sha256") != current_digests.get(attachment_id):
+            continue
+        # The first valid bound row wins, exactly as the former ascending
+        # scan overwrote older rows. Skip superseded retries before parsing
+        # their full quantitative records. Invalid newer rows still fall
+        # through to the same older current-contract candidate as before.
+        if attachment_id in attempts:
             continue
         if payload.get("status") == "ACCEPTED" and not _has_valid_quantitative_record(
             version,
@@ -734,7 +742,57 @@ def current_retryable_review_version_ids(
     return frozenset(retryable)
 
 
+# Enabled only while serializing one immutable, read-only notice projection.
+# No process-wide result survives the scope, so subsequent source/policy changes
+# always execute the full validation contract again.
+_attachment_validation_read_cache: ContextVar[dict[tuple[Any, ...], bool] | None] = (
+    ContextVar("pps_attachment_validation_read_cache", default=None)
+)
+
+
+@contextmanager
+def pps_attachment_audit_read_scope() -> Iterator[None]:
+    """Reuse exact row validation within one read-only notice projection.
+
+    Never wrap a worker, a write transaction, or source mutation in this scope.
+    Nested summary serialization may reuse its enclosing notice projection.
+    """
+    if _attachment_validation_read_cache.get() is not None:
+        yield
+        return
+    token = _attachment_validation_read_cache.set({})
+    try:
+        yield
+    finally:
+        _attachment_validation_read_cache.reset(token)
+
+
 def _has_valid_quantitative_record(
+    version: NoticeVersion,
+    *,
+    attachment_id: str,
+    current_manifest_sha256: str,
+) -> bool:
+    cache = _attachment_validation_read_cache.get()
+    if cache is None:
+        return _validate_quantitative_record_binding(
+            version, attachment_id=attachment_id,
+            current_manifest_sha256=current_manifest_sha256,
+        )
+    key = (
+        version, id(version.source_payload), version.file_sha256, attachment_id,
+        current_manifest_sha256, QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
+        PROMPT_VERSION, SCHEMA_VERSION,
+    )
+    if key not in cache:
+        cache[key] = _validate_quantitative_record_binding(
+            version, attachment_id=attachment_id,
+            current_manifest_sha256=current_manifest_sha256,
+        )
+    return cache[key]
+
+
+def _validate_quantitative_record_binding(
     version: NoticeVersion,
     *,
     attachment_id: str,

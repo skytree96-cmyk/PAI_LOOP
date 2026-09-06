@@ -18,6 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from .analysis_api import (
+    ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS,
     AnalysisBatchRequest,
     run_manual_notice_analysis_batch as run_notice_analysis_batch,
 )
@@ -524,6 +525,48 @@ def _reserve_manual_job(
     return request_id
 
 
+def _recover_interrupted_manual_job(
+    request: Request, *, request_id: str, notice_key: str,
+) -> bool:
+    """Terminalize a stranded manual reservation only while its worker is idle.
+
+    Age alone cannot prove interruption: a legitimate multi-attachment worker
+    may run much longer than one batch. The same PostgreSQL advisory/process
+    lock held by the worker must also be free before recovery is allowed.
+    """
+    with _manual_execution_slot(request) as acquired:
+        if not acquired:
+            return False
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS)
+        with request.app.state.session_factory() as session:
+            job = session.scalar(select(IngestionJob).where(
+                IngestionJob.id == request_id,
+                IngestionJob.source == "MANUAL_ANALYSIS",
+                IngestionJob.status == "RUNNING",
+            ).with_for_update())
+            if (job is None or notice_key not in (job.notice_keys or [])
+                    or _utc(job.created_at) >= cutoff):
+                return False
+            config = dict(job.request_json or {})
+            raw_telemetry = config.get("openai_telemetry")
+            try:
+                telemetry = OpenAITelemetry.model_validate(raw_telemetry or {})
+            except ValidationError:
+                telemetry = OpenAITelemetry()
+            config["openai_telemetry"] = telemetry.model_copy(
+                update={"accounting_complete": False}
+            ).model_dump(mode="json")
+            config["interruption_recovered_at"] = now.isoformat()
+            job.request_json = config
+            job.status = "FAILED"
+            job.completed_at = now
+            job.quarantined_count = max(job.quarantined_count or 0, 1)
+            job.warnings = sorted(set([*(job.warnings or []), "MANUAL_WORKER_INTERRUPTED"]))
+            session.commit()
+        return True
+
+
 def _finish_manual_job(
     request: Request,
     *,
@@ -537,7 +580,7 @@ def _finish_manual_job(
 ) -> None:
     with request.app.state.session_factory() as session:
         job = session.get(IngestionJob, request_id)
-        if job is None:  # pragma: no cover - persistence invariant
+        if job is None or job.status != "RUNNING":
             return
         config = dict(job.request_json or {})
         if batch_job_id:
@@ -1336,6 +1379,13 @@ def _execute_reserved_manual_job(
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> None:
     with _manual_execution_slot(request, blocking=True):
+        # A delayed background callback cannot revive a recovered reservation.
+        with request.app.state.session_factory() as session:
+            reserved = session.get(IngestionJob, request_id)
+            if (reserved is None or reserved.source != "MANUAL_ANALYSIS"
+                    or reserved.status != "RUNNING"
+                    or notice_key not in (reserved.notice_keys or [])):
+                return
         payload = AnalysisBatchRequest(
             notice_keys=[notice_key],
             dry_run=False,
@@ -1422,6 +1472,10 @@ def get_manual_notice_analysis_request(
             or notice_key not in (job.notice_keys or [])
         ):
             raise HTTPException(status_code=404, detail="분석 요청을 찾을 수 없습니다.")
+        if (job.status == "RUNNING" and _utc(job.created_at) <
+                datetime.now(timezone.utc) - timedelta(seconds=ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS)):
+            _recover_interrupted_manual_job(request, request_id=request_id, notice_key=notice_key)
+            session.refresh(job)
         job_status = job.status
         openai_calls = job.api_calls
         raw_telemetry = (job.request_json or {}).get("openai_telemetry")

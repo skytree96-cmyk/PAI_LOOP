@@ -72,6 +72,7 @@ from .pps_enrichment import (
     build_attachment_manifest,
     department_keyword_coverage_count,
     persist_pps_metadata_version,
+    pps_attachment_audit_read_scope,
     pps_attachment_coverage,
     pps_recorded_attachment_attempt_count,
     public_analysis_reason,
@@ -480,6 +481,7 @@ def _projected_authority_is_cancelled(
     return disposition == "CANCELLED"
 
 
+@pps_attachment_audit_read_scope()
 def _summary(
     notice: Notice,
     *,
@@ -967,85 +969,86 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         for notice in notices:
-            effective_status = _effective_notice_status(notice)
-            authority = authorities.get(notice.id)
-            provider_disposition, _event_kind, _changed_at = (
-                _safe_provider_authority_projection(
-                    source_kind=_source_kind(notice),
-                    authority=authority,
+            with pps_attachment_audit_read_scope():
+                effective_status = _effective_notice_status(notice)
+                authority = authorities.get(notice.id)
+                provider_disposition, _event_kind, _changed_at = (
+                    _safe_provider_authority_projection(
+                        source_kind=_source_kind(notice),
+                        authority=authority,
+                    )
                 )
-            )
-            is_cancelled = provider_disposition == "CANCELLED"
-            if effective_status in lifecycle_counts:
-                lifecycle_counts[effective_status] += 1
-            latest = None if is_cancelled else _latest_evaluation(notice)
-            if effective_status == "OPEN" and not is_cancelled and _source_kind(notice) == "PPS":
-                stats = analysis_statistics
-                reason = public_analysis_reason(notice.versions, evaluated=latest is not None)
-                coverage = pps_attachment_coverage(list(reversed(notice.versions)))
-                stats["notice_count"] += 1
-                stats["attempted_notice_count"] += int(reason.attempted)
-                recorded_attempts = pps_recorded_attachment_attempt_count(notice.versions)
-                stats["recorded_attempt_notice_count"] += int(recorded_attempts > 0)
-                stats["recorded_attempt_attachment_count"] += recorded_attempts
-                stats["attachment_count"] += coverage.discovered
-                stats["audited_attachment_count"] += coverage.audited
-                stats["accepted_attachment_count"] += coverage.accepted
-                stats["analysis_state_counts"][reason.state] += 1
-                stats["eligibility_counts"][latest.eligibility if latest else "NOT_EVALUATED"] += 1
-                run = latest_current_analysis_run(notice)
-                totals = [s for s in run.scores if s.score_key == "quantitative.total"] if run else []
-                estimate = (
-                    public_quantitative_snapshot_projection(run, totals[0])
-                    if run is not None and len(totals) == 1 else None
-                )
-                stats["score_counts"][estimate.overall_status if estimate else "NOT_EVALUATED"] += 1
-                stats["score_range_notice_count"] += int(
-                    estimate is not None and estimate.lower_points is not None
-                    and estimate.upper_points is not None
-                )
-            if latest and effective_status in lifecycle_counts:
-                analyzed_ended_count += 1
-            if is_cancelled:
-                cancelled_count += 1
-                visible_ended_count += 1
-            elif latest and effective_status in lifecycle_counts:
-                visible_ended_count += 1
-            if (
-                not is_cancelled
-                and effective_status in lifecycle_counts
-                and notice.id not in outcome_notice_ids
-            ):
-                result_missing_count += 1
-            if latest:
-                eligibility_counts[latest.eligibility] = (
-                    eligibility_counts.get(latest.eligibility, 0) + 1
-                )
-                readiness_counts[latest.readiness_status] = (
-                    readiness_counts.get(latest.readiness_status, 0) + 1
-                )
-            if effective_status == "OPEN":
-                active_count += 1
-                if not is_cancelled and _needs_analysis_or_review(notice, latest):
-                    analysis_review_backlog_count += 1
-                recommendation, _updated_at = _latest_system_recommendation(notice)
-                if recommendation is not None:
-                    active_recommendation_counts[recommendation] += 1
+                is_cancelled = provider_disposition == "CANCELLED"
+                if effective_status in lifecycle_counts:
+                    lifecycle_counts[effective_status] += 1
+                latest = None if is_cancelled else _latest_evaluation(notice)
+                if effective_status == "OPEN" and not is_cancelled and _source_kind(notice) == "PPS":
+                    stats = analysis_statistics
+                    reason = public_analysis_reason(notice.versions, evaluated=latest is not None)
+                    coverage = pps_attachment_coverage(list(reversed(notice.versions)))
+                    stats["notice_count"] += 1
+                    stats["attempted_notice_count"] += int(reason.attempted)
+                    recorded_attempts = pps_recorded_attachment_attempt_count(notice.versions)
+                    stats["recorded_attempt_notice_count"] += int(recorded_attempts > 0)
+                    stats["recorded_attempt_attachment_count"] += recorded_attempts
+                    stats["attachment_count"] += coverage.discovered
+                    stats["audited_attachment_count"] += coverage.audited
+                    stats["accepted_attachment_count"] += coverage.accepted
+                    stats["analysis_state_counts"][reason.state] += 1
+                    stats["eligibility_counts"][latest.eligibility if latest else "NOT_EVALUATED"] += 1
+                    run = latest_current_analysis_run(notice)
+                    totals = [s for s in run.scores if s.score_key == "quantitative.total"] if run else []
+                    estimate = (
+                        public_quantitative_snapshot_projection(run, totals[0])
+                        if run is not None and len(totals) == 1 else None
+                    )
+                    stats["score_counts"][estimate.overall_status if estimate else "NOT_EVALUATED"] += 1
+                    stats["score_range_notice_count"] += int(
+                        estimate is not None and estimate.lower_points is not None
+                        and estimate.upper_points is not None
+                    )
+                if latest and effective_status in lifecycle_counts:
+                    analyzed_ended_count += 1
+                if is_cancelled:
+                    cancelled_count += 1
+                    visible_ended_count += 1
+                elif latest and effective_status in lifecycle_counts:
+                    visible_ended_count += 1
                 if (
                     not is_cancelled
-                    and _comparable_utc(notice.deadline).astimezone(KST).date()
-                    <= soon_date
+                    and effective_status in lifecycle_counts
+                    and notice.id not in outcome_notice_ids
                 ):
-                    deadline_soon += 1
-            if len(recent_notices) < 10:
-                recent_notices.append(
-                    _summary(
-                        notice,
-                        public_view=public_read_allowed(request),
-                        provider_authority=authority,
-                        has_bid_outcome=notice.id in outcome_notice_ids,
-                    ).model_dump(mode="json")
-                )
+                    result_missing_count += 1
+                if latest:
+                    eligibility_counts[latest.eligibility] = (
+                        eligibility_counts.get(latest.eligibility, 0) + 1
+                    )
+                    readiness_counts[latest.readiness_status] = (
+                        readiness_counts.get(latest.readiness_status, 0) + 1
+                    )
+                if effective_status == "OPEN":
+                    active_count += 1
+                    if not is_cancelled and _needs_analysis_or_review(notice, latest):
+                        analysis_review_backlog_count += 1
+                    recommendation, _updated_at = _latest_system_recommendation(notice)
+                    if recommendation is not None:
+                        active_recommendation_counts[recommendation] += 1
+                    if (
+                        not is_cancelled
+                        and _comparable_utc(notice.deadline).astimezone(KST).date()
+                        <= soon_date
+                    ):
+                        deadline_soon += 1
+                if len(recent_notices) < 10:
+                    recent_notices.append(
+                        _summary(
+                            notice,
+                            public_view=public_read_allowed(request),
+                            provider_authority=authority,
+                            has_bid_outcome=notice.id in outcome_notice_ids,
+                        ).model_dump(mode="json")
+                    )
 
         # The session is read-only here.  Detaching each bounded page releases
         # large JSON extraction payloads before the next page is materialised.
