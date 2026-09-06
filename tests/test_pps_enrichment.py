@@ -29,6 +29,7 @@ from pai_loop.pps_enrichment import (
     has_current_accepted_pps_extraction,
     persist_pps_metadata_version,
     pps_attachment_coverage,
+    pps_recorded_attachment_attempt_count,
     public_analysis_reason,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
@@ -2760,3 +2761,31 @@ def test_public_notice_detail_exposes_only_fixed_attachment_failure_reasons(monk
         assert row["document_name"] == "제안요청서.pdf"
         assert "SYN-PRIVATE" not in response.text
         assert "source_payload" not in response.text
+
+
+@pytest.mark.parametrize("stale_field", ["prompt_version", "processing_version", "quantitative_validation_record"])
+def test_recorded_attempt_count_preserves_processing_history_without_activating_stale_rules(stale_field):
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    assert pps_recorded_attachment_attempt_count(versions) == 1
+    versions[1].source_payload[stale_field] = "obsolete-contract"
+    assert pps_recorded_attachment_attempt_count(versions) == 1
+    assert pps_attachment_coverage(versions).accepted == 0
+    assert public_analysis_reason(versions).state == "PENDING"
+    # Duplicate retries are one processed file, not multiple files.
+    assert pps_recorded_attachment_attempt_count([*versions, versions[1]]) == 1
+
+
+@pytest.mark.parametrize("changed_field", ["manifest_sha256", "current_manifest_sha256", "attachment_id", "source_kind"])
+def test_recorded_attempt_count_rejects_unbound_or_superseded_history(changed_field):
+    versions = _analysis_versions(".pdf", status="ACCEPTED")
+    versions[1].source_payload[changed_field] = "unbound"
+    assert pps_recorded_attachment_attempt_count(versions) == 0
+
+
+def test_recorded_attempt_count_separates_not_selected_from_a_file_failure():
+    versions = _analysis_versions(".pdf", status="REVIEW", error_code=None)
+    assert pps_recorded_attachment_attempt_count(versions) == 0
+    versions = _analysis_versions(".pdf", status="REVIEW", error_code="PDF_TEXT_EXTRACTION_FAILED")
+    assert pps_recorded_attachment_attempt_count(versions) == 1
+    versions[0].source_payload["attachment_manifest"][0]["file_name"] = "replacement.pdf"
+    assert pps_recorded_attachment_attempt_count(versions) == 0
