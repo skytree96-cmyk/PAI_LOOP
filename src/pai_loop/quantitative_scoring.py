@@ -45,6 +45,7 @@ from .quantitative_rule_extraction import (
     ValidatedQuantitativeAttachmentRecord,
     merge_validated_quantitative_records,
     _case_condition_matches,
+    _case_award_matches_literal,
     _normalise_anchor_text,
     _score_cell_matches,
 )
@@ -71,7 +72,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.3"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.4"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -2273,6 +2274,12 @@ def _compiled_case_table_contract(
     candidate: ImmutableQuantitativeRuleCandidate,
 ) -> CompiledCaseTable | None:
     if candidate.scoring_method != "CASE_TABLE" or not candidate.cases:
+        return None
+    if any(
+        _normalise_anchor_text(case.literal) not in _normalise_anchor_text(case.evidence.quote)
+        or not _case_award_matches_literal(candidate, case, case.literal)
+        for case in candidate.cases
+    ):
         return None
     spec = _metric_spec(candidate)
     if spec is None:

@@ -889,6 +889,106 @@ def _case_comparison_matches(
     return _literal_contains_number(case.comparison_value, condition)
 
 
+
+
+# Exact numeric unit aliases already supported by the scoring registry. Keep
+# unknown words out of the suffix grammar; metric-specific scale checks still
+# run independently. A regression checks this finite vocabulary against it.
+_CASE_AWARD_CONDITION_UNIT_PATTERN = (
+    rf"(?:{_UNIT_PATTERN}|krw|천|만|백만|천만|억|인|year|대)"
+)
+
+
+def _case_award_matches_literal(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
+    literal: str,
+) -> bool:
+    """Bind the award to a separate terminal score token or table cell.
+
+    A comparison/category number is never also an award. Split rows may use a
+    bare terminal numeric cell; inline rows require an explicit score unit or award label.
+    The remainder must independently retain the declared condition. This check
+    uses only persisted literal/evidence structure and also protects old proofs.
+    """
+    value = unicodedata.normalize("NFKC", literal).strip()
+    if not value or len(value) > 1_000:
+        return False
+    lines = value.splitlines()
+    if any(not line.strip() for line in lines):
+        return False
+
+    def condition_matches(condition: str) -> bool:
+        # A source row number is not a comparison value. Strip only an explicit
+        # leading enumeration; never strip a decimal or a number in the body.
+        condition = re.sub(
+            r"^\s*(?:[A-Za-z가-힣]\s*[.)]\s*|\d{1,3}\s*\)\s*|\d{1,3}\.\s+)",
+            "", condition, count=1,
+        ).strip().rstrip(":：").rstrip()
+        if re.search(
+            rf"{_NUM_PATTERN}\s*점|배점\s*(?:의\s*)?{_NUM_PATTERN}",
+            condition,
+        ) or not _case_condition_matches(candidate, case, condition):
+            return False
+        if case.operator == "IN":
+            # Bare dates/another column cannot follow the cited categories and
+            # become their award. Exact category phrases may be separated only
+            # by table/list punctuation or the explicit grade unit.
+            remainder = _normalize_case_category(condition)
+            for category in sorted(case.category_values, key=len, reverse=True):
+                token = _normalize_case_category(category)
+                if not token or token not in remainder:
+                    return False
+                remainder = remainder.replace(token, "", 1)
+            remainder = remainder.replace("등급", "")
+            return not re.sub(r"[,，、/|;:·ㆍ()\[\]{}]+", "", remainder)
+        numbers = list(_NUMBER_RE.finditer(condition))
+        if len(numbers) != 1:
+            return False
+        if case.operator == "EQ":
+            return re.fullmatch(
+                rf"\s*(?:{_CASE_AWARD_CONDITION_UNIT_PATTERN})?\s*", condition[numbers[0].end():],
+                re.IGNORECASE,
+            ) is not None
+        # The comparison must finish the condition cell. Labels such as a
+        # subsequent total/date/share field cannot be borrowed across to its
+        # following number, even if that number equals the declared award.
+        if any(not condition[match.end():].strip() for match in _KOREAN_BOUND_RE.finditer(condition)):
+            return True
+        if any(re.fullmatch(rf"\s*(?:{_CASE_AWARD_CONDITION_UNIT_PATTERN})?\s*", condition[match.end():],
+                re.IGNORECASE) for match in _ASCII_DIRECT_BOUND_RE.finditer(condition)):
+            return True
+        return any(re.fullmatch(r"\s*[A-Za-z가-힣_]+\s*", condition[match.end():])
+            for match in _ASCII_REVERSED_BOUND_RE.finditer(condition))
+
+    if len(lines) >= 2 and _score_cell_matches(
+        lines[-1], value=case.award_value,
+        percent=case.award_kind == "PERCENT_OF_MAX",
+    ):
+        condition_lines = lines[:-1]
+        # A complete numeric condition may span number/unit/comparator cells;
+        # its exact grammar, not the bare final number, proves the separation.
+        return condition_matches("\n".join(condition_lines))
+
+    explicit_award = (
+        rf"(?<![\d.,+\-])(?:배점\s*(?:의\s*)?{_NUM_PATTERN}\s*(?:점|%|퍼센트)?"
+        rf"|{_NUM_PATTERN}\s*(?:점|%|퍼센트))"
+    )
+    match = re.fullmatch(
+        rf"(?P<condition>.+?)(?:\((?P<wrapped>{explicit_award})\)"
+        rf"|(?P<plain>{explicit_award}))",
+        value, re.DOTALL,
+    )
+    return bool(
+        match is not None
+        and _score_cell_matches(
+            match.group("wrapped") or match.group("plain"), value=case.award_value,
+            percent=case.award_kind == "PERCENT_OF_MAX",
+        )
+        and condition_matches(match.group("condition").strip())
+    )
+
+
 def _case_row_window_matches(
     candidate: QuantitativeRuleCandidate,
     case: QuantitativeCaseLiteral,
@@ -2312,7 +2412,7 @@ def _unique_case_support_span(
         ):
             continue
         if (
-            _literal_contains_number(case.award_value, case.literal)
+            _case_award_matches_literal(candidate, case, case.literal)
             and _case_comparison_matches(candidate, case, case.literal)
             and (
                 case.operator != "IN"
@@ -5672,9 +5772,8 @@ def _assert_available_candidate_invariants(
         for case in candidate.cases:
             if not evidence_quote_matches_source(case.literal, case.evidence.quote):
                 raise ValueError("AVAILABLE CASE literal is not bound to its anchor")
-            if not _literal_contains_number(
-                case.award_value,
-                case.literal,
+            if not _case_award_matches_literal(
+                candidate, case, case.literal,
             ) or not _case_comparison_matches(candidate, case, case.literal):
                 raise ValueError("AVAILABLE CASE numbers do not match its literal")
             rows.append(
@@ -6406,9 +6505,8 @@ def _validate_cases(
                     **context,
                 )
             )
-        if not _literal_contains_number(
-            case.award_value,
-            case.literal,
+        if not _case_award_matches_literal(
+            candidate, case, case.literal,
         ) or not _case_comparison_matches(candidate, case, case.literal):
             issues.append(
                 _issue(

@@ -4380,7 +4380,8 @@ def test_busan_credit_unit_repair_rejects_commercial_paper_case_cell() -> None:
     )
     request = quantitative_request_from_candidate_profile(profile)
 
-    assert record.status == "REVIEW"
+    assert record.status == "INCOMPLETE"
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
     assert profile.available_candidates == ()
     assert "CASE_TABLE_NOT_DETERMINISTIC" in issue_codes(profile)
     assert request.activation_status == "REVIEW_REQUIRED"
@@ -5075,11 +5076,13 @@ def test_busan_source_conditions_do_not_hide_repeated_case_row_literal() -> None
 
     profile = build(payload_with_table(table), source=source)
 
-    assert profile.status == "REVIEW"
+    assert profile.status == "INCOMPLETE"
+    assert "CASE_NUMBER_MISMATCH" in issue_codes(profile)
     assert "AMBIGUOUS_TABLE" in issue_codes(profile)
     assert "SOURCEWIDE_AMBIGUITY_CLAIM_COLLISION" in issue_codes(profile)
-    assert len(profile.available_candidates) == 3
-    assert profile.review_candidates == ()
+    assert profile.available_candidates == ()
+    assert len(profile.review_candidates) == 3
+    assert quantitative_request_from_candidate_profile(profile).activation_status == "REVIEW_REQUIRED"
 
 
 def test_busan_source_conditions_never_replace_cross_attachment_anchor() -> None:
