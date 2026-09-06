@@ -1851,7 +1851,7 @@ svg {
 
 .notice-card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: 12px;
   margin-top: 4px;
 }
@@ -1978,17 +1978,24 @@ svg {
 }
 
 .notice-card__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   padding-top: 12px;
   border-top: 1px solid #edf0ed;
 }
 
 .notice-card__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 7px;
+}
+
+.notice-card__actions > * {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .manual-analysis-action--card {
@@ -5671,7 +5678,6 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .sidebar { padding-inline: 13px; }
   .hero { grid-template-columns: 1fr 380px; padding-inline: 38px; }
   .loop-node { width: 70px; height: 70px; }
-  .notice-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .notice-table th:first-child { width: 34%; }
 }
 
@@ -5828,8 +5834,6 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
     min-width: 0;
     grid-template-columns: minmax(0, 1fr);
   }
-  .notice-card__foot,
-  .notice-card__actions { flex-wrap: wrap; }
   .notice-card { min-height: 215px; }
   .page-footer { display: block; }
   .page-footer span { display: block; margin-top: 4px; }
@@ -6211,8 +6215,21 @@ body {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+}
+
+.notice-card__axes .ai-judgment {
+  flex: 1 1 150px;
+  min-width: 0;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.notice-card__axes .operator-decision {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .requirement-item {

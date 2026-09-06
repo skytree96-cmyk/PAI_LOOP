@@ -640,9 +640,13 @@
       }
       state.quantitativeEstimates = {};
       const list = extractList(noticesResult.value);
-      state.notices = list.map(normalizeNotice).filter((notice) => notice.noticeKey);
-      state.dashboard = dashboardWithoutGlobalTotals(state.notices);
+      const previousNotices = new Map(state.notices.map((notice) => [notice.noticeKey, notice]));
       state.source = "api";
+      state.notices = list.map((raw) => {
+        const notice = normalizeNotice(raw);
+        return preserveOperatorDecision(notice, previousNotices.get(notice.noticeKey));
+      }).filter((notice) => notice.noticeKey);
+      state.dashboard = dashboardWithoutGlobalTotals(state.notices);
       state.sourceReason = "";
       state.lastSuccessfulQueryAt = new Date().toISOString();
       setSystemStatus("online");
@@ -751,7 +755,7 @@
     els.decisionComment.disabled = !decisionWritable;
     if (!decisionWritable) {
       els.saveDecisionButton.disabled = true;
-      els.saveDecisionButton.textContent = "사내 로그인 후 저장 가능";
+      els.saveDecisionButton.textContent = "현재 판단 저장 미제공";
     }
   }
 
@@ -2969,6 +2973,10 @@
         source.recommendationEvidenceCount,
       )) ?? 0),
       decision: normalizeDecision(firstValue(latestDecision.choice, source.decision, source.manager_decision, source.human_decision)),
+      // Public detail responses redact private history to []; that is not a known empty history.
+      decisionReadStatus: options.operatorDecisionsLoaded === true
+        || (state.accessMode === "SERVER_AUTHENTICATED" && Array.isArray(source.decisions))
+        ? "KNOWN" : "UNKNOWN",
       decisionComment: stringValue(firstValue(latestDecision.rationale, source.decision_comment, source.comment, source.manager_comment), ""),
       decidedBy: stringValue(firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
       decidedAt: firstValue(latestDecision.createdAt, source.decided_at, source.decision_at, null),
@@ -3358,7 +3366,7 @@
         kpis.result_missing_count,
         kpis.resultMissingCount,
       )) ?? derived.resultMissingCount,
-      undecidedCount: numberOrNull(firstValue(kpis.undecided_count, kpis.undecidedCount)) ?? derived.undecidedCount,
+      undecidedCount: derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
       totalDecisions: numberOrNull(totals.decisions) ?? notices.filter((notice) => notice.decision).length,
@@ -3400,7 +3408,9 @@
       cancelledCount: notices.filter(isCancelledNotice).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
       resultMissingCount: notices.filter((notice) => isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome).length,
-      undecidedCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length,
+      undecidedCount: operatorDecisionListAvailable(notices)
+        ? notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length
+        : null,
       lastSync: new Date().toISOString(),
       systemStatus: "online",
     };
@@ -3434,7 +3444,9 @@
     const valueIds = ["analysisAttachmentValue", "analysisEligibilityValue", "analysisScoreValue"];
     if (!stats || stats.scope !== "OPEN_PPS_NOT_CANCELLED") {
       valueIds.forEach((id) => { els[id].textContent = "—"; });
-      els.analysisProgressScope.textContent = "전체 통계 조회 대기 · 상단 새로고침으로 다시 조회할 수 있습니다.";
+      els.analysisProgressScope.textContent = state.source === "api" && state.sourceReason
+        ? "전체 통계 조회 실패 · 공고 목록은 조회됐습니다. 상단 새로고침으로 다시 조회해 주세요."
+        : "전체 통계 조회 대기 · 상단 새로고침으로 다시 조회할 수 있습니다.";
       ["analysisAttachmentDetail", "analysisEligibilityDetail", "analysisScoreDetail"].forEach((id) => { els[id].textContent = "집계 결과가 아직 없습니다."; });
       return;
     }
@@ -3460,7 +3472,12 @@
   function renderNavigationCounts() {
     els.navNewCount.textContent = displayNumber(state.dashboard.newCount) + "건";
     els.navReviewCount.textContent = displayNumber(state.dashboard.reviewCount) + "건";
-    els.navDecisionCount.textContent = displayNumber(state.dashboard.undecidedCount) + "건";
+    const decisionCount = operatorDecisionListAvailable()
+      ? state.notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length
+      : null;
+    els.navDecisionCount.textContent = decisionCount === null ? "—" : `${formatNumber(decisionCount)}건`;
+    els.navDecisionCount.setAttribute("aria-label", decisionCount === null
+      ? "담당자 판단 목록 조회 필요" : `현재 조회 공고 중 미결정 ${formatNumber(decisionCount)}건`);
   }
 
   function renderDataSource() {
@@ -3519,9 +3536,11 @@
     // Anonymous projections omit private decisions; absence is not proof of indecision.
     const decisionAccessAllowed = state.source === "demo"
       || (state.source === "api" && state.accessMode === "SERVER_AUTHENTICATED");
-    const decisionFilterAvailable = decisionAccessAllowed && state.notices.every(hasKnownOperatorDecision);
+    const decisionFilterAvailable = operatorDecisionListAvailable();
     const decisionFilterMessage = !decisionAccessAllowed
-      ? "공개 화면에서는 담당자 판단을 제공하지 않습니다. 판단 조회 권한이 있는 업무공간에서 사용할 수 있습니다."
+      ? state.operatorDecisionEnabled
+        ? "공개 화면의 공고 목록에는 담당자 판단이 포함되지 않아 분류할 수 없습니다. 운영 PIN으로 개별 공고 상세의 판단을 확인하거나 저장할 수 있습니다."
+        : "공개 화면의 공고 목록에는 담당자 판단이 포함되지 않아 분류할 수 없습니다. 현재 서버에서는 판단 저장을 제공하지 않습니다."
       : !decisionFilterAvailable
         ? "담당자 판단 목록을 불러와야 사용할 수 있습니다. 일부 공고의 조회 결과를 전체 판단으로 분류하지 않습니다."
         : "AI 추천과 구분한 담당자의 저장된 판단으로 분류합니다.";
@@ -3545,7 +3564,7 @@
         }
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
         if (state.currentView === "result-missing" && (!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome)) return false;
-        if (state.currentView === "undecided" && notice.decision) return false;
+        if (state.currentView === "undecided" && decisionFilterAvailable && operatorDecision === "all" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
       if (eligibility !== "all" && effectiveEligibilityStatus(notice) !== eligibility) return false;
@@ -3568,7 +3587,66 @@
   }
 
   function hasKnownOperatorDecision(notice) {
-    return state.source === "demo" || Boolean(notice.decision) || Array.isArray(notice.raw?.decisions);
+    return operatorDecisionReadStatus(notice) === "KNOWN";
+  }
+
+  function operatorDecisionReadStatus(notice) {
+    if (state.source === "demo") return "KNOWN";
+    return notice?.decisionReadStatus || "UNKNOWN";
+  }
+
+  function operatorDecisionListAvailable(notices = state.notices) {
+    return (state.source === "demo" || (state.source === "api" && state.accessMode === "SERVER_AUTHENTICATED"))
+      && notices.every(hasKnownOperatorDecision);
+  }
+
+  function operatorDecisionLabel(notice) {
+    const status = operatorDecisionReadStatus(notice);
+    const saved = notice?.decision ? DECISION_LABELS[notice.decision] || "보류" : "";
+    if (saved) return saved + ({ LOADING: " · 확인 중", ERROR: " · 재조회 실패", UNKNOWN: " · 최신 확인 필요" }[status] || "");
+    return { KNOWN: "미결정", LOADING: "판단 확인 중", ERROR: "판단 조회 실패", UNKNOWN: "판단 조회 필요" }[status] || "판단 조회 필요";
+  }
+
+  function preserveOperatorDecision(notice, previous) {
+    if (!previous?.decision || hasKnownOperatorDecision(notice)) return notice;
+    // Retain the last authenticated/saved value as a display snapshot, never as fresh list data.
+    return {
+      ...notice,
+      decision: previous.decision,
+      decisionComment: previous.decisionComment,
+      decidedBy: previous.decidedBy,
+      decidedAt: previous.decidedAt,
+      decisions: previous.decisions,
+    };
+  }
+
+  function operatorDecisionDetailText(notice) {
+    const saved = notice.decision
+      ? [operatorDecisionLabel(notice), notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean).join(" · ")
+      : operatorDecisionLabel(notice);
+    if (isCancelledNotice(notice)) return notice.decision
+      ? `취소 공고 · 과거 판단 기록(참고용): ${saved}`
+      : "취소 공고 · 담당자 판단을 새로 저장할 수 없습니다.";
+    const analysisNote = notice.analysisState !== "EVALUATED"
+      ? " 현재 공고 분석 전 · 새 판단은 분석 완료 후 저장할 수 있습니다." : "";
+    return `${notice.decision ? "저장된 판단: " : ""}${saved}.${analysisNote}`;
+  }
+
+  function updateOperatorDecisionReadState(notice, status) {
+    const updated = { ...notice, decisionReadStatus: status };
+    const index = state.notices.findIndex((item) => item.noticeKey === notice.noticeKey);
+    if (index >= 0) state.notices[index] = updated;
+    if (state.selectedNotice?.noticeKey === notice.noticeKey) {
+      state.selectedNotice = updated;
+      // Refresh status only, preserving an in-progress choice or comment.
+      els.decisionExisting.textContent = operatorDecisionDetailText(updated);
+      const metric = els.decisionSummary.querySelector("[data-operator-decision-summary] strong");
+      if (metric) metric.textContent = operatorDecisionLabel(updated);
+      els.analysisPipeline.innerHTML = renderPipeline(updated);
+    }
+    renderNavigationCounts();
+    applyFilters();
+    return updated;
   }
 
   function compareNotices(a, b, sort) {
@@ -3691,6 +3769,11 @@
         : count === total
           ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
           : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
+    if (state.currentView === "undecided" && state.noticeSearchMode === "stored") {
+      els.noticeSummary.textContent = operatorDecisionListAvailable()
+        ? `현재 조회 범위의 담당자 판단 · ${formatNumber(count)}건 표시`
+        : "담당자 판단 목록 조회 필요 · 아래는 공고 탐색 목록이며 미결정 공고 수가 아닙니다.";
+    }
 
     els.noticePanel.hidden = state.noticeSearchMode !== "stored";
     els.loadingState.hidden = true;
@@ -4192,7 +4275,7 @@
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
       "result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"],
-      undecided: ["결정 관리", "승인·담당자 지정 대상"],
+      undecided: ["담당자 판단", "공고별 판단 확인"],
       prespec: ["공고 탐색", "사전규격 탐색"],
       closed: ["결과 기록", "결과가 확인된 공고"],
       awards: ["낙찰 분석", "회사별 낙찰 결과"],
@@ -4431,9 +4514,6 @@
       ? { ...existing.raw, ...detail.raw, notice_key: noticeKey }
       : { ...detail.raw, notice_key: noticeKey };
     if (existing) {
-      if (!detail.decisions.length && existing.raw.decisions) {
-        mergedSource.decisions = existing.raw.decisions;
-      }
       if (!detail.departmentRanking && existing.raw.department_ranking) {
         mergedSource.department_ranking = existing.raw.department_ranking;
       }
@@ -4447,7 +4527,7 @@
         mergedSource.region_routing = existing.raw.region_routing;
       }
     }
-    const hydrated = normalizeNotice(mergedSource);
+    const hydrated = preserveOperatorDecision(normalizeNotice(mergedSource), existing);
     if (existingIndex >= 0) state.notices[existingIndex] = hydrated;
     else state.notices.push(hydrated);
     return hydrated;
@@ -4468,18 +4548,23 @@
     }
     if (!storedToken) return notice;
     state.manualAnalysisToken = storedToken;
+    notice = updateOperatorDecisionReadState(notice, "LOADING");
     try {
-      const decisions = arrayValue(await apiRequest(
+      const decisions = await apiRequest(
         `/operator-decisions/notices/${encodeURIComponent(notice.noticeKey)}`,
         { headers: { "X-PAI-Manual-Token": storedToken } },
-      ));
-      const merged = normalizeNotice({ ...notice.raw, decisions });
+      );
+      if (!Array.isArray(decisions)) throw new Error("담당자 판단 응답을 확인하지 못했습니다.");
+      const decisionSource = { ...notice.raw, decisions };
+      // The successful history response is authoritative, including a genuinely empty history.
+      for (const key of ["decision", "manager_decision", "human_decision", "decision_comment", "comment", "manager_comment", "decided_by", "decider", "decided_at", "decision_at"]) delete decisionSource[key];
+      const merged = normalizeNotice(decisionSource, 0, { operatorDecisionsLoaded: true });
       const index = state.notices.findIndex((item) => item.noticeKey === notice.noticeKey);
       if (index >= 0) state.notices[index] = merged;
-      return merged;
+      return updateOperatorDecisionReadState(merged, "KNOWN");
     } catch (error) {
       if (error?.status === 401 || error?.status === 429) clearManualAnalysisToken();
-      return notice;
+      return updateOperatorDecisionReadState(notice, "ERROR");
     }
   }
 
@@ -4603,7 +4688,7 @@
     els.decisionSummary.innerHTML = [
       summaryMetric("참가자격", cancelled ? "취소 공고" : displayAnalyzed ? analysisStatusLabel(notice) : "미분석", eligibilitySummaryClass),
       summaryMetric("AI 판단", analysisRecommendationLabel(notice), cancelled || !analyzed || qualityReview ? "summary-metric--pending" : "summary-metric--recommendation"),
-      summaryMetric("담당자 판단", notice.decision ? DECISION_LABELS[notice.decision] : "미결정", notice.decision ? "summary-metric--operator" : "summary-metric--pending"),
+      summaryMetric("담당자 판단", operatorDecisionLabel(notice), notice.decision ? "summary-metric--operator" : "summary-metric--pending", true),
       summaryMetric(notice.historicalAnalysis ? "당시 제출 준비도" : "제출 준비도", cancelled ? "현재 판단 미제공" : qualityReview ? "근거 보완 후 산정" : displayAnalyzed ? `${formatScore(notice.readinessScore)}/100` : "미산정", cancelled || !analyzed || qualityReview ? "summary-metric--pending" : ""),
       summaryMetric("판정 근거", evidence.length ? `${formatNumber(evidence.length)}건 연결` : "연결 확인 필요", evidence.length ? "" : "summary-metric--pending"),
       awardHistorySummaryMetric(notice),
@@ -4685,8 +4770,8 @@
     return `<div class="detail-fact"><small>${escapeHtml(label)}</small><strong title="${escapeAttribute(value)}">${escapeHtml(value)}</strong></div>`;
   }
 
-  function summaryMetric(label, value, className) {
-    return `<div class="summary-metric ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`;
+  function summaryMetric(label, value, className, operatorDecision = false) {
+    return `<div class="summary-metric ${className}"${operatorDecision ? " data-operator-decision-summary" : ""}><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`;
   }
 
   function awardHistorySummaryState(notice) {
@@ -5124,7 +5209,7 @@
       { name: "공고 수집", detail: "원문 보존", status: "done" },
       { name: "첨부 추출", detail: extractionDetail, status: extractionComplete ? "done" : "review" },
       { name: "규칙 판정", detail: cancelled ? "취소 · 현재 판단 비활성" : displayAnalyzed ? analysisStatusLabel(notice) : hasRules ? "분석 대기" : "조건 대기", status: cancelled ? "pending" : displayAnalyzed ? (["REVIEW", "UNKNOWN"].includes(effectiveEligibility) ? "review" : "done") : "pending" },
-      { name: "담당자 결정", detail: cancelled ? "취소 · 저장 비활성" : notice.decision ? DECISION_LABELS[notice.decision] : "미결정", status: cancelled ? "pending" : notice.decision ? "done" : "pending" },
+      { name: "담당자 결정", detail: cancelled ? "취소 · 저장 비활성" : operatorDecisionLabel(notice), status: cancelled ? "pending" : notice.decision && hasKnownOperatorDecision(notice) ? "done" : "pending" },
     ];
     return steps.map((step) => `
       <div class="pipeline-step ${step.status === "review" ? "is-review" : step.status === "pending" ? "is-pending" : ""}">
@@ -6172,7 +6257,7 @@
       return;
     }
     if (!canWriteDecision()) {
-      showToast("판단 저장 권한이 없습니다", "사내 로그인 또는 데모 운영 PIN이 필요합니다.", "warning");
+      showToast("판단 저장 권한이 없습니다", "현재 서버의 운영 권한 설정을 확인해 주세요.", "warning");
       return;
     }
     if (notice.analysisState !== "EVALUATED") {
@@ -6200,21 +6285,7 @@
     els.commentCount.textContent = String(notice.decisionComment.length);
     els.commentField.hidden = !notice.decisionComment;
     els.toggleCommentButton.setAttribute("aria-expanded", String(Boolean(notice.decisionComment)));
-    if (cancelled) {
-      const meta = notice.decision
-        ? [DECISION_LABELS[notice.decision] || notice.decision, notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean)
-        : [];
-      els.decisionExisting.textContent = meta.length
-        ? `취소 공고 · 과거 판단 기록(참고용): ${meta.join(" · ")}`
-        : "취소 공고 · 담당자 판단을 새로 저장할 수 없습니다.";
-    } else if (!analyzed) {
-      els.decisionExisting.textContent = "분석 완료 후 담당자 판단을 기록할 수 있습니다.";
-    } else if (notice.decision) {
-      const meta = [DECISION_LABELS[notice.decision] || notice.decision, notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean);
-      els.decisionExisting.textContent = meta.join(" · ");
-    } else {
-      els.decisionExisting.textContent = "아직 결정되지 않았습니다.";
-    }
+    els.decisionExisting.textContent = operatorDecisionDetailText(notice);
     els.toggleCommentButton.disabled = cancelled || !analyzed || !canWriteDecision();
     els.decisionComment.disabled = cancelled || !canWriteDecision();
     updateDecisionButton();
@@ -6336,7 +6407,7 @@
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
       : !canWriteDecision()
-      ? "사내 로그인 후 저장 가능"
+      ? "현재 판단 저장 미제공"
       : analyzed
       ? overrideReasonMissing
         ? "참여 사유를 입력하세요"
@@ -6355,7 +6426,7 @@
       return;
     }
     if (!canWriteDecision()) {
-      showToast("판단 저장 권한이 없습니다", "사내 로그인 또는 데모 운영 PIN이 필요합니다.", "warning");
+      showToast("판단 저장 권한이 없습니다", "현재 서버의 운영 권한 설정을 확인해 주세요.", "warning");
       return;
     }
     const decision = els.decisionInputs.find((input) => input.checked)?.value;
@@ -6410,6 +6481,7 @@
       const response = unwrapObject(result);
       const updated = {
         ...notice,
+        decisionReadStatus: "KNOWN",
         decision: normalizeDecision(firstValue(response.choice, response.decision, response.manager_decision, decision)) || decision,
         decisionComment: stringValue(firstValue(response.rationale, response.comment, response.decision_comment, rationale), rationale),
         decidedBy: stringValue(firstValue(response.actor_label, response.actorLabel, response.decided_by, response.decider, DECIDER_NAME), DECIDER_NAME),
@@ -6759,8 +6831,8 @@
   }
 
   function operatorDecisionIndicator(notice) {
-    const label = notice.decision ? DECISION_LABELS[notice.decision] || "보류" : "미결정";
-    const tone = notice.decision === "GO" ? "participate" : notice.decision === "NO_GO" ? "decline" : notice.decision ? "hold" : "undecided";
+    const label = operatorDecisionLabel(notice);
+    const tone = notice.decision === "GO" ? "participate" : notice.decision === "NO_GO" ? "decline" : notice.decision ? "hold" : hasKnownOperatorDecision(notice) ? "undecided" : "unavailable";
     return `<span class="operator-decision operator-decision--${tone}"><small>담당자</small><strong>${escapeHtml(label)}</strong></span>`;
   }
 
@@ -6768,7 +6840,7 @@
     if (notice.decision === "GO") return "decision-participate";
     if (notice.decision === "NO_GO") return "decision-decline";
     if (notice.decision) return "decision-hold";
-    return "decision-undecided";
+    return hasKnownOperatorDecision(notice) ? "decision-undecided" : "";
   }
 
   function emptyPanel(title, copy) {

@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260906-uxui-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260907-uxui-v2" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -79,8 +79,8 @@
                 <span class="nav-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><path d="M9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
                 </span>
-                <span>미결정 공고</span>
-                <span class="nav-count" id="navDecisionCount" aria-label="미결정 수">—</span>
+                <span>담당자 판단</span>
+                <span class="nav-count" id="navDecisionCount" aria-label="조회된 미결정 수">—</span>
               </button>
             </div>
           </div>
@@ -255,8 +255,8 @@
                 <span id="rankingProfileVersion">목록을 제외하지 않고 판정 상태 안에서 관련 공고를 위로 정렬합니다</span>
               </div>
               <label class="priority-search__select">
-                <span class="sr-only">검색 주체 부서</span>
-                <select id="departmentSelect" aria-label="검색 주체 부서">
+                <span class="sr-only">관심 부서 · 정렬 기준</span>
+                <select id="departmentSelect" aria-label="관심 부서 · 정렬 기준">
                   <option value="organization">전사 공통 (교육·컨설팅)</option>
                 </select>
               </label>
@@ -973,7 +973,7 @@
         <div class="decision-dock__head">
           <div>
             <span>담당자 결정</span>
-            <small id="decisionExisting">아직 결정되지 않았습니다.</small>
+            <small id="decisionExisting">담당자 판단 조회 상태를 확인하고 있습니다.</small>
           </div>
           <div class="decision-dock__actions">
             <button class="text-button" type="button" id="toggleCommentButton" aria-expanded="false" aria-controls="commentField">의견 남기기</button>
@@ -1209,6 +1209,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260906-uxui-v1" defer></script>
+    <script src="./app.js?v=20260907-uxui-v2" defer></script>
   </body>
 </html>
