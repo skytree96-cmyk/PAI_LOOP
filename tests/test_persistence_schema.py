@@ -18,6 +18,7 @@ from pai_loop.migrations import (
     MIGRATION_CHECKSUM,
     MIGRATION_ID,
     NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
+    PERFORMANCE_NORMALIZATION_MIGRATION_ID,
     PRESPEC_MIGRATION_ID,
     MigrationError,
     apply_additive_migrations,
@@ -255,6 +256,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         COMPANY_PERFORMANCE_MIGRATION_ID,
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
+        PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
@@ -262,6 +264,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         COMPANY_PERFORMANCE_MIGRATION_ID,
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
+        PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
@@ -277,6 +280,8 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         "bid_outcomes",
         "notice_analysis_policies",
         "company_performance_records",
+        "performance_normalization_batches",
+        "performance_normalization_revisions",
         "pre_specifications",
         "pre_specification_versions",
         "pre_specification_documents",
@@ -320,6 +325,7 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
         COMPANY_PERFORMANCE_MIGRATION_ID,
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
+        PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected

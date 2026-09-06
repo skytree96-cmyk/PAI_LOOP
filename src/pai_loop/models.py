@@ -610,3 +610,43 @@ class CompanyPerformanceRecord(Base, TimestampMixin):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[str] = mapped_column(String(120), default="KMA 입찰팀")
     updated_by: Mapped[str] = mapped_column(String(120), default="KMA 입찰팀")
+
+
+class PerformanceNormalizationBatch(Base):
+    """Private, append-only receipt for a bounded source-date normalization."""
+
+    __tablename__ = "performance_normalization_batches"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_performance_normalization_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    idempotency_key: Mapped[str] = mapped_column(String(36))
+    request_sha256: Mapped[str] = mapped_column(String(64))
+    evidence_id: Mapped[str] = mapped_column(ForeignKey("evidence.id"))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    algorithm_version: Mapped[str] = mapped_column(String(80))
+    source_binding_basis: Mapped[str] = mapped_column(String(80))
+    normalized_count: Mapped[int] = mapped_column(Integer)
+    activated_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+
+
+class PerformanceNormalizationRevision(Base):
+    """Preserves the previous operational revision without duplicating a record."""
+
+    __tablename__ = "performance_normalization_revisions"
+    __table_args__ = (
+        UniqueConstraint("record_id", "from_revision", name="uq_performance_normalization_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("performance_normalization_batches.id"))
+    record_id: Mapped[str] = mapped_column(ForeignKey("company_performance_records.id"))
+    from_revision: Mapped[int] = mapped_column(Integer)
+    to_revision: Mapped[int] = mapped_column(Integer)
+    source_cell: Mapped[str] = mapped_column(String(40))
+    source_period_sha256: Mapped[str] = mapped_column(String(64))
+    before_state: Mapped[dict[str, Any]] = mapped_column(JSON)
+    after_state: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())

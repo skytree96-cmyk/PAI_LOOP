@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_private_evidence_access
+from .private_performance_normalization import router as performance_normalization_router
 from .models import CompanyFact, Evidence, Notice
 from .quantitative_formula import parse_credit_rating
 from .quantitative_scoring import (
@@ -382,3 +383,6 @@ def register_private_credit_rating_for_notice(
         rating=payload.rating,
         binding_status=binding_status,
     )
+
+
+router.include_router(performance_normalization_router)

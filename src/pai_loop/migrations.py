@@ -26,6 +26,8 @@ from .models import (
     AnalysisRun,
     BidOutcome,
     CompanyPerformanceRecord,
+    PerformanceNormalizationBatch,
+    PerformanceNormalizationRevision,
     NoticeAnalysisPolicy,
     RecommendationSnapshot,
     ReferenceDataVersion,
@@ -66,6 +68,13 @@ COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CONTRACT = (
 )
 COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM = hashlib.sha256(
     COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+PERFORMANCE_NORMALIZATION_MIGRATION_ID = "20260906_01_performance_normalization_revisions"
+PERFORMANCE_NORMALIZATION_MIGRATION_CONTRACT = (
+    "performance_normalization_batches:v1;performance_normalization_revisions:v1"
+)
+PERFORMANCE_NORMALIZATION_MIGRATION_CHECKSUM = hashlib.sha256(
+    PERFORMANCE_NORMALIZATION_MIGRATION_CONTRACT.encode("utf-8")
 ).hexdigest()
 PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
 PRESPEC_MIGRATION_CONTRACT = (
@@ -109,6 +118,11 @@ _migrations = (
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM,
         (),
+    ),
+    (
+        PERFORMANCE_NORMALIZATION_MIGRATION_ID,
+        PERFORMANCE_NORMALIZATION_MIGRATION_CHECKSUM,
+        (PerformanceNormalizationBatch.__table__, PerformanceNormalizationRevision.__table__),
     ),
     (
         PRESPEC_MIGRATION_ID,
