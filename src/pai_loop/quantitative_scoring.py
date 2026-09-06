@@ -38,11 +38,15 @@ from .pps_enrichment import (
 )
 from .quantitative_rule_extraction import (
     AttachmentDocumentBinding,
+    ImmutableQuantitativeCase,
     ImmutableQuantitativeRuleCandidate,
     ImmutableQuantitativeTable,
     QuantitativeCandidateProfile,
     ValidatedQuantitativeAttachmentRecord,
     merge_validated_quantitative_records,
+    _case_condition_matches,
+    _normalise_anchor_text,
+    _score_cell_matches,
 )
 from .public_performance import load_public_performance_seed
 from .quantitative_formula import (
@@ -67,7 +71,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.1"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.3"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -1397,22 +1401,9 @@ def _current_dynamic_quantitative_profile(
     descriptors = {
         item["attachment_id"]: _canonical_digest(item) for item in attachments
     }
-    attempts: dict[str, Any] = {}
-    for version in reversed(versions):
-        payload = version.source_payload
-        if (
-            not isinstance(payload, dict)
-            or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
-            or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
-            or not metadata_schema_current
-            or payload.get("prompt_version") != PROMPT_VERSION
-            or payload.get("processing_version") != PPS_PROCESSING_VERSION
-            or payload.get("current_manifest_sha256") != manifest_sha256
-        ):
-            continue
-        attachment_id = str(payload.get("attachment_id") or "")
-        if payload.get("manifest_sha256") == descriptors.get(attachment_id):
-            attempts[attachment_id] = version
+    _read_attachments, _read_invalid, attempts = _current_manifest_attempts(
+        versions, validate_accepted=False,
+    )
 
     expected_documents: dict[str, str] = {}
     attachment_profiles: dict[str, dict[str, object]] = {}
@@ -1479,6 +1470,10 @@ def _current_dynamic_quantitative_profile(
         manifest_sha256=manifest_sha256,
         incomplete_attachment_ids=sorted(incomplete),
         attachment_profiles=attachment_profiles,
+        source_payloads={
+            attachment_id: attempt.source_payload
+            for attachment_id, attempt in attempts.items()
+        },
     )
 
 
@@ -1656,6 +1651,44 @@ def _amount_case_units_are_value_equivalent(
     return True
 
 
+def _case_percent_award_input_literal(
+    candidate: ImmutableQuantitativeRuleCandidate,
+    case: ImmutableQuantitativeCase,
+) -> str | None:
+    """Separate an exact numeric condition from its source-bound percent award.
+
+    This does not remove arbitrary percent tokens. The full literal must remain
+    inside its persisted evidence, end in the exact declared award cell, and
+    contain only its one structured comparison value before that cell.
+    """
+    if (
+        case.award_kind != "PERCENT_OF_MAX"
+        or case.operator not in {"GTE", "EQ", "LTE", "LT"}
+    ):
+        return None
+    if _normalise_anchor_text(case.literal) not in _normalise_anchor_text(
+        case.evidence.quote
+    ):
+        return None
+    literal = unicodedata.normalize("NFKC", case.literal).strip()
+    match = re.fullmatch(
+        r"(?P<condition>.+?)(?:\s+|(?=배점))"
+        r"(?P<award>(?:배점\s*(?:의\s*)?)?\d[\d,]*(?:\.\d+)?\s*(?:%|퍼센트))",
+        literal,
+        re.DOTALL,
+    )
+    if match is None or not _score_cell_matches(
+        match.group("award"), value=case.award_value, percent=True,
+    ):
+        return None
+    condition = match.group("condition").strip()
+    if len(re.findall(r"-?\d[\d,]*(?:\.\d+)?", condition)) != 1:
+        return None
+    if not _case_condition_matches(candidate, case, condition):
+        return None
+    return condition
+
+
 def _candidate_unit_is_source_bound(
     candidate: ImmutableQuantitativeRuleCandidate,
 ) -> bool:
@@ -1670,8 +1703,18 @@ def _candidate_unit_is_source_bound(
         )
     if candidate.formula_literal:
         literals.append(candidate.formula_literal)
-    literals.extend(item.literal for item in candidate.cases)
-    literals.extend(item.evidence.quote for item in candidate.cases)
+    spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+    for case in candidate.cases:
+        if (
+            case.award_kind == "PERCENT_OF_MAX"
+            and (spec or {}).get("value_kind", "NUMERIC") == "NUMERIC"
+        ):
+            condition = _case_percent_award_input_literal(candidate, case)
+            if condition is None:
+                return False
+            literals.append(condition)
+        else:
+            literals.extend((case.literal, case.evidence.quote))
     observed = {
         _normalize_unit(match.group("unit"))
         for literal in literals
@@ -1739,7 +1782,14 @@ def _candidate_bound_unit_scales_are_consistent(
         literals.append(candidate.threshold.literal)
     if candidate.formula_literal:
         literals.append(candidate.formula_literal)
-    literals.extend(item.literal for item in candidate.cases)
+    for case in candidate.cases:
+        if case.award_kind == "PERCENT_OF_MAX":
+            condition = _case_percent_award_input_literal(candidate, case)
+            if condition is None:
+                return False
+            literals.append(condition)
+        else:
+            literals.append(case.literal)
     if not literals:
         return False
     for literal in literals:

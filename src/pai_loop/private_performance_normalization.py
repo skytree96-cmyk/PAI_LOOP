@@ -29,17 +29,39 @@ from .performance_records import (
 )
 
 ALGORITHM_VERSION = "explicit-performance-period-v1"
+PERIOD_COMMA_ALGORITHM_VERSION = "explicit-performance-period-v2"
 _REVISION_SOURCE = "PRIVATE_PERIOD_NORMALIZATION"
 
 
-def parse_explicit_performance_period(value: str) -> tuple[date, date] | None:
+def _explicit_year_month_comma_period(text: str) -> str | None:
+    """Normalize one year/month comma only inside two fully explicit dates."""
+    full_date = r"20\d{2}\s*[.,]\s*\d{1,2}\s*\.\s*\d{1,2}\.?"
+    if text.count(",") != 1 or re.fullmatch(
+        rf"{full_date}(?:\s*[~〜∼～–—-]\s*|\s+){full_date}", text
+    ) is None:
+        return None
+    return text.replace(",", ".")
+
+
+def parse_explicit_performance_period(
+    value: str, *, algorithm_version: str = ALGORITHM_VERSION
+) -> tuple[date, date] | None:
     """Accept only two exact date boundaries; never infer a year crossing.
 
     Two-digit years follow the source register's explicit 2000-based convention.
     The caller's authenticated local-source binding is trusted separately; a
     workbook SHA and a cell name do not prove a supplied literal's membership.
     """
+    if algorithm_version not in {ALGORITHM_VERSION, PERIOD_COMMA_ALGORITHM_VERSION}:
+        return None
     text = " ".join(value.replace("\u00a0", " ").split())
+    if "," in text:
+        if algorithm_version != PERIOD_COMMA_ALGORITHM_VERSION:
+            return None
+        normalized = _explicit_year_month_comma_period(text)
+        if normalized is None:
+            return None
+        text = normalized
     full = r"(?:20\d{2}|\d{2})\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{1,2}\.?|20\d{6}"
     end = rf"(?:{full}|\d{{1,2}}\s*[./-]\s*\d{{1,2}}\.?)"
     match = re.fullmatch(
@@ -88,7 +110,7 @@ class PerformancePeriodNormalizationRequest(_PrivateModel):
     idempotency_key: UUID
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sheet_name: Literal["프로젝트DB"]
-    algorithm_version: Literal["explicit-performance-period-v1"]
+    algorithm_version: Literal["explicit-performance-period-v1", "explicit-performance-period-v2"]
     # A machine source-match assertion, distinct from a new human attestation.
     source_binding_basis: Literal["AUTHENTICATED_LOCAL_SOURCE_MATCH"]
     records: list[PerformancePeriodNormalizationItem] = Field(min_length=1, max_length=100)
@@ -228,7 +250,9 @@ def _apply_normalization(payload: PerformancePeriodNormalizationRequest, session
             or performance_normalization_state_sha256(record) != supplied.expected_state_sha256
         ):
             raise _conflict()
-        interval = parse_explicit_performance_period(supplied.source_period)
+        interval = parse_explicit_performance_period(
+            supplied.source_period, algorithm_version=payload.algorithm_version
+        )
         if interval is None:
             raise HTTPException(status_code=422, detail="원문에서 명확한 수행 시작일과 종료일을 확인할 수 없습니다.")
         before = performance_normalization_state(record)

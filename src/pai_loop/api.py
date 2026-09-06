@@ -79,6 +79,7 @@ from .pps_enrichment import (
     public_attachment_analysis_statuses,
     resolve_ingestion_keywords,
     safe_public_live_extraction,
+    safe_public_bound_extraction,
 )
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import public_quantitative_snapshot_projection
@@ -733,7 +734,7 @@ def _public_document_analyses(versions: list[NoticeVersion]) -> list[dict[str, A
         if curated is not None:
             analyses.append(curated)
             continue
-        live = safe_public_live_extraction(payload)
+        live = safe_public_bound_extraction(payload, versions)
         if live is not None:
             analyses.append(live)
     return analyses
@@ -3112,7 +3113,7 @@ def requirement_policy(
         if public_view:
             public_extraction = (
                 _curated_public_extraction(payload)
-                or safe_public_live_extraction(payload)
+                or safe_public_bound_extraction(payload, list(notice.versions))
             )
             if public_extraction is None:
                 continue
