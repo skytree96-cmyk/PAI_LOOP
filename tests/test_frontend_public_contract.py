@@ -229,16 +229,16 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'els.eligibilityFilter.value = "all"' in view_body
     assert 'els.recommendationFilter.value = "all"' in view_body
     assert ".kpi-card__action:focus-visible" in styles
-    assert "3일" in html
-    assert "7일" not in html
+    assert "7일" in html
+    assert "3일" not in html
     assert "72시간" not in html
 
 
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260906-history-v1"' in html
-    assert 'src="./app.js?v=20260906-history-v1"' in html
+    assert 'href="./styles.css?v=20260907-uxui-v2"' in html
+    assert 'src="./app.js?v=20260907-uxui-v2"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -406,7 +406,7 @@ def test_three_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert 'if (state.noticeSearchMode === "pps")' in schedule_body
     assert "renderPpsDiscovery();\n      return;" in schedule_body
 
-    for label in ("나라장터 실시간", "PAI LOOP 저장됨", "판단 필요", "판단 완료"):
+    for label in ("나라장터 실시간", "PAI 저장됨", "판단 필요", "판단 완료"):
         assert label in card_body
     assert "data-stored-notice-link" in card_body
     assert "저장된 공고로 이동" in card_body
@@ -566,8 +566,10 @@ def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None
     assert "input.disabled = cancelled ||" in existing_body
     assert "els.toggleCommentButton.disabled = cancelled ||" in existing_body
     assert "els.decisionComment.disabled = cancelled ||" in existing_body
-    assert "과거 판단 기록(참고용)" in existing_body
-    assert "담당자 판단을 새로 저장할 수 없습니다" in existing_body
+    decision_text_body = _function_body(source, "operatorDecisionDetailText", "updateOperatorDecisionReadState")
+    assert "operatorDecisionDetailText(notice)" in existing_body
+    assert "과거 판단 기록(참고용)" in decision_text_body
+    assert "담당자 판단을 새로 저장할 수 없습니다" in decision_text_body
     assert "if (isCancelledNotice(state.selectedNotice)) return" in toggle_body
     assert "const cancelled = isCancelledNotice(state.selectedNotice)" in button_body
     assert "els.saveDecisionButton.disabled = cancelled ||" in button_body
@@ -617,7 +619,7 @@ def test_cancelled_notice_presentation_never_promotes_historical_go_as_current()
     assert "analysisRecommendationLabel(notice)" in teams_body
     assert "취소 공고 · 현재 검토 제외" in card_body
     assert "analysisRecommendationLabel(notice)" in card_body
-    assert 'cancelled ? "PAI LOOP · 취소 공고 알림"' in card_body
+    assert 'cancelled ? "PAI · 취소 공고 알림"' in card_body
     assert 'cancelled ? "과거 분석 참고"' in card_body
 
 
@@ -979,7 +981,7 @@ def test_connection_status_exposes_delay_and_exact_kst_last_success_time() -> No
     assert 'setSystemStatus("delayed")' in load_body
     assert "}, 10000)" in load_body
     assert 'mode === "delayed"' in status_body
-    assert 'els.systemStatusText.textContent = "연결 지연 · 10초 초과"' in status_body
+    assert 'els.systemStatusText.textContent = "조회가 지연되고 있습니다"' in status_body
     assert "현재 화면: 서버 저장본 · 조회" in status_body
     assert "데이터 동기화" in status_body
     assert '"서버 저장본 · 조회 시각 확인 중"' in status_body
@@ -1108,5 +1110,320 @@ assert.match(els.quantObservationList.innerHTML,/내부 검증 근거 보존/);
 renderQuantitativeEstimate({...data, ruleset_version:"SYN-internal", assumptions:[]});
 assert.match(els.quantTableBody.innerHTML,/원문 위치 없음/);
 assert.match(renderQuantitativeEstimateRow({...criterion,source_anchor:{page:2}}, {publicEvidenceHidden:true}),/원문 2쪽/);
+"""
+    subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
+
+
+
+def test_urgent_seven_day_window_and_operator_filter_preserve_other_axes() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    urgent_constant = re.search(r"  const URGENT_DEADLINE_DAYS = \d+;", source)
+    assert urgent_constant
+    assert 'aria-label="7일 이내 입찰마감 공고 보기"' in html
+    assert 'class="kpi-scope-note">현재 조회 공고 중' in html
+    assert 'id="replayButton" hidden' in html
+    assert 'els.replayButton.hidden = true;' in source
+    adapter = urgent_constant.group(0)
+    adapter += "\nfunction normalizeDashboard" + _function_body(source, "normalizeDashboard", "dashboardWithoutGlobalTotals")
+    adapter += "\nfunction applyFilters" + _function_body(source, "applyFilters", "renderNoticeList")
+    adapter += "\nfunction deriveDashboard" + _function_body(source, "deriveDashboard", "renderAll")
+    adapter += "\nfunction daysUntil" + _function_body(source, "daysUntil", "formatBudget")
+    adapter += "\nfunction resetNoticeFiltersForView" + _function_body(source, "resetNoticeFiltersForView", "setLayout")
+    script = r"""
+const assert = require("node:assert/strict");
+const validDate = value => value ? new Date(value) : null;
+const effectiveEligibilityStatus = notice => notice.eligibility;
+const effectiveRecommendation = notice => notice.recommendation;
+const noticeLifecycleStatus = notice => notice.status;
+const isCancelledNotice = notice => notice.status === "CANCELLED";
+const isVisibleEndedNotice = notice => ["CLOSED", "EXPIRED", "CANCELLED"].includes(notice.status);
+const renderNoticeSearchScope = () => {};
+const renderNoticeList = () => {};
+const window = {clearTimeout() {}};
+const formatNumber = value => String(value);
+const unwrapObject = value => value || {};
+const firstObject = (...values) => values.find(value => value && typeof value === "object") || {};
+const firstValue = (...values) => values.find(value => value !== null && value !== undefined);
+const numberOrNull = value => value == null ? null : Number(value);
+const stringValue = (value, fallback="") => value == null ? fallback : String(value);
+const els = {searchInput: {value:""}, eligibilityFilter: {value:"all"},
+  recommendationFilter: {value:"all"}, operatorDecisionFilter: {value:"all",options:[{}]}, operatorDecisionFilterHelp:{},
+  sortSelect: {value:"judgement"}, priorityKeywordInput:{value:""}, departmentSelect:{value:"organization"}};
+const notice = (id, days, eligibility, decision=null, status="OPEN") => ({
+  noticeKey:id, title:id, agency:"SYN-agency", noticeNumber:id, status,
+  deadline:new Date(Date.now()+days*86400000).toISOString(), collectedAt:null,
+  analysisState:eligibility === "UNKNOWN" ? "PENDING" : "EVALUATED",
+  sourceKind:"PPS", analysisAttachmentCoverageComplete:true,
+  eligibility, eligibilityStatus:eligibility, recommendation:"GO", decision, decisionReadStatus:"KNOWN",
+  topDepartmentRankings:[], departmentReviewCandidates:[], hasBidOutcome:false, raw:{decisions:[]},
+});
+const notices = [notice("SYN-eight",8,"PASS"), notice("SYN-review",1,"REVIEW","GO"),
+  notice("SYN-seven",7,"PASS","NO_GO"), notice("SYN-today",0,"PASS","HOLD"),
+  notice("SYN-closed",2,"PASS",null,"CLOSED"), notice("SYN-expired",-1,"PASS",null,"EXPIRED"),
+  notice("SYN-pending",2,"UNKNOWN"), notice("SYN-conditional",3,"PASS","CONDITIONAL_GO")];
+const state = {loading:false, source:"api", accessMode:"SERVER_AUTHENTICATED", currentView:"all",
+  notices, dashboard:{totalNotices:800, totalDecisions:90}};
+const original = JSON.stringify(notices);
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
+  ["SYN-today","SYN-conditional","SYN-seven","SYN-eight","SYN-review","SYN-pending"]);
+state.currentView="urgent";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
+  ["SYN-today","SYN-conditional","SYN-seven","SYN-review","SYN-pending"]);
+assert.equal(deriveDashboard(notices).urgentCount,5);
+const apiCounts = {totals:{notices:800},deadline_soon:1,kpis:{urgent_count:1}};
+assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,5);
+const querySubset=notices.filter(x=>x.noticeKey==="SYN-seven");
+assert.equal(normalizeDashboard(apiCounts,querySubset).urgentCount,1);
+assert.equal(normalizeDashboard(apiCounts,querySubset).totalNotices,800);
+state.currentView="all";
+els.operatorDecisionFilter.value="NO_GO";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-seven"]);
+els.operatorDecisionFilter.value="HOLD";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-today"]);
+els.operatorDecisionFilter.value="CONDITIONAL_GO";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-conditional"]);
+els.operatorDecisionFilter.value="GO";
+els.eligibilityFilter.value="REVIEW";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-review"]);
+els.eligibilityFilter.value="PASS";
+applyFilters();
+assert.equal(state.filteredNotices.length,0);
+els.eligibilityFilter.value="all";
+els.operatorDecisionFilter.value="UNDECIDED";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-eight","SYN-pending"]);
+state.currentView="ended";
+els.operatorDecisionFilter.value="all";
+applyFilters();
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-expired","SYN-closed"]);
+state.currentView="all";
+els.operatorDecisionFilter.value="GO";
+resetNoticeFiltersForView();
+assert.equal(els.operatorDecisionFilter.value,"all");
+state.accessMode="PUBLIC_READ_ONLY";
+els.operatorDecisionFilter.value="UNDECIDED";
+applyFilters();
+assert.equal(els.operatorDecisionFilter.disabled,true);
+assert.equal(els.operatorDecisionFilter.value,"all");
+assert.equal(els.operatorDecisionFilter.options[0].textContent,"판단 조회 권한 필요");
+assert.match(els.operatorDecisionFilterHelp.textContent,/공개 화면/);
+assert.equal(state.filteredNotices.length,6);
+assert.deepEqual(state.dashboard,{totalNotices:800,totalDecisions:90});
+assert.equal(JSON.stringify(notices),original);
+state.accessMode="SERVER_AUTHENTICATED";
+state.notices=notices.map(x => ({...x,raw:{},decisionReadStatus:"UNKNOWN"}));
+els.operatorDecisionFilter.value="UNDECIDED";
+applyFilters();
+assert.equal(els.operatorDecisionFilter.disabled,true);
+assert.equal(els.operatorDecisionFilter.value,"all");
+assert.equal(state.filteredNotices.length,6);
+assert.match(els.operatorDecisionFilterHelp.textContent,/담당자 판단 목록을 불러와야/);
+"""
+    subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
+
+
+
+def test_operator_decision_read_state_preserves_history_without_inventing_undecided() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    script = r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const source = require("node:fs").readFileSync(0,"utf8");
+const storage = new Map([["pai-loop-operator-pin","SYN-test-pin"]]);
+let pendingResponse;
+const context = vm.createContext({
+  document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
+  window:{matchMedia(){return {matches:false};},setTimeout,clearTimeout,
+    sessionStorage:{getItem:key=>storage.get(key),removeItem:key=>storage.delete(key)}},
+  Headers,AbortController,URL,URLSearchParams,
+  fetch:()=>new Promise(resolve=>{pendingResponse=resolve;}),
+});
+const exported = `globalThis.ui={state,els,normalizeNotice,operatorDecisionReadStatus,
+  operatorDecisionLabel,operatorDecisionDetailText,operatorDecisionIndicator,operatorDecisionClass,
+  operatorDecisionListAvailable,preserveOperatorDecision,hydrateOperatorDecisions,
+  deriveDashboard,normalizeDashboard,renderPipeline,renderExistingDecision,renderNavigationCounts};`;
+vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
+const u=context.ui;
+const field=()=>({value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,
+  attributes:{},setAttribute(key,value){this.attributes[key]=value;},classList:{toggle(){}}});
+for(const key of ["navNewCount","navReviewCount","navDecisionCount","decisionExisting",
+  "analysisPipeline","decisionComment","commentCount","commentField","toggleCommentButton",
+  "saveDecisionButton","decisionDockBody","decisionDockToggle"]) u.els[key]=field();
+const summary=field();
+u.els.decisionSummary={querySelector:()=>summary};
+u.els.decisionInputs=[{value:"GO",checked:false},{value:"HOLD",checked:true},{value:"NO_GO",checked:false}];
+Object.assign(u.state,{source:"api",accessMode:"PUBLIC_READ_ONLY",operatorDecisionEnabled:true,
+  writeControlsEnabled:false,loading:true,dashboard:{},manualAnalysisAuthRequired:true});
+const raw={notice_key:"SYN-decision-read-state",title:"SYN 판단 상태 공고",agency:"SYN 기관",
+  deadline:"2099-09-09T08:00:00Z",status:"OPEN",analysis_state:"PENDING",decisions:[]};
+let notice=u.normalizeNotice(raw);
+u.state.notices=[notice];
+u.state.selectedNotice=notice;
+u.els.decisionComment.value="작성 중인 의견";
+assert.equal(u.operatorDecisionReadStatus(notice),"UNKNOWN");
+assert.equal(u.operatorDecisionReadStatus(u.normalizeNotice({...raw,decision:"GO"})),"UNKNOWN");
+assert.equal(u.operatorDecisionLabel(notice),"판단 조회 필요");
+assert.match(u.operatorDecisionIndicator(notice),/판단 조회 필요/);
+assert.equal(u.operatorDecisionClass(notice),"");
+assert.match(u.renderPipeline(notice),/판단 조회 필요/);
+assert.equal(u.deriveDashboard([notice]).undecidedCount,null);
+assert.equal(u.normalizeDashboard({kpis:{undecided_count:42}},[notice]).undecidedCount,null);
+u.renderNavigationCounts();
+assert.equal(u.els.navDecisionCount.textContent,"—");
+const respond=(status,payload)=>pendingResponse({ok:status>=200&&status<300,status,
+  headers:{get:()=>"application/json"},json:async()=>payload});
+(async()=>{
+  let request=u.hydrateOperatorDecisions(notice);
+  assert.equal(u.operatorDecisionReadStatus(u.state.selectedNotice),"LOADING");
+  assert.match(u.els.decisionExisting.textContent,/판단 확인 중/);
+  assert.equal(summary.textContent,"판단 확인 중");
+  assert.equal(u.els.decisionComment.value,"작성 중인 의견");
+  assert.equal(u.els.decisionInputs[1].checked,true);
+  respond(200,[{id:"SYN-decision",choice:"HOLD",actor_label:"SYN 담당자",
+    rationale:"추가 확인 후 검토",created_at:"2026-09-01T03:00:00Z",evaluation_id:"SYN-evaluation"}]);
+  notice=await request;
+  assert.equal(u.operatorDecisionReadStatus(notice),"KNOWN");
+  assert.equal(notice.decision,"HOLD");
+  assert.equal(u.operatorDecisionLabel(notice),"보류");
+  assert.match(summary.textContent,/보류/);
+  assert.equal(u.operatorDecisionListAvailable(),false,"individual PIN read is not a complete public list");
+  assert.equal(u.els.navDecisionCount.textContent,"—");
+  assert.equal(u.els.decisionComment.value,"작성 중인 의견");
+
+  // A public/AI refresh can hide history; retain the last saved judgment as explicitly stale.
+  notice=u.preserveOperatorDecision(u.normalizeNotice({...raw,recommendation:"GO"}),notice);
+  assert.equal(notice.decision,"HOLD");
+  assert.equal(u.operatorDecisionReadStatus(notice),"UNKNOWN");
+  assert.match(u.operatorDecisionLabel(notice),/보류.*최신 확인 필요/);
+  assert.equal(notice.raw.decisions.length,0);
+  u.state.notices=[notice];u.state.selectedNotice=notice;
+  request=u.hydrateOperatorDecisions(notice);
+  assert.match(summary.textContent,/보류.*확인 중/);
+  respond(401,{detail:"SYN expired PIN"});
+  notice=await request;
+  assert.equal(u.state.manualAnalysisToken,"");
+  assert.equal(storage.has("pai-loop-operator-pin"),false);
+  assert.equal(u.operatorDecisionReadStatus(notice),"ERROR");
+  assert.equal(notice.decision,"HOLD");
+  assert.match(u.operatorDecisionIndicator(notice),/보류.*재조회 실패/);
+  assert.match(u.operatorDecisionDetailText(notice),/저장된 판단: 보류.*재조회 실패/);
+  assert.match(u.renderPipeline(notice),/보류.*재조회 실패/);
+  assert.equal(u.els.decisionComment.value,"작성 중인 의견");
+  u.renderExistingDecision(notice);
+  assert.match(u.els.decisionExisting.textContent,/저장된 판단: 보류/);
+  assert.match(u.els.decisionExisting.textContent,/현재 공고 분석 전/);
+  assert.equal(u.els.saveDecisionButton.disabled,true);
+  assert.equal(u.els.decisionInputs.every(input=>input.disabled),true);
+  const cancelled={...notice,providerDisposition:"CANCELLED"};
+  u.state.selectedNotice=cancelled;
+  u.renderExistingDecision(cancelled);
+  assert.match(u.els.decisionExisting.textContent,/취소 공고.*과거 판단 기록.*보류/);
+  assert.equal(u.els.saveDecisionButton.disabled,true);
+
+  // An authenticated empty history, unlike redacted public [], really does mean undecided.
+  storage.set("pai-loop-operator-pin","SYN-test-pin");
+  notice={...notice,raw:{...notice.raw,decision:"HOLD"}};
+  u.state.notices=[notice];u.state.selectedNotice=notice;
+  request=u.hydrateOperatorDecisions(notice);
+  respond(200,[]);
+  notice=await request;
+  assert.equal(u.operatorDecisionReadStatus(notice),"KNOWN");
+  assert.equal(notice.decision,"");
+  assert.equal(u.operatorDecisionLabel(notice),"미결정");
+  assert.equal(u.operatorDecisionListAvailable(),false);
+  request=u.hydrateOperatorDecisions(notice);
+  respond(200,{unexpected:"not a history list"});
+  notice=await request;
+  assert.equal(u.operatorDecisionReadStatus(notice),"ERROR");
+  assert.equal(u.operatorDecisionLabel(notice),"판단 조회 실패");
+  assert.equal(u.deriveDashboard([notice]).undecidedCount,null);
+
+  u.state.accessMode="SERVER_AUTHENTICATED";
+  const authenticated=u.normalizeNotice(raw);
+  assert.equal(u.operatorDecisionReadStatus(authenticated),"KNOWN");
+  assert.equal(u.deriveDashboard([authenticated]).undecidedCount,1);
+  assert.equal(u.deriveDashboard([authenticated,notice]).undecidedCount,null);
+  u.state.notices=[authenticated];u.renderNavigationCounts();
+  assert.equal(u.els.navDecisionCount.textContent,"1건");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    subprocess.run(["node", "-e", script], input=source, text=True, encoding="utf-8", check=True)
+
+
+def test_decision_dock_preserves_drafts_and_opens_for_required_input() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="decisionDockBody" hidden' in html
+    assert 'id="decisionDockToggle" aria-expanded="false" aria-controls="decisionDockBody"' in html
+    assert '<strong>공고를 불러오는 중입니다</strong>' in html
+    adapter = "function setDecisionDockExpanded" + _function_body(source, "setDecisionDockExpanded", "saveDecision")
+    adapter += "\nasync function saveDecision" + _function_body(source, "saveDecision", "renderPipelineIntoExisting")
+    script = r"""
+const assert = require("node:assert/strict");
+let focused="";
+const field = id => ({value:"",hidden:false,disabled:false,textContent:"",attributes:{},
+  setAttribute(key,value) {this.attributes[key]=value;}, focus(){focused=id;},classList:{toggle(){}}});
+const els = {decisionDockBody:field("body"), decisionDockToggle:field("toggle"),
+  commentField:field("commentField"),toggleCommentButton:field("commentToggle"),
+  decisionComment:field("comment"),saveDecisionButton:field("save"),
+  decisionInputs:[{value:"GO",checked:false,focus(){focused="choice";}},{value:"HOLD",checked:true}]};
+const notice = {noticeKey:"SYN-dock", analysisState:"EVALUATED", eligibility:"REVIEW", recommendation:"GO"};
+const state = {selectedNotice:notice,notices:[notice],source:"demo",writeControlsEnabled:true};
+const isCancelledNotice=()=>false;
+const canWriteDecision=()=>true;
+const effectiveEligibilityStatus=notice=>notice.eligibility;
+const effectiveRecommendation=notice=>notice.recommendation;
+const showToast=()=>{};
+const DECISION_LABELS={GO:"참여",HOLD:"보류"};
+const DECIDER_NAME="SYN-operator";
+const unwrapObject=x=>x||{};
+const firstValue=(...xs)=>xs.find(x=>x!==undefined&&x!==null);
+const stringValue=(value,fallback)=>value==null ? fallback : String(value);
+const normalizeDecision=x=>x;
+const refreshDashboardAfterMutation=async()=>{};
+const renderExistingDecision=()=>{};
+const renderPipelineIntoExisting=()=>{};
+const renderAll=()=>{};
+(async()=>{
+  els.decisionComment.value="작성 중인 의견";
+  setDecisionDockExpanded(false);
+  assert.equal(els.decisionDockBody.hidden,true);
+  assert.equal(els.decisionDockToggle.attributes["aria-expanded"],"false");
+  setDecisionDockExpanded(true);
+  assert.equal(els.decisionComment.value,"작성 중인 의견");
+  assert.equal(els.decisionInputs[1].checked,true);
+  updateDecisionButton();
+  assert.equal(els.decisionDockBody.hidden,false);
+  setDecisionDockExpanded(false);
+  els.commentField.hidden=true;
+  toggleCommentField();
+  assert.equal(els.decisionDockBody.hidden,false);
+  assert.equal(focused,"comment");
+  assert.equal(els.decisionComment.value,"작성 중인 의견");
+  els.decisionInputs[0].checked=true;
+  els.decisionInputs[1].checked=false;
+  els.decisionComment.value="";
+  setDecisionDockExpanded(false);
+  updateDecisionButton();
+  assert.equal(els.decisionDockBody.hidden,false);
+  assert.equal(els.saveDecisionButton.disabled,true);
+  setDecisionDockExpanded(false);
+  await saveDecision({preventDefault(){}});
+  assert.equal(els.decisionDockBody.hidden,false);
+  assert.equal(focused,"comment");
+  els.decisionComment.value="담당자가 확인한 참여 사유";
+  await saveDecision({preventDefault(){}});
+  assert.equal(state.selectedNotice.decision,"GO");
+  assert.equal(state.selectedNotice.decisionComment,"담당자가 확인한 참여 사유");
+  assert.equal(els.decisionDockBody.hidden,true);
+  assert.equal(focused,"toggle");
+})().catch(error=>{console.error(error);process.exitCode=1;});
 """
     subprocess.run(["node", "-e", adapter + "\n" + script], check=True)

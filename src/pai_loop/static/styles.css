@@ -1,10 +1,10 @@
 :root {
   /* Type scale -- 2026-09-04 legibility pass (2nd attempt, after
      UI/UX redesign #73). Every font-size in this file resolves to
-     one of these. Floor is 12px (was 6px in places, 349 literal
+     one of these. Floor is 13px (was 6px in places, 349 literal
      declarations total before this pass). Nudge the whole UI
      up/down later by editing these, not literals. */
-  --fs-2xs: 12px;
+  --fs-2xs: 13px;
   --fs-xs: 13px;
   --fs-sm: 14px;
   --fs-base: 16px;
@@ -13,6 +13,8 @@
   --fs-xl: 24px;
   --fs-2xl: 32px;
   --fs-3xl: 36px;
+  --tracking-body: 0.012em;
+  --tracking-heading: 0.008em;
   --ink: #17212b;
   --ink-soft: #34465a;
   --muted: #52606d;
@@ -63,17 +65,19 @@
 }
 
 html {
-  min-width: 320px;
+  min-width: 280px;
   scroll-behavior: smooth;
 }
 
 body {
-  min-width: 320px;
+  min-width: 280px;
   min-height: 100vh;
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
   line-height: 1.5;
+  letter-spacing: var(--tracking-body);
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -86,6 +90,7 @@ input,
 select,
 textarea {
   font: inherit;
+  letter-spacing: inherit;
 }
 
 button,
@@ -289,16 +294,23 @@ svg {
 .nav-item {
   display: grid;
   min-height: 48px;
-  grid-template-columns: 26px 1fr auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 0 13px;
+  gap: 6px;
+  padding: 0 8px;
   border: 0;
   border-radius: 11px;
   color: #a9bfbc;
   background: transparent;
   text-align: left;
   transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.nav-item > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .nav-item:hover {
@@ -505,7 +517,7 @@ svg {
 
 .topbar__context h1 {
   font-size: clamp(20px, 2vw, 25px);
-  letter-spacing: -0.035em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .topbar__actions {
@@ -745,7 +757,7 @@ svg {
   margin: 13px 0 12px;
   font-size: clamp(28px, 3.2vw, 42px);
   line-height: 1.24;
-  letter-spacing: -0.055em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .hero p {
@@ -998,7 +1010,7 @@ svg {
 .section-heading h2 {
   margin: 3px 0;
   font-size: var(--fs-xl);
-  letter-spacing: -0.04em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .section-heading > div:first-child > p:last-child {
@@ -1107,9 +1119,19 @@ svg {
 
 .filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 8px 0 14px;
 }
+
+.operator-decision-filter-help {
+  margin: -2px 2px 12px;
+  color: var(--ink-soft);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.filters.is-pps-mode + .operator-decision-filter-help { display: none; }
 
 .notice-search-toolbar {
   display: flex;
@@ -1829,7 +1851,7 @@ svg {
 
 .notice-card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: 12px;
   margin-top: 4px;
 }
@@ -1899,7 +1921,7 @@ svg {
   overflow: hidden;
   font-size: var(--fs-base);
   line-height: 1.5;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--tracking-heading);
   text-overflow: ellipsis;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -1956,17 +1978,24 @@ svg {
 }
 
 .notice-card__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
   padding-top: 12px;
   border-top: 1px solid #edf0ed;
 }
 
 .notice-card__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 7px;
+}
+
+.notice-card__actions > * {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .manual-analysis-action--card {
@@ -2437,7 +2466,7 @@ svg {
   margin: 0 0 7px;
   font-size: clamp(20px, 3vw, 27px);
   line-height: 1.4;
-  letter-spacing: -0.045em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .detail-agency {
@@ -2672,7 +2701,7 @@ svg {
 .panel-intro h3 {
   margin-top: 2px;
   font-size: var(--fs-base);
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .panel-intro {
@@ -3803,7 +3832,7 @@ svg {
   color: #242533;
   font-size: var(--fs-base);
   line-height: 1.5;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .adaptive-agency {
@@ -4374,7 +4403,7 @@ svg {
   margin: 7px 0 3px;
   color: #302758;
   font-size: var(--fs-base);
-  letter-spacing: -0.035em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .pps-discovery__head p {
@@ -4568,7 +4597,7 @@ svg {
   color: var(--ink);
   font-size: var(--fs-base);
   line-height: 1.45;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .pps-candidate__title-link {
@@ -4833,7 +4862,7 @@ svg {
   margin: 9px 0 10px;
   font-size: clamp(29px, 3.4vw, 44px);
   line-height: 1.16;
-  letter-spacing: -0.055em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .performance-hero__copy > p:last-child {
@@ -4948,7 +4977,7 @@ svg {
 .performance-explorer__heading h3 {
   margin: 3px 0;
   font-size: var(--fs-xl);
-  letter-spacing: -0.04em;
+  letter-spacing: var(--tracking-heading);
 }
 
 .performance-explorer__heading p { margin: 0; }
@@ -5063,7 +5092,7 @@ svg {
   color: var(--ink);
   font-size: var(--fs-base);
   line-height: 1.48;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tracking-heading);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -5487,7 +5516,7 @@ svg {
   gap: 14px;
 }
 
-.prespec-track__head h3 { margin: 7px 0 4px; font-size: var(--fs-lg); letter-spacing: -0.025em; }
+.prespec-track__head h3 { margin: 7px 0 4px; font-size: var(--fs-lg); letter-spacing: var(--tracking-heading); }
 .prespec-track__head p { max-width: 560px; margin: 0; color: var(--ink-soft); font-size: var(--fs-sm); line-height: 1.6; }
 
 .prespec-track__badge,
@@ -5579,7 +5608,7 @@ svg {
 .prespec-card--live { border-color: #dedff6; box-shadow: 0 3px 14px rgb(79 70 229 / 0.07); }
 .prespec-card__head { display: flex; align-items: center; gap: 6px; }
 .prespec-card__head small { margin-left: auto; overflow-wrap: anywhere; color: var(--muted); font-size: var(--fs-xs); }
-.prespec-card h4 { margin: 0; color: var(--ink); font-size: var(--fs-base); line-height: 1.45; letter-spacing: -0.015em; }
+.prespec-card h4 { margin: 0; color: var(--ink); font-size: var(--fs-base); line-height: 1.45; letter-spacing: var(--tracking-heading); }
 .prespec-card > p { margin: -4px 0 0; color: var(--ink-soft); font-size: var(--fs-xs); }
 .prespec-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
 .prespec-card dl div { min-width: 0; padding: 8px 9px; border-radius: 8px; background: var(--surface-soft); }
@@ -5649,7 +5678,6 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .sidebar { padding-inline: 13px; }
   .hero { grid-template-columns: 1fr 380px; padding-inline: 38px; }
   .loop-node { width: 70px; height: 70px; }
-  .notice-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .notice-table th:first-child { width: 34%; }
 }
 
@@ -5806,8 +5834,6 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
     min-width: 0;
     grid-template-columns: minmax(0, 1fr);
   }
-  .notice-card__foot,
-  .notice-card__actions { flex-wrap: wrap; }
   .notice-card { min-height: 215px; }
   .page-footer { display: block; }
   .page-footer span { display: block; margin-top: 4px; }
@@ -5891,6 +5917,20 @@ body.teams-context .sidebar {
 body.teams-context .performance-hero,
 body.teams-context .performance-explorer {
   scroll-margin-top: 78px;
+}
+
+h1, h2, h3, h4, h5, h6,
+.notice-title {
+  letter-spacing: var(--tracking-heading);
+  font-weight: 700;
+}
+
+.notice-meta,
+.notice-card__meta,
+.detail-agency,
+.decision-selection-guide {
+  color: var(--ink-soft);
+  font-weight: 500;
 }
 
 /* UX readability baseline: key navigation and work surfaces stay legible at a glance. */
@@ -6000,6 +6040,8 @@ body {
 }
 
 .kpi-card--action .kpi-card__head > span:first-child::after {
+  display: inline-block;
+  white-space: nowrap;
   margin-left: 7px;
   color: var(--teal-deep);
   content: "열기 →";
@@ -6173,8 +6215,21 @@ body {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+}
+
+.notice-card__axes .ai-judgment {
+  flex: 1 1 150px;
+  min-width: 0;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.notice-card__axes .operator-decision {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .requirement-item {
@@ -6360,7 +6415,7 @@ body {
 .brand small,
 .sidebar-foot small,
 .sidebar-status small {
-  color: #bfd4e5;
+  color: #d7e5f0;
 }
 
 .nav-group-toggle {
@@ -7193,6 +7248,41 @@ textarea:focus,
   .sidebar {
     background: var(--nav);
   }
+}
+
+.kpi-card__head > span:first-child {
+  min-width: 0;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.kpi-card .kpi-scope-note {
+  display: block;
+  word-break: keep-all;
+  font-size: var(--fs-xs);
+}
+
+/* Keep the saved decision summary visible without covering the notice. */
+.decision-dock { display: block; }
+.decision-dock__head { flex-wrap: wrap; margin: 0; }
+.decision-dock__head > div:first-child { flex: 1 1 180px; min-width: 0; }
+.decision-dock__actions { display: flex; gap: 12px; align-items: center; }
+.decision-dock__actions .text-button { min-height: 44px; }
+.decision-dock__body {
+  max-height: min(42vh, 340px);
+  margin-top: 10px;
+  padding: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (min-width: 821px) {
+  .decision-dock__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 220px); gap: 8px 14px; align-items: end; }
+  .decision-dock__body .decision-options { grid-column: 1; grid-row: 1; }
+  .decision-dock__body #saveDecisionButton { grid-column: 2; grid-row: 1; }
+  .decision-dock__body .decision-selection-guide { grid-column: 1; grid-row: 2; }
+  .decision-dock__body .decision-disclaimer { grid-column: 2; grid-row: 2; }
+  .decision-dock__body .comment-field { grid-column: 1 / -1; grid-row: 3; }
 }
 
 @media (prefers-reduced-motion: reduce) {
