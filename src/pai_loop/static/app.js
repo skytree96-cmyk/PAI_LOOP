@@ -210,6 +210,7 @@
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
+      "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
       "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "sortSelect",
       "ppsSearchSuggestion", "ppsSearchSuggestionButton", "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
@@ -3370,6 +3371,7 @@
       totalDecisions: numberOrNull(totals.decisions) ?? notices.filter((notice) => notice.decision).length,
       eligibilityCounts,
       readinessCounts,
+      analysisStatistics: source.analysis_statistics || null,
       lastSync: firstValue(source.generated_at, source.generatedAt, source.last_sync, source.lastSync, source.updated_at, source.updatedAt, derived.lastSync),
       systemStatus: stringValue(firstValue(source.system_status, source.status), "online"),
       syntheticWarning: stringValue(firstValue(source.synthetic_data_warning, source.syntheticWarning), ""),
@@ -3419,6 +3421,31 @@
     els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "실시간";
     els.kpiReviewTrend.textContent = "처리 필요";
     els.kpiGoTrend.textContent = "AI 판단";
+    renderAnalysisProgress(data.analysisStatistics);
+  }
+
+  function renderAnalysisProgress(stats) {
+    if (!els.analysisProgress) return;
+    const valueIds = ["analysisAttachmentValue", "analysisEligibilityValue", "analysisScoreValue"];
+    if (!stats || stats.scope !== "OPEN_PPS_NOT_CANCELLED") {
+      valueIds.forEach((id) => { els[id].textContent = "—"; });
+      els.analysisProgressScope.textContent = "전체 통계 조회 대기 · 상단 새로고침으로 다시 조회할 수 있습니다.";
+      ["analysisAttachmentDetail", "analysisEligibilityDetail", "analysisScoreDetail"].forEach((id) => { els[id].textContent = "집계 결과가 아직 없습니다."; });
+      return;
+    }
+    const count = (value) => Number.isInteger(value) && value >= 0 ? value : 0;
+    const n = count(stats.notice_count);
+    const ratio = (done, total) => `${formatNumber(done)} / ${formatNumber(total)} · ${total ? (done / total * 100).toFixed(1) : "0.0"}%`;
+    const eligibility = stats.eligibility_counts || {};
+    const scores = stats.score_counts || {};
+    const analysis = stats.analysis_state_counts || {};
+    els.analysisProgressScope.textContent = `진행 중인 나라장터 공고 ${formatNumber(n)}건 · 취소 제외 · ${formatNumber(count(stats.attempted_notice_count))}건 분석 시도 · 대기 ${formatNumber(count(analysis.PENDING))}건 · ${formatKstDateTime(state.dashboard.lastSync)} 기준`;
+    els.analysisAttachmentValue.textContent = ratio(count(stats.accepted_attachment_count), count(stats.attachment_count));
+    els.analysisAttachmentDetail.textContent = `파일 ${formatNumber(count(stats.audited_attachment_count))}개 처리 · 전체 첨부 성공 ${formatNumber(count(analysis.ANALYZED))}개 공고 · 첨부 검토 ${formatNumber(count(analysis.REVIEW))}개 공고`;
+    els.analysisEligibilityValue.textContent = ratio(count(eligibility.PASS) + count(eligibility.FAIL), n);
+    els.analysisEligibilityDetail.textContent = `PASS ${count(eligibility.PASS)} · FAIL ${count(eligibility.FAIL)} · 검토 ${count(eligibility.REVIEW)} · 미평가 ${count(eligibility.NOT_EVALUATED)}`;
+    els.analysisScoreValue.textContent = ratio(count(stats.score_range_notice_count), n);
+    els.analysisScoreDetail.textContent = `확정 ${count(scores.CONFIRMED)} · 추정 ${count(scores.ESTIMATED)} · 일부 미산정 ${count(scores.UNSCORABLE)} · 검토 ${count(scores.REVIEW)} · 미평가 ${count(scores.NOT_EVALUATED)}. 최신 원문에 연결된 저장 결과이며 점수 범위가 있는 공고를 포함합니다.`;
   }
 
   function renderNavigationCounts() {
@@ -4165,6 +4192,7 @@
     const customView = resultLearningView || performanceView || awardsView;
     els.opportunityHero.hidden = !showDashboardCards;
     els.opportunityKpis.hidden = !showDashboardCards;
+    if (els.analysisProgress) els.analysisProgress.hidden = !showDashboardCards;
     els.noticeSection.hidden = customView;
     els.resultLearningSection.hidden = !resultLearningView;
     els.awardResultsSection.hidden = !awardsView;
