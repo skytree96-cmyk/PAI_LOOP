@@ -1442,3 +1442,27 @@ def test_statutory_possession_form_does_not_imply_registration_evidence() -> Non
         profile=profile, deadline="2026-09-06", evaluation_date="2026-09-06",
     )["items"][0]
     assert item["outcome"] == "REVIEW"
+
+
+@pytest.mark.parametrize("condition", [
+    "경쟁입찰참가자격등록증 사본 1부를 제출해야 한다.",
+    "입찰참가자격등록증과 사업자등록증을 첨부해야 한다.",
+    "제출서류: 경쟁 입찰 참가 자격 등록증, 인감증명서 각 1부",
+    "참가신청서, 경쟁입찰참가자격등록증 등을 봉투에 넣어 제출한다.",
+])
+def test_registration_certificate_copy_is_a_submission_checklist(condition):
+    item = classify_requirements(
+        [requirement("SYN-REGISTRATION-COPY", "SUBMISSION", condition)],
+        profile=load_public_company_profile(), deadline="2026-09-10", evaluation_date="2026-09-06",
+    )["items"][0]
+    assert item["company_fact_key"] != "bidder_registration"
+    assert item["policy_class"] == "CHECKLIST"
+
+
+def test_certificate_copy_does_not_erase_independent_registration_obligation():
+    item = classify_requirements(
+        [requirement("SYN-REGISTRATION-AND-COPY", "SUBMISSION",
+          "나라장터 입찰참가자격 등록을 마감일까지 완료하고 경쟁입찰참가자격등록증 사본 1부를 제출한다.")],
+        profile=load_public_company_profile(), deadline="2026-09-10", evaluation_date="2026-09-06",
+    )["items"][0]
+    assert item["company_fact_key"] == "bidder_registration"

@@ -1250,3 +1250,84 @@ def test_http_error_does_not_expose_server_key() -> None:
     assert outcome.status == "REVIEW"
     assert outcome.error_code == "HTTP_ERROR"
     assert "DO-NOT-LEAK" not in outcome.model_dump_json()
+
+
+def _schema_diagnostic_outcome(output):
+    with OpenAIExtractionClient(
+        api_key="SYN-KEY",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=response_payload(output))
+        ),
+        base_url="https://api.openai.test/v1",
+        max_retries=0,
+    ) as client:
+        return client.extract(
+            document_text="부산광역시에 소재한 업체", allowed_attachment_ids={"ATT-1"}
+        )
+
+
+def test_schema_diagnostic_reports_quote_length_without_copying_quote():
+    private_quote = "SYN-PRIVATE-QUOTE-" * 50
+    outcome = _schema_diagnostic_outcome(valid_output(quote=private_quote))
+    assert outcome.error_code == "SCHEMA_VALIDATION_ERROR"
+    assert "requirements.[].evidence.[].quote:string_too_long" in outcome.message
+    assert "SYN-PRIVATE" not in outcome.message
+    assert outcome.api_calls == 1
+    assert outcome.data is None
+
+
+def test_schema_diagnostic_hides_unknown_field_names_and_values():
+    output = valid_output()
+    output["SYN-PRIVATE-FIELD"] = "SYN-PRIVATE-VALUE"
+    output["requirements"][0]["SYN-SECRET-FIELD"] = {"SYN-RAW": "SYN-SECRET"}
+    output["requirements"][0]["category"] = "SYN-PRIVATE-ENUM"
+    outcome = _schema_diagnostic_outcome(output)
+    assert "*:extra_forbidden" in outcome.message
+    assert "requirements.[].category:literal_error" in outcome.message
+    assert "SYN-" not in outcome.message
+    assert outcome.status == "REVIEW"
+
+
+def test_schema_diagnostic_reports_required_quantitative_keys():
+    output = valid_output()
+    del output["quantitative_tables"]
+    del output["quantitative_table_not_applicable"]
+    outcome = _schema_diagnostic_outcome(output)
+    assert "quantitative_tables:missing" in outcome.message
+    assert "quantitative_table_not_applicable:missing" in outcome.message
+
+
+@pytest.mark.parametrize("output", [[], "SYN-PRIVATE-TEXT", None, 10])
+def test_schema_diagnostic_rejects_non_object_without_data(output):
+    outcome = _schema_diagnostic_outcome(output)
+    assert "$:object_required" in outcome.message
+    assert "SYN-PRIVATE" not in outcome.message
+    assert outcome.error_code == "SCHEMA_VALIDATION_ERROR"
+
+
+def test_schema_diagnostic_rejects_invalid_json_without_data():
+    response = response_payload(valid_output())
+    response["output"][0]["content"][0]["text"] = "SYN-PRIVATE-INVALID-JSON"
+    with OpenAIExtractionClient(
+        api_key="SYN-KEY",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=response)),
+        base_url="https://api.openai.test/v1", max_retries=0,
+    ) as client:
+        outcome = client.extract(document_text="부산광역시에 소재한 업체", allowed_attachment_ids={"ATT-1"})
+    assert "$:invalid_json" in outcome.message
+    assert "SYN-PRIVATE" not in outcome.message
+
+
+def test_schema_diagnostic_deduplicates_rows_and_caps_distinct_errors():
+    output = valid_output()
+    output["requirements"] = [dict(output["requirements"][0], category="SYN-INVALID") for _ in range(100)]
+    outcome = _schema_diagnostic_outcome(output)
+    assert outcome.message.count("category:literal_error") == 1
+    assert len(outcome.message) < 300
+    output = {key: "SYN-PRIVATE" for key in valid_output()}
+    output["requirements"] = [{"requirement_id": None}]
+    outcome = _schema_diagnostic_outcome(output)
+    diagnostics = outcome.message.split("했습니다. ", 1)[1].split("; ")
+    assert len(diagnostics) == 8
+    assert "SYN-PRIVATE" not in outcome.message
+    assert len(outcome.message) < 1800
