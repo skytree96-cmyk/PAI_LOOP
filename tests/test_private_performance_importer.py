@@ -662,3 +662,27 @@ def test_private_bulk_import_stays_draft_until_all_batches_arrive_and_replaces_p
             ).with_only_columns(func.count())
         )
         assert active_count == 1
+
+
+@pytest.mark.parametrize("period,expected", [
+    ("24.04.11~09.20", (date(2024,4,11),date(2024,9,20))),
+    ("24.03.12.~12.20.", (date(2024,3,12),date(2024,12,20))),
+    ("25.05.03〜\n06.11", (date(2025,5,3),date(2025,6,11))),
+    ("24.01.08-\n01.12", (date(2024,1,8),date(2024,1,12))),
+    ("2024-05-11\n2024-12-20", (date(2024,5,11),date(2024,12,20))),
+    ("20240411 ~ 2025/\n06/20", (date(2024,4,11),date(2025,6,20))),
+    ("2024.11.12~25.07.21", (date(2024,11,12),date(2025,7,21))),
+])
+def test_period_parser_preserves_explicit_mixed_and_abbreviated_boundaries(period, expected):
+    assert parse_period(period) == expected
+
+
+@pytest.mark.parametrize("period", [
+    "24.10.12~05.21", "2024.12.11~2024.02.12", "24.02.30~03.20",
+    "24.12~25.01", "20241220", "45400", "계약체결후 260 일",
+    "20244.05.13~2024.11.20", "20240/02/18~2024/05/26",
+    "2024.03.22~202412.25",
+])
+def test_period_parser_keeps_incomplete_or_malformed_source_dates_unresolved(period):
+    start, end = parse_period(period)
+    assert start is None or end is None or end < start
