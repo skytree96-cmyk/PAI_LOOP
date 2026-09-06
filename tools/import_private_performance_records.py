@@ -410,10 +410,52 @@ def parse_date(value: object) -> date | None:
     return _date_from_match(match) if match else None
 
 
+def _explicit_period_dates(text: str) -> tuple[date | None, date | None] | None:
+    """Parse two explicit boundaries without joining adjacent date tokens.
+
+    Abbreviated end years are restored only within the same calendar year.
+    A single date, duration, month-only range or malformed year is not proof
+    of an exact interval and remains subject to the existing strict parser.
+    """
+    full = r"(?:20\d{2}|\d{2})\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{1,2}\.?|20\d{6}"
+    end = rf"(?:{full}|\d{{1,2}}\s*[./-]\s*\d{{1,2}}\.?)"
+    match = re.fullmatch(
+        rf"(?P<start>{full})(?:\s*[~〜∼～–—-]\s*|\s+)(?P<end>{end})",
+        text,
+    )
+    if match is None:
+        return None
+
+    def boundary(token: str, *, year: int | None = None) -> date | None:
+        compact = re.fullmatch(r"(20\d{2})(\d{2})(\d{2})", token)
+        parts = compact.groups() if compact else tuple(
+            part for part in re.split(r"[./-]", token.rstrip(".")) if part.strip()
+        )
+        try:
+            numbers = tuple(int(part.strip()) for part in parts)
+            if len(numbers) == 2 and year is not None:
+                return date(year, *numbers)
+            if len(numbers) == 3:
+                y, month, day = numbers
+                return date(y + 2000 if y < 100 else y, month, day)
+        except ValueError:
+            return None
+        return None
+
+    start = boundary(match.group("start"))
+    end_date = boundary(match.group("end"), year=start.year if start else None)
+    if start is None or end_date is None or end_date < start:
+        return None, None
+    return start, end_date
+
+
 def parse_period(value: object) -> tuple[date | None, date | None]:
     text = _normalise_text(value)
     if not text:
         return None, None
+    explicit = _explicit_period_dates(text)
+    if explicit is not None:
+        return explicit
     text = re.sub(r"(?<=\d)\s+(?=\d)", "", text)
     matches = list(_DATE_TOKEN_RE.finditer(text))
     if len(matches) >= 2:
