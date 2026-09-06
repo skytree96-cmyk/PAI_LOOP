@@ -640,7 +640,7 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.5"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.6"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.1"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.3.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -2602,7 +2602,7 @@ def test_confidence_fix_recalculates_old_pipeline_run_once_without_extraction(mo
         assert not current.reused
         assert run_analysis_pipeline(case.session, notice_id=case.notice_id).reused
         assert case.client.calls == 1
-        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.5"
+        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.6"
 
 
 @pytest.mark.parametrize("malformed", [None, {}, "invalid", "__MISSING__"])
