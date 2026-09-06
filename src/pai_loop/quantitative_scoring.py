@@ -1380,7 +1380,6 @@ def _current_dynamic_quantitative_profile(
             for version in versions
             if isinstance(version.source_payload, dict)
             and version.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(version.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
@@ -1389,7 +1388,15 @@ def _current_dynamic_quantitative_profile(
     metadata_schema_current = (
         metadata.source_payload.get("schema_version") == PPS_METADATA_SCHEMA
     )
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    raw_values = metadata.source_payload.get("attachment_manifest")
+    if not isinstance(raw_values, list):
+        return merge_validated_quantitative_records(
+            [],
+            expected_documents={},
+            manifest_sha256=_canonical_digest(raw_values),
+            incomplete_attachment_ids=["INVALID-MANIFEST-CONTAINER"],
+        )
+    raw_manifest_values = list(raw_values)
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -3693,16 +3700,16 @@ def _current_authoritative_document_state(notice: Notice) -> tuple[set[str], str
             for version in versions
             if isinstance(version.source_payload, dict)
             and version.source_payload.get("kind") == PPS_METADATA_KIND
-            and isinstance(version.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is not None:
         if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
             return set(), "현재 PPS 첨부 manifest 스키마가 갱신되지 않아 정량 배점을 확정할 수 없습니다."
-        raw_manifest_values = list(
-            metadata.source_payload.get("attachment_manifest", [])
-        )
+        raw_values = metadata.source_payload.get("attachment_manifest")
+        if not isinstance(raw_values, list):
+            return set(), "현재 PPS 첨부 manifest 형식이 올바르지 않아 정량 배점을 확정할 수 없습니다."
+        raw_manifest_values = list(raw_values)
         manifest = [
             dict(item)
             for item in raw_manifest_values

@@ -244,6 +244,16 @@ def _extract(
     # the content as a ZIP and permanently recording HWPX_INVALID_ARCHIVE.
     if extension == ".hwpx" and content.startswith(_OLE_CFB_SIGNATURE):
         return _result_from_parsed(_extract_hwp5(content, budget), file_name)
+    if (
+        extension == ".hwp"
+        and ".hwpx" in leaf_extractors
+        and content.startswith(b"PK\x03\x04")
+        and _has_exact_hwpx_mimetype(content, budget)
+    ):
+        # A ZIP signature alone cannot distinguish HWPX from arbitrary archives.
+        # Retain the original filename/bytes and use the audited HWPX leaf only
+        # after the bounded package proves its exact media type.
+        extension = ".hwpx"
     if extension == ".hwp":
         return _result_from_parsed(_extract_hwp5(content, budget), file_name)
     if extension == ".xls":
@@ -274,6 +284,18 @@ def _extract(
             archive_depth=archive_depth + 1,
         )
     return _issue_result(file_name, "UNSUPPORTED_DOCUMENT_TYPE")
+
+
+def _has_exact_hwpx_mimetype(content: bytes, budget: _Budget) -> bool:
+    with _open_archive(content, budget) as archive:
+        try:
+            item = archive.getinfo("mimetype")
+        except KeyError:
+            return False
+        expected = b"application/hwp+zip"
+        if item.is_dir() or item.file_size != len(expected):
+            return False
+        return _read_member(archive, item, budget.limits) == expected
 
 
 def _extract_generic_zip(

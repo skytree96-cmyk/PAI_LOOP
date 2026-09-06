@@ -97,7 +97,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.4"
+PIPELINE_VERSION = "analysis-pipeline-0.6.5"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -352,7 +352,6 @@ def _select_source_versions(
                 for version in reversed(versions)
                 if isinstance(version.source_payload, dict)
                 and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"
-                and isinstance(version.source_payload.get("attachment_manifest"), list)
             ),
             None,
         )
@@ -361,9 +360,8 @@ def _select_source_versions(
                 latest_metadata.source_payload.get("schema_version")
                 == PPS_METADATA_SCHEMA
             )
-            raw_manifest_values = list(
-                latest_metadata.source_payload.get("attachment_manifest", [])
-            )
+            stored_manifest = latest_metadata.source_payload.get("attachment_manifest")
+            raw_manifest_values = stored_manifest if isinstance(stored_manifest, list) else []
             raw_manifest = [
                 dict(item)
                 for item in raw_manifest_values
@@ -753,13 +751,61 @@ def _known_non_eligibility_gaps_only(sources: Sequence[_SourceDocument]) -> bool
     )
 
 
+def _current_complete_pps_evidence(
+    sources: Sequence[_SourceDocument],
+    manifest_basis: dict[str, Any] | None,
+) -> bool:
+    """Prove full source coverage without treating its mean as every clause's confidence.
+
+    This capability is limited to the exact current PPS attempts whose complete
+    extraction records already passed manifest, document and validator checks.
+    An unrelated weak anchor remains weak; it cannot revoke an independently
+    verified mandatory clause, nor can this path fill any missing source.
+    """
+
+    if not sources or manifest_basis is None or not manifest_basis["coverage_complete"]:
+        return False
+    expected = manifest_basis["expected_attachment_ids"]
+    if (
+        not expected
+        or manifest_basis["accepted_attachment_ids"] != expected
+        or {source.version.id for source in sources}
+        != set(manifest_basis["selected_attempt_ids"])
+    ):
+        return False
+    complete = all(
+        source.materializable
+        and source.version.document_complete
+        and source.data is not None
+        and not source.data.missing_or_unreadable
+        and not (set(source.warnings) - {"LOW_EXTRACTION_CONFIDENCE"})
+        for source in sources
+    )
+    return complete and any(
+        source.version.extraction_confidence < MIN_EXTRACTION_CONFIDENCE
+        or any(
+            anchor.confidence < MIN_EXTRACTION_CONFIDENCE
+            for requirement in source.data.requirements
+            for anchor in requirement.evidence
+        )
+        for source in sources
+    )
+
+
 def _partial_gate_candidate_keys(
     *,
     run_status: str,
     sources: Sequence[_SourceDocument],
     policy_items: Sequence[tuple[_MergedRequirement, dict[str, Any]]],
+    pps_manifest_basis: dict[str, Any] | None = None,
 ) -> tuple[frozenset[str], frozenset[str]]:
-    if run_status != "PARTIAL" or not _known_non_eligibility_gaps_only(sources):
+    complete_pps_evidence = (
+        run_status in {"COMPLETED", "PARTIAL"}
+        and _current_complete_pps_evidence(sources, pps_manifest_basis)
+    )
+    if not complete_pps_evidence and (
+        run_status != "PARTIAL" or not _known_non_eligibility_gaps_only(sources)
+    ):
         return frozenset(), frozenset()
 
     eligibility_items = [
@@ -767,13 +813,14 @@ def _partial_gate_candidate_keys(
         for item, policy in policy_items
         if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
     ]
-    if not eligibility_items or not all(_has_reviewable_anchor(item) for item in eligibility_items):
+    anchor_check = _has_verified_anchor if complete_pps_evidence else _has_reviewable_anchor
+    if not eligibility_items or not all(anchor_check(item) for item in eligibility_items):
         return frozenset(), frozenset()
 
     verified_materialized_keys = frozenset(
         item.requirement_key
         for item, policy in policy_items
-        if _is_materialized_policy_item(item, policy) and _has_reviewable_anchor(item)
+        if _is_materialized_policy_item(item, policy) and anchor_check(item)
     )
     return verified_materialized_keys, frozenset(
         item.requirement_key for item in eligibility_items
@@ -1102,13 +1149,14 @@ def _current_pps_manifest_basis(
             for version in sorted(versions, key=lambda item: item.version_no, reverse=True)
             if isinstance(version.source_payload, dict)
             and version.source_payload.get("kind") == "PPS_NOTICE_METADATA"
-            and isinstance(version.source_payload.get("attachment_manifest"), list)
         ),
         None,
     )
     if metadata is None or not isinstance(metadata.source_payload, dict):
         return None
-    raw_manifest_values = list(metadata.source_payload.get("attachment_manifest", []))
+    stored_manifest = metadata.source_payload.get("attachment_manifest")
+    manifest_shape_valid = isinstance(stored_manifest, list)
+    raw_manifest_values = stored_manifest if manifest_shape_valid else []
     raw_manifest = [
         dict(item)
         for item in raw_manifest_values
@@ -1117,7 +1165,7 @@ def _current_pps_manifest_basis(
     current_manifest_sha256 = _digest(raw_manifest_values)
     validated_manifest, invalid_count = _validated_manifest_attachments(raw_manifest)
     invalid_count += len(raw_manifest_values) - len(raw_manifest)
-    if metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
+    if not manifest_shape_valid or metadata.source_payload.get("schema_version") != PPS_METADATA_SCHEMA:
         invalid_count = max(1, invalid_count)
     expected = [
         {
@@ -1127,7 +1175,7 @@ def _current_pps_manifest_basis(
         for item in validated_manifest
     ]
     expected_by_id = {item["attachment_id"]: item["manifest_sha256"] for item in expected}
-    if prompt_version == PROMPT_VERSION:
+    if prompt_version == PROMPT_VERSION and manifest_shape_valid:
         _attachments, _invalid, attempts = _current_manifest_attempts(
             list(versions), validate_accepted=False,
         )
@@ -1957,6 +2005,7 @@ def run_analysis_pipeline(
                 run_status=run_status,
                 sources=sources,
                 policy_items=policy_items,
+                pps_manifest_basis=pps_manifest_basis,
             )
 
             confidence_values = [
@@ -2037,19 +2086,26 @@ def run_analysis_pipeline(
                 no_blocking_requirements_verified=no_blocking_requirements_verified,
                 risk_dimensions={},
             )
-            # A known non-eligibility gap (for example a missing score table) must
-            # not erase a separately verified eligibility clause.  Once every
-            # mandatory eligibility anchor is verified, evaluate those clauses
-            # against the company profile even when the result is REVIEW because
-            # a company fact is missing.  Unknown gaps and unverified anchors stay
-            # fail-closed in ``_partial_gate_candidate_keys``.
+            # A known non-eligibility gap or an unrelated weak anchor must not
+            # erase an independently verified eligibility clause. The complete
+            # PPS path proves every current source before using per-clause
+            # confidence; missing source and weak mandatory clauses still fail
+            # closed in ``_partial_gate_candidate_keys``. Company evidence is
+            # evaluated normally and may still require REVIEW or produce FAIL.
             eligibility_gate_applied = bool(gate_candidate_keys)
             verified_requirement_keys = (
                 gate_candidate_keys if eligibility_gate_applied else frozenset()
             )
             if eligibility_gate_applied:
+                confidence_gate_applied = _current_complete_pps_evidence(
+                    sources, pps_manifest_basis,
+                )
                 warnings = sorted(
-                    set(warnings) | {"NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"}
+                    set(warnings) | {
+                        "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED"
+                        if confidence_gate_applied
+                        else "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"
+                    }
                 )
                 materialized_version.source_payload = {
                     **(materialized_version.source_payload or {}),
