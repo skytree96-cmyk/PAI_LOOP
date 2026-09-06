@@ -301,3 +301,21 @@ h1{font-size:45px}
 .hero-video,.motion-toggle{display:none}
 }
 
+
+/* AI workflow introduction and actual product screen film. */
+.hero-grid{gap:40px;grid-template-columns:1fr 1fr}
+.hero-copy h1{font-size:clamp(34px,3.5vw,46px);line-height:1.38}
+.hero-lead{font-size:17px;line-height:1.9;max-width:530px}
+.hero-lead strong{font-weight:600;color:var(--ink)}
+.hero-bottom b{font-weight:700;color:var(--blue);margin-right:8px}
+.hero-bottom i{background:none;height:auto;width:auto;font-style:normal;color:#6b91ac}
+.product-film{min-width:0;overflow:hidden;border:1px solid #cddfeb;border-radius:18px;background:white;box-shadow:0 28px 60px -25px #17436b4a}
+.product-film__head{display:flex;align-items:center;gap:12px;padding:17px 20px;font-size:13px;font-weight:500;color:var(--muted);border-bottom:1px solid var(--line)}
+.film-duration{margin-left:auto;border-radius:6px;background:#edf4fa;padding:2px 8px;font-size:12px;white-space:nowrap}
+.product-film video{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#0b263d}
+.product-film__caption{padding:20px 22px 21px}
+.product-film__caption h2{font-size:19px;font-weight:700}
+.product-film__caption p{margin-top:7px;font-size:14px;line-height:1.7;color:var(--muted)}
+.product-film__caption small{display:block;margin-top:12px;font-size:12px;color:#526777}
+@media(max-width:1000px){.hero-grid{grid-template-columns:1fr;gap:38px}.product-film{width:100%;max-width:760px;margin:auto}.hero-copy h1{font-size:clamp(34px,5vw,48px)}.hero-lead{max-width:700px}}
+@media(max-width:600px){.hero-bottom{flex-direction:column;align-items:flex-start;gap:10px}.hero-bottom i{display:none}.product-film__head{padding:13px 15px;gap:8px;font-size:12px}.product-film__caption{padding:17px}.product-film__caption h2{font-size:17px}.hero-copy h1{font-size:34px}.hero-lead{font-size:16px}}
