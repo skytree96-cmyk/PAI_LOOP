@@ -15,7 +15,7 @@ import struct
 import unicodedata
 import zipfile
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from pathlib import PurePath, PurePosixPath
 from typing import Callable, Mapping
@@ -301,16 +301,23 @@ def _has_exact_xlsx_parts(content: bytes, budget: _Budget) -> bool:
     """Prove an OOXML workbook package inside a bounded archive read.
 
     Uses exactly the two parts ``_extract_xlsx`` already requires, so a file
-    accepted here is one that reader can open; anything else keeps the BIFF
-    path and its existing deterministic failure code.
+    accepted here is one that reader can open. A valid non-workbook ZIP keeps
+    the BIFF path; archive safety and budget failures retain their own codes.
     """
 
+    # A matched workbook is charged by the XLSX reader. A failed probe has no
+    # later archive reader, so retain its usage across subsequent siblings.
+    probe_budget = replace(budget)
+    matched = False
     try:
-        with _open_archive(content, budget) as archive:
+        with _open_archive(content, probe_budget) as archive:
             names = _archive_names(archive)
-    except DocumentExtractionError:
-        return False
-    return "[content_types].xml" in names and "xl/workbook.xml" in names
+        matched = "[content_types].xml" in names and "xl/workbook.xml" in names
+        return matched
+    finally:
+        if not matched:
+            budget.entries = probe_budget.entries
+            budget.uncompressed_bytes = probe_budget.uncompressed_bytes
 
 
 def _has_exact_hwpx_mimetype(content: bytes, budget: _Budget) -> bool:
