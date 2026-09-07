@@ -30,6 +30,12 @@ Switching to MANUAL is explicit and retains the supplied/current rate as a manua
 value while clearing active basis metadata. Switching an AUTO result to NO_BID
 requires explicitly selecting MANUAL and clearing its bid fields.
 
+The date-only editor preserves the original occurrence timestamp, including its
+offset and precision, when that date field is unchanged. This also applies when
+creating a review copy of an external result. An explicitly changed date uses
+midnight in Korea; clearing the field removes the occurrence date. Changing only
+the rate or its calculation basis does not rewrite the result's occurrence time.
+
 ## Storage, audit, and boundaries
 
 No model or database migration is required. Existing `evidence_json` stores a

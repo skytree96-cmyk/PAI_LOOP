@@ -2921,6 +2921,10 @@
     const isManualRecord = outcome?.source === "MANUAL_UI";
     const headers = await manualAnalysisAuthHeaders();
     if (!headers || epoch !== state.accountEpoch) return;
+    const occurredDate = els.resultLearningOccurredAt.value;
+    // Editing a rate must not truncate the original result timestamp to midnight.
+    const occurredAt = occurredDate === (outcome?.occurredAt?.slice(0, 10) || "")
+      ? outcome?.occurredAt || null : occurredDate ? `${occurredDate}T00:00:00+09:00` : null;
     const payload = {
       record_status: els.resultLearningRecordStatus.value, status: els.resultLearningStatus.value,
       submitted_bid_amount: nullableNumber(els.resultLearningSubmittedAmount.value), submitted_bid_rate: nullableNumber(els.resultLearningSubmittedRate.value),
@@ -2929,7 +2933,7 @@
       technical_score: nullableNumber(els.resultLearningTechnicalScore.value), price_score: nullableNumber(els.resultLearningPriceScore.value), total_score: nullableNumber(els.resultLearningTotalScore.value),
       rank: nullableNumber(els.resultLearningRank.value), winner_name: nullableText(els.resultLearningWinner.value), loss_reason: nullableText(els.resultLearningLossReason.value),
       source_reference: nullableText(els.resultLearningSourceReference.value), operator_note: nullableText(els.resultLearningOperatorNote.value),
-      occurred_at: els.resultLearningOccurredAt.value ? `${els.resultLearningOccurredAt.value}T00:00:00+09:00` : null,
+      occurred_at: occurredAt,
     };
     const path = isManualRecord ? `/result-learning/${encodeURIComponent(outcome.id)}` : "/result-learning";
     if (isManualRecord) payload.expected_updated_at = outcome.updatedAt;

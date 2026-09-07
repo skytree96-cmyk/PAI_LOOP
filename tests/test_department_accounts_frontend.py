@@ -1,5 +1,8 @@
 from pathlib import Path
+import json
 import subprocess
+
+import pytest
 
 APP = Path(__file__).parents[1] / 'src/pai_loop/static/app.js'
 
@@ -129,6 +132,84 @@ respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
 u.els.resultLearningRateBasisAmount.value='';
 await u.saveResultLearning({preventDefault(){}});
 assert.equal(requests.length,1,'missing denominator must not fall back to notice budget');
+''')
+
+
+def test_bid_rate_preview_matches_server_at_numeric_boundaries():
+    from pai_loop.result_learning import ResultLearningFields
+
+    cases = []
+    for amount, basis in [
+        ("9007199254740991", "10000000000000000"),
+        ("1000000000000000128", "2000000000000000256"),
+        ("1.765433e307", "2e307"), ("1.765433e-307", "2e-307"),
+        ("5e-324", "1e-323"), ("1.7976931348623157e308", "1.7976931348623157e308"),
+        ("1e-300", "1e300"), ("0", "5e-324"),
+        ("0.000001", "2"), ("0.0000009999999999999999", "2"),
+        ("399.99999999999994", "200"), ("400", "200"),
+    ]:
+        server = ResultLearningFields(
+            status="SUBMITTED", submitted_bid_amount=float(amount),
+            submitted_rate_calculation={"mode": "AUTO", "basis_kind": "BASE_AMOUNT",
+                                        "basis_amount": float(basis), "basis_reference": "SYN basis"},
+        )
+        cases.append([amount, basis, f"{server.submitted_bid_rate:.4f}"])
+    _run_behavior("const cases=" + json.dumps(cases) + r''';
+for(const [amount,basis,expected] of cases) {
+ assert.equal(u.submittedRatePreview(amount,basis),expected,`${amount} / ${basis}`);
+}
+assert.equal(u.submittedRatePreview('400.00000000000006','200'),null);
+assert.equal(u.submittedRatePreview('   ','200'),null);
+''')
+
+
+@pytest.mark.parametrize("record_source", ["MANUAL_UI", "PPS_AUTO_FEEDBACK"])
+def test_bid_rate_edit_preserves_occurrence_timestamp_until_date_changes(record_source):
+    _run_behavior("const recordSource=" + json.dumps(record_source) + r''';
+const occurredAt='2026-09-07T16:30:45.123456Z';
+const raw={notice_key:'SYN-N',title:'SYN notice',outcomes:[{
+ id:'SYN-result',department_id:recordSource==='MANUAL_UI'?'SYN-A':null,department_revision:1,source:recordSource,status:'SUBMITTED',
+ updated_at:'2026-09-08T00:00:00Z',occurred_at:occurredAt,source_reference:'SYN result evidence',
+ submitted_bid_amount:100,submitted_bid_rate:50,
+ submitted_rate_calculation:recordSource==='MANUAL_UI'
+  ?{mode:'AUTO',basis_kind:'BASE_AMOUNT',basis_amount:200,basis_reference:'SYN price evidence'}:{mode:'MANUAL'}}]};
+u.openResultLearningDialog(u.normalizeResultLearningNotice(raw));
+u.els.resultLearningRateMode.value='AUTO';
+u.els.resultLearningRateBasisKind.value='BASE_AMOUNT';
+u.els.resultLearningRateBasisAmount.value='200';
+u.els.resultLearningRateBasisReference.value='SYN price evidence';
+u.els.resultLearningSubmittedAmount.value='176.5433';
+let saving=u.saveResultLearning({preventDefault(){}});await tick();
+let body=JSON.parse(requests[0].options.body);
+assert.equal(body.occurred_at,occurredAt,'a rate-only edit must preserve the original timestamp');
+assert.equal(body.source_reference,'SYN result evidence');
+assert.equal(body.submitted_rate_calculation.basis_reference,'SYN price evidence');
+assert.equal(body.submitted_bid_rate,88.2717);
+if(recordSource==='MANUAL_UI') {
+ assert.equal(requests[0].options.method,'PATCH');
+ assert.equal(body.expected_updated_at,'2026-09-08T00:00:00Z');
+} else {
+ assert.equal(requests[0].options.method,'POST');
+ assert.equal(body.basis_outcome_id,'SYN-result');
+ assert.equal(body.expected_outcome_id,null);
+}
+respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningOccurredAt.value='2026-09-09';
+saving=u.saveResultLearning({preventDefault(){}});await tick();
+body=JSON.parse(requests[1].options.body);
+assert.equal(body.occurred_at,'2026-09-09T00:00:00+09:00');
+respond(requests[1],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningOccurredAt.value='';
+saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(JSON.parse(requests[2].options.body).occurred_at,null);
+respond(requests[2],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningRateMode.value='MANUAL';
+u.els.resultLearningSubmittedRate.value='77.1234';
+saving=u.saveResultLearning({preventDefault(){}});await tick();
+body=JSON.parse(requests[3].options.body);
+assert.deepEqual(body.submitted_rate_calculation,{mode:'MANUAL'});
+assert.equal(body.submitted_bid_rate,77.1234);
+respond(requests[3],422,{detail:'SYN stop before reload'});await saving;
 ''')
 
 

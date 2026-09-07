@@ -146,6 +146,41 @@ def test_auto_bid_rate_legacy_patch_keeps_basis_and_appends_before_after_history
     assert updated.status_code == 200 and updated.json()["outcome"]["submitted_bid_rate"] == 0
 
 
+def test_auto_to_manual_without_rate_preserves_dates_sources_and_history(client):
+    _notice(client)
+    response = client.post(ENDPOINT, json=_payload(
+        occurred_at="2026-09-07T16:30:45.123456Z", source_reference="SYN result evidence",
+    ))
+    assert response.status_code == 201, response.text
+    row = response.json()["outcome"]
+    history_before = _stored(client, row["id"])["_submitted_bid_rate"]["history"]
+    path = f"{ENDPOINT}/{row['id']}"
+    changed = client.patch(path, json={
+        "expected_updated_at": row["updated_at"], "submitted_rate_calculation": {"mode": "MANUAL"},
+    })
+    assert changed.status_code == 200, changed.text
+    manual = changed.json()["outcome"]
+    assert manual["submitted_bid_rate"] == row["submitted_bid_rate"]
+    assert manual["submitted_rate_calculation"] == {
+        "mode": "MANUAL", "basis_kind": None, "basis_amount": None, "basis_reference": None,
+    }
+    # A legacy amount-only PATCH must keep the explicit manual rate after the transition.
+    changed = client.patch(path, json={
+        "expected_updated_at": manual["updated_at"], "submitted_bid_amount": 120,
+    })
+    assert changed.status_code == 200, changed.text
+    final = changed.json()["outcome"]
+    assert final["submitted_bid_rate"] == row["submitted_bid_rate"]
+    assert final["occurred_at"] == row["occurred_at"]
+    assert final["source_reference"] == row["source_reference"]
+    history = _stored(client, row["id"])["_submitted_bid_rate"]["history"]
+    assert len(history) == 3 and history[:1] == history_before
+    assert history[1]["before"]["calculation"] == AUTO
+    assert history[1]["after"]["calculation"]["mode"] == "MANUAL"
+    assert history[2]["before"] == history[1]["after"]
+    assert history[2]["after"]["submitted_bid_amount"] == 120
+
+
 def test_legacy_row_without_metadata_roundtrips_and_keeps_original_evidence(client):
     _notice(client)
     with client.app.state.session_factory() as session:
