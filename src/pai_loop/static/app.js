@@ -240,6 +240,7 @@
       "awardResultsPanel", "awardResultsList", "awardResultsLoadingState", "awardResultsErrorState", "awardResultsErrorMessage", "awardResultsEmptyState",
       "performanceTotal", "performancePeriod", "performanceYears", "performancePrivacy", "performanceResultSummary",
       "performanceFilterForm", "performanceSearchInput", "performanceYearFilter", "performanceDivisionFilter",
+      "performanceDateFrom", "performanceDateTo", "performanceMinAmount", "performanceMaxAmount",
       "performancePanel", "performanceList", "performanceLoadingState", "performanceErrorState", "performanceErrorMessage",
       "performanceRetryButton", "performanceEmptyState", "performanceEmptyResetButton", "performancePagination",
       "performancePageRange", "performancePageLabel", "performancePreviousButton", "performanceNextButton",
@@ -455,15 +456,18 @@
 
     els.performanceFilterForm.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (!validatePerformanceRanges()) return;
       state.performance.offset = 0;
       void loadPerformance({ force: true });
     });
     els.performanceFilterForm.addEventListener("reset", () => {
       window.setTimeout(() => {
+        validatePerformanceRanges(false);
         state.performance.offset = 0;
         void loadPerformance({ force: true });
       }, 0);
     });
+    els.performanceFilterForm.addEventListener("input", () => validatePerformanceRanges(false));
     els.performanceRetryButton.addEventListener("click", () => loadPerformance({ force: true }));
     els.performanceEmptyResetButton.addEventListener("click", resetPerformanceFilters);
     els.performancePreviousButton.addEventListener("click", () => changePerformancePage(-1));
@@ -1503,9 +1507,31 @@
     if (query) params.set("q", query);
     if (year) params.set("year", year);
     if (division) params.set("division", division);
+    for (const [name, control] of performanceRangeControls()) {
+      if (control.value !== "") params.set(name, control.value);
+    }
     params.set("limit", String(state.performance.limit));
     params.set("offset", String(state.performance.offset));
     return `/performance?${params.toString()}`;
+  }
+
+  function performanceRangeControls() {
+    return [
+      ["date_from", els.performanceDateFrom], ["date_to", els.performanceDateTo],
+      ["min_amount", els.performanceMinAmount], ["max_amount", els.performanceMaxAmount],
+    ];
+  }
+
+  function validatePerformanceRanges(report = true) {
+    const from = els.performanceDateFrom;
+    const to = els.performanceDateTo;
+    const min = els.performanceMinAmount;
+    const max = els.performanceMaxAmount;
+    to.setCustomValidity(from.value && to.value && from.value > to.value
+      ? "종료일은 시작일 이후로 선택해 주세요." : "");
+    max.setCustomValidity(min.value !== "" && max.value !== "" && Number(min.value) > Number(max.value)
+      ? "최대 금액은 최소 금액 이상으로 입력해 주세요." : "");
+    return report ? els.performanceFilterForm.reportValidity() : true;
   }
 
   function normalizePerformanceSummary(payload) {
@@ -1635,6 +1661,7 @@
       els.performanceSearchInput,
       els.performanceYearFilter,
       els.performanceDivisionFilter,
+      ...performanceRangeControls().map(([, control]) => control),
       els.performancePreviousButton,
       els.performanceNextButton,
     ].forEach((control) => { control.disabled = isLoading; });
@@ -1654,7 +1681,8 @@
     const filtered = Boolean(
       els.performanceSearchInput.value.trim()
       || els.performanceYearFilter.value
-      || els.performanceDivisionFilter.value,
+      || els.performanceDivisionFilter.value
+      || performanceRangeControls().some(([, control]) => control.value !== ""),
     );
     els.performanceResultSummary.textContent = data.total
       ? `${filtered ? "검색 결과" : "전체"} ${formatNumber(data.total)}건 중 ${formatNumber(start)}–${formatNumber(end)}건을 표시합니다.`
@@ -1699,6 +1727,10 @@
         </dl>
         <div class="performance-keywords" aria-label="실적 키워드">${keywordMarkup}</div>
         <footer><span>공개·비식별 자료</span><small>후보 조회용 · 인정실적/점수 미확정</small></footer>
+        <div class="performance-certificate-preview">
+          <button class="button button--ghost" type="button" disabled>실적증명서 · 연결 예정</button>
+          <small>증명서 연결 후 내려받을 수 있습니다.</small>
+        </div>
       </article>`;
   }
 
@@ -1732,6 +1764,9 @@
   }
 
   function performanceErrorMessage(error) {
+    if (error?.status === 422) {
+      return "계약 기간과 금액 범위를 확인해 주세요. 시작값은 끝값보다 클 수 없습니다.";
+    }
     if (error?.status === 401 || error?.status === 403) {
       return "이 데이터는 인증된 사용자에게만 제공됩니다. 사내 인증 후 다시 시도해 주세요.";
     }
@@ -1757,6 +1792,8 @@
     els.performanceSearchInput.value = "";
     els.performanceYearFilter.value = "";
     els.performanceDivisionFilter.value = "";
+    performanceRangeControls().forEach(([, control]) => { control.value = ""; });
+    validatePerformanceRanges(false);
     state.performance.offset = 0;
     void loadPerformance();
   }

@@ -697,6 +697,13 @@
                 </label>
                 <button class="button button--primary performance-filter-submit" type="submit">검색</button>
                 <button class="button button--ghost performance-filter-reset" type="reset">필터 지우기</button>
+                <fieldset class="performance-range-filters">
+                  <legend>계약일·계약금액 범위</legend>
+                  <label>계약 시작일<input id="performanceDateFrom" type="date" /></label>
+                  <label>계약 종료일<input id="performanceDateTo" type="date" /></label>
+                  <label>최소 계약금액 (원)<input id="performanceMinAmount" type="number" min="0" step="1" placeholder="제한 없음" inputmode="numeric" /></label>
+                  <label>최대 계약금액 (원)<input id="performanceMaxAmount" type="number" min="0" step="1" placeholder="제한 없음" inputmode="numeric" /></label>
+                </fieldset>
               </form>
 
               <div class="performance-panel" id="performancePanel">
@@ -718,7 +725,7 @@
                     <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>
                   </span>
                   <strong>조건에 맞는 실적이 없습니다</strong>
-                  <p>검색어, 계약 연도 또는 수행부서 필터를 바꿔 보세요.</p>
+                  <p>검색어, 계약 기간·금액 또는 수행부서 필터를 바꿔 보세요.</p>
                   <button class="button button--ghost" type="button" id="performanceEmptyResetButton">필터 지우기</button>
                 </div>
               </div>
