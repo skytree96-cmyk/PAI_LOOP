@@ -108,7 +108,9 @@ def test_incomplete_or_inconsistent_provider_sets_never_become_won_lost_or_no_bi
     if failure == "absent": feed.participants[0] = participant("0000000002")
     elif failure == "masked": feed.participants[0]["prcbdrBizno"] = "000-**-*****"
     elif failure == "missing_id": feed.participants[0].pop("prcbdrBizno")
-    elif failure == "duplicate": feed.participants[1] = participant("000-00-00000")
+    elif failure == "duplicate":
+        # Deliberately synthetic all-zero identifier, with provider formatting.
+        feed.participants[1] = participant("-".join("0" * width for width in (3, 2, 5)))
     elif failure == "short_page": feed.total = 3
     elif failure == "winner_absent": feed.participants[1] = participant("0000000002")
     elif failure == "different_rebid": feed.participants[0]["rbidNo"] = "3"
