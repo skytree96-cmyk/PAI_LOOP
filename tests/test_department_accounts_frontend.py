@@ -18,6 +18,7 @@ const context=vm.createContext({URL,URLSearchParams,Intl,Headers,AbortController
  sessionStorage:{getItem(){return null;},removeItem(){},setItem(){throw Error('PIN storage must not be used');}}}});
 const exported=`
 const originalRenderExistingDecision=renderExistingDecision,originalUpdateDecisionButton=updateDecisionButton;
+const originalRenderResultLearning=renderResultLearning;
 renderAll=()=>{};renderDataSource=()=>{};renderResultLearning=()=>{};
 closeDetail=()=>{state.selectedNotice=null;};
 renderExistingDecision=n=>globalThis.onRender(n);renderPipelineIntoExisting=()=>{};
@@ -30,6 +31,7 @@ globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,login
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
  submittedRatePreview,updateResultLearningRate,resultLearningRateCalculation,resultLearningRateLabel,
  renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
+ renderResults:originalRenderResultLearning,formatBudget,
  setOpenDetail(fn){openDetail=fn;},
  setRefresh(fn){refreshDashboardAfterMutation=fn;}};`;
 context.onToast=args=>toasts.push(args);context.onRender=n=>rendered.push(n);
@@ -104,6 +106,24 @@ assert.equal(u.els.resultLearningSubmittedAmount.validationMessage,'');
 assert.equal(u.resultLearningRateCalculation().mode,'MANUAL');
 assert.equal(u.resultLearningRateLabel({submittedBidRate:0,submittedRateCalculation:{mode:'AUTO',basis_kind:'BASE_AMOUNT'}}),'기초금액 대비 0.0000%');
 assert.equal(u.resultLearningRateLabel({submittedBidRate:null}),'미입력');
+''')
+
+
+def test_result_amount_labels_distinguish_missing_from_zero_without_changing_notice_budget():
+    _run_behavior(r'''
+const data=u.state.resultLearning;
+data.loaded=true;data.total=1;
+data.records=[{title:'SYN result labels',noticeKey:'SYN-N',departmentOutcomes:[],outcome:{
+ status:'SUBMITTED',source:'MANUAL_UI',submittedBidAmount:null,winningBidAmount:0}}];
+u.renderResults();
+assert.match(u.els.resultLearningList.innerHTML,/<dt>우리 투찰<\/dt><dd>미입력<\/dd>/);
+assert.match(u.els.resultLearningList.innerHTML,/<dt>낙찰금액<\/dt><dd>0원<\/dd>/);
+data.records[0].outcome.submittedBidAmount=0;
+data.records[0].outcome.winningBidAmount=null;
+u.renderResults();
+assert.match(u.els.resultLearningList.innerHTML,/<dt>우리 투찰<\/dt><dd>0원<\/dd>/);
+assert.match(u.els.resultLearningList.innerHTML,/<dt>낙찰금액<\/dt><dd>미입력<\/dd>/);
+assert.equal(u.formatBudget(null),'예산 미확인');
 ''')
 
 

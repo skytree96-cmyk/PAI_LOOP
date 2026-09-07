@@ -782,7 +782,9 @@ def test_operator_editor_frontend_exposes_forms_without_server_credentials() -> 
     assert "payload.basis_outcome_id = outcome.id" in script
     assert "자동 환류 원본은 변경하지 않고" in script
     assert 'aria-describedby="resultLearningRateStatus resultLearningRatePolicy"' in html
-    assert "소수 다섯째 자리에서 반올림하여 소수 넷째 자리" in html
-    assert "서버가 10진수 연산" in html
+    assert "우리 투찰금액 ÷ 확인한 기준금액 × 100" in html
+    assert "예정가격 또는 기초금액과 출처" in html
+    assert "소수 넷째 자리까지 표시" in html
+    assert "수기 비율은 근거 참조에 기준가격도 함께" in html
     assert "X-PAI-Manual-Token" in script
     assert "X-PAI-LOOP-API-KEY" not in script

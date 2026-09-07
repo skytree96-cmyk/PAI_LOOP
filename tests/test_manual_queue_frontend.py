@@ -1,5 +1,7 @@
 import subprocess
 
+import pytest
+
 from test_department_accounts_frontend import APP, BEHAVIOR_HARNESS
 
 
@@ -25,13 +27,37 @@ currentNotice();
 '''
 
 
-def _run(script):
+def _run(script, *, real_estimate=False):
+    harness = HARNESS.replace("loadQuantitativeEstimate=async()=>{};", "renderQuantAndRisk=()=>{};") if real_estimate else HARNESS
     result = subprocess.run(
-        ["node", "-e", HARNESS + "\n(async()=>{\n" + script + "\n})().catch(e=>{console.error(e);process.exit(1);});"],
+        ["node", "-e", harness + "\n(async()=>{\n" + script + "\n})().catch(e=>{console.error(e);process.exit(1);});"],
         input=APP.read_text(encoding="utf-8"), capture_output=True, text=True, encoding="utf-8",
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("status", [200, 401])
+def test_real_preflight_estimate_cannot_repopulate_another_accounts_cache(status):
+    _run("const replyStatus=" + str(status) + r''';
+const old=u.requestManualAnalysis(key);await tick();
+assert.equal(requests.length,1);
+assert.equal(u.state.quantitativeEstimates[key].status,'loading');
+login('SYN-B');
+respond(requests[0],replyStatus,{detail:'SYN old account response'});await old;
+assert.equal(u.state.quantitativeEstimates[key],undefined,'old preflight must not publish into the new account cache');
+assert.equal(u.state.accountSession.account.id,'SYN-B');
+assert.equal(toasts.length,0);
+currentNotice();
+const current=u.requestManualAnalysis(key);await tick();
+assert.equal(requests.length,2);
+respond(requests[1],200,{SYN:'current estimate'});await tick();
+assert.equal(requests.length,3);
+respond(requests[2],200,{outcome:'REVIEW',notice_key:key});await current;
+assert.equal(u.state.quantitativeEstimates[key].status,'ready');
+assert.equal(u.state.quantitativeEstimates[key].data.SYN,'current estimate');
+assert.equal(toasts.length,1);
+''', real_estimate=True)
 
 
 def test_duplicate_click_is_locked_before_async_preflight():

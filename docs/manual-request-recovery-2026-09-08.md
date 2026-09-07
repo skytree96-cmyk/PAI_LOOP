@@ -29,6 +29,14 @@ logout/account change clears it, stops old polling, and prevents an old finalize
 from clearing a newer operation. The quantitative diagnostic retry also stops on
 account change and keeps polling the original request ID. A mismatched status
 response is rejected, and unknown terminal status is never shown as completion.
+Account changes also discard the quantitative-estimate cache, including pending
+preflight tokens, so a late success or 401 cannot publish an old cache error into
+the new session. The next account performs its own estimate lookup.
+
+Failed requests remain terminal. An immediate retry retains the existing short
+duplicate cooldown; after that window it may create a new reservation under the
+existing paid authorization and hourly limits. It does not revive the failed
+request or transfer its original actor to the retry.
 
 No provider, attachment, continuation, lifecycle, deadline or timeout budget is
 increased. The current 1,800-poll limit and three-second spacing remain unchanged;

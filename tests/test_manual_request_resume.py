@@ -1,4 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +11,8 @@ from sqlalchemy import select
 
 import pai_loop.manual_analysis as manual
 from pai_loop.models import IngestionJob
-from test_manual_analysis import _app, _create_open_pps_notice, SAME_ORIGIN_HEADERS
-from test_department_accounts import account_client, _login, NOTICE as ACCOUNT_NOTICE
+from test_manual_analysis import _app, _create_open_pps_notice, _review_batch, SAME_ORIGIN_HEADERS
+from test_department_accounts import account_client, _login, _peer, NOTICE as ACCOUNT_NOTICE
 
 
 NOTICE = "PPS-SYN-MANUAL-RESUME"
@@ -120,3 +124,89 @@ def test_resume_requires_same_origin_and_valid_account_csrf(account_client):
     assert account_client.post(url, headers={"Origin": "http://testserver"}).status_code == 403
     with account_client.app.state.session_factory() as session:
         assert session.get(IngestionJob, request_id).status == "RUNNING"
+
+
+def test_other_department_reattaches_while_original_callback_keeps_its_lease(account_client, monkeypatch):
+    _, original_actor = _login(account_client)
+    request_id = _reservation(account_client.app, notice=ACCOUNT_NOTICE)
+    with account_client.app.state.session_factory() as session:
+        job = session.get(IngestionJob, request_id)
+        job.request_json = {**job.request_json, "account_id": original_actor["account"]["id"],
+                            "department_id": original_actor["account"]["department_id"],
+                            "recompute_current": False, "retry_reviewed": False}
+        session.commit()
+        original_request = deepcopy(job.request_json)
+    other = _peer(account_client)
+    headers, other_actor = _login(other, "SYN_KMA2")
+    assert original_actor["account"]["id"] != other_actor["account"]["id"]
+    entered, finish = threading.Event(), threading.Event()
+    batches = []
+
+    def running_batch(*args, **kwargs):
+        batches.append((args, kwargs))
+        entered.set()
+        assert finish.wait(timeout=15)
+        return _review_batch(job_id="SYN-original-child")
+
+    monkeypatch.setattr(manual, "run_notice_analysis_batch", running_batch)
+    worker_request = SimpleNamespace(app=account_client.app)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker = pool.submit(manual._execute_reserved_manual_job, worker_request, request_id, ACCOUNT_NOTICE)
+        try:
+            assert entered.wait(timeout=10)
+            assert manual._PUBLIC_MANUAL_PROCESS_LOCK.locked()
+            for intent in ({"run_extraction": False, "recompute_current": True},
+                           {"run_extraction": True, "retry_reviewed": True}):
+                response = other.post(f"/api/v1/notices/{ACCOUNT_NOTICE}/analysis/request", headers=headers, json=intent)
+                assert response.status_code == 200, response.text
+                assert response.json()["request_id"] == request_id
+                assert response.json()["notice_key"] == ACCOUNT_NOTICE
+                assert response.json()["outcome"] == "QUEUED"
+            assert manual._PUBLIC_MANUAL_PROCESS_LOCK.locked(), "status read must not release the worker lease"
+            with account_client.app.state.session_factory() as session:
+                assert session.get(IngestionJob, request_id).request_json == original_request
+                assert len(list(session.scalars(select(IngestionJob)))) == 1
+            assert len(batches) == 1
+        finally:
+            finish.set()
+        worker.result(timeout=10)
+    manual._execute_reserved_manual_job(worker_request, request_id, ACCOUNT_NOTICE)
+    assert len(batches) == 1, "a delayed callback cannot rerun a terminal request"
+    with account_client.app.state.session_factory() as session:
+        job = session.get(IngestionJob, request_id)
+        assert job.status == "COMPLETED"
+        assert job.request_json["account_id"] == original_actor["account"]["id"]
+
+
+def test_failed_retry_uses_new_reservation_only_after_existing_cooldown_and_quota(monkeypatch):
+    app = _app(monkeypatch)
+    callbacks = []
+    monkeypatch.setattr(manual, "_execute_reserved_manual_job", lambda *args: callbacks.append(args))
+    with TestClient(app) as client:
+        _create_open_pps_notice(client, NOTICE)
+        failed_id = _reservation(app)
+        with app.state.session_factory() as session:
+            job = session.get(IngestionJob, failed_id)
+            job.status = "FAILED"
+            session.commit()
+            previous_request = deepcopy(job.request_json)
+        failed = client.get(f"/api/v1/notices/{NOTICE}/analysis/requests/{failed_id}", headers=SAME_ORIGIN_HEADERS)
+        assert failed.json()["outcome"] == "REVIEW"
+        immediate = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True, "retry_reviewed": True})
+        assert immediate.status_code == 200 and immediate.json()["outcome"] == "COOLDOWN"
+        assert callbacks == []
+        with app.state.session_factory() as session:
+            session.get(IngestionJob, failed_id).created_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+            session.commit()
+        app.state.settings = replace(app.state.settings, public_manual_analysis_hourly_limit=1)
+        assert client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True}).status_code == 429
+        assert callbacks == []
+        app.state.settings = replace(app.state.settings, public_manual_analysis_hourly_limit=12)
+        retry = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True})
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["outcome"] == "QUEUED" and retry.json()["request_id"] != failed_id
+        assert len(callbacks) == 1 and callbacks[0][1] == retry.json()["request_id"]
+        with app.state.session_factory() as session:
+            old = session.get(IngestionJob, failed_id)
+            assert old.status == "FAILED" and old.request_json == previous_request
+            assert len(list(session.scalars(select(IngestionJob)))) == 2
