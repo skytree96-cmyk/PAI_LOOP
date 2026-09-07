@@ -631,7 +631,7 @@ def test_ended_scope_combines_expired_and_closed_with_dashboard_list_parity(
     assert len(client.get("/api/v1/notices", params={"status": "OPEN"}).json()) == 1
 
 
-def test_dashboard_deadline_soon_counts_only_open_notices(client: TestClient) -> None:
+def test_dashboard_deadline_soon_excludes_unanalysed_open_notices(client: TestClient) -> None:
     deadline = datetime.now(timezone.utc) + timedelta(days=2)
     for notice_key, status_value in (
         ("MANUAL-DEADLINE-OPEN", "OPEN"),
@@ -651,7 +651,7 @@ def test_dashboard_deadline_soon_counts_only_open_notices(client: TestClient) ->
         assert created.status_code == 201, created.text
 
     dashboard = client.get("/api/v1/dashboard").json()
-    assert dashboard["deadline_soon"] == 1
+    assert dashboard["deadline_soon"] == 0
     assert dashboard["totals"]["active"] == 1
     assert dashboard["analysis_review_backlog_count"] == 1
 
@@ -675,15 +675,15 @@ def test_dashboard_deadline_soon_uses_same_kst_calendar_window_as_ui(
     today = fixed_now.astimezone(KST).date()
     deadlines = (
         (
-            "MANUAL-DEADLINE-THREE-DAYS-LATE",
+            "SYN-DEADLINE-FIVE-DAYS-LATE",
             datetime.combine(
-                today + timedelta(days=3), datetime.max.time(), tzinfo=KST
+                today + timedelta(days=5), datetime.max.time(), tzinfo=KST
             ).astimezone(timezone.utc),
         ),
         (
-            "MANUAL-DEADLINE-FOUR-DAYS-EARLY",
+            "SYN-DEADLINE-SIX-DAYS-EARLY",
             datetime.combine(
-                today + timedelta(days=4), datetime.min.time(), tzinfo=KST
+                today + timedelta(days=6), datetime.min.time(), tzinfo=KST
             ).astimezone(timezone.utc),
         ),
     )
@@ -700,6 +700,21 @@ def test_dashboard_deadline_soon_uses_same_kst_calendar_window_as_ui(
             },
         )
         assert created.status_code == 201, created.text
+
+    with client.app.state.session_factory() as session:
+        for notice in session.scalars(select(Notice)).all():
+            version = NoticeVersion(
+                version_no=1, file_sha256="8" * 64, source_payload={"kind": "SYN-TEST"},
+            )
+            notice.versions.append(version)
+            session.flush()
+            notice.evaluations.append(Evaluation(
+                notice_version_id=version.id, deadline_snapshot_at=notice.deadline,
+                eligibility="PASS", reason_code="PASS", readiness_score=100,
+                readiness_status="GREEN", evidence_coverage=100, risk_score=10,
+                risk_band="GO", ruleset_version="SYN-five-day", atomic_results=[], explanation={},
+            ))
+        session.commit()
 
     dashboard = client.get("/api/v1/dashboard")
     assert dashboard.status_code == 200, dashboard.text

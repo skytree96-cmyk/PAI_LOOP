@@ -8,7 +8,7 @@
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
   const NOTICE_PAGE_SIZE = 200;
-  const URGENT_DEADLINE_DAYS = 7;
+  const URGENT_DEADLINE_DAYS = 5;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const MANUAL_ANALYSIS_MAX_POLLS = 1800;
   // Compatibility note for older embedded contracts: MANUAL_ANALYSIS_MAX_POLLS = 900.
@@ -171,6 +171,8 @@
     collected: "/",
     go: "/",
     urgent: "/urgent",
+    fail: "/fail",
+    cancelled: "/cancelled",
     ended: "/",
     "result-missing": "/result-missing",
   });
@@ -180,6 +182,8 @@
     "/notices": "new",
     "/reviews": "review",
     "/urgent": "urgent",
+    "/fail": "fail",
+    "/cancelled": "cancelled",
     "/result-missing": "result-missing",
     "/decisions": "undecided",
     "/results": "closed",
@@ -886,8 +890,8 @@
 
   function noticeStatusScopeForView(view) {
     if (globalNoticeSearchActive()) return "ALL";
-    if (["ended", "result-missing"].includes(view)) return "ENDED";
-    return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
+    if (["ended", "cancelled", "result-missing"].includes(view)) return "ENDED";
+    return ["collected", "closed", "fail"].includes(view) ? "ALL" : "OPEN";
   }
 
   function renderNoticeSearchScope() {
@@ -2959,6 +2963,7 @@
       collectedAt,
       budget: firstValue(source.budget, source.estimated_amount, source.presmptPrce, source.asignBdgtAmt, null),
       eligibilityStatus: normalizeEligibility(firstValue(displayEvaluation.eligibility, allowCurrentProjection ? firstValue(source.eligibility_status, source.eligibilityStatus, source.eligibility) : null)),
+      qualificationStatus: stringValue(firstValue(source.qualification_status, source.qualificationStatus), ""),
       readinessScore: numberOrNull(firstValue(displayEvaluation.readiness_score, displayEvaluation.readinessScore, allowCurrentProjection ? firstValue(source.readiness_score, source.readinessScore, source.fit_score, source.fitScore) : null)),
       readinessStatus: normalizeReadiness(firstValue(displayEvaluation.readiness_status, displayEvaluation.status, allowCurrentProjection ? source.readiness_status : null)),
       evidenceCoverage: numberOrNull(firstValue(displayEvaluation.evidence_coverage, displayEvaluation.evidenceCoverage, allowCurrentProjection ? firstValue(source.evidence_coverage, source.evidenceCoverage, source.coverage) : null)),
@@ -3017,6 +3022,7 @@
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
       historicalAnalysis: useHistoricalEvaluation,
+      historicalQualification: firstObject(source.historical_qualification, source.historicalQualification),
       historicalEvaluatedAt: useHistoricalEvaluation
         ? firstValue(historicalEvaluation.evaluated_at, historicalEvaluation.evaluatedAt, null)
         : null,
@@ -3346,29 +3352,23 @@
     const totals = firstObject(source.totals, kpis.totals);
     const eligibilityCounts = firstObject(source.eligibility_counts, source.eligibilityCounts);
     const readinessCounts = firstObject(source.readiness_counts, source.readinessCounts);
+    const workQueues = globalNoticeSearchActive() ? {} : firstObject(source.work_queue_counts);
     const derived = deriveDashboard(notices);
     return {
       newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.active, totals.notices)) ?? derived.newCount,
-      // The backend aggregate cannot distinguish the current all-attachment
-      // audit backlog. Derive this clickable KPI from the loaded projection
-      // so it includes incomplete coverage, missing evaluation and actionable
-      // eligibility review under the same filter used by the board.
-      reviewCount: numberOrNull(firstValue(
-        kpis.analysis_review_backlog_count,
-        kpis.analysisReviewBacklogCount,
-      )) ?? derived.reviewCount,
+      // Dashboard work queues use explicit stored qualification. Global
+      // analysis totals still include missing evaluations and failed notices.
+      failCount: numberOrNull(workQueues.fail) ?? derived.failCount,
+      reviewCount: derived.reviewCount,
       qualityReviewCount: derived.qualityReviewCount,
       // These clickable KPIs must match their OPEN-only board filters. The
       // backend aggregate can include already-closed notices with a future
       // deadline, so use the loaded notice projection for both counts.
       goCount: derived.goCount,
       urgentCount: derived.urgentCount,
-      cancelledCount: numberOrNull(firstValue(kpis.cancelled_count, kpis.cancelledCount)) ?? derived.cancelledCount,
+      cancelledCount: numberOrNull(workQueues.cancelled) ?? derived.cancelledCount,
       endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? derived.endedCount,
-      resultMissingCount: numberOrNull(firstValue(
-        kpis.result_missing_count,
-        kpis.resultMissingCount,
-      )) ?? derived.resultMissingCount,
+      resultMissingCount: numberOrNull(workQueues.result_missing) ?? derived.resultMissingCount,
       undecidedCount: derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
@@ -3387,7 +3387,7 @@
     // A filtered board cannot prove whole-database counts. Retain an observed
     // aggregate after a mutation, or show unavailable until the API responds.
     const result = deriveDashboard(notices);
-    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "cancelledCount", "endedCount", "resultMissingCount"]) {
+    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "failCount", "cancelledCount", "endedCount", "resultMissingCount"]) {
       result[key] = numberOrNull(previous[key]);
     }
     result.analysisStatistics = previous.analysisStatistics || null;
@@ -3402,17 +3402,14 @@
       totalEvaluations: notices.filter((notice) => notice.evaluationId).length,
       totalDecisions: notices.filter((notice) => notice.decision).length,
       newCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN").length,
-      reviewCount: notices.filter(needsAnalysisOrReview).length,
+      failCount: notices.filter((notice) => matchesDashboardQueue(notice, "fail")).length,
+      reviewCount: notices.filter((notice) => matchesDashboardQueue(notice, "review")).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
       goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO").length,
-      urgentCount: notices.filter((notice) => {
-        if (noticeLifecycleStatus(notice) !== "OPEN") return false;
-        const days = daysUntil(notice.deadline);
-        return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
-      }).length,
-      cancelledCount: notices.filter(isCancelledNotice).length,
+      urgentCount: notices.filter((notice) => matchesDashboardQueue(notice, "urgent")).length,
+      cancelledCount: notices.filter((notice) => matchesDashboardQueue(notice, "cancelled")).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
-      resultMissingCount: notices.filter((notice) => isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome).length,
+      resultMissingCount: notices.filter((notice) => matchesDashboardQueue(notice, "result-missing")).length,
       undecidedCount: operatorDecisionListAvailable(notices)
         ? notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length
         : null,
@@ -3420,6 +3417,40 @@
       generatedAt: null,
       systemStatus: "online",
     };
+  }
+
+  function dashboardEligibilityStatus(notice) {
+    // Current qualification and retained cancellation history are separate.
+    // In particular, UNKNOWN/NOT_EVALUATED must never become REVIEW here.
+    if (isCancelledNotice(notice)) {
+      const historical = notice.historicalQualification;
+      return historical?.scope === "LAST_VALID_STORED_EVALUATION"
+        && historical.evaluated_at
+        && ["PASS", "REVIEW", "FAIL"].includes(historical.eligibility)
+        ? historical.eligibility : "NOT_EVALUATED";
+    }
+    if (notice.sourceKind === "PPS" && !notice.analysisAttachmentCoverageComplete) return "NOT_EVALUATED";
+    if (["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"].includes(notice.qualificationStatus)) return notice.qualificationStatus;
+    return notice.analysisState === "EVALUATED"
+      && !notice.historicalAnalysis
+      && ["PASS", "REVIEW", "FAIL"].includes(notice.eligibilityStatus)
+      ? notice.eligibilityStatus : "NOT_EVALUATED";
+  }
+
+  function matchesDashboardQueue(notice, queue) {
+    const eligibility = dashboardEligibilityStatus(notice);
+    if (queue === "fail") return !isCancelledNotice(notice) && eligibility === "FAIL";
+    if (!["PASS", "REVIEW"].includes(eligibility)) return false;
+    if (queue === "cancelled") return isCancelledNotice(notice);
+    if (isCancelledNotice(notice)) return false;
+    if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome;
+    if (noticeLifecycleStatus(notice) !== "OPEN") return false;
+    if (queue === "review") return needsAnalysisOrReview(notice);
+    if (queue === "urgent") {
+      const days = daysUntil(notice.deadline);
+      return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
+    }
+    return false;
   }
 
   function renderAll() {
@@ -3432,14 +3463,14 @@
 
   function renderKpis() {
     const data = state.dashboard;
-    // "수집 공고" is the database total; the sidebar's "진행 공고" keeps using active/newCount.
-    els.kpiNew.textContent = displayNumber(data.totalNotices);
+    // Preserve the existing DOM ID while replacing the total-stored card.
+    els.kpiNew.textContent = displayNumber(data.failCount);
     els.kpiReview.textContent = displayNumber(data.reviewCount);
     els.kpiGo.textContent = displayNumber(data.goCount);
     els.kpiUrgent.textContent = displayNumber(data.urgentCount);
     els.kpiResultMissing.textContent = displayNumber(data.resultMissingCount);
     els.kpiEnded.textContent = displayNumber(data.cancelledCount);
-    els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "실시간";
+    els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "자격 FAIL";
     els.kpiReviewTrend.textContent = "처리 필요";
     els.kpiGoTrend.textContent = "AI 판단";
     renderAnalysisProgress(data.analysisStatistics);
@@ -3560,20 +3591,18 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
+      if (["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)
+        && !matchesDashboardQueue(notice, state.currentView)) return false;
       if (!globalSearch) {
         if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
-        if (state.currentView === "review" && !needsAnalysisOrReview(notice)) return false;
         if (state.currentView === "go" && effectiveRecommendation(notice) !== "GO") return false;
-        if (state.currentView === "urgent") {
-          const days = daysUntil(notice.deadline);
-          if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
-        }
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
-        if (state.currentView === "result-missing" && (!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome)) return false;
         if (state.currentView === "undecided" && decisionFilterAvailable && operatorDecision === "all" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
-      if (eligibility !== "all" && effectiveEligibilityStatus(notice) !== eligibility) return false;
+      const qualification = ["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)
+        ? dashboardEligibilityStatus(notice) : effectiveEligibilityStatus(notice);
+      if (eligibility !== "all" && qualification !== eligibility) return false;
       if (recommendation !== "all" && effectiveRecommendation(notice) !== recommendation) return false;
       const decision = notice.decision || (hasKnownOperatorDecision(notice) ? "UNDECIDED" : "UNAVAILABLE");
       if (operatorDecision !== "all" && decision !== operatorDecision) return false;
@@ -4267,7 +4296,7 @@
   }
 
   function isNoticeListView(view = state.currentView) {
-    const listViews = ["all", "new", "review", "go", "urgent", "ended", "result-missing", "undecided", "closed", "collected", "awards"];
+    const listViews = ["all", "new", "review", "go", "urgent", "fail", "cancelled", "ended", "result-missing", "undecided", "closed", "collected", "awards"];
     return listViews.includes(view);
   }
 
@@ -4296,11 +4325,13 @@
       all: ["오늘 해야 할 일", "오늘의 확인 항목"],
       collected: ["수집 공고", "수집된 전체 공고"],
       new: ["공고 탐색", "진행중인 공고 조회"],
-      review: ["분석·검토 큐", "분석/검토가 필요한 공고"],
+      review: ["검토 대기", "PASS·REVIEW 중 첨부·자격 확인이 필요한 공고"],
       go: ["GO 후보", "GO 추천 공고"],
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
+      fail: ["FAIL 공고", "저장된 현재 자격 판정이 FAIL인 공고"],
+      cancelled: ["취소공고", "당시 자격 판정 PASS·REVIEW인 취소 공고"],
       ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
-      "result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"],
+      "result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"],
       undecided: ["담당자 판단", "공고별 판단 확인"],
       prespec: ["공고 탐색", "사전규격 탐색"],
       closed: ["결과 기록", "결과가 확인된 공고"],
@@ -4311,7 +4342,7 @@
     els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];
     const navigationView = nextView === "prespec"
       ? "new"
-      : ["collected", "go", "urgent", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
+      : ["collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
     const showDashboardCards = nextView === "all";
     els.navItems.forEach((item) => {
       const active = item.dataset.view === navigationView;
@@ -6733,7 +6764,11 @@
   }
 
   function analysisStatusPill(notice) {
-    if (isCancelledNotice(notice)) return '<span class="analysis-state" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
+    if (isCancelledNotice(notice)) {
+      const historical = dashboardEligibilityStatus(notice);
+      const label = historical === "NOT_EVALUATED" ? "당시 자격 미확인" : `당시 ${historical}`;
+      return `<span class="analysis-state" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고 · ${label}</span>`;
+    }
     if (notice.historicalAnalysis) {
       const value = STATUS_LABELS[notice.eligibilityStatus] ? notice.eligibilityStatus : "UNKNOWN";
       return `<span class="status-pill status-pill--${value.toLowerCase()}" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 ${escapeHtml(STATUS_LABELS[value])}</span>`;

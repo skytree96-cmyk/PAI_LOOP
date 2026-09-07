@@ -128,6 +128,18 @@ def _latest_evaluation(notice: Notice) -> Evaluation | None:
     return latest_current_evaluation(notice)
 
 
+def _dashboard_qualification(notice: Notice, evaluation: Evaluation | None) -> str:
+    """Require current source/deadline and complete PPS audit for work queues."""
+    if evaluation is None:
+        return "NOT_EVALUATED"
+    if _source_kind(notice) == "PPS" and (
+        not pps_attachment_coverage(notice.versions).complete
+        or public_analysis_reason(notice.versions, evaluated=True, source_kind="PPS").state != "ANALYZED"
+    ):
+        return "NOT_EVALUATED"
+    return evaluation.eligibility
+
+
 def _latest_system_recommendation_snapshot(
     notice: Notice,
 ) -> tuple[AnalysisRun | None, RecommendationSnapshot | None]:
@@ -500,7 +512,9 @@ def _summary(
         authority=provider_authority,
     )
     authoritative_cancelled = provider_disposition == "CANCELLED"
-    latest = None if authoritative_cancelled else _latest_evaluation(notice)
+    valid_evaluation = _latest_evaluation(notice)
+    valid_qualification = _dashboard_qualification(notice, valid_evaluation)
+    latest = None if authoritative_cancelled else valid_evaluation
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     analysis_reason = public_analysis_reason(
         notice.versions,
@@ -555,7 +569,7 @@ def _summary(
         revision_no=notice.revision_no,
         title=notice.title,
         agency=notice.agency,
-        deadline=notice.deadline,
+        deadline=_comparable_utc(notice.deadline),
         status=_effective_notice_status(notice),
         provider_disposition=provider_disposition,
         provider_event_kind=provider_event_kind,
@@ -584,6 +598,16 @@ def _summary(
         recommendation_evidence_count=recommendation_evidence_count,
         recommendation_updated_at=recommendation_updated_at,
         latest_evaluation=evaluation,
+        qualification_status="NOT_EVALUATED" if authoritative_cancelled else valid_qualification,
+        historical_qualification=(
+            {
+                "eligibility": valid_evaluation.eligibility,
+                "evaluated_at": _comparable_utc(valid_evaluation.evaluated_at),
+                "scope": "LAST_VALID_STORED_EVALUATION",
+            }
+            if authoritative_cancelled and valid_evaluation is not None and valid_qualification != "NOT_EVALUATED"
+            else None
+        ),
     )
 
 
@@ -1030,7 +1054,9 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     visible_ended_count = 0
     result_missing_count = 0
     analysis_review_backlog_count = 0
-    soon_date = now.astimezone(KST).date() + timedelta(days=3)
+    today = now.astimezone(KST).date()
+    soon_date = today + timedelta(days=5)
+    work_queue_counts = {key: 0 for key in ("fail", "review", "urgent", "result_missing", "cancelled")}
     active_count = 0
     deadline_soon = 0
     recent_notices: list[dict[str, Any]] = []
@@ -1081,7 +1107,19 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                 is_cancelled = provider_disposition == "CANCELLED"
                 if effective_status in lifecycle_counts:
                     lifecycle_counts[effective_status] += 1
-                latest = None if is_cancelled else _latest_evaluation(notice)
+                valid_evaluation = _latest_evaluation(notice)
+                valid_qualification = _dashboard_qualification(notice, valid_evaluation)
+                latest = None if is_cancelled else valid_evaluation
+                qualified = (
+                    not is_cancelled
+                    and valid_qualification in {Eligibility.PASS.value, Eligibility.REVIEW.value}
+                )
+                if is_cancelled:
+                    work_queue_counts["cancelled"] += int(
+                        valid_qualification in {Eligibility.PASS.value, Eligibility.REVIEW.value}
+                    )
+                elif valid_qualification == Eligibility.FAIL.value:
+                    work_queue_counts["fail"] += 1
                 run = latest_current_analysis_run(notice) if effective_status == "OPEN" else None
                 if effective_status == "OPEN":
                     open_runs.append(run)
@@ -1113,6 +1151,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     and notice.id not in outcome_notice_ids
                 ):
                     result_missing_count += 1
+                    work_queue_counts["result_missing"] += int(qualified)
                 if latest:
                     eligibility_counts[latest.eligibility] = (
                         eligibility_counts.get(latest.eligibility, 0) + 1
@@ -1124,12 +1163,14 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     active_count += 1
                     if not is_cancelled and _needs_analysis_or_review(notice, latest):
                         analysis_review_backlog_count += 1
+                        work_queue_counts["review"] += int(qualified)
                     if (
-                        not is_cancelled
-                        and _comparable_utc(notice.deadline).astimezone(KST).date()
+                        qualified
+                        and today <= _comparable_utc(notice.deadline).astimezone(KST).date()
                         <= soon_date
                     ):
                         deadline_soon += 1
+                        work_queue_counts["urgent"] += 1
                 if len(recent_notices) < 10:
                     recent_notices.append(
                         _summary(
@@ -1170,6 +1211,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "generated_at": now,
         "last_sync": _comparable_utc(last_sync) if last_sync is not None else None,
         "analysis_statistics": analysis_statistics,
+        "work_queue_counts": work_queue_counts,
         "totals": {
             "notices": len(notice_ids),
             "active": active_count,

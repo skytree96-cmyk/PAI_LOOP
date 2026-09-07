@@ -182,6 +182,12 @@ class DepartmentRankingOut(ApiModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class HistoricalQualificationOut(ApiModel):
+    eligibility: Literal["PASS", "REVIEW", "FAIL"]
+    evaluated_at: datetime
+    scope: Literal["LAST_VALID_STORED_EVALUATION"] = "LAST_VALID_STORED_EVALUATION"
+
+
 class NoticeSummary(ApiModel):
     notice_key: str
     bid_notice_no: str
@@ -221,7 +227,7 @@ class NoticeSummary(ApiModel):
         default=False,
         description=(
             "입찰 결과 레코드가 하나 이상 저장되어 있는지 여부입니다. "
-            "결과 미기록 목록과 대시보드 집계의 동일 모집단 계약에 사용합니다."
+            "결과 입력 필요 공고 목록과 대시보드 집계의 동일 모집단 계약에 사용합니다."
         ),
     )
     recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
@@ -242,6 +248,17 @@ class NoticeSummary(ApiModel):
     )
     recommendation_updated_at: datetime | None = None
     latest_evaluation: EvaluationOut | None = None
+    qualification_status: Literal["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"] = Field(
+        default="NOT_EVALUATED",
+        description="현재 원문·마감 기준에 유효한 저장 자격 판정입니다. 문서 분석 상태와 구분합니다.",
+    )
+    historical_qualification: HistoricalQualificationOut | None = Field(
+        default=None,
+        description=(
+            "취소 공고의 보존된 원문·마감 기준에 유효한 마지막 저장 자격 판정입니다. "
+            "현재 참가자격이나 추천을 의미하지 않으며 원문·평가 근거가 유효하지 않으면 null입니다."
+        ),
+    )
     department_ranking: DepartmentRankingOut | None = None
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)
     department_review_candidates: list[DepartmentRankingOut] = Field(default_factory=list)

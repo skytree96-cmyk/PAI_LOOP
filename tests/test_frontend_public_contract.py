@@ -179,17 +179,17 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
-    for view in ("review", "urgent", "result-missing"):
+    for view in ("fail", "review", "urgent", "result-missing", "cancelled"):
         assert f'data-kpi-view="{view}"' in html
-    assert html.count('class="kpi-card__action"') == 3
+    assert html.count('class="kpi-card__action"') == 5
     assert html.count('aria-pressed="false"') >= 3
     assert "els.kpiViewButtons" in bind_body
     assert "setView(button.dataset.kpiView)" in bind_body
     assert "scrollIntoView" in bind_body
     assert 'state.currentView === "go"' in filter_body
     assert 'effectiveRecommendation(notice) !== "GO"' in filter_body
-    assert 'state.currentView === "urgent"' in filter_body
-    assert "URGENT_DEADLINE_DAYS" in filter_body
+    assert 'matchesDashboardQueue(notice, state.currentView)' in filter_body
+    assert "URGENT_DEADLINE_DAYS" in derived_body
     assert 'timeZone: "Asia/Seoul"' in source
     assert 'state.currentView === "ended"' in filter_body
     assert "isVisibleEndedNotice(notice)" in filter_body
@@ -197,21 +197,21 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "goCount: derived.goCount" in dashboard_body
     assert "endedCount:" in dashboard_body
     assert "visible_ended_count" in dashboard_body
-    assert "cancelled_count" in dashboard_body
-    assert "analysis_review_backlog_count" in dashboard_body
+    assert "workQueues.cancelled" in dashboard_body
+    assert "reviewCount: derived.reviewCount" in dashboard_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
-    assert "reviewCount: notices.filter(needsAnalysisOrReview).length" in derived_body
+    assert 'matchesDashboardQueue(notice, "review")' in derived_body
     assert 'noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO"' in derived_body
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
     assert "resultMissingCount:" in derived_body
     assert (
-        "isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome"
+        "isVisibleEndedNotice(notice) && !notice.hasBidOutcome"
         in derived_body
     )
-    assert "kpis.result_missing_count" in dashboard_body
-    assert "els.kpiNew.textContent = displayNumber(data.totalNotices)" in source
-    assert 'state.currentView === "result-missing"' in filter_body
-    assert "!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome" in filter_body
+    assert "workQueues.result_missing" in dashboard_body
+    assert "els.kpiNew.textContent = displayNumber(data.failCount)" in source
+    assert '["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)' in filter_body
+    assert 'if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome' in derived_body
     assert "source.has_bid_outcome" in source
     assert "effectiveRecommendation(notice) !== recommendation" in filter_body
     assert 'urgent: "/urgent"' in source
@@ -220,7 +220,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
     assert 'ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"]' in view_body
-    assert '"result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"]' in view_body
+    assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
@@ -229,7 +229,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'els.eligibilityFilter.value = "all"' in view_body
     assert 'els.recommendationFilter.value = "all"' in view_body
     assert ".kpi-card__action:focus-visible" in styles
-    assert "7일" in html
+    assert "5일" in html
     assert "3일" not in html
     assert "72시간" not in html
 
@@ -237,8 +237,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260908-review-v1"' in html
-    assert 'src="./app.js?v=20260908-review-v1"' in html
+    assert 'href="./styles.css?v=20260908-dashboard-v1"' in html
+    assert 'src="./app.js?v=20260908-dashboard-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -257,7 +257,7 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     assert "DECIDE WITH EVIDENCE" not in html
     assert "확인이 필요한 공고부터 처리하세요" in html
     assert "검토 대기" in html
-    assert "결과 미기록" in html
+    assert "결과 입력 필요 공고" in html
     assert "저장된 전체 공고" in html
     assert "취소공고" in html
 
@@ -519,7 +519,7 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     badge_body = _function_body(source, "noticeLifecycleBadge", "recommendationPill")
     detail_body = _function_body(source, "renderDetail", "detailFact")
 
-    assert '["ended", "result-missing"].includes(view)' in scope_body
+    assert '["ended", "cancelled", "result-missing"].includes(view)' in scope_body
     assert 'return "ENDED"' in scope_body
     assert "provider_disposition" in normalize_body
     assert "provider_event_kind" in normalize_body
@@ -904,7 +904,7 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
 
     assert "needsAnalysisOrReview" in dashboard_body
     assert "isDocumentQualityReview" in dashboard_body
-    assert "needsAnalysisOrReview(notice)" in filter_body
+    assert "matchesDashboardQueue(notice, state.currentView)" in filter_body
     assert 'String(notice.analysisReasonCode || "")' in quality_body
     assert "notice.reasonCode" not in quality_body
     assert "ATTACHMENT_COVERAGE_INCOMPLETE" in quality_body
@@ -1120,13 +1120,13 @@ assert.match(renderQuantitativeEstimateRow({...criterion,source_anchor:{page:2}}
 
 
 
-def test_urgent_seven_day_window_and_operator_filter_preserve_other_axes() -> None:
+def test_urgent_five_day_window_and_operator_filter_preserve_other_axes() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     urgent_constant = re.search(r"  const URGENT_DEADLINE_DAYS = \d+;", source)
     assert urgent_constant
-    assert 'aria-label="7일 이내 입찰마감 공고 보기"' in html
-    assert 'class="kpi-scope-note">현재 조회 공고 중' in html
+    assert 'aria-label="5일 이내 입찰마감 공고 보기"' in html
+    assert 'class="kpi-scope-note">현재 조회 PASS·REVIEW 중' in html
     assert 'id="replayButton" hidden' in html
     assert 'els.replayButton.hidden = true;' in source
     adapter = urgent_constant.group(0)
@@ -1144,6 +1144,7 @@ const noticeLifecycleStatus = notice => notice.status;
 const isCancelledNotice = notice => notice.status === "CANCELLED";
 const isVisibleEndedNotice = notice => ["CLOSED", "EXPIRED", "CANCELLED"].includes(notice.status);
 const renderNoticeSearchScope = () => {};
+const globalNoticeSearchActive = () => Boolean(els.searchInput.value.trim());
 const renderNoticeList = () => {};
 const window = {clearTimeout() {}};
 const formatNumber = value => String(value);
@@ -1163,8 +1164,8 @@ const notice = (id, days, eligibility, decision=null, status="OPEN") => ({
   eligibility, eligibilityStatus:eligibility, recommendation:"GO", decision, decisionReadStatus:"KNOWN",
   topDepartmentRankings:[], departmentReviewCandidates:[], hasBidOutcome:false, raw:{decisions:[]},
 });
-const notices = [notice("SYN-eight",8,"PASS"), notice("SYN-review",1,"REVIEW","GO"),
-  notice("SYN-seven",7,"PASS","NO_GO"), notice("SYN-today",0,"PASS","HOLD"),
+const notices = [notice("SYN-six",6,"PASS"), notice("SYN-review",1,"REVIEW","GO"),
+  notice("SYN-five",5,"PASS","NO_GO"), notice("SYN-today",0,"PASS","HOLD"),
   notice("SYN-closed",2,"PASS",null,"CLOSED"), notice("SYN-expired",-1,"PASS",null,"EXPIRED"),
   notice("SYN-pending",2,"UNKNOWN"), notice("SYN-conditional",3,"PASS","CONDITIONAL_GO")];
 const state = {loading:false, source:"api", accessMode:"SERVER_AUTHENTICATED", currentView:"all",
@@ -1172,21 +1173,21 @@ const state = {loading:false, source:"api", accessMode:"SERVER_AUTHENTICATED", c
 const original = JSON.stringify(notices);
 applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
-  ["SYN-today","SYN-conditional","SYN-seven","SYN-eight","SYN-review","SYN-pending"]);
+  ["SYN-today","SYN-conditional","SYN-five","SYN-six","SYN-review","SYN-pending"]);
 state.currentView="urgent";
 applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
-  ["SYN-today","SYN-conditional","SYN-seven","SYN-review","SYN-pending"]);
-assert.equal(deriveDashboard(notices).urgentCount,5);
+  ["SYN-today","SYN-conditional","SYN-five","SYN-review"]);
+assert.equal(deriveDashboard(notices).urgentCount,4);
 const apiCounts = {totals:{notices:800},deadline_soon:1,kpis:{urgent_count:1}};
-assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,5);
-const querySubset=notices.filter(x=>x.noticeKey==="SYN-seven");
+assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,4);
+const querySubset=notices.filter(x=>x.noticeKey==="SYN-five");
 assert.equal(normalizeDashboard(apiCounts,querySubset).urgentCount,1);
 assert.equal(normalizeDashboard(apiCounts,querySubset).totalNotices,800);
 state.currentView="all";
 els.operatorDecisionFilter.value="NO_GO";
 applyFilters();
-assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-seven"]);
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-five"]);
 els.operatorDecisionFilter.value="HOLD";
 applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-today"]);
@@ -1203,7 +1204,7 @@ assert.equal(state.filteredNotices.length,0);
 els.eligibilityFilter.value="all";
 els.operatorDecisionFilter.value="UNDECIDED";
 applyFilters();
-assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-eight","SYN-pending"]);
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-six","SYN-pending"]);
 state.currentView="ended";
 els.operatorDecisionFilter.value="all";
 applyFilters();
