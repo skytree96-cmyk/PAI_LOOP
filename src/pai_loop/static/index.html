@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260908-manual-queue-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-participation-v1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -1068,6 +1068,11 @@
       <form class="source-link-dialog__panel record-editor-form" id="resultLearningForm">
         <header class="source-link-dialog__header"><div><p class="section-kicker">입찰 결과</p><h2 id="resultLearningDialogTitle">입찰 결과 입력</h2><p id="resultLearningDialogNotice">공고를 확인합니다.</p></div><button class="icon-button" id="resultLearningCloseButton" type="button" aria-label="결과 편집 닫기">×</button></header>
         <div class="source-link-dialog__body record-editor-grid">
+          <label class="record-field"><span>개찰 공고번호</span><input id="resultLearningOpeningNotice" readonly /></label>
+          <label class="record-field"><span>공고 차수</span><input id="resultLearningOpeningRevision" readonly /></label>
+          <label class="record-field"><span>개찰 분류번호</span><input id="resultLearningOpeningClassification" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
+          <label class="record-field"><span>재입찰번호</span><input id="resultLearningOpeningRebid" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningOpeningHelp">개찰결과에서 확인한 분류번호와 재입찰번호를 함께 입력하세요. 미확인은 두 칸을 비워 두며, 0은 확인한 경우에만 입력합니다. 수기 입력만으로 나라장터 참여 확인이 되지는 않습니다.</p>
           <label class="record-field"><span>결과 *</span><select id="resultLearningStatus" required><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
           <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">초안</option><option value="VALIDATED">검증 완료</option><option value="ARCHIVED">보관</option></select></label>
           <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="number" min="0" step="any" /></label>
@@ -1278,6 +1283,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260908-manual-queue-v1" defer></script>
+    <script src="./app.js?v=20260908-participation-v1" defer></script>
   </body>
 </html>

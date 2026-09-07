@@ -5,6 +5,7 @@ from datetime import date
 from math import isfinite
 from typing import Any, Iterator
 
+from ..outcome_identity import normalise_opening_identity
 from .pps import (
     DEFAULT_BASE_URL,
     DateWindow,
@@ -217,6 +218,8 @@ class PpsAwardClient(PpsClient):
         rows: int = 100,
         max_pages: int = 2,
         deadline_monotonic: float | None = None,
+        company_business_number: str | None = None,
+        winner_business_number: str | None = None,
     ) -> list[dict[str, Any]]:
         """Read the opening-result companies for exactly one notice.
 
@@ -232,6 +235,23 @@ class PpsAwardClient(PpsClient):
             raise ValueError("rows must be between 1 and 999")
         if not 1 <= max_pages <= 3:
             raise ValueError("max_pages must be between 1 and 3")
+
+        # The public history projection stays unchanged. The outcome adapter
+        # can request a private exact-match boolean before identifiers vanish.
+        company_number = None
+        winner_number = None
+        opening_identity = None
+        if company_business_number is not None:
+            from .company_awards import normalise_business_number
+            company_number = normalise_business_number(company_business_number)
+            if winner_business_number is not None:
+                winner_number = normalise_business_number(winner_business_number)
+            opening_identity = normalise_opening_identity({
+                "bid_notice_no": bid_notice_no, "revision_no": revision_no,
+                "classification_no": classification_no, "rebid_no": rebid_no,
+            })
+            if opening_identity is None or max_pages > 2:
+                raise ValueError("complete opening identity and at most two pages are required")
 
         self.hit_page_limit = False
         self.hit_time_limit = False
@@ -288,6 +308,20 @@ class PpsAwardClient(PpsClient):
                 raise OpeningResultsIncomplete("개찰 결과 페이지 또는 전체 건수가 불완전합니다.")
             expected_total = total
             for raw in raw_items:
+                returned_number = None
+                if company_number is not None:
+                    actual_identity = normalise_opening_identity({
+                        target: raw.get(source) for target, source in (
+                            ("bid_notice_no", "bidNtceNo"), ("revision_no", "bidNtceOrd"),
+                            ("classification_no", "bidClsfcNo"), ("rebid_no", "rbidNo"),
+                        )
+                    })
+                    if actual_identity is None or actual_identity != opening_identity:
+                        raise OpeningResultsIncomplete("개찰 결과의 전체 회차를 확인할 수 없습니다.")
+                    try:
+                        returned_number = normalise_business_number(str(raw.get("prcbdrBizno") or ""))
+                    except ValueError:
+                        raise OpeningResultsIncomplete("개찰 참여 업체 식별자를 확인할 수 없습니다.") from None
                 if any(
                     (str(raw.get(key) or "").strip() if key == "bidNtceNo" else str(raw.get(key) or "").strip().zfill(3)) != value
                     or key not in raw
@@ -295,9 +329,14 @@ class PpsAwardClient(PpsClient):
                 ):
                     raise OpeningResultsIncomplete("개찰 결과 공고 식별자가 일치하지 않습니다.")
                 company = normalise_opening_result(raw)
+                if company_number is not None:
+                    company["company_business_number_match"] = returned_number == company_number
+                    if winner_number is not None:
+                        company["final_winner_match"] = returned_number == winner_number
+                    company["opening_identity"] = opening_identity
                 # Only use the provider identifier to detect duplicate pages;
                 # it is never retained in the public company projection.
-                company_key = str(raw.get("prcbdrBizno") or company["company_name"]).strip()
+                company_key = returned_number or str(raw.get("prcbdrBizno") or company["company_name"]).strip()
                 if not company["company_name"] or company_key in seen:
                     raise OpeningResultsIncomplete("개찰 결과 업체 행이 누락되거나 중복되었습니다.")
                 seen.add(company_key)

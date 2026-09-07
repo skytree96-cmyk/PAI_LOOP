@@ -67,6 +67,54 @@ def _run_behavior(script):
     assert result.returncode == 0, result.stderr
 
 
+def test_provider_review_form_preserves_exact_opening_without_sending_server_proof():
+    _run_behavior(r'''
+const opening={bid_notice_no:'SYN-NUMBER',revision_no:'0',classification_no:'1',rebid_no:'2'};
+const raw={notice_key:'SYN-N',bid_notice_no:'SYN-NUMBER',revision_no:'00',title:'SYN notice',outcomes:[{
+ id:'SYN-provider',source:'PPS_AUTO_FEEDBACK',status:'LOST',opening_identity:opening,participation_verified:true}]};
+const notice=u.normalizeResultLearningNotice(raw);
+assert.equal(notice.outcome.participationVerified,true);
+u.openResultLearningDialog(notice);
+assert.equal(u.els.resultLearningOpeningNotice.value,'SYN-NUMBER');
+assert.equal(u.els.resultLearningOpeningRevision.value,'00');
+assert.equal(u.els.resultLearningOpeningClassification.value,'1');
+assert.equal(u.els.resultLearningOpeningRebid.value,'2');
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(requests.length,1);
+const body=JSON.parse(requests[0].options.body);
+assert.equal(body.basis_outcome_id,'SYN-provider');
+assert.equal(body.expected_outcome_id,null);
+assert.deepEqual(body.opening_identity,{...opening,revision_no:'00'});
+for(const key of ['participation_verified','participation_basis','evidence_json','source'])assert.equal(key in body,false);
+respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
+assert.equal(u.els.resultLearningDialog.open,true);
+''')
+
+
+def test_opening_form_requires_both_explicit_ordinals_and_preserves_zero_or_clear():
+    _run_behavior(r'''
+const raw={notice_key:'SYN-N',bid_notice_no:'SYN-NUMBER',revision_no:'00',outcomes:[{
+ id:'SYN-own',department_id:'SYN-A',department_revision:1,source:'MANUAL_UI',status:'SUBMITTED',
+ updated_at:'2026-09-08T00:00:00Z',opening_identity:{bid_notice_no:'SYN-NUMBER',revision_no:'0',classification_no:'0',rebid_no:'0'}}]};
+u.openResultLearningDialog(u.normalizeResultLearningNotice(raw));
+u.els.resultLearningOpeningRebid.value='';
+await u.saveResultLearning({preventDefault(){}});
+assert.equal(requests.length,0);
+assert.ok(u.els.resultLearningOpeningClassification.validationMessage);
+u.els.resultLearningOpeningRebid.value='0';
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+let body=JSON.parse(requests[0].options.body);
+assert.equal(body.opening_identity.rebid_no,'0');
+assert.equal(body.opening_identity.classification_no,'0');
+assert.equal(body.expected_updated_at,'2026-09-08T00:00:00Z');
+respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningOpeningClassification.value='';u.els.resultLearningOpeningRebid.value='';
+const clearing=u.saveResultLearning({preventDefault(){}});await tick();
+body=JSON.parse(requests[1].options.body);assert.equal(body.opening_identity,null);
+respond(requests[1],422,{detail:'SYN stop before reload'});await clearing;
+''')
+
+
 def test_bid_rate_preview_requires_explicit_basis_and_rounds_half_up():
     _run_behavior(r'''
 assert.equal(u.submittedRatePreview('176.5433','200'),'88.2717');
