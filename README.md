@@ -252,8 +252,11 @@ PPS manifest의 현재 첨부 전량(공식 슬롯 상한 10개)을 보강해 �
 확인해 결과 학습 DB에 fail-soft 환류한다. 낙찰 API만으로 참가를 증명할 수 없는 타사
 낙찰은 `LOST`로 만들지 않으며, 개찰 참가자 전체·계약 이행 결과 자동화는 후속 확장 경계다.
 
-`main`에 `workflows/**`, `manifest.json` 또는 배포 스크립트 변경이 push되면
-GitHub Actions가 workflow를 검증하고 n8n에 이름 기준으로 생성/갱신합니다.
+`main` push/merge는 n8n workflow를 자동으로 갱신하거나 게시하지 않습니다.
+GitHub Actions 배포는 `workflow_dispatch` 수동 진입점만 유지합니다. 이 진입점도
+실제 n8n을 갱신하므로 현재 브라우저 전용 운영 정책에서는 실행하지 않습니다.
+현재 배포 절차는 [n8n 수동 배포 운영 기준](docs/N8N_MANUAL_DEPLOYMENT_20260908.md)을
+따릅니다. GitHub 배포 트리거와 n8n 내부 운영 스케줄은 별개입니다.
 manifest에서 `publish: false`인 워크플로는 배포 후에도 비활성 상태를
 강제합니다.
 검증된 운영 진입점 Workflow 10과, live E2E·3개 HTTP 노드 credential 확인을 마친
@@ -287,7 +290,7 @@ dry-run이고, schedule/sub-workflow의 저장 실행은
 `PAI_LOOP_LIVE_INGESTION_ENABLED=true`일 때만 허용됩니다. 대상 공고키는
 입력값을 우선 사용하며, 승인된 n8n 환경변수 fallback만 허용합니다.
 
-필수 GitHub Actions secrets:
+GitHub Actions 수동 배포를 별도 승인해 사용할 때 필요한 secrets:
 
 - `N8N_BASE_URL`
 - `N8N_API_KEY`
