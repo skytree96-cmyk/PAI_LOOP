@@ -87,6 +87,8 @@ def test_real_adapter_records_exact_participant_without_manual_submission_and_ke
     if won:
         feed.final["bidwinnrBizno"] = OWN
     result = refresh(feed)
+    assert "QUERY_MODE_NOTICE_NUMBER" in result["items"][0]["warnings"]
+    assert not any(value.startswith("QUERY_WINDOW_BASIS_") for value in result["items"][0]["warnings"])
     assert result["items"][0]["outcome_status"] == ("WON" if won else "LOST")
     assert result["api_calls"] == result["items"][0]["api_calls"] == len(feed.calls) == 2
     row = stored(feed)[0]

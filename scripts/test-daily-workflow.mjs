@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import "./test-award-refresh-workflow.mjs";
 
 const daily = JSON.parse(await fs.readFile("workflows/pai-loop-10-daily-opportunity-briefing.json", "utf8"));
 const continuation = JSON.parse(await fs.readFile("workflows/pai-loop-11-analysis-backfill.json", "utf8"));

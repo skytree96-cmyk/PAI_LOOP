@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from pydantic_core import PydanticCustomError
 
 from ..extraction_contracts import CURRENT_EXTRACTION_CONTRACT
+from ..gateway_diagnostics import GatewayFailure, safe_gateway_failure
 
 PROMPT_VERSION = CURRENT_EXTRACTION_CONTRACT.prompt
 SCHEMA_VERSION = CURRENT_EXTRACTION_CONTRACT.schema
@@ -424,6 +425,7 @@ class ExtractionOutcome(BaseModel):
     review_code: Literal["R07"] | None = None
     error_code: str | None = None
     message: str
+    gateway_failure: GatewayFailure | None = None
     response_id: str | None = None
     model: str | None = None
     prompt_version: str = PROMPT_VERSION
@@ -772,6 +774,7 @@ class OpenAIExtractionClient:
             review_code="R07",
             error_code=error_code,
             message=message,
+            gateway_failure=metadata.get("gateway_failure"),
             response_id=metadata.get("response_id"),
             model=metadata.get("model", self.model),
             api_calls=int(metadata.get("api_calls", 1)),
@@ -863,11 +866,18 @@ class OpenAIExtractionClient:
                 continue
             if response.status_code >= 400:
                 telemetry = aggregate_openai_attempts(attempts)
+                gateway_failure = (
+                    safe_gateway_failure(decoded_payload.get("gateway_error"))
+                    if self.provider == "n8n_claude" and response.status_code == 500
+                    and isinstance(decoded_payload, dict) and set(decoded_payload) == {"gateway_error"}
+                    else None
+                )
                 return None, self._review(
                     "HTTP_ERROR",
                     f"모델 API가 HTTP {response.status_code}를 반환했습니다.",
                     api_calls=api_calls,
                     openai_telemetry=telemetry,
+                    gateway_failure=gateway_failure,
                 ), api_calls, telemetry
             if not json_valid:
                 telemetry = aggregate_openai_attempts(attempts)

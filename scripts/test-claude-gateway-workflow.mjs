@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
+import "./test-gateway-terminal-response.mjs";
 
 const workflow = JSON.parse(
   fs.readFileSync("workflows/pai-loop-13-claude-extraction-gateway.json", "utf8"),
@@ -11,12 +13,12 @@ const chain = nodes.get("Claude JSON Extraction");
 const model = nodes.get("Claude Sonnet 5");
 const normalizer = nodes.get("Normalize Gateway Response");
 
-assert.equal(workflow.nodes.length, 5);
+assert.equal(workflow.nodes.length, 10);
 assert.equal(webhook.type, "n8n-nodes-base.webhook");
 assert.equal(webhook.parameters.httpMethod, "POST");
 assert.equal(webhook.parameters.path, "pai-loop-claude/responses");
 assert.equal(webhook.parameters.authentication, "headerAuth");
-assert.equal(webhook.parameters.responseMode, "lastNode");
+assert.equal(webhook.parameters.responseMode, "responseNode");
 assert.equal(chain.type, "@n8n/n8n-nodes-langchain.chainLlm");
 assert.equal(chain.typeVersion, 1.9);
 assert.equal(model.type, "@n8n/n8n-nodes-langchain.lmChatAnthropic");
@@ -167,4 +169,58 @@ assert.throws(
   /empty or oversized/,
 );
 
-console.log("Claude extraction gateway workflow tests passed");
+const canary = "SYN-PRIVATE-GATEWAY-CANARY";
+const stages = [
+  ["Validate Gateway Request", "Input Failure", "INPUT_VALIDATION", "REQUEST_REJECTED", "Claude JSON Extraction"],
+  ["Claude JSON Extraction", "Model Failure", "MODEL_EXECUTION", "MODEL_EXECUTION_FAILED", "Normalize Gateway Response"],
+  ["Normalize Gateway Response", "Output Failure", "OUTPUT_NORMALIZATION", "OUTPUT_REJECTED", "Respond Gateway Success"],
+];
+for (const [source, suffix, stage, code, success] of stages) {
+  const safeName = `Sanitize Gateway ${suffix}`;
+  const safeNode = nodes.get(safeName);
+  const sanitize = new Function("$json", safeNode.parameters.jsCode);
+  assert.equal(nodes.get(source).onError, "continueErrorOutput");
+  assert.deepEqual(workflow.connections[source].main, [
+    [{ node: success, type: "main", index: 0 }], [{ node: safeName, type: "main", index: 0 }],
+  ]);
+  assert.deepEqual(workflow.connections[safeName].main, [[{ node: "Respond Gateway Failure", type: "main", index: 0 }]]);
+  for (const error of [canary, null, { message: canary, stack: canary, headers: { authorization: canary }, status: 429 },
+    { status: "429 " + canary }, { status: true }, { status: 399 }, { status: 600 },
+    { status: 429, statusCode: 500 }]) {
+    const rows = sanitize({ error, input: canary, body: canary, executionId: canary });
+    assert.equal(rows.length, 1);
+    const expectedStatus = stage === "MODEL_EXECUTION" && error?.status === 429 && !error.statusCode ? 429 : null;
+    assert.deepEqual(rows[0].json, { gateway_error: { version: "gateway-failure-v1", stage, code, upstream_http_status: expectedStatus } });
+    assert(!JSON.stringify(rows).includes(canary));
+  }
+  for (const field of ["status", "statusCode", "httpCode"]) {
+    for (const status of [403, 429, 502]) {
+      const diagnostic = sanitize({ error: { [field]: status, message: canary } })[0].json.gateway_error;
+      assert.equal(diagnostic.upstream_http_status, stage === "MODEL_EXECUTION" ? status : null);
+    }
+  }
+}
+for (const [suffix, allowed] of [["Success", true], ["Failure", false]]) {
+  const response = nodes.get(`Respond Gateway ${suffix}`);
+  assert.equal(response.type, "n8n-nodes-base.respondToWebhook");
+  assert.equal(response.parameters.responseBody, gatewayResponseExpression(allowed, "body"));
+  assert.equal(response.parameters.options.responseCode, gatewayResponseExpression(allowed, "status"));
+  assert(response.parameters.options.responseHeaders.entries.some(row => row.name === "Cache-Control" && row.value === "no-store"));
+}
+// Execute both former generic-500 counterexamples through their error edges.
+// Neither path can reach/retry the provider after the failure.
+for (const [source, failingCall] of [
+  ["Validate Gateway Request", () => executeValidation({ body: { ...validBody, arbitrary_prompt: canary } })],
+  ["Normalize Gateway Response", () => executeNormaliserText(canary)],
+]) {
+  let failed = false;
+  try { failingCall(); } catch (error) {
+    failed = true;
+    const edge = workflow.connections[source].main[1][0].node;
+    const safe = new Function("$json", nodes.get(edge).parameters.jsCode)({ error: error.message, body: canary });
+    assert(!JSON.stringify(safe).includes(canary));
+    assert.equal(workflow.connections[edge].main[0][0].node, "Respond Gateway Failure");
+  }
+  assert(failed);
+}
+console.log("Claude extraction gateway workflow success, failure isolation and redaction tests passed");

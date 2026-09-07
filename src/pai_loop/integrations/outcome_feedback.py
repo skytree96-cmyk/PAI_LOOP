@@ -12,14 +12,20 @@ from .awards import OpeningResultsIncomplete, PpsAwardClient, normalise_award
 from .company_awards import normalise_business_number
 from .pps import (
     DEFAULT_BASE_URL,
+    PpsApiError,
     parse_paged_response,
-    split_date_range,
 )
 
 
 DEFAULT_OUTCOME_OPERATION = (
     "as/ScsbidInfoService/getScsbidListSttusServcPPSSrch"
 )
+# Official final-award request tables use different number-query divisions.
+# https://www.data.go.kr/data/15129397/openapi.do (reference guide 1.1)
+_EXACT_QUERY_DIVISIONS = {
+    DEFAULT_OUTCOME_OPERATION: "3",
+    "as/ScsbidInfoService/getScsbidListSttusServc": "4",
+}
 
 
 def canonical_pps_revision(value: object) -> str:
@@ -137,6 +143,15 @@ class PpsOutcomeFeedbackClient(PpsAwardClient):
             raise ValueError("rows must be between 1 and 999")
         if max_pages_per_window < 1:
             raise ValueError("max_pages_per_window must be positive")
+        # Keep legacy argument validation, but number queries do not use dates
+        # or repeat the same result set once per historical month.
+        if end < start:
+            raise ValueError("end must be on or after start")
+        if max_window_days < 1:
+            raise ValueError("max_days must be positive")
+        query_division = _EXACT_QUERY_DIVISIONS.get(operation_path)
+        if query_division is None:
+            raise PpsApiError("정확번호 최종낙찰 조회에 지원되지 않는 오퍼레이션입니다.")
 
         call_start = self.request_count
         self._opening_winner_numbers: dict[tuple[str, ...], str] = {}
@@ -147,82 +162,74 @@ class PpsOutcomeFeedbackClient(PpsAwardClient):
         hit_page_limit = False
         hit_time_limit = False
 
-        for window in split_date_range(start, end, max_days=max_window_days):
-            page = 1
-            expected_total = None
-            window_count = 0
-            while True:
-                if (
-                    deadline_monotonic is not None
-                    and time.monotonic() >= deadline_monotonic
-                ):
-                    hit_time_limit = True
-                    break
-                payload = self._request(
-                    operation_path,
-                    {
-                        # PPSSrch inqryDiv=1 uses the notice-posted clock. This
-                        # keeps the query window narrow and stable even when the
-                        # final award is registered much later.
-                        "inqryDiv": "1",
-                        "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
-                        "inqryEndDt": window.end.strftime("%Y%m%d2359"),
-                        "bidNtceNo": notice_number,
-                        "pageNo": page,
-                        "numOfRows": rows,
-                    },
-                    **({"timeout_seconds": max(0.1, deadline_monotonic - time.monotonic())}
-                       if require_complete and deadline_monotonic is not None else {}),
-                )
-                raw_items, total = parse_paged_response(payload)
-                if require_complete:
-                    body = payload["response"]["body"]
-                    container = body.get("items")
-                    raw_collection = container.get("item", []) if isinstance(container, dict) else container
-                    raw_collection = [raw_collection] if isinstance(raw_collection, dict) else raw_collection
-                    if raw_collection in (None, "") and total == 0 and "items" in body:
-                        raw_collection = []
-                    if (
-                        not isinstance(raw_collection, list) or len(raw_collection) != len(raw_items)
-                        or not str(body.get("totalCount", "")).isdigit()
-                        or (expected_total is not None and total != expected_total)
-                        or len(raw_items) != min(rows, max(0, total - window_count))
-                        or ("pageNo" in body and str(body["pageNo"]) != str(page))
-                        or ("numOfRows" in body and str(body["numOfRows"]) != str(rows))
-                        or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
-                    ):
-                        raise OpeningResultsIncomplete("최종 낙찰 결과 페이지가 불완전합니다.")
-                    expected_total = total
-                    window_count += len(raw_items)
-                fetched_count += len(raw_items)
-                for raw in raw_items:
-                    projected = _normalise_outcome_row(
-                        raw,
-                        company_business_number=company_number,
-                    )
-                    if (
-                        projected["bid_notice_no"] != notice_number
-                        or canonical_pps_revision(projected["revision_no"])
-                        != expected_revision
-                    ):
-                        mismatched_count += 1
-                        continue
-                    if not projected["identity"] or not projected["winner_name"]:
-                        quarantined_count += 1
-                        continue
-                    if require_complete and str(projected["identity"]) in exact:
-                        raise OpeningResultsIncomplete("최종 낙찰 결과 회차가 중복되었습니다.")
-                    if require_complete and projected["opening_identity"] is not None and projected["company_business_number_status"] == "PRESENT_VALID":
-                        self._opening_winner_numbers[tuple(projected["opening_identity"].values())] = normalise_business_number(str(raw["bidwinnrBizno"]))
-                    exact[str(projected["identity"])] = projected
-                if page * rows >= total or not raw_items:
-                    break
-                if page >= max_pages_per_window:
-                    hit_page_limit = True
-                    break
-                page += 1
-            if hit_time_limit:
+        page = 1
+        expected_total = None
+        window_count = 0
+        while True:
+            if (
+                deadline_monotonic is not None
+                and time.monotonic() >= deadline_monotonic
+            ):
+                hit_time_limit = True
                 break
+            payload = self._request(
+                operation_path,
+                {
+                    "inqryDiv": query_division,
+                    "bidNtceNo": notice_number,
+                    "pageNo": page,
+                    "numOfRows": rows,
+                },
+                **({"timeout_seconds": max(0.1, deadline_monotonic - time.monotonic())}
+                   if require_complete and deadline_monotonic is not None else {}),
+            )
+            raw_items, total = parse_paged_response(payload)
+            if require_complete:
+                body = payload["response"]["body"]
+                container = body.get("items")
+                raw_collection = container.get("item", []) if isinstance(container, dict) else container
+                raw_collection = [raw_collection] if isinstance(raw_collection, dict) else raw_collection
+                if raw_collection in (None, "") and total == 0 and "items" in body:
+                    raw_collection = []
+                if (
+                    not isinstance(raw_collection, list) or len(raw_collection) != len(raw_items)
+                    or not str(body.get("totalCount", "")).isdigit()
+                    or (expected_total is not None and total != expected_total)
+                    or len(raw_items) != min(rows, max(0, total - window_count))
+                    or ("pageNo" in body and str(body["pageNo"]) != str(page))
+                    or ("numOfRows" in body and str(body["numOfRows"]) != str(rows))
+                    or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
+                ):
+                    raise OpeningResultsIncomplete("최종 낙찰 결과 페이지가 불완전합니다.")
+                expected_total = total
+                window_count += len(raw_items)
+            fetched_count += len(raw_items)
+            for raw in raw_items:
+                projected = _normalise_outcome_row(
+                    raw,
+                    company_business_number=company_number,
+                )
+                if (
+                    projected["bid_notice_no"] != notice_number
+                    or canonical_pps_revision(projected["revision_no"])
+                    != expected_revision
+                ):
+                    mismatched_count += 1
+                    continue
+                if not projected["identity"] or not projected["winner_name"]:
+                    quarantined_count += 1
+                    continue
+                if require_complete and str(projected["identity"]) in exact:
+                    raise OpeningResultsIncomplete("최종 낙찰 결과 회차가 중복되었습니다.")
+                if require_complete and projected["opening_identity"] is not None and projected["company_business_number_status"] == "PRESENT_VALID":
+                    self._opening_winner_numbers[tuple(projected["opening_identity"].values())] = normalise_business_number(str(raw["bidwinnrBizno"]))
+                exact[str(projected["identity"])] = projected
+            if page * rows >= total or not raw_items:
+                break
+            if page >= max_pages_per_window:
+                hit_page_limit = True
+                break
+            page += 1
 
         return ExactNoticeAwardFetch(
             rows=list(exact.values()),

@@ -39,6 +39,7 @@ from .integrations.openai_extraction import (
     merge_openai_telemetry,
 )
 from .models import Notice, NoticeVersion
+from .notice_freshness import authoritative_pps_cancelled_notice_keys
 from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
 from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
@@ -97,6 +98,15 @@ DETERMINISTIC_REVIEW_CODES = {
     "HWP_BINARY_UNSUPPORTED",
     "UNSUPPORTED_ATTACHMENT_TYPE",
 }
+# An explicit recovery allowlist, not a prefix match or a display-code policy.
+FAILED_ATTACHMENT_RETRY_CODES = frozenset({
+    "XLS_PARSE_FAILED", "XLS_EXTRACTOR_UNAVAILABLE", "XLS_CODEPAGE_UNVERIFIED",
+    "XLS_TEXT_NOT_SEMANTIC", "ATTACHMENT_NETWORK_ERROR", "ATTACHMENT_EMPTY",
+    "ATTACHMENT_HTTP_429", "ATTACHMENT_HTTP_500", "ATTACHMENT_HTTP_502",
+    "ATTACHMENT_HTTP_503", "ATTACHMENT_HTTP_504", "INTERNAL_ENRICHMENT_ERROR",
+    "NETWORK_ERROR", "HTTP_ERROR", "SCHEMA_VALIDATION_ERROR", "INVALID_JSON",
+    "INVALID_RESPONSE", "INCOMPLETE_RESPONSE", "MISSING_OUTPUT",
+})
 SEMANTIC_SOURCE_GAPS_WARNING = "SEMANTIC_SOURCE_GAPS_REPORTED"
 
 # These are high-recall provider discovery terms, separate from department
@@ -761,6 +771,69 @@ def current_retryable_review_version_ids(
         ):
             retryable.add(version.id)
     return frozenset(retryable)
+
+
+def _failed_retry_attempt_digest(version: NoticeVersion) -> str:
+    return _digest({"payload": version.source_payload, "file_sha256": version.file_sha256,
+                    "extraction_status": version.extraction_status})
+
+
+def failed_attachment_retry_snapshot(
+    versions: list[NoticeVersion], *, error_codes: list[str], max_attachments: int,
+    notice_key: str, revision_no: str,
+) -> dict[str, Any]:
+    """Freeze only explicitly selected failed bindings; never accepted reviews."""
+    attachments, invalid, attempts = _current_manifest_attempts(versions, validate_accepted=False)
+    codes = sorted(set(error_codes))
+    if invalid or not codes or not set(codes) <= FAILED_ATTACHMENT_RETRY_CODES or not 1 <= max_attachments <= 3:
+        raise ValueError("FAILED_RETRY_SCOPE_INVALID")
+    targets = []
+    for attachment in attachments:
+        version = attempts.get(attachment["attachment_id"])
+        payload = version.source_payload if version is not None else {}
+        if payload.get("status") != "REVIEW" or payload.get("error_code") not in codes:
+            continue
+        targets.append({"attachment_id": attachment["attachment_id"],
+                        "manifest_sha256": payload["manifest_sha256"],
+                        "current_manifest_sha256": payload["current_manifest_sha256"],
+                        "version_id": version.id, "version_no": version.version_no,
+                        "attempt_sha256": _failed_retry_attempt_digest(version),
+                        "error_code": payload["error_code"]})
+    if not targets:
+        raise ValueError("FAILED_RETRY_TARGETS_EMPTY")
+    if len(targets) > max_attachments:
+        raise ValueError("FAILED_RETRY_TARGET_LIMIT")
+    selected = {target["attachment_id"] for target in targets}
+    eligible = current_retryable_review_version_ids(versions)
+    version_ids = sorted(version.id for version in versions if version.id in eligible
+                         and version.source_payload.get("attachment_id") in selected
+                         and version.source_payload.get("status") == "REVIEW")
+    data = {"notice_key": notice_key, "revision_no": revision_no,
+            "error_codes": codes, "max_attachments": max_attachments,
+            "targets": targets, "version_ids": version_ids}
+    return {**data, "scope_sha256": _digest(data)}
+
+
+def valid_failed_attachment_retry_scope(scope: object) -> bool:
+    if not isinstance(scope, dict) or set(scope) != {"notice_key", "revision_no", "error_codes", "max_attachments", "targets", "version_ids", "scope_sha256"}:
+        return False
+    try:
+        return (isinstance(scope["notice_key"], str) and scope["notice_key"].startswith("PPS-")
+                and isinstance(scope["revision_no"], str)
+                and type(scope["max_attachments"]) is int and 1 <= scope["max_attachments"] <= 3
+                and isinstance(scope["error_codes"], list) and bool(scope["error_codes"])
+                and set(scope["error_codes"]) <= FAILED_ATTACHMENT_RETRY_CODES
+                and isinstance(scope["targets"], list) and 1 <= len(scope["targets"]) <= scope["max_attachments"]
+                and len({target["attachment_id"] for target in scope["targets"]}) == len(scope["targets"])
+                and isinstance(scope["version_ids"], list) and bool(scope["version_ids"])
+                and all(isinstance(value, str) for value in scope["version_ids"])
+                and all(set(target) == {"attachment_id", "manifest_sha256", "current_manifest_sha256", "version_id", "version_no", "attempt_sha256", "error_code"}
+                        and isinstance(target["version_no"], int) and target["version_no"] > 0
+                        and target["version_id"] in scope["version_ids"] and target["error_code"] in scope["error_codes"]
+                        for target in scope["targets"])
+                and scope["scope_sha256"] == _digest({key: value for key, value in scope.items() if key != "scope_sha256"}))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 # Enabled only while serializing one immutable, read-only notice projection.
@@ -2076,11 +2149,12 @@ def _matching_extraction_version(
     current_manifest_sha256: str,
     document_sha256: str,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    retry_failed_version_no: int | None = None,
 ) -> NoticeVersion | None:
     """Reuse deterministic output; REVIEW retries are capped to once per day."""
 
     now = datetime.now(timezone.utc)
-    retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+    retry_boundary_version_no = retry_failed_version_no or _accepted_quantitative_review_retry_boundary(
         versions,
         attachment_id=attachment_id,
         manifest_sha256=manifest_sha256,
@@ -2534,6 +2608,7 @@ def _persist_extraction_version(
     processing_audit: dict[str, Any] | None = None,
     quantitative_validation_record: ValidatedQuantitativeAttachmentRecord | None = None,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    retry_failed_version_no: int | None = None,
 ) -> NoticeVersion:
     if not _manifest_binding_is_current(
         session,
@@ -2578,6 +2653,7 @@ def _persist_extraction_version(
         "review_code": outcome.review_code if outcome else "R07",
         "error_code": outcome.error_code if outcome else error_code,
         "message": outcome.message if outcome else "공개 첨부를 자동 처리하지 못해 원문 검토가 필요합니다.",
+        **({"gateway_failure": outcome.gateway_failure.model_dump(mode="json")} if outcome and outcome.gateway_failure else {}),
         "response_id": outcome.response_id if outcome else None,
         "model": outcome.model if outcome else None,
         "prompt_version": outcome.prompt_version if outcome else PROMPT_VERSION,
@@ -2601,7 +2677,7 @@ def _persist_extraction_version(
             .order_by(NoticeVersion.version_no.desc())
         ).all()
     )
-    retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+    retry_boundary_version_no = retry_failed_version_no or _accepted_quantitative_review_retry_boundary(
         notice_versions,
         attachment_id=attachment["attachment_id"],
         manifest_sha256=manifest_sha256,
@@ -2706,6 +2782,7 @@ def record_internal_pps_enrichment_failure(
     current_manifest_sha256: str,
     attachments_discovered: int,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    retry_failed_version_no: int | None = None,
 ) -> PpsEnrichmentResult:
     """Persist a public-safe attempt marker after an unexpected enrichment error.
 
@@ -2793,7 +2870,10 @@ def record_internal_pps_enrichment_failure(
                 warnings=[warning, "PPS_MANIFEST_CHANGED_DURING_ENRICHMENT"],
             )
 
-        retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+        # A failed-only retry must consume its frozen generation even if the
+        # normal result could not be saved after a paid call. Older ACCEPTED
+        # rows cannot replace this new failure marker.
+        retry_boundary_version_no = retry_failed_version_no or _accepted_quantitative_review_retry_boundary(
             versions,
             attachment_id=attempted_attachment["attachment_id"],
             manifest_sha256=manifest_sha256,
@@ -2855,6 +2935,7 @@ def record_internal_pps_enrichment_failure(
                 "member_issues": [],
             },
             retry_reviewed_version_ids=retry_reviewed_version_ids,
+            retry_failed_version_no=retry_failed_version_no,
         )
     return PpsEnrichmentResult(
         status="REVIEW",
@@ -3017,15 +3098,16 @@ def _stored_attachment_result(
     *,
     attachments_discovered: int,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    reuse_only: bool = False,
 ) -> PpsEnrichmentResult | None:
     """Project a current terminal attempt so continuation never repeats work."""
 
     payload = version.source_payload
-    if not isinstance(payload, dict) or not _stored_outcome_is_idempotent(
+    if not isinstance(payload, dict) or (not reuse_only and not _stored_outcome_is_idempotent(
         version,
         payload,
         retry_reviewed_version_ids=retry_reviewed_version_ids,
-    ):
+    )):
         return None
     processing = (
         payload.get("document_processing")
@@ -3086,6 +3168,7 @@ def _enrich_selected_pps_attachment(
     openai_timeout_seconds: float,
     openai_max_retries: int,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    retry_failed_version_no: int | None = None,
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
@@ -3117,6 +3200,7 @@ def _enrich_selected_pps_attachment(
             current_manifest_sha256=current_manifest_sha256,
             document_sha256=document_sha256,
             retry_reviewed_version_ids=retry_reviewed_version_ids,
+            retry_failed_version_no=retry_failed_version_no,
         )
         if prior is not None:
             return PpsEnrichmentResult(
@@ -3153,6 +3237,7 @@ def _enrich_selected_pps_attachment(
                 error_code=error_code,
                 processing_audit=processing_audit,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                retry_failed_version_no=retry_failed_version_no,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
@@ -3187,6 +3272,7 @@ def _enrich_selected_pps_attachment(
                 error_code=error_code,
                 processing_audit=processing_audit,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                retry_failed_version_no=retry_failed_version_no,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
@@ -3214,6 +3300,7 @@ def _enrich_selected_pps_attachment(
         current_manifest_sha256=current_manifest_sha256,
         document_sha256=document_sha256,
         retry_reviewed_version_ids=retry_reviewed_version_ids,
+        retry_failed_version_no=retry_failed_version_no,
     )
     if prior is not None:
         stored = _stored_attachment_result(
@@ -3259,6 +3346,7 @@ def _enrich_selected_pps_attachment(
                 processing_audit=processing_audit,
                 quantitative_validation_record=quantitative_record,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                retry_failed_version_no=retry_failed_version_no,
             )
             duplicate_complete = _accepted_source_is_technically_complete(version)
             duplicate_semantic_warnings = (
@@ -3298,6 +3386,7 @@ def _enrich_selected_pps_attachment(
                 error_code="OPENAI_KEY_MISSING",
                 processing_audit=processing_audit,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                retry_failed_version_no=retry_failed_version_no,
             )
         return PpsEnrichmentResult(
             status="REVIEW",
@@ -3355,6 +3444,7 @@ def _enrich_selected_pps_attachment(
                 processing_audit=processing_audit,
                 quantitative_validation_record=quantitative_record,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                retry_failed_version_no=retry_failed_version_no,
             )
     except Exception as exc:
         raise PpsPostOpenAIProcessingError(outcome) from exc
@@ -3526,6 +3616,7 @@ def enrich_notice_from_pps(
     openai_max_retries: int = 0,
     deadline_monotonic: float | None = None,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    failed_attachment_retry: dict[str, Any] | None = None,
 ) -> PpsEnrichmentResult:
     """Audit and analyse every valid attachment in the current PPS manifest."""
 
@@ -3585,6 +3676,19 @@ def enrich_notice_from_pps(
         _current, _current_invalid, current_attempts = _current_manifest_attempts(versions)
         discovered = len(raw_manifest_values)
     base_warnings = ["INVALID_ATTACHMENT_MANIFEST"] if invalid_count else []
+    retry_targets = None
+    if failed_attachment_retry is not None:
+        if not valid_failed_attachment_retry_scope(failed_attachment_retry) or set(failed_attachment_retry["version_ids"]) != set(retry_reviewed_version_ids):
+            return PpsEnrichmentResult(status="REVIEW", warnings=["FAILED_RETRY_SCOPE_INVALID"])
+        retry_targets = {target["attachment_id"]: target for target in failed_attachment_retry["targets"]}
+        binding = {attachment["attachment_id"]: _digest(attachment) for attachment in attachments}
+        if (notice.notice_key != failed_attachment_retry["notice_key"] or notice.revision_no != failed_attachment_retry["revision_no"]
+            or invalid_count or any(target["current_manifest_sha256"] != current_manifest_sha256
+                                or binding.get(target["attachment_id"]) != target["manifest_sha256"]
+                                or not any(version.id == target["version_id"] and version.version_no == target["version_no"]
+                                           and _failed_retry_attempt_digest(version) == target["attempt_sha256"]
+                                           for version in versions) for target in retry_targets.values())):
+            return PpsEnrichmentResult(status="REVIEW", warnings=["FAILED_RETRY_SCOPE_STALE"])
     if not attachments:
         return PpsEnrichmentResult(
             status="PLANNED" if dry_run else ("REVIEW" if invalid_count else "SKIPPED"),
@@ -3622,11 +3726,21 @@ def enrich_notice_from_pps(
     last_version_id: str | None = None
     for attachment in attachments:
         stored_version = current_attempts.get(attachment["attachment_id"])
+        target = retry_targets.get(attachment["attachment_id"]) if retry_targets is not None else None
+        can_retry = retry_targets is None or (target is not None and stored_version is not None
+            and stored_version.id == target["version_id"] and stored_version.source_payload.get("status") == "REVIEW"
+            and stored_version.source_payload.get("error_code") == target["error_code"] and not any(
+            version.version_no > target["version_no"] and isinstance(version.source_payload, dict)
+            and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+            and version.source_payload.get("attachment_id") == target["attachment_id"]
+            and version.source_payload.get("current_manifest_sha256") == current_manifest_sha256
+            for version in versions))
         stored_result = (
             _stored_attachment_result(
                 stored_version,
                 attachments_discovered=discovered,
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
+                reuse_only=not can_retry,
             )
             if stored_version is not None
             else None
@@ -3647,6 +3761,32 @@ def enrich_notice_from_pps(
             if stored_result.version_id:
                 last_version_id = stored_result.version_id
             continue
+
+        if not can_retry:
+            # A frozen retry cannot expand into missing, expired, newly failed,
+            # or accepted quantitative-review siblings on later continuations.
+            code = "FAILED_RETRY_TARGET_CONSUMED" if target is not None else "FAILED_RETRY_ATTACHMENT_NOT_SELECTED"
+            audits.append(_audit_result_for_attachment(attachment, PpsEnrichmentResult(status="REVIEW", warnings=[code]), attempted=False))
+            warnings.append(code)
+            continue
+
+        if retry_targets is not None:
+            stop_code = None
+            with session.begin():
+                session.expire_all()
+                active = session.get(Notice, notice_id, populate_existing=True)
+                if active is None or active.status != "OPEN" or _as_utc(active.deadline) < datetime.now(timezone.utc):
+                    stop_code = "FAILED_RETRY_NOTICE_NOT_ACTIVE"
+                elif authoritative_pps_cancelled_notice_keys(session, [active]):
+                    stop_code = "FAILED_RETRY_NOTICE_NOT_ACTIVE"
+                elif (active.notice_key != failed_attachment_retry["notice_key"] or active.revision_no != failed_attachment_retry["revision_no"]
+                      or not _manifest_binding_is_current(session, notice_id=notice_id, attachment=attachment,
+                                                         manifest_sha256=_digest(attachment), current_manifest_sha256=current_manifest_sha256)):
+                    stop_code = "FAILED_RETRY_SCOPE_STALE"
+            if stop_code:
+                audits.append(_audit_result_for_attachment(attachment, PpsEnrichmentResult(status="REVIEW", warnings=[stop_code]), attempted=False))
+                warnings.append(stop_code)
+                break  # Keep earlier paid calls, download counts and audits.
 
         # One missing attachment can require one download plus an initial and
         # corrective Responses call. Start it only when the enclosing request
@@ -3689,6 +3829,8 @@ def enrich_notice_from_pps(
                     manifest_sha256=_digest(attachment),
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
+                    retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
             reason_code = (
                 "HWP_BINARY_UNSUPPORTED"
@@ -3715,6 +3857,7 @@ def enrich_notice_from_pps(
                     openai_timeout_seconds=openai_timeout_seconds,
                     openai_max_retries=openai_max_retries,
                     retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
             except PpsPostOpenAIProcessingError as exc:
                 # The provider already processed a paid request.  Even if a
@@ -3729,6 +3872,7 @@ def enrich_notice_from_pps(
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
                     retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
                 item_result = replace(
                     item_result,
@@ -3747,6 +3891,7 @@ def enrich_notice_from_pps(
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
                     retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
                 item_result = replace(
                     item_result,

@@ -14,11 +14,12 @@ const requests=[],toasts=[],rendered=[];
 const context=vm.createContext({URL,URLSearchParams,Intl,Headers,AbortController,
  fetch(path,options){return new Promise(resolve=>requests.push({path,options,resolve}));},
  document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
- window:{matchMedia(){return {matches:false}},setTimeout,clearTimeout,requestAnimationFrame(f){f();},
+ window:{location:{search:''},matchMedia(){return {matches:false}},setTimeout,clearTimeout,requestAnimationFrame(f){f();},
  sessionStorage:{getItem(){return null;},removeItem(){},setItem(){throw Error('PIN storage must not be used');}}}});
 const exported=`
 const originalRenderExistingDecision=renderExistingDecision,originalUpdateDecisionButton=updateDecisionButton;
 const originalRenderResultLearning=renderResultLearning;
+const originalLoadApplicationData=loadApplicationData;
 renderAll=()=>{};renderDataSource=()=>{};renderResultLearning=()=>{};
 closeDetail=()=>{state.selectedNotice=null;};
 renderExistingDecision=n=>globalThis.onRender(n);renderPipelineIntoExisting=()=>{};
@@ -33,6 +34,14 @@ globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,login
  bindResultLearningOpeningEvents,
  renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
  renderResults:originalRenderResultLearning,formatBudget,
+ setView,
+ useRealBootstrap(){
+  loadApplicationData=originalLoadApplicationData;
+  setLoading=value=>{state.loading=value;};setSystemStatus=()=>{};hideDemoBanner=()=>{};
+  openNoticeFromRoute=()=>{};hydrateApplicationMetadata=async()=>{};hydrateDepartmentDecisionList=async()=>{};
+  renderNoticeSearchMode=()=>{};revealActiveNavigationGroup=()=>{};closeMobileMenu=()=>{};
+ },
+ loadApplicationData:(...args)=>loadApplicationData(...args),
  setOpenDetail(fn){openDetail=fn;},
  setRefresh(fn){refreshDashboardAfterMutation=fn;}};`;
 context.onToast=args=>toasts.push(args);context.onRender=n=>rendered.push(n);
@@ -52,7 +61,7 @@ u.state.source='api';u.state.accessMode='PUBLIC_READ_ONLY';u.state.requestSequen
 function payload(id){return {enabled:true,authenticated:true,account:{id,role:'DEPARTMENT',department_id:id,
  department_name:id,username:id},csrf_token:'SYN-CSRF-'+id,
  capabilities:{read_department_records:true,write_decisions:true,write_results:true}};}
-function login(id='SYN-A'){u.applyAccountSession(payload(id));}
+function login(id='SYN-A'){u.applyAccountSession(payload(id));u.state.authDiscoveryReady=true;}
 function respond(request,status,payload){request.resolve({status,ok:status<400,
  headers:new Headers({'content-type':'application/json'}),async json(){return payload;}});}
 const tick=()=>new Promise(setImmediate);
@@ -379,6 +388,110 @@ assert.equal(u.state.resultLearning.loaded,false);
 assert.equal(u.els.resultLearningUnlockButton.disabled,false);
 assert.match(u.els.resultLearningState.innerHTML,/부서 로그인이 필요/);
 assert.doesNotMatch(u.els.resultLearningState.innerHTML,/PIN/);
+''')
+
+
+RESULT_BOOTSTRAP_SETUP = r'''
+u.useRealBootstrap();
+u.state.authDiscoveryReady=false;
+u.state.runtimeProfileAvailable=false;
+u.state.manualAnalysisAuthRequired=false;
+u.state.accountSession={enabled:false,authenticated:false,status:'idle',account:null,csrfToken:'',capabilities:{}};
+u.els.navItems=[];u.els.kpiViewButtons=[];
+u.setView('closed',{syncRoute:false,focusMain:false});
+await tick();
+assert.equal(requests.length,0,'initial results view must wait for auth discovery');
+await u.loadResultLearning({force:true});
+assert.equal(requests.length,0,'early explicit refresh must not bypass discovery');
+const bootstrap=u.loadApplicationData();await tick();
+assert.equal(requests.length,2);
+assert.match(requests[0].path,/\/notices\?/);
+assert.match(requests[1].path,/\/runtime-profile$/);
+respond(requests[0],200,[]);
+const resultRequests=()=>requests.filter(r=>r.path.includes('/result-learning?'));
+'''
+
+
+def test_results_initial_anonymous_waits_for_discovery_and_login_returns_once():
+    _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
+respond(requests[1],200,{department_accounts_enabled:true});await tick();
+assert.match(requests[2].path,/\/accounts\/me$/);
+assert.equal(resultRequests().length,0);
+await u.loadResultLearning();assert.equal(resultRequests().length,0);
+respond(requests[2],200,{enabled:true,authenticated:false});await bootstrap;
+assert.equal(resultRequests().length,0);assert.equal(toasts.length,0);
+assert.equal(u.els.accountDialog.open,false);
+assert.match(u.els.resultLearningState.innerHTML,/부서 로그인이 필요/);
+u.els.accountUsername.value='SYN-A';u.els.accountPassword.value='SYN-login-password';
+const loggingIn=u.loginDepartmentAccount({preventDefault(){}});await tick();
+respond(requests[3],200,payload('SYN-A'));await tick();
+respond(requests[4],200,[]);respond(requests[5],200,{department_accounts_enabled:true});await tick();
+respond(requests[6],200,payload('SYN-A'));await loggingIn;await tick();
+assert.equal(u.state.currentView,'closed');assert.equal(resultRequests().length,1);
+respond(resultRequests()[0],200,{records:[],total:0});await tick();
+assert.equal(u.state.resultLearning.loaded,true);
+assert.equal(u.els.accountPassword.value,'');
+''')
+
+
+def test_results_initial_cookie_session_reads_once_after_me_and_rerender():
+    _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
+respond(requests[1],200,{department_accounts_enabled:true});await tick();
+assert.equal(resultRequests().length,0);
+respond(requests[2],200,payload('SYN-A'));await bootstrap;await tick();
+assert.equal(resultRequests().length,1);
+assert.equal(resultRequests()[0].options.credentials,'same-origin');
+assert.equal(resultRequests()[0].options.headers.has('X-PAI-Manual-Token'),false);
+u.setView('closed',{syncRoute:false,focusMain:false});await tick();
+assert.equal(resultRequests().length,1);
+respond(resultRequests()[0],200,{records:[],total:0});await tick();
+u.setView('closed',{syncRoute:false,focusMain:false});await tick();
+assert.equal(resultRequests().length,1);
+''')
+
+
+def test_results_initial_pin_mode_uses_existing_pin_once_after_runtime():
+    _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
+context.window.sessionStorage.getItem=()=> 'SYN-existing-pin';
+respond(requests[1],200,{department_accounts_enabled:false,manual_analysis_auth_required:true});
+await bootstrap;await tick();
+assert.equal(requests.some(r=>r.path.endsWith('/accounts/me')),false);
+assert.equal(resultRequests().length,1);
+assert.equal(resultRequests()[0].options.headers.get('X-PAI-Manual-Token'),'SYN-existing-pin');
+respond(resultRequests()[0],200,{records:[],total:0});await tick();
+''')
+
+
+@pytest.mark.parametrize('status', [401, 503])
+def test_results_failed_me_never_falls_back_to_pin(status):
+    _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
+let pinReads=0;context.window.sessionStorage.getItem=()=>{pinReads++;return 'SYN-forbidden-pin';};
+respond(requests[1],200,{department_accounts_enabled:true});await tick();
+respond(requests[2],STATUS,{detail:'SYN account unavailable'});await bootstrap;
+assert.equal(u.state.accountSession.enabled,true);
+assert.equal(resultRequests().length,0);assert.equal(pinReads,0);assert.equal(toasts.length,0);
+await u.loadResultLearning({force:true});
+assert.equal(resultRequests().length,0);assert.equal(pinReads,0);
+assert.equal(u.els.accountDialog.open,true);
+'''.replace('STATUS', str(status)))
+
+
+def test_results_failed_runtime_never_uses_unresolved_default_auth():
+    _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
+respond(requests[1],503,{detail:'SYN runtime unavailable'});await bootstrap;
+await u.loadResultLearning({force:true});
+assert.equal(u.state.authDiscoveryReady,false);
+assert.equal(resultRequests().length,0);assert.equal(toasts.length,0);
+''')
+
+
+def test_results_concurrent_calls_share_one_get_after_auth_header_await():
+    _run_behavior(r'''
+const first=u.loadResultLearning();
+const second=u.loadResultLearning({force:true});
+await tick();assert.equal(requests.length,1);
+respond(requests[0],200,{records:[],total:0});await Promise.all([first,second]);
+assert.equal(u.state.resultLearning.loaded,true);
 ''')
 
 

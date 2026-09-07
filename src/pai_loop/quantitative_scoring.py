@@ -2737,10 +2737,17 @@ def _logical_quantitative_program(
     all_candidates = tuple(profile.available_candidates)
     reasons: set[str] = set()
     if not tables:
+        # No table was established in the extracted/validated profile; this
+        # does not prove that the source document has no physical score table.
+        # Preserve the legacy blocker and add the specific diagnostic code so
+        # presentation can distinguish this gap from competing-table ambiguity.
         return _LogicalQuantitativeProgram(
             tables=(),
             candidates=all_candidates,
-            reasons=("ALTERNATIVE_TABLE_AMBIGUOUS",),
+            reasons=(
+                "ALTERNATIVE_TABLE_AMBIGUOUS",
+                "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
+            ),
         )
     if len(tables) > _MAX_LOGICAL_PROGRAM_TABLES:
         reasons.update(

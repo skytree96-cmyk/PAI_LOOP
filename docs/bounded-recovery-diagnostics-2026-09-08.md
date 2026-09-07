@@ -55,6 +55,11 @@ route from frontend JavaScript or copy the server credential into a browser.
   `모델 API가 HTTP NNN를 반환했습니다.` for ASCII status 400–599. Prefixes,
   suffixes, trailing newlines, freeform provider text and other error codes
   produce null. No message is returned; this does not change the public reason.
+- `attachments[].gateway_failure` is nullable fixed stage/code/version and a
+  nullable numeric upstream HTTP status, available only for the selected
+  HTTP_ERROR / HTTP 500 attempt under gateway contract 1.2. Old failures remain
+  null. See [safe gateway stages](gateway-safe-failure-stages-2026-09-08.md) for
+  strict validation and the distinction between gateway and upstream failure.
 - Attachment binding metadata: `manifest_bound_attempt`, `attempt_contract`
   (`CURRENT`, `LEGACY_CASE_V1`, or `NONE`), `stored_document_digest_matches`,
   `stored_download_complete`, `stored_source_read_complete`,

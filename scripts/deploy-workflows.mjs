@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
 
 const validateOnly = process.argv.includes("--validate-only");
 const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
@@ -150,19 +151,19 @@ function validateRepositorySafetyContracts(definitions) {
   const claudeModel = claudeNodes.get("Claude Sonnet 5");
   const claudeResponse = claudeNodes.get("Normalize Gateway Response");
   assert(
-    claudeGateway.workflow.nodes.length === 5
+    claudeGateway.workflow.nodes.length === 10
       && claudeWebhook?.type === "n8n-nodes-base.webhook"
       && claudeValidation?.type === "n8n-nodes-base.code"
       && claudeChain?.type === "@n8n/n8n-nodes-langchain.chainLlm"
       && claudeModel?.type === "@n8n/n8n-nodes-langchain.lmChatAnthropic"
       && claudeResponse?.type === "n8n-nodes-base.code",
-    "workflow 13 must contain only webhook, validation, Claude chain/model, and response nodes",
+    "workflow 13 must contain the five extraction nodes and five bounded failure/response nodes",
   );
   assert(
     claudeWebhook.parameters?.httpMethod === "POST"
       && claudeWebhook.parameters?.path === "pai-loop-claude/responses"
       && claudeWebhook.parameters?.authentication === "headerAuth"
-      && claudeWebhook.parameters?.responseMode === "lastNode"
+      && claudeWebhook.parameters?.responseMode === "responseNode"
       && claudeWebhook.parameters?.options?.responseData === "firstEntryJson",
     "workflow 13 webhook must be the authenticated bounded response endpoint",
   );
@@ -178,6 +179,33 @@ function validateRepositorySafetyContracts(definitions) {
     "workflow 13 must pin Claude Sonnet 5 with bounded adaptive thinking and default sampling",
   );
   const claudeSerialised = JSON.stringify(claudeGateway.workflow);
+  for (const [source, suffix, stage, code, success] of [
+    ["Validate Gateway Request", "Input Failure", "INPUT_VALIDATION", "REQUEST_REJECTED", "Claude JSON Extraction"],
+    ["Claude JSON Extraction", "Model Failure", "MODEL_EXECUTION", "MODEL_EXECUTION_FAILED", "Normalize Gateway Response"],
+    ["Normalize Gateway Response", "Output Failure", "OUTPUT_NORMALIZATION", "OUTPUT_REJECTED", "Respond Gateway Success"],
+  ]) {
+    const safeName = `Sanitize Gateway ${suffix}`;
+    const sanitizer = claudeNodes.get(safeName);
+    const outputs = claudeGateway.workflow.connections[source]?.main;
+    assert(claudeNodes.get(source)?.onError === "continueErrorOutput"
+      && !claudeNodes.get(source)?.retryOnFail
+      && JSON.stringify(outputs) === JSON.stringify([
+        [{ node: success, type: "main", index: 0 }], [{ node: safeName, type: "main", index: 0 }],
+      ]) && sanitizer?.type === "n8n-nodes-base.code"
+      && sanitizer.parameters.jsCode.includes(`stage: '${stage}', code: '${code}'`)
+      && sanitizer.parameters.jsCode.includes("version: 'gateway-failure-v1'")
+      && JSON.stringify(claudeGateway.workflow.connections[safeName]?.main) === JSON.stringify([
+        [{ node: "Respond Gateway Failure", type: "main", index: 0 }],
+      ]), "gateway failure branches must remain isolated from success and provider calls");
+  }
+  for (const [suffix, allowed] of [["Success", true], ["Failure", false]]) {
+    const response = claudeNodes.get(`Respond Gateway ${suffix}`);
+    assert(response?.type === "n8n-nodes-base.respondToWebhook"
+      && response.parameters.respondWith === "json"
+      && response.parameters.responseBody === gatewayResponseExpression(allowed, "body")
+      && response.parameters.options.responseCode === gatewayResponseExpression(allowed, "status"),
+    "gateway terminal expressions must validate and reconstruct body and HTTP status");
+  }
   assert(
     claudeSerialised.includes("request fields do not match the extraction gateway contract")
       && claudeSerialised.includes("body.max_output_tokens > 20000")

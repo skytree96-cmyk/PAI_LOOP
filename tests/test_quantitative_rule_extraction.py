@@ -33,6 +33,7 @@ from pai_loop.quantitative_rule_extraction import (
 from pai_loop.quantitative_scoring import (
     QuantitativeFact,
     _current_dynamic_quantitative_profile,
+    _profile_activation_reasons,
     estimate_quantitative_score,
     quantitative_request_from_candidate_profile,
 )
@@ -483,6 +484,66 @@ def test_plain_absence_is_not_treated_as_no_table_evidence() -> None:
 
     assert profile.status == "INCOMPLETE"
     assert "QUANTITATIVE_TABLE_NOT_ESTABLISHED" in issue_codes(profile)
+
+
+def test_merged_profile_reports_no_established_table_beside_other_issues() -> None:
+    """A declared gap must not hide that no quantitative table was established.
+
+    The persisted merge path previously skipped
+    ``QUANTITATIVE_TABLE_NOT_ESTABLISHED`` whenever any earlier issue had
+    already made the aggregate non-``AVAILABLE``, so a fully downloaded notice
+    with zero candidates reported only the extraction gap and the logical
+    program's ``ALTERNATIVE_TABLE_AMBIGUOUS`` fallback.
+    """
+
+    gap = "표 일부 셀의 글자가 흐려 판독이 어려움"
+    payload = payload_with_gap(gap, document_type="FORM")
+    manifest_sha = "b" * 64
+    document_sha = "a" * 64
+    record = validate_quantitative_attachment_extraction(
+        payload,
+        source_text=VALID_SOURCE,
+        attachment_id=ATTACHMENT_ID,
+        document_sha256=document_sha,
+        manifest_sha256=manifest_sha,
+    )
+    assert "EXTRACTION_DECLARED_INCOMPLETE" in {item.code for item in record.issues}
+
+    merged = merge_validated_quantitative_records(
+        [record],
+        expected_documents={ATTACHMENT_ID: document_sha},
+        manifest_sha256=manifest_sha,
+        attachment_profiles={
+            ATTACHMENT_ID: {
+                "document_type": "FORM",
+                "source_label": "제출서식.hwp",
+                "missing_or_unreadable": [gap],
+            }
+        },
+    )
+    built = build_quantitative_candidate_profile(
+        {ATTACHMENT_ID: payload},
+        {ATTACHMENT_ID: VALID_SOURCE},
+        expected_attachment_ids={ATTACHMENT_ID},
+    )
+
+    assert merged.status == "INCOMPLETE"
+    assert merged.tables == ()
+    assert issue_codes(merged) == issue_codes(built)
+    assert {
+        "EXTRACTION_DECLARED_INCOMPLETE",
+        "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
+    } <= issue_codes(merged)
+
+    reasons = set(_profile_activation_reasons(merged))
+    assert "QUANTITATIVE_TABLE_NOT_ESTABLISHED" in reasons
+    assert "SOURCE_VALIDATION_ISSUES_PRESENT" in reasons
+    request = quantitative_request_from_candidate_profile(merged)
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert request.criteria == []
+    result = estimate_quantitative_score(request)
+    assert result.overall_status == "REVIEW"
+    assert result.estimated_points is None
 
 
 def test_current_manifest_source_set_must_be_complete() -> None:

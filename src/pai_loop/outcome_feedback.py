@@ -692,7 +692,7 @@ def refresh_pps_outcomes(
                     aggregate_warnings.append("WALL_TIME_LIMIT")
                     continue
 
-                start, end, window_basis = _query_window(notice, today=today)
+                start, end, _window_basis = _query_window(notice, today=today)
                 calls_before = client.request_count
                 observation_started_at = datetime.now(timezone.utc)
                 try:
@@ -1013,7 +1013,7 @@ def refresh_pps_outcomes(
                         exact_result_count=len(exact_rows),
                         api_calls=fetched.api_calls,
                         reason_code=str(values["reason_code"]),
-                        warnings=[*item_warnings, f"QUERY_WINDOW_BASIS_{window_basis}"],
+                        warnings=[*item_warnings, "QUERY_MODE_NOTICE_NUMBER"],
                     )
                 )
             api_calls = client.request_count if client is not None else 0

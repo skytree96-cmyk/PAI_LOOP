@@ -42,6 +42,7 @@
     lastSuccessfulQueryAt: null,
     lastSuccessfulSyncAt: null,
     runtimeProfileAvailable: false,
+    authDiscoveryReady: false,
     noticeSearchTimer: null,
     noticeStatusScope: "ALL",
     teamsLogs: [],
@@ -665,6 +666,11 @@
         applyRuntimeProfile(runtimeResult.value);
         if (state.accountSession.enabled) await loadAccountSession();
         if (sequence !== state.requestSequence) return;
+        state.authDiscoveryReady = true;
+        if (state.currentView === "closed"
+          && (!state.accountSession.enabled || state.accountSession.authenticated)) {
+          void loadResultLearning();
+        }
       } else {
         state.manualAnalysisEnabled = false;
         state.manualAnalysisAuthRequired = false;
@@ -2719,9 +2725,11 @@
 
   async function loadResultLearning({ force = false } = {}) {
     const epoch = state.accountEpoch;
+    // Runtime defaults do not yet identify whether cookie auth or a PIN is required.
+    if (!state.authDiscoveryReady) return;
     if (state.resultLearning.loading || (state.resultLearning.loaded && !force)) return;
     const headers = await manualAnalysisAuthHeaders();
-    if (!headers || epoch !== state.accountEpoch) return;
+    if (!headers || epoch !== state.accountEpoch || state.resultLearning.loading) return;
     state.resultLearning.loading = true;
     els.resultLearningUnlockButton.disabled = true;
     els.resultLearningState.hidden = false;
@@ -6268,7 +6276,9 @@
     const activation = data.activation_status || "REVIEW_REQUIRED";
     const sourceMissing = sourceValidation === "MISSING" || ruleSource === "MISSING";
     const notApplicable = sourceValidation === "NOT_APPLICABLE" || activation === "NOT_APPLICABLE" || ruleSource === "NOT_APPLICABLE";
-    const sourceDetail = sourceMissing
+    const activationReasonCodes = Array.isArray(data.activation_reasons) ? data.activation_reasons : [];
+    const tableNotEstablished = !notApplicable && activationReasonCodes.includes("QUANTITATIVE_TABLE_NOT_ESTABLISHED");
+    const sourceDetail = sourceMissing || tableNotEstablished
       ? "배점표 미확보"
       : notApplicable
         ? "정량평가 비적용"
@@ -6301,12 +6311,12 @@
     const scoreStatusLabel = data.overall_status === "UNSCORABLE" && lower !== null && upper !== null
       ? "일부 항목 미산정"
       : quantStatusLabel(data.overall_status);
-    els.quantSourceStatus.textContent = `${sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${scoreStatusLabel}`;
+    els.quantSourceStatus.textContent = `${tableNotEstablished ? "추출 결과 미확보" : sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${scoreStatusLabel}`;
     els.quantOpinion.textContent = data.opinion || "정량 의견이 없습니다.";
     const anchor = data.source_anchor;
     els.quantSourceAnchor.textContent = anchor
       ? `${anchor.document_label} · ${anchor.page ? `원문 ${anchor.page}쪽 · ` : ""}${anchor.section}`
-      : sourceMissing
+      : sourceMissing || tableNotEstablished
         ? "연결된 정량평가표 원문 위치 없음"
         : sourceValidation === "SOURCE_VALIDATED"
           ? "원문 위치 검증 완료 · 공개 화면 비공개"
@@ -6317,6 +6327,7 @@
       FACT_DIMENSIONS_UNMODELED: "인정기간·유사사업·VAT·역할 등 점수 산출조건이 아직 구조화되지 않았습니다.",
       FACT_KEY_AMBIGUOUS: "여러 평가항목이 같은 회사 사실 키를 사용해 값의 적용 대상을 구분할 수 없습니다.",
       ALTERNATIVE_TABLE_AMBIGUOUS: "적용 대상이 다른 복수 평가표 중 하나를 기계적으로 선택할 수 없습니다.",
+      QUANTITATIVE_TABLE_NOT_ESTABLISHED: "현재 첨부 추출·검증 결과에서 정량평가표를 확보하지 못했습니다. 원문 배점표 유무는 추가 확인이 필요합니다.",
       CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE: "현재 공고의 모든 첨부 검증이 끝나지 않았습니다.",
       BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING: "배점 구간에 공백 또는 중복이 있습니다.",
       UNIT_NOT_SOURCE_BOUND: "산정 단위를 원문 인용에서 정확히 확인할 수 없습니다.",
@@ -6337,14 +6348,16 @@
       UNKNOWN_METRIC: "제안서·제품·수기평가 항목이라 회사 사실만으로 자동 계산할 수 없습니다.",
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 최신 분석에 미확정 항목이 있어 점수 범위로 표시합니다.",
     };
-    const activationReasons = Array.isArray(data.activation_reasons)
-      ? data.activation_reasons.map((item) => `자동 산정 보류: ${activationReasonLabels[item] || "원문과 산정 규칙을 추가로 확인해야 합니다."}`)
-      : [];
+    // Preserve the server blockers; only omit the legacy display fallback when
+    // the more specific extraction-gap diagnosis is present.
+    const activationReasons = activationReasonCodes
+      .filter((item) => !(tableNotEstablished && item === "ALTERNATIVE_TABLE_AMBIGUOUS"))
+      .map((item) => `자동 산정 보류: ${activationReasonLabels[item] || "원문과 산정 규칙을 추가로 확인해야 합니다."}`);
     const quantitativeAssumptions = [...(Array.isArray(data.assumptions) ? data.assumptions : []), ...activationReasons];
     els.quantAssumptionList.innerHTML = quantitativeAssumptions.length
       ? quantitativeAssumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
       : "<li>추가 가정 없음</li>";
-    const emptyCriteria = sourceMissing
+    const emptyCriteria = sourceMissing || tableNotEstablished
       ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 확인 필요로 유지합니다.")
       : notApplicable
         ? emptyPanel("정량평가 비적용", "이 공고에는 회사 정량점수를 적용하지 않습니다.")
