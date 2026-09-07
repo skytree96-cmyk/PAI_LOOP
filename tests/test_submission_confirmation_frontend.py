@@ -132,6 +132,29 @@ assert.ok(current.every(item => item.sources.length === 1));
 const conflicts = project({...raw, document_analyses: [document([affirmative[8], negative[8]])]});
 assert.deepEqual(texts(conflicts, "settlement"), [affirmative[8], negative[8]]);
 
+// Identical wording is not a document/location identity. The existing evidence
+// collector deduplicates quotes, so a missing exact target must have no jump.
+const duplicateQuote = "사업비는 사후 정산합니다.";
+const duplicateDocument = document([duplicateQuote], "ACCEPTED", "SYN-제안요청서.pdf");
+duplicateDocument.requirements[0].evidence[0].page = 3;
+const duplicateNotice = u.normalizeNotice({...raw, document_analyses: [
+  document([duplicateQuote]), duplicateDocument,
+]});
+const duplicateSources = get(u.submissionCheckItemsForDisplay(duplicateNotice), "settlement").sources;
+assert.equal(duplicateSources.length, 2);
+assert.equal(duplicateSources[0].evidenceId, duplicateNotice.evidence[0].id);
+assert.match(duplicateSources[1].location, /SYN-제안요청서.pdf · 3쪽/);
+assert.equal(duplicateSources[1].evidenceId, "");
+assert.equal((html(u.submissionCheckItemsForDisplay(duplicateNotice)).match(/data-evidence-jump=/g) || []).length, 1);
+const duplicatePages = u.normalizeNotice({...raw, document_analyses: [document([duplicateQuote, duplicateQuote])]});
+const pageSources = get(u.submissionCheckItemsForDisplay(duplicatePages), "settlement").sources;
+assert.equal(pageSources.length, 2);
+assert.ok(pageSources[0].evidenceId);
+assert.equal(pageSources[1].evidenceId, "");
+// Even fully matching document/location/quote must identify exactly one card.
+duplicateNotice.evidence.push({...duplicateNotice.evidence[0], id: "SYN-ambiguous-card"});
+assert.ok(get(u.submissionCheckItemsForDisplay(duplicateNotice), "settlement").sources.every(item => !item.evidenceId));
+
 const malicious = project({...raw, source_url: "javascript:alert(1)", deadline: "2099-09-12T08:00:00Z",
   document_analyses: [document(["정산하지 않습니다. <script>SYN</script>"])]});
 assert.doesNotMatch(html(malicious), /<script>|javascript:/);

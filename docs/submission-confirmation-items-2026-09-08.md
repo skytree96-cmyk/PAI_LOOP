@@ -7,7 +7,9 @@ The detail view's `확인 필요 사항` list has ten fixed items: 전자입찰 
 
 This frontend projection groups existing accepted extraction quotes by topic.
 It displays the complete quote, including negation and exceptions, with document
-and page/section references and a link to the existing evidence card. Topic
+and page/section references. A link is shown only when exactly one existing
+evidence card matches the document, location and quote; identical quotes in
+another document or location cannot supply the link. Topic
 matching does not determine applicability, company compliance, or a yes/no
 answer. Missing support displays `원문 확인 필요`. Normalized summaries and
 company values cannot fill a missing quote. When attachment status is supplied,

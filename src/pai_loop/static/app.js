@@ -5375,12 +5375,18 @@
         if (seen.has(key) || !matches(item.quote.replace(/\s+/g, ""))) return false;
         seen.add(key);
         return true;
-      }).map((item) => ({
-        quote: item.quote,
-        location: `${item.file} · ${item.page}`,
-        evidenceId: arrayValue(notice.evidence).find((candidate) => quoteKey(candidate.quote) === quoteKey(item.quote))?.id || "",
-        sourceUrl: "",
-      }));
+      }).map((item) => {
+        const evidence = arrayValue(notice.evidence).filter((candidate) => (
+          candidate.file === item.file && candidate.page === item.page
+          && quoteKey(candidate.quote) === quoteKey(item.quote)
+        ));
+        return {
+          quote: item.quote,
+          location: `${item.file} · ${item.page}`,
+          evidenceId: evidence.length === 1 ? evidence[0].id : "",
+          sourceUrl: "",
+        };
+      });
       return { id, label, sources: anchors };
     });
     // Notice.deadline is the public bid deadline. Never substitute it for a
