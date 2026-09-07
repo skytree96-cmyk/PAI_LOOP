@@ -15,6 +15,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
+from .analysis_execution import (
+    ANALYSIS_EXECUTION_GATE_KEY,
+    AnalysisExecutionBusy,
+    postgres_analysis_execution_slot,
+)
 from .analysis_pipeline import (
     PIPELINE_VERSION,
     AnalysisPipelineError,
@@ -427,7 +432,7 @@ router = APIRouter(
 # contract. 0x5041494C is the stable ASCII namespace "PAIL".
 _PLANNER_ADVISORY_LOCK_KEY = 0x5041494C
 _PLANNER_PROCESS_LOCK = threading.RLock()
-_ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY = 0x50414945
+_ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY = ANALYSIS_EXECUTION_GATE_KEY
 _ANALYSIS_EXECUTION_PROCESS_LOCK = threading.Lock()
 _ANALYSIS_RUNTIME_SAFETY_ENABLED = bool(
     os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID")
@@ -3071,25 +3076,26 @@ def _serialize_analysis_execution(function):
                 retry_reviewed_version_ids=retry_reviewed_version_ids,
             )
 
-        with request.app.state.session_factory() as lock_session:
-            bind = lock_session.get_bind()
-            if bind.dialect.name == "postgresql":
-                connection = lock_session.connection()
-                connection.execute(
-                    text("SELECT pg_advisory_lock(:lock_key)"),
-                    {"lock_key": _ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY},
-                )
-                try:
+        engine = request.app.state.engine
+        if engine.dialect.name == "postgresql":
+            queued = payload.operation_id is not None and len(payload.notice_keys) == 1
+            try:
+                with postgres_analysis_execution_slot(
+                    engine,
+                    notice_key=payload.notice_keys[0] if queued else None,
+                    chunk_index=payload.chunk_index if queued else None,
+                ):
                     return function(
                         payload,
                         request,
                         retry_reviewed_version_ids=retry_reviewed_version_ids,
                     )
-                finally:
-                    connection.execute(
-                        text("SELECT pg_advisory_unlock(:lock_key)"),
-                        {"lock_key": _ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY},
-                    )
+            except AnalysisExecutionBusy:
+                raise HTTPException(
+                    status_code=503,
+                    detail="analysis execution slots are busy; retry later",
+                    headers={"Retry-After": "15"},
+                ) from None
 
         with _ANALYSIS_EXECUTION_PROCESS_LOCK:
             return function(
