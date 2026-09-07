@@ -16,6 +16,7 @@ from sqlalchemy.orm import load_only, raiseload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from .extraction_contracts import classify_attempt_header
+from .gateway_diagnostics import GatewayFailure, safe_gateway_failure
 from .manual_analysis import _quantitative_diagnostics
 from .models import Notice, NoticeVersion, PpsNoticeAuthority
 from .pps_enrichment import (
@@ -58,6 +59,7 @@ class AttachmentDiagnostic(DiagnosticModel):
     public_reason_code: str
     safe_error_code: str | None
     model_http_status: int | None = Field(default=None, ge=400, le=599)
+    gateway_failure: GatewayFailure | None = None
     error_code_redacted: bool
     processing_warning_codes: list[str] = Field(max_length=20)
     processing_codes_redacted: bool
@@ -185,6 +187,7 @@ def _attachment_projection(index: int, attachment: dict, attempt: NoticeVersion 
         state=public["state"], public_reason_code=public["reason_code"],
         safe_error_code=error if isinstance(error, str) and error in SAFE_PROCESSING_CODES else None,
         model_http_status=int(http_match.group(1)) if http_match else None,
+        gateway_failure=safe_gateway_failure(payload.get("gateway_failure")) if error == "HTTP_ERROR" and http_match and http_match.group(1) == "500" else None,
         error_code_redacted=bool(error) and error not in SAFE_PROCESSING_CODES if isinstance(error, str) else error is not None,
         processing_warning_codes=safe_codes[:20],
         processing_codes_redacted=len(safe_codes) > 20 or any(not isinstance(code, str) or code not in SAFE_PROCESSING_CODES for code in codes),

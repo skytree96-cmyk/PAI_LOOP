@@ -43,7 +43,7 @@
     "pai-loop-13-claude-extraction-gateway": {
       "file": "workflows/pai-loop-13-claude-extraction-gateway.json",
       "publish": true,
-      "contractVersion": "claude-extraction-gateway-1.1",
+      "contractVersion": "claude-extraction-gateway-1.2",
       "promotionState": "verified-live-e2e"
     },
     "pai-loop-deployment-smoke-test": {

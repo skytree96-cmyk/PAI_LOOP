@@ -6,7 +6,7 @@
         "httpMethod": "POST",
         "path": "pai-loop-claude/responses",
         "authentication": "headerAuth",
-        "responseMode": "lastNode",
+        "responseMode": "responseNode",
         "options": {
           "responseData": "firstEntryJson",
           "responseContentType": "application/json"
@@ -16,7 +16,10 @@
       "name": "Claude Extraction Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [-520, 0],
+      "position": [
+        -520,
+        0
+      ],
       "webhookId": "c19fd695-9857-4f7f-af3b-6e28a72aa02e"
     },
     {
@@ -27,7 +30,11 @@
       "name": "Validate Gateway Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-260, 0]
+      "position": [
+        -260,
+        0
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -46,7 +53,11 @@
       "name": "Claude JSON Extraction",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
-      "position": [20, 0]
+      "position": [
+        20,
+        0
+      ],
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -66,7 +77,10 @@
       "name": "Claude Sonnet 5",
       "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
       "typeVersion": 1.5,
-      "position": [20, 220]
+      "position": [
+        20,
+        220
+      ]
     },
     {
       "parameters": {
@@ -76,7 +90,108 @@
       "name": "Normalize Gateway Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [300, 0]
+      "position": [
+        300,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $json?.error;\nlet upstream = null;\nreturn [{ json: { gateway_error: { version: 'gateway-failure-v1', stage: 'INPUT_VALIDATION', code: 'REQUEST_REJECTED', upstream_http_status: upstream } } }];"
+      },
+      "id": "f555d877-26b4-502d-ad13-d91b9407cf77",
+      "name": "Sanitize Gateway Input Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $json?.error;\nlet upstream = null;\nif (error && typeof error === 'object' && !Array.isArray(error)) {\n  const candidates = [error.status, error.statusCode, error.httpCode];\n  const codes = candidates.filter(value => Number.isSafeInteger(value) && value >= 400 && value <= 599);\n  if (codes.length && codes.every(value => value === codes[0])) upstream = codes[0];\n}\nreturn [{ json: { gateway_error: { version: 'gateway-failure-v1', stage: 'MODEL_EXECUTION', code: 'MODEL_EXECUTION_FAILED', upstream_http_status: upstream } } }];"
+      },
+      "id": "e240578f-3227-5963-a952-916167574c33",
+      "name": "Sanitize Gateway Model Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $json?.error;\nlet upstream = null;\nreturn [{ json: { gateway_error: { version: 'gateway-failure-v1', stage: 'OUTPUT_NORMALIZATION', code: 'OUTPUT_REJECTED', upstream_http_status: upstream } } }];"
+      },
+      "id": "eeece447-e965-53cc-a976-d3c463f2c23c",
+      "name": "Sanitize Gateway Output Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "23f863d5-2622-5c5a-bec4-537693799841",
+      "name": "Respond Gateway Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1300,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 500,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "6b232e20-2b85-52d9-9701-440754da52be",
+      "name": "Respond Gateway Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1300,
+        420
+      ]
     }
   ],
   "connections": {
@@ -99,6 +214,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Sanitize Gateway Input Failure",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -118,6 +240,64 @@
         [
           {
             "node": "Normalize Gateway Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sanitize Gateway Model Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Gateway Input Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond Gateway Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Gateway Model Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond Gateway Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Gateway Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Gateway Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sanitize Gateway Output Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Gateway Output Failure": {
+      "main": [
+        [
+          {
+            "node": "Respond Gateway Failure",
             "type": "main",
             "index": 0
           }

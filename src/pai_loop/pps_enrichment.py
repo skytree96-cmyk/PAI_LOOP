@@ -2578,6 +2578,7 @@ def _persist_extraction_version(
         "review_code": outcome.review_code if outcome else "R07",
         "error_code": outcome.error_code if outcome else error_code,
         "message": outcome.message if outcome else "공개 첨부를 자동 처리하지 못해 원문 검토가 필요합니다.",
+        **({"gateway_failure": outcome.gateway_failure.model_dump(mode="json")} if outcome and outcome.gateway_failure else {}),
         "response_id": outcome.response_id if outcome else None,
         "model": outcome.model if outcome else None,
         "prompt_version": outcome.prompt_version if outcome else PROMPT_VERSION,
