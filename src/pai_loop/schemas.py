@@ -312,6 +312,53 @@ class AwardHistoryItemOut(ApiModel):
     awarded_at: datetime | None
     similarity_score: float
     source: str
+    opening_results: list[AwardOpeningCompanyOut] | None = None
+    opening_results_status: Literal["NOT_COLLECTED", "COLLECTED", "UNAVAILABLE", "PARTIAL", "ERROR"] | None = None
+    opening_results_read_at: datetime | None = None
+
+
+class AwardOpeningCompanyOut(ApiModel):
+    """One opening-result company. Every score is nullable and never zeroed."""
+
+    company_name: str
+    bid_amount: float | None = None
+    technical_evaluation: float | None = None
+    price_evaluation: float | None = None
+    total_evaluation: float | None = None
+    opening_rank: int | None = None
+
+
+class AnnualAwardTableRowOut(ApiModel):
+    year: int | None
+    project_title: str
+    agency: str
+    bid_notice_no: str
+    revision_no: str
+    match_kind: Literal["SAME_PROJECT", "SIMILAR_CANDIDATE"]
+    similarity_score: float | None
+    source_status: str
+    source_notice_url: str | None
+    event_date: str | None
+    company_name: str
+    bid_amount: float | None
+    technical_evaluation: float | None
+    price_evaluation: float | None
+    total_evaluation: float | None
+    opening_rank: int | None
+    participation_kind: Literal["WINNER", "PARTICIPANT", "UNKNOWN"]
+
+
+class AnnualAwardTableOut(ApiModel):
+    table_version: str
+    generated_as_of: datetime
+    years: list[int]
+    match_basis: Literal["SAME_PROJECT_AND_AGENCY", "SIMILAR_CANDIDATES_ONLY", "MIXED_BY_YEAR", "NONE"]
+    target_project_key: str
+    row_count: int
+    scored_row_count: int
+    opening_results_not_collected: int
+    rows: list[AnnualAwardTableRowOut]
+    notes: list[str]
 
 
 class AwardIntelligenceRecordOut(ApiModel):
@@ -334,6 +381,8 @@ class AwardIntelligenceRecordOut(ApiModel):
     awarded_at: datetime | None
     similarity_score: float | None
     source: str
+    opening_results: list[AwardOpeningCompanyOut] | None = None
+    opening_results_status: Literal["NOT_COLLECTED", "COLLECTED", "UNAVAILABLE", "PARTIAL", "ERROR"] | None = None
 
 
 class CompetitionRiskComponentOut(ApiModel):
@@ -406,6 +455,7 @@ class AwardIntelligenceOut(ApiModel):
     award_rate_distribution: dict[str, Any]
     submitted_bid_rate_distribution: dict[str, Any]
     prediction: dict[str, Any]
+    annual_award_table: AnnualAwardTableOut
     target_amount_basis: dict[str, Any]
     pricing_method: dict[str, Any] | None
     warnings: list[str]
@@ -606,6 +656,13 @@ class AwardHistoryRefreshRequest(ApiModel):
     page_size: int = Field(default=100, ge=1, le=100)
     max_pages_per_window: int = Field(default=1, ge=1, le=3)
     dry_run: bool = False
+    # Opt-in and hard-capped. Each notice costs at most
+    # ``opening_result_max_pages`` extra authenticated requests, and at most
+    # ``max_opening_result_notices`` notices are read per refresh, so the
+    # bound stays explicit rather than growing with the result set.
+    include_opening_results: bool = False
+    max_opening_result_notices: int = Field(default=10, ge=1, le=30)
+    opening_result_max_pages: int = Field(default=1, ge=1, le=3)
 
     @field_validator("keyword")
     @classmethod

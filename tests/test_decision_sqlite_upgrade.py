@@ -115,3 +115,39 @@ def test_sqlite_upgrade_rolls_back_copy_and_restores_foreign_keys_on_failure(tmp
         assert migrations.INDEPENDENT_DECISION_MIGRATION_ID in migrations.pending_migrations(engine)
     finally:
         engine.dispose()
+
+
+def test_legacy_decisions_and_awards_upgrade_together_without_losing_rows(tmp_path):
+    engine, original_decision = _legacy_database(tmp_path)
+    try:
+        with engine.begin() as connection:
+            for column in ("opening_results", "opening_results_status", "opening_results_read_at"):
+                connection.exec_driver_sql(f'ALTER TABLE award_history_items DROP COLUMN "{column}"')
+            connection.exec_driver_sql("""INSERT INTO award_history_items
+                (id,target_notice_id,external_identity,bid_notice_no,revision_no,title,agency,
+                 winner_name,award_amount,similarity_score,source,created_at)
+                VALUES ('SYN-award','SYN-notice','SYN-award|000|0|000','SYN-award','000',
+                        'SYN old award','SYN agency','SYN winner',123456,90,'PPS',
+                        '2026-09-08 00:00:00')""")
+            original_award = dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one())
+
+        applied = migrations.apply_additive_migrations(engine)
+        assert migrations.INDEPENDENT_DECISION_MIGRATION_ID in applied
+        assert migrations.AWARD_OPENING_RESULT_MIGRATION_ID in applied
+        assert migrations.apply_additive_migrations(engine) == []
+        assert migrations.pending_migrations(engine) == []
+        assert next(column for column in inspect(engine).get_columns("user_decisions")
+                    if column["name"] == "evaluation_id")["nullable"] is True
+        with engine.connect() as connection:
+            decision = tuple(connection.exec_driver_sql("SELECT * FROM user_decisions").one())
+            assert decision[:len(original_decision)] == original_decision
+            assert connection.exec_driver_sql("SELECT decision_id FROM bid_outcomes").scalar_one() == "SYN-decision"
+            award = dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one())
+            assert {key: award[key] for key in original_award} == original_award
+            assert {key: value for key, value in award.items() if key not in original_award} == {
+                "opening_results": None, "opening_results_status": None, "opening_results_read_at": None,
+            }
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+    finally:
+        engine.dispose()
