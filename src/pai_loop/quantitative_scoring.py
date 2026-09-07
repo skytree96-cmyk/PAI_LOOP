@@ -2737,10 +2737,17 @@ def _logical_quantitative_program(
     all_candidates = tuple(profile.available_candidates)
     reasons: set[str] = set()
     if not tables:
+        # No physical table exists, so nothing is ambiguous between
+        # alternatives. Keep the existing fail-closed blocker and add the exact
+        # reason so triage can separate "no table was established" from a real
+        # competing-table ambiguity.
         return _LogicalQuantitativeProgram(
             tables=(),
             candidates=all_candidates,
-            reasons=("ALTERNATIVE_TABLE_AMBIGUOUS",),
+            reasons=(
+                "ALTERNATIVE_TABLE_AMBIGUOUS",
+                "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
+            ),
         )
     if len(tables) > _MAX_LOGICAL_PROGRAM_TABLES:
         reasons.update(

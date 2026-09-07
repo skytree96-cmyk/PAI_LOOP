@@ -8155,16 +8155,20 @@ def merge_validated_quantitative_records(
         status: ProfileStatus = aggregate
     elif not_applicable and aggregate == "AVAILABLE":
         status = "NOT_APPLICABLE"
-    elif aggregate != "AVAILABLE":
-        status = aggregate
     else:
-        issues.append(
-            _issue(
-                "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
-                "INCOMPLETE",
-                "현재 manifest 전체에서 정량평가표나 명시적 비적용 근거를 확인하지 못했습니다.",
+        # Keep the no-table diagnosis identical to the direct build path. An
+        # earlier issue such as EXTRACTION_DECLARED_INCOMPLETE explains why one
+        # attachment failed; it does not record that the current manifest
+        # established no quantitative table at all. Emitting both keeps the
+        # missing-table fact visible and never relaxes the status.
+        if not not_applicable:
+            issues.append(
+                _issue(
+                    "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
+                    "INCOMPLETE",
+                    "현재 manifest 전체에서 정량평가표나 명시적 비적용 근거를 확인하지 못했습니다.",
+                )
             )
-        )
         status = "INCOMPLETE"
 
     issue_key = lambda item: (

@@ -6317,6 +6317,7 @@
       FACT_DIMENSIONS_UNMODELED: "인정기간·유사사업·VAT·역할 등 점수 산출조건이 아직 구조화되지 않았습니다.",
       FACT_KEY_AMBIGUOUS: "여러 평가항목이 같은 회사 사실 키를 사용해 값의 적용 대상을 구분할 수 없습니다.",
       ALTERNATIVE_TABLE_AMBIGUOUS: "적용 대상이 다른 복수 평가표 중 하나를 기계적으로 선택할 수 없습니다.",
+      QUANTITATIVE_TABLE_NOT_ESTABLISHED: "현재 첨부에서 정량평가표도 비적용 근거도 확인되지 않았습니다.",
       CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE: "현재 공고의 모든 첨부 검증이 끝나지 않았습니다.",
       BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING: "배점 구간에 공백 또는 중복이 있습니다.",
       UNIT_NOT_SOURCE_BOUND: "산정 단위를 원문 인용에서 정확히 확인할 수 없습니다.",
