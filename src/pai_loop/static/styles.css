@@ -5073,7 +5073,7 @@ svg {
 .performance-range-filters input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .performance-certificate-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .performance-certificate-preview .button:disabled { opacity: 1; color: #546f86; background: #edf3f8; border-color: #d9e4ee; cursor: not-allowed; }
-.performance-certificate-preview small { color: #546f86; font-size: 12px; }
+.performance-certificate-preview small { color: #546f86; font-size: 13px; }
 @media (max-width: 900px) { .performance-range-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 480px) { .performance-range-filters { grid-template-columns: minmax(0, 1fr); } }
 
