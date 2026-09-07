@@ -22,6 +22,7 @@ from sqlalchemy.schema import CreateTable
 
 from pai_loop.database import Base, build_engine
 from pai_loop.migrations import (
+    ACCOUNT_MIGRATION_ID,
     COMPANY_PERFORMANCE_MIGRATION_ID,
     INDEPENDENT_DECISION_MIGRATION_ID,
     COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM,
@@ -270,6 +271,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_ID,
+        ACCOUNT_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
         MIGRATION_ID,
@@ -279,6 +281,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_ID,
+        ACCOUNT_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
@@ -299,6 +302,11 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         "pre_specification_versions",
         "pre_specification_documents",
         "pre_specification_analysis_runs",
+        "department_accounts",
+        "account_sessions",
+        "account_login_buckets",
+        "account_audit",
+        "account_bootstrap_previews",
     } <= tables
     performance_columns = {
         column["name"]
@@ -404,6 +412,9 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         NoticeVersion.__table__.create(connection)
         Evaluation.__table__.create(connection)
         UserDecision.__table__.create(connection)
+        # The recorded base migration includes bid_outcomes; the account
+        # upgrade now adds nullable attribution to that existing table too.
+        BidOutcome.__table__.create(connection)
         schema_migrations.create(connection)
         connection.execute(
             schema_migrations.insert().values(
@@ -419,6 +430,7 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_ID,
+        ACCOUNT_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected
     assert apply_additive_migrations(engine) == expected

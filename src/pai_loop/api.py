@@ -1245,14 +1245,16 @@ def runtime_profile(request: Request) -> dict[str, Any]:
         public_mode
         and settings.public_manual_analysis_enabled
         and (
-            settings.environment.casefold() != "production"
+            settings.department_accounts_enabled
+            or settings.environment.casefold() != "production"
             or settings.public_manual_analysis_token_valid
         )
     )
     return {
         "access_mode": "PUBLIC_READ_ONLY" if public_mode else "SERVER_AUTHENTICATED",
-        "write_controls_enabled": not public_mode,
-        "operator_decisions_enabled": manual_analysis_enabled or not public_mode,
+        "department_accounts_enabled": settings.department_accounts_enabled,
+        "write_controls_enabled": not public_mode and not settings.department_accounts_enabled,
+        "operator_decisions_enabled": settings.department_accounts_enabled or manual_analysis_enabled or not public_mode,
         "analysis_provider": (
             "CLAUDE_VIA_N8N"
             if settings.llm_provider == "n8n_claude"
@@ -1262,7 +1264,7 @@ def runtime_profile(request: Request) -> dict[str, Any]:
         "manual_analysis_enabled": manual_analysis_enabled,
         "manual_analysis_auth_required": bool(
             manual_analysis_enabled
-            and settings.environment.casefold() == "production"
+            and (settings.department_accounts_enabled or settings.environment.casefold() == "production")
         ),
         "manual_analysis_policy": (
             {
@@ -1276,6 +1278,9 @@ def runtime_profile(request: Request) -> dict[str, Any]:
             else None
         ),
         "data_boundary": (
+            "공개 안전 조회는 익명 허용; 부서 기록·분석은 계정 권한 필요; 비공개 증빙은 별도 강한 인증 필요"
+            if settings.department_accounts_enabled
+            else
             "공개 안전 조회와 제한된 단일 공고 분석 요청만 익명 허용; 내부 쓰기·로그는 서버 인증 필요"
             if manual_analysis_enabled
             else "공개 안전 GET만 익명 허용; 변경·수집·내부 로그는 서버 인증 필요"

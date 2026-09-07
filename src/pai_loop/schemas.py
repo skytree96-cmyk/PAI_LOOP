@@ -109,6 +109,7 @@ class DecisionCreate(ApiModel):
     """
 
     evaluation_id: str | None = None
+    expected_decision_id: str | None = Field(default=None, max_length=36)
     choice: DecisionChoice
     actor_label: str = Field(default="담당자", min_length=1, max_length=120)
     rationale: str = Field(min_length=1, max_length=4000)
@@ -153,6 +154,10 @@ class EvaluationOut(ApiModel):
 
 class DecisionOut(ApiModel):
     id: str
+    department_revision: int | None = None
+    account_id: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
     evaluation_id: str | None
     choice: DecisionChoice
     actor_label: str

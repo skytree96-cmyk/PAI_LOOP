@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Connection, Engine
 
 from .database import Base, build_engine
+from .account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from .models import (
     AnalysisRun,
     BidOutcome,
@@ -114,6 +115,9 @@ _migration_tables = (
     ReferenceDataVersion.__table__,
     BidOutcome.__table__,
 )
+ACCOUNT_MIGRATION_ID = "20260908_02_department_accounts"
+ACCOUNT_MIGRATION_CHECKSUM = hashlib.sha256(b"department_accounts:v1;account_sessions:v1;account_login_buckets:v1;account_audit:v1;account_bootstrap_previews:v1;user_decisions+bid_outcomes:nullable-account_id-department_id-department_name-department_revision:unique-per-department-revision:v1").hexdigest()
+_account_tables = (DepartmentAccount.__table__, AccountSession.__table__, AccountLoginBucket.__table__, AccountAudit.__table__, AccountBootstrapPreview.__table__)
 _migrations = (
     (MIGRATION_ID, MIGRATION_CHECKSUM, _migration_tables),
     (
@@ -151,6 +155,7 @@ _migrations = (
         INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
         (),
     ),
+    (ACCOUNT_MIGRATION_ID, ACCOUNT_MIGRATION_CHECKSUM, _account_tables),
 )
 _required_base_tables = {
     "notices",
@@ -437,6 +442,36 @@ def _applied_checksum(connection: Connection, migration_id: str) -> str | None:
     ).scalar_one_or_none()
 
 
+def _account_identity_columns(connection: Connection, *, validate_only: bool = False) -> None:
+    for table in _account_tables:
+        if table.name not in inspect(connection).get_table_names():
+            raise MigrationError("department account table is missing")
+        physical = {row["name"]: row for row in inspect(connection).get_columns(table.name)}
+        for column in table.columns:
+            actual = physical.get(column.name)
+            if actual is None or actual["nullable"] != column.nullable or actual["type"]._type_affinity != column.type._type_affinity:
+                raise MigrationError("department account table has an incompatible column")
+    for table_name in ("user_decisions", "bid_outcomes"):
+        if table_name not in inspect(connection).get_table_names():
+            raise MigrationError("department record table is missing")
+        columns = {row["name"]: row for row in inspect(connection).get_columns(table_name)}
+        for name, length in (("account_id", 36), ("department_id", 120), ("department_name", 120), ("department_revision", None)):
+            if name not in columns:
+                if validate_only:
+                    raise MigrationError("department record identity column is missing")
+                column_type = f"VARCHAR({length})" if length else "INTEGER"
+                connection.exec_driver_sql(f'ALTER TABLE "{table_name}" ADD COLUMN "{name}" {column_type} NULL')
+            elif not columns[name]["nullable"]:
+                raise MigrationError("legacy department ownership must remain nullable")
+    if not validate_only:
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_decision_notice_department_revision ON user_decisions (notice_id, department_id, department_revision)")
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_outcome_notice_department_revision ON bid_outcomes (notice_id, department_id, department_revision)")
+    for table_name, index_name in (("user_decisions", "uq_decision_notice_department_revision"), ("bid_outcomes", "uq_outcome_notice_department_revision")):
+        index = next((row for row in inspect(connection).get_indexes(table_name) if row["name"] == index_name), None)
+        if not index or not index["unique"] or index["column_names"] != ["notice_id", "department_id", "department_revision"]:
+            raise MigrationError("department revision uniqueness is missing")
+
+
 def pending_migrations(engine: Engine) -> list[str]:
     """Return pending migration IDs without creating or changing any table."""
 
@@ -459,6 +494,8 @@ def pending_migrations(engine: Engine) -> list[str]:
                 )
             if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
                 _validate_applied_independent_decision_migration(connection)
+            if migration_id == ACCOUNT_MIGRATION_ID:
+                _account_identity_columns(connection, validate_only=True)
         return pending
 
 
@@ -502,6 +539,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     )
                 if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
                     _validate_applied_independent_decision_migration(connection)
+                if migration_id == ACCOUNT_MIGRATION_ID:
+                    _account_identity_columns(connection, validate_only=True)
                 continue
             for table in tables:
                 table.create(connection, checkfirst=True)
@@ -509,6 +548,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                 _add_company_performance_recognized_amount_columns(connection)
             if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
                 _relax_independent_decision_columns(connection)
+            if migration_id == ACCOUNT_MIGRATION_ID:
+                _account_identity_columns(connection)
             connection.execute(
                 schema_migrations.insert().values(
                     migration_id=migration_id,

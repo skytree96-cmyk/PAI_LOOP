@@ -17,6 +17,7 @@ from sqlalchemy import text
 from . import __version__
 from .analysis_api import router as analysis_persistence_router
 from .api import router
+from .accounts import router as accounts_router
 from .company_awards import router as company_awards_router
 from .config import Settings
 from .database import Base, build_engine, build_session_factory
@@ -77,6 +78,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             api_key=settings.api_key,
             private_evidence_token=settings.private_evidence_token,
             public_read_only=settings.public_read_only,
+            department_accounts_enabled=settings.department_accounts_enabled,
             public_manual_analysis_enabled=settings.public_manual_analysis_enabled,
             public_manual_analysis_token=settings.public_manual_analysis_token,
             public_manual_analysis_hourly_limit=settings.public_manual_analysis_hourly_limit,
@@ -146,7 +148,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         if request.url.path.startswith(
-            ("/api/v1/performance-records", "/api/v1/operator-evidence")
+            ("/api/v1/performance-records", "/api/v1/operator-evidence", "/api/v1/accounts", "/api/v1/operator-decisions", "/api/v1/result-learning")
         ):
             response.headers["Cache-Control"] = "no-store"
         if "x-frame-options" in response.headers:
@@ -154,6 +156,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         return response
 
     application.include_router(router)
+    application.include_router(accounts_router)
     application.include_router(public_performance_router)
     application.include_router(daily_operations_router)
     application.include_router(quantitative_scoring_router)
@@ -190,6 +193,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
 
     @application.exception_handler(RequestValidationError)
     async def validation_exception(request: Request, exc: RequestValidationError):
+        if request.url.path.startswith("/api/v1/accounts"):
+            return JSONResponse(status_code=422, headers={"Cache-Control": "no-store"}, content={"detail": "계정 입력 형식을 확인해 주세요.", "code": "ACCOUNT_VALIDATION_ERROR"})
         if (
             request.url.path == "/api/v1/performance-records/private-import"
             or request.url.path.startswith("/api/v1/operator-evidence")

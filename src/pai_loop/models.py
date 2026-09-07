@@ -222,6 +222,7 @@ class UserDecision(Base):
     """
 
     __tablename__ = "user_decisions"
+    __table_args__ = (Index("uq_decision_notice_department_revision", "notice_id", "department_id", "department_revision", unique=True),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     notice_id: Mapped[str] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), index=True)
@@ -230,6 +231,10 @@ class UserDecision(Base):
     )
     choice: Mapped[str] = mapped_column(String(32), index=True)
     actor_label: Mapped[str] = mapped_column(String(120), default="담당자")
+    department_revision: Mapped[int | None] = mapped_column(Integer)
+    account_id: Mapped[str | None] = mapped_column(String(36))
+    department_id: Mapped[str | None] = mapped_column(String(120))
+    department_name: Mapped[str | None] = mapped_column(String(120))
     rationale: Mapped[str] = mapped_column(Text)
     conditions: Mapped[list[str] | None] = mapped_column(JSON)
     analysis_state_snapshot: Mapped[str | None] = mapped_column(String(32), index=True)
@@ -546,6 +551,7 @@ class BidOutcome(Base, TimestampMixin):
         UniqueConstraint("notice_id", "outcome_key", name="uq_notice_bid_outcome"),
         Index("ix_bid_outcome_notice_observed", "notice_id", "observed_at"),
         Index("ix_bid_outcome_status_occurred", "status", "occurred_at"),
+        Index("uq_outcome_notice_department_revision", "notice_id", "department_id", "department_revision", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -557,6 +563,10 @@ class BidOutcome(Base, TimestampMixin):
         ForeignKey("user_decisions.id", ondelete="SET NULL"), index=True
     )
     outcome_key: Mapped[str] = mapped_column(String(180))
+    department_revision: Mapped[int | None] = mapped_column(Integer)
+    account_id: Mapped[str | None] = mapped_column(String(36))
+    department_id: Mapped[str | None] = mapped_column(String(120))
+    department_name: Mapped[str | None] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(32), index=True)
     submitted_bid_amount: Mapped[float | None] = mapped_column(Float)
     submitted_bid_rate: Mapped[float | None] = mapped_column(Float)
