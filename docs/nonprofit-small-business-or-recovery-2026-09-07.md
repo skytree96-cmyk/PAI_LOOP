@@ -50,9 +50,9 @@ notice, so it is guarded by notice-wide presence rather than by the single
 clause: a separate certificate requirement no longer denies a nonprofit
 exception that another requirement in the same notice states verbatim. The
 truthful wording is kept byte-identical for a notice in which no requirement
-mentions a nonprofit. Asserting the absence of an
-exception that is present in the clause is a false statement about the source
-text; the message now says the alternative was not recognized in a decidable
+mentions a nonprofit, so the claim is not over-suppressed. Asserting the absence
+of an exception the source states is a false statement about that source; the
+message now says only that the alternative was not recognized in a decidable
 form and that the original text must be read. No outcome changes with it.
 
 `POLICY_VERSION` advances from v11 to
