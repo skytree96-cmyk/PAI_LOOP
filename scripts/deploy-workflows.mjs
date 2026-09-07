@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
 
 const validateOnly = process.argv.includes("--validate-only");
 const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
@@ -197,13 +198,13 @@ function validateRepositorySafetyContracts(definitions) {
         [{ node: "Respond Gateway Failure", type: "main", index: 0 }],
       ]), "gateway failure branches must remain isolated from success and provider calls");
   }
-  for (const [suffix, status] of [["Success", 200], ["Failure", 500]]) {
+  for (const [suffix, allowed] of [["Success", true], ["Failure", false]]) {
     const response = claudeNodes.get(`Respond Gateway ${suffix}`);
     assert(response?.type === "n8n-nodes-base.respondToWebhook"
       && response.parameters.respondWith === "json"
-      && response.parameters.responseBody === "={{ $json }}"
-      && response.parameters.options.responseCode === status,
-    "gateway must explicitly respond with successful JSON or a failed HTTP status");
+      && response.parameters.responseBody === gatewayResponseExpression(allowed, "body")
+      && response.parameters.options.responseCode === gatewayResponseExpression(allowed, "status"),
+    "gateway terminal expressions must validate and reconstruct body and HTTP status");
   }
   assert(
     claudeSerialised.includes("request fields do not match the extraction gateway contract")

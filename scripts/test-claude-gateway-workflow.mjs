@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
+import "./test-gateway-terminal-response.mjs";
 
 const workflow = JSON.parse(
   fs.readFileSync("workflows/pai-loop-13-claude-extraction-gateway.json", "utf8"),
@@ -198,11 +200,11 @@ for (const [source, suffix, stage, code, success] of stages) {
     }
   }
 }
-for (const [suffix, code] of [["Success", 200], ["Failure", 500]]) {
+for (const [suffix, allowed] of [["Success", true], ["Failure", false]]) {
   const response = nodes.get(`Respond Gateway ${suffix}`);
   assert.equal(response.type, "n8n-nodes-base.respondToWebhook");
-  assert.equal(response.parameters.responseBody, "={{ $json }}");
-  assert.equal(response.parameters.options.responseCode, code);
+  assert.equal(response.parameters.responseBody, gatewayResponseExpression(allowed, "body"));
+  assert.equal(response.parameters.options.responseCode, gatewayResponseExpression(allowed, "status"));
   assert(response.parameters.options.responseHeaders.entries.some(row => row.name === "Cache-Control" && row.value === "no-store"));
 }
 // Execute both former generic-500 counterexamples through their error edges.

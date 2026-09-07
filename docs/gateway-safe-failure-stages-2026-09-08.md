@@ -23,6 +23,21 @@ none becomes an accepted extraction or starts another model call. Three isolated
 error outputs construct fresh objects and reach only the failure response node.
 Both responses use `Cache-Control: no-store`.
 
+Both terminal Respond-to-Webhook nodes independently validate and reconstruct
+their body inside their response expressions; neither returns `$json` directly.
+The success HTTP-status expression uses the same guard as its body expression.
+Only the exact bounded success envelope, completed status, pinned model, valid
+response ID, object JSON output and nonnegative bounded usage counters can return
+HTTP200. Null/missing usage counters remain null. Every other input yields the
+fixed OUTPUT_NORMALIZATION / OUTPUT_REJECTED HTTP500 envelope. The failure node
+also validates exact diagnostic keys and never forwards unrecognized fields.
+
+This final boundary is required because the n8n execution engine can continue
+some runtime exceptions by forwarding the original input on main output0,
+without traversing the normal error output. A task-runner failure at Normalize
+must not return an upstream text/prompt object as HTTP200. The guard is inside
+the response expression, not another Code node vulnerable to the same failure.
+
 `upstream_http_status` is available only at MODEL_EXECUTION and only from a
 structured error object's numeric `status`, `statusCode` or `httpCode`, in
 400–599. Conflicting valid fields produce null. No string parsing, nested body
@@ -86,3 +101,7 @@ JSON failures through isolated edges, canary redaction, numeric/conflicting stat
 handling, safe Python envelope validation, no transport/corrective retry, current
 attachment persistence/reuse and authenticated diagnostic reads. These are code
 and synthetic contracts, not execution on the deployed n8n runtime.
+The terminal test also injects original model text and prompt objects through
+the runtime main-output passthrough and evaluates the actual workflow response
+body/status expressions. It checks fresh objects, malformed/extra fields, output
+size/JSON shape, usage nullability/bounds and the failure responder boundary.
