@@ -18,6 +18,22 @@ jobs:
     name: Test, validate, and scan
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pai_loop_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PAI_LOOP_TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/pai_loop_test
 
     steps:
       - name: Check out repository
@@ -117,6 +133,7 @@ jobs:
               "pai_loop/analysis_pipeline.py",
               "pai_loop/analysis_selection.py",
               "pai_loop/analysis_api.py",
+              "pai_loop/analysis_execution.py",
               "pai_loop/company_awards.py",
               "pai_loop/manual_analysis.py",
               "pai_loop/operator_decisions.py",
