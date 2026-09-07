@@ -208,14 +208,15 @@ def test_auto_bid_rate_concurrent_patch_keeps_only_winning_snapshot(client, monk
     _notice(client)
     row = client.post(ENDPOINT, json=_payload()).json()["outcome"]
     barrier = threading.Barrier(2)
-    original = result_learning._same_version
+    original = result_learning.lock_outcome_notice
 
-    def same_version(actual, expected):
-        matches = original(actual, expected)
+    def synchronised_lock(session, notice_key):
+        # Race at lock acquisition: waiting inside the locked CAS check would
+        # prevent the second request from ever reaching the barrier.
         barrier.wait(timeout=5)
-        return matches
+        return original(session, notice_key)
 
-    monkeypatch.setattr(result_learning, "_same_version", same_version)
+    monkeypatch.setattr(result_learning, "lock_outcome_notice", synchronised_lock)
 
     def save(amount):
         return client.patch(f"{ENDPOINT}/{row['id']}", json={

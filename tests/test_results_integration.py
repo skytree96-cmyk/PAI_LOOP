@@ -107,14 +107,15 @@ def test_department_concurrent_rate_and_opening_change_records_one_complete_winn
     headers, me = _login(account_client)
     row = _submission(account_client, headers)
     barrier = threading.Barrier(2)
-    original = result_learning._same_version
+    original = result_learning.lock_outcome_notice
 
-    def same_version(actual, expected):
-        matches = original(actual, expected)
+    def synchronised_lock(session, notice_key):
+        # Both writers carry the same stale version into the shared lock.
+        # The loser must preserve the winner's complete rate/opening snapshot.
         barrier.wait(timeout=10)
-        return matches
+        return original(session, notice_key)
 
-    monkeypatch.setattr(result_learning, "_same_version", same_version)
+    monkeypatch.setattr(result_learning, "lock_outcome_notice", synchronised_lock)
 
     def save(number):
         return account_client.patch(f"/api/v1/result-learning/{row['id']}", headers=headers, json={

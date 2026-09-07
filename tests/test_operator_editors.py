@@ -387,14 +387,15 @@ def test_result_learning_patch_compare_and_swap_rejects_one_concurrent_writer(
         },
     ).json()["outcome"]
     barrier = threading.Barrier(2)
-    original = result_learning._same_version
+    original = result_learning.lock_outcome_notice
 
-    def synchronised_version(actual, expected):
-        matches = original(actual, expected)
+    def synchronised_lock(session, notice_key):
+        # Both requests arrive before serialization; the loser must then read
+        # the winner's new version and fail CAS, without changing its record.
         barrier.wait(timeout=5)
-        return matches
+        return original(session, notice_key)
 
-    monkeypatch.setattr(result_learning, "_same_version", synchronised_version)
+    monkeypatch.setattr(result_learning, "lock_outcome_notice", synchronised_lock)
 
     def patch(note: str):
         return client.patch(
