@@ -926,6 +926,8 @@
 
   function clearAccountPrivateState() {
     state.accountEpoch += 1;
+    state.manualAnalysisRequests.clear();
+    document.getElementById("manualAnalysisConfirmationDialog")?.close();
     state.notices = [];
     state.filteredNotices = [];
     if (state.selectedNotice) closeDetail();
@@ -1501,7 +1503,7 @@
           : ended
             ? "종료 또는 취소된 공고입니다. 저장된 공고 이력은 상세 화면에서 확인할 수 있습니다."
             : "이미 저장된 공고입니다. 중복 저장하지 않고 기존 공고에서 판단을 계속할 수 있습니다.";
-    const running = storedNotice && state.manualAnalysisRequests.get(storedNotice.noticeKey) === "running";
+    const running = storedNotice && state.manualAnalysisRequests.has(storedNotice.noticeKey);
     // Stored search results can sit outside the board's currently loaded
     // lifecycle scope. Keep an explicit state-check action; the request path
     // hydrates the canonical notice before allowing an analysis.
@@ -1523,7 +1525,7 @@
     const detailLink = detailHref
       ? `<a class="button button--ghost pps-candidate__detail-link" href="${escapeAttribute(detailHref)}" data-stored-notice-link data-notice-key="${escapeAttribute(candidate.storedNoticeKey)}" aria-label="${escapeAttribute(candidate.title)} ${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"}">${completed ? "저장된 판단 결과 보기" : "저장된 공고로 이동"} →</a>`
       : "";
-    const analysisLabel = running ? "분석 중…" : analysisAvailability.label;
+    const analysisLabel = running ? manualAnalysisLabel(availabilityNotice, true) : analysisAvailability.label;
     const analysisDisabled = running || !analysisAvailability.enabled;
     const analysisButton = `<button class="button button--primary" type="button" data-pps-analysis-key="${escapeAttribute(storedNotice?.noticeKey || candidate.storedNoticeKey)}" ${analysisDisabled ? "disabled" : ""} title="${escapeAttribute(analysisAvailability.reason)}" aria-label="${escapeAttribute(candidate.title)} ${escapeAttribute(analysisLabel)}${analysisAvailability.enabled ? "" : ` · ${escapeAttribute(analysisAvailability.reason)}`}">${running ? '<span class="button-spinner" aria-hidden="true"></span>' : ""}${escapeHtml(analysisLabel)}</button>`;
     const saveButton = !stored
@@ -4388,7 +4390,8 @@
 
   function manualAnalysisLabel(notice, running = false) {
     // Previous embedded-client labels: "판단 실행", "첨부 전체 재분석".
-    if (running) return "첨부 분석 중…";
+    if (running) return state.manualAnalysisRequests.get(notice.noticeKey)?.phase === "preparing"
+      ? "분석 요청 확인 중…" : "첨부 분석 중…";
     if (quantitativeRuleRetryRequired(notice)) return "정량 근거 재검증";
     if (
       notice.analysisState === "EVALUATED"
@@ -4554,7 +4557,7 @@
 
   function manualAnalysisAction(notice, context) {
     const availability = manualAnalysisAvailability(notice);
-    const running = state.manualAnalysisRequests.get(notice.noticeKey) === "running";
+    const running = state.manualAnalysisRequests.has(notice.noticeKey);
     const label = running ? manualAnalysisLabel(notice, true) : availability.label;
     const disabled = running || !availability.enabled;
     return `<button class="manual-analysis-action manual-analysis-action--${escapeAttribute(context)}" type="button" data-manual-analysis data-notice-key="${escapeAttribute(notice.noticeKey)}" ${disabled ? "disabled" : ""} title="${escapeAttribute(availability.reason)}" aria-label="${escapeAttribute(notice.title)} ${escapeAttribute(label)}${availability.enabled ? "" : ` · ${escapeAttribute(availability.reason)}`}">${running ? '<span class="button-spinner" aria-hidden="true"></span>' : ""}${escapeHtml(label)}</button>`;
@@ -4862,43 +4865,47 @@
   }
 
   async function requestManualAnalysis(noticeKey) {
-    if (state.manualAnalysisRequests.get(noticeKey) === "running") return;
-    let notice = state.notices.find((item) => item.noticeKey === noticeKey);
-    if (!notice && state.source !== "demo") {
-      try {
+    if (state.manualAnalysisRequests.has(noticeKey)) return;
+    const flight = { accountEpoch: state.accountEpoch, phase: "preparing" };
+    state.manualAnalysisRequests.set(noticeKey, flight);
+    const isCurrent = () => flight.accountEpoch === state.accountEpoch
+      && state.manualAnalysisRequests.get(noticeKey) === flight;
+    try {
+      if (!state.loading) renderNoticeList();
+      if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
+      let notice = state.notices.find((item) => item.noticeKey === noticeKey);
+      if (!notice && state.source !== "demo") {
         notice = await hydrateNoticeByKey(noticeKey);
-      } catch (error) {
-        showToast("분석 요청 불가", `저장된 공고 상태를 확인하지 못했습니다 · ${humanizeError(error)}`, "error");
+        if (!isCurrent()) return;
+      }
+      if (
+        state.source === "api"
+        && ["ANALYZED", "EVALUATED"].includes(notice?.analysisState)
+        && notice.analysisAttachmentCoverageComplete
+      ) {
+        await loadQuantitativeEstimate(noticeKey, { force: true });
+        if (!isCurrent()) return;
+      }
+      const availability = manualAnalysisAvailability(notice);
+      if (!availability.enabled) {
+        showToast("분석 요청 불가", availability.reason, "warning");
         return;
       }
-    }
-    if (
-      state.source === "api"
-      && ["ANALYZED", "EVALUATED"].includes(notice?.analysisState)
-      && notice.analysisAttachmentCoverageComplete
-    ) {
-      await loadQuantitativeEstimate(noticeKey, { force: true });
-    }
-    const availability = manualAnalysisAvailability(notice);
-    if (!availability.enabled) {
-      showToast("분석 요청 불가", availability.reason, "warning");
-      return;
-    }
-    if (!await confirmManualAnalysis(notice, availability)) return;
-    const authHeaders = await manualAnalysisAuthHeaders();
-    if (!authHeaders) {
-      showToast("분석 요청 취소", state.accountSession?.enabled ? "부서 로그인 상태를 확인해 주세요." : "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
-      return;
-    }
-    const evaluationOnly = evaluationOnlyManualAnalysis(notice, availability);
-    const requestBody = { run_extraction: !evaluationOnly };
-    if (availability.recomputeCurrent) requestBody.recompute_current = true;
-    if (!evaluationOnly && notice.analysisAttempted) requestBody.retry_reviewed = true;
-
-    state.manualAnalysisRequests.set(noticeKey, "running");
-    if (!state.loading) renderNoticeList();
-    if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
-    try {
+      const confirmed = await confirmManualAnalysis(notice, availability);
+      if (!isCurrent() || !confirmed) return;
+      const authHeaders = await manualAnalysisAuthHeaders();
+      if (!isCurrent()) return;
+      if (!authHeaders) {
+        showToast("분석 요청 취소", state.accountSession?.enabled ? "부서 로그인 상태를 확인해 주세요." : "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
+        return;
+      }
+      const evaluationOnly = evaluationOnlyManualAnalysis(notice, availability);
+      const requestBody = { run_extraction: !evaluationOnly };
+      if (availability.recomputeCurrent) requestBody.recompute_current = true;
+      if (!evaluationOnly && notice.analysisAttempted) requestBody.retry_reviewed = true;
+      flight.phase = "running";
+      if (!state.loading) renderNoticeList();
+      if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
       let payload = unwrapObject(await apiRequest(
         `/notices/${encodeURIComponent(noticeKey)}/analysis/request`,
         {
@@ -4907,15 +4914,21 @@
           body: JSON.stringify(requestBody),
         },
       ));
+      if (!isCurrent()) return;
       if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {
         const requestId = stringValue(payload.request_id);
         if (!requestId) throw new Error("분석 요청 식별자가 없습니다.");
         for (let poll = 0; poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1) {
           await new Promise((resolve) => window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS));
+          if (!isCurrent()) return;
           payload = unwrapObject(await apiRequest(
             `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(requestId)}`,
             { headers: authHeaders },
           ));
+          if (!isCurrent()) return;
+          if (payload.request_id !== requestId || payload.notice_key !== noticeKey) {
+            throw new Error("분석 상태 응답의 요청 식별자가 일치하지 않습니다.");
+          }
           if (stringValue(payload.outcome).toUpperCase() !== "QUEUED") break;
         }
         if (stringValue(payload.outcome).toUpperCase() === "QUEUED") {
@@ -4923,10 +4936,14 @@
         }
       }
       const outcome = stringValue(payload.outcome).toUpperCase();
+      if (!["COMPLETED", "REVIEW", "ALREADY_ANALYZED", "COOLDOWN"].includes(outcome)) {
+        throw new Error("분석 상태 응답을 확인하지 못했습니다. 공고 상태를 다시 확인해 주세요.");
+      }
       const callCount = Math.max(Number(payload.openai_calls) || 0, 0);
       const message = `${stringValue(payload.message, "분석 상태를 갱신했습니다.")} · 문서 분석 ${formatNumber(callCount)}회`;
       const reloadQuantitative = quantitativeEstimateIsVisible(noticeKey);
       await loadApplicationData({ forceApi: true });
+      if (!isCurrent()) return;
       invalidateQuantitativeEstimate(noticeKey, { forceReload: reloadQuantitative });
       if (outcome === "COOLDOWN") {
         showToast("최근 분석 결과 사용", message, "warning");
@@ -4936,12 +4953,15 @@
         showToast(outcome === "ALREADY_ANALYZED" ? "기존 분석 결과 사용" : "공고 분석 완료", message, "success");
       }
     } catch (error) {
+      if (!isCurrent()) return;
       if (error?.status === 401) state.manualAnalysisToken = "";
       showToast("공고 분석 요청 실패", humanizeError(error), "error");
     } finally {
-      state.manualAnalysisRequests.delete(noticeKey);
-      if (!state.loading) renderNoticeList();
-      if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
+      if (state.manualAnalysisRequests.get(noticeKey) === flight) {
+        state.manualAnalysisRequests.delete(noticeKey);
+        if (!state.loading) renderNoticeList();
+        if (state.selectedNotice?.noticeKey === noticeKey) renderManualAnalysisDetailAction(state.selectedNotice);
+      }
     }
   }
 
@@ -5248,7 +5268,7 @@
 
   function renderManualAnalysisDetailAction(notice) {
     const availability = manualAnalysisAvailability(notice);
-    const running = state.manualAnalysisRequests.get(notice.noticeKey) === "running";
+    const running = state.manualAnalysisRequests.has(notice.noticeKey);
     const label = running ? manualAnalysisLabel(notice, true) : availability.label;
     els.manualAnalyzeButton.hidden = false;
     els.manualAnalyzeButton.disabled = running || !availability.enabled;
@@ -5963,24 +5983,33 @@
       }
     });
     retryButton.addEventListener("click", async () => {
+      const accountEpoch = state.accountEpoch;
       retryButton.disabled = true;
       button.disabled = true;
       statisticsButton.disabled = true;
       try {
         const headers = await manualAnalysisAuthHeaders();
-        if (!headers) return;
+        if (!headers || accountEpoch !== state.accountEpoch) return;
         output.textContent = "검토 중인 정량 첨부의 재추출을 요청합니다.";
         let result = await apiRequest(
           `/notices/${encodeURIComponent(noticeKey)}/analysis/request`,
           { method: "POST", headers, body: JSON.stringify({ run_extraction: true, retry_reviewed: true }) },
         );
+        if (accountEpoch !== state.accountEpoch) return;
+        const requestId = stringValue(result.request_id);
+        if (result.outcome === "QUEUED" && !requestId) throw new Error("분석 요청 식별자가 없습니다.");
         for (let poll = 0; result.outcome === "QUEUED" && poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1) {
           output.textContent = "첨부를 재추출하고 검증하고 있습니다. 요청을 중복 실행하지 마세요.";
           await new Promise((resolve) => window.setTimeout(resolve, MANUAL_ANALYSIS_POLL_INTERVAL_MS));
+          if (accountEpoch !== state.accountEpoch) return;
           result = await apiRequest(
-            `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(result.request_id)}`,
+            `/notices/${encodeURIComponent(noticeKey)}/analysis/requests/${encodeURIComponent(requestId)}`,
             { headers },
           );
+          if (accountEpoch !== state.accountEpoch) return;
+          if (result.request_id !== requestId || result.notice_key !== noticeKey) {
+            throw new Error("분석 상태 응답의 요청 식별자가 일치하지 않습니다.");
+          }
         }
         if (!container.isConnected) return;
         output.textContent = JSON.stringify(result, null, 2);

@@ -238,8 +238,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260908-results-v1"' in html
-    assert 'src="./app.js?v=20260908-results-v1"' in html
+    assert 'href="./styles.css?v=20260908-manual-queue-v1"' in html
+    assert 'src="./app.js?v=20260908-manual-queue-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -761,10 +761,10 @@ def test_manual_analysis_action_covers_incomplete_attachment_audits_and_confirms
     assert "문서 분석 요청 상한" in confirm_body
     assert "Claude" not in confirm_body
     assert "검색" not in confirm_body
-    assert "if (!await confirmManualAnalysis(notice, availability)) return" in request_body
-    assert request_body.index("if (!await confirmManualAnalysis(notice, availability)) return") < request_body.index(
-        'state.manualAnalysisRequests.set(noticeKey, "running")'
-    )
+    assert "const confirmed = await confirmManualAnalysis(notice, availability)" in request_body
+    assert "if (!isCurrent() || !confirmed) return" in request_body
+    assert request_body.index("if (!isCurrent() || !confirmed) return") < request_body.index('method: "POST"')
+    assert request_body.index("state.manualAnalysisRequests.set(noticeKey, flight)") < request_body.index("await loadQuantitativeEstimate")
 
 
 def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order() -> None:

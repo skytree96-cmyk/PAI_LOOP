@@ -497,6 +497,20 @@ def _cooldown_response(
     )
 
 
+def _running_manual_request_id(request: Request, notice_key: str) -> str | None:
+    """Find the existing reservation without taking its worker's execution lock."""
+    with request.app.state.session_factory() as session:
+        rows = session.execute(select(IngestionJob.id, IngestionJob.notice_keys).where(
+            IngestionJob.source == "MANUAL_ANALYSIS",
+            IngestionJob.mode == "LIVE",
+            IngestionJob.status == "RUNNING",
+        ).order_by(IngestionJob.created_at.desc(), IngestionJob.id.desc()))
+        for request_id, notice_keys in rows:
+            if isinstance(notice_keys, list) and notice_key in notice_keys:
+                return request_id
+    return None
+
+
 def _reserve_manual_job(
     request: Request,
     notice_key: str,
@@ -1238,7 +1252,17 @@ def request_manual_notice_analysis(
         )
     _require_manual_operator(request, paid=False)
     caller_intent = payload or ManualAnalysisRequest()
+    # A lost POST response or interrupted browser poll must reattach to the
+    # same durable request, not reserve another callback or change its actor.
+    # The GET projection also applies the existing idle-only orphan recovery.
+    active_request_id = _running_manual_request_id(request, notice_key)
+    if active_request_id is not None:
+        return get_manual_notice_analysis_request(notice_key, active_request_id, request)
     with _manual_execution_slot(request) as acquired:
+        # Another request can reserve between the first read and lock attempt.
+        active_request_id = _running_manual_request_id(request, notice_key)
+        if active_request_id is not None:
+            return get_manual_notice_analysis_request(notice_key, active_request_id, request)
         if not acquired:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
