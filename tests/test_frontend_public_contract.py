@@ -145,7 +145,8 @@ def test_pin_decision_reload_and_current_evaluation_frontend_contract() -> None:
     assert "{ ...notice.raw, decisions }" in hydrate_body
     assert "state.notices[index] = merged" in hydrate_body
     assert "merged = await hydrateOperatorDecisions(merged)" in detail_body
-    assert "evaluation_id: notice.evaluationId" in save_body
+    assert "const evaluationId = notice.evaluationId || notice.decisionEvaluationId" in save_body
+    assert "...(evaluationId ? { evaluation_id: evaluationId } : {})" in save_body
     assert 'error?.status === 409' in save_body
     assert 'includes("평가가 갱신")' in save_body
     assert "hydrateNoticeByKey(notice.noticeKey, { force: true })" in save_body
@@ -179,17 +180,17 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
-    for view in ("review", "urgent", "result-missing"):
+    for view in ("fail", "review", "urgent", "result-missing", "cancelled"):
         assert f'data-kpi-view="{view}"' in html
-    assert html.count('class="kpi-card__action"') == 3
+    assert html.count('class="kpi-card__action"') == 5
     assert html.count('aria-pressed="false"') >= 3
     assert "els.kpiViewButtons" in bind_body
     assert "setView(button.dataset.kpiView)" in bind_body
     assert "scrollIntoView" in bind_body
     assert 'state.currentView === "go"' in filter_body
     assert 'effectiveRecommendation(notice) !== "GO"' in filter_body
-    assert 'state.currentView === "urgent"' in filter_body
-    assert "URGENT_DEADLINE_DAYS" in filter_body
+    assert 'matchesDashboardQueue(notice, state.currentView)' in filter_body
+    assert "URGENT_DEADLINE_DAYS" in derived_body
     assert 'timeZone: "Asia/Seoul"' in source
     assert 'state.currentView === "ended"' in filter_body
     assert "isVisibleEndedNotice(notice)" in filter_body
@@ -197,21 +198,21 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "goCount: derived.goCount" in dashboard_body
     assert "endedCount:" in dashboard_body
     assert "visible_ended_count" in dashboard_body
-    assert "cancelled_count" in dashboard_body
-    assert "analysis_review_backlog_count" in dashboard_body
+    assert "workQueues.cancelled" in dashboard_body
+    assert "reviewCount: derived.reviewCount" in dashboard_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
-    assert "reviewCount: notices.filter(needsAnalysisOrReview).length" in derived_body
+    assert 'matchesDashboardQueue(notice, "review")' in derived_body
     assert 'noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO"' in derived_body
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
     assert "resultMissingCount:" in derived_body
     assert (
-        "isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome"
+        "isVisibleEndedNotice(notice) && !notice.hasBidOutcome"
         in derived_body
     )
-    assert "kpis.result_missing_count" in dashboard_body
-    assert "els.kpiNew.textContent = displayNumber(data.totalNotices)" in source
-    assert 'state.currentView === "result-missing"' in filter_body
-    assert "!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome" in filter_body
+    assert "workQueues.result_missing" in dashboard_body
+    assert "els.kpiNew.textContent = displayNumber(data.failCount)" in source
+    assert '["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)' in filter_body
+    assert 'if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome' in derived_body
     assert "source.has_bid_outcome" in source
     assert "effectiveRecommendation(notice) !== recommendation" in filter_body
     assert 'urgent: "/urgent"' in source
@@ -220,7 +221,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
     assert 'ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"]' in view_body
-    assert '"result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"]' in view_body
+    assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
@@ -229,7 +230,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'els.eligibilityFilter.value = "all"' in view_body
     assert 'els.recommendationFilter.value = "all"' in view_body
     assert ".kpi-card__action:focus-visible" in styles
-    assert "7일" in html
+    assert "5일" in html
     assert "3일" not in html
     assert "72시간" not in html
 
@@ -237,8 +238,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260908-review-v1"' in html
-    assert 'src="./app.js?v=20260908-review-v1"' in html
+    assert 'href="./styles.css?v=20260908-review-v2"' in html
+    assert 'src="./app.js?v=20260908-review-v2"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -257,7 +258,7 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     assert "DECIDE WITH EVIDENCE" not in html
     assert "확인이 필요한 공고부터 처리하세요" in html
     assert "검토 대기" in html
-    assert "결과 미기록" in html
+    assert "결과 입력 필요 공고" in html
     assert "저장된 전체 공고" in html
     assert "취소공고" in html
 
@@ -519,7 +520,7 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     badge_body = _function_body(source, "noticeLifecycleBadge", "recommendationPill")
     detail_body = _function_body(source, "renderDetail", "detailFact")
 
-    assert '["ended", "result-missing"].includes(view)' in scope_body
+    assert '["ended", "cancelled", "result-missing"].includes(view)' in scope_body
     assert 'return "ENDED"' in scope_body
     assert "provider_disposition" in normalize_body
     assert "provider_event_kind" in normalize_body
@@ -544,6 +545,96 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     assert 'id="kpiEnded"' in html
     assert "운영 대상에서 제외된 공고" in html
     assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in styles
+
+
+def test_human_decision_is_recordable_without_a_current_evaluation() -> None:
+    """The operator's GO/HOLD/NO_GO is theirs, not an output of the analysis."""
+
+    source = APP_JS.read_text(encoding="utf-8")
+    preview_body = _function_body(
+        source, "focusDecisionDockFromPreview", "renderExistingDecision"
+    )
+    existing_body = _function_body(source, "renderExistingDecision", "selectTab")
+    button_body = _function_body(source, "updateDecisionButton", "saveDecision")
+    save_body = _function_body(source, "saveDecision", "renderPipelineIntoExisting")
+    record_body = _function_body(
+        source, "normalizeDecisionRecord", "buildEvaluationSummary"
+    )
+    detail_text_body = _function_body(
+        source, "operatorDecisionDetailText", "updateOperatorDecisionReadState"
+    )
+
+    # No entry point refuses the judgement because the analysis is unfinished.
+    assert '"담당자 판단은 분석 후 가능합니다"' not in preview_body
+    assert '"아직 분석 전입니다"' not in save_body
+    assert '"분석 완료 후 저장 가능"' not in button_body
+    assert "input.disabled = cancelled || !canWriteDecision()" in existing_body
+    assert "input.disabled = cancelled || !analyzed" not in existing_body
+    assert "els.toggleCommentButton.disabled = cancelled || !analyzed" not in existing_body
+
+    # An unfinished analysis makes the operator's own reason mandatory instead.
+    assert "const reasonRequired = overrideNeedsReason || (Boolean(state.selectedNotice) && !analyzed)" in button_body
+    assert "const overrideReasonMissing = reasonRequired && !els.decisionComment.value.trim()" in button_body
+    assert "els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing" in button_body
+    assert '"판단 사유를 입력하세요"' in button_body
+    assert '"분석 전 판단 기록"' in button_body
+    assert "if (!analyzed && !comment)" in save_body
+    assert '"판단 사유가 필요합니다"' in save_body
+
+    # The server-recorded analysis snapshot survives the round trip.
+    assert "analysisStateSnapshot: stringValue(firstValue(source.analysis_state_snapshot" in record_body
+    assert "analysisSnapshot: firstObject(source.analysis_snapshot" in record_body
+    assert "서버가 당시 분석 상태를 함께 남깁니다" in detail_text_body
+
+
+def test_unfinished_human_decision_requires_reason_and_preserves_visible_server_token() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    script = r'''
+const assert=require("node:assert/strict"),vm=require("node:vm"),source=require("node:fs").readFileSync(0,"utf8");
+const context=vm.createContext({document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
+  window:{matchMedia(){return {matches:false};}},URL,URLSearchParams});
+const exported=`globalThis.requests=[];
+apiRequest=async(path,options)=>{const payload=JSON.parse(options.body);requests.push(payload);return payload;};
+refreshDashboardAfterMutation=async()=>{};renderExistingDecision=()=>{};renderPipelineIntoExisting=()=>{};
+renderAll=()=>{};setDecisionDockExpanded=()=>{};showToast=()=>{};updateDecisionButton=()=>{};
+globalThis.ui={state,els,normalizeNotice,saveDecision,decisionAnalysisComplete};`;
+vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
+const u=context.ui, field=()=>({value:"",hidden:false,disabled:false,textContent:"",focus(){},setAttribute(){}});
+for(const name of ["decisionComment","commentField","toggleCommentButton","saveDecisionButton","decisionDockToggle"])
+  u.els[name]=field();
+Object.assign(u.state,{source:"api",writeControlsEnabled:true,accessMode:"SERVER_AUTHENTICATED"});
+const raw={notice_key:"PPS-SYN_UNFINISHED",title:"SYN unfinished",agency:"SYN agency",status:"EXPIRED",
+  deadline:"2020-01-01T00:00:00Z",analysis_state:"REVIEW",analysis_attachment_coverage_complete:false,
+  latest_evaluation:{id:"SYN-legacy-evaluation",eligibility:"PASS",evaluated_at:"2019-12-01T00:00:00Z"}};
+(async()=>{
+  for(const choice of ["GO","HOLD","NO_GO"]) {
+    const notice=u.normalizeNotice(raw);u.state.notices=[notice];u.state.selectedNotice=notice;
+    assert.equal(notice.evaluationId,"");
+    assert.equal(notice.decisionEvaluationId,"SYN-legacy-evaluation");
+    assert.equal(u.decisionAnalysisComplete(notice),false);
+    u.els.decisionInputs=[{value:choice,checked:true}];u.els.decisionComment.value="";
+    const before=context.requests.length;
+    await u.saveDecision({preventDefault(){}});
+    assert.equal(context.requests.length,before);
+    u.els.decisionComment.value="SYN human reason while analysis is incomplete";
+    await u.saveDecision({preventDefault(){}});
+    assert.equal(context.requests.length,before+1);
+    assert.equal(context.requests.at(-1).evaluation_id,"SYN-legacy-evaluation");
+    assert.equal(context.requests.at(-1).choice,choice);
+    assert.equal(context.requests.at(-1).rationale,u.els.decisionComment.value);
+  }
+  const missing=u.normalizeNotice({...raw,latest_evaluation:null});
+  u.state.notices=[missing];u.state.selectedNotice=missing;
+  await u.saveDecision({preventDefault(){}});
+  assert.equal(Object.hasOwn(context.requests.at(-1),"evaluation_id"),false);
+  const count=context.requests.length;
+  u.state.selectedNotice={...missing,providerDisposition:"CANCELLED"};
+  await u.saveDecision({preventDefault(){}});
+  assert.equal(context.requests.length,count);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    result = subprocess.run(["node", "-e", script], input=source, text=True, encoding="utf-8", capture_output=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None:
@@ -782,8 +873,8 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
     assert "analysisStatusPill(notice)" in panel_body
     assert "검증된 공개 자격정책이 없습니다" in panel_body
     assert "종합 판단을 PASS로 보완하지 않습니다" in panel_body
-    assert "eligibilityRequirementsForDisplay(notice)" in actions_body
-    assert 'requirement.status))' in actions_body
+    assert "submissionCheckItemsForDisplay(notice)" in actions_body
+    assert "eligibilityRequirementsForDisplay(notice)" not in actions_body
     assert "eligibilityRequirementsForDisplay(notice)" in detail_body
     assert "renderEligibilityPanel(notice, requirements)" in detail_body
 
@@ -904,7 +995,7 @@ def test_document_quality_review_is_not_presented_as_eligibility_review() -> Non
 
     assert "needsAnalysisOrReview" in dashboard_body
     assert "isDocumentQualityReview" in dashboard_body
-    assert "needsAnalysisOrReview(notice)" in filter_body
+    assert "matchesDashboardQueue(notice, state.currentView)" in filter_body
     assert 'String(notice.analysisReasonCode || "")' in quality_body
     assert "notice.reasonCode" not in quality_body
     assert "ATTACHMENT_COVERAGE_INCOMPLETE" in quality_body
@@ -1120,13 +1211,13 @@ assert.match(renderQuantitativeEstimateRow({...criterion,source_anchor:{page:2}}
 
 
 
-def test_urgent_seven_day_window_and_operator_filter_preserve_other_axes() -> None:
+def test_urgent_five_day_window_and_operator_filter_preserve_other_axes() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     urgent_constant = re.search(r"  const URGENT_DEADLINE_DAYS = \d+;", source)
     assert urgent_constant
-    assert 'aria-label="7일 이내 입찰마감 공고 보기"' in html
-    assert 'class="kpi-scope-note">현재 조회 공고 중' in html
+    assert 'aria-label="5일 이내 입찰마감 공고 보기"' in html
+    assert 'class="kpi-scope-note">현재 조회 PASS·REVIEW 중' in html
     assert 'id="replayButton" hidden' in html
     assert 'els.replayButton.hidden = true;' in source
     adapter = urgent_constant.group(0)
@@ -1144,6 +1235,7 @@ const noticeLifecycleStatus = notice => notice.status;
 const isCancelledNotice = notice => notice.status === "CANCELLED";
 const isVisibleEndedNotice = notice => ["CLOSED", "EXPIRED", "CANCELLED"].includes(notice.status);
 const renderNoticeSearchScope = () => {};
+const globalNoticeSearchActive = () => Boolean(els.searchInput.value.trim());
 const renderNoticeList = () => {};
 const window = {clearTimeout() {}};
 const formatNumber = value => String(value);
@@ -1163,8 +1255,8 @@ const notice = (id, days, eligibility, decision=null, status="OPEN") => ({
   eligibility, eligibilityStatus:eligibility, recommendation:"GO", decision, decisionReadStatus:"KNOWN",
   topDepartmentRankings:[], departmentReviewCandidates:[], hasBidOutcome:false, raw:{decisions:[]},
 });
-const notices = [notice("SYN-eight",8,"PASS"), notice("SYN-review",1,"REVIEW","GO"),
-  notice("SYN-seven",7,"PASS","NO_GO"), notice("SYN-today",0,"PASS","HOLD"),
+const notices = [notice("SYN-six",6,"PASS"), notice("SYN-review",1,"REVIEW","GO"),
+  notice("SYN-five",5,"PASS","NO_GO"), notice("SYN-today",0,"PASS","HOLD"),
   notice("SYN-closed",2,"PASS",null,"CLOSED"), notice("SYN-expired",-1,"PASS",null,"EXPIRED"),
   notice("SYN-pending",2,"UNKNOWN"), notice("SYN-conditional",3,"PASS","CONDITIONAL_GO")];
 const state = {loading:false, source:"api", accessMode:"SERVER_AUTHENTICATED", currentView:"all",
@@ -1172,21 +1264,21 @@ const state = {loading:false, source:"api", accessMode:"SERVER_AUTHENTICATED", c
 const original = JSON.stringify(notices);
 applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
-  ["SYN-today","SYN-conditional","SYN-seven","SYN-eight","SYN-review","SYN-pending"]);
+  ["SYN-today","SYN-conditional","SYN-five","SYN-six","SYN-review","SYN-pending"]);
 state.currentView="urgent";
 applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
-  ["SYN-today","SYN-conditional","SYN-seven","SYN-review","SYN-pending"]);
-assert.equal(deriveDashboard(notices).urgentCount,5);
+  ["SYN-today","SYN-conditional","SYN-five","SYN-review"]);
+assert.equal(deriveDashboard(notices).urgentCount,4);
 const apiCounts = {totals:{notices:800},deadline_soon:1,kpis:{urgent_count:1}};
-assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,5);
-const querySubset=notices.filter(x=>x.noticeKey==="SYN-seven");
+assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,4);
+const querySubset=notices.filter(x=>x.noticeKey==="SYN-five");
 assert.equal(normalizeDashboard(apiCounts,querySubset).urgentCount,1);
 assert.equal(normalizeDashboard(apiCounts,querySubset).totalNotices,800);
 state.currentView="all";
 els.operatorDecisionFilter.value="NO_GO";
 applyFilters();
-assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-seven"]);
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-five"]);
 els.operatorDecisionFilter.value="HOLD";
 applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-today"]);
@@ -1203,7 +1295,7 @@ assert.equal(state.filteredNotices.length,0);
 els.eligibilityFilter.value="all";
 els.operatorDecisionFilter.value="UNDECIDED";
 applyFilters();
-assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-eight","SYN-pending"]);
+assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),["SYN-six","SYN-pending"]);
 state.currentView="ended";
 els.operatorDecisionFilter.value="all";
 applyFilters();
@@ -1324,8 +1416,11 @@ const respond=(status,payload)=>pendingResponse({ok:status>=200&&status<300,stat
   u.renderExistingDecision(notice);
   assert.match(u.els.decisionExisting.textContent,/저장된 판단: 보류/);
   assert.match(u.els.decisionExisting.textContent,/현재 공고 분석 전/);
+  assert.equal(u.els.saveDecisionButton.disabled,false);
+  assert.equal(u.els.decisionInputs.every(input=>input.disabled),false);
+  u.els.decisionComment.value="";
+  u.renderExistingDecision({...notice,decisionComment:""});
   assert.equal(u.els.saveDecisionButton.disabled,true);
-  assert.equal(u.els.decisionInputs.every(input=>input.disabled),true);
   const cancelled={...notice,providerDisposition:"CANCELLED"};
   u.state.selectedNotice=cancelled;
   u.renderExistingDecision(cancelled);

@@ -13,7 +13,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .auth import require_api_key
 
@@ -522,9 +522,19 @@ def query_public_performance(
     q: str | None = None,
     year: int | None = None,
     division: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    min_amount: int | None = None,
+    max_amount: int | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("계약 시작일은 종료일보다 늦을 수 없습니다.")
+    if any(value is not None and value < 0 for value in (min_amount, max_amount)):
+        raise ValueError("계약금액은 0원 이상이어야 합니다.")
+    if min_amount is not None and max_amount is not None and min_amount > max_amount:
+        raise ValueError("최소 계약금액은 최대 계약금액보다 클 수 없습니다.")
     seed = load_public_performance_seed()
     query = _normalise_text(q)
     division_query = _normalise_text(division)
@@ -532,6 +542,23 @@ def query_public_performance(
     division_folded = division_query.casefold() if division_query else None
 
     def matches(record: Mapping[str, Any]) -> bool:
+        if date_from is not None or date_to is not None:
+            contract_date = _normalise_date(record.get("contract_date"))
+            if contract_date is None:
+                return False
+            if date_from and contract_date < date_from.isoformat():
+                return False
+            if date_to and contract_date > date_to.isoformat():
+                return False
+        if min_amount is not None or max_amount is not None:
+            amount_text = _normalise_amount(record.get("contract_amount_krw"))
+            if amount_text is None:
+                return False
+            amount = Decimal(amount_text)
+            if min_amount is not None and amount < min_amount:
+                return False
+            if max_amount is not None and amount > max_amount:
+                return False
         if year is not None and record.get("contract_year") != year:
             return False
         if division_folded and division_folded not in str(record.get("division") or "").casefold():
@@ -578,13 +605,24 @@ def get_public_performance(
     q: str | None = None,
     year: int | None = Query(default=None, ge=1900, le=2200),
     division: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    min_amount: int | None = Query(default=None, ge=0),
+    max_amount: int | None = Query(default=None, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    return query_public_performance(
-        q=q,
-        year=year,
-        division=division,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return query_public_performance(
+            q=q,
+            year=year,
+            division=division,
+            date_from=date_from,
+            date_to=date_to,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

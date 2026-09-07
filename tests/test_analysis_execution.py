@@ -48,6 +48,110 @@ def postgres_engine():
         engine.dispose()
 
 
+def test_postgres_legacy_decision_upgrade_preserves_rows(postgres_engine):
+    """Exercise the actual NOT NULL migration in an isolated disposable schema."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import inspect, select
+    from sqlalchemy.exc import IntegrityError
+
+    from pai_loop import migrations
+    from pai_loop.database import Base
+    from pai_loop.models import BidOutcome, Evaluation, Notice, NoticeVersion, UserDecision
+
+    schema = "syn_decision_" + uuid.uuid4().hex
+    engine = create_engine(
+        postgres_engine.url,
+        connect_args={"options": f"-csearch_path={schema}"},
+        pool_size=1,
+        max_overflow=0,
+    )
+    with postgres_engine.begin() as connection:
+        connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT current_schema()")) == schema
+        Base.metadata.create_all(engine)
+        now = datetime(2026, 9, 8, tzinfo=timezone.utc)
+        with engine.begin() as connection:
+            connection.execute(Notice.__table__.insert().values(
+                id="SYN-notice", notice_key="SYN-PG-LEGACY", bid_notice_no="SYN-PG-LEGACY",
+                revision_no="00", title="SYN legacy notice", agency="SYN agency",
+                deadline=now, status="CLOSED",
+            ))
+            connection.execute(NoticeVersion.__table__.insert().values(
+                id="SYN-version", notice_id="SYN-notice", version_no=1, file_sha256="a" * 64,
+            ))
+            connection.execute(Evaluation.__table__.insert().values(
+                id="SYN-evaluation", notice_id="SYN-notice", notice_version_id="SYN-version",
+                deadline_snapshot_at=now, eligibility="REVIEW", reason_code="R07",
+                readiness_score=50, readiness_status="YELLOW", evidence_coverage=50,
+                risk_band="HOLD", atomic_results=[], explanation={},
+            ))
+            connection.execute(UserDecision.__table__.insert().values(
+                id="SYN-old-decision", notice_id="SYN-notice", evaluation_id="SYN-evaluation",
+                choice="HOLD", actor_label="SYN operator", rationale="SYN retained rationale",
+                conditions=["SYN retained condition"], created_at=now,
+            ))
+            connection.execute(BidOutcome.__table__.insert().values(
+                id="SYN-outcome", notice_id="SYN-notice", decision_id="SYN-old-decision",
+                evaluation_id="SYN-evaluation", outcome_key="SYN-outcome", status="WON",
+            ))
+            original_decision = dict(connection.execute(select(UserDecision.__table__)).mappings().one())
+            original_outcome = dict(connection.execute(select(BidOutcome.__table__)).mappings().one())
+            # Recreate the old constraints/columns without dropping any table or
+            # its inbound bid_outcomes reference. No migration ledger exists yet.
+            connection.exec_driver_sql("ALTER TABLE user_decisions ALTER COLUMN evaluation_id SET NOT NULL")
+            connection.exec_driver_sql("ALTER TABLE user_decisions DROP COLUMN analysis_state_snapshot")
+            connection.exec_driver_sql("ALTER TABLE user_decisions DROP COLUMN analysis_snapshot")
+
+        columns = {item["name"]: item for item in inspect(engine).get_columns("user_decisions")}
+        assert columns["evaluation_id"]["nullable"] is False
+        assert "analysis_state_snapshot" not in columns and "analysis_snapshot" not in columns
+        original_foreign_keys = inspect(engine).get_foreign_keys("user_decisions")
+        assert migrations.INDEPENDENT_DECISION_MIGRATION_ID in migrations.pending_migrations(engine)
+        assert migrations.INDEPENDENT_DECISION_MIGRATION_ID in migrations.apply_additive_migrations(engine)
+        columns = {item["name"]: item for item in inspect(engine).get_columns("user_decisions")}
+        assert all(columns[name]["nullable"] is True for name in (
+            "evaluation_id", "analysis_state_snapshot", "analysis_snapshot",
+        ))
+        assert inspect(engine).get_foreign_keys("user_decisions") == original_foreign_keys
+
+        with engine.begin() as connection:
+            assert dict(connection.execute(select(UserDecision.__table__)).mappings().one()) == original_decision
+            assert dict(connection.execute(select(BidOutcome.__table__)).mappings().one()) == original_outcome
+            connection.execute(UserDecision.__table__.insert().values(
+                id="SYN-new-decision", notice_id="SYN-notice", evaluation_id=None,
+                choice="NO_GO", actor_label="SYN operator", rationale="SYN independent reason",
+                analysis_state_snapshot="NOT_EVALUATED",
+                analysis_snapshot={"analysis_state": "NOT_EVALUATED"}, created_at=now,
+            ))
+            preserved_decisions = [dict(row) for row in connection.execute(
+                select(UserDecision.__table__).order_by(UserDecision.id)
+            ).mappings()]
+            assert preserved_decisions[0]["evaluation_id"] is None
+            assert preserved_decisions[0]["analysis_snapshot"] == {"analysis_state": "NOT_EVALUATED"}
+
+        assert migrations.apply_additive_migrations(engine) == []
+        assert migrations.pending_migrations(engine) == []
+        with engine.connect() as connection:
+            assert [dict(row) for row in connection.execute(
+                select(UserDecision.__table__).order_by(UserDecision.id)
+            ).mappings()] == preserved_decisions
+            assert dict(connection.execute(select(BidOutcome.__table__)).mappings().one()) == original_outcome
+        with pytest.raises(IntegrityError), engine.begin() as connection:
+            connection.execute(UserDecision.__table__.insert().values(
+                id="SYN-invalid-decision", notice_id="SYN-missing-notice", evaluation_id=None,
+                choice="NO_GO", actor_label="SYN operator", rationale="SYN invalid reference",
+            ))
+    finally:
+        engine.dispose()
+        # The fixture already rejects non-local/non-test databases. Only this
+        # test's UUID-named schema is removed; the shared public schema is untouched.
+        with postgres_engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def _start(pool, engine, *, key=None, lane=None):
     entered, release = Event(), Event()
 

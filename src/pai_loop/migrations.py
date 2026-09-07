@@ -4,13 +4,16 @@ import argparse
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+import re
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
     DateTime,
+    JSON,
     MetaData,
     String,
     Table,
@@ -26,6 +29,7 @@ from .models import (
     AnalysisRun,
     BidOutcome,
     CompanyPerformanceRecord,
+    UserDecision,
     PerformanceNormalizationBatch,
     PerformanceNormalizationRevision,
     NoticeAnalysisPolicy,
@@ -75,6 +79,14 @@ PERFORMANCE_NORMALIZATION_MIGRATION_CONTRACT = (
 )
 PERFORMANCE_NORMALIZATION_MIGRATION_CHECKSUM = hashlib.sha256(
     PERFORMANCE_NORMALIZATION_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+INDEPENDENT_DECISION_MIGRATION_ID = "20260908_01_independent_operator_decisions"
+INDEPENDENT_DECISION_MIGRATION_CONTRACT = (
+    "user_decisions:evaluation_id:nullable;"
+    "analysis_state_snapshot:varchar32|null;analysis_snapshot:json|null"
+)
+INDEPENDENT_DECISION_MIGRATION_CHECKSUM = hashlib.sha256(
+    INDEPENDENT_DECISION_MIGRATION_CONTRACT.encode("utf-8")
 ).hexdigest()
 PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
 PRESPEC_MIGRATION_CONTRACT = (
@@ -133,6 +145,11 @@ _migrations = (
             PreSpecificationDocument.__table__,
             PreSpecificationAnalysisRun.__table__,
         ),
+    ),
+    (
+        INDEPENDENT_DECISION_MIGRATION_ID,
+        INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
+        (),
     ),
 )
 _required_base_tables = {
@@ -229,6 +246,189 @@ def _add_company_performance_recognized_amount_columns(
     )
 
 
+_INDEPENDENT_DECISION_COLUMNS = {
+    "analysis_state_snapshot": ("VARCHAR(32)", String),
+    "analysis_snapshot": ("JSON", JSON),
+}
+
+
+def _validate_independent_decision_columns(
+    columns: Sequence[dict[str, object]],
+    *,
+    require_all: bool,
+) -> None:
+    by_name = {str(column["name"]): column for column in columns}
+    for column_name, (_sql_type, expected_type) in _INDEPENDENT_DECISION_COLUMNS.items():
+        column = by_name.get(column_name)
+        if column is None:
+            if require_all:
+                raise MigrationError(
+                    "user_decisions migration did not create required column "
+                    f"{column_name}"
+                )
+            continue
+        if not isinstance(column.get("type"), expected_type):
+            raise MigrationError(
+                "user_decisions has an incompatible existing column "
+                f"{column_name}; expected {expected_type.__name__}"
+            )
+        if column.get("nullable") is not True:
+            raise MigrationError(
+                "user_decisions has an incompatible existing column "
+                f"{column_name}; the additive column must be nullable"
+            )
+    evaluation_id = by_name.get("evaluation_id")
+    if evaluation_id is None:
+        raise MigrationError("user_decisions is missing its evaluation_id column")
+    if require_all and evaluation_id.get("nullable") is not True:
+        raise MigrationError(
+            "user_decisions.evaluation_id is still NOT NULL; a decision recorded "
+            "before analysis cannot be stored"
+        )
+
+
+def _validate_applied_independent_decision_migration(connection: Connection) -> None:
+    table_name = UserDecision.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        raise MigrationError(
+            "user_decisions is missing although its independent-decision "
+            "migration is recorded as applied"
+        )
+    _validate_independent_decision_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+
+
+def _relax_independent_decision_columns(connection: Connection) -> None:
+    """Add the nullable snapshot columns and release the evaluation_id gate.
+
+    PostgreSQL relaxes NOT NULL in place. SQLite copies the complete existing
+    table inside the migration transaction, preserving data and schema objects.
+    """
+
+    table_name = UserDecision.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        UserDecision.__table__.create(connection, checkfirst=True)
+    existing_columns = inspect(connection).get_columns(table_name)
+    _validate_independent_decision_columns(existing_columns, require_all=False)
+    existing = {str(column["name"]) for column in existing_columns}
+    for column_name, (sql_type, _expected_type) in _INDEPENDENT_DECISION_COLUMNS.items():
+        if column_name in existing:
+            continue
+        connection.exec_driver_sql(
+            f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {sql_type}'
+        )
+
+    evaluation_id = next(
+        column
+        for column in inspect(connection).get_columns(table_name)
+        if str(column["name"]) == "evaluation_id"
+    )
+    if evaluation_id.get("nullable") is not True:
+        dialect = connection.dialect.name
+        if dialect == "postgresql":
+            connection.exec_driver_sql(
+                f'ALTER TABLE "{table_name}" ALTER COLUMN "evaluation_id" DROP NOT NULL'
+            )
+        elif dialect == "sqlite":
+            _rebuild_sqlite_decisions_with_nullable_evaluation(connection)
+        else:
+            raise MigrationError(
+                f"{dialect} cannot relax user_decisions.evaluation_id in place; "
+                "recreate this development database with --create-base"
+            )
+    _validate_independent_decision_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+    for index in UserDecision.__table__.indexes:
+        if index.name == "ix_user_decisions_analysis_state_snapshot":
+            index.create(connection, checkfirst=True)
+
+
+def _rebuild_sqlite_decisions_with_nullable_evaluation(connection: Connection) -> None:
+    """Preserve the original DDL, all values, indexes, triggers and child rows."""
+    if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one():
+        raise MigrationError("SQLite decision rebuild requires migration-scoped foreign key suspension")
+    original_sql = connection.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='user_decisions'"
+    ).scalar_one()
+    # Historical supported schemas use VARCHAR(36); accept equivalent SQLite
+    # text types/identifier quoting, and fail before copying on unknown DDL.
+    relaxed_sql, changes = re.subn(
+        r'((?:\(|,)\s*(?:"evaluation_id"|`evaluation_id`|\[evaluation_id\]|evaluation_id)'
+        r'\s+(?:VARCHAR|CHAR|TEXT)(?:\s*\(\s*\d+\s*\))?\s+)NOT\s+NULL\b',
+        r'\1', original_sql, flags=re.IGNORECASE,
+    )
+    if changes != 1:
+        raise MigrationError("Cannot identify exactly one SQLite evaluation_id NOT NULL constraint")
+    temporary_name = "__pai_user_decisions_nullable"
+    if temporary_name in inspect(connection).get_table_names():
+        raise MigrationError("SQLite decision migration temporary table already exists; preserve it for review")
+    replacement_sql, changes = re.subn(
+        r'^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+        r'(?:"user_decisions"|`user_decisions`|\[user_decisions\]|user_decisions)(?=\s*\()',
+        f'CREATE TABLE "{temporary_name}"', relaxed_sql, count=1, flags=re.IGNORECASE,
+    )
+    if changes != 1:
+        raise MigrationError("Cannot identify the SQLite user_decisions table declaration")
+    schema_objects = list(connection.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE tbl_name='user_decisions' "
+        "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type, name"
+    ).scalars())
+    quote = connection.dialect.identifier_preparer.quote
+    columns = ", ".join(
+        quote(row[1]) for row in connection.exec_driver_sql('PRAGMA table_xinfo("user_decisions")')
+        if row[6] == 0  # Generated columns are recomputed by their unchanged DDL.
+    )
+    connection.exec_driver_sql(replacement_sql)
+    connection.exec_driver_sql(
+        f'INSERT INTO "{temporary_name}" ({columns}) SELECT {columns} FROM user_decisions'
+    )
+    count_before = connection.exec_driver_sql("SELECT COUNT(*) FROM user_decisions").scalar_one()
+    count_after = connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{temporary_name}"').scalar_one()
+    changed = connection.exec_driver_sql(
+        f'SELECT {columns} FROM user_decisions EXCEPT SELECT {columns} FROM "{temporary_name}" LIMIT 1'
+    ).first()
+    if count_before != count_after or changed is not None:
+        raise MigrationError("SQLite decision migration copy verification failed")
+    connection.exec_driver_sql('DROP TABLE "user_decisions"')
+    connection.exec_driver_sql(f'ALTER TABLE "{temporary_name}" RENAME TO "user_decisions"')
+    for statement in schema_objects:
+        connection.exec_driver_sql(statement)
+
+
+@contextmanager
+def _migration_transaction(engine: Engine) -> Iterator[Connection]:
+    """Make SQLite DDL transactional and restore FK enforcement on every exit."""
+    with engine.connect() as connection:
+        sqlite = connection.dialect.name == "sqlite"
+        foreign_keys = 0
+        if sqlite:
+            foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+            connection.commit()
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.commit()
+        try:
+            with connection.begin():
+                if sqlite:
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                yield connection
+                if sqlite and connection.exec_driver_sql("PRAGMA foreign_key_check").first() is not None:
+                    raise MigrationError("SQLite migration foreign key verification failed")
+        finally:
+            if sqlite:
+                try:
+                    connection.exec_driver_sql(f"PRAGMA foreign_keys={int(foreign_keys)}")
+                    if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() != foreign_keys:
+                        raise MigrationError("SQLite migration could not restore foreign key enforcement")
+                    connection.commit()
+                except Exception:
+                    connection.invalidate()
+                    raise
+
+
 def _applied_checksum(connection: Connection, migration_id: str) -> str | None:
     return connection.execute(
         select(schema_migrations.c.checksum).where(
@@ -257,19 +457,22 @@ def pending_migrations(engine: Engine) -> list[str]:
                 _validate_applied_company_performance_recognized_amount_migration(
                     connection
                 )
+            if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
+                _validate_applied_independent_decision_migration(connection)
         return pending
 
 
 def apply_additive_migrations(engine: Engine) -> list[str]:
     """Apply additive tables/nullable columns and record idempotent ledger rows.
 
-    Existing rows are never rewritten and tables/columns are never dropped.
+    Existing records and relationships are preserved. SQLite's nullable
+    evaluation upgrade rebuilds only user_decisions in an atomic transaction.
     Existing application tables must already be present. A new installation
     should run ``Base.metadata.create_all`` first (the CLI exposes this as
     ``--create-base``).
     """
 
-    with engine.begin() as connection:
+    with _migration_transaction(engine) as connection:
         if connection.dialect.name == "postgresql":
             connection.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),
@@ -297,11 +500,15 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     _validate_applied_company_performance_recognized_amount_migration(
                         connection
                     )
+                if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
+                    _validate_applied_independent_decision_migration(connection)
                 continue
             for table in tables:
                 table.create(connection, checkfirst=True)
             if migration_id == COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID:
                 _add_company_performance_recognized_amount_columns(connection)
+            if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
+                _relax_independent_decision_columns(connection)
             connection.execute(
                 schema_migrations.insert().values(
                     migration_id=migration_id,

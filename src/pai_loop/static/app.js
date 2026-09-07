@@ -8,7 +8,7 @@
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
   const NOTICE_PAGE_SIZE = 200;
-  const URGENT_DEADLINE_DAYS = 7;
+  const URGENT_DEADLINE_DAYS = 5;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const MANUAL_ANALYSIS_MAX_POLLS = 1800;
   // Compatibility note for older embedded contracts: MANUAL_ANALYSIS_MAX_POLLS = 900.
@@ -171,6 +171,8 @@
     collected: "/",
     go: "/",
     urgent: "/urgent",
+    fail: "/fail",
+    cancelled: "/cancelled",
     ended: "/",
     "result-missing": "/result-missing",
   });
@@ -180,6 +182,8 @@
     "/notices": "new",
     "/reviews": "review",
     "/urgent": "urgent",
+    "/fail": "fail",
+    "/cancelled": "cancelled",
     "/result-missing": "result-missing",
     "/decisions": "undecided",
     "/results": "closed",
@@ -236,6 +240,7 @@
       "awardResultsPanel", "awardResultsList", "awardResultsLoadingState", "awardResultsErrorState", "awardResultsErrorMessage", "awardResultsEmptyState",
       "performanceTotal", "performancePeriod", "performanceYears", "performancePrivacy", "performanceResultSummary",
       "performanceFilterForm", "performanceSearchInput", "performanceYearFilter", "performanceDivisionFilter",
+      "performanceDateFrom", "performanceDateTo", "performanceMinAmount", "performanceMaxAmount",
       "performancePanel", "performanceList", "performanceLoadingState", "performanceErrorState", "performanceErrorMessage",
       "performanceRetryButton", "performanceEmptyState", "performanceEmptyResetButton", "performancePagination",
       "performancePageRange", "performancePageLabel", "performancePreviousButton", "performanceNextButton",
@@ -451,15 +456,18 @@
 
     els.performanceFilterForm.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (!validatePerformanceRanges()) return;
       state.performance.offset = 0;
       void loadPerformance({ force: true });
     });
     els.performanceFilterForm.addEventListener("reset", () => {
       window.setTimeout(() => {
+        validatePerformanceRanges(false);
         state.performance.offset = 0;
         void loadPerformance({ force: true });
       }, 0);
     });
+    els.performanceFilterForm.addEventListener("input", () => validatePerformanceRanges(false));
     els.performanceRetryButton.addEventListener("click", () => loadPerformance({ force: true }));
     els.performanceEmptyResetButton.addEventListener("click", resetPerformanceFilters);
     els.performancePreviousButton.addEventListener("click", () => changePerformancePage(-1));
@@ -539,12 +547,16 @@
       button.addEventListener("click", () => selectTab(button.dataset.tab));
       button.addEventListener("keydown", handleTabKeydown);
     });
-    els.requirementList.addEventListener("click", (event) => {
-      if (!event.target.closest("[data-evidence-jump]")) return;
-      selectTab("evidence");
-      requestAnimationFrame(() => {
-        els.evidenceList.scrollIntoView({ behavior: "smooth", block: "start" });
-        els.evidenceList.focus();
+    [els.requirementList, els.actionList].forEach((list) => {
+      list.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-evidence-jump]");
+        if (!button) return;
+        selectTab("evidence");
+        requestAnimationFrame(() => {
+          const target = document.getElementById(`evidence-${button.dataset.evidenceJump}`) || els.evidenceList;
+          els.evidenceList.focus({ preventScroll: true });
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
       });
     });
 
@@ -886,8 +898,8 @@
 
   function noticeStatusScopeForView(view) {
     if (globalNoticeSearchActive()) return "ALL";
-    if (["ended", "result-missing"].includes(view)) return "ENDED";
-    return ["collected", "closed"].includes(view) ? "ALL" : "OPEN";
+    if (["ended", "cancelled", "result-missing"].includes(view)) return "ENDED";
+    return ["collected", "closed", "fail"].includes(view) ? "ALL" : "OPEN";
   }
 
   function renderNoticeSearchScope() {
@@ -1499,9 +1511,31 @@
     if (query) params.set("q", query);
     if (year) params.set("year", year);
     if (division) params.set("division", division);
+    for (const [name, control] of performanceRangeControls()) {
+      if (control.value !== "") params.set(name, control.value);
+    }
     params.set("limit", String(state.performance.limit));
     params.set("offset", String(state.performance.offset));
     return `/performance?${params.toString()}`;
+  }
+
+  function performanceRangeControls() {
+    return [
+      ["date_from", els.performanceDateFrom], ["date_to", els.performanceDateTo],
+      ["min_amount", els.performanceMinAmount], ["max_amount", els.performanceMaxAmount],
+    ];
+  }
+
+  function validatePerformanceRanges(report = true) {
+    const from = els.performanceDateFrom;
+    const to = els.performanceDateTo;
+    const min = els.performanceMinAmount;
+    const max = els.performanceMaxAmount;
+    to.setCustomValidity(from.value && to.value && from.value > to.value
+      ? "종료일은 시작일 이후로 선택해 주세요." : "");
+    max.setCustomValidity(min.value !== "" && max.value !== "" && Number(min.value) > Number(max.value)
+      ? "최대 금액은 최소 금액 이상으로 입력해 주세요." : "");
+    return report ? els.performanceFilterForm.reportValidity() : true;
   }
 
   function normalizePerformanceSummary(payload) {
@@ -1631,6 +1665,7 @@
       els.performanceSearchInput,
       els.performanceYearFilter,
       els.performanceDivisionFilter,
+      ...performanceRangeControls().map(([, control]) => control),
       els.performancePreviousButton,
       els.performanceNextButton,
     ].forEach((control) => { control.disabled = isLoading; });
@@ -1650,7 +1685,8 @@
     const filtered = Boolean(
       els.performanceSearchInput.value.trim()
       || els.performanceYearFilter.value
-      || els.performanceDivisionFilter.value,
+      || els.performanceDivisionFilter.value
+      || performanceRangeControls().some(([, control]) => control.value !== ""),
     );
     els.performanceResultSummary.textContent = data.total
       ? `${filtered ? "검색 결과" : "전체"} ${formatNumber(data.total)}건 중 ${formatNumber(start)}–${formatNumber(end)}건을 표시합니다.`
@@ -1695,6 +1731,10 @@
         </dl>
         <div class="performance-keywords" aria-label="실적 키워드">${keywordMarkup}</div>
         <footer><span>공개·비식별 자료</span><small>후보 조회용 · 인정실적/점수 미확정</small></footer>
+        <div class="performance-certificate-preview">
+          <button class="button button--ghost" type="button" disabled>실적증명서 · 연결 예정</button>
+          <small>증명서 연결 후 내려받을 수 있습니다.</small>
+        </div>
       </article>`;
   }
 
@@ -1728,6 +1768,9 @@
   }
 
   function performanceErrorMessage(error) {
+    if (error?.status === 422) {
+      return "계약 기간과 금액 범위를 확인해 주세요. 시작값은 끝값보다 클 수 없습니다.";
+    }
     if (error?.status === 401 || error?.status === 403) {
       return "이 데이터는 인증된 사용자에게만 제공됩니다. 사내 인증 후 다시 시도해 주세요.";
     }
@@ -1753,6 +1796,8 @@
     els.performanceSearchInput.value = "";
     els.performanceYearFilter.value = "";
     els.performanceDivisionFilter.value = "";
+    performanceRangeControls().forEach(([, control]) => { control.value = ""; });
+    validatePerformanceRanges(false);
     state.performance.offset = 0;
     void loadPerformance();
   }
@@ -2959,6 +3004,7 @@
       collectedAt,
       budget: firstValue(source.budget, source.estimated_amount, source.presmptPrce, source.asignBdgtAmt, null),
       eligibilityStatus: normalizeEligibility(firstValue(displayEvaluation.eligibility, allowCurrentProjection ? firstValue(source.eligibility_status, source.eligibilityStatus, source.eligibility) : null)),
+      qualificationStatus: stringValue(firstValue(source.qualification_status, source.qualificationStatus), ""),
       readinessScore: numberOrNull(firstValue(displayEvaluation.readiness_score, displayEvaluation.readinessScore, allowCurrentProjection ? firstValue(source.readiness_score, source.readinessScore, source.fit_score, source.fitScore) : null)),
       readinessStatus: normalizeReadiness(firstValue(displayEvaluation.readiness_status, displayEvaluation.status, allowCurrentProjection ? source.readiness_status : null)),
       evidenceCoverage: numberOrNull(firstValue(displayEvaluation.evidence_coverage, displayEvaluation.evidenceCoverage, allowCurrentProjection ? firstValue(source.evidence_coverage, source.evidenceCoverage, source.coverage) : null)),
@@ -3014,9 +3060,13 @@
       actions: arrayValue(firstValue(source.actions, source.next_actions, source.review_actions, [])).map((value) => stringValue(value)).filter(Boolean),
       pipeline: firstValue(source.pipeline, source.analysis_pipeline, null),
       evaluationId: stringValue(firstValue(evaluation.id, allowCurrentProjection ? source.evaluation_id : null), ""),
+      // A legacy stored evaluation can be hidden from current analysis UI
+      // while still being the server's concurrency token for human decisions.
+      decisionEvaluationId: stringValue(evaluationCandidate.id, ""),
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
       historicalAnalysis: useHistoricalEvaluation,
+      historicalQualification: firstObject(source.historical_qualification, source.historicalQualification),
       historicalEvaluatedAt: useHistoricalEvaluation
         ? firstValue(historicalEvaluation.evaluated_at, historicalEvaluation.evaluatedAt, null)
         : null,
@@ -3110,6 +3160,8 @@
       actorLabel: stringValue(firstValue(source.actor_label, source.actorLabel, source.decided_by)),
       rationale: stringValue(firstValue(source.rationale, source.comment)),
       conditions: arrayValue(source.conditions).map((value) => stringValue(value)).filter(Boolean),
+      analysisStateSnapshot: stringValue(firstValue(source.analysis_state_snapshot, source.analysisStateSnapshot), ""),
+      analysisSnapshot: firstObject(source.analysis_snapshot, source.analysisSnapshot),
       createdAt: firstValue(source.created_at, source.createdAt, null),
     };
   }
@@ -3346,29 +3398,23 @@
     const totals = firstObject(source.totals, kpis.totals);
     const eligibilityCounts = firstObject(source.eligibility_counts, source.eligibilityCounts);
     const readinessCounts = firstObject(source.readiness_counts, source.readinessCounts);
+    const workQueues = globalNoticeSearchActive() ? {} : firstObject(source.work_queue_counts);
     const derived = deriveDashboard(notices);
     return {
       newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.active, totals.notices)) ?? derived.newCount,
-      // The backend aggregate cannot distinguish the current all-attachment
-      // audit backlog. Derive this clickable KPI from the loaded projection
-      // so it includes incomplete coverage, missing evaluation and actionable
-      // eligibility review under the same filter used by the board.
-      reviewCount: numberOrNull(firstValue(
-        kpis.analysis_review_backlog_count,
-        kpis.analysisReviewBacklogCount,
-      )) ?? derived.reviewCount,
+      // Dashboard work queues use explicit stored qualification. Global
+      // analysis totals still include missing evaluations and failed notices.
+      failCount: numberOrNull(workQueues.fail) ?? derived.failCount,
+      reviewCount: derived.reviewCount,
       qualityReviewCount: derived.qualityReviewCount,
       // These clickable KPIs must match their OPEN-only board filters. The
       // backend aggregate can include already-closed notices with a future
       // deadline, so use the loaded notice projection for both counts.
       goCount: derived.goCount,
       urgentCount: derived.urgentCount,
-      cancelledCount: numberOrNull(firstValue(kpis.cancelled_count, kpis.cancelledCount)) ?? derived.cancelledCount,
+      cancelledCount: numberOrNull(workQueues.cancelled) ?? derived.cancelledCount,
       endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? derived.endedCount,
-      resultMissingCount: numberOrNull(firstValue(
-        kpis.result_missing_count,
-        kpis.resultMissingCount,
-      )) ?? derived.resultMissingCount,
+      resultMissingCount: numberOrNull(workQueues.result_missing) ?? derived.resultMissingCount,
       undecidedCount: derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? notices.length,
       totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
@@ -3387,7 +3433,7 @@
     // A filtered board cannot prove whole-database counts. Retain an observed
     // aggregate after a mutation, or show unavailable until the API responds.
     const result = deriveDashboard(notices);
-    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "cancelledCount", "endedCount", "resultMissingCount"]) {
+    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "failCount", "cancelledCount", "endedCount", "resultMissingCount"]) {
       result[key] = numberOrNull(previous[key]);
     }
     result.analysisStatistics = previous.analysisStatistics || null;
@@ -3402,17 +3448,14 @@
       totalEvaluations: notices.filter((notice) => notice.evaluationId).length,
       totalDecisions: notices.filter((notice) => notice.decision).length,
       newCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN").length,
-      reviewCount: notices.filter(needsAnalysisOrReview).length,
+      failCount: notices.filter((notice) => matchesDashboardQueue(notice, "fail")).length,
+      reviewCount: notices.filter((notice) => matchesDashboardQueue(notice, "review")).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
       goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO").length,
-      urgentCount: notices.filter((notice) => {
-        if (noticeLifecycleStatus(notice) !== "OPEN") return false;
-        const days = daysUntil(notice.deadline);
-        return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
-      }).length,
-      cancelledCount: notices.filter(isCancelledNotice).length,
+      urgentCount: notices.filter((notice) => matchesDashboardQueue(notice, "urgent")).length,
+      cancelledCount: notices.filter((notice) => matchesDashboardQueue(notice, "cancelled")).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
-      resultMissingCount: notices.filter((notice) => isVisibleEndedNotice(notice) && !isCancelledNotice(notice) && !notice.hasBidOutcome).length,
+      resultMissingCount: notices.filter((notice) => matchesDashboardQueue(notice, "result-missing")).length,
       undecidedCount: operatorDecisionListAvailable(notices)
         ? notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length
         : null,
@@ -3420,6 +3463,40 @@
       generatedAt: null,
       systemStatus: "online",
     };
+  }
+
+  function dashboardEligibilityStatus(notice) {
+    // Current qualification and retained cancellation history are separate.
+    // In particular, UNKNOWN/NOT_EVALUATED must never become REVIEW here.
+    if (isCancelledNotice(notice)) {
+      const historical = notice.historicalQualification;
+      return historical?.scope === "LAST_VALID_STORED_EVALUATION"
+        && historical.evaluated_at
+        && ["PASS", "REVIEW", "FAIL"].includes(historical.eligibility)
+        ? historical.eligibility : "NOT_EVALUATED";
+    }
+    if (notice.sourceKind === "PPS" && !notice.analysisAttachmentCoverageComplete) return "NOT_EVALUATED";
+    if (["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"].includes(notice.qualificationStatus)) return notice.qualificationStatus;
+    return notice.analysisState === "EVALUATED"
+      && !notice.historicalAnalysis
+      && ["PASS", "REVIEW", "FAIL"].includes(notice.eligibilityStatus)
+      ? notice.eligibilityStatus : "NOT_EVALUATED";
+  }
+
+  function matchesDashboardQueue(notice, queue) {
+    const eligibility = dashboardEligibilityStatus(notice);
+    if (queue === "fail") return !isCancelledNotice(notice) && eligibility === "FAIL";
+    if (!["PASS", "REVIEW"].includes(eligibility)) return false;
+    if (queue === "cancelled") return isCancelledNotice(notice);
+    if (isCancelledNotice(notice)) return false;
+    if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome;
+    if (noticeLifecycleStatus(notice) !== "OPEN") return false;
+    if (queue === "review") return needsAnalysisOrReview(notice);
+    if (queue === "urgent") {
+      const days = daysUntil(notice.deadline);
+      return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
+    }
+    return false;
   }
 
   function renderAll() {
@@ -3432,14 +3509,14 @@
 
   function renderKpis() {
     const data = state.dashboard;
-    // "수집 공고" is the database total; the sidebar's "진행 공고" keeps using active/newCount.
-    els.kpiNew.textContent = displayNumber(data.totalNotices);
+    // Preserve the existing DOM ID while replacing the total-stored card.
+    els.kpiNew.textContent = displayNumber(data.failCount);
     els.kpiReview.textContent = displayNumber(data.reviewCount);
     els.kpiGo.textContent = displayNumber(data.goCount);
     els.kpiUrgent.textContent = displayNumber(data.urgentCount);
     els.kpiResultMissing.textContent = displayNumber(data.resultMissingCount);
     els.kpiEnded.textContent = displayNumber(data.cancelledCount);
-    els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "실시간";
+    els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "자격 FAIL";
     els.kpiReviewTrend.textContent = "처리 필요";
     els.kpiGoTrend.textContent = "AI 판단";
     renderAnalysisProgress(data.analysisStatistics);
@@ -3560,20 +3637,18 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
+      if (["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)
+        && !matchesDashboardQueue(notice, state.currentView)) return false;
       if (!globalSearch) {
         if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
-        if (state.currentView === "review" && !needsAnalysisOrReview(notice)) return false;
         if (state.currentView === "go" && effectiveRecommendation(notice) !== "GO") return false;
-        if (state.currentView === "urgent") {
-          const days = daysUntil(notice.deadline);
-          if (days === null || days < 0 || days > URGENT_DEADLINE_DAYS) return false;
-        }
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
-        if (state.currentView === "result-missing" && (!isVisibleEndedNotice(notice) || isCancelledNotice(notice) || notice.hasBidOutcome)) return false;
         if (state.currentView === "undecided" && decisionFilterAvailable && operatorDecision === "all" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
-      if (eligibility !== "all" && effectiveEligibilityStatus(notice) !== eligibility) return false;
+      const qualification = ["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)
+        ? dashboardEligibilityStatus(notice) : effectiveEligibilityStatus(notice);
+      if (eligibility !== "all" && qualification !== eligibility) return false;
       if (recommendation !== "all" && effectiveRecommendation(notice) !== recommendation) return false;
       const decision = notice.decision || (hasKnownOperatorDecision(notice) ? "UNDECIDED" : "UNAVAILABLE");
       if (operatorDecision !== "all" && decision !== operatorDecision) return false;
@@ -3628,13 +3703,13 @@
 
   function operatorDecisionDetailText(notice) {
     const saved = notice.decision
-      ? [operatorDecisionLabel(notice), notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean).join(" · ")
+      ? [operatorDecisionLabel(notice), notice.decidedBy, notice.decidedAt ? formatKstDateTime(notice.decidedAt) : ""].filter(Boolean).join(" · ")
       : operatorDecisionLabel(notice);
     if (isCancelledNotice(notice)) return notice.decision
       ? `취소 공고 · 과거 판단 기록(참고용): ${saved}`
       : "취소 공고 · 담당자 판단을 새로 저장할 수 없습니다.";
-    const analysisNote = notice.analysisState !== "EVALUATED"
-      ? " 현재 공고 분석 전 · 새 판단은 분석 완료 후 저장할 수 있습니다." : "";
+    const analysisNote = !decisionAnalysisComplete(notice)
+      ? " 현재 공고 분석 전 · 판단 사유를 입력하면 지금도 기록할 수 있고, 서버가 당시 분석 상태를 함께 남깁니다." : "";
     return `${notice.decision ? "저장된 판단: " : ""}${saved}.${analysisNote}`;
   }
 
@@ -4267,7 +4342,7 @@
   }
 
   function isNoticeListView(view = state.currentView) {
-    const listViews = ["all", "new", "review", "go", "urgent", "ended", "result-missing", "undecided", "closed", "collected", "awards"];
+    const listViews = ["all", "new", "review", "go", "urgent", "fail", "cancelled", "ended", "result-missing", "undecided", "closed", "collected", "awards"];
     return listViews.includes(view);
   }
 
@@ -4296,11 +4371,13 @@
       all: ["오늘 해야 할 일", "오늘의 확인 항목"],
       collected: ["수집 공고", "수집된 전체 공고"],
       new: ["공고 탐색", "진행중인 공고 조회"],
-      review: ["분석·검토 큐", "분석/검토가 필요한 공고"],
+      review: ["검토 대기", "PASS·REVIEW 중 첨부·자격 확인이 필요한 공고"],
       go: ["GO 후보", "GO 추천 공고"],
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
+      fail: ["FAIL 공고", "저장된 현재 자격 판정이 FAIL인 공고"],
+      cancelled: ["취소공고", "당시 자격 판정 PASS·REVIEW인 취소 공고"],
       ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
-      "result-missing": ["결과 미기록", "입찰마감 후 결과를 기록해야 할 공고"],
+      "result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"],
       undecided: ["담당자 판단", "공고별 판단 확인"],
       prespec: ["공고 탐색", "사전규격 탐색"],
       closed: ["결과 기록", "결과가 확인된 공고"],
@@ -4311,7 +4388,7 @@
     els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];
     const navigationView = nextView === "prespec"
       ? "new"
-      : ["collected", "go", "urgent", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
+      : ["collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
     const showDashboardCards = nextView === "all";
     els.navItems.forEach((item) => {
       const active = item.dataset.view === navigationView;
@@ -5264,43 +5341,86 @@
       </div>`;
   }
 
+  function submissionCheckItemsForDisplay(notice) {
+    // This is a source index, not an eligibility rule or a yes/no classifier.
+    // Keep complete quotes (including exceptions and negation) for human review.
+    const definitions = [
+      ["electronic-bid", "전자입찰 여부", (text) => /전자입찰|입찰(?:서)?.{0,30}전자(?:적|적으로|제출|방식)/.test(text)],
+      ["bid-deadline", "입찰 마감일", (text) => /입찰(?:서)?(?:의)?(?:접수|제출)?(?:마감|기한|기간|일시)/.test(text)],
+      ["proposal-deadline", "제안서 마감일", (text) => /제안서(?:의)?(?:접수|제출)?(?:마감|기한|기간|일시)/.test(text.replace(/가격제안서/g, "가격서"))],
+      ["proposal-method", "제안서 제출 유형", (text) => text.split(/[.!?;。]/).some((clause) => /제안서/.test(clause) && /제출|접수/.test(clause) && /전자|온라인|방문|우편|직접|대면|나라장터|이메일|e-?발주시스템|e-?mail/i.test(clause))],
+      ["bid-security", "입찰보증보험", (text) => /입찰보증(?:금|보험|증권|서)/.test(text)],
+      ["lead-presentation", "총괄책임자 PT 진행 여부", (text) => /총괄책임자|사업책임자|연구책임자|사업관리자|총괄PM/i.test(text) && /발표|설명회|프레젠테이션|(?:^|[^a-z])PT(?:[^a-z]|$)/i.test(text)],
+      ["training-venue", "연수원·강의장 보유 여부", (text) => /연수원|강의장|교육장|교육시설/.test(text) && /보유|소유|임차|대관|임대|확보/.test(text)],
+      ["personnel", "참여인력 자격조건", (text) => /참여인력|투입인력|참여자|연구진|연구원|책임자|강사|수행인력|전문인력/.test(text) && /자격|학위|학사|석사|박사|경력|전공|자격증|재직|상근|\d+명/.test(text)],
+      ["settlement", "정산 여부", (text) => /정산/.test(text)],
+      ["nonprofit-profit", "비영리 이윤제외", (text) => /비영리/.test(text) && /이윤|이익/.test(text)],
+    ];
+    const raw = firstObject(notice.raw);
+    const analyses = arrayValue(firstValue(raw.document_analyses, raw.documentAnalyses, []));
+    const statuses = arrayValue(notice.attachmentAnalysisStatuses);
+    const quoteKey = (value) => stringValue(value).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR");
+    const documentNames = analyses.map((item, index) => normalizeDocumentAnalysis(item, index).documentName);
+    const sources = flattenDocumentEvidence(analyses).filter((item) => {
+      // Public attachment status identifies documents by filename. Ambiguous
+      // duplicate names cannot prove which current attachment owns the quote.
+      if (documentNames.filter((name) => name === item.file).length !== 1) return false;
+      const current = statuses.filter((status) => status.document_name === item.file);
+      return !statuses.length || (current.length === 1 && current[0].state === "ANALYZED");
+    });
+    const items = definitions.map(([id, label, matches]) => {
+      const seen = new Set();
+      const anchors = sources.filter((item) => {
+        const key = [item.file, item.page, quoteKey(item.quote)].join("|");
+        if (seen.has(key) || !matches(item.quote.replace(/\s+/g, ""))) return false;
+        seen.add(key);
+        return true;
+      }).map((item) => {
+        const evidence = arrayValue(notice.evidence).filter((candidate) => (
+          candidate.file === item.file && candidate.page === item.page
+          && quoteKey(candidate.quote) === quoteKey(item.quote)
+        ));
+        return {
+          quote: item.quote,
+          location: `${item.file} · ${item.page}`,
+          evidenceId: evidence.length === 1 ? evidence[0].id : "",
+          sourceUrl: "",
+        };
+      });
+      return { id, label, sources: anchors };
+    });
+    // Notice.deadline is the public bid deadline. Never substitute it for a
+    // missing proposal deadline, even when the two often happen to coincide.
+    if (validDate(notice.deadline)) {
+      items.find((item) => item.id === "bid-deadline").sources.unshift({
+        quote: formatKstDateTime(notice.deadline),
+        location: "공고 기본정보 · 입찰서 제출 마감",
+        evidenceId: "",
+        sourceUrl: safeHttpUrl(notice.sourceUrl),
+      });
+    }
+    return items;
+  }
+
+  function renderSubmissionCheckItem(item) {
+    const sources = item.sources.map((source) => `
+      <div class="submission-check-source">
+        <p>${escapeHtml(source.quote)}</p>
+        <small>${escapeHtml(source.location)}</small>
+        ${source.evidenceId ? `<button type="button" class="evidence-jump" data-evidence-jump="${escapeAttribute(source.evidenceId)}">근거 보기</button>` : ""}
+        ${source.sourceUrl ? `<a class="evidence-jump" href="${escapeAttribute(source.sourceUrl)}" target="_blank" rel="noopener noreferrer">공고 원문</a>` : ""}
+      </div>`).join("");
+    return `<li data-submission-check="${escapeAttribute(item.id)}"><strong>${escapeHtml(item.label)}</strong>${sources || '<p class="submission-check-missing">원문 확인 필요</p>'}</li>`;
+  }
+
   function renderActions(notice) {
     if (isCancelledNotice(notice)) {
       els.actionCard.hidden = true;
       els.actionList.innerHTML = "";
       return;
     }
-    let actions = notice.actions.slice();
-    const requirements = eligibilityRequirementsForDisplay(notice);
-    if (!actions.length) {
-      actions = requirements
-        .filter((requirement) => ["REVIEW", "UNKNOWN", "FAIL"].includes(requirement.status))
-        .map((requirement) => requirement.status === "FAIL"
-          ? `${requirement.title}의 불일치 사유와 적용 가능한 예외 경로가 있는지 확인하세요.`
-          : `${requirement.title}의 충족 여부와 최신 증빙을 확인하세요.`);
-    }
-    if (!actions.length && publicEligibilityPolicyPending(notice)) {
-      actions = ["공개 자격 판정을 불러온 뒤 확인 필요 사항을 표시합니다."];
-    }
-    if (
-      !actions.length
-      && notice.sourceKind === "PPS"
-      && (
-        notice.analysisState !== "EVALUATED"
-        || !notice.analysisAttachmentCoverageComplete
-        || isDocumentQualityReview(notice)
-      )
-    ) {
-      const availability = manualAnalysisAvailability(notice);
-      actions = [
-        availability.enabled
-          ? `상단 ‘${availability.label}’을 실행하거나 자동 분석 완료를 기다리세요.`
-          : "공고 원문에서 첨부를 직접 확인하고 자동 분석 완료를 기다리세요.",
-        "분석 완료 전에는 참가 자격·준비도·AI 추천을 확정값으로 사용하지 마세요.",
-      ];
-    }
-    els.actionCard.hidden = actions.length === 0;
-    els.actionList.innerHTML = actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+    els.actionCard.hidden = false;
+    els.actionList.innerHTML = submissionCheckItemsForDisplay(notice).map(renderSubmissionCheckItem).join("");
   }
 
   function renderEvidence(item) {
@@ -6286,12 +6406,13 @@
       showToast("판단 저장 권한이 없습니다", "현재 서버의 운영 권한 설정을 확인해 주세요.", "warning");
       return;
     }
-    if (notice.analysisState !== "EVALUATED") {
-      showToast("담당자 판단은 분석 후 가능합니다", "현재 공고는 수집 완료·분석 대기 상태입니다.", "warning");
-      return;
-    }
     selectTab("overview");
     setDecisionDockExpanded(true);
+    if (!decisionAnalysisComplete(notice)) {
+      els.commentField.hidden = false;
+      els.toggleCommentButton.setAttribute("aria-expanded", "true");
+      showToast("분석 전에도 판단을 기록할 수 있습니다", "분석이 완료되지 않았으므로 판단 사유를 입력해 주세요.", "warning");
+    }
     els.decisionForm.scrollIntoView({ behavior: "smooth", block: "end" });
     els.decisionInputs[0]?.focus();
   }
@@ -6301,18 +6422,19 @@
       state.decisionDockNoticeKey = notice.noticeKey;
       setDecisionDockExpanded(false);
     }
-    const analyzed = notice.analysisState === "EVALUATED";
+    const analyzed = decisionAnalysisComplete(notice);
     const cancelled = isCancelledNotice(notice);
     els.decisionInputs.forEach((input) => {
       input.checked = notice.decision === input.value || (notice.decision === "CONDITIONAL_GO" && input.value === "HOLD");
-      input.disabled = cancelled || !analyzed || !canWriteDecision();
+      input.disabled = cancelled || !canWriteDecision();
     });
     els.decisionComment.value = notice.decisionComment;
     els.commentCount.textContent = String(notice.decisionComment.length);
-    els.commentField.hidden = !notice.decisionComment;
-    els.toggleCommentButton.setAttribute("aria-expanded", String(Boolean(notice.decisionComment)));
+    // An unanalysed notice always needs a written reason, so keep the field open.
+    els.commentField.hidden = analyzed && !notice.decisionComment;
+    els.toggleCommentButton.setAttribute("aria-expanded", String(!analyzed || Boolean(notice.decisionComment)));
     els.decisionExisting.textContent = operatorDecisionDetailText(notice);
-    els.toggleCommentButton.disabled = cancelled || !analyzed || !canWriteDecision();
+    els.toggleCommentButton.disabled = cancelled || !canWriteDecision();
     els.decisionComment.disabled = cancelled || !canWriteDecision();
     updateDecisionButton();
   }
@@ -6410,37 +6532,47 @@
     if (willOpen) els.decisionComment.focus();
   }
 
+  function decisionAnalysisComplete(notice) {
+    return notice?.analysisState === "EVALUATED"
+      && (notice.sourceKind !== "PPS" || notice.analysisAttachmentCoverageComplete === true);
+  }
+
   function updateDecisionButton() {
     const selectedChoice = els.decisionInputs.find((input) => input.checked)?.value || "";
     const selected = Boolean(selectedChoice);
-    const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
+    const analyzed = decisionAnalysisComplete(state.selectedNotice);
     const cancelled = isCancelledNotice(state.selectedNotice);
     const overrideNeedsReason = selectedChoice === "GO"
       && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(state.selectedNotice)) || effectiveRecommendation(state.selectedNotice) !== "GO");
-    const overrideReasonMissing = overrideNeedsReason && !els.decisionComment.value.trim();
-    if (overrideNeedsReason) {
+    // An unanalysed, failed or expired notice has no current judgement to lean
+    // on, so the operator's own reason is what makes the record accountable.
+    const reasonRequired = overrideNeedsReason || (Boolean(state.selectedNotice) && !analyzed);
+    const overrideReasonMissing = reasonRequired && !els.decisionComment.value.trim();
+    if (reasonRequired) {
       if (overrideReasonMissing) setDecisionDockExpanded(true);
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
     }
-    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || !analyzed || overrideReasonMissing;
-    els.saveDecisionButton.classList.toggle("is-awaiting-selection", analyzed && !selected);
-    els.saveDecisionButton.title = analyzed && !selected
+    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing;
+    els.saveDecisionButton.classList.toggle("is-awaiting-selection", !selected);
+    els.saveDecisionButton.title = !selected
       ? "먼저 참여, 보류, 불참 중 담당자 판단을 선택해 주세요."
       : overrideReasonMissing
-        ? "참가자격 또는 AI 판단과 다른 참여 결정을 기록하려면 사유가 필요합니다."
+        ? (analyzed
+          ? "참가자격 또는 AI 판단과 다른 참여 결정을 기록하려면 사유가 필요합니다."
+          : "분석이 완료되지 않은 상태의 판단을 기록하려면 사유가 필요합니다.")
         : "";
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
       : !canWriteDecision()
       ? "현재 판단 저장 미제공"
+      : overrideReasonMissing
+      ? (analyzed ? "참여 사유를 입력하세요" : "판단 사유를 입력하세요")
+      : !selected
+      ? "먼저 최종 판단을 선택하세요"
       : analyzed
-      ? overrideReasonMissing
-        ? "참여 사유를 입력하세요"
-        : selected
-        ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
-        : "먼저 최종 판단을 선택하세요"
-      : "분석 완료 후 저장 가능";
+      ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
+      : "분석 전 판단 기록";
   }
 
   async function saveDecision(event) {
@@ -6462,7 +6594,9 @@
       els.decisionInputs[0]?.focus();
       return;
     }
-    if (decision === "GO" && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice)) || effectiveRecommendation(notice) !== "GO") && !els.decisionComment.value.trim()) {
+    const analyzed = decisionAnalysisComplete(notice);
+    const comment = els.decisionComment.value.trim();
+    if (decision === "GO" && analyzed && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice)) || effectiveRecommendation(notice) !== "GO") && !comment) {
       setDecisionDockExpanded(true);
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
@@ -6470,14 +6604,21 @@
       els.decisionComment.focus();
       return;
     }
-    if (notice.analysisState !== "EVALUATED") {
-      showToast("아직 분석 전입니다", "규칙 기반 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
+    if (!analyzed && !comment) {
+      setDecisionDockExpanded(true);
+      els.commentField.hidden = false;
+      els.toggleCommentButton.setAttribute("aria-expanded", "true");
+      showToast("판단 사유가 필요합니다", "분석이 완료되지 않은 상태의 판단은 사유를 입력해야 기록할 수 있습니다.", "warning");
+      els.decisionComment.focus();
       return;
     }
-    const comment = els.decisionComment.value.trim();
     const rationale = comment || `${DECISION_LABELS[decision]} 판단을 기록했습니다.`;
+    // Send the identifier the screen actually showed. Omitting it is only
+    // valid when no current evaluation exists; the server still rejects a
+    // stale identifier and one belonging to another notice.
+    const evaluationId = notice.evaluationId || notice.decisionEvaluationId;
     const payload = {
-      evaluation_id: notice.evaluationId,
+      ...(evaluationId ? { evaluation_id: evaluationId } : {}),
       choice: decision,
       actor_label: DECIDER_NAME,
       rationale,
@@ -6733,7 +6874,11 @@
   }
 
   function analysisStatusPill(notice) {
-    if (isCancelledNotice(notice)) return '<span class="analysis-state" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고</span>';
+    if (isCancelledNotice(notice)) {
+      const historical = dashboardEligibilityStatus(notice);
+      const label = historical === "NOT_EVALUATED" ? "당시 자격 미확인" : `당시 ${historical}`;
+      return `<span class="analysis-state" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고 · ${label}</span>`;
+    }
     if (notice.historicalAnalysis) {
       const value = STATUS_LABELS[notice.eligibilityStatus] ? notice.eligibilityStatus : "UNKNOWN";
       return `<span class="status-pill status-pill--${value.toLowerCase()}" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 ${escapeHtml(STATUS_LABELS[value])}</span>`;
