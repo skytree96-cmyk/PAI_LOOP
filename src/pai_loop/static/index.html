@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260908-results-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-manual-queue-v1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -1077,7 +1077,7 @@
           <label class="record-field record-field--wide result-rate-basis" hidden><span>기준가격 출처 *</span><input id="resultLearningRateBasisReference" maxlength="1000" placeholder="기준가격을 확인한 공고·개찰결과 문서와 위치" /></label>
           <label class="record-field"><span>우리 투찰률(%)</span><input id="resultLearningSubmittedRate" type="number" min="0" max="200" step="0.0001" aria-describedby="resultLearningRateStatus resultLearningRatePolicy" /></label>
           <p class="record-editor-note record-field--wide" id="resultLearningRateStatus" role="status" aria-live="polite"></p>
-          <p class="record-editor-note record-field--wide" id="resultLearningRatePolicy">자동 계산은 우리 투찰금액 ÷ 직접 확인한 기준금액 × 100입니다. 소수 다섯째 자리에서 반올림하여 소수 넷째 자리까지 표시하며, 저장 시 서버가 10진수 연산으로 같은 반올림 규칙을 적용합니다. 기준가격의 종류·금액·출처가 없으면 자동 계산할 수 없습니다. 추정가격·예산·낙찰금액은 계산 기준으로 대용하지 않습니다.</p>
+          <p class="record-editor-note record-field--wide" id="resultLearningRatePolicy">우리 투찰금액 ÷ 확인한 기준금액 × 100으로 계산합니다. 예정가격 또는 기초금액과 출처를 입력하세요. 결과는 소수 넷째 자리까지 표시합니다.</p>
           <label class="record-field"><span>낙찰금액(원)</span><input id="resultLearningWinningAmount" type="number" min="0" /></label>
           <label class="record-field"><span>낙찰률(수기 입력, %)</span><input id="resultLearningWinningRate" type="number" min="0" max="200" step="0.0001" /></label>
           <label class="record-field"><span>기술점수</span><input id="resultLearningTechnicalScore" type="number" min="0" max="100" step="0.01" /></label>
@@ -1089,7 +1089,7 @@
           <label class="record-field record-field--wide"><span>결과·미낙찰 사유</span><textarea id="resultLearningLossReason" rows="2" maxlength="4000"></textarea></label>
           <label class="record-field record-field--wide"><span>출처 또는 근거 참조</span><input id="resultLearningSourceReference" maxlength="1000" placeholder="나라장터 결과 식별자, 평가결과 공문 등" /></label>
           <label class="record-field record-field--wide"><span>담당자 메모</span><textarea id="resultLearningOperatorNote" rows="2" maxlength="2000"></textarea></label>
-          <p class="record-editor-note record-field--wide">검증 완료 결과는 출처가 필요합니다. 비율을 입력할 때는 근거 참조에 예정가격·기초금액 등 기준가격의 종류와 금액을 반드시 적으세요. 기준가격이 없으면 비율을 비워 둡니다.</p>
+          <p class="record-editor-note record-field--wide">검증 완료로 저장하려면 결과의 출처가 필요합니다. 수기 비율은 근거 참조에 기준가격도 함께 적어주세요.</p>
         </div>
         <footer class="source-link-dialog__actions"><button class="button button--secondary" id="resultLearningCancelButton" type="button">취소</button><button class="button button--primary" id="resultLearningSaveButton" type="submit">결과 저장</button></footer>
       </form>
@@ -1278,6 +1278,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260908-results-v1" defer></script>
+    <script src="./app.js?v=20260908-manual-queue-v1" defer></script>
   </body>
 </html>

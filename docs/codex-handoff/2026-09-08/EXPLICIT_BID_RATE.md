@@ -15,8 +15,8 @@ create/update/output DTOs. Its fields are `mode` (`MANUAL` or `AUTO`),
 provide the complete basis. MANUAL requires the basis fields to be empty.
 
 The server computes `submitted_bid_amount / basis_amount * 100` with Python
-Decimal and rounds to four decimal places using `ROUND_HALF_UP`. The UI states
-this policy and previews the same rounding with integer ratios. The persisted
+Decimal and rounds to four decimal places using `ROUND_HALF_UP`. The UI previews
+the same rounding with integer ratios and explains the formula and required basis. The persisted
 rate remains the existing Float column; the calculation uses decimal strings of
 the validated numeric inputs. A missing submitted amount cannot be calculated;
 an actual zero amount produces zero percent. A zero/nonfinite denominator and
