@@ -212,7 +212,7 @@ class Login(InputModel):
         return value.upper()
 
 
-def _throttle(session: Session, request: Request, username: str) -> None:
+def _throttle(session: Session, request: Request, username: str) -> list[AccountLoginBucket]:
     now = now_utc()
     session.execute(delete(AccountLoginBucket).where(AccountLoginBucket.expires_at <= now))
     ip = request.client.host if request.client else "unknown"
@@ -224,11 +224,9 @@ def _throttle(session: Session, request: Request, username: str) -> None:
     if any(row and row.attempts >= limit for row, _, limit in rows) or count + sum(row is None for row, _, _ in rows) > LOGIN_BUCKET_LIMIT:
         session.commit()
         raise HTTPException(429, "로그인 시도가 많습니다. 잠시 후 다시 시도해 주세요.", headers={"Retry-After": str(LOGIN_WINDOW_SECONDS)})
-    for row, key, _ in rows:
-        if row:
-            row.attempts += 1
-        else:
-            session.add(AccountLoginBucket(key=key, attempts=1, expires_at=now + timedelta(seconds=LOGIN_WINDOW_SECONDS)))
+    # The caller holds the serial transaction through password verification.
+    # Charge only failures; success must not consume or reset earlier failures.
+    return [row if row is not None else AccountLoginBucket(key=key, attempts=0, expires_at=now + timedelta(seconds=LOGIN_WINDOW_SECONDS)) for row, key, _ in rows]
 
 
 @router.post("/login")
@@ -239,10 +237,13 @@ def login(payload: Login, request: Request, response: Response) -> dict:
         raise HTTPException(403, "로그인에는 서버 키를 사용할 수 없습니다.")
     with request.app.state.session_factory() as session:
         serial_transaction(session)
-        _throttle(session, request, payload.username)
+        failure_buckets = _throttle(session, request, payload.username)
         account = session.scalar(select(DepartmentAccount).where(DepartmentAccount.username == payload.username))
         valid = verify_password(payload.password.get_secret_value(), account.password_hash if account else _DUMMY_HASH)
         if not valid or not account or not account.active or (account.role == "DEPARTMENT" and account.department_id not in departments()):
+            for bucket in failure_buckets:
+                bucket.attempts += 1
+                session.add(bucket)
             audit(session, "LOGIN_FAILED")
             session.commit()
             raise HTTPException(401, "아이디 또는 비밀번호를 확인해 주세요.")

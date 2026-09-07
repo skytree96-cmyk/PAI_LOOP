@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -212,12 +213,85 @@ def test_login_throttle_is_persistent_bounded_and_username_scoped(account_client
     assert limited.status_code == 429 and limited.headers["retry-after"] == "900"
     assert _login(peer, "SYN_KMA2")[1]["authenticated"]
     with client.app.state.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(AccountLoginBucket)) == 4
+        assert session.scalar(select(func.count()).select_from(AccountLoginBucket)) == 3
         assert not any("SYN_KMA" in row.key for row in session.scalars(select(AccountLoginBucket)).all())
         for row in session.scalars(select(AccountLoginBucket)).all():
             row.expires_at = now_utc() - timedelta(seconds=1)
         session.commit()
     assert _login(client)[1]["authenticated"]
+
+
+def test_all_24_departments_can_login_from_one_address_without_spending_failure_budget(account_client):
+    client = account_client
+    catalog = list(departments())
+    assert len(catalog) == 24
+    _bootstrap(client, [
+        {"username": f"SYN_KMA{index + 1}", "password": PASSWORD, "role": "DEPARTMENT", "department_id": department, "active": True}
+        for index, department in enumerate(catalog) if index >= 2
+    ])
+    for index, department in enumerate(catalog):
+        with closing(_peer(client)) as peer:
+            _, result = _login(peer, f"SYN_KMA{index + 1}")
+            assert result["account"]["department_id"] == department
+    with client.app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(AccountLoginBucket)) == 0
+        assert session.scalar(select(func.count()).select_from(AccountAudit).where(AccountAudit.event == "LOGIN_SUCCEEDED")) == 24
+
+
+def test_successful_login_preserves_prior_failure_counts_and_expiries(account_client):
+    client = account_client
+    bad = {"username": "syn_kma1", "password": "SYN-wrong"}
+    for _ in range(4):
+        assert client.post("/api/v1/accounts/login", headers=ORIGIN, json=bad).status_code == 401
+    with client.app.state.session_factory() as session:
+        before = {row.key: (row.attempts, row.expires_at) for row in session.scalars(select(AccountLoginBucket)).all()}
+        assert len(before) == 3 and all(attempts == 4 for attempts, _ in before.values())
+    _login(client)
+    with client.app.state.session_factory() as session:
+        after = {row.key: (row.attempts, row.expires_at) for row in session.scalars(select(AccountLoginBucket)).all()}
+        assert after == before
+    assert client.post("/api/v1/accounts/login", headers=ORIGIN, json=bad).status_code == 401
+    blocked = client.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": "SYN_KMA1", "password": PASSWORD})
+    assert blocked.status_code == 429 and blocked.headers["retry-after"] == "900"
+    with client.app.state.session_factory() as session:
+        assert all(row.attempts == 5 for row in session.scalars(select(AccountLoginBucket)).all())
+
+
+@pytest.mark.parametrize("scope,limit", [("ip", 20), ("global", 100)])
+def test_failed_login_address_and_global_limits_remain_in_force(account_client, scope, limit):
+    client = account_client
+    for index in range(limit):
+        # A new username avoids the five-failure username limit. Global coverage
+        # also changes the actual client address, never a forwarded header.
+        address = f"192.0.2.{index + 1}" if scope == "global" else "192.0.2.1"
+        with closing(TestClient(client.app, client=(address, 50000))) as peer:
+            response = peer.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": f"SYN_UNKNOWN_{index}", "password": "SYN-wrong"})
+            assert response.status_code == 401
+    with closing(TestClient(client.app, client=("192.0.2.200" if scope == "global" else "192.0.2.1", 50000))) as peer:
+        blocked = peer.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": "SYN_KMA1", "password": PASSWORD})
+        assert blocked.status_code == 429 and blocked.headers["retry-after"] == "900"
+    with client.app.state.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(AccountAudit).where(AccountAudit.event == "LOGIN_FAILED")) == limit
+        assert max(row.attempts for row in session.scalars(select(AccountLoginBucket)).all()) == limit
+        assert session.scalar(select(func.count()).select_from(AccountSession)) == 0
+
+
+def test_concurrent_success_and_failures_preserve_the_username_limit(account_client):
+    client = account_client
+    for _ in range(3):
+        assert client.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": "SYN_KMA1", "password": "SYN-wrong"}).status_code == 401
+
+    def attempt(password):
+        with closing(_peer(client)) as peer:
+            return peer.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": "SYN_KMA1", "password": password}).status_code
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        statuses = list(pool.map(attempt, [PASSWORD, "SYN-wrong", "SYN-wrong", "SYN-wrong"]))
+    assert statuses[0] in {200, 429}
+    assert statuses[1:].count(401) == 2 and statuses[1:].count(429) == 1
+    with client.app.state.session_factory() as session:
+        assert all(row.attempts == 5 for row in session.scalars(select(AccountLoginBucket)).all())
+    assert attempt(PASSWORD) == 429
 
 
 def test_persistent_login_bucket_capacity_fails_closed_and_recovers_after_expiry(account_client):
