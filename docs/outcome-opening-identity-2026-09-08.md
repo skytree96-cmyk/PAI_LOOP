@@ -67,10 +67,13 @@ not sum all historical rows as distinct bids without event-level reconciliation.
 
 Server-key authentication, operator authorization, private evidence boundaries and
 manual record update paths are unchanged. Automatic feedback rejects a key
-collision owned by another source. This checkout predates department-account
-integration; that integration must retain its account ownership and capability
-checks around the unchanged result-learning paths. The new identity is evidence,
-not an actor label or authorization claim.
+collision owned by another source. The results follow-up branch integrates this
+guard with department accounts and explicit bid-rate calculation on `f0e5651`.
+Account ownership, capabilities and CAS remain enforced before evidence changes.
+Opening and rate histories coexist; the opening history uses the account's
+workflow actor, while rate history also records the account ID. The new identity
+is evidence, not an actor label or authorization claim. No participant-discovery
+query or opening-identity editor UI is implemented by this integration.
 
 Relevant review reasons: `PARTICIPATION_OPENING_NOT_CONFIRMED`,
 `PPS_OPENING_IDENTITY_MISSING`, `PPS_OPENING_IDENTITY_MISMATCH`, and
