@@ -45,7 +45,12 @@ now asserts.
 
 Where a clause names a nonprofit alternative in a grammar the parser cannot
 bind, the outcome stays the same confirmed-absence FAIL, but the explanation no
-longer asserts `공고 원문에도 비영리법인 예외가 없어`. Asserting the absence of an
+longer asserts `공고 원문에도 비영리법인 예외가 없어`. That claim is about the
+notice, so it is guarded by notice-wide presence rather than by the single
+clause: a separate certificate requirement no longer denies a nonprofit
+exception that another requirement in the same notice states verbatim. The
+truthful wording is kept byte-identical for a notice in which no requirement
+mentions a nonprofit. Asserting the absence of an
 exception that is present in the clause is a false statement about the source
 text; the message now says the alternative was not recognized in a decidable
 form and that the original text must be read. No outcome changes with it.

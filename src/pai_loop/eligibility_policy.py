@@ -1364,6 +1364,11 @@ def classify_requirements(
         "비영리법인" in text and _contains(text, "참여 가능", "예외", "적용하지")
         for text in normalized
     )
+    # The absence claim in the SME failure message is about 공고 원문 - the notice -
+    # so it must be guarded by notice-wide presence, not by one clause. A
+    # clause-scoped guard leaves a separate requirement denying a nonprofit
+    # exception that another requirement in the same notice states verbatim.
+    nonprofit_text_present_in_notice = any("비영리법인" in text for text in normalized)
     items: list[dict[str, Any]] = []
 
     for requirement, text in zip(requirements, normalized, strict=True):
@@ -1670,6 +1675,12 @@ def classify_requirements(
                         "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
                         "않습니다. 이 조건에 비영리법인 대안 문구가 있으나 결정 가능한 형태로 "
                         "인식되지 않아 예외 경로를 적용할 수 없으므로 공고 원문 검토가 필요합니다."
+                    )
+                elif nonprofit_text_present_in_notice:
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
+                        "않습니다. 공고의 다른 항목에 비영리법인 문구가 있으나 이 조건에 적용되는 "
+                        "예외로 확정할 수 없으므로 공고 원문 검토가 필요합니다."
                     )
                 else:
                     certificate_failure_message = (

@@ -597,6 +597,46 @@ def test_nonprofit_small_business_or_never_downgrades_direct_production_fail() -
     )
 
 
+def test_separate_certificate_fail_does_not_deny_a_nonprofit_clause_elsewhere() -> None:
+    """A confirmed-absence FAIL must not deny a nonprofit exception the notice has.
+
+    The claim is about 공고 원문, so it is guarded by notice-wide presence. The
+    outcome is unchanged; only the stated reason is.
+    """
+
+    result = classify_requirements(
+        [
+            requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
+            requirement("SYN-SME-SEPARATE", "CERTIFICATION", "중소기업확인서를 보유해야 함."),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )
+    separate = {item["requirement_id"]: item for item in result["items"]}[
+        "SYN-SME-SEPARATE"
+    ]
+
+    assert separate["blocking"] is True
+    assert separate["company_fact_key"] != "nonprofit_entity"
+    assert "비영리법인 예외가 없어" not in separate["message"]
+    assert "원문 검토" in separate["message"]
+
+
+def test_absence_claim_survives_when_no_requirement_mentions_a_nonprofit() -> None:
+    """The claim is truthful for a notice with no nonprofit text, so keep it."""
+
+    item = classify_requirements(
+        [requirement("SYN-SME-ONLY", "CERTIFICATION", "중소기업확인서를 보유해야 함.")],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "FAIL_CONFIRMED"
+    assert "비영리법인 예외가 없어" in item["message"]
+
+
 def test_unrecognized_nonprofit_alternative_fails_without_denying_the_clause() -> None:
     """Fail closed, but never claim the notice text has no nonprofit exception."""
 
