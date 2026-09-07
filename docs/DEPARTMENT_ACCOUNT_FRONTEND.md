@@ -38,3 +38,20 @@ races, login cleanup, batch boundaries, own form payloads, conflict reloads, and
 the separate paid-analysis permission. The existing frontend, operator-decision,
 and result-editor tests remain part of the focused validation. These tests do not
 verify a production deployment, browser cookie policy, or visual layout.
+
+Anonymous detail drawers offer a login entry even before analysis; after login,
+the same notice is reopened and its own-department record is loaded. Cancelled
+notices and administrators still have no write control. An incomplete analysis
+requires a rationale when actually saving, rather than when opening login.
+
+The overview contains a separate latest-decision card for each department,
+including unassigned legacy history. This avoids placing long department lists
+inside the fixed decision form. It renders only for authenticated sessions and
+is cleared on account changes. It never supplies a different department's draft.
+
+Local browser verification used only SYN accounts and a closed synthetic notice:
+two departments saved independent HOLD/NO_GO decisions without an evaluation;
+one saved its own NO_BID outcome; admin could read but had no result edit button;
+logout cleared records; login from the drawer returned to the same notice.
+The 390-by-844 mobile layout was inspected. These are local checks, not real
+account registration or production activation. Assets: `20260908-accounts-v1`.

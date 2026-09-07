@@ -238,8 +238,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260908-review-v2"' in html
-    assert 'src="./app.js?v=20260908-review-v2"' in html
+    assert 'href="./styles.css?v=20260908-accounts-v1"' in html
+    assert 'src="./app.js?v=20260908-accounts-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -575,7 +575,8 @@ def test_human_decision_is_recordable_without_a_current_evaluation() -> None:
     # An unfinished analysis makes the operator's own reason mandatory instead.
     assert "const reasonRequired = overrideNeedsReason || (Boolean(state.selectedNotice) && !analyzed)" in button_body
     assert "const overrideReasonMissing = reasonRequired && !els.decisionComment.value.trim()" in button_body
-    assert "els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing" in button_body
+    # The anonymous button opens login; authenticated writes still require a reason.
+    assert "els.saveDecisionButton.disabled = cancelled || !state.selectedNotice || (!loginRequired && (!canWriteDecision() || overrideReasonMissing))" in button_body
     assert '"판단 사유를 입력하세요"' in button_body
     assert '"분석 전 판단 기록"' in button_body
     assert "if (!analyzed && !comment)" in save_body

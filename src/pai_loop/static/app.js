@@ -228,6 +228,7 @@
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "manualAnalysisTokenDialog", "manualAnalysisTokenInput",
       "accountLoginButton", "accountButtonLabel", "accountDialog", "accountLoginForm", "accountDialogTitle", "accountDialogHelp", "accountDialogClose", "accountUsername", "accountPassword", "accountCredentials", "accountIdentity", "accountError", "accountLogoutButton", "accountSubmitButton",
+      "departmentDecisionCard", "departmentDecisionState", "departmentDecisionList",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
       "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyConcentration", "historyPrediction", "historyCoverage", "historyWarnings", "decisionForm", "decisionExisting", "toggleCommentButton", "decisionDockToggle", "decisionDockBody",
@@ -846,7 +847,7 @@
     if (session.enabled && !state.resultLearning.loaded && !state.resultLearning.loading) {
       els.resultLearningSummary.textContent = session.authenticated ? "부서별 결과 기록을 불러오세요." : "부서 로그인 후 결과 기록을 불러오세요.";
       els.resultLearningState.innerHTML = session.authenticated
-        ? "<strong>부서별 결과 기록 조회</strong><p>결과 기록 열기를 눌러 저장된 기록을 확인하세요.</p>"
+        ? "<strong>부서별 결과 기록 조회</strong><p>목록 새로고침을 눌러 저장된 기록을 확인하세요.</p>"
         : "<strong>부서 로그인이 필요합니다</strong><p>상단 부서 로그인으로 인증한 뒤 결과 기록을 확인하세요.</p>";
     }
   }
@@ -861,6 +862,7 @@
 
   async function loginDepartmentAccount(event) {
     event.preventDefault();
+    const returnNoticeKey = state.selectedNotice?.noticeKey;
     if (els.accountSubmitButton.disabled || state.accountSession.authenticated) return;
     els.accountSubmitButton.disabled = true;
     els.accountError.hidden = true;
@@ -873,6 +875,8 @@
       const epoch = state.accountEpoch;
       els.accountDialog.close();
       await loadApplicationData({ forceApi: true });
+      if (epoch !== state.accountEpoch) return;
+      if (returnNoticeKey && !state.selectedNotice) await openDetail(returnNoticeKey);
       if (epoch !== state.accountEpoch) return;
       if (state.selectedNotice) {
         const noticeKey = state.selectedNotice.noticeKey;
@@ -936,7 +940,7 @@
     els.resultLearningPagination.hidden = true;
     els.resultLearningState.hidden = false;
     els.resultLearningList.innerHTML = "";
-    for (const id of ["noticeTableBody", "noticeCardGrid", "decisionExisting", "decisionSummary", "performanceEditorList"]) {
+    for (const id of ["noticeTableBody", "noticeCardGrid", "decisionExisting", "decisionSummary", "performanceEditorList", "departmentDecisionList"]) {
       if (els[id]) els[id].replaceChildren();
     }
     els.decisionComment.value = "";
@@ -3813,7 +3817,7 @@
     if (state.currentView === "closed") {
       els.dataSourceLabel.textContent = state.resultLearning.loaded
         ? `결과 학습 DB · 대상 공고 ${formatNumber(state.resultLearning.total)}건 · 자동 환류/담당자 입력 구분`
-        : "결과 학습 DB · 운영 키로 조회";
+        : state.accountSession?.enabled ? "결과 학습 DB · 부서 로그인 후 조회" : "결과 학습 DB · 운영 키로 조회";
       return;
     }
     if (state.currentView === "awards") {
@@ -6754,7 +6758,14 @@
     els.commentField.hidden = analyzed && !notice.decisionComment;
     els.toggleCommentButton.setAttribute("aria-expanded", String(!analyzed || Boolean(notice.decisionComment)));
     els.decisionExisting.textContent = operatorDecisionDetailText(notice);
-    if (state.accountSession?.enabled && hasKnownOperatorDecision(notice)) {
+    if (els.departmentDecisionCard) {
+      els.departmentDecisionCard.hidden = !state.accountSession?.enabled || !state.accountSession.authenticated;
+      els.departmentDecisionList.innerHTML = "";
+      els.departmentDecisionState.textContent = hasKnownOperatorDecision(notice)
+        ? (canWriteDecision() ? "각 부서의 최근 기록입니다. 내 부서의 판단은 하단에서 작성하세요." : "각 부서의 최근 기록입니다. 이 계정은 조회만 가능합니다.")
+        : "부서 판단을 조회하지 못했습니다. 공고 상세를 다시 열어 확인해 주세요.";
+    }
+    if (els.departmentDecisionList && state.accountSession?.enabled && state.accountSession.authenticated && hasKnownOperatorDecision(notice)) {
       const history = arrayValue(notice.decisions).slice().sort(compareDepartmentRevision);
       const departments = new Set();
       const latest = history.filter((record) => {
@@ -6762,9 +6773,8 @@
         if (departments.has(key)) return false;
         departments.add(key); return true;
       });
-      els.decisionExisting.textContent += latest.length
-        ? ` 부서별 최근 판단: ${latest.map((record) => `${record.departmentName || record.actorLabel || "기존 기록"} · ${DECISION_LABELS[record.choice] || "확인 필요"} · ${record.rationale || "사유 없음"}`).join(" / ")}`
-        : " 저장된 부서 판단이 없습니다.";
+      els.departmentDecisionList.innerHTML = latest.map((record) => `<li><strong>${escapeHtml(record.departmentName || record.actorLabel || "기존 기록")}</strong><span>${escapeHtml(DECISION_LABELS[record.choice] || "확인 필요")}</span><p>${escapeHtml(record.rationale || "사유 없음")}</p><small>${escapeHtml(record.createdAt ? formatShortDateTime(record.createdAt) : "기록 시각 미확인")}</small></li>`).join("");
+      if (!latest.length) els.departmentDecisionState.textContent = "저장된 부서 판단이 없습니다.";
     }
     els.toggleCommentButton.disabled = cancelled || !canWriteDecision();
     els.decisionComment.disabled = cancelled || !canWriteDecision();
@@ -6870,6 +6880,7 @@
   }
 
   function updateDecisionButton() {
+    const loginRequired = state.accountSession?.enabled && !state.accountSession.authenticated;
     const selectedChoice = els.decisionInputs.find((input) => input.checked)?.value || "";
     const selected = Boolean(selectedChoice);
     const analyzed = decisionAnalysisComplete(state.selectedNotice);
@@ -6885,9 +6896,9 @@
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
     }
-    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing;
+    els.saveDecisionButton.disabled = cancelled || !state.selectedNotice || (!loginRequired && (!canWriteDecision() || overrideReasonMissing));
     els.saveDecisionButton.classList.toggle("is-awaiting-selection", !selected);
-    els.saveDecisionButton.title = !selected
+    els.saveDecisionButton.title = loginRequired ? "부서 로그인 후 이 공고로 돌아옵니다." : !selected
       ? "먼저 참여, 보류, 불참 중 담당자 판단을 선택해 주세요."
       : overrideReasonMissing
         ? (analyzed
@@ -6916,6 +6927,7 @@
       showToast("취소 공고입니다", "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다.", "warning");
       return;
     }
+    if (state.accountSession?.enabled && !state.accountSession.authenticated) { openAccountDialog(); return; }
     if (!canWriteDecision()) {
       showToast("판단 저장 권한이 없습니다", "현재 서버의 운영 권한 설정을 확인해 주세요.", "warning");
       return;
