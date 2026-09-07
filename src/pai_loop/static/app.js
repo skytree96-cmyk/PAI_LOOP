@@ -6010,7 +6010,7 @@
     } else if (status === "ready" || status === "stored") {
       els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : `저장본 ${items.length}건`;
       els.historyStatusLabel.classList.add("is-ready");
-      els.historyStatusText.textContent = "저장된 제목 유사 후보이며 동일 사업 확정 이력이 아닙니다.";
+      els.historyStatusText.textContent = "연도별 같은 사업을 먼저 표시하며, 유사 사업은 따로 표시합니다.";
     } else if (status === "error") {
       els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : items.length ? `저장본 ${items.length}건` : "미수집";
       els.historyStatusLabel.classList.add("is-error");
@@ -6127,10 +6127,7 @@
           : awardTableMessageRow(`${year}년 · 표시할 저장 기록이 없습니다. 실제 낙찰·참여 이력이 없다는 뜻은 아닙니다.`);
       }).join("")
       : awardTableMessageRow("최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다."));
-    const notes = Array.isArray(table.notes) ? table.notes : [];
-    els.historyAwardTableNotes.innerHTML = notes.length
-      ? `<ul>${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
-      : "";
+    els.historyAwardTableNotes.innerHTML = "<p>미확인은 자료가 없는 항목입니다. 참여업체는 조회된 범위만 표시합니다. 기술평가는 입찰의 기술점수입니다.</p>";
   }
 
   function renderHistory(item) {
