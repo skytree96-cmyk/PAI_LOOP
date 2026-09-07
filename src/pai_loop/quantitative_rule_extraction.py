@@ -7403,7 +7403,7 @@ def build_quantitative_candidate_profile(
                     _issue(
                         "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
                         "INCOMPLETE",
-                        "정량평가표도 비적용 원문 근거도 확인되지 않았습니다.",
+                        "첨부 추출·검증 결과에서 정량평가표나 명시적 비적용 근거를 확보하지 못했습니다.",
                     )
                 )
             status = "INCOMPLETE"
@@ -8156,17 +8156,15 @@ def merge_validated_quantitative_records(
     elif not_applicable and aggregate == "AVAILABLE":
         status = "NOT_APPLICABLE"
     else:
-        # Keep the no-table diagnosis identical to the direct build path. An
-        # earlier issue such as EXTRACTION_DECLARED_INCOMPLETE explains why one
-        # attachment failed; it does not record that the current manifest
-        # established no quantitative table at all. Emitting both keeps the
-        # missing-table fact visible and never relaxes the status.
+        # Match the direct build's diagnostic for an unestablished table in
+        # extraction/validation results, not a claim about physical source
+        # contents. Earlier attachment issues remain visible and blocking.
         if not not_applicable:
             issues.append(
                 _issue(
                     "QUANTITATIVE_TABLE_NOT_ESTABLISHED",
                     "INCOMPLETE",
-                    "현재 manifest 전체에서 정량평가표나 명시적 비적용 근거를 확인하지 못했습니다.",
+                    "현재 manifest의 추출·검증 결과에서 정량평가표나 명시적 비적용 근거를 확보하지 못했습니다.",
                 )
             )
         status = "INCOMPLETE"

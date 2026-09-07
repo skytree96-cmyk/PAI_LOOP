@@ -538,6 +538,12 @@ def test_merged_profile_reports_no_established_table_beside_other_issues() -> No
     reasons = set(_profile_activation_reasons(merged))
     assert "QUANTITATIVE_TABLE_NOT_ESTABLISHED" in reasons
     assert "SOURCE_VALIDATION_ISSUES_PRESENT" in reasons
+    request = quantitative_request_from_candidate_profile(merged)
+    assert request.activation_status == "REVIEW_REQUIRED"
+    assert request.criteria == []
+    result = estimate_quantitative_score(request)
+    assert result.overall_status == "REVIEW"
+    assert result.estimated_points is None
 
 
 def test_current_manifest_source_set_must_be_complete() -> None:
