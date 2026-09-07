@@ -355,13 +355,8 @@ def test_independent_decision_migration_adds_nullable_decision_columns() -> None
     engine.dispose()
 
 
-def test_independent_decision_migration_refuses_to_rebuild_a_legacy_sqlite_table() -> None:
-    """SQLite cannot relax NOT NULL in place, so fail closed instead of rewriting.
-
-    PostgreSQL, the deployed dialect, releases the constraint with a
-    catalog-only ALTER. A legacy SQLite development file is recreated with
-    ``--create-base`` rather than being rebuilt row by row here.
-    """
+def test_independent_decision_migration_upgrades_a_legacy_sqlite_table() -> None:
+    """Existing SQLite installations upgrade without recreating their database."""
 
     engine = build_engine("sqlite:///:memory:")
     legacy_user_decisions = Table(
@@ -387,8 +382,11 @@ def test_independent_decision_migration_refuses_to_rebuild_a_legacy_sqlite_table
         Evaluation.__table__.create(connection)
         legacy_user_decisions.create(connection)
 
-    with pytest.raises(MigrationError, match="--create-base"):
-        apply_additive_migrations(engine)
+    assert INDEPENDENT_DECISION_MIGRATION_ID in apply_additive_migrations(engine)
+    assert apply_additive_migrations(engine) == []
+    columns = {column["name"]: column for column in inspect(engine).get_columns("user_decisions")}
+    assert columns["evaluation_id"]["nullable"] is True
+    assert {"analysis_state_snapshot", "analysis_snapshot"} <= columns.keys()
     engine.dispose()
 
 

@@ -145,7 +145,8 @@ def test_pin_decision_reload_and_current_evaluation_frontend_contract() -> None:
     assert "{ ...notice.raw, decisions }" in hydrate_body
     assert "state.notices[index] = merged" in hydrate_body
     assert "merged = await hydrateOperatorDecisions(merged)" in detail_body
-    assert "...(notice.evaluationId ? { evaluation_id: notice.evaluationId } : {})" in save_body
+    assert "const evaluationId = notice.evaluationId || notice.decisionEvaluationId" in save_body
+    assert "...(evaluationId ? { evaluation_id: evaluationId } : {})" in save_body
     assert 'error?.status === 409' in save_body
     assert 'includes("평가가 갱신")' in save_body
     assert "hydrateNoticeByKey(notice.noticeKey, { force: true })" in save_body
@@ -584,6 +585,56 @@ def test_human_decision_is_recordable_without_a_current_evaluation() -> None:
     assert "analysisStateSnapshot: stringValue(firstValue(source.analysis_state_snapshot" in record_body
     assert "analysisSnapshot: firstObject(source.analysis_snapshot" in record_body
     assert "서버가 당시 분석 상태를 함께 남깁니다" in detail_text_body
+
+
+def test_unfinished_human_decision_requires_reason_and_preserves_visible_server_token() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    script = r'''
+const assert=require("node:assert/strict"),vm=require("node:vm"),source=require("node:fs").readFileSync(0,"utf8");
+const context=vm.createContext({document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
+  window:{matchMedia(){return {matches:false};}},URL,URLSearchParams});
+const exported=`globalThis.requests=[];
+apiRequest=async(path,options)=>{const payload=JSON.parse(options.body);requests.push(payload);return payload;};
+refreshDashboardAfterMutation=async()=>{};renderExistingDecision=()=>{};renderPipelineIntoExisting=()=>{};
+renderAll=()=>{};setDecisionDockExpanded=()=>{};showToast=()=>{};updateDecisionButton=()=>{};
+globalThis.ui={state,els,normalizeNotice,saveDecision,decisionAnalysisComplete};`;
+vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
+const u=context.ui, field=()=>({value:"",hidden:false,disabled:false,textContent:"",focus(){},setAttribute(){}});
+for(const name of ["decisionComment","commentField","toggleCommentButton","saveDecisionButton","decisionDockToggle"])
+  u.els[name]=field();
+Object.assign(u.state,{source:"api",writeControlsEnabled:true,accessMode:"SERVER_AUTHENTICATED"});
+const raw={notice_key:"PPS-SYN_UNFINISHED",title:"SYN unfinished",agency:"SYN agency",status:"EXPIRED",
+  deadline:"2020-01-01T00:00:00Z",analysis_state:"REVIEW",analysis_attachment_coverage_complete:false,
+  latest_evaluation:{id:"SYN-legacy-evaluation",eligibility:"PASS",evaluated_at:"2019-12-01T00:00:00Z"}};
+(async()=>{
+  for(const choice of ["GO","HOLD","NO_GO"]) {
+    const notice=u.normalizeNotice(raw);u.state.notices=[notice];u.state.selectedNotice=notice;
+    assert.equal(notice.evaluationId,"");
+    assert.equal(notice.decisionEvaluationId,"SYN-legacy-evaluation");
+    assert.equal(u.decisionAnalysisComplete(notice),false);
+    u.els.decisionInputs=[{value:choice,checked:true}];u.els.decisionComment.value="";
+    const before=context.requests.length;
+    await u.saveDecision({preventDefault(){}});
+    assert.equal(context.requests.length,before);
+    u.els.decisionComment.value="SYN human reason while analysis is incomplete";
+    await u.saveDecision({preventDefault(){}});
+    assert.equal(context.requests.length,before+1);
+    assert.equal(context.requests.at(-1).evaluation_id,"SYN-legacy-evaluation");
+    assert.equal(context.requests.at(-1).choice,choice);
+    assert.equal(context.requests.at(-1).rationale,u.els.decisionComment.value);
+  }
+  const missing=u.normalizeNotice({...raw,latest_evaluation:null});
+  u.state.notices=[missing];u.state.selectedNotice=missing;
+  await u.saveDecision({preventDefault(){}});
+  assert.equal(Object.hasOwn(context.requests.at(-1),"evaluation_id"),false);
+  const count=context.requests.length;
+  u.state.selectedNotice={...missing,providerDisposition:"CANCELLED"};
+  await u.saveDecision({preventDefault(){}});
+  assert.equal(context.requests.length,count);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    result = subprocess.run(["node", "-e", script], input=source, text=True, encoding="utf-8", capture_output=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None:
@@ -1365,8 +1416,11 @@ const respond=(status,payload)=>pendingResponse({ok:status>=200&&status<300,stat
   u.renderExistingDecision(notice);
   assert.match(u.els.decisionExisting.textContent,/저장된 판단: 보류/);
   assert.match(u.els.decisionExisting.textContent,/현재 공고 분석 전/);
+  assert.equal(u.els.saveDecisionButton.disabled,false);
+  assert.equal(u.els.decisionInputs.every(input=>input.disabled),false);
+  u.els.decisionComment.value="";
+  u.renderExistingDecision({...notice,decisionComment:""});
   assert.equal(u.els.saveDecisionButton.disabled,true);
-  assert.equal(u.els.decisionInputs.every(input=>input.disabled),true);
   const cancelled={...notice,providerDisposition:"CANCELLED"};
   u.state.selectedNotice=cancelled;
   u.renderExistingDecision(cancelled);

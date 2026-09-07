@@ -13,13 +13,14 @@ from .notice_freshness import (
     authoritative_pps_notice_is_cancelled,
     latest_current_evaluation,
 )
-from .pps_enrichment import public_analysis_reason
+from .pps_enrichment import pps_attachment_coverage, public_analysis_reason
 from .schemas import DecisionCreate
 
 
 DECISION_SNAPSHOT_VERSION = "operator-decision-snapshot-v1"
 EVALUATED_SNAPSHOT_STATE = "EVALUATED"
 NOT_EVALUATED_SNAPSHOT_STATE = "NOT_EVALUATED"
+INCOMPLETE_SNAPSHOT_STATE = "INCOMPLETE"
 
 
 def _begin_current_evaluation_snapshot(session: Session) -> None:
@@ -94,22 +95,31 @@ def _analysis_snapshot(
 
     reason = public_analysis_reason(
         notice.versions,
-        evaluated=bool(notice.evaluations),
+        evaluated=evaluation is not None,
         source_kind=_source_kind(notice),
     )
     deadline = _comparable_utc(notice.deadline)
-    state = (
-        EVALUATED_SNAPSHOT_STATE if evaluation is not None else NOT_EVALUATED_SNAPSHOT_STATE
+    analysis_complete = (
+        evaluation is not None
+        and reason.state == "ANALYZED"
+        and (_source_kind(notice) != "PPS" or pps_attachment_coverage(notice.versions).complete)
     )
+    state = EVALUATED_SNAPSHOT_STATE if analysis_complete else (
+        INCOMPLETE_SNAPSHOT_STATE if evaluation is not None else NOT_EVALUATED_SNAPSHOT_STATE
+    )
+    stored_status = str(notice.status or "").upper()
+    deadline_passed = bool(deadline and deadline < captured_at)
     snapshot: dict[str, Any] = {
         "snapshot_version": DECISION_SNAPSHOT_VERSION,
         "captured_at": captured_at.isoformat(),
         "analysis_state": state,
+        "analysis_complete": analysis_complete,
         "analysis_reason_state": reason.state,
         "analysis_reason_code": reason.reason_code,
-        "notice_status": str(notice.status or "").upper(),
+        "notice_status": "EXPIRED" if stored_status == "OPEN" and deadline_passed else stored_status,
+        "stored_notice_status": stored_status,
         "deadline": deadline.isoformat() if deadline else None,
-        "deadline_passed": bool(deadline and deadline < captured_at),
+        "deadline_passed": deadline_passed,
         "evaluation": None,
     }
     if evaluation is not None:
@@ -189,7 +199,9 @@ def persist_current_evaluation_decision(
         else:
             evaluation = latest
 
-        if evaluation is None and not payload.rationale.strip():
+        # Enforce this invariant here too: callers outside FastAPI must not
+        # bypass it by constructing a payload without running Pydantic validation.
+        if not payload.rationale.strip():
             raise HTTPException(
                 status_code=422,
                 detail="분석이 완료되지 않은 상태의 담당자 판단은 판단 사유가 필요합니다.",

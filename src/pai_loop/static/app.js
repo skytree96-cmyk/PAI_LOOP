@@ -3056,6 +3056,9 @@
       actions: arrayValue(firstValue(source.actions, source.next_actions, source.review_actions, [])).map((value) => stringValue(value)).filter(Boolean),
       pipeline: firstValue(source.pipeline, source.analysis_pipeline, null),
       evaluationId: stringValue(firstValue(evaluation.id, allowCurrentProjection ? source.evaluation_id : null), ""),
+      // A legacy stored evaluation can be hidden from current analysis UI
+      // while still being the server's concurrency token for human decisions.
+      decisionEvaluationId: stringValue(evaluationCandidate.id, ""),
       reasonCode: stringValue(firstValue(evaluation.reason_code, evaluation.reasonCode), ""),
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
       historicalAnalysis: useHistoricalEvaluation,
@@ -3701,7 +3704,7 @@
     if (isCancelledNotice(notice)) return notice.decision
       ? `취소 공고 · 과거 판단 기록(참고용): ${saved}`
       : "취소 공고 · 담당자 판단을 새로 저장할 수 없습니다.";
-    const analysisNote = notice.analysisState !== "EVALUATED"
+    const analysisNote = !decisionAnalysisComplete(notice)
       ? " 현재 공고 분석 전 · 판단 사유를 입력하면 지금도 기록할 수 있고, 서버가 당시 분석 상태를 함께 남깁니다." : "";
     return `${notice.decision ? "저장된 판단: " : ""}${saved}.${analysisNote}`;
   }
@@ -6358,7 +6361,7 @@
     }
     selectTab("overview");
     setDecisionDockExpanded(true);
-    if (notice.analysisState !== "EVALUATED") {
+    if (!decisionAnalysisComplete(notice)) {
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
       showToast("분석 전에도 판단을 기록할 수 있습니다", "분석이 완료되지 않았으므로 판단 사유를 입력해 주세요.", "warning");
@@ -6372,7 +6375,7 @@
       state.decisionDockNoticeKey = notice.noticeKey;
       setDecisionDockExpanded(false);
     }
-    const analyzed = notice.analysisState === "EVALUATED";
+    const analyzed = decisionAnalysisComplete(notice);
     const cancelled = isCancelledNotice(notice);
     els.decisionInputs.forEach((input) => {
       input.checked = notice.decision === input.value || (notice.decision === "CONDITIONAL_GO" && input.value === "HOLD");
@@ -6482,10 +6485,15 @@
     if (willOpen) els.decisionComment.focus();
   }
 
+  function decisionAnalysisComplete(notice) {
+    return notice?.analysisState === "EVALUATED"
+      && (notice.sourceKind !== "PPS" || notice.analysisAttachmentCoverageComplete === true);
+  }
+
   function updateDecisionButton() {
     const selectedChoice = els.decisionInputs.find((input) => input.checked)?.value || "";
     const selected = Boolean(selectedChoice);
-    const analyzed = state.selectedNotice?.analysisState === "EVALUATED";
+    const analyzed = decisionAnalysisComplete(state.selectedNotice);
     const cancelled = isCancelledNotice(state.selectedNotice);
     const overrideNeedsReason = selectedChoice === "GO"
       && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(state.selectedNotice)) || effectiveRecommendation(state.selectedNotice) !== "GO");
@@ -6539,7 +6547,7 @@
       els.decisionInputs[0]?.focus();
       return;
     }
-    const analyzed = notice.analysisState === "EVALUATED";
+    const analyzed = decisionAnalysisComplete(notice);
     const comment = els.decisionComment.value.trim();
     if (decision === "GO" && analyzed && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice)) || effectiveRecommendation(notice) !== "GO") && !comment) {
       setDecisionDockExpanded(true);
@@ -6561,8 +6569,9 @@
     // Send the identifier the screen actually showed. Omitting it is only
     // valid when no current evaluation exists; the server still rejects a
     // stale identifier and one belonging to another notice.
+    const evaluationId = notice.evaluationId || notice.decisionEvaluationId;
     const payload = {
-      ...(notice.evaluationId ? { evaluation_id: notice.evaluationId } : {}),
+      ...(evaluationId ? { evaluation_id: evaluationId } : {}),
       choice: decision,
       actor_label: DECIDER_NAME,
       rationale,
