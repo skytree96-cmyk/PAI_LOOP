@@ -187,6 +187,11 @@ jobs:
           node scripts/test-teams-delivery-workflow.mjs
           node scripts/test-claude-gateway-workflow.mjs
 
+      - name: Verify gateway expressions with the deployed n8n parser
+        run: |
+          npm ci --prefix scripts/n8n-expression-test-runtime --ignore-scripts --no-audit --no-fund
+          node scripts/test-gateway-expression-runtime.mjs
+
       - name: Verify local frontend assets
         shell: python
         run: |
