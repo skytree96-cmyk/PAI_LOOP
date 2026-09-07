@@ -95,7 +95,7 @@ def test_provider_id_cannot_select_evaluation_fact_key():
     changed = policy(CONDITION.replace("2건", "9건"))
     assert original["evaluation_fact_key"] != changed["evaluation_fact_key"]
     assert original["evaluation_fact_key"] == policy("  " + CONDITION.replace(" ", "  "))["evaluation_fact_key"]
-    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.07-v11"
+    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.07-v12"
 
 
 def test_public_generic_or_exact_boolean_never_claims_scope_is_bound():

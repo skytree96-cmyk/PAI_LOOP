@@ -410,6 +410,211 @@ def test_nonprofit_small_business_exception_is_scoped_fail_closed() -> None:
     )
 
 
+_NONPROFIT_SMALL_BUSINESS_OR = (
+    "소기업·소상공인 확인서 소지 업체 또는 "
+    "비영리법인(법인설립허가서 등 증빙 제출) 중 하나에 해당"
+)
+
+
+# Tails an extracted `normalized_condition` carries after the clause. Sized from
+# the shapes real extracted conditions end with; each is inert (no obligation of
+# its own, no polarity), so the whole-clause anchor still owns the meaning.
+_NONPROFIT_SMALL_BUSINESS_OR_TAILS = [
+    "",
+    "함.",
+    "해야 함.",
+    "하여야 함",
+    "되어야 함.",
+    "하는 업체여야 함.",
+    "하는 업체이어야 함",
+    "하는 자",
+    "한다.",
+]
+
+
+@pytest.mark.parametrize("tail", _NONPROFIT_SMALL_BUSINESS_OR_TAILS)
+def test_nonprofit_small_business_or_absorbs_inert_declarative_tail(tail: str) -> None:
+    item = classify_requirements(
+        [requirement("SYN-SME-OR-TAIL", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR + tail)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "PASS_EXCEPTION"
+    assert item["company_fact_key"] == "nonprofit_entity"
+
+
+@pytest.mark.parametrize("condition", [
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("확인서 소지", "확인서를 소지한"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("중 하나에", "중 어느 하나에"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("소지", "보유"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("소기업·소상공인", "중소기업"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("소기업·소상공인", "소상공인"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("(법인설립허가서 등 증빙 제출)", ""),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("업체 또는", "자 또는"),
+])
+def test_nonprofit_small_business_or_accepts_equivalent_complete_clause(condition: str) -> None:
+    item = classify_requirements(
+        [requirement("SYN-SME-OR-EQUIV", "CERTIFICATION", condition + "해야 함.")],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "PASS_EXCEPTION"
+    assert item["company_fact_key"] == "nonprofit_entity"
+
+
+@pytest.mark.parametrize("category", ["ENTITY", "CERTIFICATION", "OTHER"])
+def test_nonprofit_small_business_exact_or_uses_existing_evidence(category: str) -> None:
+    item = classify_requirements(
+        [requirement("SYN-SME-OR", category, _NONPROFIT_SMALL_BUSINESS_OR)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "PASS_EXCEPTION"
+    assert item["blocking"] is False
+    assert item["company_fact_key"] == "nonprofit_entity"
+    assert item["evidence_state"] == "VERIFIED"
+    assert item["evidence"] is not None
+    assert item["deadline_as_of"] == "2026-09-10"
+    assert "비영리법인 예외가 없어" not in item["message"]
+
+
+@pytest.mark.parametrize("unavailable", ["missing_fact", "false_fact", "expired_fact", "expired_evidence"])
+def test_nonprofit_small_business_or_preserves_fact_and_deadline_checks(unavailable: str) -> None:
+    profile = load_public_company_profile()
+    fact = profile["facts"]["nonprofit_entity"]
+    if unavailable == "missing_fact":
+        del profile["facts"]["nonprofit_entity"]
+    elif unavailable == "false_fact":
+        fact["value"] = False
+    elif unavailable == "expired_fact":
+        fact["effective_to"] = "2026-09-09"
+    else:
+        evidence = next(
+            item for item in profile["evidence"]
+            if item["evidence_key"] == fact["evidence_key"]
+        )
+        evidence["valid_until"] = "2026-09-09"
+
+    item = classify_requirements(
+        [requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR)],
+        profile=profile,
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "REVIEW"
+    assert item["blocking"] is True
+    assert item["company_fact_key"] == "nonprofit_entity"
+
+
+@pytest.mark.parametrize("condition", [
+    _NONPROFIT_SMALL_BUSINESS_OR.replace(" 또는 ", " 및 "),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("해당", "해당하지 않음"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("비영리법인(", "비영리법인 제외 업체("),
+    _NONPROFIT_SMALL_BUSINESS_OR + ". 단, 비영리법인은 제외한다.",
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("증빙 제출", "증빙 제출 및 직접생산확인증명서 보유"),
+    "직접생산확인증명서와 " + _NONPROFIT_SMALL_BUSINESS_OR,
+    _NONPROFIT_SMALL_BUSINESS_OR + "하며 직접생산확인증명서도 보유해야 함.",
+    _NONPROFIT_SMALL_BUSINESS_OR + "하며 중소기업확인서는 모두 보유해야 함.",
+    _NONPROFIT_SMALL_BUSINESS_OR + "하지 않아야 함.",
+    _NONPROFIT_SMALL_BUSINESS_OR + "하지 않는 업체여야 함.",
+    _NONPROFIT_SMALL_BUSINESS_OR + ". 다만 비영리법인은 참여할 수 없음.",
+    _NONPROFIT_SMALL_BUSINESS_OR + "하는 업체는 참가할 수 없음.",
+    # A nonprofit alternative restricted to a legal subset does not prove the
+    # company belongs to that subset, so it must never open the PASS path.
+    _NONPROFIT_SMALL_BUSINESS_OR.replace("비영리법인", "특정 비영리법인"),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace(
+        "비영리법인(법인설립허가서 등 증빙 제출)", "비영리법인(우선조달 예외 대상)"
+    ),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace(
+        "비영리법인(법인설립허가서 등 증빙 제출)", "시행령 제2조의3 제2호 해당 비영리법인"
+    ),
+    _NONPROFIT_SMALL_BUSINESS_OR.replace(
+        "(법인설립허가서 등 증빙 제출)", "(법인설립허가서 등 증빙 제출 후 별도 승인)"
+    ),
+])
+def test_nonprofit_small_business_or_rejects_negation_and_extra_gates(condition: str) -> None:
+    items = classify_requirements(
+        [requirement("SYN-SME-OR-CLOSED", "CERTIFICATION", condition)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+
+    assert all(not item["outcome"].startswith("PASS") for item in items)
+    assert all(item["company_fact_key"] != "nonprofit_entity" for item in items)
+
+
+def test_nonprofit_small_business_or_does_not_extend_to_another_requirement() -> None:
+    result = classify_requirements(
+        [
+            requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
+            requirement("SYN-SME-SEPARATE", "CERTIFICATION", "중소기업확인서를 보유해야 함."),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["SYN-SME-OR"]["outcome"] == "PASS_EXCEPTION"
+    # The OR clause proves scope for its own clause only. A separate certificate
+    # requirement keeps its own explicit confirmed-absence FAIL: nothing in the
+    # OR clause says this notice waives that other certificate.
+    assert by_id["SYN-SME-SEPARATE"]["outcome"] == "FAIL_CONFIRMED"
+    assert by_id["SYN-SME-SEPARATE"]["blocking"] is True
+    assert by_id["SYN-SME-SEPARATE"]["company_fact_key"] != "nonprofit_entity"
+
+
+def test_nonprofit_small_business_or_never_downgrades_direct_production_fail() -> None:
+    """An SME/nonprofit OR clause says nothing about direct production."""
+
+    result = classify_requirements(
+        [
+            requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
+            requirement(
+                "SYN-DP-SEPARATE",
+                "CERTIFICATION",
+                "직접생산확인증명서를 보유해야 함.",
+            ),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+
+    assert by_id["SYN-SME-OR"]["outcome"] == "PASS_EXCEPTION"
+    assert by_id["SYN-DP-SEPARATE"]["company_fact_key"] != "nonprofit_entity"
+    assert by_id["SYN-DP-SEPARATE"]["company_fact_key"] != (
+        "direct_production_nonprofit_exception_scope"
+    )
+
+
+def test_unrecognized_nonprofit_alternative_fails_without_denying_the_clause() -> None:
+    """Fail closed, but never claim the notice text has no nonprofit exception."""
+
+    condition = "소기업·소상공인 확인서 소지 업체 또는 관계법령상 비영리법인에 해당해야 함."
+    item = classify_requirements(
+        [requirement("SYN-SME-OR-UNBOUND", "CERTIFICATION", condition)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "FAIL_CONFIRMED"
+    assert item["blocking"] is True
+    assert item["company_fact_key"] != "nonprofit_entity"
+    assert "비영리법인 예외가 없어" not in item["message"]
+    assert "원문 검토" in item["message"]
+
+
 def test_slash_industry_logic_and_training_scope_stay_fail_closed() -> None:
     result = classify_requirements(
         [

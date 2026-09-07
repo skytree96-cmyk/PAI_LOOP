@@ -14,7 +14,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.07-v11"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.07-v12"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -302,6 +302,38 @@ def _has_explicit_nonprofit_direct_production_exception(text: str) -> bool:
     )
 
 
+# Declarative sentence endings an extracted `normalized_condition` carries after
+# the clause itself. Every token is a closed literal that states no obligation of
+# its own and no polarity, so absorbing it into the whole-clause anchor cannot
+# import a duty, a negation or an exclusion. Sized from the shapes real extracted
+# conditions actually end with (obligation copulas `여야/이어야 함`, obligation
+# verbs `해야/하여야/되어야 함`, and a bare subject noun such as `업체`/`자`).
+# There is deliberately no leading-affix allowlist: observed conditions begin at
+# the clause itself.
+_INERT_CLAUSE_TAIL = (
+    r"(?:하는|되는)?\s*(?:업체|자|기관|법인|단체|사업자)?\s*"
+    r"(?:여야|이어야)?\s*(?:해야|하여야|되어야)?\s*(?:함|한다|합니다)?\s*\.?"
+)
+
+
+def _has_explicit_nonprofit_small_business_alternative(text: str) -> bool:
+    """Recognize one complete SME/nonprofit OR, without borrowing another duty.
+
+    Full-clause matching keeps exclusions, negation, AND conditions and extra
+    qualification duties outside this alternative. The optional parenthesis is
+    limited to the stated incorporation-permit evidence submission, and the only
+    tolerated tail is the inert declarative ending in `_INERT_CLAUSE_TAIL`.
+    """
+
+    return re.fullmatch(
+        rf"{_SMALL_BUSINESS_CERT_PATTERN}\s*(?:을|를)?\s*(?:소지|보유)(?:한|하는)?\s*"
+        r"(?:업체|자|기관|법인|단체|사업자)\s*또는\s*"
+        r"비영리법인(?:\s*\(\s*법인\s*설립\s*허가서\s*(?:등\s*)?증빙\s*제출\s*\))?"
+        rf"\s*중\s*(?:어느\s*)?하나에\s*해당{_INERT_CLAUSE_TAIL}",
+        text,
+    ) is not None
+
+
 def _has_explicit_nonprofit_small_business_exception(text: str, *, category: str) -> bool:
     """Accept an SME exception only when its scope is proven in this clause."""
 
@@ -316,6 +348,7 @@ def _has_explicit_nonprofit_small_business_exception(text: str, *, category: str
         and "비영리법인" in text
         and (
             alternative_participation is not None
+            or _has_explicit_nonprofit_small_business_alternative(text)
             or _has_scoped_nonprofit_exception(
                 text,
                 subject_pattern=_SMALL_BUSINESS_CERT_PATTERN,
@@ -1323,6 +1356,10 @@ def classify_requirements(
     _eligibility_item_now = functools.partial(_eligibility_item, today=today)
     requirements = expand_statutory_qualification_requirements(requirements)
     normalized = [_normalise(item.get("normalized_condition")) for item in requirements]
+    # A complete SME/nonprofit OR clause proves scope for its own clause only.
+    # Keep it out of this notice-wide flag: the flag downgrades a *different*
+    # requirement's explicit COMPANY_CONFIRMED_ABSENT FAIL to a scope REVIEW,
+    # and the OR clause says nothing about any other certificate family.
     nonprofit_exception_present = any(
         "비영리법인" in text and _contains(text, "참여 가능", "예외", "적용하지")
         for text in normalized
@@ -1623,6 +1660,22 @@ def classify_requirements(
                 )
             else:
                 certificate_fact_key = _small_business_fact_key(text)
+                # Do not assert that the notice contains no nonprofit exception
+                # when the clause mentions one. The outcome stays the same
+                # confirmed-absence FAIL; only the stated reason changes, so the
+                # explanation never claims a fact about the source text that the
+                # text contradicts.
+                if "비영리법인" in text:
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
+                        "않습니다. 이 조건에 비영리법인 대안 문구가 있으나 결정 가능한 형태로 "
+                        "인식되지 않아 예외 경로를 적용할 수 없으므로 공고 원문 검토가 필요합니다."
+                    )
+                else:
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 않으며, "
+                        "공고 원문에도 비영리법인 예외가 없어 필수조건을 충족할 수 없습니다."
+                    )
                 item = _eligibility_item_now(
                     requirement,
                     profile=profile,
@@ -1630,10 +1683,7 @@ def classify_requirements(
                     deadline=as_of,
                     message="공고가 요구한 기업 확인서 보유 사실이 연결되었습니다.",
                     fail_on_confirmed_absence=True,
-                    failure_message=(
-                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 않으며, "
-                        "공고 원문에도 비영리법인 예외가 없어 필수조건을 충족할 수 없습니다."
-                    ),
+                    failure_message=certificate_failure_message,
                 )
         elif _contains(text, "하도급", "단독입찰"):
             item = _checklist_item(
