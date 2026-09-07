@@ -3703,7 +3703,7 @@
 
   function operatorDecisionDetailText(notice) {
     const saved = notice.decision
-      ? [operatorDecisionLabel(notice), notice.decidedBy, notice.decidedAt ? formatShortDateTime(notice.decidedAt) : ""].filter(Boolean).join(" · ")
+      ? [operatorDecisionLabel(notice), notice.decidedBy, notice.decidedAt ? formatKstDateTime(notice.decidedAt) : ""].filter(Boolean).join(" · ")
       : operatorDecisionLabel(notice);
     if (isCancelledNotice(notice)) return notice.decision
       ? `취소 공고 · 과거 판단 기록(참고용): ${saved}`

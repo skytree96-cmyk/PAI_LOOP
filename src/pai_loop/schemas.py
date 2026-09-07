@@ -162,6 +162,12 @@ class DecisionOut(ApiModel):
     analysis_snapshot: dict[str, Any] | None = None
     created_at: datetime
 
+    @field_validator("created_at")
+    @classmethod
+    def created_at_utc(cls, value: datetime) -> datetime:
+        # SQLite returns naive UTC; make its meaning explicit to every browser.
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
 
 class DepartmentRankingBreakdownOut(ApiModel):
     source: Literal[

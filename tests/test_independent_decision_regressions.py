@@ -8,7 +8,14 @@ from sqlalchemy import select
 
 from pai_loop import decision_persistence
 from pai_loop.models import Evaluation, Notice, NoticeVersion, UserDecision
-from pai_loop.schemas import DecisionCreate
+from pai_loop.schemas import DecisionCreate, DecisionOut
+
+
+def test_decision_timestamp_serializes_naive_database_utc_explicitly():
+    result = DecisionOut(id="SYN-decision", evaluation_id=None, choice="HOLD",
+        actor_label="SYN department", rationale="SYN reason", conditions=None,
+        created_at=datetime(2026, 9, 7, 17, 30))
+    assert result.model_dump(mode="json")["created_at"] == "2026-09-07T17:30:00Z"
 from pai_loop.pps_enrichment import PPS_METADATA_SCHEMA
 
 
