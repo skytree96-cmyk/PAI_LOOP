@@ -5510,6 +5510,8 @@ svg {
 }
 
 .record-field--wide { grid-column: 1 / -1; }
+.result-rate-basis[hidden] { display: none; }
+.record-field input[readonly] { background: var(--surface-muted, #f1f5f9); }
 
 .record-field input,
 .record-field select,

@@ -1070,8 +1070,14 @@
         <div class="source-link-dialog__body record-editor-grid">
           <label class="record-field"><span>결과 *</span><select id="resultLearningStatus" required><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
           <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">초안</option><option value="VALIDATED">검증 완료</option><option value="ARCHIVED">보관</option></select></label>
-          <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="number" min="0" /></label>
-          <label class="record-field"><span>우리 투찰률(수기 입력, %)</span><input id="resultLearningSubmittedRate" type="number" min="0" max="200" step="0.0001" /></label>
+          <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="number" min="0" step="any" /></label>
+          <label class="record-field"><span>우리 투찰률 입력 방식</span><select id="resultLearningRateMode"><option value="MANUAL">수기 입력</option><option value="AUTO">기준가격으로 자동 계산</option></select></label>
+          <label class="record-field result-rate-basis" hidden><span>계산 기준 종류 *</span><select id="resultLearningRateBasisKind"><option value="">선택해 주세요</option><option value="PLANNED_PRICE">예정가격</option><option value="BASE_AMOUNT">기초금액</option></select></label>
+          <label class="record-field result-rate-basis" hidden><span>계산 기준금액(원) *</span><input id="resultLearningRateBasisAmount" type="number" min="0" step="any" /></label>
+          <label class="record-field record-field--wide result-rate-basis" hidden><span>기준가격 출처 *</span><input id="resultLearningRateBasisReference" maxlength="1000" placeholder="기준가격을 확인한 공고·개찰결과 문서와 위치" /></label>
+          <label class="record-field"><span>우리 투찰률(%)</span><input id="resultLearningSubmittedRate" type="number" min="0" max="200" step="0.0001" aria-describedby="resultLearningRateStatus resultLearningRatePolicy" /></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningRateStatus" role="status" aria-live="polite"></p>
+          <p class="record-editor-note record-field--wide" id="resultLearningRatePolicy">자동 계산은 우리 투찰금액 ÷ 직접 확인한 기준금액 × 100입니다. 소수 다섯째 자리에서 반올림하여 소수 넷째 자리까지 표시하며, 저장 시 서버가 10진수 연산으로 같은 반올림 규칙을 적용합니다. 기준가격의 종류·금액·출처가 없으면 자동 계산할 수 없습니다. 추정가격·예산·낙찰금액은 계산 기준으로 대용하지 않습니다.</p>
           <label class="record-field"><span>낙찰금액(원)</span><input id="resultLearningWinningAmount" type="number" min="0" /></label>
           <label class="record-field"><span>낙찰률(수기 입력, %)</span><input id="resultLearningWinningRate" type="number" min="0" max="200" step="0.0001" /></label>
           <label class="record-field"><span>기술점수</span><input id="resultLearningTechnicalScore" type="number" min="0" max="100" step="0.01" /></label>

@@ -253,6 +253,7 @@
       "performanceRecordProject", "performanceRecordAgency", "performanceRecordDivision", "performanceRecordStatus", "performanceRecordContractDate", "performanceRecordStartDate", "performanceRecordEndDate", "performanceRecordAmount", "performanceRecordVat", "performanceRecordShare", "performanceRecordCertificate", "performanceRecordCompleted", "performanceRecordEvidence", "performanceRecordKeywords", "performanceRecordOverview",
       "resultLearningSummary", "resultLearningUnlockButton", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
       "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
+      "resultLearningRateMode", "resultLearningRateBasisKind", "resultLearningRateBasisAmount", "resultLearningRateBasisReference", "resultLearningRateStatus",
     ];
 
     ids.forEach((id) => {
@@ -504,10 +505,14 @@
     els.resultLearningPreviousButton.addEventListener("click", () => changeResultLearningPage(-1));
     els.resultLearningNextButton.addEventListener("click", () => changeResultLearningPage(1));
     els.resultLearningForm.addEventListener("submit", saveResultLearning);
+    [els.resultLearningSubmittedAmount, els.resultLearningRateBasisAmount, els.resultLearningRateBasisReference].forEach((input) => input.addEventListener("input", updateResultLearningRate));
+    [els.resultLearningRateMode, els.resultLearningRateBasisKind].forEach((input) => input.addEventListener("change", updateResultLearningRate));
     els.resultLearningStatus.addEventListener("change", () => {
       if (els.resultLearningStatus.value !== "NO_BID") return;
       [els.resultLearningSubmittedAmount, els.resultLearningSubmittedRate, els.resultLearningWinningAmount, els.resultLearningWinningRate, els.resultLearningTechnicalScore, els.resultLearningPriceScore, els.resultLearningTotalScore, els.resultLearningRank].forEach((input) => { input.value = ""; });
       els.resultLearningWinner.value = "";
+      els.resultLearningRateMode.value = "MANUAL";
+      updateResultLearningRate();
     });
     els.resultLearningCloseButton.addEventListener("click", closeResultLearningDialog);
     els.resultLearningCancelButton.addEventListener("click", closeResultLearningDialog);
@@ -2757,6 +2762,7 @@
         id: stringValue(outcome.id), outcomeKey: stringValue(outcome.outcome_key), recordStatus: stringValue(outcome.record_status, "DRAFT").toUpperCase(),
         revision: numberOrNull(outcome.revision) ?? 1, status: stringValue(outcome.status).toUpperCase(), submittedBidAmount: numberOrNull(outcome.submitted_bid_amount),
         submittedBidRate: numberOrNull(outcome.submitted_bid_rate), winningBidAmount: numberOrNull(outcome.winning_bid_amount), winningBidRate: numberOrNull(outcome.winning_bid_rate),
+        submittedRateCalculation: outcome.submitted_rate_calculation || { mode: "MANUAL" },
         technicalScore: numberOrNull(outcome.technical_score), priceScore: numberOrNull(outcome.price_score), totalScore: numberOrNull(outcome.total_score), rank: numberOrNull(outcome.rank),
         winnerName: stringValue(outcome.winner_name), lossReason: stringValue(outcome.loss_reason), source: stringValue(outcome.source), sourceReference: stringValue(outcome.source_reference),
         basisOutcomeId: stringValue(outcome.basis_outcome_id), basisSource: stringValue(outcome.basis_source),
@@ -2777,7 +2783,7 @@
       return `<article class="operator-record result-record" role="listitem">
         <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? recordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
-        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(formatBudget(outcome?.submittedBidAmount))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(formatBudget(outcome?.winningBidAmount))}</dd></div></dl>
+        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(formatBudget(outcome?.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(formatBudget(outcome?.winningBidAmount))}</dd></div></dl>
         ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
         <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
       </article>`;
@@ -2813,6 +2819,12 @@
     els.resultLearningRecordStatus.value = outcome?.recordStatus || "DRAFT";
     els.resultLearningSubmittedAmount.value = outcome?.submittedBidAmount ?? "";
     els.resultLearningSubmittedRate.value = outcome?.submittedBidRate ?? "";
+    const calculation = outcome?.submittedRateCalculation;
+    els.resultLearningRateMode.value = calculation?.mode === "AUTO" ? "AUTO" : "MANUAL";
+    els.resultLearningRateBasisKind.value = calculation?.basis_kind || "";
+    els.resultLearningRateBasisAmount.value = calculation?.basis_amount ?? "";
+    els.resultLearningRateBasisReference.value = calculation?.basis_reference || "";
+    updateResultLearningRate();
     els.resultLearningWinningAmount.value = outcome?.winningBidAmount ?? "";
     els.resultLearningWinningRate.value = outcome?.winningBidRate ?? "";
     els.resultLearningTechnicalScore.value = outcome?.technicalScore ?? "";
@@ -2835,18 +2847,84 @@
     state.resultLearning.editingOutcome = null;
   }
 
+  function resultLearningRateLabel(outcome) {
+    if (outcome?.submittedBidRate == null) return "미입력";
+    const basis = outcome.submittedRateCalculation;
+    const label = basis?.mode === "AUTO" ? (basis.basis_kind === "PLANNED_PRICE" ? "예정가격 대비" : "기초금액 대비") : "수기";
+    return `${label} ${Number(outcome.submittedBidRate).toFixed(4)}%`;
+  }
+
+  function submittedRatePreview(amountText, basisText) {
+    // Integer ratios implement half-up rounding without binary floating-point ties.
+    function fraction(text) {
+      if (text == null || String(text).trim() === "") return null;
+      const number = Number(text);
+      if (!Number.isFinite(number) || number < 0) return null;
+      const [coefficient, exponentText = "0"] = String(number).toLowerCase().split("e");
+      const [whole, decimals = ""] = coefficient.split(".");
+      const scale = decimals.length - Number(exponentText);
+      return scale >= 0 ? [BigInt(whole + decimals), 10n ** BigInt(scale)] : [BigInt(whole + decimals) * 10n ** BigInt(-scale), 1n];
+    }
+    const amount = fraction(amountText), basis = fraction(basisText);
+    if (!amount || !basis || basis[0] === 0n) return null;
+    const numerator = amount[0] * basis[1] * 100n, denominator = amount[1] * basis[0];
+    if (numerator > denominator * 200n) return null;
+    const rounded = (numerator * 10000n * 2n + denominator) / (denominator * 2n);
+    return `${rounded / 10000n}.${String(rounded % 10000n).padStart(4, "0")}`;
+  }
+
+  function resultLearningRateCalculation() {
+    return els.resultLearningRateMode.value === "AUTO" ? {
+      mode: "AUTO", basis_kind: els.resultLearningRateBasisKind.value,
+      basis_amount: nullableNumber(els.resultLearningRateBasisAmount.value),
+      basis_reference: nullableText(els.resultLearningRateBasisReference.value),
+    } : { mode: "MANUAL" };
+  }
+
+  function updateResultLearningRate() {
+    const automatic = els.resultLearningRateMode.value === "AUTO";
+    const fields = [els.resultLearningRateBasisKind, els.resultLearningRateBasisAmount, els.resultLearningRateBasisReference];
+    fields.forEach((input) => {
+      input.closest(".result-rate-basis")?.toggleAttribute("hidden", !automatic);
+      input.required = automatic;
+      input.disabled = !automatic;
+    });
+    els.resultLearningSubmittedAmount.required = automatic;
+    els.resultLearningSubmittedRate.readOnly = automatic;
+    els.resultLearningSubmittedAmount.setCustomValidity("");
+    if (!automatic) {
+      els.resultLearningRateStatus.textContent = "수기 입력값을 저장합니다. 자동 계산하려면 기준가격을 직접 확인해 입력하세요.";
+      return true;
+    }
+    const calculation = resultLearningRateCalculation();
+    const rate = submittedRatePreview(els.resultLearningSubmittedAmount.value, els.resultLearningRateBasisAmount.value);
+    const valid = rate !== null && ["PLANNED_PRICE", "BASE_AMOUNT"].includes(calculation.basis_kind) && Boolean(calculation.basis_reference);
+    els.resultLearningSubmittedRate.value = valid ? rate : "";
+    const message = "우리 투찰금액과 기준가격의 종류·양수 금액·출처를 확인해 주세요. 비율은 200% 이하여야 합니다.";
+    els.resultLearningSubmittedAmount.setCustomValidity(valid ? "" : message);
+    els.resultLearningRateStatus.textContent = valid
+      ? `${calculation.basis_kind === "PLANNED_PRICE" ? "예정가격" : "기초금액"} ${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 20 }).format(calculation.basis_amount)}원 대비 ${rate}% · 저장 시 서버 계산`
+      : message;
+    return valid;
+  }
+
   async function saveResultLearning(event) {
     event.preventDefault();
     const epoch = state.accountEpoch;
     const notice = state.resultLearning.editingNotice;
     const outcome = state.resultLearning.editingOutcome;
     if (!notice || !canWriteResults()) return;
+    if (!updateResultLearningRate()) {
+      els.resultLearningForm.reportValidity();
+      return;
+    }
     const isManualRecord = outcome?.source === "MANUAL_UI";
     const headers = await manualAnalysisAuthHeaders();
     if (!headers || epoch !== state.accountEpoch) return;
     const payload = {
       record_status: els.resultLearningRecordStatus.value, status: els.resultLearningStatus.value,
       submitted_bid_amount: nullableNumber(els.resultLearningSubmittedAmount.value), submitted_bid_rate: nullableNumber(els.resultLearningSubmittedRate.value),
+      submitted_rate_calculation: resultLearningRateCalculation(),
       winning_bid_amount: nullableNumber(els.resultLearningWinningAmount.value), winning_bid_rate: nullableNumber(els.resultLearningWinningRate.value),
       technical_score: nullableNumber(els.resultLearningTechnicalScore.value), price_score: nullableNumber(els.resultLearningPriceScore.value), total_score: nullableNumber(els.resultLearningTotalScore.value),
       rank: nullableNumber(els.resultLearningRank.value), winner_name: nullableText(els.resultLearningWinner.value), loss_reason: nullableText(els.resultLearningLossReason.value),

@@ -460,6 +460,38 @@ def test_legacy_results_are_explicitly_unassigned_and_cannot_be_claimed(account_
     assert own.json()["outcome"]["id"] != saved["id"]
 
 
+def test_department_auto_bid_rate_preserves_owner_versions_and_audit(account_client):
+    headers, identity = _login(account_client)
+    calculation = {"mode": "AUTO", "basis_kind": "BASE_AMOUNT", "basis_amount": 200, "basis_reference": "SYN 기준가격 1쪽"}
+    values = {"status": "SUBMITTED", "submitted_bid_amount": 100, "submitted_rate_calculation": calculation}
+    first = _outcome(account_client, headers, **values)
+    assert first.status_code == 201, first.text
+    row = first.json()["outcome"]
+    assert row["submitted_bid_rate"] == 50
+    assert _outcome(account_client, headers, **values).json()["created"] is False
+    stale_create = _outcome(account_client, headers, **values, idempotency_key="SYN-rate-other-request")
+    assert stale_create.status_code == 409
+    path = f"/api/v1/result-learning/{row['id']}"
+    other = _peer(account_client)
+    other_headers, _ = _login(other, "SYN_KMA2")
+    change = {"expected_updated_at": row["updated_at"], "submitted_bid_amount": 120}
+    assert other.patch(path, headers=other_headers, json=change).status_code == 403
+    assert _peer(account_client).patch(path, headers=SERVER, json=change).status_code == 403
+    updated = account_client.patch(path, headers=headers, json=change)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["outcome"]["submitted_bid_rate"] == 60
+    assert updated.json()["outcome"]["department_id"] == row["department_id"]
+    assert updated.json()["outcome"]["revision"] == 2
+    assert account_client.patch(path, headers=headers, json=change).status_code == 409
+    with account_client.app.state.session_factory() as session:
+        item = session.get(BidOutcome, row["id"])
+        history = item.evidence_json["_submitted_bid_rate"]["history"]
+        assert len(history) == 2
+        assert all(entry["actor_id"] == identity["account"]["id"] for entry in history)
+        assert history[-1]["before"]["submitted_bid_rate"] == 50
+        assert history[-1]["after"]["submitted_bid_rate"] == 60
+
+
 def test_result_create_idempotence_and_department_concurrency(account_client):
     headers, _ = _login(account_client)
     with ThreadPoolExecutor(max_workers=2) as pool:

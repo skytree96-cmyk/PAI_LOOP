@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -29,11 +30,35 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
+class SubmittedRateCalculation(ApiModel):
+    mode: Literal["MANUAL", "AUTO"] = "MANUAL"
+    basis_kind: Literal["PLANNED_PRICE", "BASE_AMOUNT"] | None = None
+    basis_amount: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    basis_reference: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("basis_reference")
+    @classmethod
+    def normalise_reference(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return " ".join(value.split()) or None
+
+    @model_validator(mode="after")
+    def validate_basis(self) -> "SubmittedRateCalculation":
+        if self.mode == "AUTO":
+            if self.basis_kind is None or self.basis_amount is None or not self.basis_reference:
+                raise ValueError("자동 계산에는 기준가격의 종류·금액·출처가 모두 필요합니다.")
+        elif any(value is not None for value in (self.basis_kind, self.basis_amount, self.basis_reference)):
+            raise ValueError("수기 모드의 계산 기준은 비워 주세요.")
+        return self
+
+
 class ResultLearningFields(ApiModel):
     record_status: WorkflowStatus = "DRAFT"
     status: OutcomeStatus
-    submitted_bid_amount: float | None = Field(default=None, ge=0)
-    submitted_bid_rate: float | None = Field(default=None, ge=0, le=200)
+    submitted_bid_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    submitted_bid_rate: float | None = Field(default=None, ge=0, le=200, allow_inf_nan=False)
+    submitted_rate_calculation: SubmittedRateCalculation = Field(default_factory=SubmittedRateCalculation)
     winning_bid_amount: float | None = Field(default=None, ge=0)
     winning_bid_rate: float | None = Field(default=None, ge=0, le=200)
     technical_score: float | None = Field(default=None, ge=0, le=100)
@@ -57,6 +82,16 @@ class ResultLearningFields(ApiModel):
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "ResultLearningFields":
+        if self.submitted_rate_calculation.mode == "AUTO":
+            if self.submitted_bid_amount is None:
+                raise ValueError("자동 계산에는 우리 투찰금액이 필요합니다.")
+            with localcontext() as context:
+                context.prec = 40
+                rate = Decimal(str(self.submitted_bid_amount)) / Decimal(str(self.submitted_rate_calculation.basis_amount)) * 100
+                if rate > 200:
+                    raise ValueError("기준가격 대비 비율은 200%를 초과할 수 없습니다. 금액과 기준을 확인해 주세요.")
+                # The server owns the result, including when an old client sends a stale rate.
+                self.submitted_bid_rate = float(rate.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
         bid_facts = (
             self.submitted_bid_amount,
             self.submitted_bid_rate,
@@ -130,8 +165,9 @@ class ResultLearningUpdate(ApiModel):
     expected_updated_at: datetime
     record_status: WorkflowStatus | None = None
     status: OutcomeStatus | None = None
-    submitted_bid_amount: float | None = Field(default=None, ge=0)
-    submitted_bid_rate: float | None = Field(default=None, ge=0, le=200)
+    submitted_bid_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    submitted_bid_rate: float | None = Field(default=None, ge=0, le=200, allow_inf_nan=False)
+    submitted_rate_calculation: SubmittedRateCalculation = Field(default_factory=SubmittedRateCalculation)
     winning_bid_amount: float | None = Field(default=None, ge=0)
     winning_bid_rate: float | None = Field(default=None, ge=0, le=200)
     technical_score: float | None = Field(default=None, ge=0, le=100)
@@ -163,6 +199,7 @@ class ResultLearningOutcomeOut(ApiModel):
     status: OutcomeStatus
     submitted_bid_amount: float | None
     submitted_bid_rate: float | None
+    submitted_rate_calculation: SubmittedRateCalculation
     winning_bid_amount: float | None
     winning_bid_rate: float | None
     technical_score: float | None
@@ -307,6 +344,17 @@ def _workflow(item: BidOutcome) -> dict[str, Any]:
     }
 
 
+def _rate_calculation(item: BidOutcome) -> SubmittedRateCalculation:
+    evidence = item.evidence_json if isinstance(item.evidence_json, dict) else {}
+    stored = evidence.get("_submitted_bid_rate")
+    if item.source == "MANUAL_UI" and isinstance(stored, dict):
+        try:
+            return SubmittedRateCalculation.model_validate(stored.get("calculation"))
+        except ValidationError:
+            pass
+    return SubmittedRateCalculation()
+
+
 def _out(item: BidOutcome) -> ResultLearningOutcomeOut:
     workflow = _workflow(item)
     return ResultLearningOutcomeOut(
@@ -321,6 +369,7 @@ def _out(item: BidOutcome) -> ResultLearningOutcomeOut:
         status=item.status,
         submitted_bid_amount=item.submitted_bid_amount,
         submitted_bid_rate=item.submitted_bid_rate,
+        submitted_rate_calculation=_rate_calculation(item),
         winning_bid_amount=item.winning_bid_amount,
         winning_bid_rate=item.winning_bid_rate,
         technical_score=item.technical_score,
@@ -351,7 +400,17 @@ def _latest_outcome(notice: Notice) -> BidOutcome | None:
 
 
 def _fields(payload: ResultLearningFields) -> dict[str, object]:
-    return payload.model_dump(exclude={"record_status", "operator_note", "notice_key", "idempotency_key"})
+    return payload.model_dump(exclude={"record_status", "operator_note", "notice_key", "idempotency_key", "submitted_rate_calculation"})
+
+
+def _rate_snapshot(fields: dict[str, Any]) -> dict[str, Any]:
+    calculation = fields["submitted_rate_calculation"]
+    return {
+        "submitted_bid_amount": fields["submitted_bid_amount"],
+        "submitted_bid_rate": fields["submitted_bid_rate"],
+        "calculation": calculation,
+        "rounding_policy": "DECIMAL_HALF_UP_4" if calculation["mode"] == "AUTO" else None,
+    }
 
 
 def _evidence(
@@ -363,6 +422,9 @@ def _evidence(
     created: bool,
     basis: BidOutcome | None = None,
     actor_label: str | None = None,
+    actor_id: str | None = None,
+    rate_fields: ResultLearningFields | None = None,
+    previous_rate_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = dict(existing) if isinstance(existing, dict) else {}
     previous = result.get("_workflow")
@@ -394,6 +456,26 @@ def _evidence(
         result["operator_note"] = operator_note
     else:
         result.pop("operator_note", None)
+    if rate_fields is not None:
+        before = _rate_snapshot(previous_rate_fields) if previous_rate_fields is not None else None
+        after = _rate_snapshot(rate_fields.model_dump())
+        previous_rate = result.get("_submitted_bid_rate")
+        previous_rate = previous_rate if isinstance(previous_rate, dict) else {}
+        history = previous_rate.get("history")
+        history = list(history) if isinstance(history, list) else []
+        if before != after:
+            history.append({
+                "revision": revision,
+                "changed_at": datetime.now(timezone.utc).isoformat(),
+                "actor_id": actor_id,
+                "actor_label": actor_label or "KMA 입찰팀",
+                "before": before,
+                "after": after,
+            })
+        result["_submitted_bid_rate"] = {
+            "calculation": after["calculation"],
+            "history": history,
+        }
     return result
 
 
@@ -404,6 +486,7 @@ def _current_fields(item: BidOutcome) -> dict[str, object]:
         "status": item.status,
         "submitted_bid_amount": item.submitted_bid_amount,
         "submitted_bid_rate": item.submitted_bid_rate,
+        "submitted_rate_calculation": _rate_calculation(item).model_dump(),
         "winning_bid_amount": item.winning_bid_amount,
         "winning_bid_rate": item.winning_bid_rate,
         "technical_score": item.technical_score,
@@ -549,6 +632,7 @@ def create_result_learning(
             raise HTTPException(403, "자기 부서의 결과만 변경할 수 있습니다.")
         expected = {
             **values,
+            "submitted_rate_calculation": validated.submitted_rate_calculation.model_dump(),
             "record_status": validated.record_status,
             "operator_note": validated.operator_note,
         }
@@ -588,6 +672,8 @@ def create_result_learning(
             created=True,
             basis=basis,
             actor_label=identity.actor_label if identity else None,
+            actor_id=identity.id if identity else None,
+            rate_fields=validated,
         ),
         **values,
     )
@@ -649,6 +735,9 @@ def update_result_learning(
         operator_note=validated.operator_note,
         created=False,
         actor_label=identity.actor_label if identity else None,
+        actor_id=identity.id if identity else None,
+        rate_fields=validated,
+        previous_rate_fields=_current_fields(item),
     )
     next_updated_at = datetime.now(timezone.utc)
     version_lower = item.updated_at - timedelta(microseconds=1)

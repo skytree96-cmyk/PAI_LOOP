@@ -766,6 +766,12 @@ def test_operator_editor_frontend_exposes_forms_without_server_credentials() -> 
     for element_id in (
         "resultLearningSection",
         "resultLearningForm",
+        "resultLearningRateMode",
+        "resultLearningRateBasisKind",
+        "resultLearningRateBasisAmount",
+        "resultLearningRateBasisReference",
+        "resultLearningRateStatus",
+        "resultLearningRatePolicy",
         "performanceEditorList",
         "performanceRecordForm",
     ):
@@ -775,5 +781,8 @@ def test_operator_editor_frontend_exposes_forms_without_server_credentials() -> 
     assert 'outcome.source === "MANUAL_UI"' in script
     assert "payload.basis_outcome_id = outcome.id" in script
     assert "자동 환류 원본은 변경하지 않고" in script
+    assert 'aria-describedby="resultLearningRateStatus resultLearningRatePolicy"' in html
+    assert "소수 다섯째 자리에서 반올림하여 소수 넷째 자리" in html
+    assert "서버가 10진수 연산" in html
     assert "X-PAI-Manual-Token" in script
     assert "X-PAI-LOOP-API-KEY" not in script

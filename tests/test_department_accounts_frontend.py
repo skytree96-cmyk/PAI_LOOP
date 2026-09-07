@@ -25,6 +25,7 @@ refreshDashboardAfterMutation=async()=>{};loadApplicationData=async()=>{};
 globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,loginDepartmentAccount,logoutDepartmentAccount,
  hydrateDepartmentDecisionList,hydrateOperatorDecisions,normalizeNotice,normalizeResultLearningNotice,
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
+ submittedRatePreview,updateResultLearningRate,resultLearningRateCalculation,resultLearningRateLabel,
  renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
  setOpenDetail(fn){openDetail=fn;},
  setRefresh(fn){refreshDashboardAfterMutation=fn;}};`;
@@ -35,6 +36,7 @@ const fields=new Map();
 function field(){return {value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,
  dataset:{},classList:{contains(){return false;},toggle(){},add(){},remove(){}},setAttribute(){},
  replaceChildren(){this.innerHTML='';this.textContent='';},reset(){},focus(){},closest(){return null;},
+ setCustomValidity(message){this.validationMessage=message;},reportValidity(){return !this.validationMessage;},
  showModal(){this.open=true;},close(){this.open=false;}};}
 Object.setPrototypeOf(u.els,new Proxy({}, {get(_,key){if(!fields.has(key))fields.set(key,field());return fields.get(key);}}));
 u.els.decisionInputs=[{value:'GO',checked:false},{value:'HOLD',checked:true},{value:'NO_GO',checked:false}];
@@ -58,6 +60,76 @@ def _run_behavior(script):
         input=APP.read_text(encoding='utf-8'), capture_output=True, text=True, encoding='utf-8',
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_bid_rate_preview_requires_explicit_basis_and_rounds_half_up():
+    _run_behavior(r'''
+assert.equal(u.submittedRatePreview('176.5433','200'),'88.2717');
+assert.equal(u.submittedRatePreview('0','200'),'0.0000');
+assert.equal(u.submittedRatePreview('2','3'),'66.6667');
+assert.equal(u.submittedRatePreview('1e2','2e2'),'50.0000');
+assert.equal(u.submittedRatePreview('','200'),null);
+assert.equal(u.submittedRatePreview(null,'200'),null);
+assert.equal(u.submittedRatePreview('1','0'),null);
+assert.equal(u.submittedRatePreview('400.0001','200'),null);
+assert.equal(u.submittedRatePreview('Infinity','200'),null);
+u.els.resultLearningSubmittedAmount.value='0';
+u.els.resultLearningRateMode.value='AUTO';
+u.els.resultLearningRateBasisKind.value='PLANNED_PRICE';
+u.els.resultLearningRateBasisAmount.value='200';
+u.els.resultLearningRateBasisReference.value='SYN 예정가격 1쪽';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningSubmittedRate.value,'0.0000');
+assert.equal(u.els.resultLearningSubmittedRate.readOnly,true);
+assert.equal(u.els.resultLearningRateBasisAmount.required,true);
+assert.match(u.els.resultLearningRateStatus.textContent,/예정가격 200원 대비 0.0000%/);
+u.els.resultLearningSubmittedAmount.value='176.5433';u.updateResultLearningRate();
+assert.equal(u.els.resultLearningSubmittedRate.value,'88.2717');
+u.els.resultLearningRateBasisAmount.value='';
+assert.equal(u.updateResultLearningRate(),false);
+assert.equal(u.els.resultLearningSubmittedRate.value,'');
+assert.ok(u.els.resultLearningSubmittedAmount.validationMessage);
+u.els.resultLearningRateBasisAmount.value='200';u.els.resultLearningRateBasisReference.value='';
+assert.equal(u.updateResultLearningRate(),false);
+u.els.resultLearningRateMode.value='MANUAL';u.els.resultLearningSubmittedRate.value='87.1234';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningSubmittedRate.value,'87.1234');
+assert.equal(u.els.resultLearningSubmittedRate.readOnly,false);
+assert.equal(u.els.resultLearningRateBasisAmount.required,false);
+assert.equal(u.els.resultLearningRateBasisAmount.disabled,true);
+assert.equal(u.els.resultLearningSubmittedAmount.validationMessage,'');
+assert.equal(u.resultLearningRateCalculation().mode,'MANUAL');
+assert.equal(u.resultLearningRateLabel({submittedBidRate:0,submittedRateCalculation:{mode:'AUTO',basis_kind:'BASE_AMOUNT'}}),'기초금액 대비 0.0000%');
+assert.equal(u.resultLearningRateLabel({submittedBidRate:null}),'미입력');
+''')
+
+
+def test_bid_rate_form_reopens_basis_and_sends_explicit_auto_contract():
+    _run_behavior(r'''
+const raw={notice_key:'SYN-N',title:'SYN notice',estimated_amount:999999,outcomes:[{
+ id:'SYN-result',department_id:'SYN-A',department_revision:1,source:'MANUAL_UI',status:'SUBMITTED',
+ updated_at:'2026-09-08T00:00:00Z',submitted_bid_amount:0,submitted_bid_rate:0,
+ submitted_rate_calculation:{mode:'AUTO',basis_kind:'BASE_AMOUNT',basis_amount:200,basis_reference:'SYN basis 2쪽'}}]};
+u.openResultLearningDialog(u.normalizeResultLearningNotice(raw));
+assert.equal(u.els.resultLearningRateMode.value,'AUTO');
+assert.equal(u.els.resultLearningRateBasisKind.value,'BASE_AMOUNT');
+assert.equal(u.els.resultLearningRateBasisAmount.value,200);
+assert.equal(u.els.resultLearningSubmittedRate.value,'0.0000');
+u.els.resultLearningSubmittedAmount.value='176.5433';
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(requests.length,1);
+const body=JSON.parse(requests[0].options.body);
+assert.equal(requests[0].options.method,'PATCH');
+assert.equal(body.expected_updated_at,'2026-09-08T00:00:00Z');
+assert.equal(body.submitted_bid_rate,88.2717);
+assert.equal(body.submitted_rate_calculation.basis_amount,200);
+assert.equal(body.submitted_rate_calculation.basis_kind,'BASE_AMOUNT');
+assert.equal(body.submitted_rate_calculation.basis_reference,'SYN basis 2쪽');
+respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningRateBasisAmount.value='';
+await u.saveResultLearning({preventDefault(){}});
+assert.equal(requests.length,1,'missing denominator must not fall back to notice budget');
+''')
 
 
 def test_old_me_and_old_401_cannot_restore_or_expire_another_session():
