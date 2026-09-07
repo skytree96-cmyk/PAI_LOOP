@@ -1108,6 +1108,8 @@ def _quantitative_candidate_shapes(
 
 def _quantitative_diagnostics(
     notice: Notice,
+    *,
+    include_candidate_shapes: bool = True,
 ) -> ManualQuantitativeDiagnosticsResponse:
     # Local import avoids the manual-analysis -> analysis-api -> quantitative
     # module cycle during application startup. Both helpers are pure reads over
@@ -1187,12 +1189,12 @@ def _quantitative_diagnostics(
             notice,
             profile,
             candidate_status="AVAILABLE",
-        ),
+        ) if include_candidate_shapes else [],
         review_candidate_shapes=_quantitative_candidate_shapes(
             notice,
             profile,
             candidate_status="REVIEW",
-        ),
+        ) if include_candidate_shapes else [],
     )
 
 

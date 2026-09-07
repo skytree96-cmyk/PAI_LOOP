@@ -37,6 +37,7 @@ from .quantitative_scoring import quantitative_scoring_router
 from .reference_api import router as reference_data_router
 from .reference_registry import sync_packaged_reference_data, sync_public_company_profile
 from .result_learning import router as result_learning_router
+from .recovery_diagnostics import PATH as recovery_diagnostics_path, router as recovery_diagnostics_router
 from .schemas import HealthResponse
 from .teams_readiness import router as teams_readiness_router
 
@@ -138,6 +139,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     async def teams_tab_security_headers(request: Request, call_next):
         _scrub_private_performance_search_query(request)
         response = await call_next(request)
+        if request.url.path == recovery_diagnostics_path:
+            response.headers["Cache-Control"] = "no-store"
         # Teams tabs are first-party HTTPS pages rendered by Microsoft inside
         # an iframe. CSP is the standards-based allowlist; X-Frame-Options is
         # intentionally omitted because DENY/SAMEORIGIN would block Teams.
@@ -167,6 +170,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(result_learning_router)
     application.include_router(operator_decisions_router)
     application.include_router(manual_analysis_router)
+    application.include_router(recovery_diagnostics_router)
     application.include_router(pps_discovery_router)
     application.include_router(prespec_router)
     application.include_router(private_company_evidence_router)
@@ -193,6 +197,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
 
     @application.exception_handler(RequestValidationError)
     async def validation_exception(request: Request, exc: RequestValidationError):
+        if request.url.path == recovery_diagnostics_path:
+            return JSONResponse(status_code=422, headers={"Cache-Control": "no-store"}, content={"detail": "진단 공고 목록을 확인해 주세요.", "code": "DIAGNOSTIC_VALIDATION_ERROR"})
         if request.url.path.startswith("/api/v1/accounts"):
             return JSONResponse(status_code=422, headers={"Cache-Control": "no-store"}, content={"detail": "계정 입력 형식을 확인해 주세요.", "code": "ACCOUNT_VALIDATION_ERROR"})
         if (
