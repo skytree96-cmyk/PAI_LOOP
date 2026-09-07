@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "# 11 · Resumable Analysis Backfill · v0.8\n\n수동 최초 실행은 현재 OPEN 미시도 공고와 24시간 cooldown을 지난 retryable 공고를 최대 3,000건까지 durable parent로 예약합니다. 한 n8n 실행은 최대 30건을, batch HTTP 호출당 1건을 직렬 처리합니다. `QUOTE_UNVERIFIED` 교정 재시도를 포함해 첨부당 Claude gateway 요청은 최대 2회(공고당 최대 20회)입니다. 1분 schedule은 DAILY를 먼저, 그다음 BACKFILL을 재개하며 활성 작업이 없으면 audit를 만들지 않습니다.\n\n각 segment는 서버에 lease와 exact chunk map을 저장합니다. 겹친 실행은 zero-offer, 동일 chunk retry는 저장 응답 재사용, stale lease는 bounded recovery, 768회 초과는 DEAD_LETTER입니다.",
+        "content": "# 11 · Resumable Analysis Backfill · bounded concurrency 2\n\n기존 parent·segment·chunk·공고 키를 보존하여 서로 다른 공고를 최대 2개 동시 처리합니다. 각 HTTP 요청은 공고 1개이며 서버의 공고별 잠금과 2개 실행 슬롯을 통과해야 합니다. 수동/일반 분석은 기존 전역 배타 잠금을 유지합니다.\n\n첨부당 Claude 요청은 교정을 포함해 최대 2회이며 450초 추출 예산과 600초 HTTP 제한을 유지합니다. 1분 schedule은 DAILY 우선으로 기존 큐만 재개합니다. 겹친 실행은 zero-offer, 정확한 chunk 재전송은 저장 응답을 재사용합니다. 현재 parent의 저장된 실행당 한도·재시도·source boundary를 변경하지 않습니다.\n\n배포 시 실행 중 구간을 먼저 종료하고 서버와 W11을 함께 검증합니다. 병렬 처리 수는 공고/첨부 성공률이 아닙니다.",
         "height": 250,
         "width": 760
       },
@@ -245,7 +245,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map((item) => item.json);\nconst operation = $node['Validate Backfill Plan'].json.operation;\nconst totals = { requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, openaiCalls: 0 };\nconst keys = [];\nfor (const row of rows) { for (const field of Object.keys(totals)) totals[field] += Number(row[field] ?? 0); keys.push(...row.noticeKeys); }\nif (rows.length !== operation.chunks.length || new Set(keys).size !== keys.length || totals.requested !== operation.offered || totals.processed !== totals.completed + totals.skipped + totals.failed) throw new Error('continuation aggregate is duplicated or incomplete');\nreturn [{ json: { runtime: $node['Validate Backfill Plan'].json.runtime, operation: { ...operation, chunksExecuted: rows.length, ...totals, childJobs: rows.map((row) => row.childJobId), warnings: [...new Set(rows.flatMap((row) => row.warnings ?? []))].slice(0, 50) } } }];"
+        "jsCode": "const rows = $input.all().map((item) => item.json);\nconst operation = $node['Validate Backfill Plan'].json.operation;\nconst totals = { requested: 0, processed: 0, completed: 0, skipped: 0, failed: 0, openaiCalls: 0 };\nconst keys = [];\nfor (const row of rows) { for (const field of Object.keys(totals)) totals[field] += Number(row[field] ?? 0); keys.push(...row.noticeKeys); }\nconst expectedKeys = operation.chunks.flat().map(String);\nconst expectedSet = new Set(expectedKeys);\nconst childIds = rows.map((row) => row.childJobId);\nif (rows.length !== operation.chunks.length || expectedSet.size !== expectedKeys.length || keys.length !== expectedKeys.length || new Set(keys).size !== keys.length || keys.some((key) => !expectedSet.has(key)) || new Set(childIds).size !== childIds.length || totals.requested !== operation.offered || totals.processed !== operation.offered || totals.processed !== totals.completed + totals.skipped + totals.failed) throw new Error('continuation aggregate is duplicated or incomplete');\nreturn [{ json: { runtime: $node['Validate Backfill Plan'].json.runtime, operation: { ...operation, chunksExecuted: rows.length, ...totals, childJobs: rows.map((row) => row.childJobId), warnings: [...new Set(rows.flatMap((row) => row.warnings ?? []))].slice(0, 50) } } }];"
       },
       "id": "backfill-aggregate",
       "name": "Aggregate Backfill Progress",
@@ -356,13 +356,13 @@
     },
     {
       "parameters": {
-        "batchSize": 1,
+        "batchSize": 2,
         "options": {
           "reset": false
         }
       },
       "id": "analysis-continuation-serial-loop",
-      "name": "Process Continuation Chunks Serially",
+      "name": "Process Continuation Chunks (Max 2)",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "position": [
@@ -469,7 +469,7 @@
       "main": [
         [
           {
-            "node": "Process Continuation Chunks Serially",
+            "node": "Process Continuation Chunks (Max 2)",
             "type": "main",
             "index": 0
           }
@@ -491,7 +491,7 @@
       "main": [
         [
           {
-            "node": "Process Continuation Chunks Serially",
+            "node": "Process Continuation Chunks (Max 2)",
             "type": "main",
             "index": 0
           }
@@ -542,7 +542,7 @@
         ]
       ]
     },
-    "Process Continuation Chunks Serially": {
+    "Process Continuation Chunks (Max 2)": {
       "main": [
         [
           {
