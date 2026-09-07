@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    JSON,
     MetaData,
     String,
     Table,
@@ -26,6 +27,7 @@ from .models import (
     AnalysisRun,
     BidOutcome,
     CompanyPerformanceRecord,
+    UserDecision,
     PerformanceNormalizationBatch,
     PerformanceNormalizationRevision,
     NoticeAnalysisPolicy,
@@ -75,6 +77,14 @@ PERFORMANCE_NORMALIZATION_MIGRATION_CONTRACT = (
 )
 PERFORMANCE_NORMALIZATION_MIGRATION_CHECKSUM = hashlib.sha256(
     PERFORMANCE_NORMALIZATION_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+INDEPENDENT_DECISION_MIGRATION_ID = "20260908_01_independent_operator_decisions"
+INDEPENDENT_DECISION_MIGRATION_CONTRACT = (
+    "user_decisions:evaluation_id:nullable;"
+    "analysis_state_snapshot:varchar32|null;analysis_snapshot:json|null"
+)
+INDEPENDENT_DECISION_MIGRATION_CHECKSUM = hashlib.sha256(
+    INDEPENDENT_DECISION_MIGRATION_CONTRACT.encode("utf-8")
 ).hexdigest()
 PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
 PRESPEC_MIGRATION_CONTRACT = (
@@ -133,6 +143,11 @@ _migrations = (
             PreSpecificationDocument.__table__,
             PreSpecificationAnalysisRun.__table__,
         ),
+    ),
+    (
+        INDEPENDENT_DECISION_MIGRATION_ID,
+        INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
+        (),
     ),
 )
 _required_base_tables = {
@@ -229,6 +244,106 @@ def _add_company_performance_recognized_amount_columns(
     )
 
 
+_INDEPENDENT_DECISION_COLUMNS = {
+    "analysis_state_snapshot": ("VARCHAR(32)", String),
+    "analysis_snapshot": ("JSON", JSON),
+}
+
+
+def _validate_independent_decision_columns(
+    columns: Sequence[dict[str, object]],
+    *,
+    require_all: bool,
+) -> None:
+    by_name = {str(column["name"]): column for column in columns}
+    for column_name, (_sql_type, expected_type) in _INDEPENDENT_DECISION_COLUMNS.items():
+        column = by_name.get(column_name)
+        if column is None:
+            if require_all:
+                raise MigrationError(
+                    "user_decisions migration did not create required column "
+                    f"{column_name}"
+                )
+            continue
+        if not isinstance(column.get("type"), expected_type):
+            raise MigrationError(
+                "user_decisions has an incompatible existing column "
+                f"{column_name}; expected {expected_type.__name__}"
+            )
+        if column.get("nullable") is not True:
+            raise MigrationError(
+                "user_decisions has an incompatible existing column "
+                f"{column_name}; the additive column must be nullable"
+            )
+    evaluation_id = by_name.get("evaluation_id")
+    if evaluation_id is None:
+        raise MigrationError("user_decisions is missing its evaluation_id column")
+    if require_all and evaluation_id.get("nullable") is not True:
+        raise MigrationError(
+            "user_decisions.evaluation_id is still NOT NULL; a decision recorded "
+            "before analysis cannot be stored"
+        )
+
+
+def _validate_applied_independent_decision_migration(connection: Connection) -> None:
+    table_name = UserDecision.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        raise MigrationError(
+            "user_decisions is missing although its independent-decision "
+            "migration is recorded as applied"
+        )
+    _validate_independent_decision_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+
+
+def _relax_independent_decision_columns(connection: Connection) -> None:
+    """Add the nullable snapshot columns and release the evaluation_id gate.
+
+    Both steps are additive: no existing row is read, rewritten or deleted, and
+    no column or table is dropped. Relaxing NOT NULL is a catalog-only change
+    on PostgreSQL, the deployed dialect. SQLite cannot alter a column
+    constraint in place and this migration deliberately refuses to rebuild the
+    table, so a legacy SQLite file fails closed with the exact remedy instead
+    of silently accepting decisions it would later reject at INSERT time.
+    """
+
+    table_name = UserDecision.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        UserDecision.__table__.create(connection, checkfirst=True)
+    existing_columns = inspect(connection).get_columns(table_name)
+    _validate_independent_decision_columns(existing_columns, require_all=False)
+    existing = {str(column["name"]) for column in existing_columns}
+    for column_name, (sql_type, _expected_type) in _INDEPENDENT_DECISION_COLUMNS.items():
+        if column_name in existing:
+            continue
+        connection.exec_driver_sql(
+            f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {sql_type}'
+        )
+
+    evaluation_id = next(
+        column
+        for column in inspect(connection).get_columns(table_name)
+        if str(column["name"]) == "evaluation_id"
+    )
+    if evaluation_id.get("nullable") is not True:
+        dialect = connection.dialect.name
+        if dialect == "postgresql":
+            connection.exec_driver_sql(
+                f'ALTER TABLE "{table_name}" ALTER COLUMN "evaluation_id" DROP NOT NULL'
+            )
+        else:
+            raise MigrationError(
+                f"{dialect} cannot relax user_decisions.evaluation_id in place; "
+                "recreate this development database with --create-base"
+            )
+    _validate_independent_decision_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+
+
 def _applied_checksum(connection: Connection, migration_id: str) -> str | None:
     return connection.execute(
         select(schema_migrations.c.checksum).where(
@@ -257,6 +372,8 @@ def pending_migrations(engine: Engine) -> list[str]:
                 _validate_applied_company_performance_recognized_amount_migration(
                     connection
                 )
+            if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
+                _validate_applied_independent_decision_migration(connection)
         return pending
 
 
@@ -297,11 +414,15 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     _validate_applied_company_performance_recognized_amount_migration(
                         connection
                     )
+                if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
+                    _validate_applied_independent_decision_migration(connection)
                 continue
             for table in tables:
                 table.create(connection, checkfirst=True)
             if migration_id == COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID:
                 _add_company_performance_recognized_amount_columns(connection)
+            if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
+                _relax_independent_decision_columns(connection)
             connection.execute(
                 schema_migrations.insert().values(
                     migration_id=migration_id,

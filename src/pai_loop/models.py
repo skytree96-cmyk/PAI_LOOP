@@ -210,19 +210,34 @@ class Evaluation(Base):
 
 
 class UserDecision(Base):
+    """One human participation decision, owned by the operator, not the analysis.
+
+    ``evaluation_id`` is nullable because the person deciding is accountable
+    whether or not the deterministic engine produced a current evaluation: a
+    notice may be undecidable before analysis, after a failed extraction, or
+    after its deadline, and the record of what a human chose must survive that.
+    ``analysis_state_snapshot`` and ``analysis_snapshot`` are written by the
+    server from what it observed at insert time, so a later re-analysis adds a
+    new evaluation without rewriting, re-binding or invalidating this row.
+    """
+
     __tablename__ = "user_decisions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     notice_id: Mapped[str] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), index=True)
-    evaluation_id: Mapped[str] = mapped_column(ForeignKey("evaluations.id", ondelete="CASCADE"), index=True)
+    evaluation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evaluations.id", ondelete="CASCADE"), index=True
+    )
     choice: Mapped[str] = mapped_column(String(32), index=True)
     actor_label: Mapped[str] = mapped_column(String(120), default="담당자")
     rationale: Mapped[str] = mapped_column(Text)
     conditions: Mapped[list[str] | None] = mapped_column(JSON)
+    analysis_state_snapshot: Mapped[str | None] = mapped_column(String(32), index=True)
+    analysis_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     notice: Mapped[Notice] = relationship(back_populates="decisions")
-    evaluation: Mapped[Evaluation] = relationship(back_populates="decisions")
+    evaluation: Mapped[Evaluation | None] = relationship(back_populates="decisions")
     bid_outcomes: Mapped[list["BidOutcome"]] = relationship(back_populates="decision")
 
 

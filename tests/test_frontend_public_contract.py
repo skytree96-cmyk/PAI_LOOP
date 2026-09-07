@@ -145,7 +145,7 @@ def test_pin_decision_reload_and_current_evaluation_frontend_contract() -> None:
     assert "{ ...notice.raw, decisions }" in hydrate_body
     assert "state.notices[index] = merged" in hydrate_body
     assert "merged = await hydrateOperatorDecisions(merged)" in detail_body
-    assert "evaluation_id: notice.evaluationId" in save_body
+    assert "...(notice.evaluationId ? { evaluation_id: notice.evaluationId } : {})" in save_body
     assert 'error?.status === 409' in save_body
     assert 'includes("평가가 갱신")' in save_body
     assert "hydrateNoticeByKey(notice.noticeKey, { force: true })" in save_body
@@ -544,6 +544,46 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     assert 'id="kpiEnded"' in html
     assert "운영 대상에서 제외된 공고" in html
     assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in styles
+
+
+def test_human_decision_is_recordable_without_a_current_evaluation() -> None:
+    """The operator's GO/HOLD/NO_GO is theirs, not an output of the analysis."""
+
+    source = APP_JS.read_text(encoding="utf-8")
+    preview_body = _function_body(
+        source, "focusDecisionDockFromPreview", "renderExistingDecision"
+    )
+    existing_body = _function_body(source, "renderExistingDecision", "selectTab")
+    button_body = _function_body(source, "updateDecisionButton", "saveDecision")
+    save_body = _function_body(source, "saveDecision", "renderPipelineIntoExisting")
+    record_body = _function_body(
+        source, "normalizeDecisionRecord", "buildEvaluationSummary"
+    )
+    detail_text_body = _function_body(
+        source, "operatorDecisionDetailText", "updateOperatorDecisionReadState"
+    )
+
+    # No entry point refuses the judgement because the analysis is unfinished.
+    assert '"담당자 판단은 분석 후 가능합니다"' not in preview_body
+    assert '"아직 분석 전입니다"' not in save_body
+    assert '"분석 완료 후 저장 가능"' not in button_body
+    assert "input.disabled = cancelled || !canWriteDecision()" in existing_body
+    assert "input.disabled = cancelled || !analyzed" not in existing_body
+    assert "els.toggleCommentButton.disabled = cancelled || !analyzed" not in existing_body
+
+    # An unfinished analysis makes the operator's own reason mandatory instead.
+    assert "const reasonRequired = overrideNeedsReason || (Boolean(state.selectedNotice) && !analyzed)" in button_body
+    assert "const overrideReasonMissing = reasonRequired && !els.decisionComment.value.trim()" in button_body
+    assert "els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing" in button_body
+    assert '"판단 사유를 입력하세요"' in button_body
+    assert '"분석 전 판단 기록"' in button_body
+    assert "if (!analyzed && !comment)" in save_body
+    assert '"판단 사유가 필요합니다"' in save_body
+
+    # The server-recorded analysis snapshot survives the round trip.
+    assert "analysisStateSnapshot: stringValue(firstValue(source.analysis_state_snapshot" in record_body
+    assert "analysisSnapshot: firstObject(source.analysis_snapshot" in record_body
+    assert "서버가 당시 분석 상태를 함께 남깁니다" in detail_text_body
 
 
 def test_cancelled_notice_decision_entry_points_are_strictly_read_only() -> None:

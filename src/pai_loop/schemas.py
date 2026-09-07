@@ -100,11 +100,29 @@ class EvaluateRequest(ApiModel):
 
 
 class DecisionCreate(ApiModel):
+    """A human participation decision submitted for one notice.
+
+    ``evaluation_id`` stays optional so a decision can be recorded before any
+    analysis, after a failed extraction, or after the deadline. The server
+    still requires it whenever a current evaluation exists, which is what keeps
+    the stale-evaluation and wrong-notice defenses in place.
+    """
+
     evaluation_id: str | None = None
     choice: DecisionChoice
     actor_label: str = Field(default="담당자", min_length=1, max_length=120)
     rationale: str = Field(min_length=1, max_length=4000)
     conditions: list[str] | None = None
+
+    @field_validator("rationale")
+    @classmethod
+    def _require_written_rationale(cls, value: str) -> str:
+        """Reject a blank rationale so an unanalysed record cannot be empty."""
+
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("판단 사유를 입력해야 합니다.")
+        return stripped
 
 
 class NoticeVersionOut(ApiModel):
@@ -135,11 +153,13 @@ class EvaluationOut(ApiModel):
 
 class DecisionOut(ApiModel):
     id: str
-    evaluation_id: str
+    evaluation_id: str | None
     choice: DecisionChoice
     actor_label: str
     rationale: str
     conditions: list[str] | None
+    analysis_state_snapshot: str | None = None
+    analysis_snapshot: dict[str, Any] | None = None
     created_at: datetime
 
 

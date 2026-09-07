@@ -4,7 +4,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect, select
+from sqlalchemy import (
+    Column,
+    DateTime,
+    JSON,
+    MetaData,
+    String,
+    Table,
+    func,
+    inspect,
+    select,
+)
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -13,6 +23,7 @@ from sqlalchemy.schema import CreateTable
 from pai_loop.database import Base, build_engine
 from pai_loop.migrations import (
     COMPANY_PERFORMANCE_MIGRATION_ID,
+    INDEPENDENT_DECISION_MIGRATION_ID,
     COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_CHECKSUM,
     COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
     MIGRATION_CHECKSUM,
@@ -258,6 +269,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
+        INDEPENDENT_DECISION_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
         MIGRATION_ID,
@@ -266,6 +278,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
+        INDEPENDENT_DECISION_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
@@ -299,6 +312,86 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
     engine.dispose()
 
 
+def test_independent_decision_migration_adds_nullable_decision_columns() -> None:
+    """A human decision must be storable without any evaluation to point at."""
+
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    assert INDEPENDENT_DECISION_MIGRATION_ID in pending_migrations(engine)
+    assert INDEPENDENT_DECISION_MIGRATION_ID in apply_additive_migrations(engine)
+    assert apply_additive_migrations(engine) == []
+
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("user_decisions")
+    }
+    assert {"analysis_state_snapshot", "analysis_snapshot"} <= set(columns)
+    assert columns["analysis_state_snapshot"]["nullable"] is True
+    assert columns["analysis_snapshot"]["nullable"] is True
+    assert columns["evaluation_id"]["nullable"] is True
+
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        notice = _notice(now)
+        session.add(notice)
+        session.flush()
+        session.add(
+            UserDecision(
+                notice_id=notice.id,
+                evaluation_id=None,
+                choice="NO_GO",
+                actor_label="KMA 입찰팀",
+                rationale="분석 전 담당자 판단",
+                analysis_state_snapshot="NOT_EVALUATED",
+                analysis_snapshot={"analysis_state": "NOT_EVALUATED"},
+            )
+        )
+        session.commit()
+        stored = session.scalar(select(UserDecision))
+        assert stored is not None
+        assert stored.evaluation_id is None
+        assert stored.analysis_state_snapshot == "NOT_EVALUATED"
+    engine.dispose()
+
+
+def test_independent_decision_migration_refuses_to_rebuild_a_legacy_sqlite_table() -> None:
+    """SQLite cannot relax NOT NULL in place, so fail closed instead of rewriting.
+
+    PostgreSQL, the deployed dialect, releases the constraint with a
+    catalog-only ALTER. A legacy SQLite development file is recreated with
+    ``--create-base`` rather than being rebuilt row by row here.
+    """
+
+    engine = build_engine("sqlite:///:memory:")
+    legacy_user_decisions = Table(
+        "user_decisions",
+        MetaData(),
+        Column("id", String(36), primary_key=True),
+        Column("notice_id", String(36), nullable=False),
+        Column("evaluation_id", String(36), nullable=False),
+        Column("choice", String(32), nullable=False),
+        Column("actor_label", String(120), nullable=False),
+        Column("rationale", String(), nullable=False),
+        Column("conditions", JSON),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+    )
+    with engine.begin() as connection:
+        Notice.__table__.create(connection)
+        NoticeVersion.__table__.create(connection)
+        Evaluation.__table__.create(connection)
+        legacy_user_decisions.create(connection)
+
+    with pytest.raises(MigrationError, match="--create-base"):
+        apply_additive_migrations(engine)
+    engine.dispose()
+
+
 def test_additive_migration_refuses_an_uninitialised_database() -> None:
     engine = build_engine("sqlite:///:memory:")
     with pytest.raises(MigrationError, match="--create-base"):
@@ -327,6 +420,7 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         COMPANY_PERFORMANCE_RECOGNIZED_AMOUNT_MIGRATION_ID,
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
+        INDEPENDENT_DECISION_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected
     assert apply_additive_migrations(engine) == expected

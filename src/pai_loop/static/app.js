@@ -3153,6 +3153,8 @@
       actorLabel: stringValue(firstValue(source.actor_label, source.actorLabel, source.decided_by)),
       rationale: stringValue(firstValue(source.rationale, source.comment)),
       conditions: arrayValue(source.conditions).map((value) => stringValue(value)).filter(Boolean),
+      analysisStateSnapshot: stringValue(firstValue(source.analysis_state_snapshot, source.analysisStateSnapshot), ""),
+      analysisSnapshot: firstObject(source.analysis_snapshot, source.analysisSnapshot),
       createdAt: firstValue(source.created_at, source.createdAt, null),
     };
   }
@@ -3700,7 +3702,7 @@
       ? `취소 공고 · 과거 판단 기록(참고용): ${saved}`
       : "취소 공고 · 담당자 판단을 새로 저장할 수 없습니다.";
     const analysisNote = notice.analysisState !== "EVALUATED"
-      ? " 현재 공고 분석 전 · 새 판단은 분석 완료 후 저장할 수 있습니다." : "";
+      ? " 현재 공고 분석 전 · 판단 사유를 입력하면 지금도 기록할 수 있고, 서버가 당시 분석 상태를 함께 남깁니다." : "";
     return `${notice.decision ? "저장된 판단: " : ""}${saved}.${analysisNote}`;
   }
 
@@ -6354,12 +6356,13 @@
       showToast("판단 저장 권한이 없습니다", "현재 서버의 운영 권한 설정을 확인해 주세요.", "warning");
       return;
     }
-    if (notice.analysisState !== "EVALUATED") {
-      showToast("담당자 판단은 분석 후 가능합니다", "현재 공고는 수집 완료·분석 대기 상태입니다.", "warning");
-      return;
-    }
     selectTab("overview");
     setDecisionDockExpanded(true);
+    if (notice.analysisState !== "EVALUATED") {
+      els.commentField.hidden = false;
+      els.toggleCommentButton.setAttribute("aria-expanded", "true");
+      showToast("분석 전에도 판단을 기록할 수 있습니다", "분석이 완료되지 않았으므로 판단 사유를 입력해 주세요.", "warning");
+    }
     els.decisionForm.scrollIntoView({ behavior: "smooth", block: "end" });
     els.decisionInputs[0]?.focus();
   }
@@ -6373,14 +6376,15 @@
     const cancelled = isCancelledNotice(notice);
     els.decisionInputs.forEach((input) => {
       input.checked = notice.decision === input.value || (notice.decision === "CONDITIONAL_GO" && input.value === "HOLD");
-      input.disabled = cancelled || !analyzed || !canWriteDecision();
+      input.disabled = cancelled || !canWriteDecision();
     });
     els.decisionComment.value = notice.decisionComment;
     els.commentCount.textContent = String(notice.decisionComment.length);
-    els.commentField.hidden = !notice.decisionComment;
-    els.toggleCommentButton.setAttribute("aria-expanded", String(Boolean(notice.decisionComment)));
+    // An unanalysed notice always needs a written reason, so keep the field open.
+    els.commentField.hidden = analyzed && !notice.decisionComment;
+    els.toggleCommentButton.setAttribute("aria-expanded", String(!analyzed || Boolean(notice.decisionComment)));
     els.decisionExisting.textContent = operatorDecisionDetailText(notice);
-    els.toggleCommentButton.disabled = cancelled || !analyzed || !canWriteDecision();
+    els.toggleCommentButton.disabled = cancelled || !canWriteDecision();
     els.decisionComment.disabled = cancelled || !canWriteDecision();
     updateDecisionButton();
   }
@@ -6485,30 +6489,35 @@
     const cancelled = isCancelledNotice(state.selectedNotice);
     const overrideNeedsReason = selectedChoice === "GO"
       && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(state.selectedNotice)) || effectiveRecommendation(state.selectedNotice) !== "GO");
-    const overrideReasonMissing = overrideNeedsReason && !els.decisionComment.value.trim();
-    if (overrideNeedsReason) {
+    // An unanalysed, failed or expired notice has no current judgement to lean
+    // on, so the operator's own reason is what makes the record accountable.
+    const reasonRequired = overrideNeedsReason || (Boolean(state.selectedNotice) && !analyzed);
+    const overrideReasonMissing = reasonRequired && !els.decisionComment.value.trim();
+    if (reasonRequired) {
       if (overrideReasonMissing) setDecisionDockExpanded(true);
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
     }
-    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || !analyzed || overrideReasonMissing;
-    els.saveDecisionButton.classList.toggle("is-awaiting-selection", analyzed && !selected);
-    els.saveDecisionButton.title = analyzed && !selected
+    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing;
+    els.saveDecisionButton.classList.toggle("is-awaiting-selection", !selected);
+    els.saveDecisionButton.title = !selected
       ? "먼저 참여, 보류, 불참 중 담당자 판단을 선택해 주세요."
       : overrideReasonMissing
-        ? "참가자격 또는 AI 판단과 다른 참여 결정을 기록하려면 사유가 필요합니다."
+        ? (analyzed
+          ? "참가자격 또는 AI 판단과 다른 참여 결정을 기록하려면 사유가 필요합니다."
+          : "분석이 완료되지 않은 상태의 판단을 기록하려면 사유가 필요합니다.")
         : "";
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
       : !canWriteDecision()
       ? "현재 판단 저장 미제공"
+      : overrideReasonMissing
+      ? (analyzed ? "참여 사유를 입력하세요" : "판단 사유를 입력하세요")
+      : !selected
+      ? "먼저 최종 판단을 선택하세요"
       : analyzed
-      ? overrideReasonMissing
-        ? "참여 사유를 입력하세요"
-        : selected
-        ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
-        : "먼저 최종 판단을 선택하세요"
-      : "분석 완료 후 저장 가능";
+      ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
+      : "분석 전 판단 기록";
   }
 
   async function saveDecision(event) {
@@ -6530,7 +6539,9 @@
       els.decisionInputs[0]?.focus();
       return;
     }
-    if (decision === "GO" && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice)) || effectiveRecommendation(notice) !== "GO") && !els.decisionComment.value.trim()) {
+    const analyzed = notice.analysisState === "EVALUATED";
+    const comment = els.decisionComment.value.trim();
+    if (decision === "GO" && analyzed && (["FAIL", "REVIEW", "UNKNOWN"].includes(effectiveEligibilityStatus(notice)) || effectiveRecommendation(notice) !== "GO") && !comment) {
       setDecisionDockExpanded(true);
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
@@ -6538,14 +6549,20 @@
       els.decisionComment.focus();
       return;
     }
-    if (notice.analysisState !== "EVALUATED") {
-      showToast("아직 분석 전입니다", "규칙 기반 자격 평가가 완료된 뒤 담당자 판단을 저장할 수 있습니다.", "warning");
+    if (!analyzed && !comment) {
+      setDecisionDockExpanded(true);
+      els.commentField.hidden = false;
+      els.toggleCommentButton.setAttribute("aria-expanded", "true");
+      showToast("판단 사유가 필요합니다", "분석이 완료되지 않은 상태의 판단은 사유를 입력해야 기록할 수 있습니다.", "warning");
+      els.decisionComment.focus();
       return;
     }
-    const comment = els.decisionComment.value.trim();
     const rationale = comment || `${DECISION_LABELS[decision]} 판단을 기록했습니다.`;
+    // Send the identifier the screen actually showed. Omitting it is only
+    // valid when no current evaluation exists; the server still rejects a
+    // stale identifier and one belonging to another notice.
     const payload = {
-      evaluation_id: notice.evaluationId,
+      ...(notice.evaluationId ? { evaluation_id: notice.evaluationId } : {}),
       choice: decision,
       actor_label: DECIDER_NAME,
       rationale,
