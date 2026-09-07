@@ -3604,65 +3604,90 @@ svg {
 
 .history-storage-note strong { flex: 0 0 auto; color: var(--teal-deep); font-size: var(--fs-2xs); }
 
-.history-intelligence {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+.history-award-table {
   margin-bottom: 10px;
-}
-
-.history-intel-card {
-  min-width: 0;
-  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #fff;
 }
 
-.history-intel-card--strategy {
-  border-color: #b9d8cc;
-  background: linear-gradient(145deg, #f4faf7, #fff);
+.history-award-table__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
 }
 
-.history-intel-card h4 { margin: 3px 0 8px; font-size: var(--fs-xs); }
-.history-intel-card > p:not(.section-kicker) { margin: 7px 0 3px; color: var(--ink-soft); font-size: var(--fs-2xs); line-height: 1.5; }
-.history-intel-card > small { display: block; color: var(--muted); font-size: var(--fs-2xs); line-height: 1.5; }
+.history-award-table__head h4 { margin: 0; font-size: var(--fs-xs); }
+.history-award-table__basis { color: var(--muted); font-size: var(--fs-2xs); }
 
-.history-intel-value {
+/* Wide content scrolls inside its own region so the panel never scrolls
+   sideways, and the region is focusable for keyboard-only readers. */
+.history-award-table__scroll { overflow-x: auto; }
+.history-award-table__scroll:focus-visible { outline: 2px solid var(--teal-deep); outline-offset: -2px; }
+
+.award-table { width: 100%; border-collapse: collapse; font-size: var(--fs-2xs); }
+.award-table thead th {
+  position: sticky;
+  top: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+  color: var(--ink-soft);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.award-table tbody th,
+.award-table tbody td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.award-table tbody th { min-width: 190px; text-align: left; font-weight: 500; }
+.award-table tbody th strong { display: block; font-size: var(--fs-xs); }
+.award-table tbody th span,
+.award-table tbody th small { display: block; margin-top: 2px; line-height: 1.45; }
+.award-table tbody th small { color: var(--muted); }
+.award-table tbody td { white-space: nowrap; }
+
+.award-table__row.is-candidate tbody th,
+.award-table__row.is-candidate { background: #fffdf6; }
+.award-table__row.is-winner { background: #f4faf7; }
+.award-table__candidate-flag {
   display: block;
-  color: var(--teal-deep);
-  font-size: var(--fs-md);
-  letter-spacing: -0.04em;
-}
-
-.history-intel-value small { font-size: var(--fs-2xs); letter-spacing: 0; }
-
-.history-coverage-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-}
-
-.history-coverage-grid span { padding: 6px; border-radius: 7px; background: var(--canvas); }
-.history-coverage-grid strong,
-.history-coverage-grid small { display: block; }
-.history-coverage-grid strong { font-size: var(--fs-2xs); }
-.history-coverage-grid small { margin-top: 2px; color: var(--muted); font-size: var(--fs-2xs); }
-
-.history-warnings {
-  margin-bottom: 10px;
-  padding: 10px 12px;
-  border: 1px solid #f0dca8;
-  border-radius: 9px;
+  margin-top: 4px;
   color: #6b5728;
-  background: #fffaf0;
+  font-size: var(--fs-2xs);
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.award-table__source { color: var(--teal-deep); }
+.award-table__missing { color: var(--muted); }
+.award-table__message { color: var(--muted); }
+.award-table__message td { padding: 18px 12px; text-align: center; }
+
+.award-table__participation {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--canvas);
+  color: var(--ink-soft);
+}
+
+.award-table__participation.is-winner { background: #e3f2ea; color: var(--teal-deep); }
+.award-table__participation.is-unknown { color: var(--muted); }
+
+.history-award-table__notes {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  color: #6b5728;
   font-size: var(--fs-2xs);
   line-height: 1.55;
 }
 
-.history-warnings:empty { display: none; }
-.history-warnings strong { font-size: var(--fs-2xs); }
-.history-warnings ul { margin: 4px 0 0; padding-left: 16px; }
+.history-award-table__notes:empty { display: none; }
+.history-award-table__notes ul { margin: 0; padding-left: 16px; }
+
 .history-fact-line { margin-top: 5px; color: #66716d !important; font-size: var(--fs-2xs) !important; line-height: 1.5; }
 
 .history-card {
@@ -5943,7 +5968,7 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .score-overview { grid-template-columns: 1fr 1fr; }
   .score-card--risk { grid-column: 1 / -1; }
   .quant-observation-list { grid-template-columns: 1fr; }
-  .history-intelligence { grid-template-columns: 1fr; }
+  .award-table tbody th { min-width: 150px; }
   .history-card { grid-template-columns: 52px minmax(0, 1fr); gap: 10px; padding: 13px; }
   .history-year { width: 48px; height: 48px; }
   .history-price { grid-column: 2; text-align: left; }

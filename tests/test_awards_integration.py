@@ -13,7 +13,7 @@ from pai_loop.integrations.awards import (
     PpsAwardClient,
     normalise_award,
 )
-from pai_loop.integrations.pps import DateWindow, PpsApiError
+from pai_loop.integrations.pps import KST, DateWindow, PpsApiError
 from pai_loop.main import create_app
 
 
@@ -304,6 +304,7 @@ def test_award_client_skips_title_mismatch_and_stops_on_empty_page() -> None:
     assert items == []
     assert client.request_count == 2
     assert client.hit_page_limit is False
+    assert client.hit_incomplete_response is True
 
 
 def test_award_client_raises_for_unrecoverable_subwindow_by_default() -> None:
@@ -422,9 +423,10 @@ def test_award_history_refresh_is_idempotent_and_visible_in_detail(
         )
         assert first.status_code == 200
         body = first.json()
-        assert body["status"] == "COMPLETED"
+        assert body["status"] == "PARTIAL"  # The SYN nameless award was quarantined.
         assert body["keyword"] == "7급 승진후보자 역량"
-        assert body["window"] == {"from": "2023-01-15", "to": "2026-01-15"}
+        today = datetime.now(KST).date()
+        assert body["window"] == {"from": f"{today.year - 2}-01-01", "to": today.isoformat()}
         assert body["created"] == 1
         assert body["records"] == 1
 

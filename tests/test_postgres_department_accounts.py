@@ -27,8 +27,9 @@ from pai_loop.account_models import AccountAudit, AccountBootstrapPreview, Accou
 from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, departments, now_utc, password_hash
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_session_factory
+from pai_loop import migrations
 from pai_loop.migrations import ACCOUNT_MIGRATION_ID, apply_additive_migrations, pending_migrations, schema_migrations
-from pai_loop.models import BidOutcome, Notice, UserDecision
+from pai_loop.models import AwardHistoryItem, BidOutcome, Evaluation, Notice, NoticeVersion, UserDecision
 from pai_loop.operator_decisions import router as decisions_router
 from pai_loop.result_learning import router as results_router
 
@@ -215,6 +216,71 @@ def test_postgres_account_migration_preserves_unassigned_history_and_reapplies(p
         columns = {column["name"]: column for column in inspect(engine).get_columns(table_name)}
         assert all(columns[name]["nullable"] for name in ("account_id", "department_id", "department_name", "department_revision"))
         assert any(index["unique"] and index["column_names"] == ["notice_id", "department_id", "department_revision"] for index in inspect(engine).get_indexes(table_name))
+
+
+def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullable_decisions(postgres_account_engine):
+    engine = postgres_account_engine
+    Base.metadata.create_all(engine)
+    factory = build_session_factory(engine)
+    now = now_utc()
+    with factory() as session:
+        notice = Notice(id="SYN-PG-COMBINED-N", notice_key="SYN-PG-COMBINED", bid_notice_no="SYN-PG-COMBINED", revision_no="00", title="SYN combined legacy", agency="SYN agency", status="OPEN", deadline=now + timedelta(days=1))
+        session.add(notice)
+        session.flush()
+        version = NoticeVersion(id="SYN-PG-COMBINED-V", notice_id=notice.id, version_no=1, file_sha256="a" * 64)
+        session.add(version)
+        session.flush()
+        evaluation = Evaluation(id="SYN-PG-COMBINED-E", notice_id=notice.id, notice_version_id=version.id, deadline_snapshot_at=now, eligibility="REVIEW", reason_code="R07", readiness_score=50, readiness_status="YELLOW", evidence_coverage=50, risk_band="HOLD", atomic_results=[], explanation={})
+        session.add(evaluation)
+        session.flush()
+        decision = UserDecision(id="SYN-PG-COMBINED-D", notice_id=notice.id, evaluation_id=evaluation.id, choice="HOLD", actor_label="SYN legacy actor", rationale="SYN preserved reason")
+        session.add(decision)
+        session.flush()
+        session.add(BidOutcome(id="SYN-PG-COMBINED-O", notice_id=notice.id, decision_id=decision.id, evaluation_id=evaluation.id, outcome_key="SYN-combined-outcome", status="NO_BID", source="MANUAL_UI"))
+        session.add(AwardHistoryItem(id="SYN-PG-COMBINED-A", target_notice_id=notice.id, external_identity="SYN-combined-award", bid_notice_no="SYN-OLD-AWARD", revision_no="000", title="SYN old award", agency="SYN agency", winner_name="SYN winner", award_amount=123456, similarity_score=90, source="PPS"))
+        session.commit()
+
+    identity_columns = ("account_id", "department_id", "department_name", "department_revision")
+    with engine.begin() as connection:
+        for table in (AccountSession.__table__, AccountAudit.__table__, AccountLoginBucket.__table__, AccountBootstrapPreview.__table__, DepartmentAccount.__table__):
+            table.drop(connection)
+        for table_name in ("user_decisions", "bid_outcomes"):
+            for column in identity_columns:
+                connection.exec_driver_sql(f'ALTER TABLE "{table_name}" DROP COLUMN "{column}"')
+        for column in ("analysis_state_snapshot", "analysis_snapshot"):
+            connection.exec_driver_sql(f'ALTER TABLE user_decisions DROP COLUMN "{column}"')
+        connection.exec_driver_sql('ALTER TABLE user_decisions ALTER COLUMN evaluation_id SET NOT NULL')
+        for column in ("opening_results", "opening_results_status", "opening_results_read_at"):
+            connection.exec_driver_sql(f'ALTER TABLE award_history_items DROP COLUMN "{column}"')
+        original = {table: dict(connection.exec_driver_sql(f'SELECT * FROM "{table}"').mappings().one())
+                    for table in ("user_decisions", "bid_outcomes", "award_history_items")}
+
+    expected = {
+        migrations.INDEPENDENT_DECISION_MIGRATION_ID: migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
+        migrations.AWARD_OPENING_RESULT_MIGRATION_ID: migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM,
+        migrations.ACCOUNT_MIGRATION_ID: migrations.ACCOUNT_MIGRATION_CHECKSUM,
+    }
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with _hold_department_lock(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY):
+            futures = [pool.submit(apply_additive_migrations, engine) for _ in range(2)]
+            _assert_waiters(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY, 2)
+        applied = [future.result(timeout=20) for future in futures]
+    assert sum(bool(result) for result in applied) == 1
+    assert [key for result in applied for key in result][-3:] == list(expected)
+    assert apply_additive_migrations(engine) == [] and pending_migrations(engine) == []
+    with engine.connect() as connection:
+        ledger = dict(connection.execute(select(schema_migrations.c.migration_id, schema_migrations.c.checksum)).all())
+        assert {key: ledger[key] for key in expected} == expected
+        for table, previous in original.items():
+            current = dict(connection.exec_driver_sql(f'SELECT * FROM "{table}"').mappings().one())
+            assert {key: current[key] for key in previous} == previous
+            assert all(value is None for key, value in current.items() if key not in previous)
+    columns = {column["name"]: column for column in inspect(engine).get_columns("user_decisions")}
+    assert columns["evaluation_id"]["nullable"]
+    with factory() as session:
+        session.add(UserDecision(id="SYN-PG-COMBINED-NEW", notice_id="SYN-PG-COMBINED-N", evaluation_id=None, choice="NO_GO", actor_label="SYN independent actor", rationale="SYN no evaluation needed"))
+        session.commit()
+        assert session.scalar(select(func.count()).select_from(UserDecision)) == 2
 
 
 @pytest.mark.parametrize("kind", ["decision", "result"])

@@ -231,7 +231,7 @@
       "departmentDecisionCard", "departmentDecisionState", "departmentDecisionList",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
-      "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyConcentration", "historyPrediction", "historyCoverage", "historyWarnings", "decisionForm", "decisionExisting", "toggleCommentButton", "decisionDockToggle", "decisionDockBody",
+      "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyAwardTableBasis", "historyAwardTableBody", "historyAwardTableNotes", "decisionForm", "decisionExisting", "toggleCommentButton", "decisionDockToggle", "decisionDockBody",
       "commentField", "decisionComment", "commentCount", "saveDecisionButton", "toastRegion", "skeletonRowTemplate",
       "teamsMockSource", "teamsMockTitle", "teamsMockAgency", "teamsMockStatus", "teamsMockDeadline", "teamsMockReason",
       "teamsMockReadiness", "teamsMockRisk", "teamsMockRecommendation", "teamsPreviewOpenButton", "teamsPreviewDecisionButton",
@@ -3565,6 +3565,8 @@
       awardRateBasis: stringValue(firstValue(source.award_rate_basis, source.awardRateBasis), ""),
       technicalScore: numberOrNull(firstValue(source.technical_score, source.technicalScore)),
       priceScore: numberOrNull(firstValue(source.price_score, source.priceScore)),
+      openingResults: Array.isArray(source.opening_results) ? source.opening_results : null,
+      openingResultsStatus: stringValue(firstValue(source.opening_results_status, source.openingResultsStatus), ""),
     };
   }
 
@@ -6279,7 +6281,7 @@
     const notice = state.notices.find((item) => item.noticeKey === noticeKey) || state.selectedNotice;
     if (!notice) return;
 
-    state.awardHistoryMeta[noticeKey] = { status: "loading", message: "" };
+    state.awardHistoryMeta[noticeKey] = { ...current, status: "loading", message: "" };
     if (state.selectedNotice?.noticeKey === noticeKey) {
       renderAwardHistoryPanel(notice);
       updateAwardHistorySummaryMetric(notice);
@@ -6287,7 +6289,18 @@
 
     try {
       const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/award-intelligence`);
-      const rows = Array.isArray(payload?.records) ? payload.records.map(normalizeHistory) : [];
+      const table = payload?.annual_award_table;
+      const numericFields = ["bid_amount", "technical_evaluation", "price_evaluation", "total_evaluation"];
+      if (payload?.notice_key !== noticeKey || !Array.isArray(payload?.records) || !Array.isArray(table?.rows)
+          || table.row_count !== table.rows.length || !Array.isArray(table.years)
+          || table.years.length !== 3 || !table.years.every((year, index) => Number.isInteger(year) && year === table.years[0] - index)
+          || table.rows.some((row) => !row || !table.years.includes(row.year)
+            || typeof row.company_name !== "string" || typeof row.bid_notice_no !== "string"
+            || !["SAME_PROJECT", "SIMILAR_CANDIDATE"].includes(row.match_kind)
+            || numericFields.some((field) => row[field] !== null && (typeof row[field] !== "number" || !Number.isFinite(row[field]))))) {
+        throw new Error("낙찰 표 응답이 불완전하여 이전 저장본을 유지합니다.");
+      }
+      const rows = payload.records.map(normalizeHistory);
       const updated = {
         ...notice,
         awardHistory: rows,
@@ -6296,9 +6309,9 @@
       const index = state.notices.findIndex((item) => item.noticeKey === noticeKey);
       if (index >= 0) state.notices[index] = updated;
       if (state.selectedNotice?.noticeKey === noticeKey) state.selectedNotice = updated;
-      state.awardHistoryMeta[noticeKey] = { status: rows.length ? "ready" : "empty", message: "", intelligence: payload };
+      state.awardHistoryMeta[noticeKey] = { status: table.rows.length ? "ready" : "empty", message: "", intelligence: payload };
     } catch (error) {
-      state.awardHistoryMeta[noticeKey] = { status: "error", message: humanizeError(error) };
+      state.awardHistoryMeta[noticeKey] = { ...current, status: "error", message: humanizeError(error) };
     } finally {
       if (state.selectedNotice?.noticeKey === noticeKey) {
         renderAwardHistoryPanel(state.selectedNotice);
@@ -6310,6 +6323,7 @@
   function renderAwardHistoryPanel(notice) {
     const items = notice.awardHistory;
     const meta = state.awardHistoryMeta[notice.noticeKey] || {};
+    const annualRows = meta.intelligence?.annual_award_table?.rows;
     const status = state.source === "demo" ? "demo" : meta.status || (items.length ? "stored" : "empty");
     els.historyStatusLabel.className = "history-status-badge";
 
@@ -6318,13 +6332,13 @@
       els.historyStatusLabel.classList.add("is-loading");
       els.historyStatusText.textContent = "PAI 서버에 저장된 낙찰 후보를 읽고 있습니다.";
     } else if (status === "ready" || status === "stored") {
-      els.historyStatusLabel.textContent = `저장본 ${items.length}건`;
+      els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : `저장본 ${items.length}건`;
       els.historyStatusLabel.classList.add("is-ready");
-      els.historyStatusText.textContent = "저장된 제목 유사 후보이며 동일 사업 확정 이력이 아닙니다.";
+      els.historyStatusText.textContent = "연도별 같은 사업을 먼저 표시하며, 유사 사업은 따로 표시합니다.";
     } else if (status === "error") {
-      els.historyStatusLabel.textContent = items.length ? `저장본 ${items.length}건` : "미수집";
+      els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : items.length ? `저장본 ${items.length}건` : "미수집";
       els.historyStatusLabel.classList.add("is-error");
-      els.historyStatusText.textContent = items.length
+      els.historyStatusText.textContent = Array.isArray(annualRows) || items.length
         ? `저장 이력 재조회 실패 · 상세 응답의 저장본을 표시합니다. ${meta.message}`
         : `저장 이력을 확인하지 못했습니다. 외부 조회는 시작하지 않았습니다. ${meta.message}`;
     } else if (status === "demo") {
@@ -6334,79 +6348,110 @@
     } else {
       els.historyStatusLabel.textContent = "미수집";
       els.historyStatusLabel.classList.add("is-empty");
-      els.historyStatusText.textContent = "현재 서버에 저장된 낙찰 후보가 없습니다.";
+      els.historyStatusText.textContent = "현재 3개 연도 표에 표시할 저장 기록이 없습니다. 미수집 여부는 별도 확인이 필요합니다.";
     }
 
-    renderAwardIntelligence(meta.intelligence, status);
+    renderAnnualAwardTable(meta.intelligence, status);
 
-    els.historyList.innerHTML = items.length
-      ? items.map(renderHistory).join("")
-      : emptyPanel("저장된 낙찰 이력이 없습니다", "아직 수집되지 않은 상태입니다. 이 화면에서는 외부 조달청 API를 자동 호출하지 않습니다.");
+    // Retain the legacy element ID for panel consumers; the annual table is
+    // the sole visible history view.
+    els.historyList.textContent = "";
+    els.historyList.hidden = true;
   }
 
-  function renderAwardIntelligence(intelligence, status) {
-    const loading = status === "loading";
-    const concentration = intelligence?.concentration;
-    const prediction = intelligence?.prediction;
-    const coverage = intelligence?.field_coverage;
-    if (loading) {
-      els.historyConcentration.innerHTML = `<p class="section-kicker">낙찰자 집중도</p><h4>집중도 계산 중</h4><p>저장 이력을 읽고 있습니다.</p>`;
-      els.historyPrediction.innerHTML = `<p class="section-kicker">가격 범위 참고</p><h4>가격 전략 계산 중</h4><p>외부 조회 없이 저장값만 사용합니다.</p>`;
-      els.historyCoverage.innerHTML = `<p class="section-kicker">확인 가능한 자료</p><h4>자료 항목 확인 중</h4><p>누락값은 사실로 보간하지 않습니다.</p>`;
-      els.historyWarnings.innerHTML = "";
-      return;
-    }
-    if (!intelligence) {
-      const note = status === "demo" ? "데모 이력에는 서버 계산 결과를 적용하지 않습니다." : "저장된 분석 결과가 없습니다.";
-      els.historyConcentration.innerHTML = `<p class="section-kicker">낙찰자 집중도</p><h4>산정 불가</h4><p>${escapeHtml(note)}</p>`;
-      els.historyPrediction.innerHTML = `<p class="section-kicker">가격 범위 참고</p><h4>예측 미제공</h4><p>유효 낙찰률 3건 이상과 명시적 기준금액이 필요합니다.</p>`;
-      els.historyCoverage.innerHTML = `<p class="section-kicker">자료 적용 범위</p><h4>확인 가능한 값만 표시</h4><p>낙찰금액과 투찰금액, 기술점수와 가격점수는 서로 대체하지 않습니다.</p>`;
-      els.historyWarnings.innerHTML = "";
-      return;
-    }
+  const AWARD_TABLE_BASIS_LABELS = {
+    SAME_PROJECT_AND_AGENCY: "동일 사업명 · 동일 발주기관",
+    SIMILAR_CANDIDATES_ONLY: "유사 사업 후보만 확인",
+    MIXED_BY_YEAR: "연도별 동일 사업 우선 · 일부 연도 유사 후보",
+    NONE: "표시할 기록 없음",
+  };
+  const AWARD_PARTICIPATION_LABELS = { WINNER: "낙찰", PARTICIPANT: "참여", UNKNOWN: "구분 미확인" };
+  const AWARD_TABLE_COLUMNS = 7;
 
-    const top = concentration?.top_winner;
-    const hhi = numberOrNull(concentration?.hhi);
-    const competition = intelligence?.competition_risk;
-    const competitionAvailable = competition?.status === "MODEL_ESTIMATE" && numberOrNull(competition?.score) !== null;
-    const competitionBand = ({ LOW: "낮음", MODERATE: "보통", HIGH: "높음", VERY_HIGH: "매우 높음", UNKNOWN: "미산정" })[competition?.band] || "미산정";
-    const participantMedian = numberOrNull(competition?.components?.participant_count?.value);
-    els.historyConcentration.innerHTML = `
-      <p class="section-kicker">경쟁 리스크 · 참가자격과 별도</p><h4>경쟁·집중 리스크 ${escapeHtml(competitionBand)}</h4>
-      <strong class="history-intel-value">${competitionAvailable ? formatNumber(competition.score, 1) : "—"} <small>${competitionAvailable ? "/ 100" : "미산정"}</small></strong>
-      <p>HHI ${hhi === null ? "미산정" : formatNumber(hhi, 0)} · 상위 수주 비중 ${top ? `${formatNumber(top.share * 100, 1)}%` : "미확인"} · 참여 중앙값 ${participantMedian === null ? "미확인" : `${formatNumber(participantMedian, 1)}곳`}</p>
-      <small>${escapeHtml(competition?.rationale || "필수 사실 커버리지가 부족해 점수를 보류했습니다.")}</small>
-      <small>신뢰도 ${escapeHtml(confidenceLabel(competition?.confidence))} · ${top ? `표본 상위 ${escapeHtml(top.winner_name)} ${formatNumber(top.count)}건` : "낙찰자 표본 없음"} · 법적 독점 판정 아님</small>`;
-
-    const award = prediction?.award_rate;
-    const submitted = prediction?.submitted_bid_rate;
-    const amount = prediction?.award_amount_range;
-    const pricingMethod = intelligence?.pricing_method;
-    const awardAvailable = award?.status === "MODEL_ESTIMATE";
-    els.historyPrediction.innerHTML = `
-      <p class="section-kicker">가격 범위 참고 · 의사결정 참고</p><h4>예측 낙찰률 ${awardAvailable ? `${formatNumber(award.center, 2)}%` : "미제공"}</h4>
-      <strong class="history-intel-value">${awardAvailable ? `${formatNumber(award.range_low, 2)}–${formatNumber(award.range_high, 2)}%` : "표본 부족"}</strong>
-      <p>${amount ? `예상 낙찰금액 ${escapeHtml(formatBudget(amount.low))}–${escapeHtml(formatBudget(amount.high))}` : "기준/추정금액이 없거나 표본이 부족해 금액 범위를 산정하지 않았습니다."}</p>
-      <p class="history-pricing-method">${pricingMethod ? `문서 근거 가격평가: ${escapeHtml(pricingMethod.method?.at_or_above_80_percent || "산식 확인")}` : "현재 공고 문서와 정확히 일치하는 가격평가 산식 근거 없음"}</p>
-      <small>신뢰도 ${escapeHtml(confidenceLabel(award?.confidence))} · ${formatNumber(award?.sample_count || 0)}건 · 투찰률 ${submitted?.status === "MODEL_ESTIMATE" ? `${formatNumber(submitted.center, 2)}%` : "별도 표본 부족"}</small>
-      <small>${escapeHtml(award?.rationale || "유효 표본이 부족해 예측 근거를 제시하지 않습니다.")} · ${escapeHtml(award?.method || "산정 안 함")}</small>`;
-
-    const coverageCell = (label, key) => {
-      const field = coverage?.[key];
-      return `<span><strong>${escapeHtml(label)}</strong><small>${formatNumber(field?.available || 0)} / ${formatNumber(field?.total || intelligence.record_count || 0)}건</small></span>`;
-    };
-    els.historyCoverage.innerHTML = `
-      <p class="section-kicker">확인 가능한 자료</p><h4>사실 항목 충족도</h4>
-      <div class="history-coverage-grid">${coverageCell("낙찰자", "winner")}${coverageCell("참여기관 수", "participant_count")}${coverageCell("낙찰금액", "award_amount")}${coverageCell("예정가격", "estimated_price")}${coverageCell("투찰금액", "submitted_bid_price")}${coverageCell("기술점수", "technical_score")}${coverageCell("가격점수", "price_score")}</div>`;
-    const warnings = [...new Set([
-      ...(Array.isArray(intelligence.warnings) ? intelligence.warnings : []),
-      ...(Array.isArray(competition?.warnings) ? competition.warnings : []),
-    ])];
-    els.historyWarnings.innerHTML = warnings.length ? `<strong>해석 주의</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : "";
+  function awardTableMessageRow(message) {
+    return `<tr class="award-table__message"><td colspan="${AWARD_TABLE_COLUMNS}">${escapeHtml(message)}</td></tr>`;
   }
 
-  function confidenceLabel(value) {
-    return ({ HIGH: "높음", MEDIUM: "보통", LOW: "낮음", INSUFFICIENT: "근거 부족" })[String(value || "").toUpperCase()] || "근거 부족";
+  // Missing means missing. A blank amount or score is labelled, never shown as
+  // 0 and never filled in from another column.
+  function awardTableScore(value) {
+    return value === null || value === undefined
+      ? '<span class="award-table__missing">미확인</span>'
+      : escapeHtml(formatNumber(value, 2));
+  }
+
+  function awardTableAmount(value) {
+    return value === null || value === undefined
+      ? '<span class="award-table__missing">미확인</span>'
+      : escapeHtml(`${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 20 }).format(value)}원`);
+  }
+
+  function renderAwardTableRow(row) {
+    const year = row.year === null || row.year === undefined ? "연도 미확인" : String(row.year);
+    const participation = AWARD_PARTICIPATION_LABELS[row.participation_kind] || AWARD_PARTICIPATION_LABELS.UNKNOWN;
+    const candidate = row.match_kind !== "SAME_PROJECT";
+    const similarity = numberOrNull(row.similarity_score);
+    const link = safeHttpUrl(row.source_notice_url || "");
+    const noticeRef = [row.bid_notice_no, row.revision_no].filter(Boolean).join("-");
+    const sourceLine = link
+      ? `<a class="award-table__source" href="${escapeAttribute(link)}" target="_blank" rel="noopener noreferrer">공고 원문 열기${noticeRef ? ` · ${escapeHtml(noticeRef)}` : ""}</a>`
+      : `<span class="award-table__source">${escapeHtml(noticeRef || "공고번호 미확인")}</span>`;
+    return `
+      <tr class="award-table__row ${candidate ? "is-candidate" : "is-same-project"} ${row.participation_kind === "WINNER" ? "is-winner" : ""}">
+        <th scope="row">
+          <strong>${escapeHtml(year)}</strong>
+          <span>${escapeHtml(row.project_title || "사업명 미확인")}</span>
+          <small>${escapeHtml(row.agency || "발주기관 미확인")}${row.event_date ? ` · ${escapeHtml(row.event_date)}` : ""}</small>
+          <small>${sourceLine} · 개찰자료 ${escapeHtml(row.source_status === "COLLECTED" ? "수집됨" : row.source_status === "PARTIAL" ? "부분 응답 · 이전 저장본 또는 미확인" : row.source_status === "ERROR" ? "조회 실패 · 이전 저장본 또는 미확인" : row.source_status === "UNAVAILABLE" ? "응답 업체 행 없음" : "미수집")}</small>
+          ${candidate ? `<em class="award-table__candidate-flag">유사 사업 후보${similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`} · 동일 발주 확정 아님</em>` : ""}
+        </th>
+        <td>${escapeHtml(row.company_name || "업체명 미확인")}</td>
+        <td>${awardTableAmount(row.bid_amount)}</td>
+        <td>${awardTableScore(row.technical_evaluation)}</td>
+        <td>${awardTableScore(row.price_evaluation)}</td>
+        <td>${awardTableScore(row.total_evaluation)}</td>
+        <td><span class="award-table__participation is-${escapeAttribute(String(row.participation_kind || "UNKNOWN").toLowerCase())}">${escapeHtml(participation)}</span></td>
+      </tr>`;
+  }
+
+  function renderAnnualAwardTable(intelligence, status) {
+    const table = intelligence?.annual_award_table;
+    if (status === "loading" && !table) {
+      els.historyAwardTableBasis.textContent = "기준 확인 중";
+      els.historyAwardTableBody.innerHTML = awardTableMessageRow("저장된 낙찰 기록을 읽고 있습니다.");
+      els.historyAwardTableNotes.innerHTML = "";
+      return;
+    }
+    if (status === "error" && !table) {
+      els.historyAwardTableBasis.textContent = "조회 실패";
+      els.historyAwardTableBody.innerHTML = awardTableMessageRow("저장 이력을 확인하지 못했습니다. 이 화면에서 외부 조회를 시작하지 않았습니다.");
+      els.historyAwardTableNotes.innerHTML = "";
+      return;
+    }
+    if (!table) {
+      els.historyAwardTableBasis.textContent = status === "demo" ? "예시 데이터" : "기준 미확인";
+      els.historyAwardTableBody.innerHTML = awardTableMessageRow(
+        status === "demo"
+          ? "데모 이력에는 서버 계산 결과를 적용하지 않습니다."
+          : "저장된 최근 3년 낙찰 표가 없습니다.",
+      );
+      els.historyAwardTableNotes.innerHTML = "";
+      return;
+    }
+    const years = Array.isArray(table.years) ? table.years : [];
+    const basis = AWARD_TABLE_BASIS_LABELS[table.match_basis] || AWARD_TABLE_BASIS_LABELS.NONE;
+    els.historyAwardTableBasis.textContent = years.length ? `${years.join(" · ")} · ${basis}` : basis;
+    const rows = Array.isArray(table.rows) ? table.rows : [];
+    const retained = status === "loading" ? awardTableMessageRow("저장본을 다시 확인하는 동안 이전 표를 유지합니다.")
+      : status === "error" ? awardTableMessageRow("재조회 실패 · 이전 저장본을 표시합니다.") : "";
+    els.historyAwardTableBody.innerHTML = retained + (rows.length
+      ? years.map((year) => {
+        const annualRows = rows.filter((row) => row.year === year);
+        return annualRows.length ? annualRows.map(renderAwardTableRow).join("")
+          : awardTableMessageRow(`${year}년 · 표시할 저장 기록이 없습니다. 실제 낙찰·참여 이력이 없다는 뜻은 아닙니다.`);
+      }).join("")
+      : awardTableMessageRow("최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다."));
+    els.historyAwardTableNotes.innerHTML = "<p>미확인은 자료가 없는 항목입니다. 참여업체는 조회된 범위만 표시합니다. 기술평가는 입찰의 기술점수입니다.</p>";
   }
 
   function renderHistory(item) {

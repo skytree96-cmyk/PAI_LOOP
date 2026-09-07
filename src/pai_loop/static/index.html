@@ -921,14 +921,31 @@
               <p id="historyStatusText">서버에 저장된 제목 유사 후보만 표시합니다.</p>
             </div>
           </div>
-          <div class="history-storage-note" role="note"><strong>저장된 조회 결과 전용</strong><span>이 화면은 외부 조회를 시작하지 않습니다. 낙찰자·낙찰금액·예정가격·투찰금액·낙찰률·기술/가격점수를 서로 다른 항목으로 취급하며, 없는 값은 추정 사실로 채우지 않습니다.</span></div>
-          <section class="history-intelligence" aria-label="3년 낙찰 및 가격 분석">
-            <article class="history-intel-card" id="historyConcentration"></article>
-            <article class="history-intel-card history-intel-card--strategy" id="historyPrediction"></article>
-            <article class="history-intel-card" id="historyCoverage"></article>
+          <section class="history-award-table" aria-labelledby="historyAwardTableHeading">
+            <div class="history-award-table__head">
+              <h4 id="historyAwardTableHeading">최근 3년 낙찰 표</h4>
+              <span class="history-award-table__basis" id="historyAwardTableBasis">기준 확인 중</span>
+            </div>
+            <div class="history-award-table__scroll" tabindex="0" role="region" aria-labelledby="historyAwardTableHeading" aria-describedby="historyAwardTableNotes">
+              <table class="award-table">
+                <caption class="sr-only">연도별 사업, 업체, 투찰금액, 기술·가격·종합 평가와 낙찰 여부</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">연도 · 사업</th>
+                    <th scope="col">업체명</th>
+                    <th scope="col">투찰금액</th>
+                    <th scope="col">기술평가</th>
+                    <th scope="col">가격평가</th>
+                    <th scope="col">종합평가</th>
+                    <th scope="col">구분</th>
+                  </tr>
+                </thead>
+                <tbody id="historyAwardTableBody"></tbody>
+              </table>
+            </div>
+            <div class="history-award-table__notes" id="historyAwardTableNotes" role="note"></div>
           </section>
-          <div class="history-warnings" id="historyWarnings" role="note"></div>
-          <div class="history-list" id="historyList"></div>
+          <div class="history-list" id="historyList" hidden></div>
         </section>
 
         <section class="tab-panel teams-panel" id="panel-teams" role="tabpanel" aria-labelledby="tab-teams" data-panel="teams" hidden>

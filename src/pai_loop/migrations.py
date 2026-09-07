@@ -28,6 +28,7 @@ from .database import Base, build_engine
 from .account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from .models import (
     AnalysisRun,
+    AwardHistoryItem,
     BidOutcome,
     CompanyPerformanceRecord,
     UserDecision,
@@ -88,6 +89,14 @@ INDEPENDENT_DECISION_MIGRATION_CONTRACT = (
 )
 INDEPENDENT_DECISION_MIGRATION_CHECKSUM = hashlib.sha256(
     INDEPENDENT_DECISION_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+AWARD_OPENING_RESULT_MIGRATION_ID = "20260908_01_award_opening_results"
+AWARD_OPENING_RESULT_MIGRATION_CONTRACT = (
+    "award_history_items:opening_results:json|null;"
+    "opening_results_status:varchar32|null;opening_results_read_at:timestamptz|null"
+)
+AWARD_OPENING_RESULT_MIGRATION_CHECKSUM = hashlib.sha256(
+    AWARD_OPENING_RESULT_MIGRATION_CONTRACT.encode("utf-8")
 ).hexdigest()
 PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
 PRESPEC_MIGRATION_CONTRACT = (
@@ -153,6 +162,11 @@ _migrations = (
     (
         INDEPENDENT_DECISION_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
+        (),
+    ),
+    (
+        AWARD_OPENING_RESULT_MIGRATION_ID,
+        AWARD_OPENING_RESULT_MIGRATION_CHECKSUM,
         (),
     ),
     (ACCOUNT_MIGRATION_ID, ACCOUNT_MIGRATION_CHECKSUM, _account_tables),
@@ -434,6 +448,80 @@ def _migration_transaction(engine: Engine) -> Iterator[Connection]:
                     raise
 
 
+_AWARD_OPENING_RESULT_COLUMNS = {
+    "opening_results": ("JSON", JSON),
+    "opening_results_status": ("VARCHAR(32)", String),
+    "opening_results_read_at": ("TIMESTAMP WITH TIME ZONE", DateTime),
+}
+
+
+def _validate_award_opening_result_columns(
+    columns: Sequence[dict[str, object]],
+    *,
+    require_all: bool,
+) -> None:
+    by_name = {str(column["name"]): column for column in columns}
+    for column_name, (_sql_type, expected_type) in _AWARD_OPENING_RESULT_COLUMNS.items():
+        column = by_name.get(column_name)
+        if column is None:
+            if require_all:
+                raise MigrationError(
+                    "award_history_items migration did not create required column "
+                    f"{column_name}"
+                )
+            continue
+        if not isinstance(column.get("type"), expected_type):
+            raise MigrationError(
+                "award_history_items has an incompatible existing column "
+                f"{column_name}; expected {expected_type.__name__}"
+            )
+        if column.get("nullable") is not True:
+            raise MigrationError(
+                "award_history_items has an incompatible existing column "
+                f"{column_name}; the additive column must be nullable"
+            )
+
+
+def _validate_applied_award_opening_result_migration(connection: Connection) -> None:
+    table_name = AwardHistoryItem.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        raise MigrationError(
+            "award_history_items is missing although its opening-result "
+            "migration is recorded as applied"
+        )
+    _validate_award_opening_result_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+
+
+def _add_award_opening_result_columns(connection: Connection) -> None:
+    """Add nullable opening-result columns without touching existing awards.
+
+    Every existing row keeps NULL, which the API reports as "not collected"
+    rather than as an empty competitor set or a zero score.
+    """
+
+    table_name = AwardHistoryItem.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        AwardHistoryItem.__table__.create(connection, checkfirst=True)
+    existing_columns = inspect(connection).get_columns(table_name)
+    _validate_award_opening_result_columns(existing_columns, require_all=False)
+    existing = {str(column["name"]) for column in existing_columns}
+    for column_name, (sql_type, _expected_type) in _AWARD_OPENING_RESULT_COLUMNS.items():
+        if column_name in existing:
+            continue
+        if column_name == "opening_results_read_at" and connection.dialect.name != "postgresql":
+            sql_type = "DATETIME"
+        connection.exec_driver_sql(
+            f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {sql_type}'
+        )
+    _validate_award_opening_result_columns(
+        inspect(connection).get_columns(table_name),
+        require_all=True,
+    )
+
+
 def _applied_checksum(connection: Connection, migration_id: str) -> str | None:
     return connection.execute(
         select(schema_migrations.c.checksum).where(
@@ -494,6 +582,8 @@ def pending_migrations(engine: Engine) -> list[str]:
                 )
             if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
                 _validate_applied_independent_decision_migration(connection)
+            if migration_id == AWARD_OPENING_RESULT_MIGRATION_ID:
+                _validate_applied_award_opening_result_migration(connection)
             if migration_id == ACCOUNT_MIGRATION_ID:
                 _account_identity_columns(connection, validate_only=True)
         return pending
@@ -539,6 +629,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     )
                 if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
                     _validate_applied_independent_decision_migration(connection)
+                if migration_id == AWARD_OPENING_RESULT_MIGRATION_ID:
+                    _validate_applied_award_opening_result_migration(connection)
                 if migration_id == ACCOUNT_MIGRATION_ID:
                     _account_identity_columns(connection, validate_only=True)
                 continue
@@ -548,6 +640,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                 _add_company_performance_recognized_amount_columns(connection)
             if migration_id == INDEPENDENT_DECISION_MIGRATION_ID:
                 _relax_independent_decision_columns(connection)
+            if migration_id == AWARD_OPENING_RESULT_MIGRATION_ID:
+                _add_award_opening_result_columns(connection)
             if migration_id == ACCOUNT_MIGRATION_ID:
                 _account_identity_columns(connection)
             connection.execute(

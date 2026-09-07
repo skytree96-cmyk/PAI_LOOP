@@ -22,6 +22,7 @@ from sqlalchemy.schema import CreateTable
 
 from pai_loop.database import Base, build_engine
 from pai_loop.migrations import (
+    AWARD_OPENING_RESULT_MIGRATION_ID,
     ACCOUNT_MIGRATION_ID,
     COMPANY_PERFORMANCE_MIGRATION_ID,
     INDEPENDENT_DECISION_MIGRATION_ID,
@@ -40,6 +41,7 @@ from pai_loop.migrations import (
 )
 from pai_loop.models import (
     AnalysisRun,
+    AwardHistoryItem,
     BidOutcome,
     CompanyPerformanceRecord,
     Evaluation,
@@ -271,6 +273,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_ID,
+        AWARD_OPENING_RESULT_MIGRATION_ID,
         ACCOUNT_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
@@ -281,6 +284,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_ID,
+        AWARD_OPENING_RESULT_MIGRATION_ID,
         ACCOUNT_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
@@ -398,6 +402,50 @@ def test_independent_decision_migration_upgrades_a_legacy_sqlite_table() -> None
     engine.dispose()
 
 
+def test_award_opening_result_migration_adds_nullable_columns() -> None:
+    """Competitors and evaluation scores are addable without touching old rows."""
+
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    assert AWARD_OPENING_RESULT_MIGRATION_ID in pending_migrations(engine)
+    assert AWARD_OPENING_RESULT_MIGRATION_ID in apply_additive_migrations(engine)
+    assert apply_additive_migrations(engine) == []
+
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("award_history_items")
+    }
+    for name in ("opening_results", "opening_results_status", "opening_results_read_at"):
+        assert columns[name]["nullable"] is True
+
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        notice = _notice(now)
+        session.add(notice)
+        session.flush()
+        session.add(
+            AwardHistoryItem(
+                target_notice_id=notice.id,
+                external_identity="SYN-AWARD-1|000|0|000",
+                bid_notice_no="SYN-AWARD-1",
+                title="SYN 낙찰 이력",
+                agency="SYN 기관",
+                winner_name="SYN-A",
+                similarity_score=90.0,
+            )
+        )
+        session.commit()
+        stored = session.scalar(select(AwardHistoryItem))
+        assert stored is not None
+        # A pre-existing award keeps NULL: never collected, never an empty
+        # competitor set and never a zero score.
+        assert stored.opening_results is None
+        assert stored.opening_results_status is None
+        assert stored.opening_results_read_at is None
+    engine.dispose()
+
+
 def test_additive_migration_refuses_an_uninitialised_database() -> None:
     engine = build_engine("sqlite:///:memory:")
     with pytest.raises(MigrationError, match="--create-base"):
@@ -430,6 +478,7 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         PERFORMANCE_NORMALIZATION_MIGRATION_ID,
         PRESPEC_MIGRATION_ID,
         INDEPENDENT_DECISION_MIGRATION_ID,
+        AWARD_OPENING_RESULT_MIGRATION_ID,
         ACCOUNT_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected
