@@ -397,7 +397,7 @@ def test_other_winner_becomes_lost_only_after_stored_submission(
         )
         assert unknown.status_code == 200
         assert unknown.json()["review"] == 1
-        assert unknown.json()["items"][0]["reason_code"] == "PARTICIPATION_NOT_CONFIRMED"
+        assert unknown.json()["items"][0]["reason_code"] == "PARTICIPATION_OPENING_NOT_CONFIRMED"
         assert client.get("/api/v1/notices/PPS-OUTCOME-LOSS/outcomes").json() == []
 
         draft = client.post(
@@ -416,7 +416,7 @@ def test_other_winner_becomes_lost_only_after_stored_submission(
             json={"notice_keys": ["PPS-OUTCOME-LOSS"]},
         )
         assert still_unknown.status_code == 200
-        assert still_unknown.json()["items"][0]["reason_code"] == "PARTICIPATION_NOT_CONFIRMED"
+        assert still_unknown.json()["items"][0]["reason_code"] == "PARTICIPATION_OPENING_NOT_CONFIRMED"
 
         submitted = client.post(
             "/api/v1/result-learning",
@@ -427,6 +427,10 @@ def test_other_winner_becomes_lost_only_after_stored_submission(
                 "status": "SUBMITTED",
                 "submitted_bid_amount": 97_000_000,
                 "source_reference": "담당자 검증 투찰 기록",
+                "opening_identity": {
+                    "bid_notice_no": "20250101002", "revision_no": "0",
+                    "classification_no": "0", "rebid_no": "0",
+                },
             },
         )
         assert submitted.status_code == 201
@@ -572,7 +576,7 @@ def test_dry_run_update_is_non_mutating_then_live_update_is_idempotent(
         assert unchanged.json()["items"][0]["result"] == "UNCHANGED"
 
 
-def test_stable_business_key_lazily_reuses_legacy_schema_key(
+def test_full_opening_key_preserves_legacy_schema_key_and_remains_schema_independent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PPS_API_KEY", "server-side-pps-key")
@@ -584,11 +588,7 @@ def test_stable_business_key_lazily_reuses_legacy_schema_key(
     legacy_digest = hashlib.sha256(
         f"PPS|{bid_notice_no}|0|pai-loop-pps-outcome-feedback-1.0.0".encode()
     ).hexdigest()[:40]
-    stable_digest = hashlib.sha256(
-        f"PPS|{bid_notice_no}|0|FINAL_AWARD".encode()
-    ).hexdigest()[:40]
     legacy_key = f"pps-final-award:{legacy_digest}"
-    stable_key = f"pps-final-award:{stable_digest}"
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as client:
         _create_ended_pps_notice(
@@ -621,12 +621,15 @@ def test_stable_business_key_lazily_reuses_legacy_schema_key(
             json={"notice_keys": ["PPS-OUTCOME-LEGACY-KEY"]},
         )
         assert migrated.status_code == 200
-        assert migrated.json()["items"][0]["result"] == "UPDATED"
+        assert migrated.json()["items"][0]["result"] == "CREATED"
+        stable_key = migrated.json()["items"][0]["outcome_key"]
+        assert stable_key != legacy_key
         outcomes = client.get(
             "/api/v1/notices/PPS-OUTCOME-LEGACY-KEY/outcomes"
         ).json()
-        assert len(outcomes) == 1
-        assert outcomes[0]["outcome_key"] == stable_key
+        assert len(outcomes) == 2
+        legacy = next(item for item in outcomes if item["outcome_key"] == legacy_key)
+        assert legacy["evidence_json"] == {}
 
         monkeypatch.setattr(
             "pai_loop.outcome_feedback.OUTCOME_FEEDBACK_SCHEMA",
@@ -640,9 +643,10 @@ def test_stable_business_key_lazily_reuses_legacy_schema_key(
         outcomes = client.get(
             "/api/v1/notices/PPS-OUTCOME-LEGACY-KEY/outcomes"
         ).json()
-        assert len(outcomes) == 1
-        assert outcomes[0]["outcome_key"] == stable_key
-        assert outcomes[0]["evidence_json"]["schema_version"].endswith("9.9.9")
+        assert len(outcomes) == 2
+        assert next(item for item in outcomes if item["outcome_key"] == legacy_key) == legacy
+        current = next(item for item in outcomes if item["outcome_key"] == stable_key)
+        assert current["evidence_json"]["schema_version"].endswith("9.9.9")
 
 
 def test_automatic_batches_rotate_past_recently_checked_notices(

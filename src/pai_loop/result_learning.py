@@ -19,6 +19,7 @@ from .manual_analysis import (
     _same_origin_request,
 )
 from .models import BidOutcome, Notice
+from .outcome_identity import PpsOpeningIdentity, normalise_opening_identity
 
 
 OutcomeStatus = Literal["NO_BID", "SUBMITTED", "WON", "LOST", "CANCELLED"]
@@ -71,6 +72,7 @@ class ResultLearningFields(ApiModel):
     source_reference: str | None = Field(default=None, max_length=1000)
     operator_note: str | None = Field(default=None, max_length=2000)
     occurred_at: datetime | None = None
+    opening_identity: PpsOpeningIdentity | None = None
 
     @field_validator("winner_name", "reason_code", "loss_reason", "source_reference", "operator_note")
     @classmethod
@@ -180,6 +182,7 @@ class ResultLearningUpdate(ApiModel):
     source_reference: str | None = Field(default=None, max_length=1000)
     operator_note: str | None = Field(default=None, max_length=2000)
     occurred_at: datetime | None = None
+    opening_identity: PpsOpeningIdentity | None = None
 
     @field_validator("winner_name", "reason_code", "loss_reason", "source_reference", "operator_note")
     @classmethod
@@ -211,6 +214,7 @@ class ResultLearningOutcomeOut(ApiModel):
     loss_reason: str | None
     source: str
     source_reference: str | None
+    opening_identity: PpsOpeningIdentity | None = None
     basis_outcome_id: str | None
     basis_source: str | None
     operator_note: str | None
@@ -306,22 +310,30 @@ def _workflow(item: BidOutcome) -> dict[str, Any]:
     workflow = evidence.get("_workflow")
     workflow = workflow if isinstance(workflow, dict) else {}
     record_status = str(workflow.get("record_status") or "").upper()
+    source = item.source.upper()
+    exact_match = evidence.get("exact_match")
+    participation = evidence.get("participation_basis")
+    opening_identity = normalise_opening_identity(evidence.get("opening_identity"))
+    confirmed_loss = bool(
+        isinstance(exact_match, dict) and exact_match.get("verified") is True
+        and opening_identity is not None
+        and isinstance(participation, dict)
+        and participation.get("record_status") == "VALIDATED"
+        and participation.get("human_reviewed") is True
+        and normalise_opening_identity(participation.get("opening_identity")) == opening_identity
+    )
+    if source == "PPS_AUTO_FEEDBACK" and item.status == "LOST" and not confirmed_loss:
+        # Preserve the observation, but a legacy workflow flag cannot supply
+        # the opening identity missing from its participation evidence.
+        record_status = "ARCHIVED" if record_status == "ARCHIVED" else "DRAFT"
     if record_status not in {"DRAFT", "VALIDATED", "ARCHIVED"}:
-        source = item.source.upper()
-        exact_match = evidence.get("exact_match")
-        participation = evidence.get("participation_basis")
         automatic_validated = bool(
             source == "PPS_AUTO_FEEDBACK"
             and isinstance(exact_match, dict)
             and exact_match.get("verified") is True
             and (
                 item.status == "WON"
-                or (
-                    item.status == "LOST"
-                    and isinstance(participation, dict)
-                    and participation.get("record_status") == "VALIDATED"
-                    and participation.get("human_reviewed") is True
-                )
+                or item.status == "LOST" and confirmed_loss
             )
         )
         record_status = (
@@ -381,6 +393,7 @@ def _out(item: BidOutcome) -> ResultLearningOutcomeOut:
         loss_reason=item.loss_reason,
         source=item.source,
         source_reference=item.source_reference,
+        opening_identity=_stored_opening_identity(item),
         basis_outcome_id=workflow["basis_outcome_id"],
         basis_source=workflow["basis_source"],
         operator_note=workflow["operator_note"],
@@ -399,8 +412,27 @@ def _latest_outcome(notice: Notice) -> BidOutcome | None:
     )
 
 
+def _stored_opening_identity(item: BidOutcome) -> dict[str, str] | None:
+    evidence = item.evidence_json if isinstance(item.evidence_json, dict) else {}
+    return normalise_opening_identity(evidence.get("opening_identity"))
+
+
+def _validated_opening_identity(
+    identity: PpsOpeningIdentity | None, notice: Notice,
+) -> dict[str, str] | None:
+    if identity is None:
+        return None
+    supplied = identity.model_dump()
+    expected = normalise_opening_identity({
+        **supplied, "bid_notice_no": notice.bid_notice_no, "revision_no": notice.revision_no,
+    })
+    if supplied != expected:
+        raise HTTPException(status_code=422, detail="개찰 식별자가 이 공고·차수와 일치하지 않습니다.")
+    return supplied
+
+
 def _fields(payload: ResultLearningFields) -> dict[str, object]:
-    return payload.model_dump(exclude={"record_status", "operator_note", "notice_key", "idempotency_key", "submitted_rate_calculation"})
+    return payload.model_dump(exclude={"record_status", "operator_note", "notice_key", "idempotency_key", "submitted_rate_calculation", "opening_identity"})
 
 
 def _rate_snapshot(fields: dict[str, Any]) -> dict[str, Any]:
@@ -420,6 +452,7 @@ def _evidence(
     revision: int,
     operator_note: str | None,
     created: bool,
+    opening_identity: dict[str, str] | None,
     basis: BidOutcome | None = None,
     actor_label: str | None = None,
     actor_id: str | None = None,
@@ -427,6 +460,10 @@ def _evidence(
     previous_rate_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = dict(existing) if isinstance(existing, dict) else {}
+    if opening_identity is None:
+        result.pop("opening_identity", None)
+    else:
+        result["opening_identity"] = opening_identity
     previous = result.get("_workflow")
     previous = previous if isinstance(previous, dict) else {}
     result["_workflow"] = {
@@ -483,6 +520,7 @@ def _current_fields(item: BidOutcome) -> dict[str, object]:
     workflow = _workflow(item)
     return {
         "record_status": workflow["record_status"],
+        "opening_identity": _stored_opening_identity(item),
         "status": item.status,
         "submitted_bid_amount": item.submitted_bid_amount,
         "submitted_bid_rate": item.submitted_bid_rate,
@@ -607,6 +645,7 @@ def create_result_learning(
     notice = _notice(session, payload.notice_key)
     if identity and (notice.status == "CANCELLED" or authoritative_pps_notice_is_cancelled(session, notice)):
         raise HTTPException(409, "취소된 공고의 결과는 변경할 수 없습니다.")
+    opening_identity = _validated_opening_identity(payload.opening_identity, notice)
     basis: BidOutcome | None = None
     if payload.basis_outcome_id:
         basis = session.get(BidOutcome, payload.basis_outcome_id)
@@ -635,6 +674,7 @@ def create_result_learning(
             "submitted_rate_calculation": validated.submitted_rate_calculation.model_dump(),
             "record_status": validated.record_status,
             "operator_note": validated.operator_note,
+            "opening_identity": opening_identity,
         }
         if not _same_learning_values(_current_fields(existing), expected):
             raise HTTPException(
@@ -670,6 +710,7 @@ def create_result_learning(
             revision=1,
             operator_note=validated.operator_note,
             created=True,
+            opening_identity=opening_identity,
             basis=basis,
             actor_label=identity.actor_label if identity else None,
             actor_id=identity.id if identity else None,
@@ -728,6 +769,7 @@ def update_result_learning(
         raise HTTPException(status_code=422, detail=detail) from exc
     values = _fields(validated)
     workflow = _workflow(item)
+    opening_identity = _validated_opening_identity(validated.opening_identity, item.notice)
     next_evidence = _evidence(
         item.evidence_json,
         record_status=validated.record_status,
@@ -738,6 +780,7 @@ def update_result_learning(
         actor_id=identity.id if identity else None,
         rate_fields=validated,
         previous_rate_fields=_current_fields(item),
+        opening_identity=opening_identity,
     )
     next_updated_at = datetime.now(timezone.utc)
     version_lower = item.updated_at - timedelta(microseconds=1)

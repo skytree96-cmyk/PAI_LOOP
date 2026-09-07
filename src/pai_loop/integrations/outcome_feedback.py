@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from ..outcome_identity import normalise_opening_identity
 from .awards import normalise_award
 from .company_awards import normalise_business_number
 from .pps import (
@@ -72,6 +73,15 @@ def _normalise_outcome_row(
 
     safe = {
         **award,
+        # Preserve whether every component was actually supplied. The display
+        # award normalizer's legacy zero defaults cannot prove an opening.
+        "opening_identity": normalise_opening_identity({
+            target: str(raw[source]).strip() if raw.get(source) is not None else None
+            for target, source in (
+                ("bid_notice_no", "bidNtceNo"), ("revision_no", "bidNtceOrd"),
+                ("classification_no", "bidClsfcNo"), ("rebid_no", "rbidNo"),
+            )
+        }),
         "company_business_number_match": business_number_match,
         "company_business_number_status": business_number_status,
     }

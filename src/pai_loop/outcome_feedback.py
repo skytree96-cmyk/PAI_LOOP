@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from contextlib import nullcontext
@@ -31,6 +32,7 @@ from .models import (
     PpsNoticeAuthority,
     UserDecision,
 )
+from .outcome_identity import normalise_opening_identity
 
 
 OUTCOME_FEEDBACK_SCHEMA = "pai-loop-pps-outcome-feedback-1.0.0"
@@ -40,9 +42,6 @@ _DEFAULT_WALL_SECONDS = 75.0
 _PPS_METADATA_KIND = "PPS_NOTICE_METADATA"
 _MAX_AUTOMATIC_CANDIDATES = 5_000
 _MAX_COMPLETED_AUDIT_JOBS = 10_000
-_LEGACY_OUTCOME_FEEDBACK_SCHEMAS = (
-    "pai-loop-pps-outcome-feedback-1.0.0",
-)
 
 
 class ApiModel(BaseModel):
@@ -258,23 +257,18 @@ def _submission_basis(
     session: Session,
     notice: Notice,
     *,
-    automatic_keys: set[str],
+    opening_identity: dict[str, str],
 ) -> BidOutcome | None:
     candidates = list(
         session.scalars(
             select(BidOutcome)
         .where(
             BidOutcome.notice_id == notice.id,
-            BidOutcome.outcome_key.not_in(automatic_keys),
             or_(
                 BidOutcome.source.is_(None),
                 BidOutcome.source != OUTCOME_FEEDBACK_SOURCE,
             ),
-            or_(
-                BidOutcome.status.in_(["SUBMITTED", "WON", "LOST"]),
-                BidOutcome.submitted_bid_amount.is_not(None),
-                BidOutcome.submitted_bid_rate.is_not(None),
-            ),
+            BidOutcome.status.in_(["SUBMITTED", "WON", "LOST"]),
         )
         .order_by(BidOutcome.observed_at.desc(), BidOutcome.created_at.desc())
         ).all()
@@ -287,32 +281,19 @@ def _submission_basis(
         if (
             str(workflow.get("record_status") or "").upper() == "VALIDATED"
             and workflow.get("human_reviewed") is True
+            and normalise_opening_identity(evidence.get("opening_identity")) == opening_identity
         ):
             return candidate
     return None
 
 
-def _automatic_outcome_key(notice: Notice) -> str:
+def _automatic_outcome_key(opening_identity: dict[str, str]) -> str:
     digest = hashlib.sha256(
-        (
-            f"PPS|{notice.bid_notice_no}|"
-            f"{canonical_pps_revision(notice.revision_no)}|FINAL_AWARD"
-        ).encode("utf-8")
+        ("PPS|FINAL_AWARD|" + json.dumps(
+            opening_identity, sort_keys=True, separators=(",", ":"),
+        )).encode("utf-8")
     ).hexdigest()[:40]
     return f"pps-final-award:{digest}"
-
-
-def _legacy_automatic_outcome_keys(notice: Notice) -> set[str]:
-    return {
-        "pps-final-award:"
-        + hashlib.sha256(
-            (
-                f"PPS|{notice.bid_notice_no}|"
-                f"{canonical_pps_revision(notice.revision_no)}|{schema}"
-            ).encode("utf-8")
-        ).hexdigest()[:40]
-        for schema in _LEGACY_OUTCOME_FEEDBACK_SCHEMAS
-    }
 
 
 def _latest_evaluation_id(session: Session, notice: Notice) -> str | None:
@@ -343,6 +324,7 @@ def _outcome_values(
     notice: Notice,
     *,
     selected: dict[str, Any],
+    opening_identity: dict[str, str],
     outcome_status: Literal["WON", "LOST"],
     exact_result_count: int,
     company_match_basis: str,
@@ -360,6 +342,7 @@ def _outcome_values(
         "operation": operation_path,
         "provider_identity": selected.get("identity"),
         "provider_result_sha256": selected.get("provider_result_sha256"),
+        "opening_identity": opening_identity,
         "exact_match": {
             "verified": True,
             "bid_notice_no": notice.bid_notice_no,
@@ -388,6 +371,9 @@ def _outcome_values(
                 "status": participation.status,
                 "record_status": "VALIDATED",
                 "human_reviewed": True,
+                "opening_identity": normalise_opening_identity(
+                    participation.evidence_json.get("opening_identity")
+                ),
             }
             if participation is not None
             else {"kind": "PROVIDER_WINNER_EXACT_MATCH"}
@@ -432,7 +418,6 @@ def _upsert_outcome(
     notice: Notice,
     *,
     outcome_key: str,
-    legacy_outcome_keys: set[str],
     values: dict[str, Any],
     dry_run: bool,
 ) -> Literal["CREATED", "UPDATED", "UNCHANGED", "DRY_RUN_CREATE", "DRY_RUN_UPDATE"]:
@@ -442,13 +427,10 @@ def _upsert_outcome(
             BidOutcome.outcome_key == outcome_key,
         )
     )
-    if existing is None and legacy_outcome_keys:
-        existing = session.scalar(
-            select(BidOutcome).where(
-                BidOutcome.notice_id == notice.id,
-                BidOutcome.source == OUTCOME_FEEDBACK_SOURCE,
-                BidOutcome.outcome_key.in_(legacy_outcome_keys),
-            )
+    if existing is not None and existing.source != OUTCOME_FEEDBACK_SOURCE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="다른 작성 주체의 결과를 자동 환류로 수정할 수 없습니다.",
         )
     if existing is None:
         if not dry_run:
@@ -467,8 +449,6 @@ def _upsert_outcome(
         for field, value in values.items()
         if not _same_value(getattr(existing, field), value)
     }
-    if existing.outcome_key != outcome_key:
-        changes["outcome_key"] = outcome_key
     if not changes:
         return "UNCHANGED"
     if not dry_run:
@@ -759,6 +739,32 @@ def refresh_pps_outcomes(
                     )
                     continue
 
+                # One notice/revision can contain several classifications or
+                # rebids. Do not select an old win or borrow another round's
+                # submission. This bounded endpoint requires one final opening.
+                identities = [normalise_opening_identity(
+                    row.get("opening_identity") if "opening_identity" in row else row
+                ) for row in exact_rows]
+                identity_problem = (
+                    "PPS_OPENING_IDENTITY_MISSING" if any(value is None for value in identities)
+                    else "PPS_OPENING_IDENTITY_MISMATCH" if any(
+                        identity != normalise_opening_identity(row)
+                        for identity, row in zip(identities, exact_rows, strict=True)
+                    )
+                    else "PPS_MULTIPLE_OPENING_IDENTITIES" if len({
+                        json.dumps(value, sort_keys=True) for value in identities
+                    }) > 1 else None
+                )
+                if identity_problem:
+                    counters["review"] += 1
+                    items.append(OutcomeFeedbackItem(
+                        notice_key=notice.notice_key, bid_notice_no=notice.bid_notice_no,
+                        revision_no=notice.revision_no, result="REVIEW",
+                        exact_result_count=len(exact_rows), api_calls=fetched.api_calls,
+                        reason_code=identity_problem, warnings=item_warnings,
+                    ))
+                    continue
+
                 selected, company_won, company_basis = _select_provider_result(exact_rows)
                 if company_basis in {
                     "COMPANY_IDENTITY_CONFLICT",
@@ -794,8 +800,9 @@ def refresh_pps_outcomes(
                     )
                     continue
 
-                outcome_key = _automatic_outcome_key(notice)
-                legacy_outcome_keys = _legacy_automatic_outcome_keys(notice)
+                opening_identity = identities[0]
+                assert opening_identity is not None  # The explicit guard above proved it.
+                outcome_key = _automatic_outcome_key(opening_identity)
                 participation = None
                 if company_won:
                     outcome_status: Literal["WON", "LOST"] = "WON"
@@ -803,7 +810,7 @@ def refresh_pps_outcomes(
                     participation = _submission_basis(
                         session,
                         notice,
-                        automatic_keys={outcome_key, *legacy_outcome_keys},
+                        opening_identity=opening_identity,
                     )
                     if participation is None:
                         counters["review"] += 1
@@ -815,7 +822,7 @@ def refresh_pps_outcomes(
                                 result="REVIEW",
                                 exact_result_count=len(exact_rows),
                                 api_calls=fetched.api_calls,
-                                reason_code="PARTICIPATION_NOT_CONFIRMED",
+                                reason_code="PARTICIPATION_OPENING_NOT_CONFIRMED",
                                 warnings=item_warnings,
                             )
                         )
@@ -826,6 +833,7 @@ def refresh_pps_outcomes(
                     session,
                     notice,
                     selected=selected,
+                    opening_identity=opening_identity,
                     outcome_status=outcome_status,
                     exact_result_count=len(exact_rows),
                     company_match_basis=company_basis or "OTHER_WINNER",
@@ -836,7 +844,6 @@ def refresh_pps_outcomes(
                     session,
                     notice,
                     outcome_key=outcome_key,
-                    legacy_outcome_keys=legacy_outcome_keys,
                     values=values,
                     dry_run=payload.dry_run,
                 )
