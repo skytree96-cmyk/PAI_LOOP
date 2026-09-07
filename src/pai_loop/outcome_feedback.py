@@ -15,7 +15,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .auth import require_api_key
-from .accounts import serial_transaction
+from .outcome_write_lock import lock_outcome_notice
 from .integrations.awards import OpeningResultsIncomplete
 from .integrations.company_awards import (
     DEFAULT_COMPANY_BUSINESS_NUMBER,
@@ -933,9 +933,9 @@ def refresh_pps_outcomes(
                 if provider_participant is not None:
                     # Finish provider reads before the short serialized write.
                     # Re-read human corrections and newer provider observations.
-                    notice_id = notice.id
+                    notice_id, notice_key = notice.id, notice.notice_key
                     session.rollback()
-                    serial_transaction(session, scope=f"pps-outcome:{notice_id}")
+                    lock_outcome_notice(session, notice_key)
                     notice = session.get(Notice, notice_id)
                     assert notice is not None
                     existing = session.scalar(select(BidOutcome).where(

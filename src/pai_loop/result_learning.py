@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
 from .accounts import Identity, authenticated_account, audit, enabled, serial_transaction
+from .outcome_write_lock import lock_outcome_notice
 from .notice_freshness import authoritative_pps_notice_is_cancelled
 from .manual_analysis import (
     _manual_feature_enabled,
@@ -665,6 +666,7 @@ def create_result_learning(
         serial_transaction(session, scope=f"result:{payload.notice_key}:{identity.department_id}")
         if "expected_outcome_id" not in payload.model_fields_set:
             raise HTTPException(422, "화면에서 확인한 자기 부서의 최신 결과 식별자가 필요합니다.")
+    lock_outcome_notice(session, payload.notice_key)
     notice = _notice(session, payload.notice_key)
     if identity and (notice.status == "CANCELLED" or authoritative_pps_notice_is_cancelled(session, notice)):
         raise HTTPException(409, "취소된 공고의 결과는 변경할 수 없습니다.")
@@ -767,6 +769,14 @@ def update_result_learning(
     session: DbSession,
 ) -> ResultLearningMutationOut:
     identity = _operator_access(request, mutation=True)
+    item = session.get(BidOutcome, outcome_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="결과 학습 기록을 찾을 수 없습니다.")
+    notice_key = session.scalar(select(Notice.notice_key).where(Notice.id == item.notice_id))
+    # Discard the pre-lock read snapshot before waiting. CAS and ownership must
+    # be checked against the row committed by the preceding notice writer.
+    session.rollback()
+    lock_outcome_notice(session, notice_key)
     item = session.get(BidOutcome, outcome_id)
     if item is None:
         raise HTTPException(status_code=404, detail="결과 학습 기록을 찾을 수 없습니다.")

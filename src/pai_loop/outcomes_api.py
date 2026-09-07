@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .auth import public_read_allowed, require_api_key
 from .models import BidOutcome, Evaluation, Notice, UserDecision
+from .outcome_write_lock import lock_outcome_notice
 
 
 class ApiModel(BaseModel):
@@ -197,6 +198,7 @@ def upsert_bid_outcome(
     request: Request,
     session: DbSession,
 ) -> BidOutcomeOut:
+    lock_outcome_notice(session, notice_key)
     notice = _notice(session, notice_key)
     if payload.evaluation_id:
         evaluation = session.get(Evaluation, payload.evaluation_id)

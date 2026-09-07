@@ -506,6 +506,7 @@
     els.resultLearningPreviousButton.addEventListener("click", () => changeResultLearningPage(-1));
     els.resultLearningNextButton.addEventListener("click", () => changeResultLearningPage(1));
     els.resultLearningForm.addEventListener("submit", saveResultLearning);
+    bindResultLearningOpeningEvents();
     [els.resultLearningSubmittedAmount, els.resultLearningRateBasisAmount, els.resultLearningRateBasisReference].forEach((input) => input.addEventListener("input", updateResultLearningRate));
     [els.resultLearningRateMode, els.resultLearningRateBasisKind].forEach((input) => input.addEventListener("change", updateResultLearningRate));
     els.resultLearningStatus.addEventListener("change", () => {
@@ -2917,6 +2918,13 @@
       ? `${calculation.basis_kind === "PLANNED_PRICE" ? "예정가격" : "기초금액"} ${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 20 }).format(calculation.basis_amount)}원 대비 ${rate}% · 저장 시 서버 계산`
       : message;
     return valid;
+  }
+
+  function bindResultLearningOpeningEvents() {
+    [els.resultLearningOpeningClassification, els.resultLearningOpeningRebid].forEach((input) => {
+      input.addEventListener("input", resultLearningOpeningIdentity);
+      input.addEventListener("change", resultLearningOpeningIdentity);
+    });
   }
 
   function resultLearningOpeningIdentity() {
