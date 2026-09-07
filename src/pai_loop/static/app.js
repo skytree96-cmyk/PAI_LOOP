@@ -5372,7 +5372,7 @@
       const seen = new Set();
       const anchors = sources.filter((item) => {
         const key = [item.file, item.page, quoteKey(item.quote)].join("|");
-        if (seen.has(key) || !matches(item.quote.replace(/\s+/g, ""))) return false;
+        if (seen.has(key) || !submissionQuoteMatches(id, matches, item)) return false;
         seen.add(key);
         return true;
       }).map((item) => {
@@ -5400,6 +5400,21 @@
       });
     }
     return items;
+  }
+
+  function submissionQuoteMatches(id, matches, item) {
+    const quote = item.quote.replace(/\s+/g, "");
+    if (matches(quote)) return true;
+    // A verified source section may identify what 'submission' means. Keep
+    // the original quote and location; never use a generated summary here.
+    const section = stringValue(item.page).replace(/[\s()]/g, "");
+    const proposalSection = /(?:기술)?제안서(?:제출|접수)/.test(section) && !/가격제안/.test(section);
+    if (id === "proposal-deadline" && proposalSection) return /(?:제출|접수)(?:일시|기한|기간|마감)/.test(quote);
+    if (id === "proposal-method" && proposalSection) return matches(`제안서${quote}`);
+    if (id === "bid-deadline" && !proposalSection && /(?:가격제안입찰|가격제안|입찰)(?:서)?(?:제출|접수)/.test(section)) {
+      return /(?:제출|접수)(?:일시|기한|기간|마감)/.test(quote);
+    }
+    return false;
   }
 
   function renderSubmissionCheckItem(item) {
