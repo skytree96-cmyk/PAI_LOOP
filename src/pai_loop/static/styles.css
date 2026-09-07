@@ -2280,7 +2280,13 @@ svg {
   font-size: var(--fs-lg);
 }
 
+/* Let long notice titles shrink before autofocus reveals the close button. */
+.source-link-dialog__header > div {
+  min-width: 0;
+}
+
 .source-link-dialog__header .icon-button {
+  flex: 0 0 auto;
   font-size: var(--fs-xl);
 }
 
@@ -5481,8 +5487,20 @@ svg {
 
 .record-editor-dialog .source-link-dialog__panel {
   display: flex;
+  width: 100%;
+  min-width: 0;
   max-height: min(860px, calc(100vh - 32px));
   flex-direction: column;
+}
+
+.record-editor-dialog .source-link-dialog__panel > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.record-editor-dialog .source-link-dialog__header,
+.record-editor-dialog .source-link-dialog__actions {
+  flex: 0 0 auto;
 }
 
 .record-editor-dialog .source-link-dialog__header p:last-child {
@@ -5496,6 +5514,7 @@ svg {
 }
 
 .record-editor-grid {
+  min-height: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   overflow-y: auto;
 }
@@ -5517,6 +5536,7 @@ svg {
 .record-field select,
 .record-field textarea {
   width: 100%;
+  min-width: 0;
   min-height: 41px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -5890,7 +5910,10 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .performance-kpi-card { padding: 14px 13px 12px; border-radius: 12px; }
   .performance-kpi-card strong { font-size: var(--fs-lg); }
   .performance-explorer { padding: 21px 13px 17px; border-radius: 17px; }
-  .performance-explorer__heading { align-items: center; }
+  .performance-explorer__heading { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .performance-explorer__heading > .button,
+  .operator-heading-actions .button { white-space: nowrap; }
+  .performance-explorer__heading > .button { flex: 0 0 auto; }
   .performance-explorer__heading h3 { font-size: var(--fs-lg); }
   .performance-filters { grid-template-columns: 1fr; padding: 10px; }
   .operator-filters { grid-template-columns: 1fr; }
@@ -5898,7 +5921,7 @@ body.teams-context .prespec-track { scroll-margin-top: 78px; }
   .operator-heading-actions .button { flex: 1 1 150px; }
   .record-editor-dialog { width: 100%; max-width: none; margin: auto 0 0; border-radius: 18px 18px 0 0; }
   .record-editor-dialog .source-link-dialog__panel { max-height: calc(100vh - 18px); }
-  .record-editor-grid { grid-template-columns: 1fr; }
+  .record-editor-grid { grid-template-columns: minmax(0, 1fr); }
   .record-field--wide { grid-column: auto; }
   .performance-search-field { grid-column: auto; }
   .performance-card { min-height: 0; padding: 15px; }
@@ -6802,6 +6825,28 @@ textarea:focus,
 .performance-hero__copy > p:last-child {
   color: var(--ink-soft);
 }
+
+/* Shared callouts must follow the light hero surface, including source variants. */
+.performance-hero .performance-boundary {
+  border-color: var(--line);
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+
+.performance-hero .performance-boundary strong { color: var(--ink); }
+.performance-hero .performance-boundary p { color: var(--ink-soft); }
+
+.performance-hero .performance-boundary__icon,
+.performance-hero .data-classification,
+.performance-hero .prespec-help-button {
+  border-color: var(--line-strong);
+  color: var(--blue);
+  background: var(--blue-pale);
+}
+
+.performance-hero .data-classification span { color: currentcolor; }
+.performance-hero .prespec-help-button:hover { color: #fff; background: var(--blue); }
+.performance-hero .prespec-help-button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 .detail-drawer {
   background:
