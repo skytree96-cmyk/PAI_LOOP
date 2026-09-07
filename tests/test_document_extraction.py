@@ -6,6 +6,7 @@ import sys
 import types
 import zipfile
 import zlib
+from dataclasses import replace
 
 import pytest
 
@@ -956,6 +957,142 @@ def test_ooxml_workbook_served_under_an_xls_name_is_read_by_the_xlsx_leaf() -> N
 
     assert under_xls.text == under_xlsx.text
     assert under_xls.complete == under_xlsx.complete
+
+
+@pytest.mark.parametrize("dimension", ["entries", "uncompressed"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_ooxml_xls_uses_the_same_archive_budget_as_xlsx(
+    dimension: str, nested: bool,
+) -> None:
+    package = _minimal_xlsx()
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        entries = archive.infolist()
+        entry_count = len(entries)
+        unpacked_size = sum(item.file_size for item in entries)
+        largest_member = max(item.file_size for item in entries)
+    if nested:
+        # The outer ZIP and the first workbook have already consumed budget
+        # before the second workbook's filename probe runs.
+        entry_count = 2 + 2 * entry_count
+        unpacked_size = 2 * len(package) + 2 * unpacked_size
+        largest_member = max(largest_member, len(package))
+    limits = ExtractionLimits()
+    if dimension == "entries":
+        limits = replace(
+            limits, max_entries_per_archive=len(entries),
+            max_total_entries=entry_count,
+        )
+    else:
+        limits = replace(
+            limits, max_member_uncompressed_bytes=largest_member,
+            max_total_uncompressed_bytes=unpacked_size,
+        )
+    for extension in (".xlsx", ".xls"):
+        content = package
+        file_name = "SYN-workbook" + extension
+        if nested:
+            content = _archive({
+                "SYN-first.xlsx": package,
+                "SYN-target" + extension: package,
+            })
+            file_name = "SYN-bundle.zip"
+        result = extract_document_content(file_name, content, limits=limits)
+        assert result.complete is True
+        assert result.members_processed == (2 if nested else 1)
+        assert result.warnings == ()
+        assert "수행실적" in result.text
+
+
+@pytest.mark.parametrize(
+    ("dimension", "expected_code"),
+    [
+        ("entries", "ARCHIVE_TOTAL_ENTRY_LIMIT"),
+        ("uncompressed", "ARCHIVE_UNCOMPRESSED_LIMIT"),
+    ],
+)
+def test_ooxml_xls_preserves_exhausted_shared_budget_error(
+    dimension: str, expected_code: str,
+) -> None:
+    package = _minimal_xlsx()
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        entries = archive.infolist()
+        unpacked_size = sum(item.file_size for item in entries)
+        largest_member = max(len(package), *(item.file_size for item in entries))
+    limits = ExtractionLimits()
+    if dimension == "entries":
+        limits = replace(
+            limits, max_entries_per_archive=len(entries),
+            max_total_entries=2 + 2 * len(entries) - 1,
+        )
+    else:
+        limits = replace(
+            limits, max_member_uncompressed_bytes=largest_member,
+            max_total_uncompressed_bytes=2 * len(package) + 2 * unpacked_size - 1,
+        )
+    for extension in (".xlsx", ".xls"):
+        result = extract_document_content(
+            "SYN-bundle.zip",
+            _archive({"SYN-first.xlsx": package, "SYN-target" + extension: package}),
+            limits=limits,
+        )
+        assert result.complete is False
+        assert result.members_processed == 1
+        assert result.warnings == (expected_code,)
+        assert result.member_issues[0].reason == expected_code
+
+
+@pytest.mark.parametrize(
+    ("members", "expected_code"),
+    [
+        ({"../SYN-member.xml": "<x/>"}, "ARCHIVE_UNSAFE_MEMBER_PATH"),
+        ({"SYN-member.xml": "<x/>", "syn-member.xml": "<x/>"}, "ARCHIVE_DUPLICATE_MEMBER"),
+    ],
+)
+def test_xls_filename_probe_preserves_archive_safety_errors(
+    members: dict[str, str], expected_code: str,
+) -> None:
+    with pytest.raises(DocumentExtractionError, match=f"^{expected_code}$"):
+        extract_document_content("SYN-workbook.xls", _archive(members))
+
+
+@pytest.mark.parametrize("dimension", ["entries", "uncompressed"])
+@pytest.mark.parametrize("allowed_children", [2, 3])
+def test_non_workbook_xls_probes_share_the_archive_budget(
+    dimension: str, allowed_children: int,
+) -> None:
+    package = _archive({
+        "[Content_Types].xml": "<Types/>",
+        "docProps/app.xml": "<x/>",
+        "SYN-note.xml": "<x/>",
+    })
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        entries = archive.infolist()
+        unpacked_size = sum(item.file_size for item in entries)
+    limits = ExtractionLimits()
+    if dimension == "entries":
+        limits = replace(
+            limits, max_entries_per_archive=3,
+            max_total_entries=3 + allowed_children * len(entries),
+        )
+        budget_error = "ARCHIVE_TOTAL_ENTRY_LIMIT"
+    else:
+        limits = replace(
+            limits, max_member_uncompressed_bytes=len(package),
+            max_total_uncompressed_bytes=3 * len(package) + allowed_children * unpacked_size,
+        )
+        budget_error = "ARCHIVE_UNCOMPRESSED_LIMIT"
+    result = extract_document_content(
+        "SYN-non-workbooks.zip",
+        _archive({f"SYN-{index:02d}.xls": package for index in range(3)}),
+        limits=limits,
+    )
+    expected = ["XLS_PARSE_FAILED"] * allowed_children
+    if allowed_children < 3:
+        expected.append(budget_error)
+    assert result.complete is False
+    assert result.members_discovered == 3
+    assert result.members_processed == 0
+    assert [issue.reason for issue in result.member_issues] == expected
 
 
 def test_zip_that_is_not_an_ooxml_workbook_keeps_the_xls_failure() -> None:
