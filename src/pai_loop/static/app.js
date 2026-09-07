@@ -5957,7 +5957,7 @@
     const notice = state.notices.find((item) => item.noticeKey === noticeKey) || state.selectedNotice;
     if (!notice) return;
 
-    state.awardHistoryMeta[noticeKey] = { status: "loading", message: "" };
+    state.awardHistoryMeta[noticeKey] = { ...current, status: "loading", message: "" };
     if (state.selectedNotice?.noticeKey === noticeKey) {
       renderAwardHistoryPanel(notice);
       updateAwardHistorySummaryMetric(notice);
@@ -5965,7 +5965,18 @@
 
     try {
       const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/award-intelligence`);
-      const rows = Array.isArray(payload?.records) ? payload.records.map(normalizeHistory) : [];
+      const table = payload?.annual_award_table;
+      const numericFields = ["bid_amount", "technical_evaluation", "price_evaluation", "total_evaluation"];
+      if (payload?.notice_key !== noticeKey || !Array.isArray(payload?.records) || !Array.isArray(table?.rows)
+          || table.row_count !== table.rows.length || !Array.isArray(table.years)
+          || table.years.length !== 3 || !table.years.every((year, index) => Number.isInteger(year) && year === table.years[0] - index)
+          || table.rows.some((row) => !row || !table.years.includes(row.year)
+            || typeof row.company_name !== "string" || typeof row.bid_notice_no !== "string"
+            || !["SAME_PROJECT", "SIMILAR_CANDIDATE"].includes(row.match_kind)
+            || numericFields.some((field) => row[field] !== null && (typeof row[field] !== "number" || !Number.isFinite(row[field]))))) {
+        throw new Error("낙찰 표 응답이 불완전하여 이전 저장본을 유지합니다.");
+      }
+      const rows = payload.records.map(normalizeHistory);
       const updated = {
         ...notice,
         awardHistory: rows,
@@ -5974,9 +5985,9 @@
       const index = state.notices.findIndex((item) => item.noticeKey === noticeKey);
       if (index >= 0) state.notices[index] = updated;
       if (state.selectedNotice?.noticeKey === noticeKey) state.selectedNotice = updated;
-      state.awardHistoryMeta[noticeKey] = { status: rows.length ? "ready" : "empty", message: "", intelligence: payload };
+      state.awardHistoryMeta[noticeKey] = { status: table.rows.length ? "ready" : "empty", message: "", intelligence: payload };
     } catch (error) {
-      state.awardHistoryMeta[noticeKey] = { status: "error", message: humanizeError(error) };
+      state.awardHistoryMeta[noticeKey] = { ...current, status: "error", message: humanizeError(error) };
     } finally {
       if (state.selectedNotice?.noticeKey === noticeKey) {
         renderAwardHistoryPanel(state.selectedNotice);
@@ -5988,6 +5999,7 @@
   function renderAwardHistoryPanel(notice) {
     const items = notice.awardHistory;
     const meta = state.awardHistoryMeta[notice.noticeKey] || {};
+    const annualRows = meta.intelligence?.annual_award_table?.rows;
     const status = state.source === "demo" ? "demo" : meta.status || (items.length ? "stored" : "empty");
     els.historyStatusLabel.className = "history-status-badge";
 
@@ -5996,13 +6008,13 @@
       els.historyStatusLabel.classList.add("is-loading");
       els.historyStatusText.textContent = "PAI 서버에 저장된 낙찰 후보를 읽고 있습니다.";
     } else if (status === "ready" || status === "stored") {
-      els.historyStatusLabel.textContent = `저장본 ${items.length}건`;
+      els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : `저장본 ${items.length}건`;
       els.historyStatusLabel.classList.add("is-ready");
       els.historyStatusText.textContent = "저장된 제목 유사 후보이며 동일 사업 확정 이력이 아닙니다.";
     } else if (status === "error") {
-      els.historyStatusLabel.textContent = items.length ? `저장본 ${items.length}건` : "미수집";
+      els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : items.length ? `저장본 ${items.length}건` : "미수집";
       els.historyStatusLabel.classList.add("is-error");
-      els.historyStatusText.textContent = items.length
+      els.historyStatusText.textContent = Array.isArray(annualRows) || items.length
         ? `저장 이력 재조회 실패 · 상세 응답의 저장본을 표시합니다. ${meta.message}`
         : `저장 이력을 확인하지 못했습니다. 외부 조회는 시작하지 않았습니다. ${meta.message}`;
     } else if (status === "demo") {
@@ -6012,19 +6024,21 @@
     } else {
       els.historyStatusLabel.textContent = "미수집";
       els.historyStatusLabel.classList.add("is-empty");
-      els.historyStatusText.textContent = "현재 서버에 저장된 낙찰 후보가 없습니다.";
+      els.historyStatusText.textContent = "현재 3개 연도 표에 표시할 저장 기록이 없습니다. 미수집 여부는 별도 확인이 필요합니다.";
     }
 
     renderAnnualAwardTable(meta.intelligence, status);
 
-    els.historyList.innerHTML = items.length
-      ? items.map(renderHistory).join("")
-      : emptyPanel("저장된 낙찰 이력이 없습니다", "아직 수집되지 않은 상태입니다. 이 화면에서는 외부 조달청 API를 자동 호출하지 않습니다.");
+    // Retain the legacy element ID for panel consumers; the annual table is
+    // the sole visible history view.
+    els.historyList.textContent = "";
+    els.historyList.hidden = true;
   }
 
   const AWARD_TABLE_BASIS_LABELS = {
     SAME_PROJECT_AND_AGENCY: "동일 사업명 · 동일 발주기관",
     SIMILAR_CANDIDATES_ONLY: "유사 사업 후보만 확인",
+    MIXED_BY_YEAR: "연도별 동일 사업 우선 · 일부 연도 유사 후보",
     NONE: "표시할 기록 없음",
   };
   const AWARD_PARTICIPATION_LABELS = { WINNER: "낙찰", PARTICIPANT: "참여", UNKNOWN: "구분 미확인" };
@@ -6064,7 +6078,7 @@
           <strong>${escapeHtml(year)}</strong>
           <span>${escapeHtml(row.project_title || "사업명 미확인")}</span>
           <small>${escapeHtml(row.agency || "발주기관 미확인")}${row.event_date ? ` · ${escapeHtml(row.event_date)}` : ""}</small>
-          <small>${sourceLine} · 개찰자료 ${escapeHtml(row.source_status === "COLLECTED" ? "수집됨" : row.source_status === "UNAVAILABLE" ? "제공 안 됨" : "미수집")}</small>
+          <small>${sourceLine} · 개찰자료 ${escapeHtml(row.source_status === "COLLECTED" ? "수집됨" : row.source_status === "PARTIAL" ? "부분 응답 · 이전 저장본 또는 미확인" : row.source_status === "ERROR" ? "조회 실패 · 이전 저장본 또는 미확인" : row.source_status === "UNAVAILABLE" ? "응답 업체 행 없음" : "미수집")}</small>
           ${candidate ? `<em class="award-table__candidate-flag">유사 사업 후보${similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`} · 동일 발주 확정 아님</em>` : ""}
         </th>
         <td>${escapeHtml(row.company_name || "업체명 미확인")}</td>
@@ -6078,13 +6092,13 @@
 
   function renderAnnualAwardTable(intelligence, status) {
     const table = intelligence?.annual_award_table;
-    if (status === "loading") {
+    if (status === "loading" && !table) {
       els.historyAwardTableBasis.textContent = "기준 확인 중";
       els.historyAwardTableBody.innerHTML = awardTableMessageRow("저장된 낙찰 기록을 읽고 있습니다.");
       els.historyAwardTableNotes.innerHTML = "";
       return;
     }
-    if (status === "error") {
+    if (status === "error" && !table) {
       els.historyAwardTableBasis.textContent = "조회 실패";
       els.historyAwardTableBody.innerHTML = awardTableMessageRow("저장 이력을 확인하지 못했습니다. 이 화면에서 외부 조회를 시작하지 않았습니다.");
       els.historyAwardTableNotes.innerHTML = "";
@@ -6104,9 +6118,15 @@
     const basis = AWARD_TABLE_BASIS_LABELS[table.match_basis] || AWARD_TABLE_BASIS_LABELS.NONE;
     els.historyAwardTableBasis.textContent = years.length ? `${years.join(" · ")} · ${basis}` : basis;
     const rows = Array.isArray(table.rows) ? table.rows : [];
-    els.historyAwardTableBody.innerHTML = rows.length
-      ? rows.map(renderAwardTableRow).join("")
-      : awardTableMessageRow("최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다.");
+    const retained = status === "loading" ? awardTableMessageRow("저장본을 다시 확인하는 동안 이전 표를 유지합니다.")
+      : status === "error" ? awardTableMessageRow("재조회 실패 · 이전 저장본을 표시합니다.") : "";
+    els.historyAwardTableBody.innerHTML = retained + (rows.length
+      ? years.map((year) => {
+        const annualRows = rows.filter((row) => row.year === year);
+        return annualRows.length ? annualRows.map(renderAwardTableRow).join("")
+          : awardTableMessageRow(`${year}년 · 표시할 저장 기록이 없습니다. 실제 낙찰·참여 이력이 없다는 뜻은 아닙니다.`);
+      }).join("")
+      : awardTableMessageRow("최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다."));
     const notes = Array.isArray(table.notes) ? table.notes : [];
     els.historyAwardTableNotes.innerHTML = notes.length
       ? `<ul>${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`

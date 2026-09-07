@@ -313,7 +313,7 @@ class AwardHistoryItemOut(ApiModel):
     similarity_score: float
     source: str
     opening_results: list[AwardOpeningCompanyOut] | None = None
-    opening_results_status: Literal["NOT_COLLECTED", "COLLECTED", "UNAVAILABLE"] | None = None
+    opening_results_status: Literal["NOT_COLLECTED", "COLLECTED", "UNAVAILABLE", "PARTIAL", "ERROR"] | None = None
     opening_results_read_at: datetime | None = None
 
 
@@ -352,7 +352,7 @@ class AnnualAwardTableOut(ApiModel):
     table_version: str
     generated_as_of: datetime
     years: list[int]
-    match_basis: Literal["SAME_PROJECT_AND_AGENCY", "SIMILAR_CANDIDATES_ONLY", "NONE"]
+    match_basis: Literal["SAME_PROJECT_AND_AGENCY", "SIMILAR_CANDIDATES_ONLY", "MIXED_BY_YEAR", "NONE"]
     target_project_key: str
     row_count: int
     scored_row_count: int
@@ -382,7 +382,7 @@ class AwardIntelligenceRecordOut(ApiModel):
     similarity_score: float | None
     source: str
     opening_results: list[AwardOpeningCompanyOut] | None = None
-    opening_results_status: Literal["NOT_COLLECTED", "COLLECTED", "UNAVAILABLE"] | None = None
+    opening_results_status: Literal["NOT_COLLECTED", "COLLECTED", "UNAVAILABLE", "PARTIAL", "ERROR"] | None = None
 
 
 class CompetitionRiskComponentOut(ApiModel):

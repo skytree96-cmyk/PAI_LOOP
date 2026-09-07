@@ -39,6 +39,8 @@ def test_the_replaced_intelligence_cards_are_gone_from_every_asset() -> None:
     # The panel's own loading/error/empty contract is untouched.
     for kept in ("historyStatusLabel", "historyStatusText", "historyList"):
         assert kept in app and kept in html, kept
+    assert 'id="historyList" hidden' in html
+    assert "items.map(renderHistory)" not in app
 
 
 def test_the_award_table_markup_carries_the_agreed_columns_and_a11y() -> None:
@@ -156,6 +158,14 @@ assert.doesNotMatch(html, /award-table__missing">0/);
 assert.match(html, /https:\/\/www\.g2b\.go\.kr\//);
 assert.match(html, /공고 원문 열기 · SYN-2025-000/);
 assert.match(els.historyAwardTableNotes.innerHTML, /기술점수입니다/);
+assert.match(html, /2026년 · 표시할 저장 기록/);
+const retained = { annual_award_table: { years: [2026, 2025, 2024], match_basis: "MIXED_BY_YEAR", rows: [row({ source_status: "PARTIAL" })], notes: [] } };
+for (const status of ["loading", "error"]) {
+  renderAnnualAwardTable(retained, status);
+  assert.match(els.historyAwardTableBody.innerHTML, /SYN-기관A/);
+  assert.match(els.historyAwardTableBody.innerHTML, /이전/);
+  assert.match(els.historyAwardTableBody.innerHTML, /부분 응답/);
+}
 
 // A similar candidate is labelled as one and never reads as the same job.
 renderAnnualAwardTable({
@@ -177,7 +187,7 @@ renderAnnualAwardTable({
     years: [2026, 2025, 2024],
     match_basis: "SAME_PROJECT_AND_AGENCY",
     rows: [row({
-      year: null,
+      year: 2024,
       source_status: "NOT_COLLECTED",
       source_notice_url: null,
       technical_evaluation: null,
@@ -188,7 +198,7 @@ renderAnnualAwardTable({
   },
 }, "ready");
 const uncollected = els.historyAwardTableBody.innerHTML;
-assert.match(uncollected, /연도 미확인/);
+assert.match(uncollected, /2024/);
 assert.match(uncollected, /개찰자료 미수집/);
 assert.equal((uncollected.match(/award-table__missing">미확인</g) || []).length, 3);
 assert.doesNotMatch(uncollected, /<a class="award-table__source"/);
@@ -196,7 +206,7 @@ assert.doesNotMatch(uncollected, /<a class="award-table__source"/);
 // Escaping holds for provider-supplied text.
 renderAnnualAwardTable({
   annual_award_table: {
-    years: [2026],
+    years: [2026, 2025, 2024],
     match_basis: "SAME_PROJECT_AND_AGENCY",
     rows: [row({ company_name: "<script>SYN</script>" })],
     notes: [],
@@ -210,4 +220,42 @@ assert.doesNotMatch(els.historyAwardTableBody.innerHTML, /<script>/);
         text=True,
         encoding="utf-8",
     )
+    assert result.returncode == 0, result.stderr
+
+
+def test_award_reload_keeps_valid_rows_on_failure_or_partial_response_and_can_retry() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    loader = "async function loadStoredAwardHistory" + _function_body(source, "loadStoredAwardHistory", "renderAwardHistoryPanel")
+    script = r"""
+const assert = require("node:assert/strict");
+const notice = { noticeKey: "SYN-current", awardHistory: [{ winner: "SYN-A" }], raw: {} };
+const row = { year: 2025, company_name: "SYN-A", bid_notice_no: "SYN-old", match_kind: "SAME_PROJECT", bid_amount: 10, technical_evaluation: null, price_evaluation: null, total_evaluation: null };
+const valid = { notice_key: "SYN-current", records: [{ winner: "SYN-A" }], annual_award_table: { rows: [row], row_count: 1, years: [2026, 2025, 2024] } };
+const state = { source: "api", notices: [notice], selectedNotice: notice, awardHistoryMeta: { "SYN-current": { status: "ready", intelligence: valid } } };
+const normalizeHistory = (row) => row;
+const sanitizeNoticeAwardHistory = (raw) => raw;
+const humanizeError = (error) => error.message;
+const updateAwardHistorySummaryMetric = () => {};
+let snapshots = [];
+const renderAwardHistoryPanel = () => snapshots.push(state.awardHistoryMeta["SYN-current"].intelligence);
+let response;
+const apiRequest = async () => { if (response instanceof Error) throw response; return response; };
+(async () => {
+  for (response of [new Error("SYN failure"), {}, { ...valid, annual_award_table: { ...valid.annual_award_table, rows: [] } }, { ...valid, annual_award_table: { ...valid.annual_award_table, rows: [{ ...row, bid_amount: undefined }] } }]) {
+    await loadStoredAwardHistory("SYN-current", { force: true });
+    assert.equal(state.awardHistoryMeta["SYN-current"].status, "error");
+    assert.equal(state.awardHistoryMeta["SYN-current"].intelligence, valid);
+    assert.equal(state.selectedNotice, notice);
+    assert.equal(state.selectedNotice.awardHistory[0].winner, "SYN-A");
+  }
+  assert.ok(snapshots.every((snapshot) => snapshot === valid));
+  response = valid;
+  await loadStoredAwardHistory("SYN-current"); // error remains retryable without force
+  assert.equal(state.awardHistoryMeta["SYN-current"].status, "ready");
+  response = { ...valid, records: [], annual_award_table: { ...valid.annual_award_table, rows: [], row_count: 0 } };
+  await loadStoredAwardHistory("SYN-current", { force: true });
+  assert.equal(state.awardHistoryMeta["SYN-current"].status, "empty");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(["node", "-e", loader + "\n" + script], capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr

@@ -30,7 +30,7 @@ from .department_ranking import (
     rank_notice_department_views,
     rank_notice_for_department,
 )
-from .integrations.awards import PpsAwardClient
+from .integrations.awards import OpeningResultsIncomplete, PpsAwardClient
 from .award_intelligence import build_annual_award_table, build_award_intelligence
 from .integrations.pps import (
     KST,
@@ -2849,14 +2849,23 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
     )
     result["notice_key"] = notice.notice_key
     result["period"] = {"from": cutoff.isoformat(), "to": as_of.date().isoformat(), "years": 3}
-    # The annual table reads the same stored rows. It performs no request of
-    # its own, so the public read stays free of remote traffic and writes.
+    # Resolve source URLs only from stored notices with the historical identity.
+    # Ambiguous or unavailable URLs remain absent, never the target's URL.
+    historical_urls: dict[tuple[str, str], set[str]] = {}
+    notice_numbers = {item.bid_notice_no for item in candidates}
+    if notice_numbers:
+        for historical_notice in session.scalars(
+            select(Notice).where(Notice.bid_notice_no.in_(notice_numbers))
+        ):
+            if historical_notice.source_url:
+                key = (historical_notice.bid_notice_no, historical_notice.revision_no.zfill(3))
+                historical_urls.setdefault(key, set()).add(historical_notice.source_url)
     result["annual_award_table"] = build_annual_award_table(
-        history,
+        candidates,
         target_title=notice.title,
         target_agency=notice.agency,
-        as_of=as_of,
-        notice_source_url=notice.source_url,
+        as_of=datetime.now(timezone.utc),
+        historical_notice_urls={key: next(iter(urls)) for key, urls in historical_urls.items() if len(urls) == 1},
     )
     result["target_amount_basis"] = {
         "kind": "NOTICE_ESTIMATED_AMOUNT" if notice.estimated_amount else "UNAVAILABLE",
@@ -2900,12 +2909,8 @@ def refresh_award_history(
         raise HTTPException(status_code=503, detail="PPS_API_KEY가 서버에 설정되지 않았습니다.")
 
     keyword = payload.keyword or _derive_award_keyword(notice.title)
-    as_of = (
-        _comparable_utc(notice.published_at).date()
-        if notice.published_at
-        else datetime.now(timezone.utc).date()
-    )
-    start = _minus_years(as_of, payload.years)
+    as_of = datetime.now(KST).date()
+    start = date(as_of.year - payload.years + 1, 1, 1)
     window = {"from": start.isoformat(), "to": as_of.isoformat()}
     warnings = [
         "검색 결과는 제목 유사 후보이며 동일 사업 확정 이력이 아닙니다. 담당자 검토가 필요합니다."
@@ -2926,6 +2931,9 @@ def refresh_award_history(
             "years": payload.years,
             "page_size": payload.page_size,
             "max_pages_per_window": payload.max_pages_per_window,
+            "include_opening_results": payload.include_opening_results,
+            "max_opening_result_notices": payload.max_opening_result_notices,
+            "opening_result_max_pages": payload.opening_result_max_pages,
         },
         notice_keys=[notice.notice_key],
         warnings=[],
@@ -2940,7 +2948,7 @@ def refresh_award_history(
             service_key=settings.pps_api_key,
             base_url=settings.pps_base_url,
             timeout_seconds=12,
-            max_retries=1,
+            max_retries=0,
         ) as client:
             fetched_rows = list(
                 client.iter_awards(
@@ -2959,6 +2967,7 @@ def refresh_award_history(
             fallback_window_count = client.fallback_window_count
             window_errors = list(client.window_errors)
             hit_time_limit = getattr(client, "hit_time_limit", False)
+            hit_incomplete_response = getattr(client, "hit_incomplete_response", False)
     except PpsApiError as exc:
         _mark_pps_job_failed(
             session,
@@ -2978,6 +2987,8 @@ def refresh_award_history(
 
     if hit_page_limit:
         warnings.append("일부 30일 구간이 페이지 제한에 도달했습니다. 구간 또는 키워드를 좁혀 재조회하세요.")
+    if hit_incomplete_response:
+        warnings.append("낙찰 응답의 전체 건수와 페이지 행이 일치하지 않아 부분 수집으로 기록했습니다. 기존 저장 기록은 삭제하지 않습니다.")
     if fallback_window_count:
         warnings.append(
             f"비표준 응답을 받은 {fallback_window_count}개 구간은 7일 단위로 재조회했습니다."
@@ -3004,25 +3015,29 @@ def refresh_award_history(
         warnings.append(f"필수 공개 필드가 없는 {quarantined}건은 격리했습니다.")
 
     opening_by_identity: dict[str, list[dict[str, Any]]] = {}
+    opening_failures: dict[str, str] = {}
     opening_requested = 0
     opening_failed = 0
+    opening_limited = False
     if payload.include_opening_results and candidates and not payload.dry_run:
         selected = list(candidates.items())[: payload.max_opening_result_notices]
         if len(candidates) > len(selected):
+            opening_limited = True
             warnings.append(
                 f"개찰 결과는 상한에 따라 {len(selected)}건만 조회했습니다. "
-                f"나머지 {len(candidates) - len(selected)}건은 미수집으로 남습니다."
+                f"나머지 {len(candidates) - len(selected)}건은 이전 저장본 또는 미수집 상태를 유지합니다."
             )
         try:
             with PpsAwardClient(
                 service_key=settings.pps_api_key,
                 base_url=settings.pps_base_url,
                 timeout_seconds=12,
-                max_retries=1,
+                max_retries=0,
             ) as opening_client:
                 for identity, item in selected:
                     if time.monotonic() >= award_deadline:
                         warnings.append("개찰 결과 조회는 수집 제한 시간에서 중단했습니다.")
+                        hit_time_limit = True
                         break
                     opening_requested += 1
                     try:
@@ -3035,11 +3050,15 @@ def refresh_award_history(
                             max_pages=payload.opening_result_max_pages,
                             deadline_monotonic=award_deadline,
                         )
+                    except OpeningResultsIncomplete:
+                        opening_failed += 1
+                        opening_failures[identity] = "PARTIAL"
                     except PpsApiError:
-                        # A per-notice failure leaves that row untouched, so a
+                        # A per-notice failure leaves the company set untouched, so a
                         # previously stored opening result is never replaced
                         # with a false empty competitor set.
                         opening_failed += 1
+                        opening_failures[identity] = "ERROR"
                 api_calls += opening_client.request_count
         except Exception:
             _mark_pps_job_failed(
@@ -3050,7 +3069,7 @@ def refresh_award_history(
             )
             raise
         if opening_failed:
-            warnings.append(f"{opening_failed}건의 개찰 결과 조회가 실패해 미수집으로 남겼습니다.")
+            warnings.append(f"{opening_failed}건의 개찰 결과 조회가 실패하거나 불완전해 기존 저장본을 유지했습니다. 신규 건은 미확인입니다.")
     elif payload.include_opening_results and payload.dry_run:
         warnings.append("dry_run이므로 개찰 결과 조회를 실행하지 않았습니다.")
 
@@ -3084,9 +3103,16 @@ def refresh_award_history(
         }
         if identity in opening_by_identity:
             companies = opening_by_identity[identity]
-            values["opening_results"] = companies
-            values["opening_results_status"] = "COLLECTED" if companies else "UNAVAILABLE"
-            values["opening_results_read_at"] = datetime.now(timezone.utc)
+            if not companies and existing is not None and existing.opening_results:
+                opening_failures[identity] = "PARTIAL"
+                opening_failed += 1
+                warnings.append("빈 개찰 응답이 이전 업체 목록과 달라 기존 저장본을 유지했습니다.")
+            else:
+                values["opening_results"] = companies
+                values["opening_results_status"] = "COLLECTED" if companies else "UNAVAILABLE"
+                values["opening_results_read_at"] = datetime.now(timezone.utc)
+        if identity in opening_failures:
+            values["opening_results_status"] = opening_failures[identity]
         if existing is None:
             created += 1
             if not payload.dry_run:
@@ -3102,7 +3128,7 @@ def refresh_award_history(
         changes = {
             field: value
             for field, value in values.items()
-            if (
+            if value not in (None, "") and (
                 not _same_datetime(getattr(existing, field), value)
                 if field in {"opened_at", "awarded_at"}
                 else getattr(existing, field) != value
@@ -3119,9 +3145,12 @@ def refresh_award_history(
     if payload.include_opening_results:
         warnings.append(
             f"개찰 결과를 {opening_requested}건 조회했습니다. 조회하지 않은 낙찰 건의 "
-            "참여업체와 평가점수는 미수집 상태로 남습니다."
+            "참여업체와 평가점수는 이전 저장본 또는 미수집 상태를 유지합니다."
         )
-    job.status = "PARTIAL" if window_errors or hit_time_limit else "COMPLETED"
+    job.status = "PARTIAL" if (
+        window_errors or hit_time_limit or hit_page_limit or hit_incomplete_response or quarantined
+        or opening_failed or opening_limited
+    ) else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
     job.matched = len(candidates)

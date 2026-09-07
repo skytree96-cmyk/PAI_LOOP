@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import re
 from math import exp, log
@@ -556,7 +556,7 @@ def _normalise_agency(value: Any) -> str:
 
 
 def _row_year(occurred_at: datetime | None) -> int | None:
-    return occurred_at.year if occurred_at else None
+    return occurred_at.astimezone(timezone(timedelta(hours=9))).year if occurred_at else None
 
 
 def _opening_companies(row: Any) -> list[dict[str, Any]] | None:
@@ -603,12 +603,13 @@ def build_annual_award_table(
     target_agency: Any = None,
     as_of: datetime | None = None,
     notice_source_url: str | None = None,
+    historical_notice_urls: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[str, Any]:
     """Lay stored award facts out as one row per company per year.
 
     Rows for the same project (title with its year removed, plus the same
-    agency) are kept and ranked first. Similar-title candidates are emitted
-    only when no same-project row exists, and they are labelled as candidates
+    agency) are preferred independently in each calendar year. Similar-title
+    candidates appear in years without an exact match, labelled as candidates
     so the table never reads as proof that an older procurement was this one.
     Absent amounts and scores stay ``None``; nothing is defaulted to zero and
     no score is derived from another field.
@@ -617,14 +618,13 @@ def build_annual_award_table(
     reference = as_of or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
+    reference = reference.astimezone(timezone(timedelta(hours=9)))
     years = [reference.year - offset for offset in range(3)]
     target_key = normalise_project_title(target_title)
     target_agency_key = _normalise_agency(target_agency)
 
     same_project: list[dict[str, Any]] = []
     similar: list[dict[str, Any]] = []
-    not_collected = 0
-    empty_openings = 0
     undated = 0
 
     for row in records:
@@ -634,22 +634,22 @@ def build_annual_award_table(
             continue
         if year is None:
             undated += 1
+            continue
+        if occurred_at > reference:
+            continue
         title = str(_value(row, "title") or "")
         agency = str(_value(row, "agency") or "")
         winner_name = str(_value(row, "winner_name") or "").strip()
         is_same_project = bool(
             target_key
             and normalise_project_title(title) == target_key
-            and (not target_agency_key or _normalise_agency(agency) == target_agency_key)
+            and target_agency_key
+            and _normalise_agency(agency) == target_agency_key
         )
         companies = _opening_companies(row)
-        if companies is None:
-            not_collected += 1
-        elif not companies:
-            empty_openings += 1
         source_status = (
             str(_value(row, "opening_results_status") or "")
-            or ("NOT_COLLECTED" if companies is None else "COLLECTED")
+            or ("NOT_COLLECTED" if companies is None else "COLLECTED" if companies else "UNAVAILABLE")
         )
         base = {
             "year": year,
@@ -660,8 +660,13 @@ def build_annual_award_table(
             "match_kind": "SAME_PROJECT" if is_same_project else "SIMILAR_CANDIDATE",
             "similarity_score": _similarity_score(_value(row, "similarity_score")),
             "source_status": source_status,
-            "source_notice_url": notice_source_url,
-            "event_date": occurred_at.date().isoformat() if occurred_at else None,
+            # The target notice URL is deliberately never used for history.
+            # An unavailable historical URL leaves a plain notice reference.
+            "source_notice_url": (historical_notice_urls or {}).get((
+                str(_value(row, "bid_notice_no") or ""),
+                str(_value(row, "revision_no") or "").zfill(3),
+            )),
+            "event_date": occurred_at.astimezone(reference.tzinfo).date().isoformat(),
         }
         if companies:
             entries = [
@@ -674,12 +679,12 @@ def build_annual_award_table(
             ]
         else:
             # With no opening read there is still one truthful row: the award
-            # endpoint's winner and its award amount. The three evaluation
-            # columns stay missing rather than borrowing the award amount.
+            # endpoint's winner. Neither submitted bid nor scores can be
+            # filled from that endpoint's final award amount.
             entries = [{
                 **base,
                 "company_name": winner_name or "",
-                "bid_amount": _number(_value(row, "award_amount")),
+                "bid_amount": None,
                 "technical_evaluation": None,
                 "price_evaluation": None,
                 "total_evaluation": None,
@@ -688,15 +693,25 @@ def build_annual_award_table(
             }]
         (same_project if is_same_project else similar).extend(entries)
 
+    selected = []
+    for year in years:
+        exact = [item for item in same_project if item["year"] == year]
+        selected.extend(exact or [item for item in similar if item["year"] == year])
+    kinds = {item["match_kind"] for item in selected}
     match_basis = (
-        "SAME_PROJECT_AND_AGENCY" if same_project
-        else "SIMILAR_CANDIDATES_ONLY" if similar
+        "MIXED_BY_YEAR" if len(kinds) == 2
+        else "SAME_PROJECT_AND_AGENCY" if "SAME_PROJECT" in kinds
+        else "SIMILAR_CANDIDATES_ONLY" if kinds
         else "NONE"
     )
-    # Similar candidates are a fallback, not a supplement: showing them beside
-    # a confirmed same-project row would invite reading them as the same
-    # procurement.
-    selected = same_project if same_project else similar
+    not_collected = len({
+        (item["bid_notice_no"], item["revision_no"])
+        for item in selected if item["source_status"] == "NOT_COLLECTED"
+    })
+    empty_openings = len({
+        (item["bid_notice_no"], item["revision_no"])
+        for item in selected if item["source_status"] == "UNAVAILABLE"
+    })
 
     def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
         return (
@@ -709,15 +724,18 @@ def build_annual_award_table(
     rows = sorted(selected, key=sort_key)
     scored_rows = sum(
         1 for item in rows
-        if item["technical_evaluation"] is not None or item["price_evaluation"] is not None
+        if any(item[field] is not None for field in ("technical_evaluation", "price_evaluation", "total_evaluation"))
     )
     notes = [
         "기술평가는 입찰의 기술점수이며 이 제품의 정량평가 항목과 다릅니다.",
         "값이 없는 항목은 미확인으로 표시하며 0점이나 다른 값으로 추정하지 않습니다.",
+        "투찰금액은 개찰자료의 제출 금액이며 최종 낙찰금액으로 대신하지 않습니다.",
+        "연도마다 동일 사업명·동일 발주기관을 우선하고, 없는 연도에는 유사 후보를 표시합니다.",
+        "참여업체는 저장된 개찰 응답 범위이며 전체 경쟁업체 목록임을 보장하지 않습니다.",
     ]
-    if match_basis == "SIMILAR_CANDIDATES_ONLY":
+    if match_basis in {"SIMILAR_CANDIDATES_ONLY", "MIXED_BY_YEAR"}:
         notes.append(
-            "동일 사업명·동일 발주기관 기록이 없어 제목 유사 후보만 표시합니다. "
+            "동일 사업명·동일 발주기관 기록이 없는 연도는 제목 유사 후보를 표시합니다. "
             "유사도는 동일 발주라는 증거가 아닙니다."
         )
     if match_basis == "NONE":

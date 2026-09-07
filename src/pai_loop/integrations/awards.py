@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import date
+from math import isfinite
 from typing import Any, Iterator
 
 from .pps import (
@@ -20,18 +21,28 @@ DEFAULT_OPENING_RESULT_OPERATION = (
     "as/ScsbidInfoService/getOpengResultListInfoOpengCompt"
 )
 
-# Field names confirmed against one real service-procurement response. The
-# Swagger example omits the score fields, but the live envelope carried them,
-# so each score is read through a short alias list and stays missing rather
-# than being guessed when no alias is present. Technical evaluation here is
-# the bid's technical score, NOT the separate quantitative component this
-# product scores elsewhere.
-_OPENING_COMPANY_NAME_KEYS = ("prcbdrNm", "bidwinnrNm", "cmpnyNm", "corpNm")
-_OPENING_BID_AMOUNT_KEYS = ("bidprcAmt", "bidPrceAmt", "sucsfbidAmt")
+# Official operation schema: https://www.data.go.kr/data/15129397/openapi.do
+# prcbdrNm, bidprcAmt and opengRank are documented. rmrk is a remark;
+# sucsfbidAmt belongs to the separate final-award operation, never a bid.
+# The score fields were observed in a service-procurement response but are
+# absent from that Swagger schema. Only these exact fields are accepted;
+# technical evaluation is not this product's quantitative component.
+_OPENING_COMPANY_NAME_KEYS = ("prcbdrNm",)
+_OPENING_BID_AMOUNT_KEYS = ("bidprcAmt",)
 _OPENING_TECHNICAL_KEYS = ("techEvlVal",)
 _OPENING_PRICE_KEYS = ("bidPrceEvlVal",)
 _OPENING_TOTAL_KEYS = ("totalEvlAmtVal",)
-_OPENING_RANK_KEYS = ("opengRank", "rmrk")
+
+
+class OpeningResultsIncomplete(PpsApiError):
+    """An opening response cannot safely replace a stored company set."""
+
+
+def _opening_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    number = _number(value)
+    return number if number is not None and isfinite(number) and number >= 0 else None
 
 
 def _first_present(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -51,13 +62,14 @@ def normalise_opening_result(item: dict[str, Any]) -> dict[str, Any]:
     award endpoint instead.
     """
 
+    rank = _integer(item.get("opengRank"))
     return {
         "company_name": str(_first_present(item, _OPENING_COMPANY_NAME_KEYS) or "").strip(),
-        "bid_amount": _number(_first_present(item, _OPENING_BID_AMOUNT_KEYS)),
-        "technical_evaluation": _number(_first_present(item, _OPENING_TECHNICAL_KEYS)),
-        "price_evaluation": _number(_first_present(item, _OPENING_PRICE_KEYS)),
-        "total_evaluation": _number(_first_present(item, _OPENING_TOTAL_KEYS)),
-        "opening_rank": _integer(_first_present(item, _OPENING_RANK_KEYS)),
+        "bid_amount": _opening_number(_first_present(item, _OPENING_BID_AMOUNT_KEYS)),
+        "technical_evaluation": _opening_number(_first_present(item, _OPENING_TECHNICAL_KEYS)),
+        "price_evaluation": _opening_number(_first_present(item, _OPENING_PRICE_KEYS)),
+        "total_evaluation": _opening_number(_first_present(item, _OPENING_TOTAL_KEYS)),
+        "opening_rank": rank if rank is not None and rank > 0 else None,
     }
 
 
@@ -102,6 +114,7 @@ class PpsAwardClient(PpsClient):
         super().__init__(service_key=service_key, base_url=base_url, **kwargs)
         self.fallback_window_count = 0
         self.window_errors: list[str] = []
+        self.hit_incomplete_response = False
 
     def _fetch_window(
         self,
@@ -116,6 +129,7 @@ class PpsAwardClient(PpsClient):
         results: list[dict[str, Any]] = []
         folded_keyword = keyword.casefold()
         page = 1
+        expected_total: int | None = None
         while True:
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
@@ -130,12 +144,35 @@ class PpsAwardClient(PpsClient):
                     "pageNo": page,
                     "numOfRows": rows,
                 },
+                timeout_seconds=(
+                    max(0.1, deadline_monotonic - time.monotonic())
+                    if deadline_monotonic is not None else None
+                ),
             )
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                self.hit_time_limit = True
+                return results
             raw_items, total = parse_paged_response(payload)
+            body = payload["response"]["body"]
+            container = body.get("items")
+            raw = container.get("item", []) if isinstance(container, dict) else container
+            raw = [raw] if isinstance(raw, dict) else raw
+            if raw in (None, "") and total == 0 and "items" in body:
+                raw = []
+            if not isinstance(raw, list) or len(raw) != len(raw_items) or not str(body["totalCount"]).isdigit():
+                raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.")
+            incomplete = (
+                (expected_total is not None and total != expected_total)
+                or len(raw_items) != min(rows, max(0, total - (page - 1) * rows))
+            )
+            expected_total = total
             for raw in raw_items:
                 award = normalise_award(raw)
                 if folded_keyword in award["title"].casefold():
                     results.append(award)
+            if incomplete:
+                self.hit_incomplete_response = True
+                return results
             if page * rows >= total or not raw_items:
                 break
             if page >= max_pages:
@@ -159,28 +196,37 @@ class PpsAwardClient(PpsClient):
         """Read the opening-result companies for exactly one notice.
 
         The bound is deliberately tight: one notice per call, a caller-set page
-        cap and the same wall deadline the award sweep already honours. Rows
-        with no company name are dropped rather than stored as a blank bidder.
+        cap and the same wall deadline the award sweep already honours.
+        Incomplete or ambiguous sets raise instead of masquerading as a full
+        company list or an empty successful response.
         """
 
         if not str(bid_notice_no).strip():
             raise ValueError("bid_notice_no is required")
         if not 1 <= rows <= 999:
             raise ValueError("rows must be between 1 and 999")
-        if max_pages < 1:
-            raise ValueError("max_pages must be positive")
+        if not 1 <= max_pages <= 3:
+            raise ValueError("max_pages must be between 1 and 3")
 
+        self.hit_page_limit = False
+        self.hit_time_limit = False
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
+        expected_total: int | None = None
+        identity = {
+            "bidNtceNo": str(bid_notice_no).strip(),
+            "bidNtceOrd": str(revision_no or "000").zfill(3),
+            "bidClsfcNo": str(classification_no or "0").zfill(3),
+            "rbidNo": str(rebid_no or "000").zfill(3),
+        }
         page = 1
         while page <= max_pages:
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
-                break
+                raise OpeningResultsIncomplete("개찰 결과 수집 제한 시간에 도달했습니다.")
             payload = self._request(
                 operation_path,
                 {
-                    "inqryDiv": "1",
                     "bidNtceNo": str(bid_notice_no).strip(),
                     "bidNtceOrd": str(revision_no or "000"),
                     "bidClsfcNo": str(classification_no or "0"),
@@ -188,21 +234,56 @@ class PpsAwardClient(PpsClient):
                     "pageNo": page,
                     "numOfRows": rows,
                 },
+                timeout_seconds=(
+                    max(0.1, deadline_monotonic - time.monotonic())
+                    if deadline_monotonic is not None else None
+                ),
             )
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                self.hit_time_limit = True
+                raise OpeningResultsIncomplete("개찰 결과 수집 제한 시간에 도달했습니다.")
             raw_items, total = parse_paged_response(payload)
+            body = payload["response"]["body"]
+            container = body.get("items")
+            raw = container.get("item", []) if isinstance(container, dict) else container
+            raw = [raw] if isinstance(raw, dict) else raw
+            # PPS may encode a genuinely empty collection as an empty string.
+            if raw in (None, "") and total == 0 and "items" in body:
+                raw = []
+            if (
+                not isinstance(raw, list)
+                or len(raw) != len(raw_items)
+                or not str(body.get("totalCount", "")).isdigit()
+                or total < 0
+                or (expected_total is not None and total != expected_total)
+                or len(raw_items) != min(rows, max(0, total - len(results)))
+                or ("pageNo" in body and str(body["pageNo"]) != str(page))
+                or ("numOfRows" in body and str(body["numOfRows"]) != str(rows))
+            ):
+                raise OpeningResultsIncomplete("개찰 결과 페이지 또는 전체 건수가 불완전합니다.")
+            expected_total = total
             for raw in raw_items:
+                if any(
+                    (str(raw.get(key) or "").strip() if key == "bidNtceNo" else str(raw.get(key) or "").strip().zfill(3)) != value
+                    or key not in raw
+                    for key, value in identity.items()
+                ):
+                    raise OpeningResultsIncomplete("개찰 결과 공고 식별자가 일치하지 않습니다.")
                 company = normalise_opening_result(raw)
-                if not company["company_name"] or company["company_name"] in seen:
-                    continue
-                seen.add(company["company_name"])
+                # Only use the provider identifier to detect duplicate pages;
+                # it is never retained in the public company projection.
+                company_key = str(raw.get("prcbdrBizno") or company["company_name"]).strip()
+                if not company["company_name"] or company_key in seen:
+                    raise OpeningResultsIncomplete("개찰 결과 업체 행이 누락되거나 중복되었습니다.")
+                seen.add(company_key)
                 results.append(company)
-            if not raw_items or page * rows >= total:
-                break
+            if len(results) == total:
+                return results
             if page >= max_pages:
                 self.hit_page_limit = True
-                break
+                raise OpeningResultsIncomplete("개찰 결과 페이지 제한에 도달했습니다.")
             page += 1
-        return results
+        raise AssertionError("unreachable")
 
     def iter_awards(
         self,
@@ -224,12 +305,15 @@ class PpsAwardClient(PpsClient):
             raise ValueError("rows must be between 1 and 999")
         if max_pages_per_window < 1:
             raise ValueError("max_pages_per_window must be positive")
+        if not 1 <= max_window_days <= 30:
+            raise ValueError("max_window_days must be between 1 and 30")
         if not 1 <= fallback_window_days < max_window_days:
             raise ValueError("fallback_window_days must be shorter than max_window_days")
         self.hit_page_limit = False
         self.hit_time_limit = False
         self.fallback_window_count = 0
         self.window_errors = []
+        self.hit_incomplete_response = False
         for window in split_date_range(start, end, max_days=max_window_days):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
