@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260907-uxui-v2" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-review-v1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -115,10 +115,26 @@
         <div class="sidebar-status" aria-label="시스템 상태">
           <div>
             <span class="status-dot" id="systemStatusDot" aria-hidden="true"></span>
-            <span id="systemStatusText">연결 확인 중</span>
+            <span id="systemStatusText" role="status">데이터 불러오는 중</span>
           </div>
-          <small id="lastSyncText">마지막 동기화 —</small>
+          <small id="lastSyncText">동기화 시각 확인 중</small>
         </div>
+
+            <div class="pai-bot-access sidebar-teams">
+              <button
+                class="button button--teams"
+                type="button"
+                id="paiBotTeamsButton"
+                aria-label="PAI Teams 채널 열기"
+                aria-describedby="paiBotTeamsAccessNote"
+                aria-disabled="true"
+                disabled
+              >
+                <img src="/static/teams-icon.png" width="28" height="30" alt="" aria-hidden="true" />
+                <span>PAI Teams</span>
+              </button>
+              <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">채널 연결 준비 중</small>
+            </div>
 
         <div class="sidebar-foot">
           <span class="avatar" aria-hidden="true">P</span>
@@ -148,21 +164,10 @@
             <h1 id="pageTitle">오늘 할 일</h1>
           </div>
           <div class="topbar__actions">
-            <div class="pai-bot-access">
-              <button
-                class="button button--teams"
-                type="button"
-                id="paiBotTeamsButton"
-                aria-label="PAI 봇 Teams 열기 (등록된 개발자 전용)"
-                aria-describedby="paiBotTeamsAccessNote"
-                aria-disabled="true"
-                disabled
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-4.5 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" /><path d="M8 9h8M8 13h5" /></svg>
-                <span>PAI 봇 Teams 열기</span>
-              </button>
-              <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">등록된 개발자 전용 · 팀 생성 중</small>
-            </div>
+            <a class="button button--teams" id="paiUserGuideLink" href="https://pai-loop.pages.dev/" target="_blank" rel="noopener noreferrer" aria-label="PAI 사용설명서 (새 탭)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4V4ZM13 7a3 3 0 0 1 3-3h5v15h-4a4 4 0 0 0-4 2" /></svg>
+              <span>PAI 사용설명서</span>
+            </a>
             <button class="button button--ghost" type="button" id="refreshButton">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" /></svg>
               <span>새로고침</span>
@@ -1209,6 +1214,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260907-uxui-v2" defer></script>
+    <script src="./app.js?v=20260908-review-v1" defer></script>
   </body>
 </html>

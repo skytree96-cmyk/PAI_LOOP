@@ -14,7 +14,7 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.07-v11"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.07-v12"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -302,6 +302,78 @@ def _has_explicit_nonprofit_direct_production_exception(text: str) -> bool:
     )
 
 
+# Declarative sentence endings an extracted `normalized_condition` carries after
+# the clause itself. Every token is a closed literal that states no obligation of
+# its own and no polarity, so absorbing it into the whole-clause anchor cannot
+# import a duty, a negation or an exclusion. Sized from the shapes real extracted
+# conditions actually end with (obligation copulas `여야/이어야 함`, obligation
+# verbs `해야/하여야/되어야 함`, and a bare subject noun such as `업체`/`자`).
+# There is deliberately no leading-affix allowlist: observed conditions begin at
+# the clause itself.
+_INERT_CLAUSE_TAIL = (
+    r"(?:하는|되는)?\s*(?:업체|자|기관|법인|단체|사업자)?\s*"
+    r"(?:여야|이어야)?\s*(?:해야|하여야|되어야)?\s*(?:함|한다|합니다)?\s*\.?"
+)
+_SMALL_BUSINESS_HOLDER_OR = (
+    rf"{_SMALL_BUSINESS_CERT_PATTERN}\s*(?:을|를)?\s*(?:소지|보유)(?:한|하는)?\s*"
+    r"(?:업체|자|기관|법인|단체|사업자)\s*또는\s*"
+)
+
+
+def _has_explicit_nonprofit_small_business_alternative(text: str) -> bool:
+    """Recognize one complete SME/nonprofit OR, without borrowing another duty.
+
+    Full-clause matching keeps exclusions, negation, AND conditions and extra
+    qualification duties outside this alternative. The optional parenthesis is
+    limited to the stated incorporation-permit evidence submission, and the only
+    tolerated tail is the inert declarative ending in `_INERT_CLAUSE_TAIL`.
+    """
+
+    return re.fullmatch(
+        _SMALL_BUSINESS_HOLDER_OR
+        + r"비영리법인(?:\s*\(\s*법인\s*설립\s*허가서\s*(?:등\s*)?증빙\s*제출\s*\))?"
+        rf"\s*중\s*(?:어느\s*)?하나에\s*해당{_INERT_CLAUSE_TAIL}",
+        text,
+    ) is not None
+
+
+def _has_unresolved_nonprofit_small_business_subset(text: str) -> bool:
+    """Keep a bounded legal-subset OR unresolved, never infer subset membership.
+
+    These complete clause shapes identify a second alternative whose extra
+    legal qualification has no bound company fact. A generic nonprofit fact
+    cannot satisfy it, and absence of the SME certificate cannot refute it.
+    """
+
+    subset = (
+        r"(?:우선\s*조달\s*계약\s*예외\s*규정에\s*따른\s*비영리법인|"
+        r"관계\s*법령상\s*비영리법인|"
+        r"비영리법인\s*\(\s*우선\s*조달\s*예외\s*대상\s*\)|"
+        r"시행령\s*제\s*2\s*조의\s*3\s*(?:제\s*1\s*항\s*)?"
+        r"제\s*2\s*호\s*(?:해당|에\s*따른)\s*비영리법인)"
+    )
+    return re.fullmatch(
+        _SMALL_BUSINESS_HOLDER_OR + subset
+        + rf"\s*(?:중\s*(?:어느\s*)?하나에|에)\s*해당{_INERT_CLAUSE_TAIL}",
+        text,
+    ) is not None
+
+
+def _is_unqualified_small_business_certificate_clause(text: str) -> bool:
+    """Identify only a standalone possession/validity clause with unknown scope.
+
+    An explicit nonprofit exclusion, an independent-duty marker, or another
+    AND qualification cannot match this complete clause and keeps its own gate.
+    """
+
+    return re.fullmatch(
+        rf"{_SMALL_BUSINESS_CERT_PATTERN}\s*(?:을|를|은|는)?\s*"
+        r"(?:(?:보유|소지)(?:해야|하여야)|유효기간\s*내(?:에)?\s*있어야)"
+        r"\s*(?:함|한다|합니다)?\s*\.?",
+        text,
+    ) is not None
+
+
 def _has_explicit_nonprofit_small_business_exception(text: str, *, category: str) -> bool:
     """Accept an SME exception only when its scope is proven in this clause."""
 
@@ -316,6 +388,7 @@ def _has_explicit_nonprofit_small_business_exception(text: str, *, category: str
         and "비영리법인" in text
         and (
             alternative_participation is not None
+            or _has_explicit_nonprofit_small_business_alternative(text)
             or _has_scoped_nonprofit_exception(
                 text,
                 subject_pattern=_SMALL_BUSINESS_CERT_PATTERN,
@@ -1248,6 +1321,44 @@ def _unmapped_eligibility_item(
     return item
 
 
+def _independent_small_business_certificate_pass(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    """Return the certificate PASS item when it completes an SME OR by itself.
+
+    Within OR alternatives a complete PASS path wins, so a company certificate
+    that is verified and valid at the notice deadline satisfies the clause on
+    its own and the nonprofit alternative never has to be decided. Evaluation
+    reuses ``_eligibility_item`` unchanged, so the fact value, effective range,
+    evidence validity window and freshness recheck all keep their existing
+    meaning. Anything short of that PASS -- a missing fact, an unverified one,
+    a confirmed absence, or one outside the deadline window -- returns ``None``
+    so the caller's nonprofit-scope handling stays exactly as before. This
+    never turns a certificate absence into a FAIL: the nonprofit alternative
+    may still apply, so ``fail_on_confirmed_absence`` stays off here.
+    """
+
+    item = _eligibility_item(
+        requirement,
+        profile=profile,
+        fact_key=_small_business_fact_key(text),
+        deadline=deadline,
+        today=today,
+        message=(
+            "공고가 요구한 기업 확인서를 마감일 기준 유효하게 보유하고 있어 "
+            "비영리법인 대안을 판단하지 않고도 이 조건을 충족합니다."
+        ),
+    )
+    if item["outcome"] != "PASS_CURRENT" or item["blocking"]:
+        return None
+    return item
+
+
 def _checklist_item(
     requirement: dict[str, Any],
     *,
@@ -1323,10 +1434,28 @@ def classify_requirements(
     _eligibility_item_now = functools.partial(_eligibility_item, today=today)
     requirements = expand_statutory_qualification_requirements(requirements)
     normalized = [_normalise(item.get("normalized_condition")) for item in requirements]
+    # A complete SME/nonprofit OR proves no exception for another certificate
+    # family. Legal-subset ORs also stay SME-scoped, even when their qualifier
+    # contains the word "예외". Their company subset membership is unresolved.
+    sme_alternative_clauses = {
+        text for text in normalized
+        if _has_explicit_nonprofit_small_business_alternative(text)
+        or _has_unresolved_nonprofit_small_business_subset(text)
+    }
+    sme_alternative_scope_present = any(
+        text in sme_alternative_clauses and bool(requirement.get("mandatory", True))
+        for requirement, text in zip(requirements, normalized, strict=True)
+    )
     nonprofit_exception_present = any(
         "비영리법인" in text and _contains(text, "참여 가능", "예외", "적용하지")
+        and text not in sme_alternative_clauses
         for text in normalized
     )
+    # The absence claim in the SME failure message is about 공고 원문 - the notice -
+    # so it must be guarded by notice-wide presence, not by one clause. A
+    # clause-scoped guard leaves a separate requirement denying a nonprofit
+    # exception that another requirement in the same notice states verbatim.
+    nonprofit_text_present_in_notice = any("비영리법인" in text for text in normalized)
     items: list[dict[str, Any]] = []
 
     for requirement, text in zip(requirements, normalized, strict=True):
@@ -1599,10 +1728,33 @@ def classify_requirements(
                 message="납품할 소프트웨어의 정품·활성화·호환 사양이며 회사 보유 자격으로 사용하지 않습니다.",
             )
         elif small_business:
-            if _has_explicit_nonprofit_small_business_exception(
+            # Both SME/nonprofit OR shapes below offer the certificate as their
+            # own first alternative, so an independently satisfied certificate
+            # completes the clause and the nonprofit branch is never reached.
+            # Without this the generic alternative fell to REVIEW on a false
+            # nonprofit fact and the legal-subset alternative stayed
+            # unconditionally unresolved, even though the same certificate
+            # passes the plain SME clause. Scope stays on these two OR shapes:
+            # the unresolved-scope branches further down keep their REVIEW.
+            generic_nonprofit_alternative = _has_explicit_nonprofit_small_business_exception(
                 text,
                 category=category,
-            ):
+            )
+            legal_subset_alternative = _has_unresolved_nonprofit_small_business_subset(text)
+            independent_certificate_pass = (
+                _independent_small_business_certificate_pass(
+                    requirement,
+                    profile=profile,
+                    text=text,
+                    deadline=as_of,
+                    today=today,
+                )
+                if generic_nonprofit_alternative or legal_subset_alternative
+                else None
+            )
+            if independent_certificate_pass is not None:
+                item = independent_certificate_pass
+            elif generic_nonprofit_alternative:
                 item = _eligibility_item_now(
                     requirement,
                     profile=profile,
@@ -1610,6 +1762,27 @@ def classify_requirements(
                     deadline=as_of,
                     pass_outcome="PASS_EXCEPTION",
                     message="공고의 비영리법인 예외 경로와 설립허가 근거가 연결되어 소기업 확인서 조건을 대체합니다.",
+                )
+            elif legal_subset_alternative:
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="small_business_nonprofit_legal_subset",
+                    deadline=as_of,
+                    message=(
+                        "이 조건은 법령상 일부 비영리법인을 대안으로 허용하지만 회사가 그 범위에 "
+                        "해당하는지 근거가 연결되지 않았습니다. 일반 비영리법인 사실이나 기업확인서 "
+                        "미보유만으로 충족·미충족을 확정할 수 없어 검토가 필요합니다."
+                    ),
+                )
+            elif sme_alternative_scope_present and _is_unqualified_small_business_certificate_clause(text):
+                item = _unmapped_eligibility_item(
+                    requirement,
+                    fact_key="small_business_nonprofit_exception_scope",
+                    deadline=as_of,
+                    message=(
+                        "같은 기업확인서 계열에 비영리법인 대안이 있으나 이 보유·유효기간 조건에도 "
+                        "적용되는지 범위가 연결되지 않아 원문 검토가 필요합니다."
+                    ),
                 )
             elif nonprofit_exception_present:
                 item = _unmapped_eligibility_item(
@@ -1623,6 +1796,28 @@ def classify_requirements(
                 )
             else:
                 certificate_fact_key = _small_business_fact_key(text)
+                # Do not assert that the notice contains no nonprofit exception
+                # when the clause mentions one. The outcome stays the same
+                # confirmed-absence FAIL; only the stated reason changes, so the
+                # explanation never claims a fact about the source text that the
+                # text contradicts.
+                if "비영리법인" in text:
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
+                        "않습니다. 이 조건에 비영리법인 대안 문구가 있으나 결정 가능한 형태로 "
+                        "인식되지 않아 예외 경로를 적용할 수 없으므로 공고 원문 검토가 필요합니다."
+                    )
+                elif nonprofit_text_present_in_notice:
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
+                        "않습니다. 공고의 다른 항목에 비영리법인 문구가 있으나 이 조건에 적용되는 "
+                        "예외로 확정할 수 없으므로 공고 원문 검토가 필요합니다."
+                    )
+                else:
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 않으며, "
+                        "공고 원문에도 비영리법인 예외가 없어 필수조건을 충족할 수 없습니다."
+                    )
                 item = _eligibility_item_now(
                     requirement,
                     profile=profile,
@@ -1630,10 +1825,7 @@ def classify_requirements(
                     deadline=as_of,
                     message="공고가 요구한 기업 확인서 보유 사실이 연결되었습니다.",
                     fail_on_confirmed_absence=True,
-                    failure_message=(
-                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 않으며, "
-                        "공고 원문에도 비영리법인 예외가 없어 필수조건을 충족할 수 없습니다."
-                    ),
+                    failure_message=certificate_failure_message,
                 )
         elif _contains(text, "하도급", "단독입찰"):
             item = _checklist_item(

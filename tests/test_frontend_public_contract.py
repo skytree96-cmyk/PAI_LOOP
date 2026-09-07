@@ -237,8 +237,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260907-uxui-v2"' in html
-    assert 'src="./app.js?v=20260907-uxui-v2"' in html
+    assert 'href="./styles.css?v=20260908-review-v1"' in html
+    assert 'src="./app.js?v=20260908-review-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -981,16 +981,19 @@ def test_connection_status_exposes_delay_and_exact_kst_last_success_time() -> No
     assert 'setSystemStatus("delayed")' in load_body
     assert "}, 10000)" in load_body
     assert 'mode === "delayed"' in status_body
-    assert 'els.systemStatusText.textContent = "조회가 지연되고 있습니다"' in status_body
-    assert "현재 화면: 서버 저장본 · 조회" in status_body
-    assert "데이터 동기화" in status_body
-    assert '"서버 저장본 · 조회 시각 확인 중"' in status_body
+    for label in ("데이터 불러오는 중 · 지연", "데이터 불러오기 완료", "데이터 불러오기 일부 오류", "데이터 불러오기 실패"):
+        assert label in status_body
+    assert "state.lastSuccessfulSyncAt" in status_body
+    assert "최근 동기화" in status_body
+    assert "최근 조회" in status_body
+    assert "동기화 시각 미확인" in status_body
+    assert "현재 화면: 서버 저장본" not in status_body
     assert 'timeZone: "Asia/Seoul"' in kst_body
     assert "hour12: false" in kst_body
     assert "KST" in kst_body
 
 
-def test_pai_bot_teams_access_is_member_only_and_fails_closed_until_configured() -> None:
+def test_pai_teams_sidebar_and_manual_link_fail_closed_until_configured() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -998,8 +1001,10 @@ def test_pai_bot_teams_access_is_member_only_and_fails_closed_until_configured()
     open_body = _function_body(source, "openPaiBotTeams", "safePaiBotTeamsUrl")
 
     assert 'id="paiBotTeamsButton"' in html
-    assert "PAI 봇 Teams 열기" in html
-    assert "등록된 개발자 전용" in html
+    assert "PAI Teams 채널 열기" in html
+    assert "등록된 개발자 전용" not in html
+    assert 'id="paiUserGuideLink" href="https://pai-loop.pages.dev/"' in html
+    assert 'src="/static/teams-icon.png"' in html
     assert 'aria-disabled="true"' in html
     assert "disabled" in html
     config_match = re.search(
@@ -1425,5 +1430,38 @@ const renderAll=()=>{};
   assert.equal(els.decisionDockBody.hidden,true);
   assert.equal(focused,"toggle");
 })().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
+
+
+def test_status_retains_last_success_without_inventing_sync_and_evidence_keeps_real_states() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    adapter = "function setSystemStatus" + _function_body(source, "setSystemStatus", "showDemoBanner")
+    adapter += "\nfunction renderEvidence" + _function_body(source, "renderEvidence", "quantitativeEstimateIsVisible")
+    script = r"""
+const assert = require("node:assert/strict");
+const els = {systemStatusDot: {classList: {add() {}}}, systemStatusText: {}, lastSyncText: {}};
+const state = {dashboard: {}, lastSuccessfulQueryAt: "QUERY_TIME", lastSuccessfulSyncAt: null};
+const formatKstDateTime = x => x;
+const escapeHtml = x => String(x).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escapeAttribute = escapeHtml;
+setSystemStatus("online");
+assert.match(els.lastSyncText.textContent, /최근 조회 QUERY_TIME.*동기화 시각 미확인/);
+state.dashboard.lastSync = "SOURCE_SYNC";
+setSystemStatus("online");
+assert.equal(els.lastSyncText.textContent, "최근 동기화 SOURCE_SYNC");
+state.dashboard = {};
+setSystemStatus("error");
+assert.equal(els.systemStatusText.textContent, "데이터 불러오기 실패");
+assert.equal(els.lastSyncText.textContent, "최근 동기화 SOURCE_SYNC");
+setSystemStatus("partial");
+assert.match(els.systemStatusText.textContent, /일부 오류/);
+const evidence = {id:"SYN", file:"공고문.pdf", quote:"<script>원문</script>", page:"2쪽", confidence:95};
+const provisional = renderEvidence({...evidence, status:"PROVISIONAL"});
+assert.doesNotMatch(provisional, /잠정|검증됨|누락|<script>/);
+assert.match(provisional, /2쪽/);
+assert.match(provisional, /&lt;script&gt;/);
+assert.match(renderEvidence({...evidence, status:"VERIFIED"}), /검증됨/);
+assert.match(renderEvidence({...evidence, status:"MISSING"}), /누락/);
 """
     subprocess.run(["node", "-e", adapter + "\n" + script], check=True)

@@ -40,6 +40,8 @@
     requestSequence: 0,
     connectionDelayTimer: null,
     lastSuccessfulQueryAt: null,
+    lastSuccessfulSyncAt: null,
+    runtimeProfileAvailable: false,
     noticeSearchTimer: null,
     noticeStatusScope: "ALL",
     teamsLogs: [],
@@ -333,8 +335,8 @@
     els.paiBotTeamsButton.setAttribute("aria-disabled", String(!isReady));
     els.paiBotTeamsButton.dataset.state = isReady ? "ready" : "pending";
     els.paiBotTeamsAccessNote.textContent = isReady
-      ? "등록된 개발자 전용"
-      : "등록된 개발자 전용 · 팀 생성 중";
+      ? "Teams 채널 열기"
+      : "채널 연결 준비 중";
   }
 
   function openPaiBotTeams() {
@@ -630,6 +632,7 @@
     }
 
     if (noticesResult.status === "fulfilled") {
+      state.runtimeProfileAvailable = runtimeResult.status === "fulfilled";
       if (runtimeResult.status === "fulfilled") {
         applyRuntimeProfile(runtimeResult.value);
       } else {
@@ -649,7 +652,7 @@
       state.dashboard = dashboardWithoutGlobalTotals(state.notices);
       state.sourceReason = "";
       state.lastSuccessfulQueryAt = new Date().toISOString();
-      setSystemStatus("online");
+      setSystemStatus("loading");
       if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) showDemoBanner(state.dashboard.syntheticWarning);
       else hideDemoBanner();
       finishLoading();
@@ -681,7 +684,7 @@
     } else {
       state.sourceReason = "전체 집계 조회가 지연되었습니다. 공고 목록은 조회됐으며 전체 통계는 새로고침이 필요합니다.";
     }
-    setSystemStatus("online");
+    setSystemStatus(dashboardResult.status === "fulfilled" && profilesResult.status === "fulfilled" && state.runtimeProfileAvailable ? "online" : "partial");
     renderAll();
   }
 
@@ -3373,7 +3376,8 @@
       eligibilityCounts,
       readinessCounts,
       analysisStatistics: source.analysis_statistics || null,
-      lastSync: firstValue(source.generated_at, source.generatedAt, source.last_sync, source.lastSync, source.updated_at, source.updatedAt, derived.lastSync),
+      lastSync: firstValue(source.last_sync, source.lastSync) || null,
+      generatedAt: firstValue(source.generated_at, source.generatedAt) || null,
       systemStatus: stringValue(firstValue(source.system_status, source.status), "online"),
       syntheticWarning: stringValue(firstValue(source.synthetic_data_warning, source.syntheticWarning), ""),
     };
@@ -3388,6 +3392,7 @@
     }
     result.analysisStatistics = previous.analysisStatistics || null;
     result.lastSync = previous.lastSync || null;
+    result.generatedAt = previous.generatedAt || null;
     return result;
   }
 
@@ -3411,7 +3416,8 @@
       undecidedCount: operatorDecisionListAvailable(notices)
         ? notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !notice.decision).length
         : null,
-      lastSync: new Date().toISOString(),
+      lastSync: null,
+      generatedAt: null,
       systemStatus: "online",
     };
   }
@@ -3460,7 +3466,7 @@
     const recordedFiles = stats.recorded_attempt_attachment_count;
     const history = Number.isInteger(recordedNotices) && Number.isInteger(recordedFiles)
       ? `누적 처리 ${formatNumber(count(recordedNotices))}개 공고·${formatNumber(count(recordedFiles))}개 파일 · ` : "";
-    els.analysisProgressScope.textContent = `진행 중인 나라장터 공고 ${formatNumber(n)}건 · 취소 제외 · ${history}현재 기준 분석 시도 ${formatNumber(count(stats.attempted_notice_count))}건 · 현재 기준 대기 ${formatNumber(count(analysis.PENDING))}건 · ${formatKstDateTime(state.dashboard.lastSync)} 기준`;
+    els.analysisProgressScope.textContent = `진행 중인 나라장터 공고 ${formatNumber(n)}건 · 취소 제외 · ${history}현재 기준 분석 시도 ${formatNumber(count(stats.attempted_notice_count))}건 · 현재 기준 대기 ${formatNumber(count(analysis.PENDING))}건 · ${formatKstDateTime(state.dashboard.generatedAt)} 기준`;
     els.analysisAttachmentValue.textContent = ratio(count(stats.accepted_attachment_count), count(stats.attachment_count));
     els.analysisAttachmentDetail.textContent = `현재 기준 파일 ${formatNumber(count(stats.audited_attachment_count))}개 검증 · 전체 첨부 성공 ${formatNumber(count(analysis.ANALYZED))}개 공고 · 첨부 검토 ${formatNumber(count(analysis.REVIEW))}개 공고`;
     els.analysisEligibilityValue.textContent = ratio(count(eligibility.PASS) + count(eligibility.FAIL), n);
@@ -4017,23 +4023,38 @@
     if (document.getElementById("manualAnalysisConfirmationDialog")) return Promise.resolve(false);
     const dialog = document.createElement("dialog");
     dialog.id = "manualAnalysisConfirmationDialog";
+    dialog.className = "source-link-dialog analysis-confirmation-dialog";
     dialog.setAttribute("aria-label", "공고 분석 실행 확인");
     const form = document.createElement("form");
     form.method = "dialog";
+    form.className = "source-link-dialog__panel";
+    const header = document.createElement("header");
+    header.className = "source-link-dialog__header";
+    const title = document.createElement("h2");
+    title.textContent = "분석 범위와 사용량 확인";
+    header.append(title);
+    const body = document.createElement("div");
+    body.className = "source-link-dialog__body";
     const description = document.createElement("p");
     description.style.whiteSpace = "pre-wrap";
     description.textContent = message;
+    description.id = "manualAnalysisConfirmationDescription";
+    dialog.setAttribute("aria-describedby", description.id);
+    body.append(description);
+    const actions = document.createElement("div");
+    actions.className = "source-link-dialog__actions";
     const cancel = document.createElement("button");
     cancel.type = "submit";
     cancel.value = "cancel";
     cancel.textContent = "취소";
-    cancel.className = "btn btn-secondary";
+    cancel.className = "button button--ghost";
     const confirm = document.createElement("button");
     confirm.type = "submit";
     confirm.value = "confirm";
     confirm.textContent = actionLabel;
-    confirm.className = "btn btn-primary";
-    form.append(description, cancel, confirm);
+    confirm.className = "button button--primary";
+    actions.append(cancel, confirm);
+    form.append(header, body, actions);
     dialog.append(form);
     document.body.append(dialog);
     return new Promise((resolve) => {
@@ -4166,27 +4187,32 @@
     els.systemStatusDot.className = "status-dot";
     if (mode === "online") {
       els.systemStatusDot.classList.add("is-online");
-      els.systemStatusText.textContent = state.accessMode === "PUBLIC_READ_ONLY" ? "온라인 · 읽기 전용" : "온라인 · 운영 연결됨";
+      els.systemStatusText.textContent = "데이터 불러오기 완료";
     } else if (mode === "demo") {
       els.systemStatusDot.classList.add("is-demo");
-      els.systemStatusText.textContent = "데모 모드";
+      els.systemStatusText.textContent = "예시 데이터";
     } else if (mode === "error") {
       els.systemStatusDot.classList.add("is-error");
-      els.systemStatusText.textContent = "연결 오류";
+      els.systemStatusText.textContent = "데이터 불러오기 실패";
+    } else if (mode === "partial") {
+      els.systemStatusDot.classList.add("is-error");
+      els.systemStatusText.textContent = "데이터 불러오기 일부 오류";
     } else if (mode === "delayed") {
       els.systemStatusDot.classList.add("is-demo");
-      els.systemStatusText.textContent = "조회가 지연되고 있습니다";
+      els.systemStatusText.textContent = "데이터 불러오는 중 · 지연";
     } else {
-      els.systemStatusText.textContent = "연결 확인 중";
+      els.systemStatusText.textContent = "데이터 불러오는 중";
     }
-    const sync = state.dashboard.lastSync;
+    if (mode === "demo") {
+      els.lastSyncText.textContent = "기능 확인용 예시 화면";
+      return;
+    }
+    if (state.dashboard.lastSync) state.lastSuccessfulSyncAt = state.dashboard.lastSync;
+    const sync = state.lastSuccessfulSyncAt;
     const queryAt = state.lastSuccessfulQueryAt;
-    if (queryAt) {
-      const syncLabel = sync ? ` · 데이터 동기화 ${formatKstDateTime(sync)}` : "";
-      els.lastSyncText.textContent = `현재 화면: 서버 저장본 · 조회 ${formatKstDateTime(queryAt)}${syncLabel}`;
-    } else {
-      els.lastSyncText.textContent = sync ? `서버 저장본 · 데이터 동기화 ${formatKstDateTime(sync)}` : "서버 저장본 · 조회 시각 확인 중";
-    }
+    els.lastSyncText.textContent = sync
+      ? `최근 동기화 ${formatKstDateTime(sync)}`
+      : queryAt ? `최근 조회 ${formatKstDateTime(queryAt)} · 동기화 시각 미확인` : "동기화 시각 확인 중";
   }
 
   function showDemoBanner(reason) {
@@ -5280,12 +5306,12 @@
   function renderEvidence(item) {
     const confidence = item.confidence;
     const statusClass = item.status === "PROVISIONAL" ? "is-provisional" : item.status === "MISSING" ? "is-missing" : "";
-    const statusLabel = item.status === "VERIFIED" ? "검증됨" : item.status === "PROVISIONAL" ? "잠정" : "누락";
+    const statusLabel = item.status === "VERIFIED" ? "검증됨" : item.status === "PROVISIONAL" ? "" : "누락";
     return `
       <article class="evidence-card" id="evidence-${escapeAttribute(item.id)}">
         <div class="evidence-card__head">
           <span class="evidence-file"><svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z" /><path d="M14 3v5h5" /></svg><span>${escapeHtml(item.file)}</span></span>
-          <span class="evidence-status ${statusClass}">${escapeHtml(statusLabel)}</span>
+          ${statusLabel ? `<span class="evidence-status ${statusClass}">${escapeHtml(statusLabel)}</span>` : ""}
         </div>
         <blockquote class="evidence-quote">“${escapeHtml(item.quote)}”</blockquote>
         <div class="evidence-card__foot">

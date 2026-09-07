@@ -63,6 +63,10 @@ It does not assert that the underlying company data is absent.
 
 POLICY_VERSION advances to pai-loop-requirement-policy-2026.09.07-v11. That field
 already participates in the pipeline input digest and stored basis versions.
+(Superseded: v11 was later advanced to
+`pai-loop-requirement-policy-2026.09.07-v12` by
+`docs/nonprofit-small-business-or-recovery-2026-09-07.md`. The evidence recorded
+in this runbook is unchanged and remains the record for the v11 change.)
 The PR108 accepted-gap analysis-pipeline-0.6.6 baseline is preserved; extraction
 prompt/schema/validator and quantitative engine versions are unchanged. Existing
 accepted extraction can be reused for a provider-free recalculation. Old audit
