@@ -919,6 +919,34 @@ def refresh_pps_outcomes(
                         continue
                     outcome_status = "LOST"
 
+                # Every automatic writer, including the existing W10 caller,
+                # must hold this lock from the fresh proof read through commit.
+                # Otherwise a legacy upsert can pass its proof guard before a
+                # strict refresh commits and then erase that newer evidence.
+                notice_id, notice_key = notice.id, notice.notice_key
+                session.rollback()
+                lock_outcome_notice(session, notice_key)
+                notice = session.get(Notice, notice_id)
+                assert notice is not None
+                existing = session.scalar(select(BidOutcome).where(
+                    BidOutcome.notice_id == notice.id, BidOutcome.outcome_key == outcome_key))
+                stale = (provider_participant is not None and existing is not None
+                         and _as_utc(existing.updated_at) > observation_started_at)
+                ineligible = _eligibility_reason(session, notice, now=datetime.now(timezone.utc))
+                if provider_participant is None and outcome_status == "LOST":
+                    participation = _submission_basis(session, notice, opening_identity=opening_identity)
+                    if participation is None:
+                        ineligible = ineligible or "PARTICIPATION_OPENING_NOT_CONFIRMED"
+                if stale or ineligible or _human_participation_conflict(session, notice, opening_identity, outcome_status):
+                    session.rollback()
+                    counters["review"] += 1
+                    items.append(OutcomeFeedbackItem(
+                        notice_key=notice.notice_key, bid_notice_no=notice.bid_notice_no,
+                        revision_no=notice.revision_no, result="REVIEW",
+                        exact_result_count=len(exact_rows), api_calls=fetched.api_calls,
+                        reason_code="NEWER_RESULT_PRESERVED" if stale else ineligible or "HUMAN_PARTICIPATION_CONFLICT",
+                    ))
+                    continue
                 values = _outcome_values(
                     session,
                     notice,
@@ -931,27 +959,6 @@ def refresh_pps_outcomes(
                     operation_path=operation_path,
                 )
                 if provider_participant is not None:
-                    # Finish provider reads before the short serialized write.
-                    # Re-read human corrections and newer provider observations.
-                    notice_id, notice_key = notice.id, notice.notice_key
-                    session.rollback()
-                    lock_outcome_notice(session, notice_key)
-                    notice = session.get(Notice, notice_id)
-                    assert notice is not None
-                    existing = session.scalar(select(BidOutcome).where(
-                        BidOutcome.notice_id == notice.id, BidOutcome.outcome_key == outcome_key))
-                    stale = existing is not None and _as_utc(existing.updated_at) > observation_started_at
-                    ineligible = _eligibility_reason(session, notice, now=datetime.now(timezone.utc))
-                    if stale or ineligible or _human_participation_conflict(session, notice, opening_identity, outcome_status):
-                        session.rollback()
-                        counters["review"] += 1
-                        items.append(OutcomeFeedbackItem(
-                            notice_key=notice.notice_key, bid_notice_no=notice.bid_notice_no,
-                            revision_no=notice.revision_no, result="REVIEW",
-                            exact_result_count=len(exact_rows), api_calls=fetched.api_calls,
-                            reason_code="NEWER_RESULT_PRESERVED" if stale else ineligible or "HUMAN_PARTICIPATION_CONFLICT",
-                        ))
-                        continue
                     participant_digest = hashlib.sha256(json.dumps(
                         provider_participant, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
                     ).encode()).hexdigest()
@@ -985,7 +992,7 @@ def refresh_pps_outcomes(
                 )
                 if not payload.dry_run:
                     session.commit()
-                elif provider_participant is not None:
+                else:
                     session.rollback()
                 counter = {
                     "CREATED": "created",

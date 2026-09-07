@@ -382,6 +382,7 @@ def postgres_participation(postgres_account_app, monkeypatch):
         session.commit()
     identity = {"bid_notice_no": original_key, "revision_no": "0", "classification_no": "1", "rebid_no": "2"}
     raw = {"bidNtceNo": original_key, "bidNtceOrd": "00", "bidClsfcNo": "1", "rbidNo": "2"}
+    provider_state = {"winner": "0000000001", "amount": "90000000"}
 
     def provider(request):
         if request.url.path.endswith("getOpengResultListInfoOpengCompt"):
@@ -389,18 +390,19 @@ def postgres_participation(postgres_account_app, monkeypatch):
                     for number in ("0000000000", "0000000001")]
         else:
             assert request.url.path.endswith("getScsbidListSttusServcPPSSrch")
-            rows = [{**raw, "bidwinnrBizno": "0000000001", "bidwinnrNm": "SYN winner", "sucsfbidAmt": "90000000", "prtcptCnum": "2"}]
+            rows = [{**raw, "bidwinnrBizno": provider_state["winner"], "bidwinnrNm": "SYN winner", "sucsfbidAmt": provider_state["amount"], "prtcptCnum": "2"}]
         return httpx.Response(200, json={"response": {"header": {"resultCode": "00"}, "body": {
             "items": rows, "totalCount": len(rows), "pageNo": 1, "numOfRows": 100}}})
 
     monkeypatch.setattr(outcome_feedback, "DEFAULT_COMPANY_BUSINESS_NUMBER", "0000000000")
     monkeypatch.setattr(outcome_feedback, "PpsOutcomeFeedbackClient", lambda **kwargs: PpsOutcomeFeedbackClient(**kwargs, transport=httpx.MockTransport(provider)))
 
-    def refresh():
+    def refresh(include_participation=True):
         with TestClient(app) as client:
             return client.post("/api/v1/outcome-feedback/pps/refresh", headers={"X-PAI-LOOP-API-KEY": "SYN-server-key"},
-                               json={"notice_keys": [key], "include_participation": True})
+                               json={"notice_keys": [key], "include_participation": include_participation})
 
+    refresh.provider_state = provider_state
     return app, key, actors[0], identity, refresh
 
 
@@ -502,6 +504,65 @@ def test_postgres_human_write_cannot_commit_between_provider_check_and_insert(po
         if mutation != "generic":
             human_written_at = saved.observed_at if mutation == "create" else saved.updated_at
             assert automatic_row.updated_at <= human_written_at
+
+
+@pytest.mark.parametrize("pause_point", ["before_lock", "after_proof_guard"])
+def test_postgres_legacy_refresh_cannot_erase_concurrent_strict_proof(postgres_participation, monkeypatch, pause_point):
+    from pai_loop import outcome_feedback
+
+    app, key, actor, identity, refresh = postgres_participation
+    refresh.provider_state["winner"] = "0000000000"
+    assert refresh(False).json()["items"][0]["result"] == "CREATED"
+    refresh.provider_state["amount"] = "91000000"
+    legacy_paused, release_legacy = Event(), Event()
+    # _same_value runs after the legacy proof guard, at the exact old race.
+    function = "_same_value" if pause_point == "after_proof_guard" else "_select_provider_result"
+    original = getattr(outcome_feedback, function)
+
+    def pause_legacy(*args, **kwargs):
+        value = original(*args, **kwargs)
+        if not legacy_paused.is_set():
+            legacy_paused.set()
+            assert release_legacy.wait(10), "synthetic legacy refresh was not released"
+        return value
+
+    monkeypatch.setattr(outcome_feedback, function, pause_legacy)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        legacy = pool.submit(refresh, False)
+        try:
+            assert legacy_paused.wait(5)
+            refresh.provider_state["amount"] = "95000000"
+            strict = pool.submit(refresh)
+            if pause_point == "after_proof_guard":
+                # A strict writer cannot slip between the legacy guard and UPDATE.
+                _assert_waiters(app.state.engine, outcome_notice_lock_key(key), 1)
+                assert not strict.done()
+            else:
+                # A legacy provider read can finish late; it must reread the new
+                # proof under the lock and leave the entire strict record intact.
+                response = strict.result(timeout=10)
+                assert response.status_code == 200, response.text
+                assert response.json()["items"][0]["result"] == "UPDATED"
+                with app.state.session_factory() as session:
+                    row = session.scalar(select(BidOutcome).where(BidOutcome.source == "PPS_AUTO_FEEDBACK"))
+                    strict_snapshot = (row.updated_at, row.winning_bid_amount, row.submitted_bid_amount, row.evidence_json)
+        finally:
+            release_legacy.set()
+        old_response, new_response = legacy.result(timeout=20), strict.result(timeout=20)
+    assert old_response.status_code == new_response.status_code == 200
+    assert old_response.json()["items"][0]["result"] == ("UPDATED" if pause_point == "after_proof_guard" else "UNCHANGED")
+    assert new_response.json()["items"][0]["result"] == "UPDATED"
+    with app.state.session_factory() as session:
+        row = session.scalar(select(BidOutcome).where(BidOutcome.source == "PPS_AUTO_FEEDBACK"))
+        assert row.winning_bid_amount == 95000000 and row.submitted_bid_amount == 86130000
+        assert row.evidence_json["participation_basis"]["kind"] == "PROVIDER_PARTICIPANT_EXACT"
+        assert len(row.evidence_json["_provider_history"]) == 1
+        assert row.department_id is None and row.account_id is None
+        if pause_point == "before_lock":
+            assert (row.updated_at, row.winning_bid_amount, row.submitted_bid_amount, row.evidence_json) == strict_snapshot
+    visible = _request(app, actor, "GET", "/api/v1/result-learning").json()["records"][0]["latest_outcome"]
+    assert visible["participation_verified"] is True
+    assert visible["winning_bid_amount"] == 95000000
 
 
 @pytest.mark.parametrize("host,database,query", [("production.invalid", "pai_loop_test", {}), ("localhost", "production", {}), ("localhost", "pai_loop_test", {"host": "production.invalid"})])
