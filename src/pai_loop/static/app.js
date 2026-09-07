@@ -42,6 +42,7 @@
     lastSuccessfulQueryAt: null,
     lastSuccessfulSyncAt: null,
     runtimeProfileAvailable: false,
+    authDiscoveryReady: false,
     noticeSearchTimer: null,
     noticeStatusScope: "ALL",
     teamsLogs: [],
@@ -665,6 +666,11 @@
         applyRuntimeProfile(runtimeResult.value);
         if (state.accountSession.enabled) await loadAccountSession();
         if (sequence !== state.requestSequence) return;
+        state.authDiscoveryReady = true;
+        if (state.currentView === "closed"
+          && (!state.accountSession.enabled || state.accountSession.authenticated)) {
+          void loadResultLearning();
+        }
       } else {
         state.manualAnalysisEnabled = false;
         state.manualAnalysisAuthRequired = false;
@@ -2719,9 +2725,11 @@
 
   async function loadResultLearning({ force = false } = {}) {
     const epoch = state.accountEpoch;
+    // Runtime defaults do not yet identify whether cookie auth or a PIN is required.
+    if (!state.authDiscoveryReady) return;
     if (state.resultLearning.loading || (state.resultLearning.loaded && !force)) return;
     const headers = await manualAnalysisAuthHeaders();
-    if (!headers || epoch !== state.accountEpoch) return;
+    if (!headers || epoch !== state.accountEpoch || state.resultLearning.loading) return;
     state.resultLearning.loading = true;
     els.resultLearningUnlockButton.disabled = true;
     els.resultLearningState.hidden = false;
