@@ -149,6 +149,53 @@ def test_provider_and_unknown_codes_expose_only_public_category(diagnostic_clien
     assert CANARY not in response.text
 
 
+@pytest.mark.parametrize("status", [403, 429, 502])
+def test_model_http_status_uses_only_exact_local_template(diagnostic_client, status):
+    def mutate(versions):
+        versions[-1].source_payload["message"] = f"모델 API가 HTTP {status}를 반환했습니다."
+    seed(diagnostic_client, extension=".hwpx", error="HTTP_ERROR", mutate=mutate)
+    response = read(diagnostic_client)
+    attachment, = response.json()["notices"][0]["attachments"]
+    assert attachment["model_http_status"] == status
+    assert attachment["public_reason_code"] == "MODEL_HTTP_FAILED"
+    assert "message" not in response.text and CANARY not in response.text
+
+
+@pytest.mark.parametrize("error,message", [
+    ("HTTP_ERROR", CANARY + "모델 API가 HTTP 403를 반환했습니다."),
+    ("HTTP_ERROR", "모델 API가 HTTP 429를 반환했습니다." + CANARY),
+    ("HTTP_ERROR", "모델 API가 HTTP 502를 반환했습니다.\n"),
+    ("HTTP_ERROR", "HTTP 403 " + CANARY),
+    ("HTTP_ERROR", "모델 API가 HTTP 200를 반환했습니다."),
+    ("HTTP_ERROR", "모델 API가 HTTP 600를 반환했습니다."),
+    ("HTTP_ERROR", "모델 API가 HTTP ４０３를 반환했습니다."),
+    ("HTTP_ERROR", {"status": 403, "body": CANARY}),
+    ("HTTP_ERROR", None),
+    ("MODEL_HTTP_FAILED", "모델 API가 HTTP 403를 반환했습니다."),
+    ("HTTP_ERROR " + CANARY, "모델 API가 HTTP 403를 반환했습니다."),
+    (None, "모델 API가 HTTP 403를 반환했습니다."),
+])
+def test_model_http_status_rejects_freeform_or_non_http_error(diagnostic_client, error, message):
+    def mutate(versions):
+        versions[-1].source_payload["message"] = message
+    seed(diagnostic_client, error=error, mutate=mutate)
+    response = read(diagnostic_client)
+    attachment, = response.json()["notices"][0]["attachments"]
+    assert attachment["model_http_status"] is None
+    assert "message" not in response.text and CANARY not in response.text
+
+
+@pytest.mark.parametrize("stale", ["current_manifest_sha256", "processing_version"])
+def test_model_http_status_never_comes_from_an_unselected_attempt(diagnostic_client, stale):
+    def mutate(versions):
+        versions[-1].source_payload.update({stale: CANARY,
+            "message": "모델 API가 HTTP 403를 반환했습니다."})
+    seed(diagnostic_client, error="HTTP_ERROR", mutate=mutate)
+    attachment, = read(diagnostic_client).json()["notices"][0]["attachments"]
+    assert attachment["manifest_bound_attempt"] is False
+    assert attachment["model_http_status"] is None
+
+
 def test_processing_warning_codes_explain_xls_formula_limit_without_private_members(diagnostic_client):
     def mutate(versions):
         versions[-1].source_payload["document_processing"] = {"warnings": ["XLS_FORMULA_EXPRESSIONS_UNAVAILABLE", CANARY],

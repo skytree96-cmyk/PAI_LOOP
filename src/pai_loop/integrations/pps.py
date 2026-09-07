@@ -11,6 +11,8 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from .common import safe_pps_error_metadata
+
 DEFAULT_BASE_URL = "https://apis.data.go.kr/1230000"
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 SECRET_QUERY_KEYS = {"servicekey", "apikey", "api_key", "key"}
@@ -22,6 +24,17 @@ KST = timezone(timedelta(hours=9), name="Asia/Seoul")
 
 class PpsApiError(RuntimeError):
     """A public-safe PPS API error that never includes a credential value."""
+
+    def __init__(self, *args: object, error_type: str = "UNKNOWN", http_status: int | None = None, provider_code: str | None = None) -> None:
+        # Existing positional exception calls and messages remain compatible.
+        super().__init__(*args)
+        metadata = safe_pps_error_metadata(error_type, http_status, provider_code)
+        self.error_type = metadata["error_type"]
+        self.http_status = metadata["http_status"]
+        self.provider_code = metadata["provider_code"]
+
+    def safe_metadata(self) -> dict[str, Any]:
+        return safe_pps_error_metadata(self.error_type, self.http_status, self.provider_code)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,22 +178,26 @@ def parse_paged_response(payload: dict[str, Any]) -> tuple[list[dict[str, Any]],
             or header.get("returnAuthMsg")
             or "OpenAPI service error"
         ) if isinstance(header, dict) else "OpenAPI service error"
-        raise PpsApiError(f"PPS API service error: {str(message)[:300]}")
+        raise PpsApiError(f"PPS API service error: {str(message)[:300]}", error_type="SERVICE_ERROR",
+                          provider_code=str(header.get("returnReasonCode")) if isinstance(header, dict) else None)
     response = payload.get("response")
     if not isinstance(response, dict):
-        raise PpsApiError("PPS API 표준 response envelope가 없습니다.")
+        raise PpsApiError("PPS API 표준 response envelope가 없습니다.", error_type="MISSING_RESPONSE")
     header = response.get("header")
     body = response.get("body")
     if not isinstance(header, dict) or "resultCode" not in header:
-        raise PpsApiError("PPS API response.header/resultCode가 없습니다.")
-    if not isinstance(body, dict):
-        raise PpsApiError("PPS API response.body가 없습니다.")
+        raise PpsApiError("PPS API response.header/resultCode가 없습니다.", error_type="MISSING_HEADER")
     result_code = str(header["resultCode"])
     if result_code not in {"0", "00"}:
         message = str(header.get("resultMsg", "unknown PPS error"))[:300]
-        raise PpsApiError(f"PPS API resultCode={result_code}: {message}")
+        # Error envelopes need not carry a success body. Preserve their declared
+        # error classification before checking successful-page structure.
+        raise PpsApiError(f"PPS API resultCode={result_code}: {message}",
+                          error_type="PROVIDER_RESULT_ERROR", provider_code=result_code)
+    if not isinstance(body, dict):
+        raise PpsApiError("PPS API response.body가 없습니다.", error_type="MISSING_BODY")
     if "totalCount" not in body:
-        raise PpsApiError("PPS API response.body/totalCount가 없습니다.")
+        raise PpsApiError("PPS API response.body/totalCount가 없습니다.", error_type="MISSING_TOTAL_COUNT")
     item_container = body.get("items", {})
     if isinstance(item_container, list):
         raw_items = item_container
@@ -191,12 +208,12 @@ def parse_paged_response(payload: dict[str, Any]) -> tuple[list[dict[str, Any]],
     if isinstance(raw_items, dict):
         raw_items = [raw_items]
     if not isinstance(raw_items, list):
-        raise PpsApiError("PPS API items.item 형식이 배열이 아닙니다.")
+        raise PpsApiError("PPS API items.item 형식이 배열이 아닙니다.", error_type="INVALID_ITEMS")
     items = [item for item in raw_items if isinstance(item, dict)]
     try:
         total = int(body["totalCount"] or 0)
     except (TypeError, ValueError) as exc:
-        raise PpsApiError("PPS API totalCount가 숫자가 아닙니다.") from exc
+        raise PpsApiError("PPS API totalCount가 숫자가 아닙니다.", error_type="INVALID_TOTAL_COUNT") from exc
     return items, total
 
 
@@ -276,7 +293,7 @@ class PpsClient:
                 )
             except httpx.RequestError as exc:
                 if attempt >= self._max_retries:
-                    raise PpsApiError("PPS API 네트워크 요청이 실패했습니다.") from exc
+                    raise PpsApiError("PPS API 네트워크 요청이 실패했습니다.", error_type="NETWORK_ERROR") from exc
                 self._sleep(0.25 * (2**attempt))
                 continue
             if response.status_code in RETRYABLE_STATUS and attempt < self._max_retries:
@@ -284,13 +301,14 @@ class PpsClient:
                 continue
             if response.status_code >= 400:
                 safe_url = redact_url(str(response.request.url))
-                raise PpsApiError(f"PPS API HTTP {response.status_code}: {safe_url}")
+                raise PpsApiError(f"PPS API HTTP {response.status_code}: {safe_url}",
+                                  error_type="HTTP_ERROR", http_status=response.status_code)
             try:
                 payload = response.json()
             except ValueError as exc:
-                raise PpsApiError("PPS API가 JSON이 아닌 응답을 반환했습니다.") from exc
+                raise PpsApiError("PPS API가 JSON이 아닌 응답을 반환했습니다.", error_type="INVALID_JSON") from exc
             if not isinstance(payload, dict):
-                raise PpsApiError("PPS API 응답 형식이 객체가 아닙니다.")
+                raise PpsApiError("PPS API 응답 형식이 객체가 아닙니다.", error_type="INVALID_PAYLOAD")
             return payload
         raise AssertionError("unreachable")
 

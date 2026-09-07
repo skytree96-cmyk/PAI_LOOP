@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from datetime import date
 from math import isfinite
 from typing import Any, Iterator
@@ -140,6 +141,22 @@ class PpsAwardClient(PpsClient):
         self.fallback_window_count = 0
         self.window_errors: list[str] = []
         self.hit_incomplete_response = False
+        self._window_error_counts: Counter = Counter()
+
+    @property
+    def window_error_counts(self) -> list[dict[str, Any]]:
+        """Counts of failed window attempts, never exception prose or URLs."""
+        return [
+            {"phase": phase, "error_type": kind, "http_status": http_status,
+             "provider_code": provider_code, "count": count}
+            for (phase, kind, http_status, provider_code), count in sorted(
+                self._window_error_counts.items(), key=lambda item: tuple(str(value or "") for value in item[0])
+            )
+        ]
+
+    def _record_window_error(self, phase: str, error: PpsApiError) -> None:
+        metadata = error.safe_metadata()
+        self._window_error_counts[(phase, metadata["error_type"], metadata["http_status"], metadata["provider_code"])] += 1
 
     def _fetch_window(
         self,
@@ -185,7 +202,7 @@ class PpsAwardClient(PpsClient):
             if raw in (None, "") and total == 0 and "items" in body:
                 raw = []
             if not isinstance(raw, list) or len(raw) != len(raw_items) or not str(body["totalCount"]).isdigit():
-                raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.")
+                raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.", error_type="AWARD_PAGE_INVALID")
             incomplete = (
                 (expected_total is not None and total != expected_total)
                 or len(raw_items) != min(rows, max(0, total - (page - 1) * rows))
@@ -339,6 +356,7 @@ class PpsAwardClient(PpsClient):
         self.fallback_window_count = 0
         self.window_errors = []
         self.hit_incomplete_response = False
+        self._window_error_counts.clear()
         for window in split_date_range(start, end, max_days=max_window_days):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
@@ -352,10 +370,17 @@ class PpsAwardClient(PpsClient):
                     max_pages=max_pages_per_window,
                     deadline_monotonic=deadline_monotonic,
                 )
-            except PpsApiError:
-                # A small number of otherwise-valid 30-day PPS queries return a
-                # nonstandard envelope. Retry only that window in bounded 7-day
-                # slices; never silently reinterpret the error as zero results.
+            except PpsApiError as exc:
+                self._record_window_error("PRIMARY", exc)
+                # Do not repeat an identical short interval. A failed query is
+                # still missing coverage, even when no rows have been returned.
+                if (window.end - window.start).days + 1 <= fallback_window_days:
+                    self.window_errors.append(f"{window.start.isoformat()}..{window.end.isoformat()}")
+                    if not continue_on_window_error:
+                        raise
+                    continue
+                # Preserve the existing bounded smaller-window recovery policy;
+                # fixed metadata distinguishes transport/provider/parser failures.
                 self.fallback_window_count += 1
                 results = []
                 for fallback in split_date_range(
@@ -365,6 +390,7 @@ class PpsAwardClient(PpsClient):
                 ):
                     if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                         self.hit_time_limit = True
+                        yield from results
                         return
                     try:
                         results.extend(
@@ -377,7 +403,8 @@ class PpsAwardClient(PpsClient):
                                 deadline_monotonic=deadline_monotonic,
                             )
                         )
-                    except PpsApiError:
+                    except PpsApiError as exc:
+                        self._record_window_error("FALLBACK", exc)
                         safe_window = f"{fallback.start.isoformat()}..{fallback.end.isoformat()}"
                         self.window_errors.append(safe_window)
                         if not continue_on_window_error:

@@ -30,6 +30,7 @@ PATH = "/api/v1/diagnostics/notice-recovery"
 _UNKNOWN_CODE = "UNRECOGNIZED_DIAGNOSTIC_CODE"
 _EXTENSIONS = frozenset({".pdf", ".hwpx", ".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"})
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
+_MODEL_HTTP_MESSAGE = re.compile(r"모델 API가 HTTP ([45][0-9]{2})를 반환했습니다\.")
 
 
 class DiagnosticModel(BaseModel):
@@ -56,6 +57,7 @@ class AttachmentDiagnostic(DiagnosticModel):
     state: Literal["ANALYZED", "REVIEW", "PENDING"]
     public_reason_code: str
     safe_error_code: str | None
+    model_http_status: int | None = Field(default=None, ge=400, le=599)
     error_code_redacted: bool
     processing_warning_codes: list[str] = Field(max_length=20)
     processing_codes_redacted: bool
@@ -174,10 +176,15 @@ def _attachment_projection(index: int, attachment: dict, attempt: NoticeVersion 
     digest = payload.get("document_sha256")
     file_digest = attempt.file_sha256 if attempt is not None else None
     extension = PurePath(attachment["file_name"]).suffix.casefold()
+    # Match only the exact local HTTP_ERROR template, never provider prose.
+    message = payload.get("message")
+    http_match = (_MODEL_HTTP_MESSAGE.fullmatch(message)
+                  if error == "HTTP_ERROR" and isinstance(message, str) else None)
     return AttachmentDiagnostic(
         ordinal=index, extension=extension if extension in _EXTENSIONS else None,
         state=public["state"], public_reason_code=public["reason_code"],
         safe_error_code=error if isinstance(error, str) and error in SAFE_PROCESSING_CODES else None,
+        model_http_status=int(http_match.group(1)) if http_match else None,
         error_code_redacted=bool(error) and error not in SAFE_PROCESSING_CODES if isinstance(error, str) else error is not None,
         processing_warning_codes=safe_codes[:20],
         processing_codes_redacted=len(safe_codes) > 20 or any(not isinstance(code, str) or code not in SAFE_PROCESSING_CODES for code in codes),
