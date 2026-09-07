@@ -2975,6 +2975,7 @@ def refresh_award_history(
             hit_page_limit = client.hit_page_limit
             fallback_window_count = client.fallback_window_count
             window_errors = list(client.window_errors)
+            window_error_counts = list(getattr(client, "window_error_counts", []))
             hit_time_limit = getattr(client, "hit_time_limit", False)
             hit_incomplete_response = getattr(client, "hit_incomplete_response", False)
     except PpsApiError as exc:
@@ -3000,11 +3001,11 @@ def refresh_award_history(
         warnings.append("낙찰 응답의 전체 건수와 페이지 행이 일치하지 않아 부분 수집으로 기록했습니다. 기존 저장 기록은 삭제하지 않습니다.")
     if fallback_window_count:
         warnings.append(
-            f"비표준 응답을 받은 {fallback_window_count}개 구간은 7일 단위로 재조회했습니다."
+            f"조회가 실패한 {fallback_window_count}개 구간은 7일 단위로 재조회했습니다."
         )
     if window_errors:
         warnings.append(
-            f"재조회에도 실패한 {len(window_errors)}개 7일 구간은 누락 상태로 기록했습니다."
+            f"조회에 실패한 {len(window_errors)}개 구간은 누락 상태로 기록했습니다."
         )
     if hit_time_limit:
         warnings.append("총 480초 수집 제한에서 중단했으며 확보한 낙찰 후보만 저장했습니다.")
@@ -3168,6 +3169,7 @@ def refresh_award_history(
     ) else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
+    job.request_json = {**(job.request_json or {}), "window_error_counts": window_error_counts}
     job.matched = len(candidates)
     job.created_count = created
     job.updated_count = updated
@@ -3200,6 +3202,7 @@ def refresh_award_history(
         records=len(candidates),
         dry_run=payload.dry_run,
         warnings=warnings,
+        window_error_counts=window_error_counts,
     )
 
 
