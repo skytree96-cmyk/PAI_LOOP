@@ -67,7 +67,7 @@ A ZIP signature alone diverts nothing, and the filename, bytes and digest
 identity are untouched. Extracted text passes exactly the same gates as any
 other workbook.
 
-## Verification
+## Initial verification (head 991af39)
 
 - `tests/test_document_extraction.py`: 33 passed, including a BIFF5 stream built
   with and without a `CODEPAGE` record from byte-identical cp949 cells, an OOXML
@@ -103,3 +103,35 @@ precondition for page-anchored evidence, and the leaf contract offers no channel
 to record a deterministic "recovered" marker, so relaxing it would remove a
 fail-closed check without leaving an audit trace. Both need a product decision
 and a coverage channel, not a quiet loosening.
+
+## Follow-up: charge the format probe once
+
+A synthetic boundary check found that the initial XLS probe charged archive
+entries and declared uncompressed size, then the XLSX reader charged the same
+package again. A four-entry package succeeded as `.xlsx` but failed as `.xls`
+at the identical configured four-entry limit. This is a reproduced code defect;
+the number of affected production attachments is still unknown.
+
+The probe now checks a copy of the current shared budget, including earlier
+sibling usage. A matching workbook is charged once by its actual parser.
+False and exceptional probes retain their consumed counters because no later
+archive parser charges those attempts. Repeated non-workbook `.xls` siblings
+therefore cannot evade cumulative limits. Archive safety and budget exceptions
+propagate with their original codes; only valid non-workbook packages keep the
+existing BIFF fallback. No size, entry, compression, or content-validation limit
+was raised or removed.
+
+Follow-up validation: the two document/enrichment modules passed 126 cases after
+the first boundary fix. After adding failed-probe budget preservation and four
+more cases, the changed document module passed all 45 cases; `git diff --check`
+passes. Required CI on the final PR head is recorded in the discussion. The
+12 new synthetic cases cover entry/size limits, nested sibling usage, repeated
+failed probes, and unsafe/duplicate archive entries. Intermediate browser-upload
+commits are assembled without CI; the final commit runs the required gate.
+
+The internal browser could read the production UI and saved queue progress,
+but did not provide the raw `error_code` / current manifest / `attachment_id`
+join. The free Render instance does not provide Shell access. The historical
+14/8/7 counts above are not current counts and are not attributed to these fixes.
+No production merge, deployment, workflow change, new campaign, or paid analysis
+was performed as part of this review.
