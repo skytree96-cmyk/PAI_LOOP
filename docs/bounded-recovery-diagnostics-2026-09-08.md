@@ -49,6 +49,12 @@ route from frontend JavaScript or copy the server credential into a browser.
   `error_code_redacted`, at most 20 `processing_warning_codes`, and
   `processing_codes_redacted`. Invalid manifest slots are counted separately,
   never invented as real attachments.
+- `attachments[].model_http_status` is a nullable integer. It is populated only
+  when the selected attempt has exactly `error_code=HTTP_ERROR` and its stored
+  message fully matches the local extractor template
+  `모델 API가 HTTP NNN를 반환했습니다.` for ASCII status 400–599. Prefixes,
+  suffixes, trailing newlines, freeform provider text and other error codes
+  produce null. No message is returned; this does not change the public reason.
 - Attachment binding metadata: `manifest_bound_attempt`, `attempt_contract`
   (`CURRENT`, `LEGACY_CASE_V1`, or `NONE`), `stored_document_digest_matches`,
   `stored_download_complete`, `stored_source_read_complete`,
@@ -68,7 +74,8 @@ are counted under `UNRECOGNIZED_DIAGNOSTIC_CODE`; arbitrary uppercase strings
 and prefix matches are not accepted. Processing errors use a fixed parser/safety
 vocabulary plus the finite HTTP status vocabulary emitted by the PPS downloader.
 Raw provider error messages and HTTP response bodies are never examined for
-details. The response contains no document names, attachment/internal IDs,
+details; the sole message check recognizes the exact local HTTP template above.
+The response contains no document names, attachment/internal IDs,
 hashes, source quotes, company facts, provider identifiers, or raw logs.
 
 ## Interpretation and freshness limits
@@ -80,8 +87,10 @@ hashes, source quotes, company facts, provider identifiers, or raw logs.
   recomputation does not reparse the original bytes.
 - `ATTACHMENT_HTTP_403`, for example, is a stored **PPS attachment download**
   failure. It is not a model HTTP status. `public_reason_code=MODEL_HTTP_FAILED`
-  is the existing public mapping of model `HTTP_ERROR`; model status/timeout/
-  rate-limit/gateway details are deliberately not inferred from raw prose.
+  is the existing public mapping of model `HTTP_ERROR`. `model_http_status`
+  recovers only the stored status number from the exact local template; it does
+  not establish why a provider returned that status or infer rate-limit,
+  permission, gateway, timeout or current service health from raw prose.
 - A quantitative source validation or unsupported scoring-DSL/unit/fact-dimension
   code is not proof the company lacks evidence. This endpoint does not classify
   private company missing-input causes or return a recalculated company score.

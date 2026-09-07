@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from .enums import AtomicOperator, DecisionChoice, Eligibility, EvidenceStatus, ReadinessStatus, RiskBand
+from .integrations.common import PpsErrorType
 
 
 class ApiModel(BaseModel):
@@ -675,6 +676,16 @@ class AwardHistoryRefreshRequest(ApiModel):
         return " ".join(value.split()) if value else None
 
 
+class AwardWindowErrorCount(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    phase: Literal["PRIMARY", "FALLBACK"]
+    error_type: PpsErrorType
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    provider_code: str | None = Field(default=None, pattern=r"^(?:0|[0-9]{2})$")
+    count: int = Field(ge=1)
+
+
 class AwardHistoryRefreshOut(ApiModel):
     job_id: str
     notice_key: str
@@ -689,6 +700,7 @@ class AwardHistoryRefreshOut(ApiModel):
     records: int
     dry_run: bool
     warnings: list[str]
+    window_error_counts: list[AwardWindowErrorCount] = Field(default_factory=list, max_length=2048)
 
 
 class HealthResponse(ApiModel):
