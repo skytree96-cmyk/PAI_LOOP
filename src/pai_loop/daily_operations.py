@@ -14,11 +14,7 @@ from .analysis_pipeline import PIPELINE_VERSION
 from .auth import require_api_key
 from .analysis_selection import manual_only_notice_keys
 from .award_intelligence import build_award_intelligence
-from .department_ranking import (
-    rank_notice_across_departments,
-    rank_notice_review_candidates,
-    route_notice_across_regions,
-)
+from .department_ranking import rank_notice_department_views
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
@@ -210,24 +206,23 @@ def _briefing_notice(
         (_as_utc(item.created_at) for item in notice.versions),
         default=None,
     )
-    departments = rank_notice_across_departments(
+    # One scoring pass instead of three. The separate helpers each walked the
+    # department catalog, so every business department was scored twice and
+    # every region department twice, and the shared notice context was rebuilt
+    # for each department. ``rank_notice_department_views`` partitions a single
+    # pass through the same selectors, which the ranking tests already pin as
+    # equal to the three calls it replaces.
+    department_views = rank_notice_department_views(
         title=notice.title,
         agency=notice.agency,
         category=notice.category or "",
-        limit=3,
+        top_limit=3,
+        review_limit=3,
+        region_limit=2,
     )
-    department_review_candidates = rank_notice_review_candidates(
-        title=notice.title,
-        agency=notice.agency,
-        category=notice.category or "",
-        limit=3,
-    )
-    region_routing = route_notice_across_regions(
-        title=notice.title,
-        agency=notice.agency,
-        category=notice.category or "",
-        limit=2,
-    )
+    departments = department_views["top_department_rankings"]
+    department_review_candidates = department_views["department_review_candidates"]
+    region_routing = department_views["region_routing"]
     fit = {
         "eligibility": latest.eligibility if latest else "PENDING",
         "reason_code": latest.reason_code if latest else "NOT_EVALUATED",
