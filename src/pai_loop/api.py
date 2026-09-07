@@ -30,7 +30,11 @@ from .department_ranking import (
     rank_notice_department_views,
     rank_notice_for_department,
 )
-from .integrations.awards import OpeningResultsIncomplete, PpsAwardClient
+from .integrations.awards import (
+    OpeningResultsIncomplete,
+    PpsAwardClient,
+    opening_result_loses_recorded_numbers,
+)
 from .award_intelligence import build_annual_award_table, build_award_intelligence
 from .integrations.pps import (
     KST,
@@ -3107,6 +3111,12 @@ def refresh_award_history(
                 opening_failures[identity] = "PARTIAL"
                 opening_failed += 1
                 warnings.append("빈 개찰 응답이 이전 업체 목록과 달라 기존 저장본을 유지했습니다.")
+            elif existing is not None and existing.opening_results and opening_result_loses_recorded_numbers(
+                existing.opening_results, companies,
+            ):
+                opening_failures[identity] = "PARTIAL"
+                opening_failed += 1
+                warnings.append("개찰 응답에서 기존 투찰금액·평가·순위 일부가 누락되어 이전 스냅샷 전체를 유지했습니다.")
             else:
                 values["opening_results"] = companies
                 values["opening_results_status"] = "COLLECTED" if companies else "UNAVAILABLE"

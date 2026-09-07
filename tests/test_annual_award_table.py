@@ -887,3 +887,88 @@ def test_dry_run_refresh_never_calls_the_opening_endpoint(
 
     assert response.status_code == 200, response.text
     assert any("dry_run이므로 개찰 결과 조회를 실행하지 않았습니다" in w for w in response.json()["warnings"])
+
+
+@pytest.mark.parametrize("mode", [
+    "bid_amount", "technical_evaluation", "price_evaluation", "total_evaluation", "opening_rank",
+    "zero", "correction", "different_company", "revision", "rebid",
+])
+def test_opening_numeric_refresh_preserves_whole_snapshot_only_on_missing_fields(
+    award_client: TestClient, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    key = _stored_notice_with_awards(award_client)
+    award_client.app.state.settings = replace(award_client.app.state.settings, pps_api_key="SYN-key")
+    with award_client.app.state.session_factory() as session:
+        stored = session.query(AwardHistoryItem).filter(AwardHistoryItem.bid_notice_no == "SYN-2025").one()
+        stored.opening_results_read_at = datetime(2026, 9, 7, tzinfo=timezone.utc)
+        session.commit()
+    before = next(row for row in award_client.get(f"/api/v1/notices/{key}/award-history").json()
+                  if row["bid_notice_no"] == "SYN-2025")
+    incoming = [dict(company) for company in reversed(before["opening_results"])]
+    company_a = next(company for company in incoming if company["company_name"] == "SYN-기관A")
+    missing = mode in {"bid_amount", "technical_evaluation", "price_evaluation", "total_evaluation", "opening_rank"}
+    if missing:
+        company_a[mode] = None
+        # A second company's corrected value must not be spliced into the old
+        # snapshot when a different company's numeric field disappeared.
+        incoming[0]["technical_evaluation"] = 81.0
+    elif mode == "zero":
+        for field in ("bid_amount", "technical_evaluation", "price_evaluation", "total_evaluation"):
+            company_a[field] = 0.0
+    elif mode == "correction":
+        company_a.update(bid_amount=123_456_789.0, technical_evaluation=91.0, price_evaluation=8.5, total_evaluation=99.5)
+    else:
+        incoming = [_company("SYN-기관C" if mode == "different_company" else "SYN-기관A")]
+    revision = "001" if mode == "revision" else "000"
+    rebid = "001" if mode == "rebid" else "000"
+    identity = f"SYN-2025|{revision}|0|{rebid}"
+
+    class _Refresh:
+        request_count = 1
+        hit_page_limit = False
+        hit_time_limit = False
+        fallback_window_count = 0
+        window_errors = []
+
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def iter_awards(self, **kwargs):
+            yield {"identity": identity, "bid_notice_no": "SYN-2025", "revision_no": revision,
+                   "classification_no": "0", "rebid_no": rebid, "title": TARGET_TITLE,
+                   "agency": TARGET_AGENCY, "winner_name": "SYN-기관A",
+                   "awarded_at": datetime(2025, 5, 1, tzinfo=timezone.utc)}
+
+        def fetch_opening_results(self, **kwargs):
+            assert kwargs["revision_no"] == revision and kwargs["rebid_no"] == rebid
+            return incoming
+
+    monkeypatch.setattr("pai_loop.api.PpsAwardClient", _Refresh)
+    response = award_client.post(f"/api/v1/notices/{key}/award-history/refresh", json={
+        "keyword": "SYN 교육", "include_opening_results": True,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == ("PARTIAL" if missing else "COMPLETED")
+    after = next(row for row in award_client.get(f"/api/v1/notices/{key}/award-history").json()
+                 if row["id"] == before["id"])
+    if missing or mode in {"revision", "rebid"}:
+        assert after["opening_results"] == before["opening_results"]
+        assert after["opening_results_read_at"] == before["opening_results_read_at"]
+        assert after["opening_results_status"] == ("PARTIAL" if missing else "COLLECTED")
+        if missing:
+            assert any("스냅샷 전체를 유지" in warning for warning in response.json()["warnings"])
+        else:
+            with award_client.app.state.session_factory() as session:
+                other = session.query(AwardHistoryItem).filter(AwardHistoryItem.external_identity == identity).one()
+                assert other.id != before["id"]
+                assert other.opening_results == incoming
+    else:
+        assert after["opening_results"] == incoming
+        assert after["opening_results_status"] == "COLLECTED"
+        assert after["opening_results_read_at"] != before["opening_results_read_at"]

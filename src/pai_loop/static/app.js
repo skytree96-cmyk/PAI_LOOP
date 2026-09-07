@@ -6059,7 +6059,7 @@
   function awardTableAmount(value) {
     return value === null || value === undefined
       ? '<span class="award-table__missing">미확인</span>'
-      : escapeHtml(formatBudget(value));
+      : escapeHtml(`${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 20 }).format(value)}원`);
   }
 
   function renderAwardTableRow(row) {

@@ -81,6 +81,7 @@ def test_award_table_renders_states_missing_values_and_candidate_labels() -> Non
             ("awardTableAmount", "renderAwardTableRow"),
             ("renderAwardTableRow", "renderAnnualAwardTable"),
             ("renderAnnualAwardTable", "renderHistory"),
+            ("formatBudget", "formatNumber"),
         )
     )
     constants = re.search(
@@ -101,8 +102,13 @@ const escapeHtml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g,
 const escapeAttribute = escapeHtml;
 const numberOrNull = (value) => (value === null || value === undefined || Number.isNaN(Number(value)) ? null : Number(value));
 const formatNumber = (value, digits = 0) => Number(value).toFixed(digits);
-const formatBudget = (value) => `${Number(value).toLocaleString("ko-KR")}원`;
 const safeHttpUrl = (value) => (/^https:\/\//.test(String(value || "")) ? String(value) : "");
+
+assert.equal(awardTableAmount(123456789), "123,456,789원");
+assert.equal(awardTableAmount(0), "0원");
+assert.equal(awardTableAmount(100.5), "100.5원");
+assert.match(awardTableAmount(null), /미확인/);
+assert.doesNotMatch(awardTableScore(0), /미확인/);
 
 const row = (overrides) => ({
   year: 2025,

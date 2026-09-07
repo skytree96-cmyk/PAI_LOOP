@@ -73,6 +73,31 @@ def normalise_opening_result(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def opening_result_loses_recorded_numbers(
+    previous: list[dict[str, Any]], incoming: list[dict[str, Any]],
+) -> bool:
+    """Detect missing known numbers; never merge fields between company rows.
+
+    The caller must first bind both snapshots to the same complete award
+    identity (notice, revision, classification and rebid). Names are used only
+    to detect potential loss. Ambiguous same-name rows fail conservatively;
+    they are never paired to transfer values or identify a winner.
+    """
+    prior_by_name: dict[str, list[dict[str, Any]]] = {}
+    for company in previous:
+        name = str(company.get("company_name") or "").strip()
+        if name:
+            prior_by_name.setdefault(name, []).append(company)
+    for company in incoming:
+        previous_companies = prior_by_name.get(str(company.get("company_name") or "").strip(), [])
+        for field in ("bid_amount", "technical_evaluation", "price_evaluation", "total_evaluation", "opening_rank"):
+            if _opening_number(company.get(field)) is None and any(
+                _opening_number(prior.get(field)) is not None for prior in previous_companies
+            ):
+                return True
+    return False
+
+
 def _integer(value: Any) -> int | None:
     if value in (None, ""):
         return None
