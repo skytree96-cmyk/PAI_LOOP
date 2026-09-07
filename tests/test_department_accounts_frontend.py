@@ -14,6 +14,7 @@ const context=vm.createContext({URL,URLSearchParams,Intl,Headers,AbortController
  window:{matchMedia(){return {matches:false}},setTimeout,clearTimeout,requestAnimationFrame(f){f();},
  sessionStorage:{getItem(){return null;},removeItem(){},setItem(){throw Error('PIN storage must not be used');}}}});
 const exported=`
+const originalRenderExistingDecision=renderExistingDecision,originalUpdateDecisionButton=updateDecisionButton;
 renderAll=()=>{};renderDataSource=()=>{};renderResultLearning=()=>{};
 closeDetail=()=>{state.selectedNotice=null;};
 renderExistingDecision=n=>globalThis.onRender(n);renderPipelineIntoExisting=()=>{};
@@ -24,6 +25,8 @@ refreshDashboardAfterMutation=async()=>{};loadApplicationData=async()=>{};
 globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,loginDepartmentAccount,logoutDepartmentAccount,
  hydrateDepartmentDecisionList,hydrateOperatorDecisions,normalizeNotice,normalizeResultLearningNotice,
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
+ renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
+ setOpenDetail(fn){openDetail=fn;},
  setRefresh(fn){refreshDashboardAfterMutation=fn;}};`;
 context.onToast=args=>toasts.push(args);context.onRender=n=>rendered.push(n);
 vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+'\n})();'),context);
@@ -118,6 +121,88 @@ assert.equal(u.state.resultLearning.loaded,false);
 assert.equal(u.els.resultLearningUnlockButton.disabled,false);
 assert.match(u.els.resultLearningState.innerHTML,/부서 로그인이 필요/);
 assert.doesNotMatch(u.els.resultLearningState.innerHTML,/PIN/);
+''')
+
+
+def test_anonymous_decision_action_opens_login_and_returns_to_same_notice():
+    _run_behavior(r'''
+u.applyAccountSession({enabled:true,authenticated:false});
+const original=notice();u.state.selectedNotice=original;
+u.renderDecision(original);u.updateDecisionButton();
+assert.equal(u.els.saveDecisionButton.disabled,false,'login entry does not require a choice or rationale');
+assert.equal(u.els.saveDecisionButton.textContent,'로그인 후 판단 기록');
+assert.equal(u.els.decisionInputs.every(input=>input.disabled),true);
+await u.saveDecision({preventDefault(){}});
+assert.equal(u.els.accountDialog.open,true);
+assert.equal(requests.length,0,'anonymous action cannot send a decision write');
+assert.equal(u.state.selectedNotice.noticeKey,original.noticeKey);
+const opened=[];
+u.setOpenDetail(async key=>{opened.push(key);u.state.selectedNotice=notice();});
+u.els.accountUsername.value='SYN-A';u.els.accountPassword.value='SYN-login-password';
+const loggingIn=u.loginDepartmentAccount({preventDefault(){}});await tick();
+respond(requests[0],200,payload('SYN-A'));await tick();
+assert.deepEqual(opened,[original.noticeKey]);
+assert.equal(u.els.accountDialog.open,false);
+assert.match(requests[1].path,/\/operator-decisions\/notices\/SYN-N$/);
+respond(requests[1],200,[{id:'SYN-A1',department_id:'SYN-A',department_revision:1,
+ choice:'HOLD',rationale:'SYN restored own decision'}]);
+await loggingIn;
+assert.equal(u.state.selectedNotice.noticeKey,original.noticeKey);
+assert.equal(u.state.selectedNotice.decisionComment,'SYN restored own decision');
+assert.equal(rendered.at(-1).noticeKey,original.noticeKey);
+assert.equal(requests.filter(request=>request.options.method==='POST').length,1,'login is the only mutation');
+''')
+
+
+def test_anonymous_cancelled_notice_and_admin_cannot_enter_decision_write():
+    _run_behavior(r'''
+u.applyAccountSession({enabled:true,authenticated:false});
+u.state.selectedNotice=u.normalizeNotice({...noticeRaw,status:'CLOSED',provider_disposition:'CANCELLED'});
+u.updateDecisionButton();assert.equal(u.els.saveDecisionButton.disabled,true);
+await u.saveDecision({preventDefault(){}});
+assert.equal(u.els.accountDialog.open,false);assert.equal(requests.length,0);
+u.applyAccountSession({...payload('SYN-ADMIN'),account:{id:'SYN-ADMIN',role:'ADMIN'},
+ capabilities:{read_department_records:true,write_decisions:false}});
+u.state.selectedNotice=notice([{id:'SYN-A1',department_id:'SYN-A',department_revision:1,
+ choice:'HOLD',rationale:'SYN readable department record'}]);u.updateDecisionButton();
+assert.equal(u.els.saveDecisionButton.disabled,true);
+assert.equal(u.els.saveDecisionButton.textContent,'부서 판단 조회 전용');
+u.renderDecision(u.state.selectedNotice);
+assert.match(u.els.departmentDecisionState.textContent,/조회만 가능합니다/);
+assert.doesNotMatch(u.els.departmentDecisionState.textContent,/작성하세요/);
+await u.saveDecision({preventDefault(){}});
+assert.equal(u.els.accountDialog.open,false);assert.equal(requests.length,0);
+''')
+
+
+def test_department_card_shows_latest_revision_per_department_and_clears_on_logout():
+    _run_behavior(r'''
+const current=notice([
+ {id:'SYN-A1',department_id:'SYN-A',department_name:'SYN A',department_revision:1,
+  choice:'GO',rationale:'SYN old own',created_at:'2099-01-01T00:00:00Z'},
+ {id:'SYN-A2',department_id:'SYN-A',department_name:'SYN A',department_revision:2,
+  choice:'HOLD',rationale:'SYN latest own',created_at:'2026-01-01T00:00:00Z'},
+ {id:'SYN-B1',department_id:'SYN-B',department_name:'SYN <B>',department_revision:1,
+  choice:'NO_GO',rationale:'SYN <script>other rationale</script>'},
+ {id:'SYN-LEGACY',actor_label:'SYN A',choice:'GO',rationale:'SYN unassigned record'}]);
+u.state.selectedNotice=current;u.renderDecision(current);
+const html=u.els.departmentDecisionList.innerHTML;
+assert.equal(u.els.departmentDecisionCard.hidden,false);
+assert.equal((html.match(/<li>/g)||[]).length,3,'one own, one other, and separate legacy row');
+assert.match(html,/SYN latest own/);assert.doesNotMatch(html,/SYN old own/);
+assert.match(html,/SYN &lt;B&gt;/);assert.match(html,/&lt;script&gt;other rationale&lt;\/script&gt;/);
+assert.doesNotMatch(html,/<script>/);
+assert.equal(u.els.decisionComment.value,'SYN latest own','other departments stay outside the own form');
+assert.doesNotMatch(u.els.decisionExisting.textContent,/other rationale|SYN <B>/);
+u.applyAccountSession({enabled:true,authenticated:false});
+assert.equal(u.els.departmentDecisionList.innerHTML,'','logout clears the private DOM immediately');
+assert.equal(u.els.decisionComment.value,'');assert.equal(u.state.selectedNotice,null);
+u.renderDecision(current);
+assert.equal(u.els.departmentDecisionCard.hidden,true);
+assert.equal(u.els.departmentDecisionList.innerHTML,'','a stale known notice cannot repopulate the hidden department card');
+const publicNotice=u.normalizeNotice(noticeRaw);u.renderDecision(publicNotice);
+assert.equal(u.els.departmentDecisionCard.hidden,true);
+assert.equal(u.els.departmentDecisionList.innerHTML,'');
 ''')
 
 
