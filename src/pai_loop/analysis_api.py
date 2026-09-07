@@ -61,6 +61,9 @@ from .pps_enrichment import (
     enrich_notice_from_pps,
     has_current_accepted_pps_extraction,
     public_analysis_reason,
+    FAILED_ATTACHMENT_RETRY_CODES,
+    failed_attachment_retry_snapshot,
+    valid_failed_attachment_retry_scope,
 )
 
 
@@ -246,6 +249,9 @@ class AnalysisBackfillPlanRequest(ApiModel):
     # An explicitly authorized, immutable server-to-server retry campaign.
     # IDs and source boundaries are derived by the server, never caller supplied.
     retry_reviewed: bool = False
+    retry_scope: Literal["FAILED_ATTACHMENTS"] | None = None
+    retry_error_codes: list[str] = Field(default_factory=list, max_length=16)
+    retry_max_attachments: int = Field(default=3, ge=1, le=3)
     review_campaign_key: str | None = Field(
         default=None, min_length=1, max_length=120,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$",
@@ -333,6 +339,14 @@ class AnalysisBackfillPlanRequest(ApiModel):
 
     @model_validator(mode="after")
     def validate_resume_mode(self) -> "AnalysisBackfillPlanRequest":
+        if self.retry_scope:
+            if (not self.retry_reviewed or len(self.notice_keys) != 1 or not self.retry_error_codes
+                or len(set(self.retry_error_codes)) != len(self.retry_error_codes)
+                or not set(self.retry_error_codes) <= FAILED_ATTACHMENT_RETRY_CODES):
+                raise ValueError("FAILED_ATTACHMENTS requires one explicit notice and fixed retry error codes")
+            self.retry_error_codes = sorted(self.retry_error_codes)
+        elif self.retry_error_codes or "retry_max_attachments" in self.model_fields_set:
+            raise ValueError("retry filters require FAILED_ATTACHMENTS scope")
         if self.retry_reviewed:
             if (self.queue_name != "BACKFILL" or not self.notice_keys
                 or self.review_campaign_key is None or self.resume_only
@@ -384,6 +398,8 @@ class AnalysisBackfillPlanRequest(ApiModel):
 class AnalysisBackfillPlanResponse(ApiModel):
     review_policy: Literal["FROZEN_REVIEW_RETRY_V1"] | None = None
     review_campaign_key: str | None = None
+    retry_scope: Literal["FAILED_ATTACHMENTS"] | None = None
+    retry_target_count: int | None = None
     job_id: str | None
     segment_id: str | None
     status: Literal["RUNNING", "COMPLETED", "PARTIAL", "DEAD_LETTER", "NO_ACTIVE"]
@@ -515,9 +531,13 @@ _REVIEW_CAMPAIGN_POLICY = "FROZEN_REVIEW_RETRY_V1"
 
 
 def _review_campaign_identity(payload: AnalysisBackfillPlanRequest) -> dict[str, Any]:
-    return payload.model_dump(mode="json", exclude={
+    identity = payload.model_dump(mode="json", exclude={
         "request_token", "resume_job_id", "resume_only", "resume_active",
     })
+    if payload.retry_scope is None:
+        for key in ("retry_scope", "retry_error_codes", "retry_max_attachments"):
+            identity.pop(key, None)  # Preserve already stored V1 request identities.
+    return identity
 
 
 def _review_source_boundary(notice: Notice) -> str:
@@ -576,7 +596,7 @@ def _validate_review_campaign_resume(
             raise HTTPException(status_code=409, detail="review campaign requires pure resume")
 
 
-def _review_campaign_snapshot(session: Session, keys: list[str]) -> dict[str, Any]:
+def _review_campaign_snapshot(session: Session, keys: list[str], *, payload: AnalysisBackfillPlanRequest | None = None) -> dict[str, Any]:
     snapshots: dict[str, Any] = {}
     # Keep full attachment histories bounded to one notice at a time.
     for key in keys:
@@ -594,6 +614,15 @@ def _review_campaign_snapshot(session: Session, keys: list[str]) -> dict[str, An
             "source_boundary": _review_source_boundary(notice),
             "version_ids": sorted(current_retryable_review_version_ids(notice.versions)),
         }
+        if payload is not None and payload.retry_scope:
+            try:
+                narrow = failed_attachment_retry_snapshot(notice.versions, error_codes=payload.retry_error_codes,
+                                                          max_attachments=payload.retry_max_attachments,
+                                                          notice_key=notice.notice_key, revision_no=notice.revision_no)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            snapshots[key].update(version_ids=narrow["version_ids"], failed_attachment_retry=narrow,
+                                  notice_revision_no=notice.revision_no)
         # Do not clear shared session identity state or expire planner rows.
         for version in list(notice.versions):
             session.expunge(version)
@@ -672,6 +701,12 @@ def _review_child_context(
         notice = session.scalar(select(Notice).where(Notice.notice_key == key))
         if notice is None or _review_source_boundary(notice) != snapshot.get("source_boundary"):
             return frozenset(), "REVIEW_CAMPAIGN_SOURCE_CHANGED"
+        if (parent_config.get("review_request") or {}).get("retry_scope") == "FAILED_ATTACHMENTS":
+            narrow = snapshot.get("failed_attachment_retry")
+            if not valid_failed_attachment_retry_scope(narrow) or narrow["version_ids"] != snapshot["version_ids"]:
+                return frozenset(), "FAILED_RETRY_SCOPE_INVALID"
+            if notice.revision_no != snapshot.get("notice_revision_no"):
+                return frozenset(), "REVIEW_CAMPAIGN_SOURCE_CHANGED"
         return frozenset(snapshot["version_ids"]), None
 
 
@@ -1956,6 +1991,10 @@ def _backfill_status(
         job_id=parent.id,
         review_policy=config.get("review_policy"),
         review_campaign_key=config.get("review_campaign_key"),
+        retry_scope=(config.get("review_request") or {}).get("retry_scope"),
+        retry_target_count=(sum(len((value.get("failed_attachment_retry") or {}).get("targets", []))
+                                for value in (config.get("review_snapshots") or {}).values())
+                            if (config.get("review_request") or {}).get("retry_scope") else None),
         segment_id=segment_id,
         status=response_status,
         queue_name=queue_name,
@@ -2209,7 +2248,7 @@ def plan_analysis_backfill(
         ):
             raise HTTPException(status_code=409, detail="review campaign scope contains unavailable or reserved notices")
         review_config = (
-            {**_review_campaign_snapshot(session, notice_keys),
+            {**_review_campaign_snapshot(session, notice_keys, **({"payload": payload} if payload.retry_scope else {})),
              "review_campaign_key": payload.review_campaign_key,
              "review_request": _review_campaign_identity(payload)}
             if payload.retry_reviewed else {}
@@ -3037,6 +3076,7 @@ def _enrich_one_notice(
     payload: AnalysisBatchRequest,
     deadline_monotonic: float,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    failed_attachment_retry: dict[str, Any] | None = None,
 ) -> PpsEnrichmentResult:
     settings = request.app.state.settings
     with request.app.state.session_factory() as session:
@@ -3058,6 +3098,7 @@ def _enrich_one_notice(
             openai_max_retries=0,
             deadline_monotonic=deadline_monotonic,
             retry_reviewed_version_ids=retry_reviewed_version_ids,
+            **({"failed_attachment_retry": failed_attachment_retry} if failed_attachment_retry is not None else {}),
         )
 
 
@@ -3203,6 +3244,11 @@ def _execute_notice_analysis_batch(
     job_id: str,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
 ) -> AnalysisBatchResponse:
+    failed_attachment_retry = None
+    if payload.operation_id is not None:
+        with request.app.state.session_factory() as scope_session:
+            child = scope_session.get(IngestionJob, job_id)
+            failed_attachment_retry = ((child.request_json or {}).get("review_snapshot") or {}).get("failed_attachment_retry")
     rows: list[AnalysisBatchItemOut] = []
     completed = skipped = failed = 0
     materialized = evaluations = snapshots = 0
@@ -3372,6 +3418,7 @@ def _execute_notice_analysis_batch(
                         payload=payload,
                         deadline_monotonic=enrichment_deadline,
                         retry_reviewed_version_ids=retry_reviewed_version_ids,
+                        **({"failed_attachment_retry": failed_attachment_retry} if failed_attachment_retry is not None else {}),
                     )
                     if retry_reviewed_version_ids
                     else _enrich_one_notice(
