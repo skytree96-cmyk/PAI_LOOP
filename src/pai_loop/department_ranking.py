@@ -14,6 +14,7 @@ MAX_USER_KEYWORD_LENGTH = 60
 BUSINESS_TOP_MIN_STRONG = 1
 BUSINESS_TOP_MIN_SUPPORTING = 2
 BUSINESS_REVIEW_SUPPORTING = 1
+_NORMALIZE_CACHE_MAX_TEXT_LENGTH = 128
 _FIELD_SEPARATOR = " ⟂ "
 _INSTITUTIONAL_EDUCATION_TERMS = (
     "교육지원청",
@@ -24,23 +25,29 @@ _INSTITUTIONAL_EDUCATION_TERMS = (
 )
 
 
-@lru_cache(maxsize=8192)
-def _normalize_text(value: str) -> str:
+def _fold_text(value: str) -> str:
     text = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _normalize(value: object) -> str:
-    """Normalise once per distinct string and reuse the result.
+@lru_cache(maxsize=8192)
+def _normalize_text(value: str) -> str:
+    return _fold_text(value)
 
-    Ranking re-normalises the same static catalog keyword for every notice it
-    scores, so the daily briefing spent most of its time in NFKC folding rather
-    than in the database. The function is pure, so memoising it changes no
-    score; the bound keeps notice titles from growing the cache without limit
-    and leaves the small, hot catalog resident.
+
+def _normalize(value: object) -> str:
+    """Reuse short keyword folds without retaining arbitrary notice text.
+
+    Bound both entry count and input length; Unicode folding can expand the
+    result but the retained input and output sizes remain bounded. Long text
+    is still folded in full, without caching. Preserve the original object
+    coercion before selecting the cache path, including string subclasses.
     """
 
-    return _normalize_text(value if isinstance(value, str) else str(value or ""))
+    text = str(value or "")
+    if type(text) is not str or len(text) > _NORMALIZE_CACHE_MAX_TEXT_LENGTH:
+        return _fold_text(text)
+    return _normalize_text(text)
 
 
 def _without_institutional_education_terms(value: object) -> str:
