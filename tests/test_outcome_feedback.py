@@ -62,7 +62,7 @@ def _envelope(items: list[dict[str, object]]) -> dict[str, object]:
 def test_pps_outcome_adapter_post_filters_exact_identity_and_drops_identifiers() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["bidNtceNo"] == "20250101001"
-        assert request.url.params["inqryDiv"] == "1"
+        assert request.url.params["inqryDiv"] == "3"
         return httpx.Response(
             200,
             json=_envelope(
