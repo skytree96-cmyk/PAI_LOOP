@@ -1001,6 +1001,15 @@ def _comparable_utc(value: datetime) -> datetime:
 @router.get("/dashboard")
 def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    # Response generation and source ingestion are separate clocks. Only a
+    # successful live PPS notice run proves a completed source synchronisation.
+    last_sync = session.scalar(
+        select(func.max(IngestionJob.completed_at)).where(
+            IngestionJob.source == "PPS",
+            IngestionJob.mode == "LIVE",
+            IngestionJob.status == "COMPLETED",
+        )
+    )
     notice_ids = list(
         session.scalars(
             select(Notice.id).order_by(
@@ -1159,6 +1168,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
 
     return {
         "generated_at": now,
+        "last_sync": _comparable_utc(last_sync) if last_sync is not None else None,
         "analysis_statistics": analysis_statistics,
         "totals": {
             "notices": len(notice_ids),
