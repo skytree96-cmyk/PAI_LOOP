@@ -1198,10 +1198,49 @@ def select_preferred_attachments(
     return supported[:limit], warnings
 
 
+# Extraction failures raised by the shared container, budget and safety layer
+# rather than by a format leaf. They carry no format prefix, so without this
+# allowlist they fall through to OPENAI_REVIEW, whose operator text states that
+# the document was read and only the LLM stage failed. That is false for a
+# document the extractor never managed to read, and it hides the deterministic
+# extraction marker the audit requires. The codes are enumerated (not matched by
+# a broad prefix) so that UNSUPPORTED_ATTACHMENT_TYPE and the HWP-only codes keep
+# their own earlier, more specific labels.
+_SHARED_DOCUMENT_FAILURE_CODES = frozenset({
+    "ARCHIVE_COMPRESSION_RATIO_LIMIT",
+    "ARCHIVE_DEPTH_LIMIT",
+    "ARCHIVE_DUPLICATE_MEMBER",
+    "ARCHIVE_EMPTY",
+    "ARCHIVE_ENCRYPTED_MEMBER",
+    "ARCHIVE_ENTRY_LIMIT",
+    "ARCHIVE_INVALID",
+    "ARCHIVE_LINK_MEMBER",
+    "ARCHIVE_MEMBER_READ_FAILED",
+    "ARCHIVE_MEMBER_SIZE_LIMIT",
+    "ARCHIVE_MEMBER_SIZE_MISMATCH",
+    "ARCHIVE_NO_DOCUMENT_MEMBERS",
+    "ARCHIVE_TOTAL_ENTRY_LIMIT",
+    "ARCHIVE_UNCOMPRESSED_LIMIT",
+    "ARCHIVE_UNSAFE_MEMBER_PATH",
+    "DOCUMENT_EMPTY",
+    "DOCUMENT_INPUT_TOO_LARGE",
+    "DOCUMENT_TOTAL_INPUT_LIMIT",
+    "DOCUMENT_TOTAL_UNCOMPRESSED_LIMIT",
+    "DOCUMENT_UNCOMPRESSED_SIZE_LIMIT",
+    "LEAF_EXTRACTION_FAILED",
+    "MEMBER_EXTRACTION_FAILED",
+    "UNSAFE_DOCUMENT_FILENAME",
+    "UNSUPPORTED_ARCHIVE_MEMBER_TYPE",
+    "UNSUPPORTED_DOCUMENT_TYPE",
+    "XML_DTD_FORBIDDEN",
+})
+
+
 def _public_attachment_failure_reason_code(
     attachment: dict[str, Any], error_code: str,
 ) -> AnalysisReasonCode:
     extension = PurePath(str(attachment.get("file_name") or "")).suffix.casefold()
+    shared_failure = error_code in _SHARED_DOCUMENT_FAILURE_CODES
     if error_code == "UNVERIFIED_QUOTE":
         return "QUOTE_UNVERIFIED"
     elif error_code in {"HWP_ONLY_UNSUPPORTED_R07", "HWP_BINARY_UNSUPPORTED"}:
@@ -1211,6 +1250,10 @@ def _public_attachment_failure_reason_code(
     elif extension == ".hwpx" and (
         error_code.startswith("HWPX_")
         or error_code.startswith("ATTACHMENT_")
+        # An .hwpx carrying OLE bytes is deliberately routed to the HWP5 reader,
+        # so its failures arrive under an HWP_ prefix.
+        or error_code.startswith("HWP_")
+        or shared_failure
         or error_code in {
             "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
@@ -1224,6 +1267,7 @@ def _public_attachment_failure_reason_code(
     elif extension == ".pdf" and (
         error_code.startswith("PDF_")
         or error_code.startswith("ATTACHMENT_")
+        or shared_failure
         or error_code in {
             "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",
@@ -1235,7 +1279,8 @@ def _public_attachment_failure_reason_code(
     ):
         return "PDF_EXTRACT_FAILED"
     elif extension in {".hwp", ".xlsx", ".xlsm", ".xls", ".docx", ".pptx", ".html", ".htm", ".zip"} and (
-        error_code.startswith(("HWP_", "XLSX_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
+        error_code.startswith(("HWP_", "XLSX_", "XLSM_", "XLS_", "DOCX_", "PPTX_", "HTML_", "ZIP_", "ATTACHMENT_", "DOCUMENT_PROCESSING_"))
+        or shared_failure
         or error_code in {
             "DOCUMENT_TEXT_EMPTY",
             "DOCUMENT_TEXT_EMPTY_OR_SHORT",

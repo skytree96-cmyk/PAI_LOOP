@@ -256,6 +256,17 @@ def _extract(
         extension = ".hwpx"
     if extension == ".hwp":
         return _result_from_parsed(_extract_hwp5(content, budget), file_name)
+    if (
+        extension == ".xls"
+        and content.startswith(b"PK\x03\x04")
+        and _has_exact_xlsx_parts(content, budget)
+    ):
+        # The same PPS metadata inconsistency as above: a real OOXML workbook is
+        # served under an .xls name, and the BIFF reader can only reject it. A
+        # ZIP signature alone proves nothing, so route to the audited XLSX leaf
+        # only after the bounded package proves both required OOXML parts. The
+        # filename, bytes and digest identity are unchanged.
+        extension = ".xlsx"
     if extension == ".xls":
         return _result_from_parsed(_extract_xls(content), file_name)
     if extension in leaf_extractors:
@@ -284,6 +295,22 @@ def _extract(
             archive_depth=archive_depth + 1,
         )
     return _issue_result(file_name, "UNSUPPORTED_DOCUMENT_TYPE")
+
+
+def _has_exact_xlsx_parts(content: bytes, budget: _Budget) -> bool:
+    """Prove an OOXML workbook package inside a bounded archive read.
+
+    Uses exactly the two parts ``_extract_xlsx`` already requires, so a file
+    accepted here is one that reader can open; anything else keeps the BIFF
+    path and its existing deterministic failure code.
+    """
+
+    try:
+        with _open_archive(content, budget) as archive:
+            names = _archive_names(archive)
+    except DocumentExtractionError:
+        return False
+    return "[content_types].xml" in names and "xl/workbook.xml" in names
 
 
 def _has_exact_hwpx_mimetype(content: bytes, budget: _Budget) -> bool:
@@ -751,6 +778,9 @@ def _validate_semantic_text(text: str, *, error_code: str) -> None:
         raise DocumentExtractionError(error_code)
 
 
+_UNREPORTED = object()
+
+
 def _extract_xls(content: bytes) -> _ParsedText:
     try:
         import xlrd  # type: ignore[import-not-found]
@@ -767,6 +797,24 @@ def _extract_xls(content: bytes) -> _ParsedText:
             ragged_rows=True,
             formatting_info=False,
         )
+        # A pre-BIFF8 workbook with no CODEPAGE record makes xlrd fall back to
+        # iso-8859-1 silently. Korean cell bytes then decode into characters that
+        # are not in the source, and the mojibake is semantic enough to pass the
+        # text check, so it would be returned as extracted evidence with no
+        # marker. Refuse it instead: an encoding we cannot establish is a
+        # document-quality condition, and guessing one would fabricate text.
+        # Detect exactly the reader's own fallback condition: a declared-absent
+        # CODEPAGE on a pre-BIFF8 workbook. A reader that does not report these
+        # fields at all is left alone rather than assumed to have guessed.
+        declared_codepage = getattr(workbook, "codepage", _UNREPORTED)
+        biff_version = getattr(workbook, "biff_version", _UNREPORTED)
+        resolved_encoding = str(getattr(workbook, "encoding", "") or "")
+        if (
+            declared_codepage is None
+            and biff_version is not _UNREPORTED
+            and int(biff_version or 0) < 80
+        ) or resolved_encoding.startswith("unknown_codepage_"):
+            raise DocumentExtractionError("XLS_CODEPAGE_UNVERIFIED")
         if workbook.nsheets <= 0:
             raise DocumentExtractionError("XLS_WORKBOOK_EMPTY")
         if workbook.nsheets > 64:

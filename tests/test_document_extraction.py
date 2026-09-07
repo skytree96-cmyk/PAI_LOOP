@@ -861,3 +861,108 @@ def test_text_limit_fails_closed_instead_of_truncating() -> None:
             leaf_extractors={".hwpx": lambda _name, _data: "가" * 21},
             limits=ExtractionLimits(max_document_chars=20),
         )
+
+
+def _biff5_workbook(
+    rows: list[list[tuple[int, str | float]]],
+    sheet_name: str,
+    *,
+    codepage: int | None = 949,
+    encoding: str = "cp949",
+) -> bytes:
+    """Build a bare BIFF5 stream, optionally omitting the CODEPAGE record."""
+
+    def record(record_id: int, payload: bytes = b"") -> bytes:
+        return struct.pack("<HH", record_id, len(payload)) + payload
+
+    sheet = record(0x0809, struct.pack("<HHHH", 0x0500, 0x0010, 0x0DBB, 0x07CC))
+    columns = max((column for row in rows for column, _ in row), default=0) + 1
+    sheet += record(0x0200, struct.pack("<HHHHH", 0, len(rows), 0, columns, 0))
+    for row_index, row in enumerate(rows):
+        for column, value in row:
+            if isinstance(value, str):
+                raw = value.encode(encoding)
+                sheet += record(
+                    0x0204,
+                    struct.pack("<HHHH", row_index, column, 0, len(raw)) + raw,
+                )
+            else:
+                sheet += record(
+                    0x0203,
+                    struct.pack("<HHH", row_index, column, 0)
+                    + struct.pack("<d", float(value)),
+                )
+    sheet += record(0x000A)
+
+    name = sheet_name.encode(encoding)
+    globals_stream = record(
+        0x0809, struct.pack("<HHHH", 0x0500, 0x0005, 0x0DBB, 0x07CC)
+    )
+    if codepage is not None:
+        globals_stream += record(0x0042, struct.pack("<H", codepage))
+    tail = record(0x000A)
+    boundsheet_payload = 4 + 2 + 1 + len(name)
+    globals_length = len(globals_stream) + 4 + boundsheet_payload + len(tail)
+    globals_stream += record(
+        0x0085,
+        struct.pack("<lH", globals_length, 0) + bytes([len(name)]) + name,
+    )
+    globals_stream += tail
+    assert len(globals_stream) == globals_length
+    return globals_stream + sheet
+
+
+_BIFF5_ROWS: list[list[tuple[int, str | float]]] = [
+    [(0, "평가항목"), (1, "배점")],
+    [(0, "최근 3년 유사사업 수행실적"), (1, 20.0)],
+    [(0, "기업신용평가등급 확인서"), (1, 10.0)],
+]
+
+
+def test_xls_with_declared_codepage_is_decoded_from_the_source_bytes() -> None:
+    result = extract_document_content(
+        "정량평가표.xls", _biff5_workbook(_BIFF5_ROWS, "정량평가")
+    )
+
+    assert "평가항목" in result.text
+    assert "수행실적" in result.text
+    # .xls always declares formula expressions unavailable, so it is never
+    # technically complete; that existing contract is unchanged here.
+    assert result.complete is False
+
+
+def test_xls_without_codepage_is_refused_instead_of_guessing_an_encoding() -> None:
+    """An unestablished encoding must not be returned as extracted text.
+
+    xlrd falls back to iso-8859-1 for a pre-BIFF8 workbook carrying no CODEPAGE
+    record. The mojibake is semantic enough to pass the text check, so it would
+    otherwise be accepted as evidence containing characters absent from the
+    source.
+    """
+
+    with pytest.raises(DocumentExtractionError, match="XLS_CODEPAGE_UNVERIFIED"):
+        extract_document_content(
+            "정량평가표.xls",
+            _biff5_workbook(_BIFF5_ROWS, "정량평가", codepage=None),
+        )
+
+
+def test_ooxml_workbook_served_under_an_xls_name_is_read_by_the_xlsx_leaf() -> None:
+    """Mirror the existing .hwp/.hwpx mislabel recovery for OOXML workbooks."""
+
+    package = _minimal_xlsx()
+    under_xls = extract_document_content("정량평가표.xls", package)
+    under_xlsx = extract_document_content("정량평가표.xlsx", package)
+
+    assert under_xls.text == under_xlsx.text
+    assert under_xls.complete == under_xlsx.complete
+
+
+def test_zip_that_is_not_an_ooxml_workbook_keeps_the_xls_failure() -> None:
+    """A ZIP signature alone must not divert the BIFF path."""
+
+    with pytest.raises(DocumentExtractionError, match="XLS_PARSE_FAILED"):
+        extract_document_content(
+            "정량평가표.xls",
+            _archive({"[content_types].xml": "<Types/>", "docProps/app.xml": "<x/>"}),
+        )
