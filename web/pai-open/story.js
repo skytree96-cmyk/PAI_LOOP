@@ -10,11 +10,13 @@
   const template = runway.querySelector('[data-ps-stage-template]');
   if (steps.length !== 4 || !template || copies.some(copy => !copy) || panels.some(panel => !panel)) return;
   const desktop = window.matchMedia('(min-width: 901px) and (min-height: 650px)');
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const motionToggle = story.querySelector('[data-ps-motion]');
-  let userMotion = null;
+  // The requested product default is motion on; the visible control can turn it off.
+  let userMotion = true;
   let stage = null;
   let frame = 0;
+  let renderedProgress = 0;
+  let previousFrameTime = 0;
   let active = -1;
   let controls = [];
   let start = 0;
@@ -29,7 +31,6 @@
       const selected = i === index;
       copy.inert = !selected;
       copy.setAttribute('aria-hidden', String(!selected));
-      copy.querySelector('.ps-cta').tabIndex = selected ? 0 : -1;
       panels[i].classList.toggle('is-active', selected);
       panels[i].setAttribute('aria-hidden', String(!selected));
       panels[i].inert = !selected;
@@ -52,16 +53,17 @@
     range = Math.max(1, runway.getBoundingClientRect().height - stageSize);
   }
 
-  function paint() {
-    frame = 0;
-    if (!stage) return;
-    const progress = Math.max(0, Math.min(1, (window.scrollY - start) / range));
+  function scrollProgress() {
+    return Math.max(0, Math.min(1, (window.scrollY - start) / range));
+  }
+
+  function render(progress) {
     const rawPosition = progress * (steps.length - 1);
     const segment = Math.min(2, Math.floor(rawPosition));
     const fraction = rawPosition - segment;
-    // Hold each step fully sharp for 70% of the scroll interval. Only the
-    // middle 30% moves through the glass; the same mapping reverses on scroll up.
-    const transition = Math.max(0, Math.min(1, (fraction - .35) / .30));
+    // A 54% reading plateau leaves room for a longer, flowing transition.
+    // The same continuous mapping works in reverse, without scroll snapping.
+    const transition = Math.max(0, Math.min(1, (fraction - .27) / .46));
     const position = segment + transition * transition * (3 - 2 * transition);
     showActive(Math.min(3, Math.round(position)));
     copies.forEach((copy, i) => {
@@ -74,11 +76,33 @@
       copy.style.opacity = opacity.toFixed(3);
       copy.style.filter = `blur(${Math.max(0, Math.min(11, (absolute - .12) * 13)).toFixed(2)}px)`;
       copy.style.visibility = opacity < .01 ? 'hidden' : 'visible';
+      // A newly active copy can still be entering below the masked glass.
+      // Enable its link only once the copy reaches the sharp reading plateau.
+      const cta = copy.querySelector('.ps-cta');
+      const canUseCta = i === active && absolute < .001;
+      cta.inert = !canUseCta;
+      cta.tabIndex = canUseCta ? 0 : -1;
     });
     story.style.setProperty('--ps-progress', (0.1 + progress * .9).toFixed(4));
     story.style.setProperty('--ps-light-x', `${(progress * 74 - 20).toFixed(2)}px`);
     story.style.setProperty('--ps-rotate-y', `${(-12 + Math.sin(position * 1.15) * 2.2).toFixed(2)}deg`);
     story.style.setProperty('--ps-rotate-x', `${(6 + Math.sin(position * 1.4) * 1.25).toFixed(2)}deg`);
+  }
+
+  function paint(timestamp) {
+    frame = 0;
+    if (!stage) return;
+    const target = scrollProgress();
+    const elapsed = previousFrameTime ? Math.min(64, timestamp - previousFrameTime) : 1000 / 60;
+    previousFrameTime = timestamp;
+    // Time-based damping stays consistent across refresh rates. Only visuals
+    // follow the native scroll position; wheel, touch and page scrolling stay native.
+    renderedProgress += (target - renderedProgress) * (1 - Math.exp(-elapsed / 135));
+    const unsettled = Math.abs(target - renderedProgress) > .00002;
+    if (!unsettled) renderedProgress = target;
+    render(renderedProgress);
+    if (unsettled) frame = requestAnimationFrame(paint);
+    else previousFrameTime = 0;
   }
 
   function schedule() {
@@ -122,18 +146,23 @@
     runway.classList.add('is-enhanced');
     active = -1;
     measure();
-    paint();
+    renderedProgress = scrollProgress();
+    previousFrameTime = 0;
+    render(renderedProgress);
   }
 
   function disable() {
     if (!stage) return;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
+    previousFrameTime = 0;
     copies.forEach((copy, i) => {
       copy.inert = false;
       copy.removeAttribute('aria-hidden');
       copy.removeAttribute('style');
-      copy.querySelector('.ps-cta').removeAttribute('tabindex');
+      const cta = copy.querySelector('.ps-cta');
+      cta.inert = false;
+      cta.removeAttribute('tabindex');
       panels[i].inert = false;
       panels[i].removeAttribute('aria-hidden');
       panels[i].classList.remove('is-active');
@@ -148,13 +177,13 @@
   }
 
   function syncMode() {
-    const wantsMotion = userMotion === null ? !reducedMotion.matches : userMotion;
-    if (desktop.matches && wantsMotion) enable();
+    if (desktop.matches && userMotion) enable();
     else disable();
+    story.dataset.motionState = stage ? 'on' : 'off';
     if (motionToggle) {
       motionToggle.hidden = !desktop.matches;
-      motionToggle.textContent = wantsMotion ? '모션 줄이기' : '스크롤 모션 켜기';
-      motionToggle.setAttribute('aria-pressed', String(wantsMotion));
+      motionToggle.textContent = userMotion ? '모션 끄기' : '스크롤 모션 켜기';
+      motionToggle.setAttribute('aria-pressed', String(userMotion));
     }
     measure();
     schedule();
@@ -163,9 +192,8 @@
   window.addEventListener('scroll', schedule, {passive: true});
   window.addEventListener('resize', syncMode, {passive: true});
   desktop.addEventListener('change', syncMode);
-  reducedMotion.addEventListener('change', syncMode);
   if (motionToggle) motionToggle.addEventListener('click', () => {
-    userMotion = !(userMotion === null ? !reducedMotion.matches : userMotion);
+    userMotion = !userMotion;
     syncMode();
   });
   window.addEventListener('load', () => {measure(); schedule();}, {once: true});

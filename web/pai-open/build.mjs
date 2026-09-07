@@ -5,7 +5,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const output = path.join(root, 'dist');
 await mkdir(output, { recursive: true });
 const files = ['styles.css', 'open-refinement.css', 'story.css', 'app.js', 'story.js', 'favicon.svg', '_headers'];
-const mediaFiles = ['assets/pai-intro-3d.mp4', 'assets/pai-intro-3d-poster.webp'];
+const mediaFiles = ['assets/pai-intro-glass-v2.mp4', 'assets/pai-intro-glass-v2-poster.webp'];
 const template = await readFile(path.join(root, 'index.html'), 'utf8');
 const story = await readFile(path.join(root, 'story.html'), 'utf8');
 if (template.split('<!-- PAI_STORY_COMPONENT -->').length !== 2) throw new Error('Expected one story slot');
@@ -32,7 +32,7 @@ await writeFile(path.join(output, 'index.html'), html);
 for (const file of files) await copyFile(path.join(root, file), path.join(output, file));
 const mediaOutput = path.join(output, 'assets');
 await mkdir(mediaOutput, { recursive: true });
-for (const obsolete of ['pai-loop-background.webm', 'pai-loop-poster.webp', 'pai-product-tour.webm', 'pai-product-poster.webp']) {
+for (const obsolete of ['pai-loop-background.webm', 'pai-loop-poster.webp', 'pai-product-tour.webm', 'pai-product-poster.webp', 'pai-intro-3d.mp4', 'pai-intro-3d-poster.webp']) {
   await rm(path.join(mediaOutput, obsolete), { force: true });
 }
 for (const entry of await readdir(mediaOutput, { withFileTypes: true })) {

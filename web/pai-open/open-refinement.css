@@ -74,3 +74,25 @@ body{background:#fbfcfd}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.button{transition:none}.button:hover{transform:none}}
 @media(max-width:640px){.product-film__caption{display:block}.product-film__caption h2{font-size:14px}.product-film__caption p{font-size:11px;margin-top:7px}.product-film__caption small{font-size:10px}}
 .supporting-tools{padding:0 0 110px;background:#fbfcfd}.supporting-tools h2{font-size:30px;font-weight:700}.supporting-tools .eyebrow{margin-bottom:14px}.tool-links{display:grid;grid-template-columns:repeat(3,1fr);gap:40px;margin-top:32px}.tool-links>a{position:relative;border-top:1px solid #cbdbe6;padding:24px 25px 0 0}.tool-links>a>span:first-child{font-size:18px;font-weight:600;color:#12568e}.tool-links p{font-size:13px;line-height:1.85;color:#607789;margin-top:10px}.tool-links b{position:absolute;right:0;top:22px;font-size:20px;font-weight:400;color:#12568e}.tool-links a:hover b{transform:translate(2px,-2px)}@media(max-width:640px){.supporting-tools{padding-bottom:66px}.supporting-tools h2{font-size:24px}.tool-links{grid-template-columns:1fr;gap:25px}.tool-links>a{padding-top:19px}.tool-links p{font-size:12px}.tool-links>a>span:first-child{font-size:16px}}
+
+/* Feedback revision: explicit contrast and readable type across the full page. */
+.principles{color:#122d42;background:#fbfcfd}
+.principles h2,.principles .principle-key{color:#122d42}
+.principles .eyebrow{color:#12568e}
+.principles .section-intro>p{color:#496276}
+.site-nav a{font-size:15px}.eyebrow{font-size:13px}
+.hero-lead{font-size:19px;line-height:1.8}.hero-note{font-size:14px}
+.hero-actions .button{font-size:16px}.hero-bottom{font-size:15px}
+.product-film__caption{display:block}.product-film__caption h2{font-size:19px}
+.product-film__caption p{font-size:14px;margin-top:8px}.product-film__caption small{font-size:12px}.film-kicker{font-size:12px}
+.section-intro h2,.guide h2{font-size:clamp(38px,4vw,58px)}
+.section-intro>p{font-size:19px}.principle-rows>div{grid-template-columns:210px 1fr 265px;gap:28px;padding:32px 0}
+.principle-key{font-size:23px}.principle-rows p{font-size:18px;line-height:1.8}
+.principle-rows>div>span:last-child{font-size:16px;color:#375d79}
+.principle-note{font-size:16px;color:#496276;border-color:#d4e0e9}
+.guide-intro{font-size:19px}.connection-note h3{font-size:20px}.connection-note p{font-size:16px}
+.faq-list summary{font-size:20px}.faq-list details p{font-size:17px}
+.supporting-tools h2{font-size:36px}.tool-links>a>span:first-child{font-size:22px}.tool-links p{font-size:17px}
+.closing p:not(.eyebrow){font-size:20px}.footer-inner p,.footer-inner>a:last-child,.footer-inner>span{font-size:14px}
+@media(max-width:1100px){.hero-lead{font-size:18px}.principle-rows>div{grid-template-columns:170px 1fr;gap:12px 24px}.principle-rows>div>span:last-child{grid-column:2;text-align:left}.hero-bottom{font-size:13px}}
+@media(max-width:640px){.hero-lead{font-size:16px}.hero h1{font-size:clamp(33px,8.5vw,46px)}.hero .eyebrow{font-size:10px}.hero-note{font-size:13px}.hero-actions .button{font-size:14px;padding-inline:15px}.hero-bottom{font-size:12px}.hero-bottom b{font-size:15px}.product-film__caption h2{font-size:17px}.product-film__caption p{font-size:13px}.product-film__caption small{font-size:11px}.section-intro h2,.guide h2{font-size:34px}.section-intro>p,.guide-intro{font-size:17px}.principle-rows>div{grid-template-columns:1fr;gap:10px;padding:25px 0}.principle-key{font-size:22px}.principle-rows p{font-size:16px}.principle-rows>div>span:last-child{grid-column:1;font-size:14px}.principle-note{font-size:14px}.faq-list summary{font-size:17px}.faq-list details p{font-size:16px}.supporting-tools h2{font-size:29px}.tool-links>a>span:first-child{font-size:20px}.tool-links p{font-size:16px}.closing p:not(.eyebrow){font-size:17px}.footer-inner p{font-size:13px}}
