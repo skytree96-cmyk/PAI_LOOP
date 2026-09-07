@@ -1,5 +1,8 @@
 from pathlib import Path
+import json
 import subprocess
+
+import pytest
 
 APP = Path(__file__).parents[1] / 'src/pai_loop/static/app.js'
 
@@ -25,6 +28,7 @@ refreshDashboardAfterMutation=async()=>{};loadApplicationData=async()=>{};
 globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,loginDepartmentAccount,logoutDepartmentAccount,
  hydrateDepartmentDecisionList,hydrateOperatorDecisions,normalizeNotice,normalizeResultLearningNotice,
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
+ submittedRatePreview,updateResultLearningRate,resultLearningRateCalculation,resultLearningRateLabel,
  renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
  setOpenDetail(fn){openDetail=fn;},
  setRefresh(fn){refreshDashboardAfterMutation=fn;}};`;
@@ -35,6 +39,7 @@ const fields=new Map();
 function field(){return {value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,
  dataset:{},classList:{contains(){return false;},toggle(){},add(){},remove(){}},setAttribute(){},
  replaceChildren(){this.innerHTML='';this.textContent='';},reset(){},focus(){},closest(){return null;},
+ setCustomValidity(message){this.validationMessage=message;},reportValidity(){return !this.validationMessage;},
  showModal(){this.open=true;},close(){this.open=false;}};}
 Object.setPrototypeOf(u.els,new Proxy({}, {get(_,key){if(!fields.has(key))fields.set(key,field());return fields.get(key);}}));
 u.els.decisionInputs=[{value:'GO',checked:false},{value:'HOLD',checked:true},{value:'NO_GO',checked:false}];
@@ -58,6 +63,154 @@ def _run_behavior(script):
         input=APP.read_text(encoding='utf-8'), capture_output=True, text=True, encoding='utf-8',
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_bid_rate_preview_requires_explicit_basis_and_rounds_half_up():
+    _run_behavior(r'''
+assert.equal(u.submittedRatePreview('176.5433','200'),'88.2717');
+assert.equal(u.submittedRatePreview('0','200'),'0.0000');
+assert.equal(u.submittedRatePreview('2','3'),'66.6667');
+assert.equal(u.submittedRatePreview('1e2','2e2'),'50.0000');
+assert.equal(u.submittedRatePreview('','200'),null);
+assert.equal(u.submittedRatePreview(null,'200'),null);
+assert.equal(u.submittedRatePreview('1','0'),null);
+assert.equal(u.submittedRatePreview('400.0001','200'),null);
+assert.equal(u.submittedRatePreview('Infinity','200'),null);
+u.els.resultLearningSubmittedAmount.value='0';
+u.els.resultLearningRateMode.value='AUTO';
+u.els.resultLearningRateBasisKind.value='PLANNED_PRICE';
+u.els.resultLearningRateBasisAmount.value='200';
+u.els.resultLearningRateBasisReference.value='SYN 예정가격 1쪽';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningSubmittedRate.value,'0.0000');
+assert.equal(u.els.resultLearningSubmittedRate.readOnly,true);
+assert.equal(u.els.resultLearningRateBasisAmount.required,true);
+assert.match(u.els.resultLearningRateStatus.textContent,/예정가격 200원 대비 0.0000%/);
+u.els.resultLearningSubmittedAmount.value='176.5433';u.updateResultLearningRate();
+assert.equal(u.els.resultLearningSubmittedRate.value,'88.2717');
+u.els.resultLearningRateBasisAmount.value='';
+assert.equal(u.updateResultLearningRate(),false);
+assert.equal(u.els.resultLearningSubmittedRate.value,'');
+assert.ok(u.els.resultLearningSubmittedAmount.validationMessage);
+u.els.resultLearningRateBasisAmount.value='200';u.els.resultLearningRateBasisReference.value='';
+assert.equal(u.updateResultLearningRate(),false);
+u.els.resultLearningRateMode.value='MANUAL';u.els.resultLearningSubmittedRate.value='87.1234';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningSubmittedRate.value,'87.1234');
+assert.equal(u.els.resultLearningSubmittedRate.readOnly,false);
+assert.equal(u.els.resultLearningRateBasisAmount.required,false);
+assert.equal(u.els.resultLearningRateBasisAmount.disabled,true);
+assert.equal(u.els.resultLearningSubmittedAmount.validationMessage,'');
+assert.equal(u.resultLearningRateCalculation().mode,'MANUAL');
+assert.equal(u.resultLearningRateLabel({submittedBidRate:0,submittedRateCalculation:{mode:'AUTO',basis_kind:'BASE_AMOUNT'}}),'기초금액 대비 0.0000%');
+assert.equal(u.resultLearningRateLabel({submittedBidRate:null}),'미입력');
+''')
+
+
+def test_bid_rate_form_reopens_basis_and_sends_explicit_auto_contract():
+    _run_behavior(r'''
+const raw={notice_key:'SYN-N',title:'SYN notice',estimated_amount:999999,outcomes:[{
+ id:'SYN-result',department_id:'SYN-A',department_revision:1,source:'MANUAL_UI',status:'SUBMITTED',
+ updated_at:'2026-09-08T00:00:00Z',submitted_bid_amount:0,submitted_bid_rate:0,
+ submitted_rate_calculation:{mode:'AUTO',basis_kind:'BASE_AMOUNT',basis_amount:200,basis_reference:'SYN basis 2쪽'}}]};
+u.openResultLearningDialog(u.normalizeResultLearningNotice(raw));
+assert.equal(u.els.resultLearningRateMode.value,'AUTO');
+assert.equal(u.els.resultLearningRateBasisKind.value,'BASE_AMOUNT');
+assert.equal(u.els.resultLearningRateBasisAmount.value,200);
+assert.equal(u.els.resultLearningSubmittedRate.value,'0.0000');
+u.els.resultLearningSubmittedAmount.value='176.5433';
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(requests.length,1);
+const body=JSON.parse(requests[0].options.body);
+assert.equal(requests[0].options.method,'PATCH');
+assert.equal(body.expected_updated_at,'2026-09-08T00:00:00Z');
+assert.equal(body.submitted_bid_rate,88.2717);
+assert.equal(body.submitted_rate_calculation.basis_amount,200);
+assert.equal(body.submitted_rate_calculation.basis_kind,'BASE_AMOUNT');
+assert.equal(body.submitted_rate_calculation.basis_reference,'SYN basis 2쪽');
+respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningRateBasisAmount.value='';
+await u.saveResultLearning({preventDefault(){}});
+assert.equal(requests.length,1,'missing denominator must not fall back to notice budget');
+''')
+
+
+def test_bid_rate_preview_matches_server_at_numeric_boundaries():
+    from pai_loop.result_learning import ResultLearningFields
+
+    cases = []
+    for amount, basis in [
+        ("9007199254740991", "10000000000000000"),
+        ("1000000000000000128", "2000000000000000256"),
+        ("1.765433e307", "2e307"), ("1.765433e-307", "2e-307"),
+        ("5e-324", "1e-323"), ("1.7976931348623157e308", "1.7976931348623157e308"),
+        ("1e-300", "1e300"), ("0", "5e-324"),
+        ("0.000001", "2"), ("0.0000009999999999999999", "2"),
+        ("399.99999999999994", "200"), ("400", "200"),
+    ]:
+        server = ResultLearningFields(
+            status="SUBMITTED", submitted_bid_amount=float(amount),
+            submitted_rate_calculation={"mode": "AUTO", "basis_kind": "BASE_AMOUNT",
+                                        "basis_amount": float(basis), "basis_reference": "SYN basis"},
+        )
+        cases.append([amount, basis, f"{server.submitted_bid_rate:.4f}"])
+    _run_behavior("const cases=" + json.dumps(cases) + r''';
+for(const [amount,basis,expected] of cases) {
+ assert.equal(u.submittedRatePreview(amount,basis),expected,`${amount} / ${basis}`);
+}
+assert.equal(u.submittedRatePreview('400.00000000000006','200'),null);
+assert.equal(u.submittedRatePreview('   ','200'),null);
+''')
+
+
+@pytest.mark.parametrize("record_source", ["MANUAL_UI", "PPS_AUTO_FEEDBACK"])
+def test_bid_rate_edit_preserves_occurrence_timestamp_until_date_changes(record_source):
+    _run_behavior("const recordSource=" + json.dumps(record_source) + r''';
+const occurredAt='2026-09-07T16:30:45.123456Z';
+const raw={notice_key:'SYN-N',title:'SYN notice',outcomes:[{
+ id:'SYN-result',department_id:recordSource==='MANUAL_UI'?'SYN-A':null,department_revision:1,source:recordSource,status:'SUBMITTED',
+ updated_at:'2026-09-08T00:00:00Z',occurred_at:occurredAt,source_reference:'SYN result evidence',
+ submitted_bid_amount:100,submitted_bid_rate:50,
+ submitted_rate_calculation:recordSource==='MANUAL_UI'
+  ?{mode:'AUTO',basis_kind:'BASE_AMOUNT',basis_amount:200,basis_reference:'SYN price evidence'}:{mode:'MANUAL'}}]};
+u.openResultLearningDialog(u.normalizeResultLearningNotice(raw));
+u.els.resultLearningRateMode.value='AUTO';
+u.els.resultLearningRateBasisKind.value='BASE_AMOUNT';
+u.els.resultLearningRateBasisAmount.value='200';
+u.els.resultLearningRateBasisReference.value='SYN price evidence';
+u.els.resultLearningSubmittedAmount.value='176.5433';
+let saving=u.saveResultLearning({preventDefault(){}});await tick();
+let body=JSON.parse(requests[0].options.body);
+assert.equal(body.occurred_at,occurredAt,'a rate-only edit must preserve the original timestamp');
+assert.equal(body.source_reference,'SYN result evidence');
+assert.equal(body.submitted_rate_calculation.basis_reference,'SYN price evidence');
+assert.equal(body.submitted_bid_rate,88.2717);
+if(recordSource==='MANUAL_UI') {
+ assert.equal(requests[0].options.method,'PATCH');
+ assert.equal(body.expected_updated_at,'2026-09-08T00:00:00Z');
+} else {
+ assert.equal(requests[0].options.method,'POST');
+ assert.equal(body.basis_outcome_id,'SYN-result');
+ assert.equal(body.expected_outcome_id,null);
+}
+respond(requests[0],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningOccurredAt.value='2026-09-09';
+saving=u.saveResultLearning({preventDefault(){}});await tick();
+body=JSON.parse(requests[1].options.body);
+assert.equal(body.occurred_at,'2026-09-09T00:00:00+09:00');
+respond(requests[1],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningOccurredAt.value='';
+saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(JSON.parse(requests[2].options.body).occurred_at,null);
+respond(requests[2],422,{detail:'SYN stop before reload'});await saving;
+u.els.resultLearningRateMode.value='MANUAL';
+u.els.resultLearningSubmittedRate.value='77.1234';
+saving=u.saveResultLearning({preventDefault(){}});await tick();
+body=JSON.parse(requests[3].options.body);
+assert.deepEqual(body.submitted_rate_calculation,{mode:'MANUAL'});
+assert.equal(body.submitted_bid_rate,77.1234);
+respond(requests[3],422,{detail:'SYN stop before reload'});await saving;
+''')
 
 
 def test_old_me_and_old_401_cannot_restore_or_expire_another_session():
