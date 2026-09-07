@@ -57,3 +57,11 @@ Admin-cookie endpoints:
 - `GET /api/v1/accounts/audit/list`: latest 200 bounded metadata events, no credentials, evidence, reasons, or raw request bodies.
 
 There is no public signup, account deletion, role reassignment, or impersonation endpoint. Bootstrap and account activation are separate operator actions. Existing supported SQLite databases receive additive account tables and nullable identity columns under the migration transaction; migration checks remain idempotent and fail closed on incompatible physical schema. PostgreSQL uses the same additive DDL, but this local validation does not activate or connect to a production database.
+
+## PostgreSQL CI integration gate
+
+`tests/test_postgres_department_accounts.py` runs against the existing disposable PostgreSQL 16 service through `PAI_LOOP_TEST_POSTGRES_URL` in the normal CI test/coverage step. It adds no duplicate workflow execution or service. Missing configuration skips PostgreSQL integration cases locally and fails them when `CI=true`.
+
+The fixture accepts only the repository's local host allowlist and `pai_loop_test` database prefix, rejects URL/service/host-address overrides, and creates a generated `syn_accounts_<uuid>` schema per test. Only that schema is eligible for teardown. It never creates, drops, or migrates the public schema or a production database.
+
+The real PostgreSQL cases cover an existing pre-account schema upgrade twice with unassigned decision IDs/labels/snapshots and linked outcomes preserved; two simultaneous first decisions/results for one department; independent writes from different departments; cross-department overwrite rejection; and two updates using the same result version. Create tests observe actual ungranted PostgreSQL advisory locks before release; the update test synchronizes two real SQL updates after both handlers read the original version. A local skipped case is not PostgreSQL validation: these six integration cases must pass in CI before rollout.
