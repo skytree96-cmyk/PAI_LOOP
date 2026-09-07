@@ -624,6 +624,27 @@ def _analysis_versions(
         (".hwpx", "UNVERIFIED_QUOTE", "REVIEW", "QUOTE_UNVERIFIED"),
         (".pdf", "SCHEMA_VALIDATION_ERROR", "REVIEW", "OPENAI_REVIEW"),
         (".pdf", None, "ACCEPTED", "ANALYZED"),
+        # Shared container/budget/safety failures carry no format prefix. They
+        # must still resolve to the extraction marker for the attachment's own
+        # format, never to OPENAI_REVIEW, whose operator text states the
+        # document was read and only the LLM stage failed.
+        (".pdf", "DOCUMENT_EMPTY", "REVIEW", "PDF_EXTRACT_FAILED"),
+        (".pdf", "DOCUMENT_INPUT_TOO_LARGE", "REVIEW", "PDF_EXTRACT_FAILED"),
+        (".hwpx", "ARCHIVE_INVALID", "REVIEW", "HWPX_EXTRACT_FAILED"),
+        (".hwpx", "ARCHIVE_ENCRYPTED_MEMBER", "REVIEW", "HWPX_EXTRACT_FAILED"),
+        (".hwpx", "UNSAFE_DOCUMENT_FILENAME", "REVIEW", "HWPX_EXTRACT_FAILED"),
+        # An .hwpx carrying OLE bytes is deliberately routed to the HWP5 reader.
+        (".hwpx", "HWP_FILE_HEADER_INVALID", "REVIEW", "HWPX_EXTRACT_FAILED"),
+        (".xlsx", "ARCHIVE_NO_DOCUMENT_MEMBERS", "REVIEW", "DOCUMENT_EXTRACT_FAILED"),
+        (".xls", "XLS_CODEPAGE_UNVERIFIED", "REVIEW", "DOCUMENT_EXTRACT_FAILED"),
+        (".zip", "MEMBER_EXTRACTION_FAILED", "REVIEW", "DOCUMENT_EXTRACT_FAILED"),
+        (".hwp", "XML_DTD_FORBIDDEN", "REVIEW", "DOCUMENT_EXTRACT_FAILED"),
+        # The more specific earlier labels keep priority.
+        (".hwp", "UNSUPPORTED_ATTACHMENT_TYPE", "REVIEW", "UNSUPPORTED_ATTACHMENT"),
+        (".hwp", "HWP_ONLY_UNSUPPORTED_R07", "REVIEW", "HWP_ONLY_UNSUPPORTED"),
+        # An LLM-stage failure must not be relabelled as an extraction failure.
+        (".hwpx", "SCHEMA_VALIDATION_ERROR", "REVIEW", "OPENAI_REVIEW"),
+        (".xls", "PROVIDER_TIMEOUT", "REVIEW", "OPENAI_REVIEW"),
     ],
 )
 def test_public_analysis_reason_is_current_manifest_bound_and_public_safe(
