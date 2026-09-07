@@ -564,12 +564,12 @@ def test_nonprofit_small_business_or_does_not_extend_to_another_requirement() ->
     by_id = {item["requirement_id"]: item for item in result["items"]}
 
     assert by_id["SYN-SME-OR"]["outcome"] == "PASS_EXCEPTION"
-    # The OR clause proves scope for its own clause only. A separate certificate
-    # requirement keeps its own explicit confirmed-absence FAIL: nothing in the
-    # OR clause says this notice waives that other certificate.
-    assert by_id["SYN-SME-SEPARATE"]["outcome"] == "FAIL_CONFIRMED"
+    # A separate row does not establish independent applicability: this remains
+    # the SME certificate family, and its relation to the OR clause is unbound.
+    # Match the existing same-family scope REVIEW contract, without granting PASS.
+    assert by_id["SYN-SME-SEPARATE"]["outcome"] == "REVIEW"
     assert by_id["SYN-SME-SEPARATE"]["blocking"] is True
-    assert by_id["SYN-SME-SEPARATE"]["company_fact_key"] != "nonprofit_entity"
+    assert by_id["SYN-SME-SEPARATE"]["company_fact_key"] == "small_business_nonprofit_exception_scope"
 
 
 def test_nonprofit_small_business_or_never_downgrades_direct_production_fail() -> None:
@@ -591,18 +591,15 @@ def test_nonprofit_small_business_or_never_downgrades_direct_production_fail() -
     by_id = {item["requirement_id"]: item for item in result["items"]}
 
     assert by_id["SYN-SME-OR"]["outcome"] == "PASS_EXCEPTION"
+    assert by_id["SYN-DP-SEPARATE"]["outcome"] == "FAIL_CONFIRMED"
     assert by_id["SYN-DP-SEPARATE"]["company_fact_key"] != "nonprofit_entity"
     assert by_id["SYN-DP-SEPARATE"]["company_fact_key"] != (
         "direct_production_nonprofit_exception_scope"
     )
 
 
-def test_separate_certificate_fail_does_not_deny_a_nonprofit_clause_elsewhere() -> None:
-    """A confirmed-absence FAIL must not deny a nonprofit exception the notice has.
-
-    The claim is about 공고 원문, so it is guarded by notice-wide presence. The
-    outcome is unchanged; only the stated reason is.
-    """
+def test_separate_certificate_review_does_not_deny_a_nonprofit_clause_elsewhere() -> None:
+    """The same-family scope review must not deny the notice's stated alternative."""
 
     result = classify_requirements(
         [
@@ -617,6 +614,7 @@ def test_separate_certificate_fail_does_not_deny_a_nonprofit_clause_elsewhere() 
         "SYN-SME-SEPARATE"
     ]
 
+    assert separate["outcome"] == "REVIEW"
     assert separate["blocking"] is True
     assert separate["company_fact_key"] != "nonprofit_entity"
     assert "비영리법인 예외가 없어" not in separate["message"]
@@ -637,8 +635,8 @@ def test_absence_claim_survives_when_no_requirement_mentions_a_nonprofit() -> No
     assert "비영리법인 예외가 없어" in item["message"]
 
 
-def test_unrecognized_nonprofit_alternative_fails_without_denying_the_clause() -> None:
-    """Fail closed, but never claim the notice text has no nonprofit exception."""
+def test_legal_subset_nonprofit_alternative_needs_bound_membership() -> None:
+    """A false SME branch cannot refute an explicitly stated unbound OR branch."""
 
     condition = "소기업·소상공인 확인서 소지 업체 또는 관계법령상 비영리법인에 해당해야 함."
     item = classify_requirements(
@@ -648,11 +646,131 @@ def test_unrecognized_nonprofit_alternative_fails_without_denying_the_clause() -
         evaluation_date="2026-09-07",
     )["items"][0]
 
-    assert item["outcome"] == "FAIL_CONFIRMED"
+    assert item["outcome"] == "REVIEW"
     assert item["blocking"] is True
-    assert item["company_fact_key"] != "nonprofit_entity"
+    assert item["company_fact_key"] == "small_business_nonprofit_legal_subset"
     assert "비영리법인 예외가 없어" not in item["message"]
-    assert "원문 검토" in item["message"]
+    assert "검토" in item["message"]
+
+
+# PUBLIC_POLICY_PROJECTION: observed UI wording, not an ACCEPTED attachment
+# extraction or a verified quote from its raw source. This tests only policy.
+_PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR = (
+    "소기업·소상공인 확인서를 소지한 업체 또는 "
+    "우선조달계약 예외 규정에 따른 비영리법인 중 하나에 해당"
+)
+
+
+@pytest.mark.parametrize("condition", [
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR,
+    "소기업·소상공인 확인서를 소지한 업체 또는 "
+    "비영리법인(우선조달 예외 대상) 중 하나에 해당해야 함.",
+    "소기업·소상공인 확인서를 소지한 업체 또는 "
+    "시행령 제2조의3 제1항 제2호에 따른 비영리법인 중 하나에 해당하는 업체여야 함.",
+])
+def test_public_policy_projection_legal_subset_never_uses_generic_nonprofit_pass(condition: str) -> None:
+    profile = load_public_company_profile()
+    assert profile["facts"]["nonprofit_entity"]["value"] is True
+    item = classify_requirements(
+        [requirement("SYN-SME-LEGAL-SUBSET", "CERTIFICATION", condition)],
+        profile=profile,
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "REVIEW"
+    assert item["blocking"] is True
+    assert item["company_fact_key"] == "small_business_nonprofit_legal_subset"
+    assert item["evidence"] is None
+
+
+@pytest.mark.parametrize("condition", [
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR.replace(" 또는 ", " 및 "),
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR.replace("해당", "해당하지 않음"),
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR + ". 단, 비영리법인은 제외한다.",
+    "참고사항: " + _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR,
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR + "하며 직접생산확인증명서도 보유해야 함.",
+])
+def test_legal_subset_review_never_borrows_a_partial_or_negated_alternative(condition: str) -> None:
+    items = classify_requirements(
+        [requirement("SYN-SME-SUBSET-UNSUPPORTED", "CERTIFICATION", condition)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+
+    assert all(item["company_fact_key"] != "small_business_nonprofit_legal_subset" for item in items)
+    assert all(not item["outcome"].startswith("PASS") for item in items)
+
+
+@pytest.mark.parametrize("condition", [
+    "소기업·소상공인 확인서를 보유해야 함.",
+    "소기업·소상공인 확인서는 유효기간 내에 있어야 함.",
+])
+def test_separate_sme_possession_or_validity_keeps_scope_review(condition: str) -> None:
+    items = classify_requirements(
+        [
+            requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
+            requirement("SYN-SME-RELATED", "CERTIFICATION", condition),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    related = next(item for item in items if item["requirement_id"] == "SYN-SME-RELATED")
+
+    assert related["outcome"] == "REVIEW"
+    assert related["company_fact_key"] == "small_business_nonprofit_exception_scope"
+
+
+@pytest.mark.parametrize("alternative", [
+    _NONPROFIT_SMALL_BUSINESS_OR,
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR,
+])
+@pytest.mark.parametrize("independent", [
+    "직접생산확인증명서를 보유해야 함.",
+    "중소기업확인서는 비영리법인도 보유해야 함.",
+    "중소기업확인서를 보유해야 하며 비영리법인은 제외한다.",
+    "중소기업확인서를 보유해야 하며 별도 등록도 완료해야 함.",
+    "중소기업확인서를 예외 없이 반드시 보유해야 함.",
+])
+def test_sme_alternative_review_never_masks_independent_or_excluded_failure(
+    alternative: str, independent: str,
+) -> None:
+    items = classify_requirements(
+        [
+            requirement("SYN-SME-ALTERNATIVE", "CERTIFICATION", alternative),
+            requirement("SYN-INDEPENDENT-GATE", "CERTIFICATION", independent),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    gate = next(item for item in items if item["requirement_id"] == "SYN-INDEPENDENT-GATE")
+
+    assert gate["outcome"] == "FAIL_CONFIRMED"
+    assert gate["blocking"] is True
+    assert gate["company_fact_key"] in {"direct_production_certificate", "sme_certificate"}
+
+
+@pytest.mark.parametrize("alternative", [
+    _NONPROFIT_SMALL_BUSINESS_OR,
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR,
+])
+def test_optional_alternative_does_not_reclassify_a_mandatory_sme_gate(alternative: str) -> None:
+    items = classify_requirements(
+        [
+            requirement("SYN-OPTIONAL-OR", "CERTIFICATION", alternative, mandatory=False),
+            requirement("SYN-REQUIRED-SME", "CERTIFICATION", "중소기업확인서를 보유해야 함."),
+        ],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    gate = next(item for item in items if item["requirement_id"] == "SYN-REQUIRED-SME")
+
+    assert gate["outcome"] == "FAIL_CONFIRMED"
+    assert gate["company_fact_key"] == "sme_certificate"
 
 
 def test_slash_industry_logic_and_training_scope_stay_fail_closed() -> None:
