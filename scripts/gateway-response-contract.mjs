@@ -1,5 +1,6 @@
 // Embedded directly in Respond-to-Webhook expressions. A separate Code node
 // cannot be the final guard: a runner failure may forward that node's input.
+// Keep an explicit catch binding: n8n's AST scope transform rejects `catch {}`.
 export function guardGatewayResponse(value, successAllowed) {
   const failure = () => ({ status: 500, body: { gateway_error: {
     version: "gateway-failure-v1", stage: "OUTPUT_NORMALIZATION",
@@ -39,7 +40,7 @@ export function guardGatewayResponse(value, successAllowed) {
     return { status: 200, body: { id: value.id, status: "completed", model: "claude-sonnet-5",
       output_text: JSON.stringify(parsed), usage: { input_tokens: usage.input_tokens ?? null,
         output_tokens: usage.output_tokens ?? null, total_tokens: usage.total_tokens ?? null } } };
-  } catch {
+  } catch (ignored) {
     return failure();
   }
 }
