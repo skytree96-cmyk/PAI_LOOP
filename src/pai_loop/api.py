@@ -31,7 +31,7 @@ from .department_ranking import (
     rank_notice_for_department,
 )
 from .integrations.awards import PpsAwardClient
-from .award_intelligence import build_award_intelligence
+from .award_intelligence import build_annual_award_table, build_award_intelligence
 from .integrations.pps import (
     KST,
     PpsApiError,
@@ -2849,6 +2849,15 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
     )
     result["notice_key"] = notice.notice_key
     result["period"] = {"from": cutoff.isoformat(), "to": as_of.date().isoformat(), "years": 3}
+    # The annual table reads the same stored rows. It performs no request of
+    # its own, so the public read stays free of remote traffic and writes.
+    result["annual_award_table"] = build_annual_award_table(
+        history,
+        target_title=notice.title,
+        target_agency=notice.agency,
+        as_of=as_of,
+        notice_source_url=notice.source_url,
+    )
     result["target_amount_basis"] = {
         "kind": "NOTICE_ESTIMATED_AMOUNT" if notice.estimated_amount else "UNAVAILABLE",
         "amount": notice.estimated_amount,
@@ -2994,6 +3003,57 @@ def refresh_award_history(
     if quarantined:
         warnings.append(f"필수 공개 필드가 없는 {quarantined}건은 격리했습니다.")
 
+    opening_by_identity: dict[str, list[dict[str, Any]]] = {}
+    opening_requested = 0
+    opening_failed = 0
+    if payload.include_opening_results and candidates and not payload.dry_run:
+        selected = list(candidates.items())[: payload.max_opening_result_notices]
+        if len(candidates) > len(selected):
+            warnings.append(
+                f"개찰 결과는 상한에 따라 {len(selected)}건만 조회했습니다. "
+                f"나머지 {len(candidates) - len(selected)}건은 미수집으로 남습니다."
+            )
+        try:
+            with PpsAwardClient(
+                service_key=settings.pps_api_key,
+                base_url=settings.pps_base_url,
+                timeout_seconds=12,
+                max_retries=1,
+            ) as opening_client:
+                for identity, item in selected:
+                    if time.monotonic() >= award_deadline:
+                        warnings.append("개찰 결과 조회는 수집 제한 시간에서 중단했습니다.")
+                        break
+                    opening_requested += 1
+                    try:
+                        opening_by_identity[identity] = opening_client.fetch_opening_results(
+                            bid_notice_no=item["bid_notice_no"],
+                            revision_no=item.get("revision_no") or "000",
+                            classification_no=item.get("classification_no") or "0",
+                            rebid_no=item.get("rebid_no") or "000",
+                            rows=payload.page_size,
+                            max_pages=payload.opening_result_max_pages,
+                            deadline_monotonic=award_deadline,
+                        )
+                    except PpsApiError:
+                        # A per-notice failure leaves that row untouched, so a
+                        # previously stored opening result is never replaced
+                        # with a false empty competitor set.
+                        opening_failed += 1
+                api_calls += opening_client.request_count
+        except Exception:
+            _mark_pps_job_failed(
+                session,
+                job_id=job.id,
+                error_code="PPS_OPENING_RESULT_CLIENT_ERROR",
+                warning="조달청 개찰결과 클라이언트가 예기치 않게 종료되었습니다.",
+            )
+            raise
+        if opening_failed:
+            warnings.append(f"{opening_failed}건의 개찰 결과 조회가 실패해 미수집으로 남겼습니다.")
+    elif payload.include_opening_results and payload.dry_run:
+        warnings.append("dry_run이므로 개찰 결과 조회를 실행하지 않았습니다.")
+
     created = 0
     updated = 0
     duplicates = provider_duplicates
@@ -3022,6 +3082,11 @@ def refresh_award_history(
             "similarity_score": _award_similarity(notice.title, item["title"]),
             "source": "PPS",
         }
+        if identity in opening_by_identity:
+            companies = opening_by_identity[identity]
+            values["opening_results"] = companies
+            values["opening_results_status"] = "COLLECTED" if companies else "UNAVAILABLE"
+            values["opening_results_read_at"] = datetime.now(timezone.utc)
         if existing is None:
             created += 1
             if not payload.dry_run:
@@ -3051,6 +3116,11 @@ def refresh_award_history(
         else:
             duplicates += 1
 
+    if payload.include_opening_results:
+        warnings.append(
+            f"개찰 결과를 {opening_requested}건 조회했습니다. 조회하지 않은 낙찰 건의 "
+            "참여업체와 평가점수는 미수집 상태로 남습니다."
+        )
     job.status = "PARTIAL" if window_errors or hit_time_limit else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)

@@ -16,6 +16,49 @@ from .pps import (
 )
 
 DEFAULT_AWARD_OPERATION = "as/ScsbidInfoService/getScsbidListSttusServcPPSSrch"
+DEFAULT_OPENING_RESULT_OPERATION = (
+    "as/ScsbidInfoService/getOpengResultListInfoOpengCompt"
+)
+
+# Field names confirmed against one real service-procurement response. The
+# Swagger example omits the score fields, but the live envelope carried them,
+# so each score is read through a short alias list and stays missing rather
+# than being guessed when no alias is present. Technical evaluation here is
+# the bid's technical score, NOT the separate quantitative component this
+# product scores elsewhere.
+_OPENING_COMPANY_NAME_KEYS = ("prcbdrNm", "bidwinnrNm", "cmpnyNm", "corpNm")
+_OPENING_BID_AMOUNT_KEYS = ("bidprcAmt", "bidPrceAmt", "sucsfbidAmt")
+_OPENING_TECHNICAL_KEYS = ("techEvlVal",)
+_OPENING_PRICE_KEYS = ("bidPrceEvlVal",)
+_OPENING_TOTAL_KEYS = ("totalEvlAmtVal",)
+_OPENING_RANK_KEYS = ("opengRank", "rmrk")
+
+
+def _first_present(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def normalise_opening_result(item: dict[str, Any]) -> dict[str, Any]:
+    """Read one opening-result company row without inventing an absent score.
+
+    Every numeric field is ``None`` when the provider omitted it or sent an
+    empty string. ``is_winner`` is deliberately absent here: an opening rank
+    is not a final award, and the caller resolves the winner from the separate
+    award endpoint instead.
+    """
+
+    return {
+        "company_name": str(_first_present(item, _OPENING_COMPANY_NAME_KEYS) or "").strip(),
+        "bid_amount": _number(_first_present(item, _OPENING_BID_AMOUNT_KEYS)),
+        "technical_evaluation": _number(_first_present(item, _OPENING_TECHNICAL_KEYS)),
+        "price_evaluation": _number(_first_present(item, _OPENING_PRICE_KEYS)),
+        "total_evaluation": _number(_first_present(item, _OPENING_TOTAL_KEYS)),
+        "opening_rank": _integer(_first_present(item, _OPENING_RANK_KEYS)),
+    }
 
 
 def _integer(value: Any) -> int | None:
@@ -94,6 +137,66 @@ class PpsAwardClient(PpsClient):
                 if folded_keyword in award["title"].casefold():
                     results.append(award)
             if page * rows >= total or not raw_items:
+                break
+            if page >= max_pages:
+                self.hit_page_limit = True
+                break
+            page += 1
+        return results
+
+    def fetch_opening_results(
+        self,
+        *,
+        bid_notice_no: str,
+        revision_no: str = "000",
+        classification_no: str = "0",
+        rebid_no: str = "000",
+        operation_path: str = DEFAULT_OPENING_RESULT_OPERATION,
+        rows: int = 100,
+        max_pages: int = 2,
+        deadline_monotonic: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read the opening-result companies for exactly one notice.
+
+        The bound is deliberately tight: one notice per call, a caller-set page
+        cap and the same wall deadline the award sweep already honours. Rows
+        with no company name are dropped rather than stored as a blank bidder.
+        """
+
+        if not str(bid_notice_no).strip():
+            raise ValueError("bid_notice_no is required")
+        if not 1 <= rows <= 999:
+            raise ValueError("rows must be between 1 and 999")
+        if max_pages < 1:
+            raise ValueError("max_pages must be positive")
+
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        page = 1
+        while page <= max_pages:
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                self.hit_time_limit = True
+                break
+            payload = self._request(
+                operation_path,
+                {
+                    "inqryDiv": "1",
+                    "bidNtceNo": str(bid_notice_no).strip(),
+                    "bidNtceOrd": str(revision_no or "000"),
+                    "bidClsfcNo": str(classification_no or "0"),
+                    "rbidNo": str(rebid_no or "000"),
+                    "pageNo": page,
+                    "numOfRows": rows,
+                },
+            )
+            raw_items, total = parse_paged_response(payload)
+            for raw in raw_items:
+                company = normalise_opening_result(raw)
+                if not company["company_name"] or company["company_name"] in seen:
+                    continue
+                seen.add(company["company_name"])
+                results.append(company)
+            if not raw_items or page * rows >= total:
                 break
             if page >= max_pages:
                 self.hit_page_limit = True

@@ -354,6 +354,13 @@ class AwardHistoryItem(Base):
     awarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     similarity_score: Mapped[float] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String(32), default="PPS")
+    # Per-company opening results for this award, or NULL when they were never
+    # read. NULL and [] are different facts: NULL means the bounded opening
+    # endpoint was not called for this row, [] means it answered with no
+    # usable company. Neither is ever rendered as a zero score.
+    opening_results: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    opening_results_status: Mapped[str | None] = mapped_column(String(32))
+    opening_results_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     target_notice: Mapped[Notice] = relationship(back_populates="award_history")
