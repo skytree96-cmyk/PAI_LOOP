@@ -200,6 +200,82 @@ def test_cancelled_submission_with_old_bid_amount_is_not_participation(identity_
     assert _automatic_rows(identity_client) == []
 
 
+@pytest.mark.parametrize("status", ["NO_BID", "CANCELLED"])
+def test_latest_same_opening_nonparticipation_does_not_reuse_old_submission(identity_client, status):
+    old_id = _participation(identity_client, _identity())
+    response = identity_client.post("/api/v1/result-learning", json={
+        "notice_key": NOTICE_KEY, "idempotency_key": "SYN-withdrawn-opening-request",
+        "record_status": "VALIDATED", "status": status,
+        "source_reference": "SYN 동일 회차 참여 정정", "opening_identity": _identity(),
+    })
+    assert response.status_code == 201, response.text
+    assert _refresh(identity_client)["items"][0]["result"] == "REVIEW"
+    assert _automatic_rows(identity_client) == []
+    with identity_client.app.state.session_factory() as session:
+        assert session.get(BidOutcome, old_id).status == "SUBMITTED"
+
+
+def test_manual_opening_identity_edits_keep_previous_identity_evidence(identity_client):
+    row = identity_client.post("/api/v1/result-learning", json=_submission_payload()).json()["outcome"]
+    changed = identity_client.patch(f"/api/v1/result-learning/{row['id']}", json={
+        "expected_updated_at": row["updated_at"], "opening_identity": _identity(rebid_no="3"),
+    })
+    assert changed.status_code == 200, changed.text
+    with identity_client.app.state.session_factory() as session:
+        stored = session.get(BidOutcome, row["id"]).evidence_json
+        assert stored["opening_identity"] == _identity(rebid_no="3")
+        assert any(entry["before"] == _identity() and entry["after"] == _identity(rebid_no="3")
+                   for entry in stored.get("_opening_identity_history", []))
+        history = stored["_opening_identity_history"]
+        assert history[-1]["revision"] == 2 and history[-1]["changed_at"]
+    updated = changed.json()["outcome"]
+    note = identity_client.patch(f"/api/v1/result-learning/{row['id']}", json={
+        "expected_updated_at": updated["updated_at"], "operator_note": "SYN unrelated note",
+    })
+    assert note.status_code == 200
+    with identity_client.app.state.session_factory() as session:
+        assert session.get(BidOutcome, row["id"]).evidence_json["_opening_identity_history"] == history
+    stale = identity_client.patch(f"/api/v1/result-learning/{row['id']}", json={
+        "expected_updated_at": row["updated_at"], "opening_identity": None,
+    })
+    assert stale.status_code == 409
+    cleared = identity_client.patch(f"/api/v1/result-learning/{row['id']}", json={
+        "expected_updated_at": note.json()["outcome"]["updated_at"], "opening_identity": None,
+    })
+    assert cleared.status_code == 200
+    with identity_client.app.state.session_factory() as session:
+        stored = session.get(BidOutcome, row["id"]).evidence_json
+        assert "opening_identity" not in stored
+        assert stored["_opening_identity_history"][:-1] == history
+        assert stored["_opening_identity_history"][-1]["before"] == _identity(rebid_no="3")
+        assert stored["_opening_identity_history"][-1]["after"] is None
+
+
+@pytest.mark.parametrize("same_opening", [False, True])
+def test_new_submission_or_another_opening_cancellation_does_not_hide_participation(identity_client, same_opening):
+    if same_opening:
+        _participation(identity_client, _identity(), key="SYN-previous-cancellation", status="CANCELLED")
+        _participation(identity_client, _identity(), key="SYN-new-submission")
+    else:
+        _participation(identity_client, _identity())
+        _participation(identity_client, _identity(rebid_no="3"), key="SYN-other-cancellation", status="CANCELLED")
+    assert _refresh(identity_client)["items"][0]["outcome_status"] == "LOST"
+    assert len(_automatic_rows(identity_client)) == 1
+
+
+def test_unreviewed_provider_observation_does_not_supersede_human_participation(identity_client):
+    _participation(identity_client, _identity())
+    with identity_client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        session.add(BidOutcome(
+            notice_id=notice.id, outcome_key="SYN-neutral-provider-observation", status="CANCELLED",
+            source="PPS_IMPORT", observed_at=datetime.now(timezone.utc),
+            evidence_json={"opening_identity": _identity()},
+        ))
+        session.commit()
+    assert _refresh(identity_client)["items"][0]["outcome_status"] == "LOST"
+
+
 def _submission_payload(**changes):
     return {
         "notice_key": NOTICE_KEY, "idempotency_key": "SYN-opening-manual-request",

@@ -26,10 +26,17 @@ and returned in result-learning outcome projections. No database migration is
 needed. Existing manual saves can omit it; omission does not authorize an
 automatic loss. Updates retain the existing version/CAS check, and changing the
 identity under an already-used create idempotency key returns conflict.
+Identity changes and explicit removal retain before/after snapshots, revision,
+timestamp and workflow actor in private `_opening_identity_history` evidence.
+Unrelated edits and stale requests do not add identity-history entries.
 
 Automatic `LOST` requires a non-automatic `SUBMITTED`, `WON` or `LOST` record with
 `VALIDATED` workflow, actual human review and the same complete opening identity.
 `CANCELLED` with an old bid amount cannot serve as participation. The automatic
+lookup first resolves the latest human-reviewed record for that exact opening, so a
+new `NO_BID`, `CANCELLED`, or unvalidated correction cannot revive an older
+validated submission. A record for another opening does not supersede it.
+The automatic
 evidence retains the specific submission ID, its verified opening identity and
 its existing human-review status. It does not mark the automated operation as
 human-reviewed or synthesize an explanation for why the bid lost.

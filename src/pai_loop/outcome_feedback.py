@@ -268,22 +268,25 @@ def _submission_basis(
                 BidOutcome.source.is_(None),
                 BidOutcome.source != OUTCOME_FEEDBACK_SOURCE,
             ),
-            BidOutcome.status.in_(["SUBMITTED", "WON", "LOST"]),
         )
         .order_by(BidOutcome.observed_at.desc(), BidOutcome.created_at.desc())
         ).all()
     )
     for candidate in candidates:
         evidence = candidate.evidence_json if isinstance(candidate.evidence_json, dict) else {}
+        if normalise_opening_identity(evidence.get("opening_identity")) != opening_identity:
+            continue
+        # Resolve the latest human-reviewed record before checking its status.
+        # A withdrawn/draft correction must not revive an older submission.
         workflow = evidence.get("_workflow")
-        if not isinstance(workflow, dict):
+        if not isinstance(workflow, dict) or workflow.get("human_reviewed") is not True:
             continue
         if (
             str(workflow.get("record_status") or "").upper() == "VALIDATED"
-            and workflow.get("human_reviewed") is True
-            and normalise_opening_identity(evidence.get("opening_identity")) == opening_identity
+            and candidate.status in {"SUBMITTED", "WON", "LOST"}
         ):
             return candidate
+        return None
     return None
 
 

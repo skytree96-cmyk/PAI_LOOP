@@ -460,6 +460,7 @@ def _evidence(
     previous_rate_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = dict(existing) if isinstance(existing, dict) else {}
+    previous_opening_identity = result.get("opening_identity")
     if opening_identity is None:
         result.pop("opening_identity", None)
     else:
@@ -513,6 +514,17 @@ def _evidence(
             "calculation": after["calculation"],
             "history": history,
         }
+    if previous_opening_identity != opening_identity:
+        history = result.get("_opening_identity_history")
+        history = list(history) if isinstance(history, list) else []
+        history.append({
+            "revision": revision,
+            "changed_at": datetime.now(timezone.utc).isoformat(),
+            "actor": result["_workflow"]["updated_by"],
+            "before": previous_opening_identity,
+            "after": opening_identity,
+        })
+        result["_opening_identity_history"] = history
     return result
 
 
