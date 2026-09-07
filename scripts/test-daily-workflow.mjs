@@ -72,7 +72,9 @@ assert.equal(outcomeFeedbackHttp.onError, "continueRegularOutput");
 assert.doesNotMatch(JSON.stringify(outcomeFeedbackHttp), /X-PAI-LOOP-API-KEY/i);
 assert.equal(nodes.get("Process Daily Chunks Serially").type, "n8n-nodes-base.splitInBatches");
 assert.equal(nodes.get("Process Daily Chunks Serially").parameters.batchSize, 1);
-assert.equal(continuationNodes.get("Process Continuation Chunks Serially").parameters.batchSize, 1);
+assert.equal(continuationNodes.get("Process Continuation Chunks (Max 2)").parameters.batchSize, 2);
+assert.equal(continuationNodes.get("Process Continuation Chunks (Max 2)").type, "n8n-nodes-base.splitInBatches");
+assert.equal(continuationNodes.get("Validate Chunk Result").parameters.mode, "runOnceForEachItem");
 assert.match(nodes.get("Analyze Evaluate and Snapshot PPS Notices").parameters.body, /operation_id:/);
 assert.match(nodes.get("Analyze Evaluate and Snapshot PPS Notices").parameters.body, /segment_id:/);
 assert.match(nodes.get("Analyze Evaluate and Snapshot PPS Notices").parameters.body, /chunk_index:/);
@@ -109,8 +111,8 @@ assert.deepEqual(targets(daily, "Record Batch Analysis Skipped"), ["Refresh PPS 
 assert.deepEqual(targets(daily, "Refresh PPS Outcome Feedback Fail-Soft"), ["Normalize PPS Outcome Feedback"]);
 assert.deepEqual(targets(daily, "Normalize PPS Outcome Feedback"), ["Fetch Ranked Seven-Day Briefing"]);
 assert.deepEqual(targets(daily, "Build Seven-Day Offline Fixture"), ["Normalize Optional Quant and Pricing"]);
-assert.deepEqual(targets(continuation, "Expand Bounded Three-Notice Chunks"), ["Process Continuation Chunks Serially"]);
-assert.deepEqual(targets(continuation, "Validate Chunk Result"), ["Process Continuation Chunks Serially"]);
+assert.deepEqual(targets(continuation, "Expand Bounded Three-Notice Chunks"), ["Process Continuation Chunks (Max 2)"]);
+assert.deepEqual(targets(continuation, "Validate Chunk Result"), ["Process Continuation Chunks (Max 2)"]);
 
 const ppsResponse = {
   job_id: "pps-test", source: "PPS", mode: "live", status: "COMPLETED",
@@ -333,6 +335,31 @@ const continuationPlan = one(continuationNodes, "Validate Backfill Plan", {
 }, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
 assert.equal(continuationPlan.operation.segmentId, operationResponse.segment_id);
 assert.deepEqual(continuationPlan.operation.chunkIndices, [11, 12, 13]);
+const concurrentChunkResults = continuationPlan.operation.chunks.map((keys, index) =>
+  one(continuationNodes, "Validate Chunk Result", responseFor(keys, String(index + 301)))
+);
+const aggregateConcurrent = (rows) => one(continuationNodes, "Aggregate Backfill Progress", {}, {
+  node: { "Validate Backfill Plan": { json: continuationPlan } },
+  input: { all: () => rows.map((json) => ({ json })) },
+});
+const reverseCompleted = aggregateConcurrent([...concurrentChunkResults].reverse());
+assert.equal(reverseCompleted.operation.processed, 3);
+assert.equal(reverseCompleted.operation.chunksExecuted, 3);
+assert.equal(reverseCompleted.operation.segmentId, continuationPlan.operation.segmentId);
+const wrongKeyChunks = structuredClone(concurrentChunkResults);
+wrongKeyChunks[0].noticeKeys = ["SYN-UNLEASED-NOTICE"];
+assert.throws(() => aggregateConcurrent(wrongKeyChunks), /duplicated or incomplete/);
+const missingChunk = concurrentChunkResults.slice(1);
+assert.throws(() => aggregateConcurrent(missingChunk), /duplicated or incomplete/);
+const duplicateChunk = [...concurrentChunkResults.slice(0, 2), concurrentChunkResults[0]];
+assert.throws(() => aggregateConcurrent(duplicateChunk), /duplicated or incomplete/);
+const reusedChild = structuredClone(concurrentChunkResults);
+reusedChild[1].childJobId = reusedChild[0].childJobId;
+assert.throws(() => aggregateConcurrent(reusedChild), /duplicated or incomplete/);
+const emptyResults = structuredClone(concurrentChunkResults).map((row) => ({
+  ...row, processed: 0, completed: 0, skipped: 0, failed: 0, noticeKeys: [],
+}));
+assert.throws(() => aggregateConcurrent(emptyResults), /duplicated or incomplete/);
 const leasedNoOffer = one(continuationNodes, "Validate Backfill Plan", {
   ...operationResponse, offered: 0, notice_keys: [], chunks: [], chunk_indices: [],
 }, { node: { "Build Scheduled Continuation Runtime": { json: { runtime: continuationRuntime } } } });
