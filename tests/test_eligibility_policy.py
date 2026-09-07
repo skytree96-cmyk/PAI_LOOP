@@ -703,6 +703,199 @@ def test_legal_subset_review_never_borrows_a_partial_or_negated_alternative(cond
     assert all(not item["outcome"].startswith("PASS") for item in items)
 
 
+def _synthetic_sme_holder_profile() -> dict[str, object]:
+    """Synthetic certificate holder that is not a nonprofit; no real company data.
+
+    The curated public profile pins the opposite pair (no certificate, nonprofit
+    true), so the independently satisfied certificate branch of an SME/nonprofit
+    OR needs its own fixture. Every identifier is a `SYN-` placeholder.
+    """
+
+    def fact(value: bool, evidence_key: str) -> dict[str, object]:
+        return {
+            "value": value,
+            "evidence_key": evidence_key,
+            "evidence_state": "VERIFIED",
+            "effective_from": "2026-01-01",
+            "effective_to": "2026-12-31",
+            "last_verified_at": "2026-09-07",
+            "deadline_policy": "RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE",
+        }
+
+    return {
+        "classification": "PUBLIC_SAFE_COMPANY_PROFILE",
+        "facts": {
+            "small_business_certificate": fact(True, "SYN-SME-CERT"),
+            "sme_certificate": fact(True, "SYN-SME-CERT"),
+            "nonprofit_entity": fact(False, "SYN-NONPROFIT-STATE"),
+            "direct_production_certificate": {
+                "value": False,
+                "evidence_key": None,
+                "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+                "effective_from": "2026-01-01",
+                "effective_to": None,
+                "last_verified_at": "2026-09-07",
+                "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION",
+            },
+        },
+        "evidence": [
+            {
+                "evidence_key": key,
+                "display_name": "Synthetic eligibility evidence",
+                "sha256": "a" * 64,
+                "valid_from": "2026-01-01",
+                "valid_until": "2026-12-31",
+                "last_observed_at": "2026-09-07",
+            }
+            for key in ("SYN-SME-CERT", "SYN-NONPROFIT-STATE")
+        ],
+    }
+
+
+_SME_CERTIFICATE_FACT_KEYS = {"small_business_certificate", "sme_certificate"}
+
+# Both OR shapes name the certificate as their own first alternative: the
+# generic nonprofit alternative and the legal-subset one.
+_INDEPENDENT_SME_OR_CONDITIONS = [
+    _NONPROFIT_SMALL_BUSINESS_OR,
+    _PUBLIC_POLICY_PROJECTION_NONPROFIT_SUBSET_OR,
+    "소기업·소상공인 확인서 소지 업체 또는 관계법령상 비영리법인에 해당해야 함.",
+]
+
+
+@pytest.mark.parametrize("condition", _INDEPENDENT_SME_OR_CONDITIONS)
+def test_sme_or_accepts_the_independently_satisfied_certificate_branch(condition: str) -> None:
+    """A verified, deadline-valid certificate completes the OR on its own.
+
+    Within OR alternatives a complete PASS path wins, so neither a false generic
+    nonprofit fact nor an unresolved legal-subset alternative may drag the whole
+    clause to REVIEW when the certificate branch is already satisfied.
+    """
+
+    profile = _synthetic_sme_holder_profile()
+    assert profile["facts"]["nonprofit_entity"]["value"] is False
+
+    item = classify_requirements(
+        [requirement("SYN-SME-OR-HOLDER", "CERTIFICATION", condition)],
+        profile=profile,
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] == "PASS_CURRENT"
+    assert item["blocking"] is False
+    assert item["company_fact_key"] in _SME_CERTIFICATE_FACT_KEYS
+    assert item["evidence_state"] == "VERIFIED"
+    assert item["evidence"] is not None
+    assert item["deadline_as_of"] == "2026-09-10"
+
+
+@pytest.mark.parametrize("condition", _INDEPENDENT_SME_OR_CONDITIONS)
+def test_sme_or_certificate_branch_matches_the_plain_certificate_clause(condition: str) -> None:
+    """The OR's certificate branch decides exactly as the plain clause does."""
+
+    items = classify_requirements(
+        [
+            requirement("SYN-SME-PLAIN", "CERTIFICATION", "소기업·소상공인 확인서 소지 업체여야 함."),
+            requirement("SYN-SME-OR-HOLDER", "CERTIFICATION", condition),
+        ],
+        profile=_synthetic_sme_holder_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    by_id = {item["requirement_id"]: item for item in items}
+
+    for key in ("outcome", "blocking", "company_fact_key", "evidence_state"):
+        assert by_id["SYN-SME-OR-HOLDER"][key] == by_id["SYN-SME-PLAIN"][key]
+
+
+@pytest.mark.parametrize("condition", _INDEPENDENT_SME_OR_CONDITIONS)
+@pytest.mark.parametrize("unavailable", [
+    "missing_fact",
+    "false_fact",
+    "expired_fact",
+    "expired_evidence",
+    "stale_verification",
+])
+def test_sme_or_certificate_branch_keeps_evidence_and_deadline_checks(
+    condition: str, unavailable: str,
+) -> None:
+    """Only a fact that survives every existing validity check may open PASS."""
+
+    profile = _synthetic_sme_holder_profile()
+    for key in sorted(_SME_CERTIFICATE_FACT_KEYS):
+        if unavailable == "missing_fact":
+            del profile["facts"][key]
+            continue
+        fact = profile["facts"][key]
+        if unavailable == "false_fact":
+            fact["value"] = False
+        elif unavailable == "expired_fact":
+            fact["effective_to"] = "2026-09-09"
+        elif unavailable == "stale_verification":
+            fact["last_verified_at"] = "2020-01-01"
+    if unavailable == "expired_evidence":
+        for evidence in profile["evidence"]:
+            if evidence["evidence_key"] == "SYN-SME-CERT":
+                evidence["valid_until"] = "2026-09-09"
+
+    item = classify_requirements(
+        [requirement("SYN-SME-OR-HOLDER", "CERTIFICATION", condition)],
+        profile=profile,
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"][0]
+
+    assert item["outcome"] != "PASS_CURRENT"
+    assert item["blocking"] is True
+    assert item["company_fact_key"] not in _SME_CERTIFICATE_FACT_KEYS
+
+
+@pytest.mark.parametrize("condition", _INDEPENDENT_SME_OR_CONDITIONS)
+def test_satisfied_sme_or_never_masks_an_independent_direct_production_fail(condition: str) -> None:
+    """A satisfied certificate branch says nothing about direct production."""
+
+    items = classify_requirements(
+        [
+            requirement("SYN-SME-OR-HOLDER", "CERTIFICATION", condition),
+            requirement("SYN-DP-GATE", "CERTIFICATION", "직접생산확인증명서를 보유해야 함."),
+        ],
+        profile=_synthetic_sme_holder_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    gate = next(item for item in items if item["requirement_id"] == "SYN-DP-GATE")
+
+    assert gate["outcome"] == "FAIL_CONFIRMED"
+    assert gate["blocking"] is True
+    assert gate["company_fact_key"] == "direct_production_certificate"
+
+
+@pytest.mark.parametrize("related", [
+    "소기업·소상공인 확인서를 보유해야 함.",
+    "소기업·소상공인 확인서는 유효기간 내에 있어야 함.",
+])
+def test_satisfied_sme_or_keeps_the_separate_scope_review(related: str) -> None:
+    """A satisfied OR clause does not resolve another clause's nonprofit scope."""
+
+    items = classify_requirements(
+        [
+            requirement("SYN-SME-OR-HOLDER", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
+            requirement("SYN-SME-RELATED", "CERTIFICATION", related),
+        ],
+        profile=_synthetic_sme_holder_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    by_id = {item["requirement_id"]: item for item in items}
+
+    assert by_id["SYN-SME-OR-HOLDER"]["outcome"] == "PASS_CURRENT"
+    assert by_id["SYN-SME-RELATED"]["outcome"] == "REVIEW"
+    assert by_id["SYN-SME-RELATED"]["company_fact_key"] == (
+        "small_business_nonprofit_exception_scope"
+    )
+
+
 @pytest.mark.parametrize("condition", [
     "소기업·소상공인 확인서를 보유해야 함.",
     "소기업·소상공인 확인서는 유효기간 내에 있어야 함.",

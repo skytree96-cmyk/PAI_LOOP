@@ -135,3 +135,43 @@ browser-upload commits skip CI while the companion tests and this document are
 being assembled; the final commit has no skip directive and runs the required gate.
 No production deployment, queue change, account activation, or PIN retirement
 was performed by this review.
+
+## Regression fix on 2026-09-08: the certificate branch decides first
+
+Both OR shapes above name the SME certificate as their own first alternative,
+but neither branch evaluated it. The generic alternative went straight to
+`nonprofit_entity`, so a company holding a verified, deadline-valid certificate
+and confirmed *not* to be a nonprofit fell to REVIEW; the legal-subset
+alternative returned its unbound-membership REVIEW unconditionally. The same
+company passes the plain SME certificate clause, so one clause contradicted the
+other on the same facts.
+
+Eligibility resolution takes a complete PASS path before any linked REVIEW.
+Both branches now evaluate the certificate first through the unchanged
+`_eligibility_item` helper, and use its PASS when it is complete. Anything short
+of that PASS — a missing fact, a false one, one outside the deadline's effective
+or evidence validity window, or a stale RECHECK/RECONFIRM verification — leaves
+the previous handling untouched. This corrects one sentence in the legal-subset
+paragraph above: absence of the SME certificate still does not refute that OR,
+but *possession* of it does satisfy the OR's own first branch, without deciding
+subset membership.
+
+`fail_on_confirmed_absence` stays off on this path, so a confirmed-absent
+certificate never turns an OR into a FAIL. Everything else is unchanged: a
+separate direct-production requirement keeps its `FAIL_CONFIRMED`, an explicit
+independent AND duty keeps its gate, the same-family possession/validity scope
+REVIEW still applies when a complete OR exists elsewhere, and the notice-wide
+`nonprofit_exception_present` flag is untouched.
+
+`POLICY_VERSION` stays at `pai-loop-requirement-policy-2026.09.07-v12`. v12 was
+introduced by this same unmerged branch and has not been deployed, so no stored
+snapshot carries the pre-fix v12 behavior. If any v12 analysis is ever produced
+before this fix lands, that assumption breaks and the version must advance.
+Confirm this at integration.
+
+Focused validation: `tests/test_eligibility_policy.py` and
+`tests/test_performance_eligibility_recovery.py` pass 267 cases, including 26 new
+synthetic cases covering the certificate-satisfied OR across both shapes, parity
+with the plain certificate clause, the five fact/evidence/freshness invalidity
+variants, the preserved direct-production `FAIL_CONFIRMED`, and the preserved
+same-family scope REVIEW. The full CI gate is run by the integrator, not here.
