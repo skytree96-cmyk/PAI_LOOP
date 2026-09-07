@@ -5,6 +5,7 @@ import json
 import re
 import time
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
@@ -14,6 +15,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .auth import require_api_key
+from .outcome_write_lock import lock_outcome_notice
+from .integrations.awards import OpeningResultsIncomplete
 from .integrations.company_awards import (
     DEFAULT_COMPANY_BUSINESS_NUMBER,
     DEFAULT_COMPANY_NAME,
@@ -33,6 +36,7 @@ from .models import (
     UserDecision,
 )
 from .outcome_identity import normalise_opening_identity
+from .outcome_participation import COMPANY_IDENTITY_SOURCE, PARTICIPATION_KIND, PARTICIPATION_OPERATION
 
 
 OUTCOME_FEEDBACK_SCHEMA = "pai-loop-pps-outcome-feedback-1.0.0"
@@ -55,6 +59,8 @@ class PpsOutcomeFeedbackRequest(ApiModel):
     max_notices: int = Field(default=10, ge=1, le=_MAX_NOTICE_KEYS)
     lookback_days: int = Field(default=730, ge=1, le=1095)
     max_pages_per_notice: int = Field(default=1, ge=1, le=2)
+    include_participation: bool = False
+    participation_max_pages: int = Field(default=1, ge=1, le=2)
     dry_run: bool = False
 
     @field_validator("notice_keys")
@@ -253,7 +259,7 @@ def _select_provider_result(
     return ordered[0], False, "OTHER_WINNER"
 
 
-def _submission_basis(
+def _latest_human_opening_record(
     session: Session,
     notice: Notice,
     *,
@@ -269,7 +275,7 @@ def _submission_basis(
                 BidOutcome.source != OUTCOME_FEEDBACK_SOURCE,
             ),
         )
-        .order_by(BidOutcome.observed_at.desc(), BidOutcome.created_at.desc())
+        .order_by(BidOutcome.updated_at.desc(), BidOutcome.observed_at.desc(), BidOutcome.created_at.desc(), BidOutcome.id.desc())
         ).all()
     )
     for candidate in candidates:
@@ -281,13 +287,26 @@ def _submission_basis(
         workflow = evidence.get("_workflow")
         if not isinstance(workflow, dict) or workflow.get("human_reviewed") is not True:
             continue
-        if (
-            str(workflow.get("record_status") or "").upper() == "VALIDATED"
-            and candidate.status in {"SUBMITTED", "WON", "LOST"}
-        ):
-            return candidate
-        return None
+        return candidate
     return None
+
+
+def _submission_basis(session: Session, notice: Notice, *, opening_identity: dict[str, str]) -> BidOutcome | None:
+    candidate = _latest_human_opening_record(session, notice, opening_identity=opening_identity)
+    if candidate is not None and (
+        str(candidate.evidence_json["_workflow"].get("record_status") or "").upper() == "VALIDATED"
+        and candidate.status in {"SUBMITTED", "WON", "LOST"}
+    ):
+        return candidate
+    return None
+
+
+def _human_participation_conflict(session: Session, notice: Notice, identity: dict[str, str], outcome_status: str) -> bool:
+    candidate = _latest_human_opening_record(session, notice, opening_identity=identity)
+    return candidate is not None and (
+        str(candidate.evidence_json["_workflow"].get("record_status") or "").upper() != "VALIDATED"
+        or candidate.status not in {"SUBMITTED", outcome_status}
+    )
 
 
 def _automatic_outcome_key(opening_identity: dict[str, str]) -> str:
@@ -423,6 +442,7 @@ def _upsert_outcome(
     outcome_key: str,
     values: dict[str, Any],
     dry_run: bool,
+    precise_timestamp: bool = False,
 ) -> Literal["CREATED", "UPDATED", "UNCHANGED", "DRY_RUN_CREATE", "DRY_RUN_UPDATE"]:
     existing = session.scalar(
         select(BidOutcome).where(
@@ -435,6 +455,12 @@ def _upsert_outcome(
             status_code=status.HTTP_409_CONFLICT,
             detail="다른 작성 주체의 결과를 자동 환류로 수정할 수 없습니다.",
         )
+    if existing is not None and not precise_timestamp:
+        previous_proof = (existing.evidence_json or {}).get("participation_basis")
+        if isinstance(previous_proof, dict) and previous_proof.get("kind") == PARTICIPATION_KIND:
+            # An old scheduled caller cannot erase proof, bid facts or history
+            # after the explicit participant path has established this event.
+            return "UNCHANGED"
     if existing is None:
         if not dry_run:
             session.add(
@@ -442,6 +468,7 @@ def _upsert_outcome(
                     notice_id=notice.id,
                     outcome_key=outcome_key,
                     observed_at=datetime.now(timezone.utc),
+                    **({"updated_at": datetime.now(timezone.utc)} if precise_timestamp else {}),
                     **values,
                 )
             )
@@ -457,6 +484,8 @@ def _upsert_outcome(
     if not dry_run:
         for field, value in changes.items():
             setattr(existing, field, value)
+        if precise_timestamp:
+            existing.updated_at = datetime.now(timezone.utc)
     return "DRY_RUN_UPDATE" if dry_run else "UPDATED"
 
 
@@ -585,6 +614,8 @@ def refresh_pps_outcomes(
             "max_notices": payload.max_notices,
             "lookback_days": payload.lookback_days,
             "max_pages_per_notice": payload.max_pages_per_notice,
+            "include_participation": payload.include_participation,
+            "participation_max_pages": payload.participation_max_pages,
             "dry_run": payload.dry_run,
             "openai_calls": 0,
         },
@@ -663,6 +694,7 @@ def refresh_pps_outcomes(
 
                 start, end, window_basis = _query_window(notice, today=today)
                 calls_before = client.request_count
+                observation_started_at = datetime.now(timezone.utc)
                 try:
                     fetched = client.fetch_exact_notice_awards(
                         bid_notice_no=notice.bid_notice_no,
@@ -674,7 +706,17 @@ def refresh_pps_outcomes(
                         rows=100,
                         max_pages_per_window=payload.max_pages_per_notice,
                         deadline_monotonic=wall_deadline,
+                        require_complete=payload.include_participation,
                     )
+                except OpeningResultsIncomplete:
+                    counters["review"] += 1
+                    items.append(OutcomeFeedbackItem(
+                        notice_key=notice.notice_key, bid_notice_no=notice.bid_notice_no,
+                        revision_no=notice.revision_no, result="REVIEW",
+                        api_calls=client.request_count - calls_before,
+                        reason_code="PPS_FINAL_RESULT_INCOMPLETE",
+                    ))
+                    continue
                 except PpsApiError:
                     counters["errors"] += 1
                     items.append(
@@ -807,7 +849,52 @@ def refresh_pps_outcomes(
                 assert opening_identity is not None  # The explicit guard above proved it.
                 outcome_key = _automatic_outcome_key(opening_identity)
                 participation = None
-                if company_won:
+                provider_participant = None
+                if payload.include_participation:
+                    strict_problem = None
+                    if (len(exact_rows) != 1 or fetched.mismatched_count or fetched.quarantined_count or boundary_mismatches):
+                        strict_problem = "PPS_FINAL_RESULT_INCONSISTENT"
+                    elif (selected.get("company_business_number_status") != "PRESENT_VALID"
+                          or not isinstance(selected.get("company_business_number_match"), bool)
+                          or not re.fullmatch(r"[0-9a-f]{64}", str(selected.get("provider_result_sha256") or ""))):
+                        strict_problem = "FINAL_WINNER_IDENTITY_UNCONFIRMED"
+                    if strict_problem is None:
+                        try:
+                            companies = client.fetch_exact_opening_participation(
+                                **opening_identity, company_business_number=DEFAULT_COMPANY_BUSINESS_NUMBER,
+                                rows=100, max_pages=payload.participation_max_pages,
+                                deadline_monotonic=wall_deadline,
+                            )
+                            counters["fetched"] += len(companies)
+                            own = [row for row in companies if row.get("company_business_number_match") is True]
+                            winners = [row for row in companies if row.get("final_winner_match") is True]
+                            if not companies or any(normalise_opening_identity(row.get("opening_identity")) != opening_identity
+                                                    or not isinstance(row.get("company_business_number_match"), bool)
+                                                    for row in companies):
+                                strict_problem = "PPS_PARTICIPATION_INCOMPLETE"
+                            elif (len(winners) != 1 or winners[0].get("company_business_number_match") is not selected["company_business_number_match"]
+                                  or (selected.get("participant_count") is not None and selected["participant_count"] != len(companies))):
+                                strict_problem = "PPS_FINAL_PARTICIPANTS_INCONSISTENT"
+                            elif len(own) != 1:
+                                strict_problem = "COMPANY_PARTICIPATION_NOT_CONFIRMED"
+                            else:
+                                provider_participant = own[0]
+                        except OpeningResultsIncomplete:
+                            strict_problem = "PPS_PARTICIPATION_INCOMPLETE"
+                        except PpsApiError:
+                            strict_problem = "PPS_PARTICIPATION_API_ERROR"
+                    fetched = replace(fetched, api_calls=client.request_count - calls_before)
+                    if strict_problem:
+                        counters["review"] += 1
+                        items.append(OutcomeFeedbackItem(
+                            notice_key=notice.notice_key, bid_notice_no=notice.bid_notice_no,
+                            revision_no=notice.revision_no, result="REVIEW",
+                            exact_result_count=len(exact_rows), api_calls=fetched.api_calls,
+                            reason_code=strict_problem, warnings=item_warnings,
+                        ))
+                        continue
+                    outcome_status = "WON" if selected["company_business_number_match"] else "LOST"
+                elif company_won:
                     outcome_status: Literal["WON", "LOST"] = "WON"
                 else:
                     participation = _submission_basis(
@@ -832,6 +919,34 @@ def refresh_pps_outcomes(
                         continue
                     outcome_status = "LOST"
 
+                # Every automatic writer, including the existing W10 caller,
+                # must hold this lock from the fresh proof read through commit.
+                # Otherwise a legacy upsert can pass its proof guard before a
+                # strict refresh commits and then erase that newer evidence.
+                notice_id, notice_key = notice.id, notice.notice_key
+                session.rollback()
+                lock_outcome_notice(session, notice_key)
+                notice = session.get(Notice, notice_id)
+                assert notice is not None
+                existing = session.scalar(select(BidOutcome).where(
+                    BidOutcome.notice_id == notice.id, BidOutcome.outcome_key == outcome_key))
+                stale = (provider_participant is not None and existing is not None
+                         and _as_utc(existing.updated_at) > observation_started_at)
+                ineligible = _eligibility_reason(session, notice, now=datetime.now(timezone.utc))
+                if provider_participant is None and outcome_status == "LOST":
+                    participation = _submission_basis(session, notice, opening_identity=opening_identity)
+                    if participation is None:
+                        ineligible = ineligible or "PARTICIPATION_OPENING_NOT_CONFIRMED"
+                if stale or ineligible or _human_participation_conflict(session, notice, opening_identity, outcome_status):
+                    session.rollback()
+                    counters["review"] += 1
+                    items.append(OutcomeFeedbackItem(
+                        notice_key=notice.notice_key, bid_notice_no=notice.bid_notice_no,
+                        revision_no=notice.revision_no, result="REVIEW",
+                        exact_result_count=len(exact_rows), api_calls=fetched.api_calls,
+                        reason_code="NEWER_RESULT_PRESERVED" if stale else ineligible or "HUMAN_PARTICIPATION_CONFLICT",
+                    ))
+                    continue
                 values = _outcome_values(
                     session,
                     notice,
@@ -843,15 +958,42 @@ def refresh_pps_outcomes(
                     participation=participation,
                     operation_path=operation_path,
                 )
+                if provider_participant is not None:
+                    participant_digest = hashlib.sha256(json.dumps(
+                        provider_participant, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                    ).encode()).hexdigest()
+                    values["evidence_json"]["participation_basis"] = {
+                        "kind": PARTICIPATION_KIND, "operation": PARTICIPATION_OPERATION,
+                        "complete": True, "company_identifier_match": True,
+                        "winner_is_company": outcome_status == "WON", "opening_identity": opening_identity,
+                        "company_identity_source": COMPANY_IDENTITY_SOURCE,
+                        "final_result_sha256": selected.get("provider_result_sha256"),
+                        "participant_result_sha256": participant_digest,
+                    }
+                    values["submitted_bid_amount"] = provider_participant.get("bid_amount")
+                    values["decision_id"] = None  # Company proof cannot identify an owning department.
+                    values["reason_code"] = "PPS_EXACT_PARTICIPANT_AND_FINAL_WINNER"
+                    # Preserve earlier automatic evidence when a provider fact changes.
+                    if existing is not None:
+                        history = list((existing.evidence_json or {}).get("_provider_history", []))
+                        previous = {key: value for key, value in (existing.evidence_json or {}).items() if key != "_provider_history"}
+                        if previous != values["evidence_json"]:
+                            history.append({"status": existing.status, "evidence": previous,
+                                            "observed_at": _as_utc(existing.updated_at).isoformat()})
+                        if history:
+                            values["evidence_json"]["_provider_history"] = history
                 result = _upsert_outcome(
                     session,
                     notice,
                     outcome_key=outcome_key,
                     values=values,
                     dry_run=payload.dry_run,
+                    precise_timestamp=provider_participant is not None,
                 )
                 if not payload.dry_run:
                     session.commit()
+                else:
+                    session.rollback()
                 counter = {
                     "CREATED": "created",
                     "DRY_RUN_CREATE": "created",

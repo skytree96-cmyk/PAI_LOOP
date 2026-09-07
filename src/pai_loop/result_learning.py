@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
 from .accounts import Identity, authenticated_account, audit, enabled, serial_transaction
+from .outcome_write_lock import lock_outcome_notice
 from .notice_freshness import authoritative_pps_notice_is_cancelled
 from .manual_analysis import (
     _manual_feature_enabled,
@@ -20,6 +21,7 @@ from .manual_analysis import (
 )
 from .models import BidOutcome, Notice
 from .outcome_identity import PpsOpeningIdentity, normalise_opening_identity
+from .outcome_participation import PARTICIPATION_KIND, provider_participation_verified
 
 
 OutcomeStatus = Literal["NO_BID", "SUBMITTED", "WON", "LOST", "CANCELLED"]
@@ -215,6 +217,7 @@ class ResultLearningOutcomeOut(ApiModel):
     source: str
     source_reference: str | None
     opening_identity: PpsOpeningIdentity | None = None
+    participation_verified: bool = False
     basis_outcome_id: str | None
     basis_source: str | None
     operator_note: str | None
@@ -227,6 +230,7 @@ class ResultLearningOutcomeOut(ApiModel):
 class ResultLearningNoticeOut(ApiModel):
     notice_key: str
     bid_notice_no: str
+    revision_no: str
     title: str
     agency: str
     deadline: datetime
@@ -314,7 +318,8 @@ def _workflow(item: BidOutcome) -> dict[str, Any]:
     exact_match = evidence.get("exact_match")
     participation = evidence.get("participation_basis")
     opening_identity = normalise_opening_identity(evidence.get("opening_identity"))
-    confirmed_loss = bool(
+    provider_confirmed = provider_participation_verified(source, item.status, evidence)
+    confirmed_loss = provider_confirmed or bool(
         isinstance(exact_match, dict) and exact_match.get("verified") is True
         and opening_identity is not None
         and isinstance(participation, dict)
@@ -325,6 +330,9 @@ def _workflow(item: BidOutcome) -> dict[str, Any]:
     if source == "PPS_AUTO_FEEDBACK" and item.status == "LOST" and not confirmed_loss:
         # Preserve the observation, but a legacy workflow flag cannot supply
         # the opening identity missing from its participation evidence.
+        record_status = "ARCHIVED" if record_status == "ARCHIVED" else "DRAFT"
+    if (source == "PPS_AUTO_FEEDBACK" and isinstance(participation, dict)
+        and participation.get("kind") == PARTICIPATION_KIND and not provider_confirmed):
         record_status = "ARCHIVED" if record_status == "ARCHIVED" else "DRAFT"
     if record_status not in {"DRAFT", "VALIDATED", "ARCHIVED"}:
         automatic_validated = bool(
@@ -394,6 +402,7 @@ def _out(item: BidOutcome) -> ResultLearningOutcomeOut:
         source=item.source,
         source_reference=item.source_reference,
         opening_identity=_stored_opening_identity(item),
+        participation_verified=provider_participation_verified(item.source, item.status, item.evidence_json),
         basis_outcome_id=workflow["basis_outcome_id"],
         basis_source=workflow["basis_source"],
         operator_note=workflow["operator_note"],
@@ -481,6 +490,8 @@ def _evidence(
             "outcome_key": basis.outcome_key,
             "source": basis.source,
             "source_reference": basis.source_reference,
+            "opening_identity": _stored_opening_identity(basis),
+            "participation_verified": provider_participation_verified(basis.source, basis.status, basis.evidence_json),
         }
     elif isinstance(previous_basis, dict):
         result["_workflow"]["basis_outcome"] = dict(previous_basis)
@@ -631,6 +642,7 @@ def list_result_learning(
             ResultLearningNoticeOut(
                 notice_key=notice.notice_key,
                 bid_notice_no=notice.bid_notice_no,
+                revision_no=notice.revision_no,
                 title=notice.title,
                 agency=notice.agency,
                 deadline=notice.deadline,
@@ -654,6 +666,7 @@ def create_result_learning(
         serial_transaction(session, scope=f"result:{payload.notice_key}:{identity.department_id}")
         if "expected_outcome_id" not in payload.model_fields_set:
             raise HTTPException(422, "화면에서 확인한 자기 부서의 최신 결과 식별자가 필요합니다.")
+    lock_outcome_notice(session, payload.notice_key)
     notice = _notice(session, payload.notice_key)
     if identity and (notice.status == "CANCELLED" or authoritative_pps_notice_is_cancelled(session, notice)):
         raise HTTPException(409, "취소된 공고의 결과는 변경할 수 없습니다.")
@@ -665,6 +678,11 @@ def create_result_learning(
             raise HTTPException(
                 status_code=422,
                 detail="이 공고의 검토 기준 결과가 아닙니다.",
+            )
+        if "opening_identity" not in payload.model_fields_set:
+            inherited_identity = _stored_opening_identity(basis)
+            opening_identity = _validated_opening_identity(
+                PpsOpeningIdentity.model_validate(inherited_identity) if inherited_identity else None, notice,
             )
     key_material = f"{identity.department_id}:{payload.idempotency_key}" if identity else payload.idempotency_key
     outcome_key = "manual-ui:" + hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:40]
@@ -751,6 +769,14 @@ def update_result_learning(
     session: DbSession,
 ) -> ResultLearningMutationOut:
     identity = _operator_access(request, mutation=True)
+    item = session.get(BidOutcome, outcome_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="결과 학습 기록을 찾을 수 없습니다.")
+    notice_key = session.scalar(select(Notice.notice_key).where(Notice.id == item.notice_id))
+    # Discard the pre-lock read snapshot before waiting. CAS and ownership must
+    # be checked against the row committed by the preceding notice writer.
+    session.rollback()
+    lock_outcome_notice(session, notice_key)
     item = session.get(BidOutcome, outcome_id)
     if item is None:
         raise HTTPException(status_code=404, detail="결과 학습 기록을 찾을 수 없습니다.")

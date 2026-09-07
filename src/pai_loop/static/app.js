@@ -254,6 +254,7 @@
       "resultLearningSummary", "resultLearningUnlockButton", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
       "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
       "resultLearningRateMode", "resultLearningRateBasisKind", "resultLearningRateBasisAmount", "resultLearningRateBasisReference", "resultLearningRateStatus",
+      "resultLearningOpeningNotice", "resultLearningOpeningRevision", "resultLearningOpeningClassification", "resultLearningOpeningRebid",
     ];
 
     ids.forEach((id) => {
@@ -505,6 +506,7 @@
     els.resultLearningPreviousButton.addEventListener("click", () => changeResultLearningPage(-1));
     els.resultLearningNextButton.addEventListener("click", () => changeResultLearningPage(1));
     els.resultLearningForm.addEventListener("submit", saveResultLearning);
+    bindResultLearningOpeningEvents();
     [els.resultLearningSubmittedAmount, els.resultLearningRateBasisAmount, els.resultLearningRateBasisReference].forEach((input) => input.addEventListener("input", updateResultLearningRate));
     [els.resultLearningRateMode, els.resultLearningRateBasisKind].forEach((input) => input.addEventListener("change", updateResultLearningRate));
     els.resultLearningStatus.addEventListener("change", () => {
@@ -2757,7 +2759,7 @@
       ? own[0] || outcomes.find((row) => !row.department_id && row.source !== "MANUAL_UI") || null
       : raw.latest_outcome && typeof raw.latest_outcome === "object" ? raw.latest_outcome : null;
     return {
-      noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
+      noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), revisionNo: stringValue(raw.revision_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
       deadline: stringValue(raw.deadline), noticeStatus: stringValue(raw.notice_status),
       expectedOutcomeId: own[0]?.id || null,
       departmentOutcomes: outcomes.map((row) => ({ departmentName: stringValue(row.department_name, row.source === "MANUAL_UI" ? "기존 기록" : "나라장터"), status: stringValue(row.status), note: stringValue(row.operator_note), updatedAt: row.updated_at })),
@@ -2766,6 +2768,7 @@
         revision: numberOrNull(outcome.revision) ?? 1, status: stringValue(outcome.status).toUpperCase(), submittedBidAmount: numberOrNull(outcome.submitted_bid_amount),
         submittedBidRate: numberOrNull(outcome.submitted_bid_rate), winningBidAmount: numberOrNull(outcome.winning_bid_amount), winningBidRate: numberOrNull(outcome.winning_bid_rate),
         submittedRateCalculation: outcome.submitted_rate_calculation || { mode: "MANUAL" },
+        openingIdentity: outcome.opening_identity || null, participationVerified: outcome.participation_verified === true,
         technicalScore: numberOrNull(outcome.technical_score), priceScore: numberOrNull(outcome.price_score), totalScore: numberOrNull(outcome.total_score), rank: numberOrNull(outcome.rank),
         winnerName: stringValue(outcome.winner_name), lossReason: stringValue(outcome.loss_reason), source: stringValue(outcome.source), sourceReference: stringValue(outcome.source_reference),
         basisOutcomeId: stringValue(outcome.basis_outcome_id), basisSource: stringValue(outcome.basis_source),
@@ -2786,6 +2789,7 @@
       return `<article class="operator-record result-record" role="listitem">
         <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? recordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
+        ${outcome?.openingIdentity ? `<p>${outcome.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(outcome.openingIdentity.revision_no)} / 분류 ${escapeHtml(outcome.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(outcome.openingIdentity.rebid_no)}</p>` : ""}
         <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(outcome?.submittedBidAmount == null ? "미입력" : formatBudget(outcome.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(outcome?.winningBidAmount == null ? "미입력" : formatBudget(outcome.winningBidAmount))}</dd></div></dl>
         ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
         <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
@@ -2818,6 +2822,11 @@
     state.resultLearning.editingOutcome = outcome;
     els.resultLearningDialogTitle.textContent = !outcome ? "입찰 결과 입력" : (isManualRecord ? "입찰 결과 수정" : "자동 환류 결과 검토본 만들기");
     els.resultLearningDialogNotice.textContent = `${notice.title} · ${notice.bidNoticeNo}`;
+    els.resultLearningOpeningNotice.value = notice.bidNoticeNo || outcome?.openingIdentity?.bid_notice_no || "";
+    els.resultLearningOpeningRevision.value = notice.revisionNo || outcome?.openingIdentity?.revision_no || "";
+    els.resultLearningOpeningClassification.value = outcome?.openingIdentity?.classification_no ?? "";
+    els.resultLearningOpeningRebid.value = outcome?.openingIdentity?.rebid_no ?? "";
+    els.resultLearningOpeningClassification.setCustomValidity("");
     els.resultLearningStatus.value = outcome?.status || "NO_BID";
     els.resultLearningRecordStatus.value = outcome?.recordStatus || "DRAFT";
     els.resultLearningSubmittedAmount.value = outcome?.submittedBidAmount ?? "";
@@ -2911,12 +2920,38 @@
     return valid;
   }
 
+  function bindResultLearningOpeningEvents() {
+    [els.resultLearningOpeningClassification, els.resultLearningOpeningRebid].forEach((input) => {
+      input.addEventListener("input", resultLearningOpeningIdentity);
+      input.addEventListener("change", resultLearningOpeningIdentity);
+    });
+  }
+
+  function resultLearningOpeningIdentity() {
+    const classification = String(els.resultLearningOpeningClassification.value || "").trim();
+    const rebid = String(els.resultLearningOpeningRebid.value || "").trim();
+    if (!classification && !rebid) {
+      els.resultLearningOpeningClassification.setCustomValidity("");
+      return null;
+    }
+    const noticeNumber = String(els.resultLearningOpeningNotice.value || "").trim();
+    const revision = String(els.resultLearningOpeningRevision.value || "").trim();
+    const valid = noticeNumber && [revision, classification, rebid].every((value) => /^[0-9]{1,20}$/.test(value));
+    els.resultLearningOpeningClassification.setCustomValidity(valid ? "" : "공고 차수와 개찰결과의 분류번호·재입찰번호를 모두 확인해 주세요.");
+    return valid ? { bid_notice_no: noticeNumber, revision_no: revision, classification_no: classification, rebid_no: rebid } : undefined;
+  }
+
   async function saveResultLearning(event) {
     event.preventDefault();
     const epoch = state.accountEpoch;
     const notice = state.resultLearning.editingNotice;
     const outcome = state.resultLearning.editingOutcome;
     if (!notice || !canWriteResults()) return;
+    const openingIdentity = resultLearningOpeningIdentity();
+    if (openingIdentity === undefined) {
+      els.resultLearningForm.reportValidity();
+      return;
+    }
     if (!updateResultLearningRate()) {
       els.resultLearningForm.reportValidity();
       return;
@@ -2937,6 +2972,7 @@
       rank: nullableNumber(els.resultLearningRank.value), winner_name: nullableText(els.resultLearningWinner.value), loss_reason: nullableText(els.resultLearningLossReason.value),
       source_reference: nullableText(els.resultLearningSourceReference.value), operator_note: nullableText(els.resultLearningOperatorNote.value),
       occurred_at: occurredAt,
+      opening_identity: openingIdentity,
     };
     const path = isManualRecord ? `/result-learning/${encodeURIComponent(outcome.id)}` : "/result-learning";
     if (isManualRecord) payload.expected_updated_at = outcome.updatedAt;

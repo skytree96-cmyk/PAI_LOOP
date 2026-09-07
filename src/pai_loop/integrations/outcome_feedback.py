@@ -8,11 +8,10 @@ from datetime import date
 from typing import Any
 
 from ..outcome_identity import normalise_opening_identity
-from .awards import normalise_award
+from .awards import OpeningResultsIncomplete, PpsAwardClient, normalise_award
 from .company_awards import normalise_business_number
 from .pps import (
     DEFAULT_BASE_URL,
-    PpsClient,
     parse_paged_response,
     split_date_range,
 )
@@ -102,7 +101,7 @@ class ExactNoticeAwardFetch:
     hit_time_limit: bool
 
 
-class PpsOutcomeFeedbackClient(PpsClient):
+class PpsOutcomeFeedbackClient(PpsAwardClient):
     """Bounded PPS final-award lookup with mandatory exact identity filtering."""
 
     def __init__(
@@ -127,6 +126,7 @@ class PpsOutcomeFeedbackClient(PpsClient):
         max_window_days: int = 30,
         max_pages_per_window: int = 1,
         deadline_monotonic: float | None = None,
+        require_complete: bool = False,
     ) -> ExactNoticeAwardFetch:
         notice_number = str(bid_notice_no or "").strip()
         if not notice_number:
@@ -139,6 +139,7 @@ class PpsOutcomeFeedbackClient(PpsClient):
             raise ValueError("max_pages_per_window must be positive")
 
         call_start = self.request_count
+        self._opening_winner_numbers: dict[tuple[str, ...], str] = {}
         exact: dict[str, dict[str, Any]] = {}
         fetched_count = 0
         mismatched_count = 0
@@ -148,6 +149,8 @@ class PpsOutcomeFeedbackClient(PpsClient):
 
         for window in split_date_range(start, end, max_days=max_window_days):
             page = 1
+            expected_total = None
+            window_count = 0
             while True:
                 if (
                     deadline_monotonic is not None
@@ -168,8 +171,29 @@ class PpsOutcomeFeedbackClient(PpsClient):
                         "pageNo": page,
                         "numOfRows": rows,
                     },
+                    **({"timeout_seconds": max(0.1, deadline_monotonic - time.monotonic())}
+                       if require_complete and deadline_monotonic is not None else {}),
                 )
                 raw_items, total = parse_paged_response(payload)
+                if require_complete:
+                    body = payload["response"]["body"]
+                    container = body.get("items")
+                    raw_collection = container.get("item", []) if isinstance(container, dict) else container
+                    raw_collection = [raw_collection] if isinstance(raw_collection, dict) else raw_collection
+                    if raw_collection in (None, "") and total == 0 and "items" in body:
+                        raw_collection = []
+                    if (
+                        not isinstance(raw_collection, list) or len(raw_collection) != len(raw_items)
+                        or not str(body.get("totalCount", "")).isdigit()
+                        or (expected_total is not None and total != expected_total)
+                        or len(raw_items) != min(rows, max(0, total - window_count))
+                        or ("pageNo" in body and str(body["pageNo"]) != str(page))
+                        or ("numOfRows" in body and str(body["numOfRows"]) != str(rows))
+                        or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
+                    ):
+                        raise OpeningResultsIncomplete("최종 낙찰 결과 페이지가 불완전합니다.")
+                    expected_total = total
+                    window_count += len(raw_items)
                 fetched_count += len(raw_items)
                 for raw in raw_items:
                     projected = _normalise_outcome_row(
@@ -186,6 +210,10 @@ class PpsOutcomeFeedbackClient(PpsClient):
                     if not projected["identity"] or not projected["winner_name"]:
                         quarantined_count += 1
                         continue
+                    if require_complete and str(projected["identity"]) in exact:
+                        raise OpeningResultsIncomplete("최종 낙찰 결과 회차가 중복되었습니다.")
+                    if require_complete and projected["opening_identity"] is not None and projected["company_business_number_status"] == "PRESENT_VALID":
+                        self._opening_winner_numbers[tuple(projected["opening_identity"].values())] = normalise_business_number(str(raw["bidwinnrBizno"]))
                     exact[str(projected["identity"])] = projected
                 if page * rows >= total or not raw_items:
                     break
@@ -204,4 +232,13 @@ class PpsOutcomeFeedbackClient(PpsClient):
             api_calls=self.request_count - call_start,
             hit_page_limit=hit_page_limit,
             hit_time_limit=hit_time_limit,
+        )
+
+    def fetch_exact_opening_participation(self, *, company_business_number: str, **kwargs: Any) -> list[dict[str, Any]]:
+        opening = normalise_opening_identity(kwargs)
+        winner = self._opening_winner_numbers.get(tuple(opening.values())) if opening else None
+        if winner is None:
+            raise OpeningResultsIncomplete("최종 낙찰자의 전체 개찰 회차와 업체 식별자를 확인할 수 없습니다.")
+        return self.fetch_opening_results(
+            **kwargs, company_business_number=company_business_number, winner_business_number=winner,
         )
