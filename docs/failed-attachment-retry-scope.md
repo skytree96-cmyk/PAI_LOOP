@@ -57,6 +57,9 @@ cooldown, public manual의 최근 요청/시간당 한도, 서버 인증, 공고
 claim generation, lease, cached HTTP replay, 공고별 최대 10 execution 제한은 유지한다.
 각 선택 첨부의 기존 모델 호출 상한은 2회이므로 최대 3첨부의 상한은 6회다.
 이미 저장된 성공/실패와 HTTP 응답은 재전송으로 새 provider 호출을 만들지 않는다.
+유료 호출 뒤 정상 결과 저장에 실패해도 오류 기록을 저장할 수 있으면, 선택된 실패
+버전 이후의 새 `INTERNAL_ENRICHMENT_ERROR` 기록을 남긴다. 이 경로에서도 과거
+`ACCEPTED`를 대신 반환하지 않으며, 같은 snapshot의 재개는 새 오류 기록을 재사용한다.
 
 공고 차수/manifest/기존 실패 행이 달라지거나 공고가 취소·종료되면 중단한다.
 실행 중 다음 첨부를 시작하기 전에도 현재 상태와 manifest를 확인한다. 이미 실행된

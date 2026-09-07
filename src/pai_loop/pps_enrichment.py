@@ -2782,6 +2782,7 @@ def record_internal_pps_enrichment_failure(
     current_manifest_sha256: str,
     attachments_discovered: int,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
+    retry_failed_version_no: int | None = None,
 ) -> PpsEnrichmentResult:
     """Persist a public-safe attempt marker after an unexpected enrichment error.
 
@@ -2869,7 +2870,10 @@ def record_internal_pps_enrichment_failure(
                 warnings=[warning, "PPS_MANIFEST_CHANGED_DURING_ENRICHMENT"],
             )
 
-        retry_boundary_version_no = _accepted_quantitative_review_retry_boundary(
+        # A failed-only retry must consume its frozen generation even if the
+        # normal result could not be saved after a paid call. Older ACCEPTED
+        # rows cannot replace this new failure marker.
+        retry_boundary_version_no = retry_failed_version_no or _accepted_quantitative_review_retry_boundary(
             versions,
             attachment_id=attempted_attachment["attachment_id"],
             manifest_sha256=manifest_sha256,
@@ -2931,6 +2935,7 @@ def record_internal_pps_enrichment_failure(
                 "member_issues": [],
             },
             retry_reviewed_version_ids=retry_reviewed_version_ids,
+            retry_failed_version_no=retry_failed_version_no,
         )
     return PpsEnrichmentResult(
         status="REVIEW",
@@ -3824,6 +3829,8 @@ def enrich_notice_from_pps(
                     manifest_sha256=_digest(attachment),
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
+                    retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
             reason_code = (
                 "HWP_BINARY_UNSUPPORTED"
@@ -3865,6 +3872,7 @@ def enrich_notice_from_pps(
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
                     retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
                 item_result = replace(
                     item_result,
@@ -3883,6 +3891,7 @@ def enrich_notice_from_pps(
                     current_manifest_sha256=current_manifest_sha256,
                     attachments_discovered=discovered,
                     retry_reviewed_version_ids=retry_reviewed_version_ids,
+                    **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
                 )
                 item_result = replace(
                     item_result,

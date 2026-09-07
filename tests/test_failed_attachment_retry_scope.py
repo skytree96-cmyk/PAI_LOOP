@@ -258,3 +258,73 @@ def test_authoritative_cancellation_stops_selected_failed_dispatch(failed_case, 
     result = run(scope)
     assert downloads == [] and result.openai_calls == 0
     assert "FAILED_RETRY_NOTICE_NOT_ACTIVE" in result.warnings
+
+
+@pytest.mark.parametrize("failure_path", ["post_provider", "unexpected_download", "unsupported_marker"])
+def test_error_fallback_consumes_frozen_failure_after_old_accepted_history(failed_case, monkeypatch, failure_path):
+    client, notice_id, downloads, run, snapshot = failed_case
+    with client.app.state.session_factory() as session:
+        old = next(row for row in session.get(Notice, notice_id).versions if row.source_payload.get("status") == "ACCEPTED")
+        accepted_id, accepted_payload = old.id, deepcopy(old.source_payload)
+        failed = _append_extraction_history_version(session, old, status="REVIEW", error_code="XLS_PARSE_FAILED")
+        failed_id, failed_no = failed.id, failed.version_no
+        attachment_id = old.source_payload["attachment_id"]
+        session.commit()
+    scope = snapshot()
+    original_download = enrichment.download_public_attachment
+    original_persist = enrichment._persist_extraction_version
+    reached_failure = []
+
+    def changed_download(attachment, **kwargs):
+        content = original_download(attachment, **kwargs)
+        if attachment["attachment_id"] != attachment_id:
+            return content
+        if failure_path == "unexpected_download":
+            reached_failure.append(True)
+            raise RuntimeError("SYN unexpected download processing failure")
+        # Same manifest binding but different bytes and model input: an old
+        # accepted extraction cannot eliminate this actual mock provider call.
+        updated = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(content)) as source, zipfile.ZipFile(updated, "w") as target:
+            for member in source.infolist():
+                data = source.read(member.filename)
+                if member.filename == "Contents/section0.xml":
+                    data = data.replace(b"</s>", b"<p>SYN changed retry source</p></s>")
+                target.writestr(member.filename, data)
+        return updated.getvalue()
+
+    def fail_paid_persist(*args, **kwargs):
+        if kwargs["attachment"]["attachment_id"] == attachment_id and kwargs.get("outcome") is not None:
+            assert kwargs["outcome"].api_calls == 1
+            reached_failure.append(True)
+            raise ValueError("SYN post-provider persistence failure")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(enrichment, "download_public_attachment", changed_download)
+    if failure_path == "post_provider":
+        monkeypatch.setattr(enrichment, "_persist_extraction_version", fail_paid_persist)
+    elif failure_path == "unsupported_marker":
+        original_unsupported = enrichment._record_unsupported_pps_attachment
+        def fail_unsupported(*args, **kwargs):
+            if kwargs["attachment"]["attachment_id"] == attachment_id:
+                reached_failure.append(True)
+                raise ValueError("SYN unsupported marker failure")
+            return original_unsupported(*args, **kwargs)
+        monkeypatch.setattr(enrichment, "_EXTRACTABLE_EXTENSIONS", frozenset())
+        monkeypatch.setattr(enrichment, "_record_unsupported_pps_attachment", fail_unsupported)
+
+    first = run(scope)
+    once = list(downloads)
+    calls = _RetryableReviewClient.calls
+    assert reached_failure == [True]
+    assert first.openai_calls == calls == {"post_provider": 2, "unexpected_download": 1, "unsupported_marker": 0}[failure_path]
+    second = run(scope)
+    assert downloads == once and _RetryableReviewClient.calls == calls
+    assert second.openai_calls == 0 and reached_failure == [True]
+    with client.app.state.session_factory() as session:
+        assert session.get(NoticeVersion, accepted_id).source_payload == accepted_payload
+        latest = max((row for row in session.get(Notice, notice_id).versions
+                      if row.source_payload.get("attachment_id") == attachment_id), key=lambda row: row.version_no)
+        assert latest.id != failed_id and latest.version_no > failed_no
+        assert latest.source_payload["status"] == "REVIEW"
+        assert latest.source_payload["error_code"] == "INTERNAL_ENRICHMENT_ERROR"
