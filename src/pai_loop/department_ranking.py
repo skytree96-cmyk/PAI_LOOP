@@ -24,9 +24,23 @@ _INSTITUTIONAL_EDUCATION_TERMS = (
 )
 
 
-def _normalize(value: object) -> str:
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+@lru_cache(maxsize=8192)
+def _normalize_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize(value: object) -> str:
+    """Normalise once per distinct string and reuse the result.
+
+    Ranking re-normalises the same static catalog keyword for every notice it
+    scores, so the daily briefing spent most of its time in NFKC folding rather
+    than in the database. The function is pure, so memoising it changes no
+    score; the bound keeps notice titles from growing the cache without limit
+    and leaves the small, hot catalog resident.
+    """
+
+    return _normalize_text(value if isinstance(value, str) else str(value or ""))
 
 
 def _without_institutional_education_terms(value: object) -> str:
