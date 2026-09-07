@@ -61,7 +61,9 @@ runtime tests exercise basis-required preview and the actual form payload.
 Existing operator/editor, generic outcome, and frontend contracts remain part of
 the focused gate.
 
-This is a local implementation based on accounts release commit `1f31460`.
-Assets intentionally retain `20260908-accounts-v1` for the root integration step.
+The original implementation was based on accounts release commit `1f31460`.
+It is now integrated onto accounts release `f0e5651` in the local
+`feat/results-followup-0908` branch, preserving account and annual award-table
+behavior. Assets and all four asset contracts use `20260908-results-v1`.
 No deployment, operational API call, live password/account operation, or full CI run
 is claimed by this handoff.
