@@ -362,13 +362,21 @@ def _manual_feature_enabled(request: Request) -> bool:
     # is configured; the broad server API key is deliberately not reused in a
     # browser.
     return bool(
-        settings.environment.casefold() != "production"
+        settings.department_accounts_enabled
+        or settings.environment.casefold() != "production"
         or settings.public_manual_analysis_token_valid
     )
 
 
-def _require_manual_operator(request: Request) -> None:
+def _require_manual_operator(request: Request, *, paid: bool = True) -> None:
     settings = request.app.state.settings
+    if settings.department_accounts_enabled:
+        from .accounts import authenticated_account
+        path = request.url.path
+        if not re.fullmatch(r"/api/v1/notices/[^/]+/analysis/(request|quantitative-diagnostics|requests/[^/]+)", path):
+            raise HTTPException(403, "이 작업은 부서 계정 권한에 포함되지 않습니다.")
+        request.state.department_identity = authenticated_account(request, mutation=request.method not in {"GET", "HEAD"}, paid=paid)
+        return
     if settings.environment.casefold() != "production":
         return
     expected = (
@@ -508,6 +516,7 @@ def _reserve_manual_job(
                 window_json={"scope": "ONE_OPEN_PPS_NOTICE"},
                 request_json={
                     "trigger": "PUBLIC_SAME_ORIGIN",
+                    **({"account_id": request.state.department_identity.id, "department_id": request.state.department_identity.department_id} if hasattr(request.state, "department_identity") else {}),
                     "force": False,
                     "evaluation_only": evaluation_only,
                     "recompute_current": recompute_current,
@@ -521,6 +530,9 @@ def _reserve_manual_job(
                 notice_keys=[notice_key],
             )
         )
+        if hasattr(request.state, "department_identity"):
+            from .accounts import audit
+            audit(session, "FREE_ANALYSIS_RESERVED" if evaluation_only else "PAID_ANALYSIS_RESERVED", actor=request.state.department_identity.id, target=request_id)
         session.commit()
     return request_id
 
@@ -1193,7 +1205,7 @@ def get_manual_quantitative_diagnostics(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="홈페이지와 동일한 출처에서만 진단할 수 있습니다.",
         )
-    _require_manual_operator(request)
+    _require_manual_operator(request, paid=False)
     notice = _load_notice(request, notice_key)
     response.headers["Cache-Control"] = "no-store"
     return _quantitative_diagnostics(notice)
@@ -1224,7 +1236,7 @@ def request_manual_notice_analysis(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="홈페이지와 동일한 출처에서만 분석을 요청할 수 있습니다.",
         )
-    _require_manual_operator(request)
+    _require_manual_operator(request, paid=False)
     caller_intent = payload or ManualAnalysisRequest()
     with _manual_execution_slot(request) as acquired:
         if not acquired:
@@ -1289,6 +1301,8 @@ def request_manual_notice_analysis(
                 and not retry_reviewed_version_ids
             )
         )
+        if settings.department_accounts_enabled and not evaluation_only:
+            _require_manual_operator(request, paid=True)
         if not evaluation_only and not caller_intent.run_extraction:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1463,7 +1477,7 @@ def get_manual_notice_analysis_request(
         "sec-fetch-site", ""
     ).strip().casefold() != "same-origin":
         raise HTTPException(status_code=403, detail="홈페이지와 동일한 출처에서만 조회할 수 있습니다.")
-    _require_manual_operator(request)
+    _require_manual_operator(request, paid=False)
     with request.app.state.session_factory() as session:
         job = session.get(IngestionJob, request_id)
         if (

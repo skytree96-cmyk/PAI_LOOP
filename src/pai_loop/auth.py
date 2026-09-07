@@ -53,8 +53,12 @@ def require_api_key(request: Request) -> None:
     settings = request.app.state.settings
     if public_read_allowed(request):
         return
+    if settings.department_accounts_enabled:
+        from .accounts import browser_request
+        if request.headers.get("x-pai-loop-api-key") and browser_request(request):
+            raise HTTPException(status_code=403, detail="서버 키는 브라우저 계정 권한을 대체할 수 없습니다.")
     configured_key: str | None = settings.api_key
-    auth_required = settings.environment.casefold() == "production" or bool(configured_key)
+    auth_required = settings.department_accounts_enabled or settings.environment.casefold() == "production" or bool(configured_key)
     if not auth_required:
         return
     candidate = request.headers.get("X-PAI-LOOP-API-KEY", "")

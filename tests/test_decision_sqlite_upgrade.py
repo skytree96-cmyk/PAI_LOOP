@@ -1,12 +1,22 @@
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from pai_loop.database import Base, build_engine
 from pai_loop import migrations
 from pai_loop.models import BidOutcome, Evaluation, Notice, NoticeVersion
+
+
+ACCOUNT_COLUMNS = ("account_id", "department_id", "department_name", "department_revision")
+ACCOUNT_TABLES = ("account_sessions", "account_audit", "account_login_buckets", "account_bootstrap_previews", "department_accounts")
+COMBINED_MIGRATIONS = (
+    (migrations.INDEPENDENT_DECISION_MIGRATION_ID, migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM),
+    (migrations.AWARD_OPENING_RESULT_MIGRATION_ID, migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM),
+    (migrations.ACCOUNT_MIGRATION_ID, migrations.ACCOUNT_MIGRATION_CHECKSUM),
+)
 
 
 def _legacy_database(tmp_path):
@@ -69,7 +79,8 @@ def test_sqlite_upgrade_preserves_old_records_references_schema_objects_and_is_i
         with engine.begin() as connection:
             row = tuple(connection.exec_driver_sql("SELECT * FROM user_decisions").one())
             assert row[:len(original)] == original
-            assert row[len(original):] == (None, None)
+            assert list(columns)[len(original):] == ["analysis_state_snapshot", "analysis_snapshot", *ACCOUNT_COLUMNS]
+            assert row[len(original):] == (None,) * 6
             assert connection.exec_driver_sql("SELECT decision_id FROM bid_outcomes").scalar_one() == "SYN-decision"
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM SYN_decision_audit").scalar_one() == 1
             assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
@@ -117,37 +128,106 @@ def test_sqlite_upgrade_rolls_back_copy_and_restores_foreign_keys_on_failure(tmp
         engine.dispose()
 
 
-def test_legacy_decisions_and_awards_upgrade_together_without_losing_rows(tmp_path):
+def _legacy_combined_database(tmp_path):
     engine, original_decision = _legacy_database(tmp_path)
-    try:
-        with engine.begin() as connection:
-            for column in ("opening_results", "opening_results_status", "opening_results_read_at"):
-                connection.exec_driver_sql(f'ALTER TABLE award_history_items DROP COLUMN "{column}"')
-            connection.exec_driver_sql("""INSERT INTO award_history_items
-                (id,target_notice_id,external_identity,bid_notice_no,revision_no,title,agency,
-                 winner_name,award_amount,similarity_score,source,created_at)
-                VALUES ('SYN-award','SYN-notice','SYN-award|000|0|000','SYN-award','000',
-                        'SYN old award','SYN agency','SYN winner',123456,90,'PPS',
-                        '2026-09-08 00:00:00')""")
-            original_award = dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one())
+    with engine.begin() as connection:
+        for column in ("opening_results", "opening_results_status", "opening_results_read_at"):
+            connection.exec_driver_sql(f'ALTER TABLE award_history_items DROP COLUMN "{column}"')
+        connection.exec_driver_sql("DROP INDEX uq_outcome_notice_department_revision")
+        for column in ACCOUNT_COLUMNS:
+            connection.exec_driver_sql(f'ALTER TABLE bid_outcomes DROP COLUMN "{column}"')
+        for table in ACCOUNT_TABLES:
+            connection.exec_driver_sql(f'DROP TABLE "{table}"')
+        connection.exec_driver_sql("""INSERT INTO award_history_items
+            (id,target_notice_id,external_identity,bid_notice_no,revision_no,title,agency,
+             winner_name,award_amount,similarity_score,source,created_at)
+            VALUES ('SYN-award','SYN-notice','SYN-award|000|0|000','SYN-award','000',
+                    'SYN old award','SYN agency','SYN winner',123456,90,'PPS',
+                    '2026-09-08 00:00:00')""")
+        original_award = dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one())
+        original_outcome = dict(connection.exec_driver_sql("SELECT * FROM bid_outcomes").mappings().one())
+    return engine, original_decision, original_award, original_outcome
 
+
+def _assert_combined_upgrade(engine, original_decision, original_award, original_outcome):
+    assert migrations.apply_additive_migrations(engine) == []
+    assert migrations.pending_migrations(engine) == []
+    assert next(column for column in inspect(engine).get_columns("user_decisions")
+                if column["name"] == "evaluation_id")["nullable"] is True
+    for table in ("user_decisions", "bid_outcomes"):
+        columns = {column["name"]: column for column in inspect(engine).get_columns(table)}
+        assert all(columns[column]["nullable"] for column in ACCOUNT_COLUMNS)
+        assert any(index["unique"] and index["column_names"] == ["notice_id", "department_id", "department_revision"]
+                   for index in inspect(engine).get_indexes(table))
+    with engine.connect() as connection:
+        ledger = dict(connection.execute(select(migrations.schema_migrations.c.migration_id, migrations.schema_migrations.c.checksum)).all())
+        assert {key: ledger[key] for key, _ in COMBINED_MIGRATIONS} == dict(COMBINED_MIGRATIONS)
+        decision = tuple(connection.exec_driver_sql("SELECT * FROM user_decisions").one())
+        assert decision[:len(original_decision)] == original_decision
+        assert decision[len(original_decision):] == (None,) * 6
+        outcome = dict(connection.exec_driver_sql("SELECT * FROM bid_outcomes").mappings().one())
+        assert {key: outcome[key] for key in original_outcome} == original_outcome
+        assert {key: value for key, value in outcome.items() if key not in original_outcome} == dict.fromkeys(ACCOUNT_COLUMNS)
+        award = dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one())
+        assert {key: award[key] for key in original_award} == original_award
+        assert {key: value for key, value in award.items() if key not in original_award} == {
+            "opening_results": None, "opening_results_status": None, "opening_results_read_at": None,
+        }
+        assert all(connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{table}"').scalar_one() == 0 for table in ACCOUNT_TABLES)
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM SYN_decision_audit").scalar_one() == 1
+        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+        assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+
+
+def test_legacy_decisions_awards_and_accounts_upgrade_together_without_losing_rows(tmp_path):
+    engine, original_decision, original_award, original_outcome = _legacy_combined_database(tmp_path)
+    try:
         applied = migrations.apply_additive_migrations(engine)
-        assert migrations.INDEPENDENT_DECISION_MIGRATION_ID in applied
-        assert migrations.AWARD_OPENING_RESULT_MIGRATION_ID in applied
-        assert migrations.apply_additive_migrations(engine) == []
-        assert migrations.pending_migrations(engine) == []
-        assert next(column for column in inspect(engine).get_columns("user_decisions")
-                    if column["name"] == "evaluation_id")["nullable"] is True
+        assert applied[-3:] == [key for key, _ in COMBINED_MIGRATIONS]
+        _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
+    finally:
+        engine.dispose()
+
+
+def test_combined_legacy_upgrade_rolls_back_every_migration_after_account_failure(tmp_path, monkeypatch):
+    engine, original_decision, original_award, original_outcome = _legacy_combined_database(tmp_path)
+    account_upgrade = migrations._account_identity_columns
+
+    def fail_after_accounts(connection, *, validate_only=False):
+        account_upgrade(connection, validate_only=validate_only)
+        if not validate_only:
+            raise migrations.MigrationError("SYN final account migration failure")
+
+    monkeypatch.setattr(migrations, "_account_identity_columns", fail_after_accounts)
+    try:
+        with pytest.raises(migrations.MigrationError, match="SYN final account"):
+            migrations.apply_additive_migrations(engine)
         with engine.connect() as connection:
-            decision = tuple(connection.exec_driver_sql("SELECT * FROM user_decisions").one())
-            assert decision[:len(original_decision)] == original_decision
-            assert connection.exec_driver_sql("SELECT decision_id FROM bid_outcomes").scalar_one() == "SYN-decision"
-            award = dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one())
-            assert {key: award[key] for key in original_award} == original_award
-            assert {key: value for key, value in award.items() if key not in original_award} == {
-                "opening_results": None, "opening_results_status": None, "opening_results_read_at": None,
-            }
+            assert tuple(connection.exec_driver_sql("SELECT * FROM user_decisions").one()) == original_decision
+            assert dict(connection.exec_driver_sql("SELECT * FROM award_history_items").mappings().one()) == original_award
+            assert dict(connection.exec_driver_sql("SELECT * FROM bid_outcomes").mappings().one()) == original_outcome
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM SYN_decision_audit").scalar_one() == 1
             assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
             assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+        tables = inspect(engine).get_table_names()
+        assert not set(ACCOUNT_TABLES) & set(tables)
+        assert "schema_migrations" not in tables and "__pai_user_decisions_nullable" not in tables
+        columns = {column["name"]: column for column in inspect(engine).get_columns("user_decisions")}
+        assert not columns["evaluation_id"]["nullable"] and "analysis_snapshot" not in columns
+        monkeypatch.setattr(migrations, "_account_identity_columns", account_upgrade)
+        migrations.apply_additive_migrations(engine)
+        _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
+    finally:
+        engine.dispose()
+
+
+def test_concurrent_combined_legacy_upgrades_apply_each_migration_once(tmp_path):
+    engine, original_decision, original_award, original_outcome = _legacy_combined_database(tmp_path)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            applied = list(pool.map(lambda _: migrations.apply_additive_migrations(engine), range(2)))
+        assert sum(bool(result) for result in applied) == 1
+        assert [key for result in applied for key in result][-3:] == [key for key, _ in COMBINED_MIGRATIONS]
+        _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
     finally:
         engine.dispose()

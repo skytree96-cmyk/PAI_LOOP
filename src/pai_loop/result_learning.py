@@ -10,6 +10,8 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_api_key
+from .accounts import Identity, authenticated_account, audit, enabled, serial_transaction
+from .notice_freshness import authoritative_pps_notice_is_cancelled
 from .manual_analysis import (
     _manual_feature_enabled,
     _require_manual_operator,
@@ -95,6 +97,7 @@ class ResultLearningCreate(ResultLearningFields):
     notice_key: str = Field(min_length=1, max_length=160)
     idempotency_key: str = Field(min_length=8, max_length=180)
     basis_outcome_id: str | None = Field(default=None, min_length=1, max_length=64)
+    expected_outcome_id: str | None = Field(default=None, max_length=36)
 
     @field_validator("notice_key")
     @classmethod
@@ -150,6 +153,10 @@ class ResultLearningUpdate(ApiModel):
 
 class ResultLearningOutcomeOut(ApiModel):
     id: str
+    department_revision: int | None = None
+    account_id: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
     outcome_key: str
     record_status: WorkflowStatus
     revision: int
@@ -184,6 +191,7 @@ class ResultLearningNoticeOut(ApiModel):
     deadline: datetime
     notice_status: str
     latest_outcome: ResultLearningOutcomeOut | None
+    outcomes: list[ResultLearningOutcomeOut] = Field(default_factory=list)
 
 
 class ResultLearningListOut(ApiModel):
@@ -213,7 +221,12 @@ def get_session(request: Request):
 DbSession = Annotated[Session, Depends(get_session)]
 
 
-def _operator_access(request: Request, *, mutation: bool) -> None:
+def _operator_access(request: Request, *, mutation: bool) -> Identity | None:
+    if enabled(request):
+        if request.headers.get("x-pai-loop-api-key"):
+            require_api_key(request)
+            return None
+        return authenticated_account(request, mutation=mutation, department_write=mutation)
     if request.headers.get("x-pai-loop-api-key"):
         require_api_key(request)
         return
@@ -298,6 +311,10 @@ def _out(item: BidOutcome) -> ResultLearningOutcomeOut:
     workflow = _workflow(item)
     return ResultLearningOutcomeOut(
         id=item.id,
+        account_id=item.account_id,
+        department_id=item.department_id,
+        department_name=item.department_name,
+        department_revision=item.department_revision,
         outcome_key=item.outcome_key,
         record_status=workflow["record_status"],
         revision=workflow["revision"],
@@ -345,6 +362,7 @@ def _evidence(
     operator_note: str | None,
     created: bool,
     basis: BidOutcome | None = None,
+    actor_label: str | None = None,
 ) -> dict[str, Any]:
     result = dict(existing) if isinstance(existing, dict) else {}
     previous = result.get("_workflow")
@@ -368,6 +386,10 @@ def _evidence(
         result["_workflow"]["basis_outcome"] = dict(previous_basis)
     if created:
         result["_workflow"]["created_by"] = "KMA 입찰팀"
+    if actor_label:
+        result["_workflow"]["updated_by"] = actor_label
+        if created:
+            result["_workflow"]["created_by"] = actor_label
     if operator_note:
         result["operator_note"] = operator_note
     else:
@@ -481,6 +503,7 @@ def list_result_learning(
                 deadline=notice.deadline,
                 notice_status=_effective_notice_status(notice),
                 latest_outcome=_out(latest) if latest else None,
+                outcomes=[_out(item) for item in sorted(notice.bid_outcomes, key=lambda item: (_utc(item.observed_at), item.id), reverse=True)] if enabled(request) else [],
             )
             for notice, latest in page
         ],
@@ -493,8 +516,14 @@ def create_result_learning(
     request: Request,
     session: DbSession,
 ) -> ResultLearningMutationOut:
-    _operator_access(request, mutation=True)
+    identity = _operator_access(request, mutation=True)
+    if identity:
+        serial_transaction(session, scope=f"result:{payload.notice_key}:{identity.department_id}")
+        if "expected_outcome_id" not in payload.model_fields_set:
+            raise HTTPException(422, "화면에서 확인한 자기 부서의 최신 결과 식별자가 필요합니다.")
     notice = _notice(session, payload.notice_key)
+    if identity and (notice.status == "CANCELLED" or authoritative_pps_notice_is_cancelled(session, notice)):
+        raise HTTPException(409, "취소된 공고의 결과는 변경할 수 없습니다.")
     basis: BidOutcome | None = None
     if payload.basis_outcome_id:
         basis = session.get(BidOutcome, payload.basis_outcome_id)
@@ -503,7 +532,8 @@ def create_result_learning(
                 status_code=422,
                 detail="이 공고의 검토 기준 결과가 아닙니다.",
             )
-    outcome_key = "manual-ui:" + hashlib.sha256(payload.idempotency_key.encode("utf-8")).hexdigest()[:40]
+    key_material = f"{identity.department_id}:{payload.idempotency_key}" if identity else payload.idempotency_key
+    outcome_key = "manual-ui:" + hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:40]
     validated = ResultLearningFields.model_validate(
         payload.model_dump(include=set(ResultLearningFields.model_fields))
     )
@@ -515,6 +545,8 @@ def create_result_learning(
         )
     )
     if existing is not None:
+        if identity and existing.department_id != identity.department_id:
+            raise HTTPException(403, "자기 부서의 결과만 변경할 수 있습니다.")
         expected = {
             **values,
             "record_status": validated.record_status,
@@ -535,10 +567,18 @@ def create_result_learning(
             notice_key=notice.notice_key,
             outcome=_out(existing),
         )
+    if identity:
+        previous = session.scalar(select(BidOutcome).where(BidOutcome.notice_id == notice.id, BidOutcome.department_id == identity.department_id).order_by(BidOutcome.department_revision.desc(), BidOutcome.id.desc()).limit(1))
+        if (previous.id if previous else None) != payload.expected_outcome_id:
+            raise HTTPException(409, "자기 부서의 결과가 갱신되었습니다. 다시 확인해 주세요.")
     item = BidOutcome(
         notice_id=notice.id,
         outcome_key=outcome_key,
         source="MANUAL_UI",
+        account_id=identity.id if identity else None,
+        department_id=identity.department_id if identity else None,
+        department_name=identity.department_name if identity else None,
+        department_revision=(previous.department_revision + 1 if previous else 1) if identity else None,
         observed_at=datetime.now(timezone.utc),
         evidence_json=_evidence(
             None,
@@ -547,10 +587,14 @@ def create_result_learning(
             operator_note=validated.operator_note,
             created=True,
             basis=basis,
+            actor_label=identity.actor_label if identity else None,
         ),
         **values,
     )
     session.add(item)
+    if identity:
+        session.flush()
+        audit(session, "DEPARTMENT_RESULT_CREATED", actor=identity.id, target=item.id)
     session.commit()
     session.refresh(item)
     return ResultLearningMutationOut(
@@ -567,10 +611,18 @@ def update_result_learning(
     request: Request,
     session: DbSession,
 ) -> ResultLearningMutationOut:
-    _operator_access(request, mutation=True)
+    identity = _operator_access(request, mutation=True)
     item = session.get(BidOutcome, outcome_id)
     if item is None:
         raise HTTPException(status_code=404, detail="결과 학습 기록을 찾을 수 없습니다.")
+    if identity and item.department_id != identity.department_id:
+        raise HTTPException(403, "자기 부서의 결과만 변경할 수 있습니다.")
+    if identity is None and item.department_id is not None:
+        raise HTTPException(403, "부서 소유 결과는 해당 부서 계정으로만 변경할 수 있습니다.")
+    if identity:
+        notice = session.get(Notice, item.notice_id)
+        if notice.status == "CANCELLED" or authoritative_pps_notice_is_cancelled(session, notice):
+            raise HTTPException(409, "취소된 공고의 결과는 변경할 수 없습니다.")
     if item.source != "MANUAL_UI":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -596,6 +648,7 @@ def update_result_learning(
         revision=workflow["revision"] + 1,
         operator_note=validated.operator_note,
         created=False,
+        actor_label=identity.actor_label if identity else None,
     )
     next_updated_at = datetime.now(timezone.utc)
     version_lower = item.updated_at - timedelta(microseconds=1)
@@ -606,6 +659,7 @@ def update_result_learning(
             BidOutcome.id == item.id,
             BidOutcome.updated_at >= version_lower,
             BidOutcome.updated_at <= version_upper,
+            BidOutcome.department_id == identity.department_id if identity else BidOutcome.department_id.is_(None),
         )
         .values(
             **values,
@@ -619,6 +673,8 @@ def update_result_learning(
             status_code=status.HTTP_409_CONFLICT,
             detail="다른 사용자가 먼저 수정했습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.",
         )
+    if identity:
+        audit(session, "DEPARTMENT_RESULT_UPDATED", actor=identity.id, target=item.id)
     session.commit()
     session.expire(item)
     session.refresh(item)

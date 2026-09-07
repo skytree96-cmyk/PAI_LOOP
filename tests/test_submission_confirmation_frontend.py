@@ -155,6 +155,21 @@ assert.equal(pageSources[1].evidenceId, "");
 duplicateNotice.evidence.push({...duplicateNotice.evidence[0], id: "SYN-ambiguous-card"});
 assert.ok(get(u.submissionCheckItemsForDisplay(duplicateNotice), "settlement").sources.every(item => !item.evidenceId));
 
+// A literal section heading can disambiguate a short source quote. It does
+// not authorize using a generated normalized_condition without a quote.
+const sectioned = document(["제출일시: 2099. 9. 10. 09:00~17:00", "직접 방문 제출 (우편 및 이메일 접수 불가)", "제출기간: 2099. 9. 1.~9. 12."]);
+sectioned.requirements[0].evidence[0].section = "4. 입찰참가등록 및 기술제안서 제출";
+sectioned.requirements[1].evidence[0].section = "4. 입찰참가등록 및 기술제안서 제출 다항";
+sectioned.requirements[2].evidence[0].section = "5. 가격제안(입찰) 제출";
+let sectionItems = project({...raw, document_analyses: [sectioned]});
+assert.equal(get(sectionItems, "proposal-deadline").sources.length, 1);
+assert.equal(get(sectionItems, "proposal-method").sources.length, 1);
+assert.equal(get(sectionItems, "bid-deadline").sources.length, 1);
+assert.match(texts(sectionItems, "bid-deadline")[0], /9\. 12/);
+sectioned.requirements.forEach(item => {item.evidence[0].section = "SYN 일반 유의사항";});
+sectionItems = project({...raw, document_analyses: [sectioned]});
+for (const id of ["proposal-deadline", "proposal-method", "bid-deadline"]) assert.equal(get(sectionItems, id).sources.length, 0);
+
 const malicious = project({...raw, source_url: "javascript:alert(1)", deadline: "2099-09-12T08:00:00Z",
   document_analyses: [document(["정산하지 않습니다. <script>SYN</script>"])]});
 assert.doesNotMatch(html(malicious), /<script>|javascript:/);

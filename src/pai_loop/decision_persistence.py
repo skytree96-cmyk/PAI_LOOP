@@ -15,6 +15,7 @@ from .notice_freshness import (
 )
 from .pps_enrichment import pps_attachment_coverage, public_analysis_reason
 from .schemas import DecisionCreate
+from .accounts import Identity, audit
 
 
 DECISION_SNAPSHOT_VERSION = "operator-decision-snapshot-v1"
@@ -158,6 +159,7 @@ def persist_current_evaluation_decision(
     notice_key: str,
     payload: DecisionCreate,
     require_explicit_evaluation_id: bool,
+    identity: Identity | None = None,
 ) -> UserDecision:
     """Insert one human decision against an atomic view of the current analysis.
 
@@ -174,8 +176,21 @@ def persist_current_evaluation_decision(
 
     _begin_current_evaluation_snapshot(session)
     try:
+        if identity is not None:
+            if identity.role != "DEPARTMENT" or not identity.department_id:
+                raise HTTPException(403, "부서 계정만 판단을 작성할 수 있습니다.")
+            if "expected_decision_id" not in payload.model_fields_set:
+                raise HTTPException(422, "화면에서 확인한 자기 부서의 최신 판단 식별자가 필요합니다.")
+            if session.get_bind().dialect.name == "postgresql":
+                import hashlib
+                lock_key = int.from_bytes(hashlib.sha256(f"{notice_key}:{identity.department_id}".encode()).digest()[:8], "big", signed=True)
+                session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
         notice = _load_notice(session, notice_key)
-        if authoritative_pps_notice_is_cancelled(session, notice):
+        if identity is not None:
+            previous = session.scalar(select(UserDecision).where(UserDecision.notice_id == notice.id, UserDecision.department_id == identity.department_id).order_by(UserDecision.department_revision.desc(), UserDecision.id.desc()).limit(1))
+            if (previous.id if previous else None) != payload.expected_decision_id:
+                raise HTTPException(409, "자기 부서의 판단이 갱신되었습니다. 다시 확인해 주세요.")
+        if (identity and notice.status == "CANCELLED") or authoritative_pps_notice_is_cancelled(session, notice):
             raise HTTPException(
                 status_code=409,
                 detail="조달청에서 취소된 공고이므로 새 담당자 결정을 기록할 수 없습니다.",
@@ -214,10 +229,18 @@ def persist_current_evaluation_decision(
             evaluation_id=evaluation.id if evaluation is not None else None,
             analysis_state_snapshot=state,
             analysis_snapshot=snapshot,
-            **payload.model_dump(exclude={"evaluation_id"}),
+            **payload.model_dump(exclude={"evaluation_id", "expected_decision_id", "actor_label"}),
+            actor_label=identity.actor_label if identity else payload.actor_label,
+            account_id=identity.id if identity else None,
+            department_id=identity.department_id if identity else None,
+            department_name=identity.department_name if identity else None,
+            department_revision=(previous.department_revision + 1 if previous else 1) if identity else None,
+            created_at=captured_at,
         )
         session.add(decision)
         session.flush()
+        if identity:
+            audit(session, "DEPARTMENT_DECISION_CREATED", actor=identity.id, target=decision.id)
 
         # Keep an explicit final guard next to the INSERT. The database lock
         # makes the snapshot atomic; the refresh also fails closed if a future

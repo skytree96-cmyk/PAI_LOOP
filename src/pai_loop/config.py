@@ -44,6 +44,7 @@ class Settings:
     api_key: str | None = None
     private_evidence_token: str | None = None
     public_read_only: bool = False
+    department_accounts_enabled: bool = False
     public_manual_analysis_enabled: bool = False
     public_manual_analysis_token: str | None = None
     # Zero disables the aggregate hourly demo quota. Per-notice cooldown,
@@ -116,6 +117,7 @@ class Settings:
                 os.getenv("PAI_LOOP_PRIVATE_EVIDENCE_TOKEN") or None
             ),
             public_read_only=_as_bool(os.getenv("PAI_LOOP_PUBLIC_READ_ONLY")),
+            department_accounts_enabled=_as_bool(os.getenv("PAI_LOOP_DEPARTMENT_ACCOUNTS_ENABLED")),
             public_manual_analysis_enabled=_as_bool(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED")
             ),

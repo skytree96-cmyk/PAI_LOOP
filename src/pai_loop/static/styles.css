@@ -5100,6 +5100,13 @@ svg {
 
 .performance-filters > * { min-width: 0; }
 
+.account-dialog { max-width: min(480px, calc(100vw - 28px)); }
+.account-dialog .source-link-dialog__header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+#accountCredentials { display: grid; gap: 16px; }
+.account-identity { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--blue-pale); color: var(--blue); line-height: 1.7; white-space: pre-line; }
+.account-error { color: var(--red); font-weight: 600; }
+#accountLoginButton span { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .performance-range-filters {
   grid-column: 1 / -1;
   display: grid;
@@ -7422,3 +7429,4 @@ textarea:focus,
   .performance-filters,
   .performance-pagination nav { display: none !important; }
 }
+.department-decision-list{list-style:none;padding:0;display:grid;gap:12px}.department-decision-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;padding:18px;border:1px solid var(--line);border-radius:16px;overflow-wrap:anywhere}.department-decision-list p,.department-decision-list small{grid-column:1/-1;margin:0}.department-decision-list small{color:var(--muted)}

@@ -59,6 +59,8 @@
     manualAnalysisToken: "",
     manualAnalysisPolicy: null,
     manualAnalysisRequests: new Map(),
+    accountSession: { enabled: false, authenticated: false, status: "idle", account: null, csrfToken: "", capabilities: {} },
+    accountEpoch: 0,
     ppsDiscovery: {
       query: "",
       fromDate: "",
@@ -225,6 +227,8 @@
       "detailDrawer", "drawerLoading", "closeDetailButton", "previousNoticeButton", "nextNoticeButton", "detailPosition", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "manualAnalysisTokenDialog", "manualAnalysisTokenInput",
+      "accountLoginButton", "accountButtonLabel", "accountDialog", "accountLoginForm", "accountDialogTitle", "accountDialogHelp", "accountDialogClose", "accountUsername", "accountPassword", "accountCredentials", "accountIdentity", "accountError", "accountLogoutButton", "accountSubmitButton",
+      "departmentDecisionCard", "departmentDecisionState", "departmentDecisionList",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
       "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyAwardTableBasis", "historyAwardTableBody", "historyAwardTableNotes", "decisionForm", "decisionExisting", "toggleCommentButton", "decisionDockToggle", "decisionDockBody",
@@ -460,6 +464,11 @@
       state.performance.offset = 0;
       void loadPerformance({ force: true });
     });
+    els.accountLoginButton.addEventListener("click", openAccountDialog);
+    els.accountDialogClose.addEventListener("click", () => els.accountDialog.close());
+    els.accountDialog.addEventListener("close", () => { els.accountPassword.value = ""; });
+    els.accountLoginForm.addEventListener("submit", loginDepartmentAccount);
+    els.accountLogoutButton.addEventListener("click", logoutDepartmentAccount);
     els.performanceFilterForm.addEventListener("reset", () => {
       window.setTimeout(() => {
         validatePerformanceRanges(false);
@@ -647,6 +656,8 @@
       state.runtimeProfileAvailable = runtimeResult.status === "fulfilled";
       if (runtimeResult.status === "fulfilled") {
         applyRuntimeProfile(runtimeResult.value);
+        if (state.accountSession.enabled) await loadAccountSession();
+        if (sequence !== state.requestSequence) return;
       } else {
         state.manualAnalysisEnabled = false;
         state.manualAnalysisAuthRequired = false;
@@ -669,6 +680,7 @@
       else hideDemoBanner();
       finishLoading();
       openNoticeFromRoute();
+      if (state.accountSession.enabled && state.accountSession.authenticated) void hydrateDepartmentDecisionList(sequence);
       void hydrateApplicationMetadata({ sequence, requestedStatusScope });
       return;
     }
@@ -739,10 +751,12 @@
 
   function applyRuntimeProfile(raw) {
     const profile = unwrapObject(raw);
+    state.accountSession.enabled = profile.department_accounts_enabled === true;
     state.accessMode = stringValue(firstValue(profile.access_mode, profile.accessMode), "UNKNOWN");
     state.writeControlsEnabled = booleanValue(
       firstValue(profile.write_controls_enabled, profile.writeControlsEnabled),
     ) ?? state.accessMode !== "PUBLIC_READ_ONLY";
+    if (state.accountSession.enabled) state.writeControlsEnabled = false;
     state.manualAnalysisEnabled = booleanValue(
       firstValue(profile.manual_analysis_enabled, profile.manualAnalysisEnabled),
     ) ?? false;
@@ -772,9 +786,188 @@
       els.saveDecisionButton.disabled = true;
       els.saveDecisionButton.textContent = "현재 판단 저장 미제공";
     }
+    if (els.accountLoginButton) renderAccountSession();
+  }
+
+  function applyAccountSession(payload) {
+    if (payload?.enabled !== true || typeof payload.authenticated !== "boolean") {
+      throw new Error("계정 상태를 확인할 수 없습니다.");
+    }
+    if (state.accountSession.account?.id !== payload.account?.id
+      || state.accountSession.csrfToken !== stringValue(payload.csrf_token)) clearAccountPrivateState();
+    state.accountSession = {
+      enabled: true,
+      authenticated: payload.authenticated === true && Boolean(payload.account?.id),
+      status: "ready",
+      account: payload.authenticated === true ? payload.account : null,
+      csrfToken: payload.authenticated === true ? stringValue(payload.csrf_token) : "",
+      capabilities: payload.authenticated === true ? firstObject(payload.capabilities) : {},
+    };
+    clearManualAnalysisToken();
+    renderAccountSession();
+  }
+
+  async function loadAccountSession() {
+    const epoch = state.accountEpoch;
+    try {
+      applyAccountSession(await apiRequest("/accounts/me"));
+    } catch (error) {
+      if (epoch !== state.accountEpoch) return;
+      clearAccountPrivateState();
+      state.accountSession = { enabled: true, authenticated: false,
+        status: error?.status === 401 ? "expired" : "error", account: null, csrfToken: "", capabilities: {} };
+      clearManualAnalysisToken();
+      renderAccountSession();
+    }
+  }
+
+  function renderAccountSession() {
+    const session = state.accountSession;
+    els.accountLoginButton.hidden = !session.enabled;
+    const label = session.authenticated
+      ? session.account.department_name || "개발자 관리자" : "부서 로그인";
+    els.accountButtonLabel.textContent = label;
+    els.accountLoginButton.setAttribute("aria-label", session.authenticated ? `${label} 계정 정보` : "부서 로그인");
+    els.accountDialogTitle.textContent = session.authenticated ? "로그인 계정" : "부서 로그인";
+    els.accountCredentials.hidden = session.authenticated;
+    els.accountIdentity.hidden = !session.authenticated;
+    els.accountSubmitButton.hidden = session.authenticated;
+    els.accountLogoutButton.hidden = !session.authenticated;
+    els.accountUsername.required = !session.authenticated;
+    els.accountPassword.required = !session.authenticated;
+    els.accountIdentity.textContent = session.authenticated
+      ? `${label} · ${session.account.username}\n${session.account.role === "ADMIN" ? "부서 판단·결과 조회 전용" : "내 부서 판단·결과 작성 가능 · 타 부서 조회 가능"}\n유료 분석 ${session.capabilities.request_paid_analysis ? "권한 있음" : "권한 없음"}` : "";
+    els.accountDialogHelp.textContent = session.authenticated
+      ? "공용 계정의 기록에는 부서명이 남습니다. 다른 부서로 작업할 때는 로그아웃 후 해당 계정으로 로그인하세요."
+      : session.status === "expired" ? "로그인이 만료되었습니다. 다시 로그인해 주세요."
+      : session.status === "error" ? "계정 상태 조회에 실패했습니다. 잠시 후 다시 로그인해 주세요."
+      : "발급받은 부서 계정으로 로그인하세요. 판단과 결과에는 로그인한 부서명이 남습니다.";
+    const privateEditor = els.performanceEditorUnlockButton?.closest(".performance-editor");
+    if (privateEditor) privateEditor.hidden = session.enabled;
+    if (session.enabled && !state.resultLearning.loaded && !state.resultLearning.loading) {
+      els.resultLearningSummary.textContent = session.authenticated ? "부서별 결과 기록을 불러오세요." : "부서 로그인 후 결과 기록을 불러오세요.";
+      els.resultLearningState.innerHTML = session.authenticated
+        ? "<strong>부서별 결과 기록 조회</strong><p>목록 새로고침을 눌러 저장된 기록을 확인하세요.</p>"
+        : "<strong>부서 로그인이 필요합니다</strong><p>상단 부서 로그인으로 인증한 뒤 결과 기록을 확인하세요.</p>";
+    }
+  }
+
+  function openAccountDialog() {
+    renderAccountSession();
+    els.accountError.hidden = true;
+    els.accountPassword.value = "";
+    els.accountDialog.showModal();
+    (state.accountSession.authenticated ? els.accountDialogClose : els.accountUsername).focus();
+  }
+
+  async function loginDepartmentAccount(event) {
+    event.preventDefault();
+    const returnNoticeKey = state.selectedNotice?.noticeKey;
+    if (els.accountSubmitButton.disabled || state.accountSession.authenticated) return;
+    els.accountSubmitButton.disabled = true;
+    els.accountError.hidden = true;
+    try {
+      const payload = await apiRequest("/accounts/login", {
+        method: "POST",
+        body: JSON.stringify({ username: els.accountUsername.value.trim(), password: els.accountPassword.value }),
+      });
+      applyAccountSession(payload);
+      const epoch = state.accountEpoch;
+      els.accountDialog.close();
+      await loadApplicationData({ forceApi: true });
+      if (epoch !== state.accountEpoch) return;
+      if (returnNoticeKey && !state.selectedNotice) await openDetail(returnNoticeKey);
+      if (epoch !== state.accountEpoch) return;
+      if (state.selectedNotice) {
+        const noticeKey = state.selectedNotice.noticeKey;
+        const notice = await hydrateOperatorDecisions(state.selectedNotice);
+        if (epoch !== state.accountEpoch || state.selectedNotice?.noticeKey !== noticeKey) return;
+        state.selectedNotice = notice;
+        renderDetail(state.selectedNotice);
+      }
+      showToast("로그인했습니다", state.accountSession.account?.role === "ADMIN" ? "부서 판단과 결과를 조회할 수 있습니다." : "로그인한 부서의 판단과 결과를 기록할 수 있습니다.");
+    } catch (error) {
+      els.accountError.textContent = error?.status === 429 ? "로그인 시도가 많습니다. 잠시 후 다시 시도해 주세요."
+        : error?.status === 401 ? "아이디 또는 비밀번호를 확인해 주세요."
+        : "로그인하지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요.";
+      els.accountError.hidden = false;
+    } finally {
+      els.accountPassword.value = "";
+      els.accountSubmitButton.disabled = false;
+    }
+  }
+
+  async function logoutDepartmentAccount() {
+    els.accountLogoutButton.disabled = true;
+    try {
+      await apiRequest("/accounts/logout", { method: "POST", headers: accountMutationHeaders() });
+      applyAccountSession({ enabled: true, authenticated: false });
+      els.accountDialog.close();
+      if (state.selectedNotice) closeDetail();
+      state.notices = [];
+      state.resultLearning.records = [];
+      await loadApplicationData({ forceApi: true });
+      showToast("로그아웃했습니다", "다른 부서로 작업하려면 다시 로그인해 주세요.");
+    } catch (_) {
+      els.accountError.textContent = "로그아웃 처리에 실패했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.";
+      els.accountError.hidden = false;
+    } finally { els.accountLogoutButton.disabled = false; }
+  }
+
+  function accountMutationHeaders() {
+    return state.accountSession.authenticated && state.accountSession.csrfToken
+      ? { "X-CSRF-Token": state.accountSession.csrfToken } : null;
+  }
+
+  function clearAccountPrivateState() {
+    state.accountEpoch += 1;
+    state.notices = [];
+    state.filteredNotices = [];
+    if (state.selectedNotice) closeDetail();
+    state.selectedNotice = null;
+    state.privateMatchPreviews = {};
+    state.performanceEditor.records = [];
+    state.performanceEditor.loaded = false;
+    state.performanceEditor.loading = false;
+    closeResultLearningDialog();
+    state.resultLearning.records = [];
+    state.resultLearning.loaded = false;
+    state.resultLearning.loading = false;
+    state.resultLearning.offset = 0;
+    state.resultLearning.total = 0;
+    els.resultLearningUnlockButton.disabled = false;
+    els.resultLearningSaveButton.disabled = false;
+    els.resultLearningPagination.hidden = true;
+    els.resultLearningState.hidden = false;
+    els.resultLearningList.innerHTML = "";
+    for (const id of ["noticeTableBody", "noticeCardGrid", "decisionExisting", "decisionSummary", "performanceEditorList", "departmentDecisionList"]) {
+      if (els[id]) els[id].replaceChildren();
+    }
+    els.decisionComment.value = "";
+    els.decisionInputs.forEach((input) => { input.checked = false; });
+    if (els.resultLearningForm) els.resultLearningForm.reset();
+  }
+
+  function canWriteResults() {
+    return !state.accountSession?.enabled || (state.accountSession.authenticated
+      && state.accountSession.capabilities.write_results === true);
+  }
+
+  function ownDepartmentRecords(records) {
+    if (!state.accountSession?.enabled) return records;
+    const department = state.accountSession.account?.department_id;
+    if (!department || state.accountSession.account?.role !== "DEPARTMENT") return [];
+    return records.filter((record) => (record.departmentId || record.department_id) === department);
+  }
+
+  function compareDepartmentRevision(a, b) {
+    const revision = (record) => numberOrNull(firstValue(record.departmentRevision, record.department_revision)) ?? -1;
+    return revision(b) - revision(a) || nullableDateSort(b.createdAt || b.updated_at, a.createdAt || a.updated_at);
   }
 
   function canWriteDecision() {
+    if (state.accountSession?.enabled) return state.accountSession.authenticated
+      && state.accountSession.capabilities.write_decisions === true;
     return Boolean(state.writeControlsEnabled || state.operatorDecisionEnabled);
   }
 
@@ -800,6 +993,16 @@
   }
 
   async function apiRequest(path, options = {}) {
+    const accountEpoch = state.accountEpoch;
+    if (state.accountSession?.enabled && (
+      /^\/(?:pps-discovery|prespec-discovery|performance-records)(?:[/?]|$)/.test(path)
+      || /^\/pre-specifications\/[^/]+\/analysis(?:[/?]|$)/.test(path)
+      || (path.startsWith("/company-awards/") && options.method && options.method !== "GET")
+    )) {
+      const error = new Error("이 작업은 부서 계정에 제공되지 않습니다. 별도 운영 환경에서 실행해 주세요.");
+      error.status = 403;
+      throw error;
+    }
     const { timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -822,7 +1025,19 @@
           ? await response.json()
           : await response.text();
 
+      // Check before error handling too: an old 401 must never expire a newer
+      // account, and an old /accounts/me must never restore a logged-out one.
+      if (accountEpoch !== state.accountEpoch) {
+        const error = new Error("로그인 계정이 변경되었습니다. 다시 조회해 주세요.");
+        error.code = "ACCOUNT_CHANGED";
+        throw error;
+      }
       if (!response.ok) {
+        if (response.status === 401 && state.accountSession?.enabled && path !== "/accounts/login") {
+          clearAccountPrivateState();
+          state.accountSession = { enabled: true, authenticated: false, status: "expired", account: null, csrfToken: "", capabilities: {} };
+          renderAccountSession();
+        }
         if (response.status === 401 && headers.has("X-PAI-Manual-Token")) {
           clearManualAnalysisToken();
         }
@@ -1140,7 +1355,7 @@
       state.ppsDiscovery.submitting = false;
     }
     if (!authHeaders) {
-      if (!authError) showToast("나라장터 조회 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
+      if (!authError) showToast("나라장터 조회 취소", state.accountSession?.enabled ? "부서 로그인 상태를 확인해 주세요." : "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
       renderPpsDiscovery();
       return;
     }
@@ -2493,9 +2708,10 @@
   }
 
   async function loadResultLearning({ force = false } = {}) {
+    const epoch = state.accountEpoch;
     if (state.resultLearning.loading || (state.resultLearning.loaded && !force)) return;
     const headers = await manualAnalysisAuthHeaders();
-    if (!headers) return;
+    if (!headers || epoch !== state.accountEpoch) return;
     state.resultLearning.loading = true;
     els.resultLearningUnlockButton.disabled = true;
     els.resultLearningState.hidden = false;
@@ -2507,26 +2723,36 @@
     if (els.resultLearningRecordFilter.value) params.set("record_status", els.resultLearningRecordFilter.value);
     try {
       const payload = unwrapObject(await apiRequest(`/result-learning?${params}`, { headers }));
+      if (epoch !== state.accountEpoch) return;
       state.resultLearning.records = arrayValue(payload.records).map(normalizeResultLearningNotice);
       state.resultLearning.total = Math.max(numberOrNull(payload.total) ?? state.resultLearning.records.length, 0);
       state.resultLearning.loaded = true;
       renderResultLearning();
     } catch (error) {
+      if (epoch !== state.accountEpoch) return;
       if (error?.status === 401) state.manualAnalysisToken = "";
       els.resultLearningState.hidden = false;
       els.resultLearningState.innerHTML = `<strong>결과 기록을 불러오지 못했습니다</strong><p>${escapeHtml(editorErrorMessage(error))}</p>`;
       showToast("결과 학습 조회 실패", editorErrorMessage(error), "error");
     } finally {
-      state.resultLearning.loading = false;
-      els.resultLearningUnlockButton.disabled = false;
+      if (epoch === state.accountEpoch) {
+        state.resultLearning.loading = false;
+        els.resultLearningUnlockButton.disabled = false;
+      }
     }
   }
 
   function normalizeResultLearningNotice(raw = {}) {
-    const outcome = raw.latest_outcome && typeof raw.latest_outcome === "object" ? raw.latest_outcome : null;
+    const outcomes = Array.isArray(raw.outcomes) ? raw.outcomes : raw.latest_outcome ? [raw.latest_outcome] : [];
+    const own = ownDepartmentRecords(outcomes).slice().sort(compareDepartmentRevision);
+    const outcome = state.accountSession?.enabled && state.accountSession.account?.role === "DEPARTMENT"
+      ? own[0] || outcomes.find((row) => !row.department_id && row.source !== "MANUAL_UI") || null
+      : raw.latest_outcome && typeof raw.latest_outcome === "object" ? raw.latest_outcome : null;
     return {
       noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
       deadline: stringValue(raw.deadline), noticeStatus: stringValue(raw.notice_status),
+      expectedOutcomeId: own[0]?.id || null,
+      departmentOutcomes: outcomes.map((row) => ({ departmentName: stringValue(row.department_name, row.source === "MANUAL_UI" ? "기존 기록" : "나라장터"), status: stringValue(row.status), note: stringValue(row.operator_note), updatedAt: row.updated_at })),
       outcome: outcome ? {
         id: stringValue(outcome.id), outcomeKey: stringValue(outcome.outcome_key), recordStatus: stringValue(outcome.record_status, "DRAFT").toUpperCase(),
         revision: numberOrNull(outcome.revision) ?? 1, status: stringValue(outcome.status).toUpperCase(), submittedBidAmount: numberOrNull(outcome.submitted_bid_amount),
@@ -2542,7 +2768,7 @@
   function renderResultLearning() {
     const data = state.resultLearning;
     els.resultLearningUnlockButton.textContent = data.loaded ? "목록 새로고침" : "결과 기록 열기";
-    els.resultLearningSummary.textContent = data.loaded ? `대상 공고 ${formatNumber(data.total)}건` : "운영 키로 결과 기록을 불러오세요.";
+    els.resultLearningSummary.textContent = data.loaded ? `대상 공고 ${formatNumber(data.total)}건${state.accountSession?.enabled ? " · 부서별 기록 조회" : ""}` : state.accountSession?.enabled ? "부서 로그인 후 결과 기록을 불러오세요." : "운영 키로 결과 기록을 불러오세요.";
     els.resultLearningState.hidden = data.records.length > 0;
     if (data.loaded && !data.records.length) els.resultLearningState.innerHTML = "<strong>조건에 맞는 공고가 없습니다</strong><p>필터를 바꾸거나 종료 공고 수집 상태를 확인해 주세요.</p>";
     els.resultLearningList.innerHTML = data.records.map((notice, index) => {
@@ -2552,7 +2778,8 @@
         <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? recordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
         <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(formatBudget(outcome?.submittedBidAmount))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(formatBudget(outcome?.winningBidAmount))}</dd></div></dl>
-        <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small><button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "결과 수정" : "검토본 만들기") : "결과 입력"}</button></footer>
+        ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
+        <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
       </article>`;
     }).join("");
     const start = data.total ? data.offset + 1 : 0;
@@ -2575,6 +2802,7 @@
   }
 
   function openResultLearningDialog(notice) {
+    if (!canWriteResults()) return;
     const outcome = notice.outcome;
     const isManualRecord = outcome?.source === "MANUAL_UI";
     state.resultLearning.editingNotice = notice;
@@ -2609,12 +2837,13 @@
 
   async function saveResultLearning(event) {
     event.preventDefault();
+    const epoch = state.accountEpoch;
     const notice = state.resultLearning.editingNotice;
     const outcome = state.resultLearning.editingOutcome;
-    if (!notice) return;
+    if (!notice || !canWriteResults()) return;
     const isManualRecord = outcome?.source === "MANUAL_UI";
     const headers = await manualAnalysisAuthHeaders();
-    if (!headers) return;
+    if (!headers || epoch !== state.accountEpoch) return;
     const payload = {
       record_status: els.resultLearningRecordStatus.value, status: els.resultLearningStatus.value,
       submitted_bid_amount: nullableNumber(els.resultLearningSubmittedAmount.value), submitted_bid_rate: nullableNumber(els.resultLearningSubmittedRate.value),
@@ -2629,23 +2858,32 @@
     else {
       payload.notice_key = notice.noticeKey;
       payload.idempotency_key = els.resultLearningDialog.dataset.requestKey || newIdempotencyKey("result");
+      if (state.accountSession?.enabled) payload.expected_outcome_id = notice.expectedOutcomeId;
       if (outcome) payload.basis_outcome_id = outcome.id;
     }
     els.resultLearningSaveButton.disabled = true;
     try {
       await apiRequest(path, { method: isManualRecord ? "PATCH" : "POST", headers, body: JSON.stringify(payload) });
+      if (epoch !== state.accountEpoch) return;
       closeResultLearningDialog();
       await loadResultLearning({ force: true });
+      if (epoch !== state.accountEpoch) return;
       showToast(
         isManualRecord ? "결과 기록 수정 완료" : (outcome ? "담당자 검토본 저장 완료" : "결과 기록 저장 완료"),
         !isManualRecord && outcome ? "자동 환류 원본은 변경하지 않고 검토본을 별도로 저장했습니다." : "검증 상태와 출처를 함께 저장했습니다.",
         "success",
       );
     } catch (error) {
+      if (epoch !== state.accountEpoch) return;
       if (error?.status === 401) state.manualAnalysisToken = "";
+      if (state.accountSession?.enabled && error?.status === 409) {
+        closeResultLearningDialog();
+        await loadResultLearning({ force: true });
+        if (epoch !== state.accountEpoch) return;
+      }
       showToast("결과 기록 저장 실패", editorErrorMessage(error), "error");
     } finally {
-      els.resultLearningSaveButton.disabled = false;
+      if (epoch === state.accountEpoch) els.resultLearningSaveButton.disabled = false;
     }
   }
 
@@ -2727,7 +2965,7 @@
     }
     const authHeaders = await manualAnalysisAuthHeaders();
     if (!authHeaders) {
-      showToast("낙찰 결과 조회 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
+      showToast("낙찰 결과 조회 취소", state.accountSession?.enabled ? "부서 로그인 상태를 확인해 주세요." : "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
       return;
     }
 
@@ -2953,7 +3191,7 @@
     const versions = arrayValue(firstValue(source.versions, source.notice_versions, [])).map(normalizeVersion);
     const latestVersion = versions.slice().sort((a, b) => b.versionNo - a.versionNo)[0] || null;
     const decisions = arrayValue(firstValue(source.decisions, source.decision_history, [])).map(normalizeDecisionRecord);
-    const latestDecision = decisions.slice().sort((a, b) => nullableDateSort(b.createdAt, a.createdAt))[0] || {};
+    const latestDecision = ownDepartmentRecords(decisions).slice().sort(state.accountSession?.enabled ? compareDepartmentRevision : (a, b) => nullableDateSort(b.createdAt, a.createdAt))[0] || {};
     const noticeKey = stringValue(
       firstValue(source.notice_key, source.noticeKey, source.id, source.bid_notice_no, source.bidNtceNo),
       `notice-${index + 1}`,
@@ -3021,14 +3259,14 @@
         source.recommendation_evidence_count,
         source.recommendationEvidenceCount,
       )) ?? 0),
-      decision: normalizeDecision(firstValue(latestDecision.choice, source.decision, source.manager_decision, source.human_decision)),
+      decision: normalizeDecision(state.accountSession?.enabled ? latestDecision.choice : firstValue(latestDecision.choice, source.decision, source.manager_decision, source.human_decision)),
       // Public detail responses redact private history to []; that is not a known empty history.
       decisionReadStatus: options.operatorDecisionsLoaded === true
-        || (state.accessMode === "SERVER_AUTHENTICATED" && Array.isArray(source.decisions))
+        || (!state.accountSession?.enabled && state.accessMode === "SERVER_AUTHENTICATED" && Array.isArray(source.decisions))
         ? "KNOWN" : "UNKNOWN",
-      decisionComment: stringValue(firstValue(latestDecision.rationale, source.decision_comment, source.comment, source.manager_comment), ""),
-      decidedBy: stringValue(firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
-      decidedAt: firstValue(latestDecision.createdAt, source.decided_at, source.decision_at, null),
+      decisionComment: stringValue(state.accountSession?.enabled ? latestDecision.rationale : firstValue(latestDecision.rationale, source.decision_comment, source.comment, source.manager_comment), ""),
+      decidedBy: stringValue(state.accountSession?.enabled ? latestDecision.actorLabel : firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
+      decidedAt: state.accountSession?.enabled ? latestDecision.createdAt || null : firstValue(latestDecision.createdAt, source.decided_at, source.decision_at, null),
       resultStatus: stringValue(firstValue(source.result_status, source.award_result, source.outcome), ""),
       hasBidOutcome: booleanValue(firstValue(source.has_bid_outcome, source.hasBidOutcome))
         ?? Boolean(stringValue(firstValue(source.result_status, source.award_result, source.outcome), "")),
@@ -3155,6 +3393,10 @@
     const source = item && typeof item === "object" ? item : {};
     return {
       id: stringValue(source.id),
+      accountId: stringValue(firstValue(source.account_id, source.accountId)),
+      departmentId: stringValue(firstValue(source.department_id, source.departmentId)),
+      departmentName: stringValue(firstValue(source.department_name, source.departmentName)),
+      departmentRevision: numberOrNull(firstValue(source.department_revision, source.departmentRevision)),
       evaluationId: stringValue(firstValue(source.evaluation_id, source.evaluationId)),
       choice: normalizeDecision(firstValue(source.choice, source.decision)),
       actorLabel: stringValue(firstValue(source.actor_label, source.actorLabel, source.decided_by)),
@@ -3577,7 +3819,7 @@
     if (state.currentView === "closed") {
       els.dataSourceLabel.textContent = state.resultLearning.loaded
         ? `결과 학습 DB · 대상 공고 ${formatNumber(state.resultLearning.total)}건 · 자동 환류/담당자 입력 구분`
-        : "결과 학습 DB · 운영 키로 조회";
+        : state.accountSession?.enabled ? "결과 학습 DB · 부서 로그인 후 조회" : "결과 학습 DB · 운영 키로 조회";
       return;
     }
     if (state.currentView === "awards") {
@@ -3620,19 +3862,23 @@
     const recommendation = els.recommendationFilter.value;
     // Anonymous projections omit private decisions; absence is not proof of indecision.
     const decisionAccessAllowed = state.source === "demo"
-      || (state.source === "api" && state.accessMode === "SERVER_AUTHENTICATED");
+      || (state.source === "api" && (state.accessMode === "SERVER_AUTHENTICATED"
+        || (state.accountSession?.enabled && state.accountSession.authenticated)));
     const decisionFilterAvailable = operatorDecisionListAvailable();
-    const decisionFilterMessage = !decisionAccessAllowed
-      ? state.operatorDecisionEnabled
+    const adminDecisionReader = state.accountSession?.enabled && state.accountSession.account?.role === "ADMIN";
+    const decisionFilterMessage = adminDecisionReader
+      ? "관리자는 부서 판단을 조회할 수 있습니다. 상세에서 부서별 기록을 확인하세요."
+      : !decisionAccessAllowed
+      ? state.accountSession?.enabled ? "부서 로그인 후 내 부서의 판단으로 분류할 수 있습니다. 다른 부서의 판단은 공고 상세에서 확인하세요." : state.operatorDecisionEnabled
         ? "공개 화면의 공고 목록에는 담당자 판단이 포함되지 않아 분류할 수 없습니다. 운영 PIN으로 개별 공고 상세의 판단을 확인하거나 저장할 수 있습니다."
         : "공개 화면의 공고 목록에는 담당자 판단이 포함되지 않아 분류할 수 없습니다. 현재 서버에서는 판단 저장을 제공하지 않습니다."
       : !decisionFilterAvailable
         ? "담당자 판단 목록을 불러와야 사용할 수 있습니다. 일부 공고의 조회 결과를 전체 판단으로 분류하지 않습니다."
-        : "AI 추천과 구분한 담당자의 저장된 판단으로 분류합니다.";
+        : state.accountSession?.enabled ? (state.accountSession.account?.role === "ADMIN" ? "관리자는 부서 판단을 조회할 수 있습니다. 상세에서 부서별 기록을 확인하세요." : "내 부서의 저장된 판단으로 분류합니다. 다른 부서의 판단은 상세에 별도로 표시합니다.") : "AI 추천과 구분한 담당자의 저장된 판단으로 분류합니다.";
     els.operatorDecisionFilter.disabled = !decisionFilterAvailable;
     els.operatorDecisionFilter.title = decisionFilterMessage;
     els.operatorDecisionFilter.options[0].textContent = decisionFilterAvailable
-      ? "담당자 판단 전체" : decisionAccessAllowed ? "담당자 판단 조회 필요" : "판단 조회 권한 필요";
+      ? "담당자 판단 전체" : adminDecisionReader ? "부서별 판단은 상세에서 조회" : decisionAccessAllowed ? "담당자 판단 조회 필요" : "판단 조회 권한 필요";
     els.operatorDecisionFilterHelp.textContent = decisionFilterMessage;
     if (!decisionFilterAvailable) els.operatorDecisionFilter.value = "all";
     const operatorDecision = els.operatorDecisionFilter.value;
@@ -3679,7 +3925,9 @@
   }
 
   function operatorDecisionListAvailable(notices = state.notices) {
-    return (state.source === "demo" || (state.source === "api" && state.accessMode === "SERVER_AUTHENTICATED"))
+    if (state.accountSession?.enabled && state.accountSession.account?.role === "ADMIN") return false;
+    return (state.source === "demo" || (state.source === "api" && (state.accessMode === "SERVER_AUTHENTICATED"
+      || (state.accountSession?.enabled && state.accountSession.authenticated))))
       && notices.every(hasKnownOperatorDecision);
   }
 
@@ -4005,6 +4253,9 @@
         state.manualAnalysisUnavailableReason || "현재 서버에서 수동 분석 기능을 사용할 수 없습니다.",
       );
     }
+    if (state.accountSession?.enabled && !state.accountSession.authenticated) {
+      return unavailable("ACCOUNT_LOGIN_REQUIRED", "로그인 후 분석 가능", "상단 부서 로그인으로 인증한 뒤 분석 권한을 확인하세요.");
+    }
     if (!canonicalStateKnown) {
       return {
         enabled: true,
@@ -4019,6 +4270,13 @@
       && notice.analysisAttachmentCoverageComplete
       && !isDocumentQualityReview(notice)
       && !quantitativeRetry;
+    if (state.accountSession?.enabled) {
+      const capability = recomputeCurrent ? "recompute_analysis" : "request_paid_analysis";
+      if (state.accountSession.capabilities[capability] !== true) {
+        return unavailable("ACCOUNT_ANALYSIS_FORBIDDEN", recomputeCurrent ? "재판단 권한 필요" : "유료 분석 권한 필요",
+          recomputeCurrent ? "이 계정에는 저장 근거 재판단 권한이 없습니다." : "첨부 분석 비용이 발생할 수 있어 별도 분석 권한이 필요합니다.");
+      }
+    }
     if (recomputeCurrent) {
       return {
         enabled: true,
@@ -4159,6 +4417,10 @@
   }
 
   async function manualAnalysisAuthHeaders() {
+    if (state.accountSession?.enabled) {
+      if (!state.accountSession.authenticated) { openAccountDialog(); return null; }
+      return accountMutationHeaders();
+    }
     if (!state.manualAnalysisAuthRequired) return {};
     if (!state.manualAnalysisToken) {
       try {
@@ -4543,7 +4805,7 @@
     if (!await confirmManualAnalysis(notice, availability)) return;
     const authHeaders = await manualAnalysisAuthHeaders();
     if (!authHeaders) {
-      showToast("분석 요청 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
+      showToast("분석 요청 취소", state.accountSession?.enabled ? "부서 로그인 상태를 확인해 주세요." : "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
       return;
     }
     const evaluationOnly = evaluationOnlyManualAnalysis(notice, availability);
@@ -4639,6 +4901,17 @@
   }
 
   async function hydrateOperatorDecisions(notice) {
+    if (state.accountSession?.enabled) {
+      const epoch = state.accountEpoch;
+      if (!state.accountSession.authenticated || !state.accountSession.capabilities.read_department_records) return notice;
+      try {
+        const records = await apiRequest(`/operator-decisions/notices/${encodeURIComponent(notice.noticeKey)}`);
+        return applyDepartmentDecisionRecords(notice, records);
+      } catch (error) {
+        if (epoch !== state.accountEpoch) throw error;
+        return updateOperatorDecisionReadState(notice, "ERROR");
+      }
+    }
     if (
       state.source !== "api"
       || state.writeControlsEnabled
@@ -4673,7 +4946,42 @@
     }
   }
 
+  function applyDepartmentDecisionRecords(notice, records) {
+    if (!Array.isArray(records)) throw new Error("부서 판단 응답을 확인할 수 없습니다.");
+    const merged = normalizeNotice({ ...notice.raw, decisions: records }, 0, { operatorDecisionsLoaded: true });
+    const index = state.notices.findIndex((item) => item.noticeKey === notice.noticeKey);
+    if (index >= 0) state.notices[index] = merged;
+    return merged;
+  }
+
+  async function hydrateDepartmentDecisionList(sequence) {
+    const epoch = state.accountEpoch;
+    const keys = state.notices.map((notice) => notice.noticeKey);
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      if (sequence !== state.requestSequence || epoch !== state.accountEpoch || !state.accountSession.authenticated) return;
+      const batch = keys.slice(offset, offset + 200);
+      try {
+        const payload = await apiRequest("/operator-decisions/batch-read", {
+          method: "POST", headers: accountMutationHeaders(), body: JSON.stringify({ notice_keys: batch }),
+        });
+        if (sequence !== state.requestSequence || epoch !== state.accountEpoch) return;
+        const records = firstObject(payload.decisions_by_notice);
+        state.notices = state.notices.map((notice) => {
+          if (!batch.includes(notice.noticeKey)) return notice;
+          return Array.isArray(records[notice.noticeKey])
+            ? normalizeNotice({ ...notice.raw, decisions: records[notice.noticeKey] }, 0, { operatorDecisionsLoaded: true })
+            : { ...notice, decisionReadStatus: "ERROR" };
+        });
+      } catch (_) {
+        if (sequence !== state.requestSequence || epoch !== state.accountEpoch) return;
+        state.notices = state.notices.map((notice) => batch.includes(notice.noticeKey) ? { ...notice, decisionReadStatus: "ERROR" } : notice);
+      }
+    }
+    renderAll();
+  }
+
   async function openDetail(noticeKey, trigger = null, { updateRoute = true } = {}) {
+    const accountEpoch = state.accountEpoch;
     let baseNotice = state.notices.find((notice) => notice.noticeKey === noticeKey);
     let hydratedFromRoute = false;
     if (!baseNotice && state.source !== "demo") {
@@ -4687,7 +4995,7 @@
         return;
       }
     }
-    if (!baseNotice) return;
+    if (!baseNotice || accountEpoch !== state.accountEpoch) return;
     state.selectedNotice = baseNotice;
     state.selectedTrigger = trigger || document.activeElement;
     renderDetail(baseNotice);
@@ -4715,6 +5023,7 @@
         ? baseNotice
         : await hydrateNoticeByKey(noticeKey, { force: true });
       merged = await hydrateOperatorDecisions(merged);
+      if (accountEpoch !== state.accountEpoch || state.selectedNotice?.noticeKey !== noticeKey) return;
       state.selectedNotice = merged;
       renderDetail(merged);
       if (merged.documentAnalyses.length) void loadPrivateMatchPreview(noticeKey);
@@ -5374,7 +5683,7 @@
       const seen = new Set();
       const anchors = sources.filter((item) => {
         const key = [item.file, item.page, quoteKey(item.quote)].join("|");
-        if (seen.has(key) || !matches(item.quote.replace(/\s+/g, ""))) return false;
+        if (seen.has(key) || !submissionQuoteMatches(id, matches, item)) return false;
         seen.add(key);
         return true;
       }).map((item) => {
@@ -5402,6 +5711,21 @@
       });
     }
     return items;
+  }
+
+  function submissionQuoteMatches(id, matches, item) {
+    const quote = item.quote.replace(/\s+/g, "");
+    if (matches(quote)) return true;
+    // A verified source section may identify what 'submission' means. Keep
+    // the original quote and location; never use a generated summary here.
+    const section = stringValue(item.page).replace(/[\s()]/g, "");
+    const proposalSection = /(?:기술)?제안서(?:제출|접수)/.test(section) && !/가격제안/.test(section);
+    if (id === "proposal-deadline" && proposalSection) return /(?:제출|접수)(?:일시|기한|기간|마감)/.test(quote);
+    if (id === "proposal-method" && proposalSection) return matches(`제안서${quote}`);
+    if (id === "bid-deadline" && !proposalSection && /(?:가격제안입찰|가격제안|입찰)(?:서)?(?:제출|접수)/.test(section)) {
+      return /(?:제출|접수)(?:일시|기한|기간|마감)/.test(quote);
+    }
+    return false;
   }
 
   function renderSubmissionCheckItem(item) {
@@ -6479,6 +6803,24 @@
     els.commentField.hidden = analyzed && !notice.decisionComment;
     els.toggleCommentButton.setAttribute("aria-expanded", String(!analyzed || Boolean(notice.decisionComment)));
     els.decisionExisting.textContent = operatorDecisionDetailText(notice);
+    if (els.departmentDecisionCard) {
+      els.departmentDecisionCard.hidden = !state.accountSession?.enabled || !state.accountSession.authenticated;
+      els.departmentDecisionList.innerHTML = "";
+      els.departmentDecisionState.textContent = hasKnownOperatorDecision(notice)
+        ? (canWriteDecision() ? "각 부서의 최근 기록입니다. 내 부서의 판단은 하단에서 작성하세요." : "각 부서의 최근 기록입니다. 이 계정은 조회만 가능합니다.")
+        : "부서 판단을 조회하지 못했습니다. 공고 상세를 다시 열어 확인해 주세요.";
+    }
+    if (els.departmentDecisionList && state.accountSession?.enabled && state.accountSession.authenticated && hasKnownOperatorDecision(notice)) {
+      const history = arrayValue(notice.decisions).slice().sort(compareDepartmentRevision);
+      const departments = new Set();
+      const latest = history.filter((record) => {
+        const key = record.departmentId || "legacy";
+        if (departments.has(key)) return false;
+        departments.add(key); return true;
+      });
+      els.departmentDecisionList.innerHTML = latest.map((record) => `<li><strong>${escapeHtml(record.departmentName || record.actorLabel || "기존 기록")}</strong><span>${escapeHtml(DECISION_LABELS[record.choice] || "확인 필요")}</span><p>${escapeHtml(record.rationale || "사유 없음")}</p><small>${escapeHtml(record.createdAt ? formatShortDateTime(record.createdAt) : "기록 시각 미확인")}</small></li>`).join("");
+      if (!latest.length) els.departmentDecisionState.textContent = "저장된 부서 판단이 없습니다.";
+    }
     els.toggleCommentButton.disabled = cancelled || !canWriteDecision();
     els.decisionComment.disabled = cancelled || !canWriteDecision();
     updateDecisionButton();
@@ -6583,6 +6925,7 @@
   }
 
   function updateDecisionButton() {
+    const loginRequired = state.accountSession?.enabled && !state.accountSession.authenticated;
     const selectedChoice = els.decisionInputs.find((input) => input.checked)?.value || "";
     const selected = Boolean(selectedChoice);
     const analyzed = decisionAnalysisComplete(state.selectedNotice);
@@ -6598,9 +6941,9 @@
       els.commentField.hidden = false;
       els.toggleCommentButton.setAttribute("aria-expanded", "true");
     }
-    els.saveDecisionButton.disabled = cancelled || !canWriteDecision() || !state.selectedNotice || overrideReasonMissing;
+    els.saveDecisionButton.disabled = cancelled || !state.selectedNotice || (!loginRequired && (!canWriteDecision() || overrideReasonMissing));
     els.saveDecisionButton.classList.toggle("is-awaiting-selection", !selected);
-    els.saveDecisionButton.title = !selected
+    els.saveDecisionButton.title = loginRequired ? "부서 로그인 후 이 공고로 돌아옵니다." : !selected
       ? "먼저 참여, 보류, 불참 중 담당자 판단을 선택해 주세요."
       : overrideReasonMissing
         ? (analyzed
@@ -6610,24 +6953,26 @@
     els.saveDecisionButton.textContent = cancelled
       ? "취소 공고 · 저장 불가"
       : !canWriteDecision()
-      ? "현재 판단 저장 미제공"
+      ? (state.accountSession?.enabled ? (state.accountSession.authenticated ? "부서 판단 조회 전용" : "로그인 후 판단 기록") : "현재 판단 저장 미제공")
       : overrideReasonMissing
       ? (analyzed ? "참여 사유를 입력하세요" : "판단 사유를 입력하세요")
       : !selected
       ? "먼저 최종 판단을 선택하세요"
       : analyzed
-      ? (state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
+      ? (state.accountSession?.enabled ? "내 부서 판단 저장" : state.writeControlsEnabled ? "선택한 판단 저장" : "운영 PIN으로 선택한 판단 저장")
       : "분석 전 판단 기록";
   }
 
   async function saveDecision(event) {
     event.preventDefault();
+    const accountEpoch = state.accountEpoch;
     const notice = state.selectedNotice;
     if (!notice) return;
     if (isCancelledNotice(notice)) {
       showToast("취소 공고입니다", "취소된 공고에는 담당자 판단을 새로 저장할 수 없습니다.", "warning");
       return;
     }
+    if (state.accountSession?.enabled && !state.accountSession.authenticated) { openAccountDialog(); return; }
     if (!canWriteDecision()) {
       showToast("판단 저장 권한이 없습니다", "현재 서버의 운영 권한 설정을 확인해 주세요.", "warning");
       return;
@@ -6669,6 +7014,15 @@
       rationale,
       conditions: decision === "HOLD" && comment ? [comment] : null,
     };
+    if (state.accountSession?.enabled) {
+      if (!hasKnownOperatorDecision(notice)) {
+        showToast("최근 판단 확인 필요", "공고 상세를 다시 열어 내 부서의 기존 판단을 확인한 뒤 저장해 주세요.", "warning");
+        return;
+      }
+      const latest = ownDepartmentRecords(arrayValue(notice.decisions)).slice().sort(compareDepartmentRevision)[0];
+      payload.expected_decision_id = latest?.id || null;
+      payload.actor_label = state.accountSession.account.department_name;
+    }
     const originalText = els.saveDecisionButton.textContent;
     els.saveDecisionButton.disabled = true;
     els.saveDecisionButton.textContent = "저장 중…";
@@ -6677,8 +7031,9 @@
       let result = null;
       if (state.source === "api") {
         const operatorHeaders = state.writeControlsEnabled ? {} : await manualAnalysisAuthHeaders();
+        if (accountEpoch !== state.accountEpoch) return;
         if (!operatorHeaders) {
-          showToast("판단 저장 취소", "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
+          showToast("판단 저장 취소", state.accountSession?.enabled ? "부서 로그인 상태를 확인해 주세요." : "4자리 운영 PIN이 입력되지 않았습니다.", "warning");
           return;
         }
         const path = state.writeControlsEnabled
@@ -6690,9 +7045,12 @@
           body: JSON.stringify(payload),
         });
       }
+      if (accountEpoch !== state.accountEpoch) return;
       const response = unwrapObject(result);
       const updated = {
         ...notice,
+        decisions: response.id ? [...arrayValue(notice.decisions), normalizeDecisionRecord(response)] : notice.decisions,
+        raw: response.id ? { ...notice.raw, decisions: [...arrayValue(notice.raw?.decisions), response] } : notice.raw,
         decisionReadStatus: "KNOWN",
         decision: normalizeDecision(firstValue(response.choice, response.decision, response.manager_decision, decision)) || decision,
         decisionComment: stringValue(firstValue(response.rationale, response.comment, response.decision_comment, rationale), rationale),
@@ -6701,25 +7059,33 @@
       };
       const index = state.notices.findIndex((item) => item.noticeKey === notice.noticeKey);
       if (index >= 0) state.notices[index] = updated;
-      state.selectedNotice = updated;
+      if (state.selectedNotice?.noticeKey === notice.noticeKey) state.selectedNotice = updated;
       await refreshDashboardAfterMutation();
-      renderExistingDecision(updated);
-      renderPipelineIntoExisting(updated);
+      if (accountEpoch !== state.accountEpoch) return;
+      if (state.selectedNotice?.noticeKey === notice.noticeKey) {
+        renderExistingDecision(updated);
+        renderPipelineIntoExisting(updated);
+        setDecisionDockExpanded(false);
+        els.decisionDockToggle.focus({ preventScroll: true });
+      }
       renderAll();
-      setDecisionDockExpanded(false);
-      els.decisionDockToggle.focus({ preventScroll: true });
       showToast(
         state.source === "demo" ? "데모 판단 반영" : "판단을 저장했습니다",
         state.source === "demo" ? "현재 브라우저에서만 반영되며 서버에는 저장되지 않습니다." : `${DECISION_LABELS[updated.decision]} 결정과 의견이 기록되었습니다.`,
         state.source === "demo" ? "warning" : "success",
       );
     } catch (error) {
+      if (accountEpoch !== state.accountEpoch) return;
       if (error?.status === 401) state.manualAnalysisToken = "";
-      if (error?.status === 409 && String(error?.message || "").includes("평가가 갱신")) {
+      if (error?.status === 409 && (state.accountSession?.enabled || String(error?.message || "").includes("평가가 갱신"))) {
         try {
-          const refreshed = await hydrateNoticeByKey(notice.noticeKey, { force: true });
-          state.selectedNotice = refreshed;
-          renderDetail(refreshed);
+          let refreshed = await hydrateNoticeByKey(notice.noticeKey, { force: true });
+          if (state.accountSession?.enabled) refreshed = await hydrateOperatorDecisions(refreshed);
+          if (accountEpoch !== state.accountEpoch) return;
+          if (state.selectedNotice?.noticeKey === notice.noticeKey) {
+            state.selectedNotice = refreshed;
+            renderDetail(refreshed);
+          }
           applyFilters();
         } catch (_) {
           // Keep the explicit stale-evaluation error when the refresh also fails.
@@ -6727,8 +7093,10 @@
       }
       showToast("판단 저장 실패", humanizeError(error), "error");
     } finally {
-      els.saveDecisionButton.textContent = originalText;
-      updateDecisionButton();
+      if (accountEpoch === state.accountEpoch) {
+        els.saveDecisionButton.textContent = originalText;
+        updateDecisionButton();
+      }
     }
   }
 
