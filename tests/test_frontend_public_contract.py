@@ -873,8 +873,8 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
     assert "analysisStatusPill(notice)" in panel_body
     assert "검증된 공개 자격정책이 없습니다" in panel_body
     assert "종합 판단을 PASS로 보완하지 않습니다" in panel_body
-    assert "eligibilityRequirementsForDisplay(notice)" in actions_body
-    assert 'requirement.status))' in actions_body
+    assert "submissionCheckItemsForDisplay(notice)" in actions_body
+    assert "eligibilityRequirementsForDisplay(notice)" not in actions_body
     assert "eligibilityRequirementsForDisplay(notice)" in detail_body
     assert "renderEligibilityPanel(notice, requirements)" in detail_body
 

@@ -3220,6 +3220,28 @@ svg {
   content: "";
 }
 
+.submission-check-note,
+.submission-check-missing {
+  color: var(--ink-soft);
+  font-size: var(--fs-xs);
+}
+
+.submission-check-source {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.submission-check-source p,
+.submission-check-missing {
+  margin: 5px 0;
+  white-space: pre-wrap;
+}
+
+.submission-check-source small {
+  display: block;
+  margin-bottom: 5px;
+}
+
 .evidence-list {
   display: grid;
   gap: 11px;

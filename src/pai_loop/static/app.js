@@ -547,12 +547,16 @@
       button.addEventListener("click", () => selectTab(button.dataset.tab));
       button.addEventListener("keydown", handleTabKeydown);
     });
-    els.requirementList.addEventListener("click", (event) => {
-      if (!event.target.closest("[data-evidence-jump]")) return;
-      selectTab("evidence");
-      requestAnimationFrame(() => {
-        els.evidenceList.scrollIntoView({ behavior: "smooth", block: "start" });
-        els.evidenceList.focus();
+    [els.requirementList, els.actionList].forEach((list) => {
+      list.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-evidence-jump]");
+        if (!button) return;
+        selectTab("evidence");
+        requestAnimationFrame(() => {
+          const target = document.getElementById(`evidence-${button.dataset.evidenceJump}`) || els.evidenceList;
+          els.evidenceList.focus({ preventScroll: true });
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
       });
     });
 
@@ -5337,43 +5341,80 @@
       </div>`;
   }
 
+  function submissionCheckItemsForDisplay(notice) {
+    // This is a source index, not an eligibility rule or a yes/no classifier.
+    // Keep complete quotes (including exceptions and negation) for human review.
+    const definitions = [
+      ["electronic-bid", "전자입찰 여부", (text) => /전자입찰|입찰(?:서)?.{0,30}전자(?:적|적으로|제출|방식)/.test(text)],
+      ["bid-deadline", "입찰 마감일", (text) => /입찰(?:서)?(?:의)?(?:접수|제출)?(?:마감|기한|기간|일시)/.test(text)],
+      ["proposal-deadline", "제안서 마감일", (text) => /제안서(?:의)?(?:접수|제출)?(?:마감|기한|기간|일시)/.test(text.replace(/가격제안서/g, "가격서"))],
+      ["proposal-method", "제안서 제출 유형", (text) => text.split(/[.!?;。]/).some((clause) => /제안서/.test(clause) && /제출|접수/.test(clause) && /전자|온라인|방문|우편|직접|대면|나라장터|이메일|e-?발주시스템|e-?mail/i.test(clause))],
+      ["bid-security", "입찰보증보험", (text) => /입찰보증(?:금|보험|증권|서)/.test(text)],
+      ["lead-presentation", "총괄책임자 PT 진행 여부", (text) => /총괄책임자|사업책임자|연구책임자|사업관리자|총괄PM/i.test(text) && /발표|설명회|프레젠테이션|(?:^|[^a-z])PT(?:[^a-z]|$)/i.test(text)],
+      ["training-venue", "연수원·강의장 보유 여부", (text) => /연수원|강의장|교육장|교육시설/.test(text) && /보유|소유|임차|대관|임대|확보/.test(text)],
+      ["personnel", "참여인력 자격조건", (text) => /참여인력|투입인력|참여자|연구진|연구원|책임자|강사|수행인력|전문인력/.test(text) && /자격|학위|학사|석사|박사|경력|전공|자격증|재직|상근|\d+명/.test(text)],
+      ["settlement", "정산 여부", (text) => /정산/.test(text)],
+      ["nonprofit-profit", "비영리 이윤제외", (text) => /비영리/.test(text) && /이윤|이익/.test(text)],
+    ];
+    const raw = firstObject(notice.raw);
+    const analyses = arrayValue(firstValue(raw.document_analyses, raw.documentAnalyses, []));
+    const statuses = arrayValue(notice.attachmentAnalysisStatuses);
+    const quoteKey = (value) => stringValue(value).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR");
+    const documentNames = analyses.map((item, index) => normalizeDocumentAnalysis(item, index).documentName);
+    const sources = flattenDocumentEvidence(analyses).filter((item) => {
+      // Public attachment status identifies documents by filename. Ambiguous
+      // duplicate names cannot prove which current attachment owns the quote.
+      if (documentNames.filter((name) => name === item.file).length !== 1) return false;
+      const current = statuses.filter((status) => status.document_name === item.file);
+      return !statuses.length || (current.length === 1 && current[0].state === "ANALYZED");
+    });
+    const items = definitions.map(([id, label, matches]) => {
+      const seen = new Set();
+      const anchors = sources.filter((item) => {
+        const key = [item.file, item.page, quoteKey(item.quote)].join("|");
+        if (seen.has(key) || !matches(item.quote.replace(/\s+/g, ""))) return false;
+        seen.add(key);
+        return true;
+      }).map((item) => ({
+        quote: item.quote,
+        location: `${item.file} · ${item.page}`,
+        evidenceId: arrayValue(notice.evidence).find((candidate) => quoteKey(candidate.quote) === quoteKey(item.quote))?.id || "",
+        sourceUrl: "",
+      }));
+      return { id, label, sources: anchors };
+    });
+    // Notice.deadline is the public bid deadline. Never substitute it for a
+    // missing proposal deadline, even when the two often happen to coincide.
+    if (validDate(notice.deadline)) {
+      items.find((item) => item.id === "bid-deadline").sources.unshift({
+        quote: formatKstDateTime(notice.deadline),
+        location: "공고 기본정보 · 입찰서 제출 마감",
+        evidenceId: "",
+        sourceUrl: safeHttpUrl(notice.sourceUrl),
+      });
+    }
+    return items;
+  }
+
+  function renderSubmissionCheckItem(item) {
+    const sources = item.sources.map((source) => `
+      <div class="submission-check-source">
+        <p>${escapeHtml(source.quote)}</p>
+        <small>${escapeHtml(source.location)}</small>
+        ${source.evidenceId ? `<button type="button" class="evidence-jump" data-evidence-jump="${escapeAttribute(source.evidenceId)}">근거 보기</button>` : ""}
+        ${source.sourceUrl ? `<a class="evidence-jump" href="${escapeAttribute(source.sourceUrl)}" target="_blank" rel="noopener noreferrer">공고 원문</a>` : ""}
+      </div>`).join("");
+    return `<li data-submission-check="${escapeAttribute(item.id)}"><strong>${escapeHtml(item.label)}</strong>${sources || '<p class="submission-check-missing">원문 확인 필요</p>'}</li>`;
+  }
+
   function renderActions(notice) {
     if (isCancelledNotice(notice)) {
       els.actionCard.hidden = true;
       els.actionList.innerHTML = "";
       return;
     }
-    let actions = notice.actions.slice();
-    const requirements = eligibilityRequirementsForDisplay(notice);
-    if (!actions.length) {
-      actions = requirements
-        .filter((requirement) => ["REVIEW", "UNKNOWN", "FAIL"].includes(requirement.status))
-        .map((requirement) => requirement.status === "FAIL"
-          ? `${requirement.title}의 불일치 사유와 적용 가능한 예외 경로가 있는지 확인하세요.`
-          : `${requirement.title}의 충족 여부와 최신 증빙을 확인하세요.`);
-    }
-    if (!actions.length && publicEligibilityPolicyPending(notice)) {
-      actions = ["공개 자격 판정을 불러온 뒤 확인 필요 사항을 표시합니다."];
-    }
-    if (
-      !actions.length
-      && notice.sourceKind === "PPS"
-      && (
-        notice.analysisState !== "EVALUATED"
-        || !notice.analysisAttachmentCoverageComplete
-        || isDocumentQualityReview(notice)
-      )
-    ) {
-      const availability = manualAnalysisAvailability(notice);
-      actions = [
-        availability.enabled
-          ? `상단 ‘${availability.label}’을 실행하거나 자동 분석 완료를 기다리세요.`
-          : "공고 원문에서 첨부를 직접 확인하고 자동 분석 완료를 기다리세요.",
-        "분석 완료 전에는 참가 자격·준비도·AI 추천을 확정값으로 사용하지 마세요.",
-      ];
-    }
-    els.actionCard.hidden = actions.length === 0;
-    els.actionList.innerHTML = actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+    els.actionCard.hidden = false;
+    els.actionList.innerHTML = submissionCheckItemsForDisplay(notice).map(renderSubmissionCheckItem).join("");
   }
 
   function renderEvidence(item) {
