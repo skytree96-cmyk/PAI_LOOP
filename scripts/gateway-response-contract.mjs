@@ -48,5 +48,7 @@ export function gatewayResponseExpression(successAllowed, field) {
   if (typeof successAllowed !== "boolean" || !["body", "status"].includes(field)) {
     throw new Error("invalid gateway expression contract");
   }
-  return `={{ (${guardGatewayResponse.toString()})($json, ${successAllowed}).${field} }}`;
+  // Git checkouts may use CRLF; workflow JSON stores the reviewed LF expression.
+  const source = guardGatewayResponse.toString().replace(/\r\n/g, "\n");
+  return `={{ (${source})($json, ${successAllowed}).${field} }}`;
 }
