@@ -105,8 +105,11 @@ confirm no in-flight requests, preserve the approved PR129 node version and
 credential bindings, and review the credential-free fragment. A legacy-to-native
 scripted migration additionally requires W13-only selection and inactive producer
 workflows before any write. No workflow is activated by local generation/tests.
-The pending-native metadata also blocks an all-workflow scripted deployment;
-W13 must be selected alone while this canary remains pending.
+The global pending-native metadata blocks producer-only and all-workflow scripted
+deployments even when the remote draft already contains native nodes. W13 must
+be selected alone, and W10/W11/W12/W13 must all be confirmed inactive before any
+CLI write while this canary remains pending. Progress persistence is explicitly
+disabled with `saveExecutionProgress:false`, alongside the existing no-save settings.
 
 Generate the reviewed source and local UI fragment with:
 

@@ -5,6 +5,20 @@ import { normalizeNativeGatewayResponse } from "./native-gateway-response.mjs";
 import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
 
 export const nativeNodeName = "Claude Sonnet 5 Native JSON";
+export const nativeCanaryWorkflowKeys = ["pai-loop-10-daily-opportunity-briefing", "pai-loop-11-analysis-backfill",
+  "pai-loop-12-teams-daily-delivery", "pai-loop-13-claude-extraction-gateway"];
+export function assertPendingNativeSelection(config, onlyKey) {
+  if (config.promotionState !== "awaiting-native-live-e2e"
+    && config.nativeCanaryState !== "awaiting-root-synthetic-schema-probe") return false;
+  assert(config.publish === true && config.contractVersion === "claude-extraction-gateway-2.0-native-json"
+    && config.promotionState === "awaiting-native-live-e2e"
+    && config.nativeCanaryState === "awaiting-root-synthetic-schema-probe", "native canary metadata is inconsistent");
+  assert.equal(onlyKey, "pai-loop-13-claude-extraction-gateway", "pending native canary permits only W13; producers cannot be deployed or activated");
+  return true;
+}
+export function assertPendingNativeInactive(remotes) {
+  for (const key of nativeCanaryWorkflowKeys) assert.equal(remotes.get(key)?.active, false, `${key} must be inactive before pending native deployment`);
+}
 export function isNativeAnthropicNode(node) {
   return node?.name === nativeNodeName && node.type === "n8n-nodes-base.httpRequest"
     && node.typeVersion === 4.2 && node.parameters?.method === "POST"
@@ -65,5 +79,6 @@ export function assertNativeGatewayWorkflow(workflow) {
   assert.equal(workflow.settings.saveDataSuccessExecution, "none");
   assert.equal(workflow.settings.saveDataErrorExecution, "none");
   assert.equal(workflow.settings.saveManualExecutions, false);
+  assert.equal(workflow.settings.saveExecutionProgress, false);
   for (const node of workflow.nodes) assert(!node.retryOnFail && !node.executeOnce && !node.alwaysOutputData);
 }

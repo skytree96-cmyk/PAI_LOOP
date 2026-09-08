@@ -2,11 +2,30 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { nativeGatewaySchema } from "./native-gateway-schema.mjs";
 import { normalizeNativeGatewayResponse } from "./native-gateway-response.mjs";
-import { assertNativeGatewayWorkflow, nativeNodeName } from "./native-gateway-contract.mjs";
+import { assertNativeGatewayWorkflow, nativeNodeName, nativeCanaryWorkflowKeys,
+  assertPendingNativeSelection, assertPendingNativeInactive } from "./native-gateway-contract.mjs";
 import { guardGatewayResponse } from "./gateway-response-contract.mjs";
 
 const workflow = JSON.parse(fs.readFileSync("workflows/pai-loop-13-claude-extraction-gateway.json", "utf8"));
 assertNativeGatewayWorkflow(workflow);
+const pendingConfig = { publish: true, contractVersion: "claude-extraction-gateway-2.0-native-json",
+  promotionState: "awaiting-native-live-e2e", nativeCanaryState: "awaiting-root-synthetic-schema-probe" };
+// The live draft already has nine native nodes: legacy detection cannot protect
+// a producer-only deployment. The global pending state must stop every write.
+const remoteDrafts = new Map(nativeCanaryWorkflowKeys.map(key => [key, { active: false, nodes: workflow.nodes }]));
+for (const selected of [undefined, ...nativeCanaryWorkflowKeys.slice(0, 3)]) {
+  let writes = 0;
+  assert.throws(() => { assertPendingNativeSelection(pendingConfig, selected); assertPendingNativeInactive(remoteDrafts); writes++; });
+  assert.equal(writes, 0);
+}
+assert.equal(assertPendingNativeSelection(pendingConfig, nativeCanaryWorkflowKeys[3]), true);
+assertPendingNativeInactive(remoteDrafts);
+for (const key of nativeCanaryWorkflowKeys) for (const active of [true, undefined]) {
+  let writes = 0;
+  const blocked = new Map(remoteDrafts); blocked.set(key, { active, nodes: workflow.nodes });
+  assert.throws(() => { assertPendingNativeSelection(pendingConfig, nativeCanaryWorkflowKeys[3]); assertPendingNativeInactive(blocked); writes++; });
+  assert.equal(writes, 0);
+}
 for (const node of workflow.nodes) assert.equal(node.credentials, undefined);
 const nodes = new Map(workflow.nodes.map(node => [node.name, node]));
 const schema = { type: "object", additionalProperties: false, properties: {

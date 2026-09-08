@@ -303,6 +303,7 @@
     "saveDataErrorExecution": "none",
     "saveDataSuccessExecution": "none",
     "saveManualExecutions": false,
-    "timezone": "Asia/Seoul"
+    "timezone": "Asia/Seoul",
+    "saveExecutionProgress": false
   }
 }

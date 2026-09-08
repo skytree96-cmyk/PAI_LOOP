@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { assertNativeGatewayWorkflow, isNativeAnthropicNode, nativeNodeName } from "./native-gateway-contract.mjs";
+import { assertNativeGatewayWorkflow, isNativeAnthropicNode, nativeNodeName,
+  assertPendingNativeSelection, assertPendingNativeInactive, nativeCanaryWorkflowKeys } from "./native-gateway-contract.mjs";
 
 const validateOnly = process.argv.includes("--validate-only");
 const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
@@ -956,9 +957,10 @@ for (const workflow of remoteWorkflows) {
 const selectedDefinitions = definitions.filter(
   (definition) => !onlyKey || definition.key === onlyKey,
 );
-if (selectedDefinitions.some(({ key, config }) => key === claudeGatewayKey && config.promotionState === "awaiting-native-live-e2e")) {
-  assert(onlyKey === claudeGatewayKey, "pending native canary must be staged alone; do not deploy producers in the same operation");
-}
+// Inspect the global gateway state even when only a producer was selected.
+const pendingNativeCanary = assertPendingNativeSelection(
+  definitions.find(({ key }) => key === claudeGatewayKey).config, onlyKey,
+);
 const unpublishedClaudeGateway = definitions.find(
   ({ key }) => key === claudeGatewayKey,
 )?.config.publish === false;
@@ -1002,6 +1004,15 @@ async function loadRemoteDefinitionForPreflight(definition, required = false) {
 const claudeGatewayDefinition = definitions.find(({ key }) => key === claudeGatewayKey);
 assert(claudeGatewayDefinition, "Claude gateway definition is missing");
 const remoteClaudeGateway = await loadRemoteDefinitionForPreflight(claudeGatewayDefinition);
+if (pendingNativeCanary) {
+  const remotes = new Map();
+  for (const key of nativeCanaryWorkflowKeys) {
+    const definition = definitions.find(item => item.key === key);
+    remotes.set(key, key === claudeGatewayKey ? remoteClaudeGateway : await loadRemoteDefinitionForPreflight(definition, true));
+  }
+  // This check is independent of legacy node detection and precedes all writes.
+  assertPendingNativeInactive(remotes);
+}
 if (remoteClaudeGateway && isNativeAnthropicNode(exactNamedNode(claudeGatewayDefinition.workflow, nativeNodeName))
     && remoteClaudeGateway.nodes?.some(node => ["Claude JSON Extraction", "Claude Sonnet 5", "Claude Sonnet 4.6"].includes(node.name))) {
   // A node-type migration must never silently move a provider credential or

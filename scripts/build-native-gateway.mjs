@@ -6,6 +6,7 @@ import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
 
 const path = "workflows/pai-loop-13-claude-extraction-gateway.json";
 const workflow = JSON.parse(fs.readFileSync(path, "utf8"));
+workflow.settings.saveExecutionProgress = false;
 const nativeName = "Claude Sonnet 5 Native JSON";
 const source = fn => fn.toString().replace(/\r\n/g, "\n");
 workflow.nodes = workflow.nodes.filter(node => !["Claude JSON Extraction", "Claude Sonnet 5"].includes(node.name));
