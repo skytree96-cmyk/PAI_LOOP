@@ -6,7 +6,7 @@ const workflow = JSON.parse(fs.readFileSync("workflows/pai-loop-13-claude-extrac
 const nodes = new Map(workflow.nodes.map(node => [node.name, node]));
 const canary = "SYN-PRIVATE-RUNNER-INPUT";
 const fallback = { gateway_error: { version: "gateway-failure-v1", stage: "OUTPUT_NORMALIZATION",
-  code: "OUTPUT_REJECTED", upstream_http_status: null } };
+  code: "OUTPUT_REJECTED", upstream_http_status: null, detail_code: "TERMINAL_GUARD_REJECTED" } };
 const evaluate = (expression, input) => typeof expression === "number" ? expression
   : new Function("$json", `return (${expression.slice(3, -2)});`)(input);
 const respond = (name, input) => {

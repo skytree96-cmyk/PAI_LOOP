@@ -143,30 +143,47 @@ for (const fenced of [
     '{"summary":"fenced"}',
   );
 }
-assert.throws(
-  () => executeNormaliserText('Here is the JSON:\n```json\n{"summary":"no"}\n```'),
-  /without prose/,
-);
-assert.throws(
-  () => executeNormaliserText('```json\n{"summary":"one"}\n```\n```json\n{"summary":"two"}\n```'),
-  /multiple Markdown fences/,
-);
-assert.throws(
-  () => executeNormaliserText('```json\n{"summary":}\n```'),
-  /not valid JSON/,
-);
-assert.throws(
-  () => executeNormaliserText('[{"summary":"array"}]'),
-  /plain JSON object/,
-);
+for (const [text, detail] of [
+  ['Here is the JSON:\n```json\n{"summary":"no"}\n```', 'OUTPUT_FENCE_INVALID'],
+  ['```json\n{"summary":"one"}\n```\n```json\n{"summary":"two"}\n```', 'OUTPUT_JSON_INVALID'],
+  ['```json\n{"summary":}\n```', 'OUTPUT_JSON_INVALID'],
+  ['[{"summary":"array"}]', 'OUTPUT_NOT_OBJECT'],
+  [' '.repeat(500001), 'OUTPUT_TOO_LARGE'],
+]) {
+  assert.deepEqual(executeNormaliserText(text)[0].json, { gateway_error: {
+    version: 'gateway-failure-v1', stage: 'OUTPUT_NORMALIZATION', code: 'OUTPUT_REJECTED',
+    upstream_http_status: null, detail_code: detail,
+  } });
+}
+// An intact JSON object's string values are evidence, not Markdown delimiters.
+for (const summary of ['```SYN```', 'SYN ``` one marker', '```json\nSYN\n```']) {
+  const text = JSON.stringify({ summary });
+  assert.equal(executeNormaliserText(text)[0].json.output_text, text);
+  assert.equal(executeNormaliserText('```json\n' + text + '\n```')[0].json.output_text, text);
+}
+for (const [input, execution, detail] of [
+  [{}, { id: 'SYN' }, 'OUTPUT_EMPTY'],
+  [{ text: ' ' }, { id: 'SYN' }, 'OUTPUT_EMPTY'],
+  [{ text: { private: 'SYN-PRIVATE-NORMALIZER' } }, { id: 'SYN' }, 'OUTPUT_TYPE_INVALID'],
+  [{ text: 'null' }, { id: 'SYN' }, 'OUTPUT_NOT_OBJECT'],
+  [{ text: '"SYN-PRIVATE-NORMALIZER"' }, { id: 'SYN' }, 'OUTPUT_NOT_OBJECT'],
+  [{ text: '```JSON\n{}\n```' }, { id: 'SYN' }, 'OUTPUT_FENCE_INVALID'],
+  [{ text: '{"SYN-PRIVATE-NORMALIZER":' }, { id: 'SYN' }, 'OUTPUT_JSON_INVALID'],
+  [{ text: '{}' }, {}, 'EXECUTION_CONTEXT_INVALID'],
+]) {
+  const output = executeNormalizer(input, execution, () => ({ all: () => [] }))[0].json;
+  assert.deepEqual(output, { gateway_error: { version: 'gateway-failure-v1',
+    stage: 'OUTPUT_NORMALIZATION', code: 'OUTPUT_REJECTED', upstream_http_status: null, detail_code: detail } });
+  const terminal = nodes.get('Respond Gateway Success');
+  const evaluate = expression => new Function('$json', `return (${expression.slice(3, -2)});`)(output);
+  assert.equal(evaluate(terminal.parameters.options.responseCode), 500);
+  assert.deepEqual(evaluate(terminal.parameters.responseBody), output);
+  assert(!JSON.stringify(output).includes('SYN-PRIVATE-NORMALIZER'));
+}
 assert.equal(
   normalizer.parameters.jsCode.includes("Object.getPrototypeOf(parsed)"),
   false,
   "n8n Code-node values can cross a sandbox realm, so prototype identity must not be used",
-);
-assert.throws(
-  () => executeNormaliserText(" ".repeat(500001)),
-  /empty or oversized/,
 );
 
 const canary = "SYN-PRIVATE-GATEWAY-CANARY";
@@ -190,7 +207,10 @@ for (const [source, suffix, stage, code, success] of stages) {
     const rows = sanitize({ error, input: canary, body: canary, executionId: canary });
     assert.equal(rows.length, 1);
     const expectedStatus = stage === "MODEL_EXECUTION" && error?.status === 429 && !error.statusCode ? 429 : null;
-    assert.deepEqual(rows[0].json, { gateway_error: { version: "gateway-failure-v1", stage, code, upstream_http_status: expectedStatus } });
+    assert.deepEqual(rows[0].json, { gateway_error: { version: "gateway-failure-v1", stage, code,
+      upstream_http_status: expectedStatus,
+      ...(stage === "OUTPUT_NORMALIZATION" ? { detail_code: "NORMALIZER_EXCEPTION" } : {}),
+    } });
     assert(!JSON.stringify(rows).includes(canary));
   }
   for (const field of ["status", "statusCode", "httpCode"]) {
@@ -211,7 +231,7 @@ for (const [suffix, allowed] of [["Success", true], ["Failure", false]]) {
 // Neither path can reach/retry the provider after the failure.
 for (const [source, failingCall] of [
   ["Validate Gateway Request", () => executeValidation({ body: { ...validBody, arbitrary_prompt: canary } })],
-  ["Normalize Gateway Response", () => executeNormaliserText(canary)],
+  ["Normalize Gateway Response", () => executeNormalizer({ get text() { throw new Error(canary); } }, {}, () => {})],
 ]) {
   let failed = false;
   try { failingCall(); } catch (error) {

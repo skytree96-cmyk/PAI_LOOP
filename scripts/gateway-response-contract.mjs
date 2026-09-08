@@ -4,7 +4,7 @@
 export function guardGatewayResponse(value, successAllowed) {
   const failure = () => ({ status: 500, body: { gateway_error: {
     version: "gateway-failure-v1", stage: "OUTPUT_NORMALIZATION",
-    code: "OUTPUT_REJECTED", upstream_http_status: null,
+    code: "OUTPUT_REJECTED", upstream_http_status: null, detail_code: "TERMINAL_GUARD_REJECTED",
   } } });
   const object = (item) => item !== null && typeof item === "object" && !Array.isArray(item);
   const keys = (item, expected) => object(item)
@@ -12,10 +12,13 @@ export function guardGatewayResponse(value, successAllowed) {
   const counter = (item) => item === null || item === undefined
     || (Number.isSafeInteger(item) && item >= 0 && item <= 10000000);
   try {
-    if (!successAllowed) {
+    // Expected normalization failures travel through main[0] as a safe envelope.
+    // Both terminal lanes still rebuild it and can only return HTTP 500.
+    if (!successAllowed || (object(value) && Object.hasOwn(value, "gateway_error"))) {
       if (!keys(value, ["gateway_error"])) return failure();
       const item = value.gateway_error;
-      if (!keys(item, ["version", "stage", "code", "upstream_http_status"])) return failure();
+      const fields = ["version", "stage", "code", "upstream_http_status"];
+      if (!keys(item, fields) && !keys(item, [...fields, "detail_code"])) return failure();
       const pairs = { INPUT_VALIDATION: "REQUEST_REJECTED", MODEL_EXECUTION: "MODEL_EXECUTION_FAILED",
         OUTPUT_NORMALIZATION: "OUTPUT_REJECTED" };
       if (item.version !== "gateway-failure-v1" || !Object.hasOwn(pairs, item.stage)
@@ -23,8 +26,16 @@ export function guardGatewayResponse(value, successAllowed) {
       const status = item.upstream_http_status;
       if (status !== null && (item.stage !== "MODEL_EXECUTION"
         || !Number.isSafeInteger(status) || status < 400 || status > 599)) return failure();
+      const detail = item.detail_code;
+      const details = ["OUTPUT_EMPTY", "OUTPUT_TYPE_INVALID", "OUTPUT_TOO_LARGE",
+        "OUTPUT_FENCE_INVALID", "OUTPUT_JSON_INVALID", "OUTPUT_NOT_OBJECT",
+        "EXECUTION_CONTEXT_INVALID", "NORMALIZER_EXCEPTION", "TERMINAL_GUARD_REJECTED"];
+      if (detail !== undefined && detail !== null
+        && (item.stage !== "OUTPUT_NORMALIZATION" || !details.includes(detail))) return failure();
+      if (successAllowed && (item.stage !== "OUTPUT_NORMALIZATION" || !details.includes(detail))) return failure();
       return { status: 500, body: { gateway_error: { version: "gateway-failure-v1",
-        stage: item.stage, code: item.code, upstream_http_status: status } } };
+        stage: item.stage, code: item.code, upstream_http_status: status,
+        ...(detail === undefined || detail === null ? {} : { detail_code: detail }) } } };
     }
     if (!keys(value, ["id", "status", "model", "output_text", "usage"])
       || value.status !== "completed" || value.model !== "claude-sonnet-5"
