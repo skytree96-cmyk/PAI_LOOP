@@ -8,47 +8,72 @@ It adds no model retry, repair chain, fallback model, tool, or second HTTP call.
 
 `manifest.json` retains the already approved W13 `publish:true` allowlist.
 `promotionState:awaiting-native-live-e2e` and `nativeCanaryState` explicitly record that
-this transport has not yet passed a real provider request. Merging this code is
+full gateway live E2E and promotion remain pending. Merging this code is
 not evidence of n8n publication, provider schema acceptance, or extraction recovery.
 Deployment remains the root operator's separately controlled manual operation.
 
-## Why exactly two fields use omission
+## Why exactly two top-level fields use JSON string transport
 
-The actual `EXTRACTION_SCHEMA` has 18 nullable `anyOf` parameters. Anthropic's
-documented union limit is 16 and includes both `anyOf` and type arrays. Replacing
-`anyOf` with `type:[...,null]` cannot avoid that limit. Omitting nullability from
-all 18 parameters would create 34 optional locations if references are expanded,
-exceeding the documented optional-parameter limit of 24.
+The original `EXTRACTION_SCHEMA` has 18 nullable `anyOf` parameters. The first
+native projection reduced this to 16 by making two anchor fields optional. A
+second local candidate used required zero-or-one-item anchor arrays instead,
+removing optional parameters. Root-operated full-schema SYN probes rejected
+both with HTTP 400 `compiled grammar is too large`. These observations establish
+grammar compilation failure for those requests, not a document failure or the
+provider's internal complexity formula. The unsuccessful anchor candidate is
+preserved in local history; its representation is no longer used.
 
-Only `$defs.EvidenceAnchor.page` and `.section` become optional, non-null provider
-properties. Every other nullable remains unchanged. The resulting schema has:
+Only top-level `quantitative_tables` and `quantitative_table_not_applicable` are
+now required JSON strings encoding their complete original values. The strings
+`"[]"` and `"null"` encode the corresponding original empty array and null. Every
+other field retains its original type, including required nullable primitive
+`EvidenceAnchor.page/section`. The provider grammar keeps only reachable
+`EvidenceAnchor` and `ExtractedRequirement` definitions:
 
-| Count interpretation | Union parameters | Optional parameters |
-| --- | ---: | ---: |
-| Unique definitions | 16 | 2 |
-| References expanded per use | 16 | 18 |
+| Provider structure | Count |
+| --- | ---: |
+| Nullable unions, unique and reference-expanded | 4 |
+| Optional parameters, both interpretations | 0 |
+| Definitions / objects / properties | 2 / 3 / 19 |
+| Enum sites / choices | 3 / 20 |
+| Compact schema UTF-8 bytes | 2,971 |
 
-The prompt explains that omission of these two fields means unknown. The decoder
-walks the exact original schema, including referenced objects and arrays, and
-restores only these two absent fields to `null`. It preserves explicit values,
-including explicit nulls. It never fills missing text, evidence, scores, arrays,
-or other required fields. Missing non-nullable/other required fields, unknown
-properties, wrong structural types, invalid enums, cycles, external references,
-unknown schema keywords, oversized schemas, or cap violations fail closed.
+All original quantitative definitions, fields, enums, evidence anchors and
+numeric types remain in the complete original schema supplied with the prompt
+and in the unchanged backend validator. They are removed only from the provider's
+grammar graph because those two values are transported as strings. This does
+not make arbitrary prose an acceptable quantitative value or replace structured
+rules with free text. Provider-level grammar no longer constrains the inner
+quantitative JSON; the gateway and backend must reject invalid inner values.
 
-The adapter moves only the unsupported keywords present in the production schema
-(`minimum`, `maximum`, `exclusiveMinimum`, `minLength`, `maxLength`, `maxItems`)
-into descriptions. It keeps the complete original schema in the prompt and
-passes the decoded object to the unchanged backend validation. For example,
-explicit `page:0` is preserved by the transport and rejected by Pydantic's
-original `page >= 1` rule. No constraint is converted into a factual assertion.
+A trusted system note overrides exactly the two top-level wire types. The
+decoder requires strings at those exact paths and strictly parses each complete
+JSON document. Missing fields, Markdown, trailing tokens, duplicate object keys
+(including escaped-equivalent keys), prototype keys, invalid numbers and wrong
+original types fail closed. The outer JSON is also checked for duplicate keys.
+No missing value is filled, substring salvaged, primitive coerced, or extra model
+request made. Same-named fields elsewhere and ordinary strings/arrays are not
+recursively interpreted as transport values. Parsing is bounded to 500,000
+characters, 12,000 nodes and depth 60 per document; the existing decode budget
+is separate so parsing does not consume its allowance.
 
-Schema size remains bounded at 64,000 characters; source/system limits remain
-140,000/12,000 characters. The 210,000 combined-character cap now also counts the
-native schema and transport convention, so native formatting cannot silently
-increase the request budget. Internal provider grammar/compilation limits can
-still reject a schema inside these public caps. A full-schema synthetic probe
-is required before any real document is retried.
+Decoded values then traverse the entire original schema, including the original
+quantitative references, required fields and enums. The backend's original
+Pydantic range/length checks and source-evidence validation remain authoritative.
+For example, page 0 or negative maximum points remain their supplied values and
+fail original validation; they are never replaced with a convenient value.
+
+Unsupported provider keywords present in the original schema (`minimum`,
+`maximum`, `exclusiveMinimum`, `minLength`, `maxLength`, `maxItems`) remain
+server-validated constraints. No unsupported `maxItems` keyword is added.
+Schema limits stay 64,000 characters, source 140,000, final provider system
+including the trusted note 12,000, and combined request 210,000. Output remains
+20,000 tokens. Root's subsequent same-source/full-schema direct HTTP SYN probe
+returned HTTP 200 with `end_turn` (reported input 9,115/output 208 tokens),
+including the two string values `"[]"`/`"null"`. This establishes provider
+acceptance for that synthetic request. Promotion metadata stays pending until
+native full gateway live E2E checks. Even a passing empty SYN output is not evidence of
+real quantitative extraction quality.
 
 ## Request and response contract
 
@@ -130,11 +155,14 @@ restore the PR129 node version; do not automatically retry a paid request.
 
 `tests/test_native_gateway_schema.py` runs the actual Python schema through the
 JavaScript adapter/decoder and then original Pydantic validation using only SYN
-source/output. The Node tests cover topology, limits, nullable preservation,
-missing/explicit fields, cycles/references, HTTP and stop failures, thinking/usage,
+source/output. The Node tests cover topology, limits, strict quantitative JSON string transport,
+missing/invalid fields, cycles/references, HTTP and stop failures, thinking/usage,
 credential boundaries, and both native and pinned Tournament terminal evaluation.
-These are local tests; a real Anthropic request and deployed n8n execution remain
-unverified until root's separately authorized synthetic probe.
+The observed synthetic provider payload is also a local regression: strict
+decoding produces the original empty array/null and passes original Pydantic
+validation. This local replay is not a deployed normalizer test. The direct HTTP
+provider probe passed; full deployed gateway E2E and real attachment quality
+remain unverified until root's separately authorized checks.
 
 - [Anthropic structured outputs and complexity limits](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits)
 - [Messages request API](https://platform.claude.com/docs/en/api/messages/create)

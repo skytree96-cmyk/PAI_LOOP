@@ -40,9 +40,14 @@ const schema = { type: "object", additionalProperties: false, properties: {
 } } };
 const originalBytes = JSON.stringify(schema);
 const projection = nativeGatewaySchema(schema, "project");
-assert.deepEqual(projection.counts, { unique: { unions: 1, optional: 2 }, expanded: { unions: 1, optional: 2 } });
-assert.deepEqual(projection.schema.$defs.EvidenceAnchor.required, ["attachment_id", "quote", "confidence"]);
-assert.match(projection.schema.$defs.EvidenceAnchor.properties.page.description, /minimum=1/);
+assert.deepEqual(projection.counts, { unique: { unions: 3, optional: 0 }, expanded: { unions: 3, optional: 0 } });
+assert.deepEqual(projection.schema.$defs.EvidenceAnchor.required, schema.$defs.EvidenceAnchor.required);
+assert.match(projection.schema.$defs.EvidenceAnchor.properties.page.anyOf[0].description, /minimum=1/);
+for (const field of ["page", "section"]) {
+  const projected = projection.schema.$defs.EvidenceAnchor.properties[field];
+  assert.equal(projected.anyOf[0].type, field === "page" ? "integer" : "string");
+  assert.deepEqual(projected.anyOf[1], { type: "null" });
+}
 assert.deepEqual(projection.schema.properties.ambiguity, schema.properties.ambiguity);
 assert.equal(JSON.stringify(schema), originalBytes);
 const body = { model: "claude-sonnet-5", service_tier: "default", store: false, max_output_tokens: 20000,
@@ -60,7 +65,10 @@ assert.equal(request.model, "claude-sonnet-5"); assert.equal(request.max_tokens,
 assert.deepEqual(request.thinking, { type: "adaptive" }); assert.equal(request.output_config.effort, "medium");
 assert.equal(request.output_config.format.type, "json_schema"); assert.equal(request.stream, false);
 assert.equal(request.messages.length, 1); assert(request.messages[0].content.includes(JSON.stringify(schema)));
-assert.match(request.messages[0].content, /Only EvidenceAnchor.page and EvidenceAnchor.section/);
+assert.match(request.system, /TRUSTED NATIVE TRANSPORT CONVENTION: Only the two top-level fields quantitative_tables and quantitative_table_not_applicable/);
+assert(request.system.startsWith(body.input[0].content[0].text));
+assert.match(request.system, /return the string "\[\]"/);
+assert(!request.messages[0].content.includes("may be omitted"));
 assert(!("temperature" in request) && !("store" in request) && !("service_tier" in request));
 for (const patch of [{ model: "SYN-invalid" }, { max_output_tokens: 20001 }, { store: true },
   { extra: "SYN-private" }, { input: [] }, { text: { format: { ...body.text.format, strict: false } } }]) assert.throws(() => validate({ ...body, ...patch }));
@@ -68,8 +76,24 @@ assert.throws(() => executeValidation({ body }, { all: () => [{}, {}] }));
 const corrective = structuredClone(body);
 corrective.input[1].content[0].text = "FINAL CORRECTIVE RETRY.\n" + corrective.input[1].content[0].text;
 assert.equal(validate(corrective).length, 1);
+for (const [index, cap] of [[0, 12000], [1, 140000]]) {
+  const oversized = structuredClone(body);
+  oversized.input[index].content[0].text += "x".repeat(cap);
+  assert.throws(() => validate(oversized), /oversized/);
+}
+const systemBoundary = structuredClone(body);
+systemBoundary.input[0].content[0].text += "x".repeat(12000 - request.system.length);
+assert.equal(validate(systemBoundary)[0].json.provider_request.system.length, 12000);
+systemBoundary.input[0].content[0].text += "x";
+assert.throws(() => validate(systemBoundary), /combined system prompt/);
+const combinedOverflow = structuredClone(body);
+combinedOverflow.input[1].content[0].text += "x".repeat(139000);
+for (const target of [combinedOverflow.text.format.schema.properties.summary,
+  combinedOverflow.text.format.schema.properties.ambiguity,
+  combinedOverflow.text.format.schema.$defs.EvidenceAnchor.properties.confidence]) target.description = "S".repeat(12000);
+assert.throws(() => validate(combinedOverflow), /combined Claude request/);
 const canary = "SYN-PRIVATE-PROVIDER-THINKING-OR-ID";
-const extracted = { summary: "SYN ``` literal", evidence: [{ attachment_id: "SYN-A1", quote: "SYN source only.", confidence: 1 }], ambiguity: null };
+const extracted = { summary: "SYN ``` literal", evidence: [{ attachment_id: "SYN-A1", page: null, section: null, quote: "SYN source only.", confidence: 1 }], ambiguity: null };
 const response = text => ({ statusCode: 200, body: { type: "message", id: canary, role: "assistant", model: "claude-sonnet-5",
   stop_reason: "end_turn", usage: { input_tokens: 3, cache_creation_input_tokens: 4, cache_read_input_tokens: 5, output_tokens: 6, thinking_tokens: 999 },
   content: [{ type: "thinking", thinking: canary, signature: canary }, { type: "text", text }],
@@ -87,7 +111,19 @@ assert.deepEqual(normalize(unreportedCache).usage, { input_tokens: null, output_
 assert(!JSON.stringify(complete).includes(canary));
 assert.equal(guardGatewayResponse(complete, true).status, 200);
 const explicit = structuredClone(extracted); explicit.evidence[0].page = 2; explicit.evidence[0].section = "SYN section";
-assert.deepEqual(JSON.parse(normalize(response(JSON.stringify(explicit))).output_text), explicit);
+assert.deepEqual(JSON.parse(normalize(response(JSON.stringify(explicit))).output_text),
+  { ...explicit, evidence: [{ ...explicit.evidence[0], page: 2, section: "SYN section" }] });
+for (const field of ["page", "section"]) {
+  for (const invalid of [false, [], [null], [[]], [{}], [true], [1, 2],
+    ...(field === "page" ? [1.5, "2", Number.MAX_SAFE_INTEGER + 1] : [1, 1.5])]) {
+    const value = structuredClone(extracted); value.evidence[0][field] = invalid;
+    const failure = normalize(response(JSON.stringify(value)));
+    assert.equal(failure.gateway_error.detail_code, "NATIVE_SCHEMA_DECODE_INVALID");
+    assert.equal(guardGatewayResponse(failure, true).status, 500);
+  }
+  const missing = structuredClone(extracted); delete missing.evidence[0][field];
+  assert.equal(normalize(response(JSON.stringify(missing))).gateway_error.detail_code, "NATIVE_SCHEMA_DECODE_INVALID");
+}
 for (const patch of [value => delete value.summary, value => delete value.ambiguity,
   value => delete value.evidence[0].quote, value => value.evidence[0].page = "2",
   value => value.evidence[0].extra = canary]) {
@@ -100,6 +136,10 @@ for (const [text, detail] of [[" ", "OUTPUT_EMPTY"], ["{}", "NATIVE_SCHEMA_DECOD
   const failure = normalize(response(text)); assert.equal(failure.gateway_error.detail_code, detail);
   for (const lane of [true, false]) assert.deepEqual(guardGatewayResponse(failure, lane), { status: 500, body: failure });
   assert(!JSON.stringify(failure).includes(canary));
+}
+for (const duplicated of [JSON.stringify(extracted).replace('{', '{"summary":"SYN duplicate",'),
+  JSON.stringify(extracted).replace('{', '{"summ\\u0061ry":"SYN duplicate",')]) {
+  assert.equal(normalize(response(duplicated)).gateway_error.detail_code, "NATIVE_SCHEMA_DECODE_INVALID");
 }
 for (const [stop, detail] of [["max_tokens", "NATIVE_STOP_MAX_TOKENS"], ["refusal", "NATIVE_STOP_REFUSAL"],
   ["tool_use", "NATIVE_STOP_UNSUPPORTED"], ["pause_turn", "NATIVE_STOP_UNSUPPORTED"],
@@ -133,6 +173,17 @@ for (let i = 0; i < 25; i++) optionalOverflow.properties[`syn_${i}`] = { type: "
 assert.throws(() => nativeGatewaySchema(optionalOverflow, "project"));
 const prototype = JSON.parse('{"summary":"SYN","evidence":[],"ambiguity":null,"__proto__":{"x":1}}');
 assert.throws(() => nativeGatewaySchema(schema, "decode", prototype));
+const otherPath = structuredClone(schema);
+otherPath.$defs.OtherAnchor = structuredClone(schema.$defs.EvidenceAnchor);
+otherPath.properties.other = { $ref: "#/$defs/OtherAnchor" }; otherPath.required.push("other");
+const otherOutput = { ...extracted, other: { attachment_id: "SYN-A1", page: 3,
+  section: null, quote: "SYN source only.", confidence: 1 } };
+assert.deepEqual(nativeGatewaySchema(otherPath, "decode", otherOutput).other, otherOutput.other);
+const invalidOther = structuredClone(otherOutput); invalidOther.other.page = [3];
+assert.throws(() => nativeGatewaySchema(otherPath, "decode", invalidOther));
+const omittedInSchema = structuredClone(schema);
+omittedInSchema.$defs.EvidenceAnchor.required = omittedInSchema.$defs.EvidenceAnchor.required.filter(key => key !== "page");
+assert.throws(() => nativeGatewaySchema(omittedInSchema, "project"));
 for (const name of ["Input", "Model", "Output"]) {
   const node = nodes.get(`Sanitize Gateway ${name} Failure`);
   const sanitize = new Function("$json", node.parameters.jsCode);

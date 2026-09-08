@@ -4,8 +4,8 @@ export function nativeGatewaySchema(original, mode, value) {
   const object = item => item !== null && typeof item === "object" && !Array.isArray(item);
   const fail = () => { throw new Error("NATIVE_SCHEMA_CONTRACT_REJECTED"); };
   const own = (item, key) => Object.hasOwn(item, key);
-  const projectedPaths = new Set([
-    "#/$defs/EvidenceAnchor/properties/page", "#/$defs/EvidenceAnchor/properties/section",
+  const transportPaths = new Set([
+    "#/properties/quantitative_tables", "#/properties/quantitative_table_not_applicable",
   ]);
   const removed = new Set(["minimum", "maximum", "exclusiveMinimum", "minLength", "maxLength", "maxItems"]);
   const allowed = new Set(["$defs", "$ref", "type", "properties", "required", "additionalProperties",
@@ -38,13 +38,6 @@ export function nativeGatewaySchema(original, mode, value) {
       if (Object.keys(node).some(key => !["$ref", "title", "description"].includes(key))) fail();
     }
     if (node.anyOf !== undefined) nullable(node);
-    if (projectedPaths.has(pointer)) {
-      const branch = nullable(node);
-      const expectedType = pointer.endsWith("/page") ? "integer" : "string";
-      if (branch.type !== expectedType) fail();
-      node = { ...branch, ...(node.title === undefined ? {} : { title: node.title }),
-        description: `${node.description ?? ""} Transport convention: omit this property only when its original value would be null.` };
-    }
     const output = {};
     const annotations = [];
     for (const [key, item] of Object.entries(node)) {
@@ -62,7 +55,7 @@ export function nativeGatewaySchema(original, mode, value) {
       else if (key === "items") output[key] = clone(item, `${pointer}/items`, depth + 1);
       else if (key === "required") {
         if (!Array.isArray(item) || item.some(name => typeof name !== "string") || new Set(item).size !== item.length) fail();
-        output[key] = item.filter(name => !projectedPaths.has(`${pointer}/properties/${name}`));
+        output[key] = [...item];
       } else if (key === "enum") {
         if (!Array.isArray(item) || !item.length || item.length > 100 || item.some(entry => typeof entry !== "string")) fail();
         output[key] = [...item];
@@ -74,9 +67,19 @@ export function nativeGatewaySchema(original, mode, value) {
     if (node.type === "object") {
       if (node.additionalProperties !== false || !object(node.properties) || !Array.isArray(node.required)
         || node.required.some(name => !own(node.properties, name))) fail();
+      if (pointer === "#" && ["quantitative_tables", "quantitative_table_not_applicable"].some(name =>
+        own(node.properties, name) && !node.required.includes(name))) fail();
+      if (pointer === "#/$defs/EvidenceAnchor" && ["page", "section"].some(name =>
+        !own(node.properties, name) || !node.required.includes(name))) fail();
     } else if (node.properties !== undefined || node.required !== undefined || node.additionalProperties !== undefined) fail();
     if (node.type === "array" && !object(node.items)) fail();
     if (annotations.length) output.description = `${output.description ?? ""} Original constraints (validated by the server): ${annotations.join("; ")}.`.trim();
+    if (transportPaths.has(pointer)) {
+      const tables = pointer.endsWith("/quantitative_tables");
+      if (tables ? node.type !== "array" || node.items?.$ref !== "#/$defs/QuantitativeTableCandidate"
+        : nullable(node).$ref !== "#/$defs/QuantitativeTableNotApplicable") fail();
+      return { type: "string", description: "Strict JSON text encoding exactly the original value for this field. Never Markdown. Preserve every original required field, type, enum, evidence and quantitative rule; the server validates the decoded value against the complete original schema." };
+    }
     return output;
   };
   if (!object(original) || original.type !== "object" || JSON.stringify(original).length > 64000) fail();
@@ -94,6 +97,21 @@ export function nativeGatewaySchema(original, mode, value) {
     if (node.anyOf) for (const child of node.anyOf) checkRefs(child, stack, depth + 1);
   };
   checkRefs(original, [], 0);
+  // Only definitions reachable from the provider's typed fields affect its grammar.
+  // The complete original definitions above remain validated and used for decoding.
+  const needed = new Set();
+  const collect = (node, depth) => {
+    bounded(depth);
+    if (node.$ref && !needed.has(node.$ref)) {
+      needed.add(node.$ref); collect(projected.$defs[node.$ref.slice(8)], depth + 1);
+    }
+    if (node.properties) for (const child of Object.values(node.properties)) collect(child, depth + 1);
+    if (node.items) collect(node.items, depth + 1);
+    if (node.anyOf) for (const child of node.anyOf) collect(child, depth + 1);
+  };
+  collect(projected, 0);
+  if (projected.$defs) projected.$defs = Object.fromEntries(Object.entries(projected.$defs)
+    .filter(([name]) => needed.has(`#/$defs/${name}`)));
   const count = expanded => {
     const totals = { unions: 0, optional: 0 };
     const walk = (node, stack, depth) => {
@@ -118,12 +136,70 @@ export function nativeGatewaySchema(original, mode, value) {
   const unique = count(false), expanded = count(true);
   if (JSON.stringify(projected).length > 64000) fail();
   if (mode === "project") return { schema: projected, counts: { unique, expanded } };
-  if (mode !== "decode") fail();
+  if (!["decode", "decode-json"].includes(mode)) fail();
+  // JSON.parse alone silently accepts duplicate keys. Tokenize each bounded JSON
+  // document so escaped-equivalent keys and trailing tokens fail before decoding.
+  const strictJson = text => {
+    if (typeof text !== "string" || text.length > 500000) fail();
+    let index = 0, parsedNodes = 0;
+    const whitespace = () => { while (index < text.length && /[\t\n\r ]/.test(text[index])) index++; };
+    const string = () => {
+      if (text[index] !== '"') fail();
+      const start = index++;
+      while (index < text.length) {
+        const char = text[index++];
+        if (char === '"') {
+          try { return JSON.parse(text.slice(start, index)); } catch (ignored) { fail(); }
+        }
+        if (char === "\\") index++;
+        else if (char.charCodeAt(0) < 32) fail();
+      }
+      fail();
+    };
+    const read = depth => {
+      if (++parsedNodes > 12000 || depth > 60) fail();
+      whitespace();
+      const char = text[index];
+      if (char === '"') return string();
+      if (char === "{" || char === "[") {
+        const isObject = char === "{", end = isObject ? "}" : "]";
+        const result = isObject ? Object.create(null) : [], keys = new Set();
+        index++; whitespace();
+        if (text[index] === end) { index++; return result; }
+        while (index < text.length) {
+          let key;
+          if (isObject) {
+            whitespace(); key = string(); whitespace();
+            if (keys.has(key) || forbidden.has(key) || text[index++] !== ":") fail();
+            keys.add(key);
+          }
+          const child = read(depth + 1);
+          if (isObject) result[key] = child; else result.push(child);
+          whitespace();
+          if (text[index] === end) { index++; return result; }
+          if (text[index++] !== ",") fail();
+        }
+        fail();
+      }
+      for (const [literal, primitive] of [["null", null], ["true", true], ["false", false]]) {
+        if (text.startsWith(literal, index)) { index += literal.length; return primitive; }
+      }
+      const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(text.slice(index));
+      if (!number || !Number.isFinite(Number(number[0]))) fail();
+      index += number[0].length; return Number(number[0]);
+    };
+    const parsed = read(0); whitespace();
+    if (index !== text.length) fail();
+    return parsed;
+  };
   const decode = (data, node, pointer, depth, stack) => {
     bounded(depth);
     if (node.$ref) {
       if (stack.includes(node.$ref)) fail();
       return decode(data, resolve(node.$ref), node.$ref, depth + 1, [...stack, node.$ref]);
+    }
+    if (transportPaths.has(pointer)) {
+      return decode(strictJson(data), node, `${pointer}/decoded`, depth + 1, stack);
     }
     if (node.anyOf) {
       const branch = nullable(node);
@@ -135,8 +211,7 @@ export function nativeGatewaySchema(original, mode, value) {
       for (const [name, child] of Object.entries(node.properties)) {
         const path = `${pointer}/properties/${name}`;
         if (!own(data, name)) {
-          if (projectedPaths.has(path)) output[name] = null;
-          else if (node.required.includes(name)) fail();
+          if (node.required.includes(name)) fail();
         } else output[name] = decode(data[name], child, path, depth + 1, stack);
       }
       return output;
@@ -153,5 +228,5 @@ export function nativeGatewaySchema(original, mode, value) {
     if (node.enum && !node.enum.includes(data)) fail();
     return data;
   };
-  return decode(value, original, "#", 0, []);
+  return decode(mode === "decode-json" ? strictJson(value) : value, original, "#", 0, []);
 }
