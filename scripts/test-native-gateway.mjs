@@ -40,13 +40,13 @@ const schema = { type: "object", additionalProperties: false, properties: {
 } } };
 const originalBytes = JSON.stringify(schema);
 const projection = nativeGatewaySchema(schema, "project");
-assert.deepEqual(projection.counts, { unique: { unions: 1, optional: 0 }, expanded: { unions: 1, optional: 0 } });
+assert.deepEqual(projection.counts, { unique: { unions: 3, optional: 0 }, expanded: { unions: 3, optional: 0 } });
 assert.deepEqual(projection.schema.$defs.EvidenceAnchor.required, schema.$defs.EvidenceAnchor.required);
-assert.match(projection.schema.$defs.EvidenceAnchor.properties.page.items.description, /minimum=1/);
+assert.match(projection.schema.$defs.EvidenceAnchor.properties.page.anyOf[0].description, /minimum=1/);
 for (const field of ["page", "section"]) {
   const projected = projection.schema.$defs.EvidenceAnchor.properties[field];
-  assert.equal(projected.type, "array"); assert(!Object.hasOwn(projected, "maxItems"));
-  assert.equal(projected.items.type, field === "page" ? "integer" : "string");
+  assert.equal(projected.anyOf[0].type, field === "page" ? "integer" : "string");
+  assert.deepEqual(projected.anyOf[1], { type: "null" });
 }
 assert.deepEqual(projection.schema.properties.ambiguity, schema.properties.ambiguity);
 assert.equal(JSON.stringify(schema), originalBytes);
@@ -65,9 +65,9 @@ assert.equal(request.model, "claude-sonnet-5"); assert.equal(request.max_tokens,
 assert.deepEqual(request.thinking, { type: "adaptive" }); assert.equal(request.output_config.effort, "medium");
 assert.equal(request.output_config.format.type, "json_schema"); assert.equal(request.stream, false);
 assert.equal(request.messages.length, 1); assert(request.messages[0].content.includes(JSON.stringify(schema)));
-assert.match(request.system, /TRUSTED NATIVE TRANSPORT CONVENTION: Only EvidenceAnchor.page and EvidenceAnchor.section/);
+assert.match(request.system, /TRUSTED NATIVE TRANSPORT CONVENTION: Only the two top-level fields quantitative_tables and quantitative_table_not_applicable/);
 assert(request.system.startsWith(body.input[0].content[0].text));
-assert.match(request.system, /return \[\] for an explicit null or \[value\]/);
+assert.match(request.system, /return the string "\[\]"/);
 assert(!request.messages[0].content.includes("may be omitted"));
 assert(!("temperature" in request) && !("store" in request) && !("service_tier" in request));
 for (const patch of [{ model: "SYN-invalid" }, { max_output_tokens: 20001 }, { store: true },
@@ -93,7 +93,7 @@ for (const target of [combinedOverflow.text.format.schema.properties.summary,
   combinedOverflow.text.format.schema.$defs.EvidenceAnchor.properties.confidence]) target.description = "S".repeat(12000);
 assert.throws(() => validate(combinedOverflow), /combined Claude request/);
 const canary = "SYN-PRIVATE-PROVIDER-THINKING-OR-ID";
-const extracted = { summary: "SYN ``` literal", evidence: [{ attachment_id: "SYN-A1", page: [], section: [], quote: "SYN source only.", confidence: 1 }], ambiguity: null };
+const extracted = { summary: "SYN ``` literal", evidence: [{ attachment_id: "SYN-A1", page: null, section: null, quote: "SYN source only.", confidence: 1 }], ambiguity: null };
 const response = text => ({ statusCode: 200, body: { type: "message", id: canary, role: "assistant", model: "claude-sonnet-5",
   stop_reason: "end_turn", usage: { input_tokens: 3, cache_creation_input_tokens: 4, cache_read_input_tokens: 5, output_tokens: 6, thinking_tokens: 999 },
   content: [{ type: "thinking", thinking: canary, signature: canary }, { type: "text", text }],
@@ -110,12 +110,12 @@ delete unreportedCache.body.usage.cache_read_input_tokens;
 assert.deepEqual(normalize(unreportedCache).usage, { input_tokens: null, output_tokens: 6, total_tokens: null });
 assert(!JSON.stringify(complete).includes(canary));
 assert.equal(guardGatewayResponse(complete, true).status, 200);
-const explicit = structuredClone(extracted); explicit.evidence[0].page = [2]; explicit.evidence[0].section = ["SYN section"];
+const explicit = structuredClone(extracted); explicit.evidence[0].page = 2; explicit.evidence[0].section = "SYN section";
 assert.deepEqual(JSON.parse(normalize(response(JSON.stringify(explicit))).output_text),
   { ...explicit, evidence: [{ ...explicit.evidence[0], page: 2, section: "SYN section" }] });
 for (const field of ["page", "section"]) {
-  for (const invalid of [null, false, 1, "SYN", [null], [[]], [{}], [true], [1, 2],
-    ...(field === "page" ? [[1.5], ["2"], [Number.MAX_SAFE_INTEGER + 1]] : [[1], [1.5]])]) {
+  for (const invalid of [false, [], [null], [[]], [{}], [true], [1, 2],
+    ...(field === "page" ? [1.5, "2", Number.MAX_SAFE_INTEGER + 1] : [1, 1.5])]) {
     const value = structuredClone(extracted); value.evidence[0][field] = invalid;
     const failure = normalize(response(JSON.stringify(value)));
     assert.equal(failure.gateway_error.detail_code, "NATIVE_SCHEMA_DECODE_INVALID");
@@ -136,6 +136,10 @@ for (const [text, detail] of [[" ", "OUTPUT_EMPTY"], ["{}", "NATIVE_SCHEMA_DECOD
   const failure = normalize(response(text)); assert.equal(failure.gateway_error.detail_code, detail);
   for (const lane of [true, false]) assert.deepEqual(guardGatewayResponse(failure, lane), { status: 500, body: failure });
   assert(!JSON.stringify(failure).includes(canary));
+}
+for (const duplicated of [JSON.stringify(extracted).replace('{', '{"summary":"SYN duplicate",'),
+  JSON.stringify(extracted).replace('{', '{"summ\\u0061ry":"SYN duplicate",')]) {
+  assert.equal(normalize(response(duplicated)).gateway_error.detail_code, "NATIVE_SCHEMA_DECODE_INVALID");
 }
 for (const [stop, detail] of [["max_tokens", "NATIVE_STOP_MAX_TOKENS"], ["refusal", "NATIVE_STOP_REFUSAL"],
   ["tool_use", "NATIVE_STOP_UNSUPPORTED"], ["pause_turn", "NATIVE_STOP_UNSUPPORTED"],

@@ -39,7 +39,7 @@ export function normalizeNativeGatewayResponse(response, execution, originalSche
   try { parsed = JSON.parse(rawOutput); } catch (ignored) { return reject("OUTPUT_JSON_INVALID"); }
   if (!object(parsed)) return reject("OUTPUT_NOT_OBJECT");
   // No Markdown stripping, substring extraction, coercion, or second model call.
-  try { parsed = decodeSchema(originalSchema, "decode", parsed); }
+  try { parsed = decodeSchema(originalSchema, "decode-json", rawOutput); }
   catch (ignored) { return reject("NATIVE_SCHEMA_DECODE_INVALID"); }
   const outputText = JSON.stringify(parsed);
   if (outputText.length > 500000) return reject("OUTPUT_TOO_LARGE");
