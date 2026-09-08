@@ -788,6 +788,13 @@ def _validate_semantic_text(text: str, *, error_code: str) -> None:
 _UNREPORTED = object()
 
 
+class _DiscardedParserLog(io.TextIOBase):
+    """Discard reader diagnostics without retaining untrusted source content."""
+
+    def write(self, message: str) -> int:
+        return len(message)
+
+
 def _extract_xls(content: bytes) -> _ParsedText:
     try:
         import xlrd  # type: ignore[import-not-found]
@@ -803,6 +810,9 @@ def _extract_xls(content: bytes) -> _ParsedText:
             on_demand=True,
             ragged_rows=True,
             formatting_info=False,
+            # xlrd can print source names/formulas even at verbosity=0 when a
+            # defined-name reference loops. Keep diagnostics out of app logs.
+            logfile=_DiscardedParserLog(),
         )
         # A pre-BIFF8 workbook with no CODEPAGE record makes xlrd fall back to
         # iso-8859-1 silently. Korean cell bytes then decode into characters that

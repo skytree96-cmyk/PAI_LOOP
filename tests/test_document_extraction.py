@@ -870,6 +870,7 @@ def _biff5_workbook(
     *,
     codepage: int | None = 949,
     encoding: str = "cp949",
+    self_referencing_name: bool = False,
 ) -> bytes:
     """Build a bare BIFF5 stream, optionally omitting the CODEPAGE record."""
 
@@ -901,6 +902,15 @@ def _biff5_workbook(
     )
     if codepage is not None:
         globals_stream += record(0x0042, struct.pack("<H", codepage))
+    if self_referencing_name:
+        defined_name = b"SYN-CIRCULAR-NAME"
+        # BIFF5 tName references the first NAME record, including itself.
+        formula = b"\x23\x01\x00" + b"\x00" * 12
+        globals_stream += record(
+            0x0018,
+            struct.pack("<HBBHHH4B", 0, 0, len(defined_name), len(formula), 0, 0, 0, 0, 0, 0)
+            + defined_name + formula,
+        )
     tail = record(0x000A)
     boundsheet_payload = 4 + 2 + 1 + len(name)
     globals_length = len(globals_stream) + 4 + boundsheet_payload + len(tail)
@@ -946,6 +956,17 @@ def test_xls_without_codepage_is_refused_instead_of_guessing_an_encoding() -> No
             "정량평가표.xls",
             _biff5_workbook(_BIFF5_ROWS, "정량평가", codepage=None),
         )
+
+
+def test_xls_circular_defined_name_fails_without_printing_source(capfd) -> None:
+    with pytest.raises(DocumentExtractionError, match="^XLS_PARSE_FAILED$") as caught:
+        extract_document_content(
+            "SYN-circular.xls",
+            _biff5_workbook(_BIFF5_ROWS, "SYN-sheet", self_referencing_name=True),
+        )
+
+    assert str(caught.value.__cause__) == "Excessive indirect references in NAME formula"
+    assert capfd.readouterr() == ("", "")
 
 
 def test_ooxml_workbook_served_under_an_xls_name_is_read_by_the_xlsx_leaf() -> None:
