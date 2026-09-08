@@ -238,8 +238,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260908-failure-recovery-v1"' in html
-    assert 'src="./app.js?v=20260908-failure-recovery-v1"' in html
+    assert 'href="./styles.css?v=20260908-teams-sidebar-v1"' in html
+    assert 'src="./app.js?v=20260908-teams-sidebar-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -1096,7 +1096,7 @@ def test_pai_teams_sidebar_and_manual_link_fail_closed_until_configured() -> Non
     assert "PAI Teams 채널 열기" in html
     assert "등록된 개발자 전용" not in html
     assert 'id="paiUserGuideLink" href="https://pai-loop.pages.dev/"' in html
-    assert 'src="/static/teams-icon.png"' in html
+    assert 'src="/teams-icon.png"' in html
     assert 'aria-disabled="true"' in html
     assert "disabled" in html
     config_match = re.search(
@@ -1106,7 +1106,7 @@ def test_pai_teams_sidebar_and_manual_link_fail_closed_until_configured() -> Non
     )
     assert config_match
     runtime_config = json.loads(config_match.group("config"))
-    assert runtime_config["paiBotTeamsUrl"].startswith("https://teams.microsoft.com/")
+    assert runtime_config["paiBotTeamsUrl"] == ""
     assert 'document.getElementById("paiLoopRuntimeConfig")' in source
     assert "safePaiBotTeamsUrl(PAI_BOT_TEAMS_URL)" in configure_body
     assert "disabled = !isReady" in configure_body

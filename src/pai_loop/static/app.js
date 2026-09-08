@@ -358,9 +358,13 @@
   }
 
   function safePaiBotTeamsUrl(value) {
+    const candidate = String(value || "");
+    if (candidate.length > 8192 || /[\u0000-\u001f\u007f\\]/.test(candidate)
+      || /^https:\/\/[^/?#]*@/i.test(candidate.trim())) return "";
     try {
-      const url = new URL(String(value || ""));
-      return url.protocol === "https:" && url.hostname.toLowerCase() === "teams.microsoft.com" ? url.href : "";
+      const url = new URL(candidate.trim());
+      return url.protocol === "https:" && url.hostname.toLowerCase() === "teams.microsoft.com"
+        && !url.username && !url.password && (!url.port || url.port === "443") ? url.href : "";
     } catch (_error) {
       return "";
     }
