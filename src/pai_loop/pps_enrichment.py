@@ -1671,6 +1671,77 @@ def _extract_pdf_text(content: bytes) -> str:
     return "".join(parts).strip()
 
 
+def _hwpx_element_events(root: ElementTree.Element) -> Iterator[tuple[bool, ElementTree.Element]]:
+    """Visit each element's start/end in document order without Python recursion."""
+    yield True, root
+    stack = [(root, iter(root))]
+    while stack:
+        node, children = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            yield False, node
+        else:
+            yield True, child
+            stack.append((child, iter(child)))
+
+
+def _hwpx_paragraph_fragments(root: ElementTree.Element) -> Iterator[list[str]]:
+    """Give each text/tail to its nearest paragraph, including around nested tables."""
+    # Preserve the original t-first rule, including t descendants in nested p.
+    # Propagate at paragraph exit instead of walking all ancestors for each t.
+    text_paragraphs: set[ElementTree.Element] = set()
+    paragraphs: list[ElementTree.Element] = []
+    for starting, node in _hwpx_element_events(root):
+        tag = str(node.tag).rsplit("}", 1)[-1]
+        if tag == "p":
+            if starting:
+                paragraphs.append(node)
+            else:
+                paragraphs.pop()
+                if node in text_paragraphs and paragraphs:
+                    text_paragraphs.add(paragraphs[-1])
+        elif starting and tag == "t" and paragraphs:
+            text_paragraphs.add(paragraphs[-1])
+
+    text_depths: list[int] = []
+    owner: ElementTree.Element | None = None
+    fragments: list[str] = []
+    for starting, node in _hwpx_element_events(root):
+        tag = str(node.tag).rsplit("}", 1)[-1]
+        if starting:
+            if tag == "p":
+                paragraphs.append(node)
+                text_depths.append(0)
+            elif tag == "t" and paragraphs:
+                text_depths[-1] += 1
+            fragment = node.text
+        else:
+            if tag == "p":
+                paragraphs.pop()
+                text_depths.pop()
+            elif tag == "t" and paragraphs:
+                text_depths[-1] -= 1
+            # A node's tail belongs to its parent context, never the closed p/t.
+            fragment = node.tail
+        if not paragraphs or not fragment:
+            continue
+        current = paragraphs[-1]
+        if current in text_paragraphs and not text_depths[-1]:
+            # Non-t text includes field/shape metadata, not just indentation.
+            continue
+        if current is not owner:
+            if not fragment.strip():
+                # Empty nested paragraphs must not split their parent's text.
+                continue
+            if fragments:
+                yield fragments
+            owner, fragments = current, []
+        fragments.append(fragment)
+    if fragments:
+        yield fragments
+
+
 def _extract_hwpx_text(content: bytes) -> str:
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
@@ -1738,25 +1809,7 @@ def _extract_hwpx_text(content: bytes) -> str:
                 root = ElementTree.fromstring(archive.read(name))
             except ElementTree.ParseError as exc:
                 raise PpsEnrichmentError("HWPX_XML_INVALID") from exc
-            # HWPX commonly splits one word across multiple hp:run/hp:t nodes.
-            # Joining every XML text node with a space turns e.g. ``과업지시서``
-            # into ``과 업 지 시 서`` and also removes all paragraph boundaries.
-            # Rebuild each hp:p from its hp:t descendants without inventing
-            # characters, then keep paragraph boundaries for reliable quotes.
-            for paragraph in root.iter():
-                if str(paragraph.tag).rsplit("}", 1)[-1] != "p":
-                    continue
-                fragments: list[str] = []
-                found_text_node = False
-                for text_node in paragraph.iter():
-                    if str(text_node.tag).rsplit("}", 1)[-1] != "t":
-                        continue
-                    found_text_node = True
-                    fragments.extend(text_node.itertext())
-                # Minimal/legacy HWPX producers (and our format fixtures) may
-                # place character data directly below the paragraph element.
-                if not found_text_node:
-                    fragments.extend(paragraph.itertext())
+            for fragments in _hwpx_paragraph_fragments(root):
                 text = unicodedata.normalize("NFC", "".join(fragments))
                 text = re.sub(r"\s+", " ", text).strip()
                 if not text:
