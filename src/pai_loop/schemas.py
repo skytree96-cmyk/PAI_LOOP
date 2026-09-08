@@ -662,6 +662,7 @@ class AwardHistoryRefreshRequest(ApiModel):
     page_size: int = Field(default=100, ge=1, le=100)
     max_pages_per_window: int = Field(default=1, ge=1, le=3)
     dry_run: bool = False
+    diagnostic_probe: bool = Field(default=False, strict=True)
     # Opt-in and hard-capped. Each notice costs at most
     # ``opening_result_max_pages`` extra authenticated requests, and at most
     # ``max_opening_result_notices`` notices are read per refresh, so the
@@ -669,6 +670,12 @@ class AwardHistoryRefreshRequest(ApiModel):
     include_opening_results: bool = False
     max_opening_result_notices: int = Field(default=10, ge=1, le=30)
     opening_result_max_pages: int = Field(default=1, ge=1, le=3)
+
+    @model_validator(mode="after")
+    def validate_diagnostic_probe(self) -> "AwardHistoryRefreshRequest":
+        if self.diagnostic_probe and (not self.dry_run or self.include_opening_results):
+            raise ValueError("diagnostic_probe requires dry_run=true and include_opening_results=false")
+        return self
 
     @field_validator("keyword")
     @classmethod

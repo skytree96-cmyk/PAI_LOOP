@@ -2947,6 +2947,8 @@ def refresh_award_history(
         warnings.append("공고명에서 검색 키워드를 자동 생성했습니다.")
     if payload.dry_run:
         warnings.append("dry_run이므로 낙찰 이력 테이블에는 변경을 저장하지 않았습니다.")
+    if payload.diagnostic_probe:
+        warnings.append("AWARD_DIAGNOSTIC_PROBE_SINGLE_CALL: 단일 호출 진단이며 전체 기간은 미조회입니다. 낙찰 기록을 저장하지 않습니다.")
 
     job = IngestionJob(
         source="PPS_AWARD",
@@ -2962,6 +2964,7 @@ def refresh_award_history(
             "include_opening_results": payload.include_opening_results,
             "max_opening_result_notices": payload.max_opening_result_notices,
             "opening_result_max_pages": payload.opening_result_max_pages,
+            **({"diagnostic_probe": True} if payload.diagnostic_probe else {}),
         },
         notice_keys=[notice.notice_key],
         warnings=[],
@@ -2977,6 +2980,7 @@ def refresh_award_history(
             base_url=settings.pps_base_url,
             timeout_seconds=12,
             max_retries=0,
+            **({"diagnostic_probe": True} if payload.diagnostic_probe else {}),
         ) as client:
             fetched_rows = list(
                 client.iter_awards(
@@ -3030,12 +3034,16 @@ def refresh_award_history(
             f"조회에 실패한 {len(window_errors)}개 구간은 누락 상태로 기록했습니다."
         )
     if hit_time_limit:
-        warnings.append("총 480초 수집 제한에서 중단했으며 확보한 낙찰 후보만 저장했습니다.")
+        warnings.append(
+            "진단 제한 시간에 도달했습니다. 수신한 응답 구조만 기록하고 낙찰 기록은 저장하지 않았습니다."
+            if payload.diagnostic_probe else
+            "총 480초 수집 제한에서 중단했으며 확보한 낙찰 후보만 저장했습니다."
+        )
 
     quarantined = 0
     candidates: dict[str, dict[str, Any]] = {}
     provider_duplicates = 0
-    for item in fetched_rows:
+    for item in ([] if payload.diagnostic_probe else fetched_rows):
         if not item.get("identity") or not item.get("bid_notice_no") or not item.get("title") or not item.get("winner_name"):
             quarantined += 1
             continue
@@ -3187,7 +3195,7 @@ def refresh_award_history(
         )
     job.status = "PARTIAL" if (
         window_errors or hit_time_limit or hit_page_limit or hit_incomplete_response or quarantined
-        or opening_failed or opening_limited
+        or opening_failed or opening_limited or payload.diagnostic_probe
     ) else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
