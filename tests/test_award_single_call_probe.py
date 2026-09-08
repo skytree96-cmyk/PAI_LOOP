@@ -38,7 +38,9 @@ def provider_response(kind, request):
     if kind == "provider_error":
         return httpx.Response(200, json={"response": {"header": {"resultCode": "30", "resultMsg": CANARY}}})
     if kind == "invalid_page":
-        body = {"totalCount": 0, CANARY: CANARY}
+        body = {"totalCount": 1, CANARY: CANARY}
+    elif kind in {"missing_items_empty", "missing_items_empty_string"}:
+        body = {"totalCount": "0" if kind.endswith("_string") else 0, CANARY: CANARY}
     elif kind == "empty":
         body = {"totalCount": 0, "items": []}
     else:
@@ -89,6 +91,7 @@ def notice(client):
 
 @pytest.mark.parametrize("kind,error", [
     ("valid", None), ("empty", None), ("invalid_page", "AWARD_PAGE_INVALID"),
+    ("missing_items_empty", None), ("missing_items_empty_string", None),
     ("missing_response", "MISSING_RESPONSE"), ("timeout", "NETWORK_ERROR"),
     ("http_error", "HTTP_ERROR"), ("redirect", "INVALID_JSON"),
     ("invalid_json", "INVALID_JSON"), ("provider_error", "PROVIDER_RESULT_ERROR"),

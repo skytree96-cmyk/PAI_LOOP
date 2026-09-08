@@ -22,7 +22,7 @@ def envelope(body):
 
 
 @pytest.mark.parametrize("body,kind,field,value", [
-    ({"totalCount": 0}, "AWARD_PAGE_INVALID", "items_type", "MISSING"),
+    ({"totalCount": 1}, "AWARD_PAGE_INVALID", "items_type", "MISSING"),
     ({"totalCount": 0.0, "items": []}, "AWARD_PAGE_INVALID", "total_count_type", "NUMBER"),
     ({"totalCount": " 0", "items": []}, "AWARD_PAGE_INVALID", "total_count_explicit_zero", False),
     ({"totalCount": None, "items": []}, "AWARD_PAGE_INVALID", "total_count_type", "NULL"),
@@ -109,7 +109,7 @@ def test_refresh_keeps_contract_and_ops_projection_is_read_only_server_only(clie
         def __init__(self, **kwargs):
             def handler(_request):
                 calls.append(1)
-                return httpx.Response(200, json=envelope({"totalCount": 0, CANARY: CANARY}))
+                return httpx.Response(200, json=envelope({"totalCount": 1, CANARY: CANARY}))
             super().__init__(**kwargs, transport=httpx.MockTransport(handler))
         def iter_awards(self, **kwargs):
             kwargs.update(start=date(2025, 1, 1), end=date(2025, 1, 1))
