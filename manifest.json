@@ -44,7 +44,7 @@
       "file": "workflows/pai-loop-13-claude-extraction-gateway.json",
       "publish": true,
       "contractVersion": "claude-extraction-gateway-2.0-native-json",
-      "promotionState": "verified-live-e2e",
+      "promotionState": "awaiting-native-live-e2e",
       "nativeCanaryState": "awaiting-root-synthetic-schema-probe"
     },
     "pai-loop-deployment-smoke-test": {

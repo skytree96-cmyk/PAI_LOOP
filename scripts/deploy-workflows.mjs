@@ -136,10 +136,15 @@ function validateRepositorySafetyContracts(definitions) {
   ) || (
     claudeGateway.config.publish === true
     && claudeGateway.config.promotionState === "verified-live-e2e"
+  ) || (
+    claudeGateway.config.publish === true
+    && claudeGateway.config.contractVersion === "claude-extraction-gateway-2.0-native-json"
+    && claudeGateway.config.promotionState === "awaiting-native-live-e2e"
+    && claudeGateway.config.nativeCanaryState === "awaiting-root-synthetic-schema-probe"
   );
   assert(
     validClaudePromotion,
-    "workflow 13 may publish only after both credentials are bound and verified-live-e2e",
+    "workflow 13 must retain a verified release or explicitly identify the pending native canary",
   );
 
   assertNativeGatewayWorkflow(claudeGateway.workflow);
@@ -951,6 +956,9 @@ for (const workflow of remoteWorkflows) {
 const selectedDefinitions = definitions.filter(
   (definition) => !onlyKey || definition.key === onlyKey,
 );
+if (selectedDefinitions.some(({ key, config }) => key === claudeGatewayKey && config.promotionState === "awaiting-native-live-e2e")) {
+  assert(onlyKey === claudeGatewayKey, "pending native canary must be staged alone; do not deploy producers in the same operation");
+}
 const unpublishedClaudeGateway = definitions.find(
   ({ key }) => key === claudeGatewayKey,
 )?.config.publish === false;

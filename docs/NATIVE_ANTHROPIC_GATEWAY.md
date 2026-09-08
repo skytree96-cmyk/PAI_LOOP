@@ -6,8 +6,8 @@ Sonnet 5, adaptive thinking, medium effort, the existing 20,000 output-token cap
 the authenticated webhook, and the original backend Pydantic/evidence checks.
 It adds no model retry, repair chain, fallback model, tool, or second HTTP call.
 
-`manifest.json` retains the already approved W13 `publish:true` allowlist and
-existing workflow promotion state. `nativeCanaryState` explicitly records that
+`manifest.json` retains the already approved W13 `publish:true` allowlist.
+`promotionState:awaiting-native-live-e2e` and `nativeCanaryState` explicitly record that
 this transport has not yet passed a real provider request. Merging this code is
 not evidence of n8n publication, provider schema acceptance, or extraction recovery.
 Deployment remains the root operator's separately controlled manual operation.
@@ -105,6 +105,8 @@ confirm no in-flight requests, preserve the approved PR129 node version and
 credential bindings, and review the credential-free fragment. A legacy-to-native
 scripted migration additionally requires W13-only selection and inactive producer
 workflows before any write. No workflow is activated by local generation/tests.
+The pending-native metadata also blocks an all-workflow scripted deployment;
+W13 must be selected alone while this canary remains pending.
 
 Generate the reviewed source and local UI fragment with:
 
