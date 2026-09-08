@@ -72,7 +72,7 @@ from .quantitative_performance import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.4"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.5"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -471,6 +471,60 @@ def _sum_public_points(values: Iterable[float]) -> float | None:
     return rounded if math.isfinite(rounded) else None
 
 
+def _is_discrete_count_bracket(criterion: QuantitativeCriterion) -> bool:
+    return (
+        criterion.formula_type == "BRACKET"
+        and criterion.metric_key in _DISCRETE_COUNT_FACT_KEYS
+    )
+
+
+# Count facts/bounds pass through float fields. Reject the first value at which
+# adjacent integers can collapse to the same float, including already-rounded
+# model values, before doing any float conversion here.
+_MAX_SAFE_COUNT_INTEGER = 2**53 - 1
+
+
+def _finite_integer(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return (
+        abs(value) <= _MAX_SAFE_COUNT_INTEGER
+        and math.isfinite(value)
+        and float(value).is_integer()
+    )
+
+
+def _count_bracket_bounds(bracket: ScoreBracket) -> tuple[int, int | None] | None:
+    """Project one source bracket onto nonnegative integers without changing it."""
+    if any(value is not None and not _finite_integer(value) for value in (bracket.min_value, bracket.max_value)):
+        return None
+    lower = 0 if bracket.min_value is None else max(0, int(bracket.min_value) + (not bracket.min_inclusive))
+    upper = None if bracket.max_value is None else int(bracket.max_value) - (not bracket.max_inclusive)
+    if upper is not None and lower > upper:
+        return None
+    return lower, upper
+
+
+def _count_bracket_rule_error(criterion: QuantitativeCriterion) -> str | None:
+    bounds = [_count_bracket_bounds(bracket) for bracket in criterion.brackets]
+    if not bounds or any(bound is None for bound in bounds):
+        return "정수 개수 배점 구간의 경계가 정수가 아니거나 포함하는 비음수 정수가 없습니다."
+    ordered = sorted(
+        (bound for bound in bounds if bound is not None),
+        key=lambda bound: (bound[0], math.inf if bound[1] is None else bound[1]),
+    )
+    next_integer = 0
+    for index, (lower, upper) in enumerate(ordered):
+        if lower < next_integer:
+            return "정수 개수 배점 구간이 같은 정수에서 서로 겹칩니다."
+        if lower > next_integer:
+            return "정수 개수 배점 구간 사이에 점수가 정의되지 않은 정수 공백이 있습니다."
+        if upper is None:
+            return None if index == len(ordered) - 1 else "열린 상한 구간 뒤에 다른 구간을 둘 수 없습니다."
+        next_integer = upper + 1
+    return "정수 개수 배점 구간이 가능한 최댓값까지 빠짐없이 이어지지 않습니다."
+
+
 def _rule_error(criterion: QuantitativeCriterion) -> str | None:
     if criterion.source_anchor is None:
         return "평가표 원문 위치가 연결되지 않았습니다."
@@ -600,6 +654,8 @@ def _rule_error(criterion: QuantitativeCriterion) -> str | None:
     )
     if any(item.boolean_value is not None for item in numeric):
         return "BRACKET 산식에는 boolean 구간을 사용할 수 없습니다."
+    if _is_discrete_count_bracket(criterion):
+        return _count_bracket_rule_error(criterion)
     previous_max: float | None = None
     previous_max_inclusive = False
     for index, item in enumerate(numeric):
@@ -660,6 +716,10 @@ def _points_for_value(
     criterion: QuantitativeCriterion,
     value: float | bool | str,
 ) -> float | None:
+    if _is_discrete_count_bracket(criterion) and (
+        not _finite_integer(value) or value < 0
+    ):
+        return None
     if criterion.formula_type == "CASE_TABLE":
         if criterion.case_table is None:
             return None
@@ -782,6 +842,24 @@ def _points_for_numeric_range(
         return (_round_points(min(values)), _round_points(max(values))) if values else None
     if criterion.formula_type != "BRACKET":
         return None
+    if _is_discrete_count_bracket(criterion):
+        if (
+            not _finite_integer(lower) or not _finite_integer(upper)
+            or lower < 0 or upper < lower
+            or _count_bracket_rule_error(criterion) is not None
+        ):
+            return None
+        points: list[float] = []
+        for bracket in criterion.brackets:
+            bounds = _count_bracket_bounds(bracket)
+            if bounds is None:
+                return None
+            bracket_lower, bracket_upper = bounds
+            intersection_lower = max(int(lower), bracket_lower)
+            intersection_upper = int(upper) if bracket_upper is None else min(int(upper), bracket_upper)
+            if intersection_lower <= intersection_upper:
+                points.append(bracket.points)
+        return (_round_points(min(points)), _round_points(max(points))) if points else None
     candidate_points: list[float] = []
     for bracket in criterion.brackets:
         bracket_lower = -math.inf if bracket.min_value is None else bracket.min_value
@@ -811,6 +889,10 @@ def _performance_lower_bound_saturates_max(
     invented and non-monotonic/formula/categorical programs remain blocked.
     """
 
+    if _is_discrete_count_bracket(criterion) and (
+        not _finite_integer(lower_value) or lower_value < 0
+    ):
+        return False
     if (
         not criterion.metric_key.startswith("company.performance.")
         or lower_value is None
@@ -1485,6 +1567,12 @@ def _current_dynamic_quantitative_profile(
     )
 
 
+_DISCRETE_COUNT_METRICS = frozenset({
+    "PERFORMANCE_COUNT", "PERSONNEL_COUNT", "CERTIFICATION_COUNT",
+    "FACILITY_EQUIPMENT_COUNT", "AWARD_COUNT",
+})
+
+
 _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
     "PERFORMANCE_AMOUNT": {
         "fact_key": "company.performance.amount",
@@ -1555,6 +1643,14 @@ _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
 
 QUANTITATIVE_CANONICAL_FACT_KEYS = frozenset(
     str(item["fact_key"]) for item in _CANONICAL_METRIC_REGISTRY.values()
+)
+# Only the five existing count metrics with scale-one units use an integer
+# BRACKET domain. Amount, ratio, years, unknown keys and other DSLs keep their
+# existing numeric contracts.
+_DISCRETE_COUNT_FACT_KEYS = frozenset(
+    str(_CANONICAL_METRIC_REGISTRY[metric]["fact_key"])
+    for metric in _DISCRETE_COUNT_METRICS
+    if set(_CANONICAL_METRIC_REGISTRY[metric]["unit_scales"].values()) == {Decimal("1")}
 )
 _FACT_SPEC_BY_KEY = {
     str(item["fact_key"]): item for item in _CANONICAL_METRIC_REGISTRY.values()
@@ -2284,13 +2380,7 @@ def _compiled_case_table_contract(
     spec = _metric_spec(candidate)
     if spec is None:
         return None
-    if candidate.metric in {
-        "PERFORMANCE_COUNT",
-        "PERSONNEL_COUNT",
-        "CERTIFICATION_COUNT",
-        "FACILITY_EQUIPMENT_COUNT",
-        "AWARD_COUNT",
-    }:
+    if candidate.metric in _DISCRETE_COUNT_METRICS:
         value_kind: Literal[
             "NUMERIC", "DISCRETE", "CATEGORICAL", "CREDIT_RATING"
         ] = "DISCRETE"

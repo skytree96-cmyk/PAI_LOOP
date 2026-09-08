@@ -150,12 +150,13 @@ def test_already_materialized_legacy_profile_cannot_activate(shape):
     assert quantitative_request_from_candidate_profile(profile).activation_status == "REVIEW_REQUIRED"
 
 
-def test_normal_serialized_proof_survives_without_provider_or_version_migration():
+def test_normal_serialized_proof_survives_without_provider_or_extraction_version_migration():
     raw, source = synthetic_payload("split")
     record, _, _ = validate(raw, source)
     reread = ValidatedQuantitativeAttachmentRecord.model_validate_json(record.model_dump_json())
     assert reread == record
-    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.7.4"
+    # Count-domain execution advanced; persisted extraction proofs did not.
+    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.7.5"
 
 
 @pytest.mark.parametrize("metric,unit,condition,label", [
