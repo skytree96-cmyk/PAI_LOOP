@@ -469,6 +469,23 @@ def _expected_bracket_terms(
     return tuple(expected)
 
 
+def _invalid_bracket_bounds(
+    bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
+) -> bool:
+    """Match the scoring engine's nonempty interval contract, including [x, x]."""
+    return (
+        bracket.min_value is not None
+        and bracket.max_value is not None
+        and (
+            bracket.min_value > bracket.max_value
+            or (
+                bracket.min_value == bracket.max_value
+                and not (bracket.min_inclusive and bracket.max_inclusive)
+            )
+        )
+    )
+
+
 def _comparator_binding_issue(
     *,
     literal: str,
@@ -5695,11 +5712,7 @@ def _assert_available_candidate_invariants(
                 raise ValueError("AVAILABLE bracket numbers do not match its literal")
             if bracket.points > candidate.max_points:
                 raise ValueError("AVAILABLE bracket points exceed criterion maximum")
-            if (
-                bracket.min_value is not None
-                and bracket.max_value is not None
-                and bracket.min_value >= bracket.max_value
-            ):
+            if _invalid_bracket_bounds(bracket):
                 raise ValueError("AVAILABLE bracket bounds are invalid")
             if not inline_binary and Counter(_comparator_terms(bracket.literal)) != Counter(
                 _expected_bracket_terms(bracket)
@@ -6276,16 +6289,12 @@ def _validate_brackets(
                     **context,
                 )
             )
-        if (
-            bracket.min_value is not None
-            and bracket.max_value is not None
-            and bracket.min_value >= bracket.max_value
-        ):
+        if _invalid_bracket_bounds(bracket):
             issues.append(
                 _issue(
                     "INVALID_BRACKET_BOUNDS",
                     "INCOMPLETE",
-                    "배점 구간 하한은 상한보다 작아야 합니다.",
+                    "배점 구간 하한은 상한보다 작거나, 같은 값이면 양쪽 경계를 포함해야 합니다.",
                     **context,
                 )
             )
