@@ -21,6 +21,7 @@ CANARY = "SYN_PRIVATE_DIAGNOSTIC_CANARY"
 
 @pytest.fixture
 def diagnostic_client(client):
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(client.app.state.settings,
         api_key=SERVER["X-PAI-LOOP-API-KEY"], public_read_only=True,
         department_accounts_enabled=False, public_manual_analysis_enabled=False)
@@ -72,7 +73,9 @@ def test_credentials_cannot_fall_back_to_public_pin_or_account(diagnostic_client
 ])
 def test_server_key_does_not_authorize_browser_or_account_context(diagnostic_client, accounts_enabled, browser_header):
     diagnostic_client.app.state.settings = replace(diagnostic_client.app.state.settings, department_accounts_enabled=accounts_enabled)
-    assert read(diagnostic_client, headers={**SERVER, **browser_header}).status_code == 403
+    # The common entry boundary rejects the retired PIN before route dispatch.
+    expected = 401 if "X-PAI-Manual-Token" in browser_header else 403
+    assert read(diagnostic_client, headers={**SERVER, **browser_header}).status_code == expected
 
 
 def test_key_is_required_even_in_development_without_configured_key(diagnostic_client):

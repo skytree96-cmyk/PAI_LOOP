@@ -13,8 +13,8 @@ const source=require('node:fs').readFileSync(0,'utf8');
 const requests=[],toasts=[],rendered=[];
 const context=vm.createContext({URL,URLSearchParams,Intl,Headers,AbortController,
  fetch(path,options){return new Promise(resolve=>requests.push({path,options,resolve}));},
- document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
- window:{location:{search:''},matchMedia(){return {matches:false}},setTimeout,clearTimeout,requestAnimationFrame(f){f();},
+ document:{created:[],head:{append(){}},createElement(tag){const node={tag,children:[],events:{},append(...nodes){this.children.push(...nodes);},addEventListener(name,fn){this.events[name]=fn;},focus(){}};this.created.push(node);return node;},body:{hidden:false,cleared:false,children:[],append(node){this.children.push(node);},replaceChildren(){this.cleared=true;this.children=[];}},documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
+ window:{location:{search:'',href:'https://syn.invalid/notices?notice=SYN-N',replace(url){this.replaced=url;}},addEventListener(){},matchMedia(){return {matches:false}},setTimeout,clearTimeout,requestAnimationFrame(f){f();},
  sessionStorage:{getItem(){return null;},removeItem(){},setItem(){throw Error('PIN storage must not be used');}}}});
 const exported=`
 const originalRenderExistingDecision=renderExistingDecision,originalUpdateDecisionButton=updateDecisionButton;
@@ -28,6 +28,8 @@ updateDecisionButton=()=>{};setDecisionDockExpanded=()=>{};
 showToast=(...args)=>globalThis.onToast(args);
 refreshDashboardAfterMutation=async()=>{};loadApplicationData=async()=>{};
 globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,loginDepartmentAccount,logoutDepartmentAccount,
+ runEntryCheck(){cacheElements=()=>{};return init();},
+ reopenDocument(){applicationLocked=false;document.body.hidden=false;document.body.cleared=false;},
  hydrateDepartmentDecisionList,hydrateOperatorDecisions,normalizeNotice,normalizeResultLearningNotice,
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
  submittedRatePreview,updateResultLearningRate,resultLearningRateCalculation,resultLearningRateLabel,
@@ -61,7 +63,7 @@ u.state.source='api';u.state.accessMode='PUBLIC_READ_ONLY';u.state.requestSequen
 function payload(id){return {enabled:true,authenticated:true,account:{id,role:'DEPARTMENT',department_id:id,
  department_name:id,username:id},csrf_token:'SYN-CSRF-'+id,
  capabilities:{read_department_records:true,write_decisions:true,write_results:true}};}
-function login(id='SYN-A'){u.applyAccountSession(payload(id));u.state.authDiscoveryReady=true;}
+function login(id='SYN-A'){u.reopenDocument();u.applyAccountSession(payload(id));u.state.authDiscoveryReady=true;}
 function respond(request,status,payload){request.resolve({status,ok:status<400,
  headers:new Headers({'content-type':'application/json'}),async json(){return payload;}});}
 const tick=()=>new Promise(setImmediate);
@@ -403,6 +405,10 @@ await tick();
 assert.equal(requests.length,0,'initial results view must wait for auth discovery');
 await u.loadResultLearning({force:true});
 assert.equal(requests.length,0,'early explicit refresh must not bypass discovery');
+await u.loadApplicationData();
+assert.equal(requests.length,0,'the work app cannot fetch a public bootstrap before login');
+// A freshly served work page has verified /accounts/me before its data bootstrap.
+login();u.state.authDiscoveryReady=false;
 const bootstrap=u.loadApplicationData();await tick();
 assert.equal(requests.length,2);
 assert.match(requests[0].path,/\/notices\?/);
@@ -412,7 +418,7 @@ const resultRequests=()=>requests.filter(r=>r.path.includes('/result-learning?')
 '''
 
 
-def test_results_initial_anonymous_waits_for_discovery_and_login_returns_once():
+def test_results_session_loss_returns_to_entry_login_without_fetching_records():
     _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
 respond(requests[1],200,{department_accounts_enabled:true});await tick();
 assert.match(requests[2].path,/\/accounts\/me$/);
@@ -421,16 +427,9 @@ await u.loadResultLearning();assert.equal(resultRequests().length,0);
 respond(requests[2],200,{enabled:true,authenticated:false});await bootstrap;
 assert.equal(resultRequests().length,0);assert.equal(toasts.length,0);
 assert.equal(u.els.accountDialog.open,false);
-assert.match(u.els.resultLearningState.innerHTML,/부서 로그인이 필요/);
-u.els.accountUsername.value='SYN-A';u.els.accountPassword.value='SYN-login-password';
-const loggingIn=u.loginDepartmentAccount({preventDefault(){}});await tick();
-respond(requests[3],200,payload('SYN-A'));await tick();
-respond(requests[4],200,[]);respond(requests[5],200,{department_accounts_enabled:true});await tick();
-respond(requests[6],200,payload('SYN-A'));await loggingIn;await tick();
-assert.equal(u.state.currentView,'closed');assert.equal(resultRequests().length,1);
-respond(resultRequests()[0],200,{records:[],total:0});await tick();
-assert.equal(u.state.resultLearning.loaded,true);
-assert.equal(u.els.accountPassword.value,'');
+assert.equal(context.document.body.hidden,true);assert.equal(context.document.body.cleared,true);
+assert.equal(context.window.location.replaced,'https://syn.invalid/notices?notice=SYN-N');
+await u.loadApplicationData();await tick();assert.equal(requests.length,3);
 ''')
 
 
@@ -471,8 +470,24 @@ assert.equal(u.state.accountSession.enabled,true);
 assert.equal(resultRequests().length,0);assert.equal(pinReads,0);assert.equal(toasts.length,0);
 await u.loadResultLearning({force:true});
 assert.equal(resultRequests().length,0);assert.equal(pinReads,0);
-assert.equal(u.els.accountDialog.open,true);
+assert.equal(context.document.body.hidden,STATUS===401);assert.equal(context.document.body.cleared,true);
 '''.replace('STATUS', str(status)))
+
+
+def test_uncertain_entry_session_stops_with_explicit_retry_without_reload_or_data():
+    _run_behavior(r'''
+u.state.notices=[notice()];
+const entry=u.runEntryCheck();await tick();
+assert.equal(requests.length,1);assert.equal(requests[0].path,'/api/v1/accounts/me');
+respond(requests[0],503,{detail:'SYN session unavailable'});await entry;await tick();
+assert.equal(context.window.location.replaced,undefined,'an uncertain session must not reload itself');
+assert.equal(u.state.accountSession.authenticated,false);assert.equal(u.state.notices.length,0);
+assert.equal(context.document.body.cleared,true);assert.equal(context.document.body.className,'login-page');
+assert.equal(context.document.body.children.length,1);assert.equal(requests.length,1);
+await u.loadApplicationData();assert.equal(requests.length,1);
+const retry=context.document.created.find(node=>node.tag==='button');assert.ok(retry);
+retry.events.click();assert.equal(context.window.location.replaced,'https://syn.invalid/notices?notice=SYN-N');
+''')
 
 
 def test_results_failed_runtime_never_uses_unresolved_default_auth():

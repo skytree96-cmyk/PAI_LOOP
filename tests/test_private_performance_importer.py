@@ -300,6 +300,7 @@ def test_private_authority_search_query_is_rejected_and_scrubbed_before_logging(
     header_name: str,
     header_value: str,
 ) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -334,6 +335,7 @@ def test_private_authority_search_query_is_rejected_and_scrubbed_before_logging(
 def test_private_bulk_import_requires_operator_or_server_key_and_is_idempotent(
     client: TestClient,
 ) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -476,6 +478,7 @@ def test_private_bulk_import_requires_operator_or_server_key_and_is_idempotent(
 def test_manual_pin_cannot_validate_or_access_private_performance_records(
     client: TestClient,
 ) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -612,6 +615,7 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
 def test_private_bulk_import_stays_draft_until_all_batches_arrive_and_replaces_prior_source(
     client: TestClient,
 ) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         api_key="server-only-api-key",

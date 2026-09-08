@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import replace
+from conftest import login_department_reader
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -132,6 +133,8 @@ def test_lean_dashboard_matches_full_graph_projection_and_current_board(client, 
     monkeypatch.setattr(api_module, "datetime", _FixedDateTime)
     client.app.state.settings = replace(client.app.state.settings, public_read_only=public_view)
     _seed_history(client)
+    if public_view:
+        login_department_reader(client)
     original = api_module._load_dashboard_notice_batch
     with monkeypatch.context() as patch:
         patch.setattr(api_module, "_load_dashboard_notice_batch",

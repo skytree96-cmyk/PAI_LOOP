@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from conftest import login_department_reader
 
 from pai_loop.main import create_app
 from pai_loop.models import AnalysisRun, Notice, NoticeVersion, ScoreSnapshot
@@ -247,6 +248,7 @@ def test_public_endpoint_returns_latest_current_sanitised_aggregate_without_rees
     )
 
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             notice = _notice(notice_key="SYN-PUBLIC-QUANT-CURRENT")
             _version(
@@ -346,6 +348,7 @@ def test_public_endpoint_restores_safe_item_rows_from_current_snapshot(
     )
 
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             notice = _notice(notice_key="SYN-PUBLIC-QUANT-ITEMS")
             _version(
@@ -484,6 +487,7 @@ def test_malformed_latest_public_item_snapshot_falls_back_without_using_older_ru
     now = datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
 
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             notice = _notice(notice_key="SYN-PUBLIC-QUANT-MALFORMED")
             _version(
@@ -609,6 +613,7 @@ def test_invalid_legacy_aggregate_snapshot_falls_back_fail_closed(
         score.lower_value = 9.701
 
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             notice = _notice(notice_key=f"SYN-LEGACY-{invalid_state}")
             _version(
@@ -661,6 +666,7 @@ def test_public_endpoint_falls_back_when_snapshot_predates_newer_pps_metadata(
     )
 
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             notice = _notice(notice_key="SYN-PUBLIC-QUANT-STALE")
             _version(
@@ -727,6 +733,7 @@ def test_dashboard_score_counts_use_latest_snapshot_and_exclude_ended_notices(mo
     app = _public_app(monkeypatch)
     now = datetime.now(timezone.utc)
     with TestClient(app) as client:
+        login_department_reader(client)
         with app.state.session_factory() as session:
             notice = _notice(notice_key="PPS-TEST-PROGRESS-SNAPSHOT")
             basis = _version(notice, version_no=1, kind="TEST_SOURCE", digest_character="e")

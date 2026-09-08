@@ -18,6 +18,7 @@ from pai_loop.public_notice_seed import (
     import_public_notice_seed,
     load_public_notice_seed,
 )
+from conftest import login_department_reader
 
 
 SERVER_HEADERS = {"X-PAI-LOOP-API-KEY": "server-only-secret"}
@@ -33,7 +34,7 @@ def test_public_source_url_removes_credentials_and_local_paths() -> None:
     assert _publication_safe_source_url(credentialed_url) is None
 
 
-def test_public_read_only_exposes_only_curated_get_surface(monkeypatch) -> None:
+def test_authenticated_department_read_exposes_only_curated_get_surface(monkeypatch) -> None:
     monkeypatch.setenv("PAI_LOOP_ENV", "development")
     monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
     monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
@@ -41,6 +42,15 @@ def test_public_read_only_exposes_only_curated_get_surface(monkeypatch) -> None:
 
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
+        for path in ("/api/v1/runtime-profile", "/api/v1/departments/keyword-profiles",
+                     "/api/v1/company-profile", "/api/v1/performance/summary", "/api/v1/notices"):
+            assert client.get(path).status_code == 401
+        assert client.get("/api/v1/private-data/status", headers=SERVER_HEADERS).status_code == 404
+        assert client.get(
+            "/api/v1/notices/example/analysis/private-match-preview",
+            headers=SERVER_HEADERS,
+        ).status_code == 404
+        login_department_reader(client)
         runtime = client.get("/api/v1/runtime-profile")
         assert runtime.status_code == 200
         assert runtime.json()["access_mode"] == "PUBLIC_READ_ONLY"
@@ -54,11 +64,6 @@ def test_public_read_only_exposes_only_curated_get_surface(monkeypatch) -> None:
         assert client.get("/api/v1/ingestion/jobs").status_code == 401
         assert client.get("/api/v1/notifications/mock").status_code == 401
         assert client.post("/api/v1/ingestion/replay").status_code == 401
-        assert client.get("/api/v1/private-data/status", headers=SERVER_HEADERS).status_code == 404
-        assert client.get(
-            "/api/v1/notices/example/analysis/private-match-preview",
-            headers=SERVER_HEADERS,
-        ).status_code == 404
 
 
 def test_public_notice_response_removes_company_values_and_internal_decisions(monkeypatch) -> None:
@@ -85,6 +90,8 @@ def test_public_notice_response_removes_company_values_and_internal_decisions(mo
         )
         assert decision.status_code == 201
 
+        assert client.get(f"/api/v1/notices/{notice_key}").status_code == 401
+        login_department_reader(client)
         public_detail = client.get(f"/api/v1/notices/{notice_key}")
         assert public_detail.status_code == 200
         payload = public_detail.json()
@@ -190,6 +197,8 @@ def test_public_hold_conditions_use_only_allowlisted_notice_text(monkeypatch) ->
             session.add(run)
             session.commit()
 
+        assert client.get(f"/api/v1/notices/{PUBLIC_NOTICE_SOURCE_KEY}").status_code == 401
+        login_department_reader(client)
         response = client.get(f"/api/v1/notices/{PUBLIC_NOTICE_SOURCE_KEY}")
         assert response.status_code == 200, response.text
         payload = response.json()
@@ -259,6 +268,8 @@ def test_public_document_analysis_is_digest_bound_and_metadata_allowlisted(monke
         )
         assert version.status_code == 201
 
+        assert client.get("/api/v1/notices/UNREVIEWED-PUBLIC-001").status_code == 401
+        login_department_reader(client)
         public_detail = client.get("/api/v1/notices/UNREVIEWED-PUBLIC-001")
         assert public_detail.status_code == 200
         assert public_detail.json()["document_analyses"] == []
@@ -375,6 +386,8 @@ def test_public_live_pps_extraction_is_redacted_and_usable_by_policy(monkeypatch
         )
         assert version.status_code == 201, version.text
 
+        assert client.get("/api/v1/notices/PPS-LIVE-PUBLIC-001").status_code == 401
+        login_department_reader(client)
         detail = client.get("/api/v1/notices/PPS-LIVE-PUBLIC-001")
         assert detail.status_code == 200
         assert detail.json()["requirements"] == []

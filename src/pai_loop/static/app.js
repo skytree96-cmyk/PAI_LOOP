@@ -197,9 +197,18 @@
 
   document.addEventListener("DOMContentLoaded", init);
 
-  function init() {
+  async function init() {
     clearManualAnalysisToken();
     cacheElements();
+    // History restores must verify the session before showing private content.
+    window.addEventListener("pagehide", () => { document.body.hidden = true; });
+    window.addEventListener("pageshow", event => { if (event.persisted) lockApplication(); });
+    try {
+      const session = await apiRequest("/accounts/me");
+      if (session?.enabled === false) { lockApplication(); return; }
+      applyAccountSession(session);
+      if (!state.accountSession.authenticated) { lockApplication(); return; }
+    } catch (error) { lockApplication({ retry: error?.status !== 401 }); return; }
     formatAwardBusinessNumberInput();
     initializeExternalSearchDates();
     configurePaiBotTeamsAccess();
@@ -213,7 +222,43 @@
       syncView: false,
     });
     setLayout(state.layout);
+    document.body.hidden = false;
     loadApplicationData();
+  }
+
+  let applicationLocked = false;
+  function lockApplication({ retry = false } = {}) {
+    if (applicationLocked) return;
+    applicationLocked = true;
+    const returnUrl = window.location.href;
+    state.accountSession = { enabled: true, authenticated: false, status: "expired", account: null, csrfToken: "", capabilities: {} };
+    document.body.hidden = true;
+    clearAccountPrivateState();
+    document.body.replaceChildren();
+    if (retry) {
+      // An uncertain session check must stop here, not reload the same document forever.
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = "/login-gate.css?v=20260908-required-login-v1";
+      document.head.append(stylesheet);
+      const card = document.createElement("main");
+      card.className = "login-card";
+      const title = document.createElement("h1");
+      title.textContent = "로그인 상태를 확인하지 못했습니다";
+      const explanation = document.createElement("p");
+      explanation.textContent = "연결 상태를 확인한 뒤 다시 시도해 주세요.";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "상태 다시 확인";
+      button.addEventListener("click", () => window.location.replace(returnUrl));
+      card.append(title, explanation, button);
+      document.body.className = "login-page";
+      document.body.append(card);
+      document.body.hidden = false;
+      button.focus();
+      return;
+    }
+    window.location.replace(returnUrl);
   }
 
   function cacheElements() {
@@ -635,6 +680,7 @@
   }
 
   async function loadApplicationData({ forceApi = false } = {}) {
+    if (applicationLocked || !state.accountSession.authenticated) return;
     const sequence = ++state.requestSequence;
     const requestedStatusScope = noticeStatusScopeForView(state.currentView);
     state.noticeStatusScope = requestedStatusScope;
@@ -778,6 +824,8 @@
     if (!accountsEnabled && state.accountSession.enabled) {
       clearAccountPrivateState();
       state.accountSession = { enabled: false, authenticated: false, status: "disabled", account: null, csrfToken: "", capabilities: {} };
+      lockApplication();
+      return;
     }
     state.accountSession.enabled = accountsEnabled;
     state.accessMode = stringValue(firstValue(profile.access_mode, profile.accessMode), "UNKNOWN");
@@ -839,6 +887,7 @@
     const epoch = state.accountEpoch;
     try {
       applyAccountSession(await apiRequest("/accounts/me"));
+      if (!state.accountSession.authenticated) lockApplication();
     } catch (error) {
       if (epoch !== state.accountEpoch) return;
       clearAccountPrivateState();
@@ -846,6 +895,7 @@
         status: error?.status === 401 ? "expired" : "error", account: null, csrfToken: "", capabilities: {} };
       clearManualAnalysisToken();
       renderAccountSession();
+      lockApplication({ retry: error?.status !== 401 });
     }
   }
 
@@ -990,13 +1040,7 @@
     els.accountLogoutButton.disabled = true;
     try {
       await apiRequest("/accounts/logout", { method: "POST", headers: accountMutationHeaders() });
-      applyAccountSession({ enabled: true, authenticated: false });
-      els.accountDialog.close();
-      if (state.selectedNotice) closeDetail();
-      state.notices = [];
-      state.resultLearning.records = [];
-      await loadApplicationData({ forceApi: true });
-      showToast("로그아웃했습니다", "다른 부서로 작업하려면 다시 로그인해 주세요.");
+      lockApplication();
     } catch (_) {
       els.accountError.textContent = "로그아웃 처리에 실패했습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요.";
       els.accountError.hidden = false;
@@ -1088,6 +1132,7 @@
   }
 
   async function apiRequest(path, options = {}) {
+    if (applicationLocked) throw new Error("로그인이 필요합니다.");
     const accountEpoch = state.accountEpoch;
     if (state.accountSession?.enabled && /^\/performance-records(?:[/?]|$)/.test(path)
       && options.method && !["GET", "HEAD"].includes(options.method)) {
@@ -1129,6 +1174,7 @@
           clearAccountPrivateState();
           state.accountSession = { enabled: true, authenticated: false, status: "expired", account: null, csrfToken: "", capabilities: {} };
           renderAccountSession();
+          lockApplication();
         }
         const message = payload?.detail || payload?.message || (typeof payload === "string" ? payload : "") || `HTTP ${response.status}`;
         const requestError = new Error(message);

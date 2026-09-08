@@ -20,6 +20,7 @@ def test_server_operator_route_can_persist_and_reload_final_decision(
 ) -> None:
     assert client.post("/api/v1/ingestion/replay").status_code == 200
     token = "2468"
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -34,7 +35,8 @@ def test_server_operator_route_can_persist_and_reload_final_decision(
     }
     endpoint = "https://testserver/api/v1/operator-decisions/notices/SYN-REVIEW-001"
     evaluation_id = client.get(
-        "https://testserver/api/v1/notices/SYN-REVIEW-001"
+        "https://testserver/api/v1/notices/SYN-REVIEW-001",
+        headers={"X-PAI-LOOP-API-KEY": "server-only-api-key"}
     ).json()["latest_evaluation"]["id"]
 
     assert client.post(
@@ -85,6 +87,7 @@ def test_final_decision_rejects_a_stale_evaluation_for_both_server_routes(
     assert client.post("/api/v1/ingestion/replay").status_code == 200
     token = "2468"
     server_key = "server-only-api-key"
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -96,7 +99,7 @@ def test_final_decision_rejects_a_stale_evaluation_for_both_server_routes(
     notice_key = "SYN-REVIEW-001"
     notice_url = f"https://testserver/api/v1/notices/{notice_key}"
     server_headers = {"X-PAI-LOOP-API-KEY": server_key}
-    stale_evaluation_id = client.get(notice_url).json()["latest_evaluation"]["id"]
+    stale_evaluation_id = client.get(notice_url, headers=server_headers).json()["latest_evaluation"]["id"]
     refreshed = client.post(
         f"{notice_url}/evaluate",
         headers=server_headers,
@@ -143,6 +146,7 @@ def test_final_decision_rejects_a_stale_evaluation_for_both_server_routes(
 def test_retired_operator_pin_never_authorizes_even_after_repeated_requests(
     client: TestClient,
 ) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -169,6 +173,7 @@ def test_retired_operator_pin_never_authorizes_even_after_repeated_requests(
 
 
 def test_runtime_profile_does_not_reenable_retired_pin_decisions(client: TestClient) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -178,7 +183,7 @@ def test_runtime_profile_does_not_reenable_retired_pin_decisions(client: TestCli
         api_key="server-only-api-key",
     )
 
-    profile = client.get("/api/v1/runtime-profile")
+    profile = client.get("/api/v1/runtime-profile", headers={"X-PAI-LOOP-API-KEY": "server-only-api-key"})
 
     assert profile.status_code == 200
     assert profile.json()["write_controls_enabled"] is False
@@ -295,6 +300,7 @@ OPERATOR_HEADERS = {"X-PAI-LOOP-API-KEY": SERVER_KEY}
 
 
 def _production_settings(client: TestClient) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -435,10 +441,10 @@ def test_stale_and_foreign_evaluation_ids_stay_refused_on_the_operator_route(
     assert client.post("/api/v1/ingestion/replay").status_code == 200
     _production_settings(client)
     foreign_evaluation_id = client.get(
-        "/api/v1/notices/SYN-PASS-001"
+        "/api/v1/notices/SYN-PASS-001", headers=OPERATOR_HEADERS
     ).json()["latest_evaluation"]["id"]
     stale_evaluation_id = client.get(
-        "/api/v1/notices/SYN-REVIEW-001"
+        "/api/v1/notices/SYN-REVIEW-001", headers=OPERATOR_HEADERS
     ).json()["latest_evaluation"]["id"]
     endpoint = (
         "https://testserver/api/v1/operator-decisions/notices/SYN-REVIEW-001"
@@ -510,7 +516,7 @@ def test_reanalysis_never_rewrites_or_rebinds_a_recorded_decision(
     server_headers = {"X-PAI-LOOP-API-KEY": SERVER_KEY}
     _production_settings(client)
     notice_url = "/api/v1/notices/SYN-REVIEW-001"
-    original_evaluation_id = client.get(notice_url).json()["latest_evaluation"]["id"]
+    original_evaluation_id = client.get(notice_url, headers=server_headers).json()["latest_evaluation"]["id"]
 
     recorded = client.post(
         f"{notice_url}/decisions",

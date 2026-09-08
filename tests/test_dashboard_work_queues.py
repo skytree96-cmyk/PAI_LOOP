@@ -183,7 +183,7 @@ def test_legacy_evaluation_without_current_attachment_coverage_is_not_qualificat
 def test_dashboard_queue_routes_serve_application(client, path):
     response = client.get(path)
     assert response.status_code == 200
-    assert "20260908-mobile-sidebar-v1" in response.text
+    assert "20260908-required-login-v1" in response.text
 
 
 def _assert_frontend_queue_parity(rows, dashboard):

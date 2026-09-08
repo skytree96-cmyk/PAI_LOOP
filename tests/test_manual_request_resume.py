@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 import pai_loop.manual_analysis as manual
 from pai_loop.models import IngestionJob
-from test_manual_analysis import _app, _create_open_pps_notice, _review_batch, SAME_ORIGIN_HEADERS
+from test_manual_analysis import _app, _create_open_pps_notice, _review_batch, _login_department
 from test_department_accounts import account_client, _login, _peer, NOTICE as ACCOUNT_NOTICE
 
 
@@ -39,11 +39,12 @@ def test_same_notice_reuses_running_reservation_without_new_callback(monkeypatch
     monkeypatch.setattr(manual, "_execute_reserved_manual_job", lambda *args: callbacks.append(args))
     with TestClient(app) as client:
         _create_open_pps_notice(client, NOTICE)
+        account_headers = _login_department(client)
         request_id = _reservation(app, age_minutes=age_minutes)
         if worker_busy:
             assert manual._PUBLIC_MANUAL_PROCESS_LOCK.acquire(blocking=False)
         try:
-            response = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True})
+            response = client.post(URL, headers=account_headers, json={"run_extraction": True})
         finally:
             if worker_busy:
                 manual._PUBLIC_MANUAL_PROCESS_LOCK.release()
@@ -64,8 +65,9 @@ def test_lost_request_id_recovers_only_idle_old_reservation_without_restarting_i
     monkeypatch.setattr(manual, "run_notice_analysis_batch", lambda *args: calls.append(args))
     with TestClient(app) as client:
         _create_open_pps_notice(client, NOTICE)
+        account_headers = _login_department(client)
         request_id = _reservation(app, age_minutes=20)
-        response = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True})
+        response = client.post(URL, headers=account_headers, json={"run_extraction": True})
         assert response.status_code == 200
         assert response.json()["outcome"] == "REVIEW"
         assert response.json()["request_id"] == request_id
@@ -83,10 +85,11 @@ def test_busy_worker_never_reuses_a_different_request_scope(monkeypatch, notice,
     app = _app(monkeypatch)
     with TestClient(app) as client:
         _create_open_pps_notice(client, NOTICE)
+        account_headers = _login_department(client)
         _reservation(app, notice=notice, source=source)
         assert manual._PUBLIC_MANUAL_PROCESS_LOCK.acquire(blocking=False)
         try:
-            response = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True})
+            response = client.post(URL, headers=account_headers, json={"run_extraction": True})
         finally:
             manual._PUBLIC_MANUAL_PROCESS_LOCK.release()
         assert response.status_code == 409
@@ -184,25 +187,26 @@ def test_failed_retry_uses_new_reservation_only_after_existing_cooldown_and_quot
     monkeypatch.setattr(manual, "_execute_reserved_manual_job", lambda *args: callbacks.append(args))
     with TestClient(app) as client:
         _create_open_pps_notice(client, NOTICE)
+        account_headers = _login_department(client)
         failed_id = _reservation(app)
         with app.state.session_factory() as session:
             job = session.get(IngestionJob, failed_id)
             job.status = "FAILED"
             session.commit()
             previous_request = deepcopy(job.request_json)
-        failed = client.get(f"/api/v1/notices/{NOTICE}/analysis/requests/{failed_id}", headers=SAME_ORIGIN_HEADERS)
+        failed = client.get(f"/api/v1/notices/{NOTICE}/analysis/requests/{failed_id}", headers=account_headers)
         assert failed.json()["outcome"] == "REVIEW"
-        immediate = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True, "retry_reviewed": True})
+        immediate = client.post(URL, headers=account_headers, json={"run_extraction": True, "retry_reviewed": True})
         assert immediate.status_code == 200 and immediate.json()["outcome"] == "COOLDOWN"
         assert callbacks == []
         with app.state.session_factory() as session:
             session.get(IngestionJob, failed_id).created_at = datetime.now(timezone.utc) - timedelta(minutes=6)
             session.commit()
         app.state.settings = replace(app.state.settings, public_manual_analysis_hourly_limit=1)
-        assert client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True}).status_code == 429
+        assert client.post(URL, headers=account_headers, json={"run_extraction": True}).status_code == 429
         assert callbacks == []
         app.state.settings = replace(app.state.settings, public_manual_analysis_hourly_limit=12)
-        retry = client.post(URL, headers=SAME_ORIGIN_HEADERS, json={"run_extraction": True})
+        retry = client.post(URL, headers=account_headers, json={"run_extraction": True})
         assert retry.status_code == 200, retry.text
         assert retry.json()["outcome"] == "QUEUED" and retry.json()["request_id"] != failed_id
         assert len(callbacks) == 1 and callbacks[0][1] == retry.json()["request_id"]

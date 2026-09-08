@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 from sqlalchemy import select
 
 from pai_loop.integrations.outcome_feedback import ExactNoticeAwardFetch
@@ -65,7 +66,7 @@ def identity_client(monkeypatch):
     monkeypatch.setattr("pai_loop.outcome_feedback.PpsOutcomeFeedbackClient", _FeedbackClient)
     monkeypatch.setattr(_FeedbackClient, "rows", [_row()])
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         with app.state.session_factory() as session:
             session.add(Notice(
                 notice_key=NOTICE_KEY, bid_notice_no=NOTICE_NO, revision_no="00",

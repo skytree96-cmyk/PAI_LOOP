@@ -5,6 +5,7 @@ from datetime import date, datetime
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 
 from pai_loop.api import _award_similarity
 from pai_loop.integrations import awards as awards_module
@@ -415,7 +416,7 @@ def test_award_history_refresh_is_idempotent_and_visible_in_detail(
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsAwardClient", _FakeAwardClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_award_target(client)
         first = client.post(
             "/api/v1/notices/PUBLIC-AWARD-TARGET/award-history/refresh",
@@ -457,7 +458,7 @@ def test_award_history_dry_run_does_not_persist(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsAwardClient", _FakeAwardClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_award_target(client)
         response = client.post(
             "/api/v1/notices/PUBLIC-AWARD-TARGET/award-history/refresh",
@@ -475,7 +476,7 @@ def test_award_history_requires_server_side_pps_key(
 ) -> None:
     monkeypatch.delenv("PPS_API_KEY", raising=False)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_award_target(client)
         response = client.post(
             "/api/v1/notices/PUBLIC-AWARD-TARGET/award-history/refresh",
@@ -490,7 +491,7 @@ def test_award_history_unexpected_client_error_finishes_failed_audit(
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsAwardClient", _BrokenAwardClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with internal_server_client(app, raise_server_exceptions=False) as client:
         _create_award_target(client)
         response = client.post(
             "/api/v1/notices/PUBLIC-AWARD-TARGET/award-history/refresh",

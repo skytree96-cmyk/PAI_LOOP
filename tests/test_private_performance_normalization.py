@@ -27,6 +27,7 @@ PERIOD = "24.04.11~09.20"
 
 
 def _seed(client, count=1, **field_changes):
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings, environment="production", api_key="SYN-server-key",
         public_read_only=True, public_manual_analysis_enabled=True,

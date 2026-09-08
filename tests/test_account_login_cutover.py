@@ -16,6 +16,7 @@ ACTIVATE = "/api/v1/accounts/initial-admin-activation"
 
 @pytest.fixture
 def inactive_admin(client):
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(client.app.state.settings, api_key=SERVER["X-PAI-LOOP-API-KEY"])
     _bootstrap(client, [{"username": "SYN_ADMIN", "password": PASSWORD, "role": "ADMIN"}])
     return client
@@ -86,10 +87,12 @@ def test_retired_pin_never_authorizes_writes_and_server_key_stays_server_only(ac
         assert client.post("https://testserver"+path, headers=pin, json=body).status_code == 401
         assert client.post("https://testserver"+path, headers={**SERVER, "Origin": "https://testserver"}, json=body).status_code == 403
     assert client.get("/api/v1/operator-decisions/notices/SYN-ACCOUNT-001", headers=SERVER).status_code == 200
-    assert client.get("/api/v1/performance").status_code == 200
-    assert client.get("/api/v1/notices").status_code == 200
+    for path in ("/api/v1/performance", "/api/v1/notices"):
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers=SERVER).status_code == 200
     if environment == "production" and not enabled:
-        runtime = client.get("/api/v1/runtime-profile").json()
+        assert client.get("/api/v1/runtime-profile").status_code == 401
+        runtime = client.get("/api/v1/runtime-profile", headers=SERVER).json()
         assert not runtime["manual_analysis_enabled"] and not runtime["operator_decisions_enabled"]
 
 

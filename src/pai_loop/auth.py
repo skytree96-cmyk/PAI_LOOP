@@ -27,10 +27,10 @@ _PUBLIC_SAFE_GET_PATTERNS = (
 
 
 def public_read_allowed(request: Request) -> bool:
-    """Return true only for the publication-safe contest-demo GET surface."""
+    """Select the redacted browser representation, never grant anonymous access."""
 
     settings = request.app.state.settings
-    if not settings.public_read_only or request.method.upper() != "GET":
+    if request.method.upper() != "GET":
         return False
     configured_key: str | None = settings.api_key
     candidate = request.headers.get("X-PAI-LOOP-API-KEY", "")
@@ -51,6 +51,8 @@ def require_api_key(request: Request) -> None:
     """
     settings = request.app.state.settings
     if public_read_allowed(request):
+        from .accounts import authenticated_account
+        authenticated_account(request)
         return
     if request.headers.get("x-pai-manual-token"):
         raise HTTPException(status_code=401, detail="부서 계정으로 다시 로그인해 주세요.")

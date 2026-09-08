@@ -35,6 +35,7 @@ EXTRACTION_ALLOWED = {"run_extraction": True}
 
 def _login_department(client: TestClient, *, paid: bool = True) -> dict[str, str]:
     # Synthetic account only, bootstrapped into this test's disposable database.
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     password = "SYN-account-fixture-password-0908"
     accounts = [{"username": "SYN_MANUAL_DEPT", "password": password, "role": "DEPARTMENT",
                  "department_id": next(iter(departments())), "active": True,
@@ -45,7 +46,7 @@ def _login_department(client: TestClient, *, paid: bool = True) -> dict[str, str
     applied = client.post("/api/v1/accounts/bootstrap", headers=server_headers,
                           json={"accounts": accounts, "dry_run": False, "preview_id": preview.json()["preview_id"]})
     assert applied.status_code == 200, applied.text
-    origin = {"Origin": "https://testserver", "Sec-Fetch-Site": "same-origin"}
+    origin = {"Origin": str(client.base_url).rstrip("/"), "Sec-Fetch-Site": "same-origin"}
     login = client.post("/api/v1/accounts/login", headers=origin,
                         json={"username": "SYN_MANUAL_DEPT", "password": password})
     assert login.status_code == 200, login.text
@@ -58,6 +59,7 @@ def _app(monkeypatch, *, enabled: bool = True, openai_configured: bool = True):
     monkeypatch.setenv("PAI_LOOP_ENV", "development")
     monkeypatch.setenv("PAI_LOOP_API_KEY", "server-only-secret")
     monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
+    monkeypatch.setenv("PAI_LOOP_DEPARTMENT_ACCOUNTS_ENABLED", "true")
     monkeypatch.setenv(
         "PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED",
         "true" if enabled else "false",
@@ -153,6 +155,8 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        assert client.post("/api/v1/notices/PPS-MANUAL-001/analysis/request", headers=SAME_ORIGIN_HEADERS).status_code == 401
+        account_headers = _login_department(client)
 
         unprotected_batch = client.post(
             "/api/v1/notices/analysis/batch",
@@ -185,7 +189,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
 
         first = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json=EXTRACTION_ALLOWED,
         )
         assert first.status_code == 200, first.text
@@ -204,7 +208,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
 
         completed = client.get(
             f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert completed.status_code == 200, completed.text
         assert completed.json()["outcome"] == "REVIEW"
@@ -212,7 +216,7 @@ def test_public_manual_analysis_is_same_origin_single_notice_and_idempotent(
 
         repeated = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json=EXTRACTION_ALLOWED,
         )
         assert repeated.status_code == 200
@@ -292,9 +296,10 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json=EXTRACTION_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
@@ -307,7 +312,7 @@ def test_manual_async_result_aggregates_continuations_behind_same_origin(
         assert blocked.status_code == 403
         completed = client.get(
             f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert completed.status_code == 200, completed.text
         body = completed.json()
@@ -345,16 +350,17 @@ def test_manual_batch_exception_marks_cost_accounting_incomplete(monkeypatch) ->
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fail_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json=EXTRACTION_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
         request_id = queued.json()["request_id"]
         completed = client.get(
             f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{request_id}",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert completed.status_code == 200, completed.text
         body = completed.json()
@@ -396,9 +402,10 @@ def test_public_manual_analysis_reuses_already_analysed_notice_without_batch(
     )
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert response.status_code == 200
         assert response.json()["outcome"] == "ALREADY_ANALYZED"
@@ -441,9 +448,10 @@ def test_analysed_notice_with_stale_extraction_contract_can_reextract(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": True, "retry_reviewed": True},
         )
 
@@ -485,16 +493,17 @@ def test_current_analysis_can_be_recomputed_from_stored_evidence(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         invalid = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": True, "recompute_current": True},
         )
         assert invalid.status_code == 422
 
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": False, "recompute_current": True},
         )
         assert queued.status_code == 200, queued.text
@@ -544,9 +553,10 @@ def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         cooled = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": True},
         )
         assert cooled.status_code == 200, cooled.text
@@ -554,7 +564,7 @@ def test_explicit_review_retry_can_bypass_general_cooldown(monkeypatch) -> None:
 
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": True, "retry_reviewed": True},
         )
         assert queued.status_code == 200, queued.text
@@ -605,9 +615,10 @@ def test_explicit_review_retry_can_reextract_accepted_quantitative_review(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": True, "retry_reviewed": True},
         )
 
@@ -658,9 +669,10 @@ def test_explicit_quantitative_retry_wins_over_evaluation_only_without_current_r
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": True, "retry_reviewed": True},
         )
 
@@ -705,9 +717,10 @@ def test_accepted_attachment_without_current_evaluation_continues_pipeline(
     monkeypatch.setattr("pai_loop.manual_analysis.run_notice_analysis_batch", fake_batch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": False},
         )
         assert queued.status_code == 200, queued.text
@@ -717,7 +730,7 @@ def test_accepted_attachment_without_current_evaluation_continues_pipeline(
 
         completed = client.get(
             f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{queued.json()['request_id']}",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert completed.status_code == 200, completed.text
         assert completed.json()["outcome"] == "COMPLETED"
@@ -759,15 +772,16 @@ def test_manual_analysis_terminal_success_requires_current_evaluation(
 
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": False},
         )
         assert queued.status_code == 200, queued.text
         completed = client.get(
             f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{queued.json()['request_id']}",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert completed.status_code == 200, completed.text
         assert completed.json()["outcome"] == "REVIEW"
@@ -788,6 +802,7 @@ def test_public_manual_analysis_rejects_authoritative_cancellation_before_job(
     )
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         now = datetime.now(timezone.utc)
         with app.state.session_factory() as session:
             session.add(
@@ -808,7 +823,7 @@ def test_public_manual_analysis_rejects_authoritative_cancellation_before_job(
 
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert response.status_code == 409
         assert "취소된 공고" in response.json()["detail"]
@@ -823,13 +838,14 @@ def test_public_manual_analysis_feature_fails_closed_and_runtime_is_explicit(
 ) -> None:
     app = _app(monkeypatch, enabled=False)
     with TestClient(app) as client:
+        account_headers = _login_department(client)
         runtime = client.get("/api/v1/runtime-profile")
         assert runtime.status_code == 200
         assert runtime.json()["manual_analysis_enabled"] is False
         assert runtime.json()["manual_analysis_policy"] is None
         response = client.post(
             "/api/v1/notices/PPS-MISSING/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
         )
         assert response.status_code == 404
 
@@ -846,6 +862,7 @@ def test_public_manual_analysis_hourly_quota_is_persisted(monkeypatch) -> None:
     )
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         with app.state.session_factory() as session:
             for index in range(12):
                 session.add(
@@ -864,7 +881,7 @@ def test_public_manual_analysis_hourly_quota_is_persisted(monkeypatch) -> None:
 
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json=EXTRACTION_ALLOWED,
         )
         assert response.status_code == 429
@@ -883,9 +900,10 @@ def test_zero_call_intent_rejects_a_state_that_requires_openai(monkeypatch) -> N
     )
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         response = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers=SAME_ORIGIN_HEADERS,
+            headers=account_headers,
             json={"run_extraction": False},
         )
         assert response.status_code == 409
@@ -914,7 +932,8 @@ def test_production_manual_analysis_requires_department_cookie_and_csrf(monkeypa
     }
     with TestClient(app, base_url="https://testserver") as client:
         _create_open_pps_notice(client)
-        runtime = client.get("/api/v1/runtime-profile")
+        assert client.get("/api/v1/runtime-profile").status_code == 401
+        runtime = client.get("/api/v1/runtime-profile", headers=SERVER_HEADERS)
         assert runtime.status_code == 200
         assert runtime.json()["manual_analysis_enabled"] is True
         assert runtime.json()["manual_analysis_auth_required"] is True
@@ -973,7 +992,8 @@ def test_production_manual_analysis_is_hidden_when_accounts_are_disabled(
         "Sec-Fetch-Site": "same-origin",
     }
     with TestClient(app, base_url="https://testserver") as client:
-        runtime = client.get("/api/v1/runtime-profile")
+        assert client.get("/api/v1/runtime-profile").status_code == 401
+        runtime = client.get("/api/v1/runtime-profile", headers=SERVER_HEADERS)
         assert runtime.status_code == 200
         assert runtime.json()["manual_analysis_enabled"] is False
         assert runtime.json()["manual_analysis_auth_required"] is False
@@ -982,7 +1002,7 @@ def test_production_manual_analysis_is_hidden_when_accounts_are_disabled(
             headers=production_origin,
             json=EXTRACTION_ALLOWED,
         )
-        assert response.status_code == 404
+        assert response.status_code == 401
 
 
 def test_quantitative_diagnostics_requires_same_origin_account_and_disables_cache(
@@ -1003,11 +1023,6 @@ def test_quantitative_diagnostics_requires_same_origin_account_and_disables_cach
     with TestClient(app, base_url="https://testserver") as client:
         _create_open_pps_notice(client)
 
-        cross_origin = client.post(
-            path,
-            headers={"Origin": "https://attacker.invalid"},
-        )
-        assert cross_origin.status_code == 403
         missing_session = client.post(path, headers=production_origin)
         assert missing_session.status_code == 401
         missing_notice_without_session = client.post(
@@ -1020,6 +1035,11 @@ def test_quantitative_diagnostics_requires_same_origin_account_and_disables_cach
             retired = client.post(path, headers={**production_origin, "X-PAI-Manual-Token": retired_pin})
             assert retired.status_code == 401
         account_headers = _login_department(client, paid=False)
+        cross_origin = client.post(
+            path,
+            headers={**account_headers, "Origin": "https://attacker.invalid"},
+        )
+        assert cross_origin.status_code == 403
         assert client.post(path, headers=production_origin).status_code == 403
         response = client.post(path, headers=account_headers)
         assert response.status_code == 200, response.text
@@ -1791,6 +1811,7 @@ def test_manual_poll_recovers_only_old_idle_reservations(
     job_id = "SYN-INTERRUPTED-MANUAL"
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         with app.state.session_factory() as session:
             session.add(IngestionJob(
                 id=job_id, source="MANUAL_ANALYSIS", mode="LIVE", status=initial_status,
@@ -1804,7 +1825,7 @@ def test_manual_poll_recovers_only_old_idle_reservations(
         try:
             response = client.get(
                 f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{job_id}",
-                headers=SAME_ORIGIN_HEADERS,
+                headers=account_headers,
             )
         finally:
             if worker_busy:
@@ -1827,7 +1848,7 @@ def test_manual_poll_recovers_only_old_idle_reservations(
             manual._execute_reserved_manual_job(SimpleNamespace(app=app), job_id, "PPS-MANUAL-001", True)
             assert calls == []
             # Repeated polling leaves the same terminal audit untouched.
-            again = client.get(f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{job_id}", headers=SAME_ORIGIN_HEADERS)
+            again = client.get(f"/api/v1/notices/PPS-MANUAL-001/analysis/requests/{job_id}", headers=account_headers)
             assert again.json()["outcome"] == "REVIEW"
 
 
@@ -1836,6 +1857,7 @@ def test_manual_recovery_rejects_wrong_notice_or_missing_origin(monkeypatch):
     app = _app(monkeypatch)
     with TestClient(app) as client:
         _create_open_pps_notice(client)
+        account_headers = _login_department(client)
         with app.state.session_factory() as session:
             session.add(IngestionJob(
                 id="SYN-BOUND-MANUAL", source="MANUAL_ANALYSIS", mode="LIVE", status="RUNNING",
@@ -1846,7 +1868,7 @@ def test_manual_recovery_rejects_wrong_notice_or_missing_origin(monkeypatch):
             session.commit()
         url = "/api/v1/notices/PPS-MANUAL-001/analysis/requests/SYN-BOUND-MANUAL"
         assert client.get(url).status_code == 403
-        wrong = client.get(url.replace("PPS-MANUAL-001", "PPS-SYN-WRONG"), headers=SAME_ORIGIN_HEADERS)
+        wrong = client.get(url.replace("PPS-MANUAL-001", "PPS-SYN-WRONG"), headers=account_headers)
         assert wrong.status_code == 404
         with app.state.session_factory() as session:
             assert session.get(IngestionJob, "SYN-BOUND-MANUAL").status == "RUNNING"
