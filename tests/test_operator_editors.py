@@ -680,83 +680,17 @@ def test_result_learning_preserves_automatic_source_as_immutable_basis(client: T
     assert latest.json()["records"][0]["latest_outcome"]["id"] == reviewed["id"]
 
 
-def test_operator_editors_require_scoped_token_in_public_production(client: TestClient) -> None:
-    token = "2468"
-    client.app.state.settings = replace(
-        client.app.state.settings,
-        environment="production",
-        public_read_only=True,
-        public_manual_analysis_enabled=True,
-        public_manual_analysis_token=token,
-        api_key="server-only-api-key",
-    )
-    no_token = client.get("/api/v1/performance-records")
-    assert no_token.status_code == 401
-    no_result_token = client.get("/api/v1/result-learning")
-    assert no_result_token.status_code == 401
-    wrong_token = client.get(
-        "/api/v1/performance-records",
-        headers={"X-PAI-Manual-Token": "1357"},
-    )
-    assert wrong_token.status_code == 401
-    wrong_server_key = client.get(
-        "/api/v1/performance-records",
-        headers={"X-PAI-LOOP-API-KEY": "wrong-server-key"},
-    )
-    assert wrong_server_key.status_code == 401
-    server_access = client.get(
-        "/api/v1/performance-records",
-        headers={"X-PAI-LOOP-API-KEY": "server-only-api-key"},
-    )
-    assert server_access.status_code == 200
-
-    headers = {
-        "Origin": "https://testserver",
-        "Sec-Fetch-Site": "same-origin",
-        "X-PAI-Manual-Token": token,
-    }
-    listing = client.get("https://testserver/api/v1/performance-records", headers=headers)
-    assert listing.status_code == 200
-    cross_site_listing = client.get(
-        "https://testserver/api/v1/performance-records",
-        headers={**headers, "Sec-Fetch-Site": "cross-site"},
-    )
-    assert cross_site_listing.status_code == 403
-    cross_site_results = client.get(
-        "https://testserver/api/v1/result-learning",
-        headers={**headers, "Sec-Fetch-Site": "cross-site"},
-    )
-    assert cross_site_results.status_code == 403
-    missing_origin = client.post(
-        "https://testserver/api/v1/performance-records",
-        headers={key: value for key, value in headers.items() if key != "Origin"},
-        json={
-            "idempotency_key": "performance-production-no-origin",
-            "project_name": "출처 없는 변경",
-        },
-    )
-    assert missing_origin.status_code == 403
-    create = client.post(
-        "https://testserver/api/v1/performance-records",
-        headers=headers,
-        json={
-            "idempotency_key": "performance-production-001",
-            "project_name": "운영자 입력 초안",
-        },
-    )
-    assert create.status_code == 201, create.text
-    assert token not in create.text
-
-    cross_origin = client.post(
-        "https://testserver/api/v1/result-learning",
-        headers={**headers, "Origin": "https://attacker.test"},
-        json={
-            "notice_key": "missing",
-            "idempotency_key": "result-production-001",
-            "status": "NO_BID",
-        },
-    )
-    assert cross_origin.status_code == 403
+def test_operator_editors_reject_retired_pin_in_public_production(client: TestClient) -> None:
+    client.app.state.settings = replace(client.app.state.settings, environment="production",
+        public_read_only=True, public_manual_analysis_enabled=True,
+        public_manual_analysis_token="2468", api_key="server-only-api-key")
+    for path in ["/api/v1/performance-records", "/api/v1/result-learning"]:
+        for headers in [{}, {"X-PAI-Manual-Token": "1357"}, {"X-PAI-Manual-Token": "2468"}]:
+            assert client.get(path, headers=headers).status_code == 401
+        assert client.get(path, headers={"X-PAI-LOOP-API-KEY": "server-only-api-key"}).status_code == 200
+        assert client.get(path, headers={"X-PAI-LOOP-API-KEY": "server-only-api-key", "Origin": "https://testserver"}).status_code == 403
+    # Cookie read vs write/private-import grants have separate executable
+    # coverage in test_account_login_cutover and test_department_accounts.
 
 
 def test_operator_editor_frontend_exposes_forms_without_server_credentials() -> None:
@@ -787,5 +721,6 @@ def test_operator_editor_frontend_exposes_forms_without_server_credentials() -> 
     assert "예정가격 또는 기초금액과 출처" in html
     assert "소수 넷째 자리까지 표시" in html
     assert "수기 비율은 근거 참조에 기준가격도 함께" in html
-    assert "X-PAI-Manual-Token" in script
+    assert "X-PAI-Manual-Token" not in script
+    assert "X-CSRF-Token" in script
     assert "X-PAI-LOOP-API-KEY" not in script

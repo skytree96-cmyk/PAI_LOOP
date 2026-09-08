@@ -504,9 +504,10 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
         "contract_date": "2024-01-01",
         "evidence_reference": "SYN 공개 근거",
     }
+    assert client.post("https://testserver/api/v1/performance-records", headers=pin_headers, json=draft_payload).status_code == 401
     created = client.post(
         "https://testserver/api/v1/performance-records",
-        headers=pin_headers,
+        headers=private_headers,
         json=draft_payload,
     )
     assert created.status_code == 201, created.text
@@ -523,7 +524,7 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
             "project_name": create_marker,
         },
     )
-    assert rejected_create.status_code == 403
+    assert rejected_create.status_code == 401
     assert rejected_create.headers["cache-control"] == "no-store"
     assert create_marker not in rejected_create.text
 
@@ -537,7 +538,7 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
             "overview": promote_marker,
         },
     )
-    assert rejected_promotion.status_code == 403
+    assert rejected_promotion.status_code == 401
     assert rejected_promotion.headers["cache-control"] == "no-store"
     assert promote_marker not in rejected_promotion.text
 
@@ -561,10 +562,8 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
         "https://testserver/api/v1/performance-records",
         headers=pin_headers,
     )
-    assert pin_listing.status_code == 200
+    assert pin_listing.status_code == 401
     assert pin_listing.headers["cache-control"] == "no-store"
-    assert pin_listing.json()["total"] == 1
-    assert pin_listing.json()["records"][0]["id"] == draft["id"]
     assert private_marker not in pin_listing.text
 
     patch_marker = "SYN-PRIVATE-PIN-PATCH-MARKER"
@@ -576,7 +575,7 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
             "project_name": patch_marker,
         },
     )
-    assert pin_patch.status_code == 403
+    assert pin_patch.status_code == 401
     assert pin_patch.headers["cache-control"] == "no-store"
     assert private_marker not in pin_patch.text
     assert patch_marker not in pin_patch.text
@@ -593,6 +592,21 @@ def test_manual_pin_cannot_validate_or_access_private_performance_records(
     assert strong_patch.headers["cache-control"] == "no-store"
     assert private_marker not in strong_patch.text
     assert patch_marker not in strong_patch.text
+
+    # A department cookie can still inspect the nonprivate register. Private
+    # imports remain excluded, including when a PIN used to expose public drafts.
+    from pai_loop.account_models import DepartmentAccount
+    from pai_loop.accounts import departments, password_hash, now_utc
+    client.app.state.settings = replace(client.app.state.settings, department_accounts_enabled=True)
+    with client.app.state.session_factory() as session:
+        session.add(DepartmentAccount(username="SYN_READER", role="DEPARTMENT", department_id=next(iter(departments())), password_hash=password_hash("SYN-reader-password-only"), active=True, created_at=now_utc()))
+        session.commit()
+    login = client.post("https://testserver/api/v1/accounts/login", headers={"Origin": "https://testserver"}, json={"username": "SYN_READER", "password": "SYN-reader-password-only"})
+    assert login.status_code == 200
+    listing = client.get("https://testserver/api/v1/performance-records")
+    assert listing.status_code == 200 and listing.json()["total"] == 1
+    assert listing.json()["records"][0]["id"] == draft["id"]
+    assert private_marker not in listing.text
 
 
 def test_private_bulk_import_stays_draft_until_all_batches_arrive_and_replaces_prior_source(

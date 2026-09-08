@@ -46,17 +46,17 @@ def require_api_key(request: Request) -> None:
     """Protect all `/api/v1` routes with a constant-time server key check.
 
     Development/test without a configured key stays local-demo friendly.
-    Production cannot start without a key. This is an interim server-to-server
-    boundary; browser clients must use a trusted backend/BFF until Teams Entra
-    SSO and role-based authorization replace it.
+    Production cannot start without a key. This remains server-to-server;
+    browser clients use the explicit department cookie routes.
     """
     settings = request.app.state.settings
     if public_read_allowed(request):
         return
-    if settings.department_accounts_enabled:
-        from .accounts import browser_request
-        if request.headers.get("x-pai-loop-api-key") and browser_request(request):
-            raise HTTPException(status_code=403, detail="서버 키는 브라우저 계정 권한을 대체할 수 없습니다.")
+    if request.headers.get("x-pai-manual-token"):
+        raise HTTPException(status_code=401, detail="부서 계정으로 다시 로그인해 주세요.")
+    from .accounts import browser_request
+    if request.headers.get("x-pai-loop-api-key") and browser_request(request):
+        raise HTTPException(status_code=403, detail="서버 키는 브라우저 계정 권한을 대체할 수 없습니다.")
     configured_key: str | None = settings.api_key
     auth_required = settings.department_accounts_enabled or settings.environment.casefold() == "production" or bool(configured_key)
     if not auth_required:
@@ -75,9 +75,8 @@ def require_api_key(request: Request) -> None:
 def require_private_evidence_access(request: Request) -> None:
     """Protect private company evidence with server or high-entropy auth.
 
-    The four-digit demo operator PIN is intentionally not accepted here. It is
-    suitable only for bounded public-demo actions, not private data access or
-    replacement of the authoritative performance register.
+    Department cookies and the retired demo PIN do not grant private data
+    access or replacement of the authoritative performance register.
     """
 
     settings = request.app.state.settings

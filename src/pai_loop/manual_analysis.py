@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import secrets
 import threading
 import time
 import unicodedata
@@ -12,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -248,10 +247,6 @@ router = APIRouter(prefix="/api/v1", tags=["public manual analysis"])
 _PUBLIC_MANUAL_LOCK_KEY = 0x5041494D  # "PAIM"
 _PUBLIC_MANUAL_PROCESS_LOCK = threading.Lock()
 _NON_ATTEMPT_REQUEST_COOLDOWN = timedelta(minutes=5)
-_PIN_FAILURE_LOCK = threading.Lock()
-_PIN_FAILURE_WINDOW_SECONDS = 10 * 60
-_PIN_FAILURES_PER_CLIENT = 5
-_PIN_FAILURES_GLOBAL = 20
 _SAFE_DIAGNOSTIC_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
 _SHA256_SHAPE = re.compile(r"^[A-Fa-f0-9]{64}$")
 _MAX_DIAGNOSTIC_CODES = 100
@@ -357,71 +352,34 @@ def _manual_feature_enabled(request: Request) -> bool:
     settings = request.app.state.settings
     if not (settings.public_read_only and settings.public_manual_analysis_enabled):
         return False
-    # Development remains convenient for local contract tests. Production
-    # never exposes a spend endpoint until a separate, narrow operator secret
-    # is configured; the broad server API key is deliberately not reused in a
-    # browser.
-    return bool(
-        settings.department_accounts_enabled
-        or settings.environment.casefold() != "production"
-        or settings.public_manual_analysis_token_valid
-    )
+    # Production browser actions require department accounts. A retired PIN
+    # setting never re-enables them when accounts are temporarily disabled.
+    return bool(settings.department_accounts_enabled or settings.environment.casefold() != "production")
 
 
 def _require_manual_operator(request: Request, *, paid: bool = True) -> None:
     settings = request.app.state.settings
+    if request.headers.get("x-pai-manual-token"):
+        raise HTTPException(401, "부서 계정으로 다시 로그인해 주세요.")
     if settings.department_accounts_enabled:
         from .accounts import authenticated_account
-        path = request.url.path
-        if not re.fullmatch(r"/api/v1/notices/[^/]+/analysis/(request|quantitative-diagnostics|requests/[^/]+)", path):
+        path, method = request.url.path, request.method
+        analysis = re.fullmatch(r"/api/v1/notices/[^/]+/analysis/(request|quantitative-diagnostics|requests/[^/]+)", path)
+        external = method == "POST" and (
+            path in {"/api/v1/company-awards/search", "/api/v1/pps-discovery/search", "/api/v1/pps-discovery/save",
+                     "/api/v1/prespec-discovery/search", "/api/v1/prespec-discovery/save"}
+            or re.fullmatch(r"/api/v1/pre-specifications/[A-Za-z0-9_-]{1,40}/analysis", path)
+        )
+        poll = method == "GET" and re.fullmatch(r"/api/v1/pre-specifications/[A-Za-z0-9_-]{1,40}/analysis/[^/]+", path)
+        if not (analysis or external or poll):
             raise HTTPException(403, "이 작업은 부서 계정 권한에 포함되지 않습니다.")
-        request.state.department_identity = authenticated_account(request, mutation=request.method not in {"GET", "HEAD"}, paid=paid)
+        request.state.department_identity = authenticated_account(
+            request, mutation=method not in {"GET", "HEAD"}, paid=True if external else False if poll else paid,
+        )
         return
     if settings.environment.casefold() != "production":
-        return
-    expected = (
-        settings.public_manual_analysis_token
-        if settings.public_manual_analysis_token_valid
-        else ""
-    )
-    supplied = request.headers.get("x-pai-manual-token", "")
-    client_key = str(request.client.host if request.client else "unknown")[:128]
-    now = time.monotonic()
-    valid = bool(
-        expected
-        and supplied
-        and secrets.compare_digest(supplied, expected)
-    )
-    with _PIN_FAILURE_LOCK:
-        failures = list(getattr(request.app.state, "manual_pin_failures", []))
-        failures = [
-            item
-            for item in failures
-            if now - float(item[0]) < _PIN_FAILURE_WINDOW_SECONDS
-        ]
-        if valid:
-            request.app.state.manual_pin_failures = [
-                item for item in failures if item[1] != client_key
-            ]
-        else:
-            client_failures = sum(1 for _, key in failures if key == client_key)
-            if (
-                client_failures >= _PIN_FAILURES_PER_CLIENT
-                or len(failures) >= _PIN_FAILURES_GLOBAL
-            ):
-                request.app.state.manual_pin_failures = failures
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="운영 PIN 확인 실패가 반복되어 잠시 잠겼습니다.",
-                    headers={"Retry-After": str(_PIN_FAILURE_WINDOW_SECONDS)},
-                )
-            failures.append((now, client_key))
-            request.app.state.manual_pin_failures = failures
-    if not valid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="분석 실행 키를 확인해 주세요.",
-        )
+        return  # Existing local development without authentication; no PIN credential.
+    raise HTTPException(401, "부서 계정 로그인이 필요합니다.")
 
 
 @contextmanager
@@ -1206,13 +1164,8 @@ def get_manual_quantitative_diagnostics(
     notice_key: str,
     request: Request,
     response: Response,
-    _operator_pin: str | None = Header(
-        default=None,
-        alias="X-PAI-Manual-Token",
-        description="운영 PIN. 서버의 동일 출처 및 운영자 인증 검증이 적용됩니다.",
-    ),
 ) -> ManualQuantitativeDiagnosticsResponse:
-    """Return PIN-only codes and bounded public-table candidate shapes."""
+    """Return account-authorized codes and bounded public-table candidate shapes."""
 
     if not _manual_feature_enabled(request):
         raise HTTPException(status_code=404, detail="수동 분석 기능이 비활성화되어 있습니다.")

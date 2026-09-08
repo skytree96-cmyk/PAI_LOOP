@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260908-teams-sidebar-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-account-cutover-v1" />
   </head>
   <body>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -523,7 +523,7 @@
                 <button class="button button--ghost" type="reset">필터 지우기</button>
               </form>
               <div class="operator-list" id="resultLearningList" role="list"></div>
-              <div class="state-view performance-state" id="resultLearningState"><strong>4자리 운영 PIN이 필요합니다</strong><p>PIN은 현재 브라우저 탭에서만 유지되며 탭을 닫으면 지워집니다.</p></div>
+              <div class="state-view performance-state" id="resultLearningState"><strong>부서 로그인이 필요합니다</strong><p>로그인한 부서의 판단과 결과를 기록하고 다른 부서의 기록을 조회할 수 있습니다.</p></div>
               <footer class="performance-pagination" id="resultLearningPagination" hidden>
                 <div><strong id="resultLearningPageRange">—</strong><span>종료 공고와 결과가 있는 공고</span></div>
                 <nav aria-label="결과 학습 페이지"><button class="button button--ghost" id="resultLearningPreviousButton" type="button">이전</button><span id="resultLearningPageLabel">1 / 1</span><button class="button button--ghost" id="resultLearningNextButton" type="button">다음</button></nav>
@@ -658,9 +658,9 @@
             <section class="performance-explorer operator-editor performance-editor" aria-labelledby="performanceEditorHeading">
               <div class="section-heading performance-explorer__heading">
                 <div>
-                  <p class="section-kicker">운영 실적 관리</p>
-                  <h3 id="performanceEditorHeading">실적 직접 등록·수정</h3>
-                  <p id="performanceEditorSummary">공개 실적 자료와 분리된 운영 실적입니다. 운영 키로 초안을 등록하거나 검증·보관 상태를 관리하세요.</p>
+                  <p class="section-kicker">운영 실적 조회</p>
+                  <h3 id="performanceEditorHeading">등록된 운영 실적</h3>
+                  <p id="performanceEditorSummary">부서 로그인으로 공개 실적 자료와 분리된 운영 실적을 조회할 수 있습니다.</p>
                 </div>
                 <div class="operator-heading-actions">
                   <button class="button button--secondary" id="performanceEditorUnlockButton" type="button">운영 실적 열기</button>
@@ -668,7 +668,7 @@
                 </div>
               </div>
               <div class="operator-list operator-list--compact" id="performanceEditorList" role="list"></div>
-              <div class="state-view operator-empty" id="performanceEditorState"><strong>4자리 운영 PIN이 필요합니다</strong><p>공개·비식별 실적 후보는 수정되지 않습니다.</p></div>
+              <div class="state-view operator-empty" id="performanceEditorState"><strong>부서 로그인이 필요합니다</strong><p>공개·비식별 실적 후보는 수정되지 않습니다.</p></div>
             </section>
 
             <section class="performance-explorer" aria-labelledby="performanceListHeading">
@@ -1165,37 +1165,22 @@
         <div class="source-link-dialog__body">
           <p id="accountDialogHelp">발급받은 부서 계정으로 로그인하세요. 판단과 결과에는 로그인한 부서명이 남습니다.</p>
           <div id="accountCredentials">
-            <label class="manual-token-field" for="accountUsername"><span>아이디</span><input id="accountUsername" name="username" autocomplete="username" maxlength="40" autocapitalize="none" spellcheck="false" placeholder="KMA1" required /></label>
-            <label class="manual-token-field" for="accountPassword"><span>비밀번호</span><input id="accountPassword" name="password" type="password" autocomplete="current-password" maxlength="256" required /></label>
+            <label class="account-credential-field" for="accountUsername"><span>아이디</span><input id="accountUsername" name="username" autocomplete="username" maxlength="40" autocapitalize="none" spellcheck="false" placeholder="KMA1" required /></label>
+            <label class="account-credential-field" for="accountPassword"><span>비밀번호</span><input id="accountPassword" name="password" type="password" autocomplete="current-password" maxlength="256" required /></label>
           </div>
           <p class="account-identity" id="accountIdentity" hidden></p>
+          <section id="accountManagement" hidden aria-labelledby="accountManagementTitle">
+            <h3 id="accountManagementTitle">부서 계정 활성화</h3>
+            <p>발급 정보를 확인한 부서만 활성화하세요. 비밀번호와 외부 조회·분석 권한은 바뀌지 않습니다.</p>
+            <button class="button button--secondary" id="accountManagementRefresh" type="button">계정 상태 새로고침</button>
+            <p id="accountManagementStatus" role="status" aria-live="polite"></p>
+            <ul class="account-management-list" id="accountManagementList"></ul>
+          </section>
           <p class="account-error" id="accountError" role="alert" hidden></p>
         </div>
         <footer class="source-link-dialog__actions">
           <button class="button button--secondary" id="accountLogoutButton" type="button" hidden>로그아웃</button>
           <button class="button button--primary" id="accountSubmitButton" type="submit">로그인</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog class="source-link-dialog" id="manualAnalysisTokenDialog" aria-labelledby="manualAnalysisTokenTitle" aria-describedby="manualAnalysisTokenHelp">
-      <form class="source-link-dialog__panel" method="dialog">
-        <header class="source-link-dialog__header">
-          <div>
-            <p class="section-kicker">실행 권한 확인</p>
-            <h2 id="manualAnalysisTokenTitle">4자리 운영 PIN</h2>
-          </div>
-        </header>
-        <div class="source-link-dialog__body">
-          <p id="manualAnalysisTokenHelp">데모의 나라장터 외부 조회·저장, 문서 분석, 최종 판단 저장을 여는 숫자 4자리 PIN입니다. 현재 브라우저 탭에서만 유지되며 탭을 닫으면 지워집니다.</p>
-          <label class="manual-token-field" for="manualAnalysisTokenInput">
-            <span>운영 PIN</span>
-            <input id="manualAnalysisTokenInput" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="off" required />
-          </label>
-        </div>
-        <footer class="source-link-dialog__actions">
-          <button class="button button--secondary" type="submit" value="cancel" formnovalidate>취소</button>
-          <button class="button button--primary" type="submit" value="confirm">확인</button>
         </footer>
       </form>
     </dialog>
@@ -1283,6 +1268,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260908-teams-sidebar-v1" defer></script>
+    <script src="./app.js?v=20260908-account-cutover-v1" defer></script>
   </body>
 </html>

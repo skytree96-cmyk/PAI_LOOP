@@ -1,13 +1,13 @@
 # Department account backend contract
 
-This is an opt-in backend. `PAI_LOOP_DEPARTMENT_ACCOUNTS_ENABLED` defaults to false. No real accounts, passwords, registration, feature activation, or production settings are created by this change. With the flag off, the existing scoped PIN flow and server API contracts remain available. With it on, PIN headers cannot authenticate department writes or analysis requests, including in development.
+This is an opt-in backend. `PAI_LOOP_DEPARTMENT_ACCOUNTS_ENABLED` defaults to false. No real accounts, passwords, registration, feature activation, or production settings are created by this change. PIN browser authentication is retired regardless of this flag. In production the flag off pauses human writes/paid browser actions; it never restores PIN access. Server-to-server API contracts remain available. The old token environment setting is accepted only as deprecated configuration compatibility and has no authentication effect. See [the cutover runbook](ACCOUNT_LOGIN_CUTOVER.md).
 
 ## Browser authentication
 
 - `GET /api/v1/runtime-profile` adds `department_accounts_enabled`. A failed account lookup in enabled mode must never trigger a PIN fallback.
 - `GET /api/v1/accounts/me` returns `enabled`, `authenticated`, nullable `account`, nullable `csrf_token`, and `capabilities`. No cookie returns an anonymous 200; an invalid, revoked, expired, or disabled-account cookie returns 401. GET needs no CSRF token.
 - `POST /api/v1/accounts/login` accepts `{username,password}` and requires the application's exact `Origin`. Username is ASCII letter followed by letters/digits/underscore/hyphen, at most 40 characters; it is normalized to uppercase. Password is at most 256 characters. Validation and authentication errors never echo submitted input. Successful login returns the same payload as `me`.
-- Session cookie `pai_department_session` is opaque, random, HttpOnly, SameSite=Strict, host-only, path `/`, with an eight-hour expiry. It is Secure on HTTPS and always in production. The server stores only a SHA-256 digest. The separate `pai_department_csrf` cookie is readable by the same-origin UI and its digest is bound to that session.
+- Session cookie `pai_department_session` is opaque, random, HttpOnly, SameSite=Strict, host-only, path `/`, with an eight-hour expiry. It is Secure on HTTPS and always in production. The server stores only a version-namespaced SHA-256 digest. Pre-cutover cookies require a fresh login; failed-login bucket hashes remain unchanged. The separate `pai_department_csrf` cookie is readable by the same-origin UI and its digest is bound to that session.
 - Every account mutation requires exact same-origin `Origin` and `X-CSRF-Token` matching both the CSRF cookie and the server session digest. Cross-site/same-site origins are rejected. Authenticated GETs use the cookie and reject cross-origin fetch metadata; they need no CSRF header.
 - `POST /api/v1/accounts/logout` revokes the session and clears both cookies. Expired/revoked cookies can also be cleared by same-origin logout. A live session still requires CSRF.
 - Login rotates the session, caps live sessions at eight per account, and removes long-expired session rows. Persistent 15-minute failed-login budgets are 5 per normalized username, 20 per client address, and 100 global. Successful logins do not consume a failure budget or clear earlier failures or their expiry, allowing all 24 departments to sign in from a shared office address. Existing lockouts are checked before password verification and still reject correct credentials until expiry. Budget checks and failure recording remain inside the same serial transaction. The throttle table has a hard 1,024-row bound and removes expired buckets. Forwarded headers are not trusted by this module. Failed/unknown/disabled logins use the same generic message and perform scrypt verification.
@@ -38,7 +38,7 @@ Paid extraction requires the separate `paid_analysis_allowed` grant; admin does 
 
 The existing manual-analysis hourly quota is unchanged, including zero meaning no aggregate hourly quota. Existing queue, execution slot, cooldown, attachment, idempotency, and call budgets remain. Reservations record server account/department IDs and a free/paid audit event; they contain no session or password.
 
-Unrelated private editors, discovery, pre-spec analysis, company-award mutations, generic analysis/ingestion APIs, and private evidence are not granted by department cookies. Strong private-evidence credentials remain separate. Existing server-to-server API-key routes still work without browser Origin/fetch metadata/session cookies. A server key presented through a browser cannot replace department authorization. Even a server-key result update cannot overwrite an account-owned result.
+Bounded company-award search, PPS/pre-spec search and selected save, and explicit pre-spec analysis now accept same-origin cookie + CSRF with the separate paid grant (including external API reads). They preserve existing provider limits and do not imply automatic extraction. Pre-spec request polling needs a logged-in account but no paid grant. Sanitized `GET /performance-records` is also available to accounts and continues to exclude private imports. Performance mutations/imports, generic analysis/ingestion APIs, and private evidence are not granted by department cookies. Strong private-evidence credentials remain separate. Existing server-to-server API-key routes still work without browser Origin/fetch metadata/session cookies. A server key presented through a browser cannot replace department authorization. Even a server-key result update cannot overwrite an account-owned result.
 
 ## Bootstrap and administration
 
@@ -48,6 +48,8 @@ Input is `{dry_run:true, accounts:[{username,password,role,department_id?,active
 
 The dry run creates only a short-lived preview, returning `preview_id` and `WOULD_CREATE`/`EXISTS_UNCHANGED` statuses. Apply the exact same account plan with `dry_run:false,preview_id`. The preview is bound to all plan fields including the password through server-key HMAC, expires after 15 minutes, and is single-use. Existing usernames are always `EXISTS_UNCHANGED`: password, role, department, active state, and grant are never overwritten by bootstrap. Duplicate department identities are refused. No password reset occurs during import.
 
+`POST /api/v1/accounts/initial-admin-activation` resolves the inactive-first-admin deadlock using the same server-only boundary. It accepts `{username,dry_run:true}` and returns `WOULD_ACTIVATE`, metadata and a preview. Apply with `{username,dry_run:false,preview_id}` only for an existing ADMIN with no department, inactive, revision 1, paid false, and no active administrator. The HMAC uses a distinct action namespace and binds the saved identity/revision/state. Fifteen-minute expiry, single use, 100-preview bound and the existing account transaction lock apply. Successful activation changes only active/revision, revokes all stored sessions and records `INITIAL_ADMIN_ACTIVATED`. No password or grant changes. A fresh dry run on an active target returns `ALREADY_ACTIVE`; replayed apply or a changed state is 409. Deliberately disabled/revised admins cannot use this initial-only path.
+
 Admin-cookie endpoints:
 
 - `GET /api/v1/accounts`: account metadata, no hashes.
@@ -55,6 +57,8 @@ Admin-cookie endpoints:
 - `GET /api/v1/accounts/sessions/list`: up to 200 session metadata rows, no session/CSRF values or hashes.
 - `POST /api/v1/accounts/sessions/{id}/revoke`: explicit revocation.
 - `GET /api/v1/accounts/audit/list`: latest 200 bounded metadata events, no credentials, evidence, reasons, or raw request bodies.
+
+The account dialog provides ADMIN-only metadata refresh and per-department activation via the existing CAS PATCH. It sends only `expected_revision` and `active:true`, clears an ambiguous result until an explicit refresh, and never retries a write. Passwords and paid grants are not edited by this minimal UI.
 
 There is no public signup, account deletion, role reassignment, or impersonation endpoint. Bootstrap and account activation are separate operator actions. Existing supported SQLite databases receive additive account tables and nullable identity columns under the migration transaction; migration checks remain idempotent and fail closed on incompatible physical schema. PostgreSQL uses the same additive DDL, but this local validation does not activate or connect to a production database.
 
