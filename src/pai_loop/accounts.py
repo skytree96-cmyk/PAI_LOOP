@@ -301,7 +301,7 @@ def logout(request: Request, response: Response) -> dict:
 
 
 class BootstrapAccount(Login):
-    password: SecretStr = Field(min_length=12, max_length=256)
+    password: SecretStr = Field(min_length=3, max_length=256)
     role: Literal["DEPARTMENT", "ADMIN"]
     department_id: str | None = Field(default=None, max_length=120)
     active: bool = False
@@ -446,7 +446,7 @@ class AccountUpdate(InputModel):
     expected_revision: int = Field(ge=1)
     active: bool | None = None
     paid_analysis_allowed: bool | None = None
-    password: SecretStr | None = Field(default=None, min_length=12, max_length=256)
+    password: SecretStr | None = Field(default=None, min_length=3, max_length=256)
 
 
 @router.patch("/{account_id}")

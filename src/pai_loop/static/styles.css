@@ -7496,3 +7496,7 @@ textarea:focus,
 .sidebar-foot > span { min-width: 0; overflow-wrap: anywhere; }
 .sidebar-foot .avatar { flex-shrink: 0; object-fit: contain; background: #12568e; }
 .sidebar-foot strong { white-space: normal; line-height: 1.6; }
+.account-password-reset { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.account-password-reset label { flex: 1 1 170px; min-width: 0; display: grid; gap: 4px; }
+.account-password-reset input { width: 100%; min-width: 0; box-sizing: border-box; }
+.account-password-reset small { flex-basis: 100%; }
