@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -76,6 +77,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             seed_synthetic=seed_synthetic,
             cors_origins=settings.cors_origins,
             log_level=settings.log_level,
+            pai_bot_teams_url=settings.pai_bot_teams_url,
             api_key=settings.api_key,
             private_evidence_token=settings.private_evidence_token,
             public_read_only=settings.public_read_only,
@@ -227,11 +229,17 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     if (static_dir / "index.html").exists():
         index_file = static_dir / "index.html"
 
-        def frontend_index() -> FileResponse:
-            return FileResponse(index_file)
+        def frontend_index() -> HTMLResponse:
+            runtime_json = json.dumps({"paiBotTeamsUrl": settings.safe_pai_bot_teams_url}, ensure_ascii=True)
+            # JSON is embedded in an inert script element; literal HTML delimiters
+            # must not terminate it, even in an approved destination's query/path.
+            runtime_json = runtime_json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+            html = index_file.read_text(encoding="utf-8").replace('{"paiBotTeamsUrl":""}', runtime_json, 1)
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
         frontend_routes = (
             "/",
+            "/index.html",
             "/notices",
             "/reviews",
             "/urgent",
