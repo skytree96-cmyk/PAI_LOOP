@@ -60,6 +60,22 @@ const validate = value => executeValidation({ body: value }, { all: () => [{}] }
 const prepared = validate(body)[0].json;
 assert.deepEqual(prepared.original_schema, schema);
 const request = prepared.provider_request;
+// The larger budget is an explicit, exact one-shot contract; ordinary requests
+// retain byte-equivalent prompts/schema and their existing 20k/180s bounds.
+const longBody = { ...body, budget_policy: 'LONG_OUTPUT_ONCE', max_output_tokens: 32000 };
+const longRequest = validate(longBody)[0].json.provider_request;
+assert.deepEqual(longRequest, { ...request, max_tokens: 32000 });
+const timeoutExpression = nodes.get(nativeNodeName).parameters.options.timeout;
+const timeoutValue = new Function('$json', `return (${timeoutExpression.slice(3, -2)});`);
+assert.equal(timeoutValue({ provider_request: request }), 180000);
+assert.equal(timeoutValue({ provider_request: longRequest }), 300000);
+for (const patch of [{ budget_policy: 'SYN-UNKNOWN' }, { budget_policy: null },
+  { max_output_tokens: 20000 }, { max_output_tokens: 32001 }, { max_output_tokens: 32000.5 },
+  { timeout_seconds: 300 }, { max_total_api_calls: 2 }]) assert.throws(() => validate({ ...longBody, ...patch }));
+assert.throws(() => validate({ ...body, max_output_tokens: 32000 }));
+const longCorrection = structuredClone(longBody);
+longCorrection.input[1].content[0].text = 'FINAL CORRECTIVE RETRY.\n' + longCorrection.input[1].content[0].text;
+assert.throws(() => validate(longCorrection));
 assert.deepEqual(Object.keys(request).sort(), ["model", "max_tokens", "system", "messages", "thinking", "output_config", "stream"].sort());
 assert.equal(request.model, "claude-sonnet-5"); assert.equal(request.max_tokens, 20000);
 assert.deepEqual(request.thinking, { type: "adaptive" }); assert.equal(request.output_config.effort, "medium");

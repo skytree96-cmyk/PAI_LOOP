@@ -6,6 +6,12 @@ Sonnet 5, adaptive thinking, medium effort, the existing 20,000 output-token cap
 the authenticated webhook, and the original backend Pydantic/evidence checks.
 It adds no model retry, repair chain, fallback model, tool, or second HTTP call.
 
+The default budget remains 20,000 tokens / HTTP 180 seconds. The separately
+selected [LONG_OUTPUT_ONCE policy](long-output-once.md) permits only a frozen,
+current 20k max-token failure to use 32,000 tokens / HTTP 300 seconds once.
+The server consumes that permission durably before dispatch; numeric budget
+overrides and corrective requests with the policy are rejected.
+
 `manifest.json` retains the already approved W13 `publish:true` allowlist.
 `promotionState:awaiting-native-live-e2e` and `nativeCanaryState` explicitly record that
 full gateway live E2E and promotion remain pending. Merging this code is

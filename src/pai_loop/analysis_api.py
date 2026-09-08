@@ -250,6 +250,7 @@ class AnalysisBackfillPlanRequest(ApiModel):
     # IDs and source boundaries are derived by the server, never caller supplied.
     retry_reviewed: bool = False
     retry_scope: Literal["FAILED_ATTACHMENTS"] | None = None
+    retry_budget_policy: Literal["LONG_OUTPUT_ONCE"] | None = None
     retry_error_codes: list[str] = Field(default_factory=list, max_length=16)
     retry_max_attachments: int = Field(default=3, ge=1, le=3)
     review_campaign_key: str | None = Field(
@@ -339,6 +340,12 @@ class AnalysisBackfillPlanRequest(ApiModel):
 
     @model_validator(mode="after")
     def validate_resume_mode(self) -> "AnalysisBackfillPlanRequest":
+        if self.retry_budget_policy is not None and (
+            self.retry_scope != "FAILED_ATTACHMENTS" or self.retry_max_attachments != 1
+            or self.retry_error_codes != ["HTTP_ERROR"] or self.max_total != 1
+            or self.execution_limit != 1 or self.max_continuations != 1
+        ):
+            raise ValueError("LONG_OUTPUT_ONCE requires one frozen HTTP_ERROR target and one execution")
         if self.retry_scope:
             if (not self.retry_reviewed or len(self.notice_keys) != 1 or not self.retry_error_codes
                 or len(set(self.retry_error_codes)) != len(self.retry_error_codes)
@@ -399,6 +406,7 @@ class AnalysisBackfillPlanResponse(ApiModel):
     review_policy: Literal["FROZEN_REVIEW_RETRY_V1"] | None = None
     review_campaign_key: str | None = None
     retry_scope: Literal["FAILED_ATTACHMENTS"] | None = None
+    retry_budget_policy: Literal["LONG_OUTPUT_ONCE"] | None = None
     retry_target_count: int | None = None
     job_id: str | None
     segment_id: str | None
@@ -537,6 +545,8 @@ def _review_campaign_identity(payload: AnalysisBackfillPlanRequest) -> dict[str,
     if payload.retry_scope is None:
         for key in ("retry_scope", "retry_error_codes", "retry_max_attachments"):
             identity.pop(key, None)  # Preserve already stored V1 request identities.
+    if payload.retry_budget_policy is None:
+        identity.pop("retry_budget_policy", None)
     return identity
 
 
@@ -618,7 +628,10 @@ def _review_campaign_snapshot(session: Session, keys: list[str], *, payload: Ana
             try:
                 narrow = failed_attachment_retry_snapshot(notice.versions, error_codes=payload.retry_error_codes,
                                                           max_attachments=payload.retry_max_attachments,
-                                                          notice_key=notice.notice_key, revision_no=notice.revision_no)
+                                                          notice_key=notice.notice_key, revision_no=notice.revision_no,
+                                                          **({"budget_policy": payload.retry_budget_policy, "session": session,
+                                                              "source_boundary": snapshots[key]["source_boundary"]}
+                                                             if payload.retry_budget_policy else {}))
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
             snapshots[key].update(version_ids=narrow["version_ids"], failed_attachment_retry=narrow,
@@ -704,6 +717,8 @@ def _review_child_context(
         if (parent_config.get("review_request") or {}).get("retry_scope") == "FAILED_ATTACHMENTS":
             narrow = snapshot.get("failed_attachment_retry")
             if not valid_failed_attachment_retry_scope(narrow) or narrow["version_ids"] != snapshot["version_ids"]:
+                return frozenset(), "FAILED_RETRY_SCOPE_INVALID"
+            if narrow.get("budget_policy") != (parent_config.get("review_request") or {}).get("retry_budget_policy"):
                 return frozenset(), "FAILED_RETRY_SCOPE_INVALID"
             if notice.revision_no != snapshot.get("notice_revision_no"):
                 return frozenset(), "REVIEW_CAMPAIGN_SOURCE_CHANGED"
@@ -1992,6 +2007,7 @@ def _backfill_status(
         review_policy=config.get("review_policy"),
         review_campaign_key=config.get("review_campaign_key"),
         retry_scope=(config.get("review_request") or {}).get("retry_scope"),
+        retry_budget_policy=(config.get("review_request") or {}).get("retry_budget_policy"),
         retry_target_count=(sum(len((value.get("failed_attachment_retry") or {}).get("targets", []))
                                 for value in (config.get("review_snapshots") or {}).values())
                             if (config.get("review_request") or {}).get("retry_scope") else None),
