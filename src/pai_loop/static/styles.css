@@ -7486,3 +7486,17 @@ textarea:focus,
 .account-management-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .account-management-list small { display: block; margin-top: 4px; color: var(--ink-soft); }
 .account-management-list button { flex-shrink: 0; white-space: nowrap; }
+
+/* Match the public PAI identity; use a light wordmark against the navy sidebar. */
+.brand-mark { overflow: hidden; background: #12568e; border-radius: 10px; }
+.brand-mark img { display: block; width: 100%; height: 100%; }
+.brand .brand-wordmark { display: inline-flex; align-items: baseline; color: #fff; font-size: 31px; font-weight: 800; line-height: 1; letter-spacing: .035em; }
+.brand-dot { display: inline-block; width: 7px; height: 7px; margin-left: 3px; background: #4ba8db; border-radius: 50%; }
+.brand small { margin-top: 5px; font-size: 10px; font-weight: 500; line-height: 1.55; letter-spacing: .015em; text-transform: none; }
+.sidebar-foot > span { min-width: 0; overflow-wrap: anywhere; }
+.sidebar-foot .avatar { flex-shrink: 0; object-fit: contain; background: #12568e; }
+.sidebar-foot strong { white-space: normal; line-height: 1.6; }
+.account-password-reset { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.account-password-reset label { flex: 1 1 170px; min-width: 0; display: grid; gap: 4px; }
+.account-password-reset input { width: 100%; min-width: 0; box-sizing: border-box; }
+.account-password-reset small { flex-basis: 100%; }
