@@ -3,11 +3,16 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   const body = json?.body && typeof json.body === 'object' && !Array.isArray(json.body) ? json.body : null;
   if (!body) throw new Error('request body must be a JSON object');
   const allowedTopLevel = ['input','max_output_tokens','model','service_tier','store','text'];
+  const longOutputOnce = Object.hasOwn(body, 'budget_policy');
+  if (longOutputOnce) {
+    if (body.budget_policy !== 'LONG_OUTPUT_ONCE' || body.max_output_tokens !== 32000) throw new Error('invalid one-shot output policy');
+    allowedTopLevel.push('budget_policy'); allowedTopLevel.sort();
+  }
   const actualTopLevel = Object.keys(body).sort();
   if (actualTopLevel.length !== allowedTopLevel.length || actualTopLevel.some((key, index) => key !== allowedTopLevel[index])) throw new Error('request fields do not match the extraction gateway contract');
   if (body.model !== 'claude-sonnet-5') throw new Error('model must be claude-sonnet-5');
   if (body.service_tier !== 'default' || body.store !== false) throw new Error('service_tier/store contract is invalid');
-  if (!Number.isSafeInteger(body.max_output_tokens) || body.max_output_tokens < 256 || body.max_output_tokens > 20000) throw new Error('max_output_tokens is outside the bounded contract');
+  if (!Number.isSafeInteger(body.max_output_tokens) || body.max_output_tokens < 256 || body.max_output_tokens > (longOutputOnce ? 32000 : 20000)) throw new Error('max_output_tokens is outside the bounded contract');
   if (!Array.isArray(body.input) || body.input.length !== 2) throw new Error('input must contain exactly system and user messages');
   const readMessage = (item, role, maximum) => {
     if (!item || item.role !== role || !Array.isArray(item.content) || item.content.length !== 1) throw new Error('message contract is invalid');
@@ -22,6 +27,7 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   if (!systemPrompt.startsWith('You extract procurement requirements as evidence only.')) throw new Error('system prompt identity is invalid');
   const initialPrompt = userPrompt.startsWith('Allowed attachment IDs:');
   const correctivePrompt = userPrompt.startsWith('FINAL CORRECTIVE RETRY.') && userPrompt.includes('Allowed attachment IDs:');
+  if (longOutputOnce && !initialPrompt) throw new Error('one-shot policy forbids corrective calls');
   if ((!initialPrompt && !correctivePrompt) || !userPrompt.includes('\n\nSOURCE:\n')) throw new Error('user prompt identity is invalid');
   const format = body.text?.format;
   if (!format || format.type !== 'json_schema' || format.name !== 'pai_loop_requirements' || format.strict !== true) throw new Error('strict response format is invalid');

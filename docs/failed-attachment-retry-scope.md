@@ -56,6 +56,8 @@ complete한다. W11의 순수 resume는 저장한 범위를 그대로 상속한�
 cooldown, public manual의 최근 요청/시간당 한도, 서버 인증, 공고 실행 잠금,
 claim generation, lease, cached HTTP replay, 공고별 최대 10 execution 제한은 유지한다.
 각 선택 첨부의 기존 모델 호출 상한은 2회이므로 최대 3첨부의 상한은 6회다.
+명시적으로 선택한 [LONG_OUTPUT_ONCE](long-output-once.md)만 확인된 현재 20k
+출력 상한 실패 1첨부를 32k/300초/모델 1회로 제한한다. 일반 범위의 상한은 유지한다.
 이미 저장된 성공/실패와 HTTP 응답은 재전송으로 새 provider 호출을 만들지 않는다.
 유료 호출 뒤 정상 결과 저장에 실패해도 오류 기록을 저장할 수 있으면, 선택된 실패
 버전 이후의 새 `INTERNAL_ENRICHMENT_ERROR` 기록을 남긴다. 이 경로에서도 과거
