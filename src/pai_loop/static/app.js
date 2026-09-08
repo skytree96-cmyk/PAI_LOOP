@@ -227,7 +227,7 @@
   }
 
   let applicationLocked = false;
-  function lockApplication({ retry = false } = {}) {
+  function lockApplication({ retry = false, relogin = false } = {}) {
     if (applicationLocked) return;
     applicationLocked = true;
     const returnUrl = window.location.href;
@@ -235,7 +235,7 @@
     document.body.hidden = true;
     clearAccountPrivateState();
     document.body.replaceChildren();
-    if (retry) {
+    if (retry || relogin) {
       // An uncertain session check must stop here, not reload the same document forever.
       const stylesheet = document.createElement("link");
       stylesheet.rel = "stylesheet";
@@ -244,12 +244,12 @@
       const card = document.createElement("main");
       card.className = "login-card";
       const title = document.createElement("h1");
-      title.textContent = "로그인 상태를 확인하지 못했습니다";
+      title.textContent = relogin ? "권한이 변경되어 다시 로그인해야 합니다" : "로그인 상태를 확인하지 못했습니다";
       const explanation = document.createElement("p");
-      explanation.textContent = "연결 상태를 확인한 뒤 다시 시도해 주세요.";
+      explanation.textContent = relogin ? "외부 조회·유료 분석 권한이 변경되었습니다. 다시 로그인해 주세요." : "연결 상태를 확인한 뒤 다시 시도해 주세요.";
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = "상태 다시 확인";
+      button.textContent = relogin ? "로그인 화면으로" : "상태 다시 확인";
       button.addEventListener("click", () => window.location.replace(returnUrl));
       card.append(title, explanation, button);
       document.body.className = "login-page";
@@ -526,6 +526,8 @@
     els.accountManagementList.addEventListener("click", (event) => {
       const button = event.target.closest("[data-activate-account]");
       if (button) void activateManagedAccount(button.dataset.activateAccount);
+      const paidButton = event.target.closest("[data-toggle-paid-account]");
+      if (paidButton) void toggleManagedAccountPaidAccess(paidButton.dataset.togglePaidAccount);
     });
     els.performanceFilterForm.addEventListener("reset", () => {
       window.setTimeout(() => {
@@ -944,8 +946,11 @@
     const managed = state.managedAccounts;
     els.accountManagementRefresh.disabled = managed.loading || managed.pending;
     els.accountManagementList.innerHTML = managed.records.map((record) => `<li>
-      <span><strong>${escapeHtml(record.department_name || "관리자")}</strong><small>${escapeHtml(record.username)} · ${record.active ? "활성" : "비활성"} · 외부 조회·분석 ${record.paid_analysis_allowed ? "허용" : "미허용"}</small></span>
+      <span><strong>${escapeHtml(record.department_name || "관리자")}${record.id === state.accountSession.account?.id ? " · 현재 계정" : ""}</strong><small>${escapeHtml(record.username)} · ${record.active ? "활성" : "비활성"} · 외부 조회·유료 분석 ${record.paid_analysis_allowed ? "허용" : "미허용"}</small></span>
+      <div class="account-management-actions">
       ${record.role === "DEPARTMENT" && !record.active ? `<button class="button button--secondary" type="button" data-activate-account="${escapeAttribute(record.id)}" aria-label="${escapeAttribute(record.department_name || record.username)} 계정 활성화" ${managed.pending || managed.loading ? "disabled" : ""}>활성화</button>` : ""}
+      ${["ADMIN", "DEPARTMENT"].includes(record.role) && typeof record.paid_analysis_allowed === "boolean" ? `<button class="button button--secondary" type="button" data-toggle-paid-account="${escapeAttribute(record.id)}" aria-label="${escapeAttribute(record.department_name || record.username)} 외부 조회·유료 분석 ${record.paid_analysis_allowed ? "해제" : "허용"}" ${managed.pending || managed.loading ? "disabled" : ""}>권한 ${record.paid_analysis_allowed ? "해제" : "허용"}</button>` : ""}
+      </div>
     </li>`).join("");
   }
 
@@ -960,7 +965,7 @@
       if (epoch !== state.accountEpoch) return;
       if (!Array.isArray(response.accounts)) throw new Error("Invalid account list");
       state.managedAccounts.records = response.accounts;
-      els.accountManagementStatus.textContent = `계정 ${response.accounts.length}개 · 활성화할 부서를 확인해 주세요.`;
+      els.accountManagementStatus.textContent = `계정 ${response.accounts.length}개 · 계정 활성 상태와 외부 조회·유료 분석 권한을 확인해 주세요.`;
     } catch (_) {
       if (epoch !== state.accountEpoch) return;
       state.managedAccounts.records = [];
@@ -994,6 +999,45 @@
       // deliberate read resolves its status; never resend an ambiguous PATCH.
       managed.records = [];
       els.accountManagementStatus.textContent = "활성화 결과를 확인하지 못했습니다. 재시도 전에 계정 상태를 새로고침해 주세요.";
+    } finally {
+      if (epoch === state.accountEpoch) { managed.pending = false; renderManagedAccounts(); }
+    }
+  }
+
+  async function toggleManagedAccountPaidAccess(id) {
+    const managed = state.managedAccounts;
+    if (!state.accountSession.authenticated || state.accountSession.capabilities.manage_accounts !== true
+      || managed.loading || managed.pending) return;
+    const row = managed.records.find((record) => record.id === id);
+    if (!row || !["ADMIN", "DEPARTMENT"].includes(row.role) || typeof row.paid_analysis_allowed !== "boolean"
+      || !Number.isSafeInteger(row.revision) || row.revision < 1) return;
+    const allowed = !row.paid_analysis_allowed;
+    const epoch = state.accountEpoch;
+    const changingSelf = id === state.accountSession.account?.id;
+    managed.pending = true;
+    renderManagedAccounts();
+    try {
+      const response = await apiRequest(`/accounts/${encodeURIComponent(id)}`, {
+        method: "PATCH", headers: accountMutationHeaders(),
+        body: JSON.stringify({ expected_revision: row.revision, paid_analysis_allowed: allowed }),
+      });
+      if (epoch !== state.accountEpoch) return;
+      if (response.id !== id || response.paid_analysis_allowed !== allowed || response.revision !== row.revision + 1
+        || response.role !== row.role || response.active !== row.active) throw new Error("Unconfirmed permission change");
+      if (changingSelf) {
+        // The accepted PATCH revokes this session too. Stop private work and
+        // let the administrator explicitly return to login without retrying it.
+        lockApplication({ relogin: true });
+        return;
+      }
+      managed.records = managed.records.map((record) => record.id === id ? response : record);
+      els.accountManagementStatus.textContent = `${row.department_name || row.username}의 외부 조회·유료 분석 권한을 ${allowed ? "허용" : "해제"}했습니다. 해당 계정은 다시 로그인해야 합니다.`;
+    } catch (_) {
+      if (epoch !== state.accountEpoch) return;
+      if (changingSelf) { lockApplication({ retry: true }); return; }
+      // A lost response may already have committed; resolve with an explicit read.
+      managed.records = [];
+      els.accountManagementStatus.textContent = "권한 변경 결과를 확인하지 못했습니다. 재시도 전에 계정 상태를 새로고침해 주세요.";
     } finally {
       if (epoch === state.accountEpoch) { managed.pending = false; renderManagedAccounts(); }
     }

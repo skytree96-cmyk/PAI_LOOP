@@ -136,3 +136,28 @@ def test_account_can_read_sanitized_performance_but_cannot_edit_or_import(accoun
     with pytest.raises(HTTPException) as failure: _operator_access(request, mutation=True)
     assert failure.value.status_code == 403
     assert _peer(client).get("/api/v1/performance-records").status_code == 401
+
+
+def test_admin_self_paid_toggle_revokes_session_without_granting_department_writes(account_client):
+    client = account_client
+    headers, me = _login(client, "SYN_ADMIN")
+    account_id = me["account"]["id"]
+    with client.app.state.session_factory() as session:
+        row = session.get(DepartmentAccount, account_id)
+        unchanged = (row.password_hash, row.role, row.department_id, row.active)
+    for revision, allowed in [(1, True), (2, False)]:
+        response = client.patch(f"/api/v1/accounts/{account_id}", headers=headers,
+                                json={"expected_revision": revision, "paid_analysis_allowed": allowed})
+        assert response.status_code == 200, response.text
+        assert response.json()["paid_analysis_allowed"] is allowed
+        assert response.json()["revision"] == revision + 1
+        assert client.get("/api/v1/accounts/me").status_code == 401
+        assert client.get("/api/v1/accounts").status_code == 401
+        headers, fresh = _login(client, "SYN_ADMIN")
+        assert fresh["account"]["paid_analysis_allowed"] is allowed
+        assert fresh["capabilities"]["manage_accounts"] is True
+        assert fresh["capabilities"]["write_decisions"] is False
+        assert fresh["capabilities"]["write_results"] is False
+        with client.app.state.session_factory() as session:
+            row = session.get(DepartmentAccount, account_id)
+            assert (row.password_hash, row.role, row.department_id, row.active) == unchanged

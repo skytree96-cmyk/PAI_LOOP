@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260908-required-login-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-paid-access-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -1170,8 +1170,9 @@
           </div>
           <p class="account-identity" id="accountIdentity" hidden></p>
           <section id="accountManagement" hidden aria-labelledby="accountManagementTitle">
-            <h3 id="accountManagementTitle">부서 계정 활성화</h3>
-            <p>발급 정보를 확인한 부서만 활성화하세요. 비밀번호와 외부 조회·분석 권한은 바뀌지 않습니다.</p>
+            <h3 id="accountManagementTitle">계정 및 분석 권한 관리</h3>
+            <p>외부 조회·유료 분석 권한은 나라장터 외부 조회와 개별 공고의 첨부 AI 분석에 사용됩니다. 분석 전 비용 확인은 계속 표시됩니다.</p>
+            <p>권한을 바꾼 계정은 다시 로그인해야 합니다. 현재 관리자 계정도 동일하게 적용됩니다.</p>
             <button class="button button--secondary" id="accountManagementRefresh" type="button">계정 상태 새로고침</button>
             <p id="accountManagementStatus" role="status" aria-live="polite"></p>
             <ul class="account-management-list" id="accountManagementList"></ul>
@@ -1268,6 +1269,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260908-required-login-v1" defer></script>
+    <script src="./app.js?v=20260908-paid-access-v1" defer></script>
   </body>
 </html>

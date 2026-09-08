@@ -33,7 +33,7 @@ globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,login
  hydrateDepartmentDecisionList,hydrateOperatorDecisions,normalizeNotice,normalizeResultLearningNotice,
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
  submittedRatePreview,updateResultLearningRate,resultLearningRateCalculation,resultLearningRateLabel,
- bindResultLearningOpeningEvents,manualAnalysisAuthHeaders,clearManualAnalysisToken,loadPerformanceEditor,loadManagedAccounts,activateManagedAccount,
+ bindResultLearningOpeningEvents,manualAnalysisAuthHeaders,clearManualAnalysisToken,loadPerformanceEditor,loadManagedAccounts,activateManagedAccount,toggleManagedAccountPaidAccess,
  renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
  renderResults:originalRenderResultLearning,formatBudget,
  setView,
@@ -797,4 +797,78 @@ const read=u.loadManagedAccounts();await tick();
 u.applyAccountSession({enabled:true,authenticated:false});
 respond(requests[0],200,{accounts:[{id:'SYN-other',role:'DEPARTMENT',active:false,revision:1}]});await read;
 assert.equal(u.state.managedAccounts.records.length,0);assert.equal(u.els.accountManagementList.innerHTML,'');
+''')
+
+
+@pytest.mark.parametrize('allowed', [False, True])
+@pytest.mark.parametrize('role', ['DEPARTMENT', 'ADMIN'])
+def test_paid_permission_toggle_is_explicit_cas_and_serializes_all_account_actions(allowed, role):
+    _run_behavior('const allowed=' + json.dumps(allowed) + ';const role=' + json.dumps(role) + ';' + r'''
+const admin=payload('SYN-ADMIN');admin.account.role='ADMIN';admin.capabilities={manage_accounts:true};u.applyAccountSession(admin);
+const row={id:'SYN-target',role,username:'SYN-user',active:false,paid_analysis_allowed:allowed,revision:4};
+u.state.managedAccounts.records=[row];
+const change=u.toggleManagedAccountPaidAccess(row.id);await tick();
+assert.equal(requests.length,1);assert.equal(requests[0].options.method,'PATCH');
+assert.deepEqual(JSON.parse(requests[0].options.body),{expected_revision:4,paid_analysis_allowed:!allowed});
+assert.equal(requests[0].options.headers.get('X-CSRF-Token'),'SYN-CSRF-SYN-ADMIN');
+assert.equal(u.els.accountManagementRefresh.disabled,true);
+assert.match(u.els.accountManagementList.innerHTML,/data-toggle-paid-account[^>]*disabled/);
+await u.toggleManagedAccountPaidAccess(row.id);await u.activateManagedAccount(row.id);await u.loadManagedAccounts();
+assert.equal(requests.length,1,'pending paid change blocks activation, toggles and refresh');
+respond(requests[0],200,{...row,paid_analysis_allowed:!allowed,revision:5});await change;
+assert.equal(u.state.managedAccounts.records[0].paid_analysis_allowed,!allowed);
+assert.equal(u.state.managedAccounts.records[0].active,false);
+assert.equal(u.state.managedAccounts.records[0].role,role);
+assert.equal(u.els.accountManagementRefresh.disabled,false);
+assert.equal(requests.length,1);assert.equal(context.window.location.replaced,undefined);
+''')
+
+
+@pytest.mark.parametrize('failure', ['conflict', 'unavailable', 'wrong-ack'])
+def test_paid_permission_uncertain_result_requires_fresh_read_and_never_resends(failure):
+    _run_behavior('const failure=' + json.dumps(failure) + ';' + r'''
+const admin=payload('SYN-ADMIN');admin.account.role='ADMIN';admin.capabilities={manage_accounts:true};u.applyAccountSession(admin);
+const row={id:'SYN-target',role:'DEPARTMENT',username:'SYN-user',active:true,paid_analysis_allowed:false,revision:1};
+u.state.managedAccounts.records=[row];
+const change=u.toggleManagedAccountPaidAccess(row.id);await tick();
+respond(requests[0],failure==='conflict'?409:failure==='unavailable'?503:200,
+ failure==='wrong-ack'?{...row,paid_analysis_allowed:true,revision:1}:{detail:'SYN result unconfirmed'});
+await change;
+assert.equal(u.state.managedAccounts.records.length,0);assert.match(u.els.accountManagementStatus.textContent,/새로고침/);
+await u.toggleManagedAccountPaidAccess(row.id);assert.equal(requests.length,1);
+const refresh=u.loadManagedAccounts();await tick();
+respond(requests[1],200,{accounts:[{...row,paid_analysis_allowed:true,revision:2}]});await refresh;
+assert.equal(requests[1].options.method,undefined,'resolution is a GET, not a retry');
+assert.equal(u.state.managedAccounts.records[0].paid_analysis_allowed,true);
+''')
+
+
+@pytest.mark.parametrize('status', [200, 503])
+def test_admin_self_permission_change_locks_private_ui_and_waits_for_explicit_login(status):
+    _run_behavior('const status=' + json.dumps(status) + ';' + r'''
+const admin=payload('SYN-ADMIN');admin.account.role='ADMIN';admin.capabilities={manage_accounts:true};u.applyAccountSession(admin);
+const row={id:'SYN-ADMIN',role:'ADMIN',username:'SYN-user',active:true,paid_analysis_allowed:false,revision:1};
+u.state.managedAccounts.records=[row];u.state.resultLearning.records=[{noticeKey:'SYN-private'}];
+const change=u.toggleManagedAccountPaidAccess(row.id);await tick();
+respond(requests[0],status,status===200?{...row,paid_analysis_allowed:true,revision:2}:{detail:'SYN ambiguous'});await change;
+assert.equal(u.state.accountSession.authenticated,false);assert.equal(context.document.body.cleared,true);
+assert.equal(u.state.managedAccounts.records.length,0);assert.equal(u.state.resultLearning.records.length,0);
+assert.equal(context.window.location.replaced,undefined,'self change must not auto reload or retry');
+const title=context.document.created.find(node=>node.tag==='h1');
+assert.match(title.textContent,status===200?/다시 로그인/:/확인하지 못했습니다/);
+await u.toggleManagedAccountPaidAccess(row.id);assert.equal(requests.length,1);
+context.document.created.find(node=>node.tag==='button').events.click();
+assert.equal(context.window.location.replaced,'https://syn.invalid/notices?notice=SYN-N');assert.equal(requests.length,1);
+''')
+
+
+def test_department_cannot_change_paid_permission_and_late_admin_ack_cannot_restore_it():
+    _run_behavior(r'''
+const row={id:'SYN-target',role:'DEPARTMENT',username:'SYN-user',active:true,paid_analysis_allowed:false,revision:1};
+u.state.managedAccounts.records=[row];await u.toggleManagedAccountPaidAccess(row.id);assert.equal(requests.length,0);
+const admin=payload('SYN-ADMIN');admin.account.role='ADMIN';admin.capabilities={manage_accounts:true};u.applyAccountSession(admin);
+u.state.managedAccounts.records=[row];const change=u.toggleManagedAccountPaidAccess(row.id);await tick();
+login('SYN-NEW');respond(requests[0],200,{...row,paid_analysis_allowed:true,revision:2});await change;
+assert.equal(u.state.accountSession.account.id,'SYN-NEW');assert.equal(u.state.managedAccounts.records.length,0);
+assert.equal(u.els.accountManagementList.innerHTML,'');assert.equal(requests.length,1);
 ''')
