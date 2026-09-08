@@ -239,7 +239,7 @@
       // An uncertain session check must stop here, not reload the same document forever.
       const stylesheet = document.createElement("link");
       stylesheet.rel = "stylesheet";
-      stylesheet.href = "/login-gate.css?v=20260908-required-login-v1";
+      stylesheet.href = "/login-gate.css?v=20260908-login-brand-v1";
       document.head.append(stylesheet);
       const card = document.createElement("main");
       card.className = "login-card";
@@ -274,6 +274,7 @@
       "detailDrawer", "drawerLoading", "closeDetailButton", "previousNoticeButton", "nextNoticeButton", "detailPosition", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "accountLoginButton", "accountButtonLabel", "accountDialog", "accountLoginForm", "accountDialogTitle", "accountDialogHelp", "accountDialogClose", "accountUsername", "accountPassword", "accountCredentials", "accountIdentity", "accountError", "accountLogoutButton", "accountSubmitButton",
+      "sidebarAccount", "sidebarAccountLabel", "sidebarAccountRole",
       "accountManagement", "accountManagementRefresh", "accountManagementStatus", "accountManagementList",
       "departmentDecisionCard", "departmentDecisionState", "departmentDecisionList",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
@@ -905,7 +906,10 @@
     const session = state.accountSession;
     els.accountLoginButton.hidden = !session.enabled;
     const label = session.authenticated
-      ? session.account.department_name || "개발자 관리자" : "부서 로그인";
+      ? session.account.role === "ADMIN" ? "개발자 관리자" : stringValue(session.account.department_name, "부서 정보 확인 중") : "부서 로그인";
+    els.sidebarAccount.hidden = !session.authenticated;
+    els.sidebarAccountLabel.textContent = session.authenticated ? label : "";
+    els.sidebarAccountRole.textContent = session.authenticated ? session.account.role === "ADMIN" ? "로그인한 관리자" : "로그인한 부서" : "";
     els.accountButtonLabel.textContent = label;
     els.accountLoginButton.setAttribute("aria-label", session.authenticated ? `${label} 계정 정보` : "부서 로그인");
     els.accountDialogTitle.textContent = session.authenticated ? "로그인 계정" : "부서 로그인";
@@ -1098,6 +1102,9 @@
 
   function clearAccountPrivateState() {
     state.accountEpoch += 1;
+    els.sidebarAccount.hidden = true;
+    els.sidebarAccountLabel.textContent = "";
+    els.sidebarAccountRole.textContent = "";
     state.managedAccounts = { records: [], loading: false, pending: false };
     if (els.accountManagementList) els.accountManagementList.replaceChildren();
     if (els.accountManagementStatus) els.accountManagementStatus.textContent = "";

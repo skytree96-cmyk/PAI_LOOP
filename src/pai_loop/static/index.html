@@ -3,21 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0f4c81" />
+    <meta name="theme-color" content="#12568e" />
     <meta name="color-scheme" content="light" />
     <meta
       name="description"
       content="PAI - 근거 기반 공공입찰 의사결정 대시보드"
     />
     <title>PAI · 입찰 의사결정 대시보드</title>
-    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./favicon.svg?v=20260908-login-brand-v1" type="image/svg+xml" />
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260908-paid-access-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-login-brand-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -26,17 +26,11 @@
       <aside class="sidebar" aria-label="주요 탐색">
         <a class="brand" href="/" aria-label="PAI 홈">
           <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 44 44" role="img">
-              <path d="M11.3 9.7a16 16 0 0 1 22.8 4.7" />
-              <path d="m33.8 8.9.5 6.4-6.2-.8" />
-              <path d="M32.7 34.3a16 16 0 0 1-22.8-4.7" />
-              <path d="m10.2 35.1-.5-6.4 6.2.8" />
-              <circle cx="22" cy="22" r="5.3" />
-            </svg>
+            <img src="/favicon.svg?v=20260908-login-brand-v1" width="42" height="42" alt="" />
           </span>
           <span>
-            <strong>PAI</strong>
-            <small>공공입찰 의사결정</small>
+            <strong class="brand-wordmark">PAI<span class="brand-dot" aria-hidden="true"></span></strong>
+            <small>AI 공공입찰 워크스페이스</small>
           </span>
         </a>
 
@@ -136,11 +130,11 @@
               <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">채널 연결 준비 중</small>
             </div>
 
-        <div class="sidebar-foot">
-          <span class="avatar" aria-hidden="true">P</span>
+        <div class="sidebar-foot" id="sidebarAccount" role="status" aria-live="polite" hidden>
+          <img class="avatar" src="/favicon.svg?v=20260908-login-brand-v1" width="36" height="36" alt="" aria-hidden="true" />
           <span>
-            <strong>PAI 업무공간</strong>
-            <small>의사결정 워크스페이스</small>
+            <strong id="sidebarAccountLabel"></strong>
+            <small id="sidebarAccountRole"></small>
           </span>
         </div>
       </aside>
@@ -1269,6 +1263,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260908-paid-access-v1" defer></script>
+    <script src="./app.js?v=20260908-login-brand-v1" defer></script>
   </body>
 </html>

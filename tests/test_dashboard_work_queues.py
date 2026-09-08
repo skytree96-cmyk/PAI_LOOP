@@ -186,7 +186,7 @@ def test_dashboard_queue_routes_serve_application(client, path):
     login_department_reader(client)
     response = client.get(path)
     assert response.status_code == 200
-    assert "20260908-paid-access-v1" in response.text
+    assert "20260908-login-brand-v1" in response.text
 
 
 def _assert_frontend_queue_parity(rows, dashboard):
