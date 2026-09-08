@@ -2,7 +2,7 @@
 
 낙찰 이력 조회의 `AWARD_PAGE_INVALID`만으로 정상 빈 응답을 잘못 거부했다고
 단정할 수 없다. 이 진단은 파서가 이미 거부한 JSON 응답의 **구조만** 구분한다.
-파서 허용 범위, 날짜 분할, 페이지 수, fallback, 재시도 및 deadline은 그대로다.
+기본 조회의 파서 허용 범위, 날짜 분할, 페이지 수, fallback, 재시도 및 deadline은 그대로다.
 개찰 결과·참여회사 판정에는 적용하지 않는다.
 
 ## 조회
@@ -56,3 +56,51 @@ HTTP·통신·비JSON 실패는 기존 `window_error_counts`를 따른다. 따�
 코드 준비 과정에서 운영 API/PPS/모델을 호출하지 않았다. 실제 실패 원인이
 어떤 응답 형태인지는 아직 확정하지 않았다. 다음 운영 확인은 별도 승인된
 최소 범위에서 수행하며, 이 진단 추가 자체가 재조회 승인이나 파서 완화는 아니다.
+
+## 명시적 단일 호출 진단
+
+기존 인증을 그대로 사용하는 아래 refresh에 `diagnostic_probe: true`를 명시하면
+**실제 HTTP 요청을 최대1회** 실행한다. 모델 호출은 없다. 이것은 기본 false이며
+기존 W10 요청·응답 키·일반 조회 동작은 바뀌지 않는다.
+
+`POST /api/v1/notices/{notice_key}/award-history/refresh`
+
+```json
+{
+  "keyword": "SYN 교육",
+  "years": 3,
+  "page_size": 100,
+  "max_pages_per_window": 1,
+  "dry_run": true,
+  "include_opening_results": false,
+  "diagnostic_probe": true
+}
+```
+
+- `dry_run=true`, `include_opening_results=false`가 필수다. 다른 조합과 문자열
+  `"true"`인 diagnostic_probe는 provider 호출·감사 작업 생성 전에422로 거절한다.
+- 요청한 기간 중 **가장 이른 첫30일 구간의 첫 페이지**만 읽는다. `window`는
+  요청 기간이며 전체 조회 완료 범위가 아니다. 기존 실패를 재생하거나 특정 실패
+  구간을 선택하는 기능은 없다. 다음 실제 확인은 승인된 요청1회로만 진행한다.
+- 클라이언트 생성 때 retry budget을0으로 고정하고 HTTP 진입 전에 한 번만
+  예약한다. 성공·빈 응답·파싱 실패·HTTP 오류·timeout 모두 다음 페이지/기간,
+  7일 fallback, 개찰 조회를 실행하지 않는다. redirect도 따라가지 않는다.
+  기존 deadline이 호출 전에 만료되면 실제 호출은0회다. 같은 클라이언트 재사용으로
+  예약을 다시 열 수 없다. 새 POST는 별도 요청이므로 **자동 재전송하지 않는다**.
+- 응답을 받은 직후 deadline에 도달하더라도 이미 받은 파싱 실패의 안전한 shape를
+  기록한다. 파서 허용 범위는 그대로이며 요청 상한 중단을 provider 오류로 만들지 않는다.
+- 정상 첫 페이지와 빈 결과도 `status=PARTIAL` 및 고정 경고 접두어
+  `AWARD_DIAGNOSTIC_PROBE_SINGLE_CALL:`로 전체 기간 미조회를 표시한다.
+  `fetched`는 첫 페이지에서 검색어에 맞은 행 수이고, `created/updated/duplicates/records`
+  는 모두0이다. 일반 dry_run의 예상 변경 건수와 달리 이 모드는 변경 계획도 생성하지 않는다.
+- 낙찰 이력·개찰 업체·사람의 판단 기록을 만들거나 수정하지 않는다. 감사 job만
+  `DRY_RUN/PARTIAL`, `diagnostic_probe=true`, 호출 수 및 기존 안전한 오류/shape 집계로 저장한다.
+  원응답, 공급자 문자열·업체정보·URL을 저장하거나 응답에 추가하지 않는다.
+- 응답의 `job_id`로 위 서버 키 전용 GET을1회 읽는다. HTTP·통신·비JSON 오류에는
+  파싱 가능한 shape가 없으므로 기존 `window_error_counts`와 함께 판단한다.
+  이1회가 성공/빈 응답이면 실패 shape를 얻지 못할 수 있으며 과거189회 조회를 반복하지 않는다.
+
+합성 회귀는 HTTP handler의 실제 호출 수를 세어 유효 행·빈 응답·표준 envelope 누락·
+거부 페이지·HTTP503·redirect·timeout·비JSON·provider 오류 각각1회, 선행 deadline은0회를
+검증한다. 직접 클라이언트의 retries3 설정도1회로 제한되며, 기존 낙찰 및 사람 판단의
+전체 열 값 보존, 원응답 표식 비노출, 동일 응답 키와 기본 조회의 다음 기간 처리를 확인한다.

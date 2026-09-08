@@ -178,17 +178,41 @@ class _AwardPageParseError(PpsApiError):
         self.page_shape = _award_page_shape(payload)
 
 
+class _AwardProbeLimitReached(RuntimeError):
+    """Local request boundary, never classified as a provider failure."""
+
+
 class PpsAwardClient(PpsClient):
     """Bounded client for service-award history using the common PPS envelope."""
 
-    def __init__(self, *, service_key: str, base_url: str = DEFAULT_BASE_URL, **kwargs: Any) -> None:
+    def __init__(
+        self, *, service_key: str, base_url: str = DEFAULT_BASE_URL,
+        diagnostic_probe: bool = False, **kwargs: Any,
+    ) -> None:
+        if diagnostic_probe:
+            kwargs["max_retries"] = 0
         super().__init__(service_key=service_key, base_url=base_url, **kwargs)
+        self._diagnostic_probe = diagnostic_probe
+        self._diagnostic_request_reserved = False
         self.fallback_window_count = 0
         self.window_errors: list[str] = []
         self.hit_incomplete_response = False
         self._window_error_counts: Counter = Counter()
         self._page_shape_counts: Counter = Counter()
         self._suppressed_page_shapes = 0
+
+    def _request(
+        self, operation_path: str, params: dict[str, Any], *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        if self._diagnostic_probe:
+            # Reserve before entering the shared HTTP implementation, including
+            # errors/timeouts. The reservation lasts for this client lifetime.
+            with self._request_count_lock:
+                if self._diagnostic_request_reserved:
+                    raise _AwardProbeLimitReached("diagnostic probe request already consumed")
+                self._diagnostic_request_reserved = True
+        return super()._request(operation_path, params, timeout_seconds=timeout_seconds)
 
     @property
     def page_shape_diagnostics(self) -> dict[str, Any]:
@@ -236,6 +260,8 @@ class PpsAwardClient(PpsClient):
         page = 1
         expected_total: int | None = None
         while True:
+            if self._diagnostic_probe and self._diagnostic_request_reserved:
+                return results
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
                 return results
@@ -256,7 +282,8 @@ class PpsAwardClient(PpsClient):
             )
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
-                return results
+                if not self._diagnostic_probe:
+                    return results
             try:
                 raw_items, total = parse_paged_response(payload)
                 body = payload["response"]["body"]
@@ -455,6 +482,8 @@ class PpsAwardClient(PpsClient):
             raise ValueError("max_window_days must be between 1 and 30")
         if not 1 <= fallback_window_days < max_window_days:
             raise ValueError("fallback_window_days must be shorter than max_window_days")
+        if self._diagnostic_probe and self._diagnostic_request_reserved:
+            return
         self.hit_page_limit = False
         self.hit_time_limit = False
         self.fallback_window_count = 0
@@ -478,6 +507,9 @@ class PpsAwardClient(PpsClient):
                 )
             except PpsApiError as exc:
                 self._record_window_error("PRIMARY", exc)
+                if self._diagnostic_probe:
+                    self.window_errors.append(f"{window.start.isoformat()}..{window.end.isoformat()}")
+                    return
                 # Do not repeat an identical short interval. A failed query is
                 # still missing coverage, even when no rows have been returned.
                 if (window.end - window.start).days + 1 <= fallback_window_days:
@@ -516,3 +548,5 @@ class PpsAwardClient(PpsClient):
                         if not continue_on_window_error:
                             raise
             yield from results
+            if self._diagnostic_probe:
+                return
