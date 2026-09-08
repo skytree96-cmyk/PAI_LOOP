@@ -81,6 +81,33 @@ def _run_behavior(script):
     assert result.returncode == 0, result.stderr
 
 
+def test_sidebar_identity_uses_registered_department_and_clears_on_session_change():
+    _run_behavior(r'''
+const registered={...payload('SYN-A'),account:{...payload('SYN-A').account,
+ department_name:'SYN 등록 부서',username:'SYN_LOGIN',actor_label:'SYN 다른 입력'}};
+u.applyAccountSession(registered);
+assert.equal(u.els.sidebarAccount.hidden,false);
+assert.equal(u.els.sidebarAccountLabel.textContent,'SYN 등록 부서');
+assert.equal(u.els.sidebarAccountRole.textContent,'로그인한 부서');
+const old=u.loadAccountSession();await tick();login('SYN-B');
+respond(requests[0],200,registered);await old;
+assert.equal(u.els.sidebarAccountLabel.textContent,'SYN-B');
+u.applyAccountSession({...payload('SYN-ADMIN'),account:{...payload('SYN-ADMIN').account,role:'ADMIN'}});
+assert.equal(u.els.sidebarAccountLabel.textContent,'개발자 관리자');
+assert.equal(u.els.sidebarAccountRole.textContent,'로그인한 관리자');
+u.applyAccountSession({...payload('SYN-C'),account:{...payload('SYN-C').account,department_name:''}});
+assert.equal(u.els.sidebarAccountLabel.textContent,'부서 정보 확인 중');
+u.applyAccountSession({enabled:true,authenticated:false});
+assert.equal(u.els.sidebarAccount.hidden,true);
+assert.equal(u.els.sidebarAccountLabel.textContent,'');
+assert.equal(u.els.sidebarAccountRole.textContent,'');
+login('SYN-D');const expired=u.loadAccountSession();await tick();
+respond(requests[1],401,{});await expired;
+assert.equal(u.els.sidebarAccount.hidden,true);
+assert.equal(u.els.sidebarAccountLabel.textContent,'');
+''')
+
+
 def test_provider_review_form_preserves_exact_opening_without_sending_server_proof():
     _run_behavior(r'''
 const opening={bid_notice_no:'SYN-NUMBER',revision_no:'0',classification_no:'1',rebid_no:'2'};

@@ -6,6 +6,24 @@ import pytest
 
 
 SOURCE = Path(__file__).parents[1] / "src/pai_loop/static/login.js"
+
+
+def test_login_brand_assets_load_without_the_business_application():
+    html = SOURCE.with_name("login.html").read_text(encoding="utf-8")
+    css = SOURCE.with_name("login-gate.css").read_text(encoding="utf-8")
+    app = SOURCE.with_name("app.js").read_text(encoding="utf-8")
+    assert 'href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"' in html
+    assert 'class="login-wordmark" aria-hidden="true">PAI<span class="login-brand-dot">' in html
+    assert 'href="/favicon.svg?v=20260908-login-brand-v1"' in html
+    assert '/login-gate.css?v=20260908-login-brand-v1' in html and '/login-gate.css?v=20260908-login-brand-v1' in app
+    assert 'font-family: "Paperlogy"' in css and '--login-blue: #12568e' in css
+    assert 'letter-spacing: .035em' in css and 'font-weight: 800' in css
+    assert 'app.js' not in html and 'styles.css' not in html
+    assert 'id="entryLoginSubmit" type="submit" disabled' in html
+    assert 'autocomplete="username"' in html and 'autocomplete="current-password"' in html
+    assert 'id="entryLoginStatus" role="status" aria-live="polite"' in html
+
+
 HARNESS = r"""
 const assert=require('node:assert/strict'),vm=require('node:vm');
 const events={},elements={},requests=[],windowEvents={};

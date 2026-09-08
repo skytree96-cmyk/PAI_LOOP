@@ -239,14 +239,14 @@
       // An uncertain session check must stop here, not reload the same document forever.
       const stylesheet = document.createElement("link");
       stylesheet.rel = "stylesheet";
-      stylesheet.href = "/login-gate.css?v=20260908-required-login-v1";
+      stylesheet.href = "/login-gate.css?v=20260908-login-brand-v1";
       document.head.append(stylesheet);
       const card = document.createElement("main");
       card.className = "login-card";
       const title = document.createElement("h1");
-      title.textContent = relogin ? "권한이 변경되어 다시 로그인해야 합니다" : "로그인 상태를 확인하지 못했습니다";
+      title.textContent = relogin ? "계정 정보가 변경되어 다시 로그인해야 합니다" : "로그인 상태를 확인하지 못했습니다";
       const explanation = document.createElement("p");
-      explanation.textContent = relogin ? "외부 조회·유료 분석 권한이 변경되었습니다. 다시 로그인해 주세요." : "연결 상태를 확인한 뒤 다시 시도해 주세요.";
+      explanation.textContent = relogin ? "변경된 계정 정보로 다시 로그인해 주세요." : "연결 상태를 확인한 뒤 다시 시도해 주세요.";
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = relogin ? "로그인 화면으로" : "상태 다시 확인";
@@ -274,6 +274,7 @@
       "detailDrawer", "drawerLoading", "closeDetailButton", "previousNoticeButton", "nextNoticeButton", "detailPosition", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "accountLoginButton", "accountButtonLabel", "accountDialog", "accountLoginForm", "accountDialogTitle", "accountDialogHelp", "accountDialogClose", "accountUsername", "accountPassword", "accountCredentials", "accountIdentity", "accountError", "accountLogoutButton", "accountSubmitButton",
+      "sidebarAccount", "sidebarAccountLabel", "sidebarAccountRole",
       "accountManagement", "accountManagementRefresh", "accountManagementStatus", "accountManagementList",
       "departmentDecisionCard", "departmentDecisionState", "departmentDecisionList",
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
@@ -519,7 +520,7 @@
     });
     els.accountLoginButton.addEventListener("click", openAccountDialog);
     els.accountDialogClose.addEventListener("click", () => els.accountDialog.close());
-    els.accountDialog.addEventListener("close", () => { els.accountPassword.value = ""; });
+    els.accountDialog.addEventListener("close", () => { els.accountPassword.value = ""; clearManagedPasswordInputs(); });
     els.accountLoginForm.addEventListener("submit", loginDepartmentAccount);
     els.accountLogoutButton.addEventListener("click", logoutDepartmentAccount);
     els.accountManagementRefresh.addEventListener("click", loadManagedAccounts);
@@ -528,6 +529,14 @@
       if (button) void activateManagedAccount(button.dataset.activateAccount);
       const paidButton = event.target.closest("[data-toggle-paid-account]");
       if (paidButton) void toggleManagedAccountPaidAccess(paidButton.dataset.togglePaidAccount);
+      const passwordButton = event.target.closest("[data-reset-password]");
+      if (passwordButton) void resetManagedAccountPassword(passwordButton.dataset.resetPassword);
+    });
+    els.accountManagementList.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing && event.target.dataset.managedPassword) {
+        event.preventDefault();
+        void resetManagedAccountPassword(event.target.dataset.managedPassword);
+      }
     });
     els.performanceFilterForm.addEventListener("reset", () => {
       window.setTimeout(() => {
@@ -905,7 +914,10 @@
     const session = state.accountSession;
     els.accountLoginButton.hidden = !session.enabled;
     const label = session.authenticated
-      ? session.account.department_name || "개발자 관리자" : "부서 로그인";
+      ? session.account.role === "ADMIN" ? "개발자 관리자" : stringValue(session.account.department_name, "부서 정보 확인 중") : "부서 로그인";
+    els.sidebarAccount.hidden = !session.authenticated;
+    els.sidebarAccountLabel.textContent = session.authenticated ? label : "";
+    els.sidebarAccountRole.textContent = session.authenticated ? session.account.role === "ADMIN" ? "로그인한 관리자" : "로그인한 부서" : "";
     els.accountButtonLabel.textContent = label;
     els.accountLoginButton.setAttribute("aria-label", session.authenticated ? `${label} 계정 정보` : "부서 로그인");
     els.accountDialogTitle.textContent = session.authenticated ? "로그인 계정" : "부서 로그인";
@@ -951,6 +963,16 @@
       ${record.role === "DEPARTMENT" && !record.active ? `<button class="button button--secondary" type="button" data-activate-account="${escapeAttribute(record.id)}" aria-label="${escapeAttribute(record.department_name || record.username)} 계정 활성화" ${managed.pending || managed.loading ? "disabled" : ""}>활성화</button>` : ""}
       ${["ADMIN", "DEPARTMENT"].includes(record.role) && typeof record.paid_analysis_allowed === "boolean" ? `<button class="button button--secondary" type="button" data-toggle-paid-account="${escapeAttribute(record.id)}" aria-label="${escapeAttribute(record.department_name || record.username)} 외부 조회·유료 분석 ${record.paid_analysis_allowed ? "해제" : "허용"}" ${managed.pending || managed.loading ? "disabled" : ""}>권한 ${record.paid_analysis_allowed ? "해제" : "허용"}</button>` : ""}
       </div>
+      <div class="account-password-reset">
+        <label>새 임시 비밀번호 <input type="password" autocomplete="new-password" spellcheck="false"
+          data-managed-password="${escapeAttribute(record.id)}" minlength="3" maxlength="256"
+          aria-label="${escapeAttribute(record.department_name || record.username)} 새 임시 비밀번호"
+          ${managed.pending || managed.loading || managed.passwordUnconfirmed?.has(record.id) ? "disabled" : ""}></label>
+        <button class="button button--secondary" type="button" data-reset-password="${escapeAttribute(record.id)}"
+          aria-label="${escapeAttribute(record.department_name || record.username)} 비밀번호 재설정"
+          ${managed.pending || managed.loading || managed.passwordUnconfirmed?.has(record.id) ? "disabled" : ""}>비밀번호 재설정</button>
+        ${managed.passwordUnconfirmed?.has(record.id) ? "<small>변경 결과 확인 필요 · 새 비밀번호로 로그인 여부를 확인해 주세요. 이 화면에서는 재전송하지 않습니다.</small>" : ""}
+      </div>
     </li>`).join("");
   }
 
@@ -965,7 +987,7 @@
       if (epoch !== state.accountEpoch) return;
       if (!Array.isArray(response.accounts)) throw new Error("Invalid account list");
       state.managedAccounts.records = response.accounts;
-      els.accountManagementStatus.textContent = `계정 ${response.accounts.length}개 · 계정 활성 상태와 외부 조회·유료 분석 권한을 확인해 주세요.`;
+      els.accountManagementStatus.textContent = `계정 ${response.accounts.length}개 · 임시 비밀번호는 3자 이상입니다. 현재 관리자 비밀번호는 다른 계정 변경을 마친 뒤 마지막에 바꿔 주세요.`;
     } catch (_) {
       if (epoch !== state.accountEpoch) return;
       state.managedAccounts.records = [];
@@ -1043,6 +1065,60 @@
     }
   }
 
+  function clearManagedPasswordInputs() {
+    for (const input of els.accountManagementList.querySelectorAll?.("[data-managed-password]") || []) input.value = "";
+  }
+
+  async function resetManagedAccountPassword(id) {
+    const managed = state.managedAccounts;
+    if (!state.accountSession.authenticated || state.accountSession.capabilities.manage_accounts !== true
+      || managed.loading || managed.pending || managed.passwordUnconfirmed?.has(id)) return;
+    const row = managed.records.find((record) => record.id === id);
+    if (!row || !["ADMIN", "DEPARTMENT"].includes(row.role) || !Number.isSafeInteger(row.revision) || row.revision < 1) return;
+    const input = [...(els.accountManagementList.querySelectorAll?.("[data-managed-password]") || [])]
+      .find((field) => field.dataset.managedPassword === id);
+    let password = input?.value || "";
+    if (input) input.value = "";
+    const minimum = 3;
+    if (Array.from(password).length < minimum || Array.from(password).length > 256) {
+      password = "";
+      els.accountManagementStatus.textContent = `임시 비밀번호는 ${minimum}자 이상 256자 이하로 입력해 주세요.`;
+      return;
+    }
+    const epoch = state.accountEpoch;
+    const changingSelf = id === state.accountSession.account?.id;
+    managed.pending = true;
+    renderManagedAccounts();
+    try {
+      const response = await apiRequest(`/accounts/${encodeURIComponent(id)}`, {
+        method: "PATCH", headers: accountMutationHeaders(),
+        body: JSON.stringify({ expected_revision: row.revision, password }),
+      });
+      if (epoch !== state.accountEpoch) return;
+      if (response.id !== id || response.revision !== row.revision + 1 || response.role !== row.role
+        || response.active !== row.active || response.paid_analysis_allowed !== row.paid_analysis_allowed) throw new Error("Unconfirmed password change");
+      if (changingSelf) { lockApplication({ relogin: true }); return; }
+      managed.records = managed.records.map((record) => record.id === id ? { ...record, revision: response.revision } : record);
+      els.accountManagementStatus.textContent = `${row.department_name || row.username}의 비밀번호를 변경했습니다. 해당 계정은 새 비밀번호로 다시 로그인해야 합니다.`;
+    } catch (error) {
+      if (epoch !== state.accountEpoch) return;
+      if ([409, 422].includes(error?.status)) {
+        managed.records = [];
+        els.accountManagementStatus.textContent = "비밀번호가 변경되지 않았습니다. 계정 상태를 새로고침한 뒤 입력을 확인해 주세요.";
+      } else if (changingSelf) {
+        lockApplication({ retry: true });
+      } else {
+        // A fresh list cannot reveal the password or prove an ambiguous write.
+        // Keep this target blocked even after refresh; never resend the secret.
+        (managed.passwordUnconfirmed ||= new Set()).add(id);
+        els.accountManagementStatus.textContent = "비밀번호 변경 결과를 확인하지 못했습니다. 해당 계정의 새 비밀번호로 로그인 여부를 확인해 주세요. 재전송하지 않습니다.";
+      }
+    } finally {
+      password = "";
+      if (epoch === state.accountEpoch) { managed.pending = false; renderManagedAccounts(); }
+    }
+  }
+
   async function loginDepartmentAccount(event) {
     event.preventDefault();
     const returnNoticeKey = state.selectedNotice?.noticeKey;
@@ -1098,6 +1174,9 @@
 
   function clearAccountPrivateState() {
     state.accountEpoch += 1;
+    els.sidebarAccount.hidden = true;
+    els.sidebarAccountLabel.textContent = "";
+    els.sidebarAccountRole.textContent = "";
     state.managedAccounts = { records: [], loading: false, pending: false };
     if (els.accountManagementList) els.accountManagementList.replaceChildren();
     if (els.accountManagementStatus) els.accountManagementStatus.textContent = "";
