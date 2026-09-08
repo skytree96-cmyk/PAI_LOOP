@@ -1,9 +1,10 @@
 from copy import deepcopy
+from typing import get_args
 
 import httpx
 import pytest
 
-from pai_loop.gateway_diagnostics import safe_gateway_failure
+from pai_loop.gateway_diagnostics import GatewayOutputDetail, safe_gateway_failure
 from pai_loop.integrations.openai_extraction import OpenAIExtractionClient
 from pai_loop.models import Notice, NoticeVersion
 from pai_loop.pps_enrichment import enrich_notice_from_pps
@@ -14,6 +15,9 @@ from test_recovery_diagnostics import diagnostic_client, seed, read
 CANARY = "SYN-PRIVATE-GATEWAY-CANARY"
 FAILURE = {"version": "gateway-failure-v1", "stage": "MODEL_EXECUTION",
            "code": "MODEL_EXECUTION_FAILED", "upstream_http_status": 429}
+OUTPUT_FAILURE = {"version": "gateway-failure-v1", "stage": "OUTPUT_NORMALIZATION",
+                  "code": "OUTPUT_REJECTED", "upstream_http_status": None,
+                  "detail_code": "OUTPUT_JSON_INVALID"}
 
 
 def outcome(body, *, provider="n8n_claude", status=500):
@@ -66,12 +70,13 @@ def test_only_exact_gateway_http500_envelope_has_diagnostic_authority(body, prov
     assert CANARY not in result.model_dump_json()
 
 
-def test_failure_survives_current_attachment_persistence_and_safe_read_without_recalling_model():
+@pytest.mark.parametrize("failure", [FAILURE, OUTPUT_FAILURE])
+def test_failure_survives_current_attachment_persistence_and_safe_read_without_recalling_model(failure):
     engine, factory, notice_id, download = _single_hwpx_reuse_case(notice_key="PPS-SYN-GATEWAY-STORED")
     calls = []
     def handler(request):
         calls.append(request)
-        return httpx.Response(500, json={"gateway_error": FAILURE})
+        return httpx.Response(500, json={"gateway_error": failure})
     def model_factory(**kwargs):
         return OpenAIExtractionClient(**kwargs, transport=httpx.MockTransport(handler))
     kwargs = dict(notice_id=notice_id, openai_api_key="SYN-key", openai_model="claude-sonnet-5",
@@ -81,10 +86,10 @@ def test_failure_survives_current_attachment_persistence_and_safe_read_without_r
         result = enrich_notice_from_pps(session, **kwargs)
     with factory() as session:
         stored = session.get(NoticeVersion, result.version_id)
-        assert stored.source_payload["gateway_failure"] == FAILURE
+        assert stored.source_payload["gateway_failure"] == failure
         diagnostic = _notice_projection(session.get(Notice, notice_id), None)
         attachment, = diagnostic.attachments
-        assert attachment.gateway_failure.model_dump() == FAILURE
+        assert attachment.gateway_failure.model_dump() == failure
         assert attachment.model_http_status == 500
         assert "response_id" not in attachment.model_dump_json()
     with factory() as session:
@@ -100,9 +105,10 @@ def test_read_sanitizer_rejects_stored_extra_private_fields():
 
 
 @pytest.mark.parametrize("stale", [False, True])
-def test_server_read_keeps_gateway_failure_inside_selected_current_attempt(diagnostic_client, stale):
+@pytest.mark.parametrize("failure", [FAILURE, OUTPUT_FAILURE])
+def test_server_read_keeps_gateway_failure_inside_selected_current_attempt(diagnostic_client, stale, failure):
     def mutate(versions):
-        versions[-1].source_payload.update(gateway_failure=FAILURE,
+        versions[-1].source_payload.update(gateway_failure=failure,
             message="모델 API가 HTTP 500를 반환했습니다.")
         if stale:
             versions[-1].source_payload["current_manifest_sha256"] = CANARY
@@ -112,5 +118,33 @@ def test_server_read_keeps_gateway_failure_inside_selected_current_attempt(diagn
     response = read(diagnostic_client)
     assert response.status_code == 200
     attachment, = response.json()["notices"][0]["attachments"]
-    assert attachment["gateway_failure"] == (None if stale else FAILURE)
+    assert attachment["gateway_failure"] == (None if stale else failure)
     assert CANARY not in response.text
+
+
+@pytest.mark.parametrize("detail", get_args(GatewayOutputDetail))
+def test_fixed_output_detail_survives_consumer_without_additional_calls(detail):
+    failure = {**OUTPUT_FAILURE, "detail_code": detail}
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure.model_dump() == failure
+    assert result.response_id is None and not result.corrective_retry_used
+
+
+@pytest.mark.parametrize("changes", [
+    {"detail_code": CANARY}, {"detail_code": 1}, {"detail_code": True},
+    {"detail_code": {"message": CANARY}}, {"detail_code": ["OUTPUT_EMPTY"]},
+    {"stage": "MODEL_EXECUTION", "code": "MODEL_EXECUTION_FAILED"},
+    {"stage": "INPUT_VALIDATION", "code": "REQUEST_REJECTED"},
+    {"upstream_http_status": 500}, {"output": CANARY},
+])
+def test_output_detail_rejects_unknown_text_types_stages_and_private_extras(changes):
+    failure = {**OUTPUT_FAILURE, **changes}
+    assert safe_gateway_failure(failure) is None
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure is None
+    assert CANARY not in result.model_dump_json()
+
+
+def test_absent_or_null_detail_keeps_legacy_serialized_shape():
+    assert safe_gateway_failure(FAILURE).model_dump() == FAILURE
+    assert safe_gateway_failure({**FAILURE, "detail_code": None}).model_dump() == FAILURE

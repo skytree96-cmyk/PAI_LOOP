@@ -215,7 +215,7 @@ function validateRepositorySafetyContracts(definitions) {
       && claudeSerialised.includes("schemaJson.length > 64000")
       && claudeSerialised.includes("combinedCharacters > 210000")
       && claudeSerialised.includes("rawOutput.length > 500000")
-      && claudeSerialised.includes("fenceMarkers.length !== 2")
+      && claudeSerialised.includes("const fenced = /^```(?:json)?")
       && claudeSerialised.includes("without prose")
       && claudeSerialised.includes("JSON.parse(outputText)")
       && claudeSerialised.includes("Array.isArray(parsed)")

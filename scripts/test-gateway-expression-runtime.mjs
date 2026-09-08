@@ -10,7 +10,7 @@ assert.equal(require("@n8n/tournament/package.json").version, "1.9.0");
 const evaluator = new Tournament(error => { throw error; });
 const workflow = JSON.parse(fs.readFileSync("workflows/pai-loop-13-claude-extraction-gateway.json", "utf8"));
 const fallback = { gateway_error: { version: "gateway-failure-v1", stage: "OUTPUT_NORMALIZATION",
-  code: "OUTPUT_REJECTED", upstream_http_status: null } };
+  code: "OUTPUT_REJECTED", upstream_http_status: null, detail_code: "TERMINAL_GUARD_REJECTED" } };
 const canary = "SYN-PRIVATE-EXPRESSION-INPUT";
 const valid = { id: "pai_claude_SYN_runtime", status: "completed", model: "claude-sonnet-5",
   output_text: '{"summary":"SYN valid output"}', usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } };
@@ -50,6 +50,26 @@ for (const [name, successAllowed] of [["Respond Gateway Success", true], ["Respo
       : { status: 500, body: !successAllowed && failures.includes(input) ? input : fallback };
     assert.deepEqual(result, expected, `${name} must preserve the bounded terminal response`);
     assert.notEqual(result.body, input);
+    assert(!JSON.stringify(result).includes(canary));
+    checked += 1;
+  }
+  for (const detail of ["OUTPUT_EMPTY", "OUTPUT_TYPE_INVALID", "OUTPUT_TOO_LARGE",
+    "OUTPUT_FENCE_INVALID", "OUTPUT_JSON_INVALID", "OUTPUT_NOT_OBJECT",
+    "EXECUTION_CONTEXT_INVALID", "NORMALIZER_EXCEPTION", "TERMINAL_GUARD_REJECTED"]) {
+    const input = { gateway_error: { ...fallback.gateway_error, detail_code: detail } };
+    const result = evaluate(input);
+    assert.deepEqual(result, { status: 500, body: input });
+    assert.notEqual(result.body.gateway_error, input.gateway_error);
+    checked += 1;
+  }
+  for (const input of [
+    { gateway_error: { ...fallback.gateway_error, detail_code: canary } },
+    { gateway_error: { ...fallback.gateway_error, detail_code: 1 } },
+    { gateway_error: { ...failures[1].gateway_error, detail_code: "OUTPUT_EMPTY" } },
+    { gateway_error: { ...fallback.gateway_error, message: canary } },
+  ]) {
+    const result = evaluate(input);
+    assert.deepEqual(result, { status: 500, body: fallback });
     assert(!JSON.stringify(result).includes(canary));
     checked += 1;
   }
