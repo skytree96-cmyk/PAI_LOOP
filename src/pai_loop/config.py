@@ -1,9 +1,24 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+def _safe_teams_url(value: str | None) -> str:
+    if (not isinstance(value, str) or len(value) > 8192
+            or any(ord(char) < 32 or ord(char) == 127 for char in value) or "\\" in value):
+        return ""
+    candidate = value.strip()
+    try:
+        parsed = urlsplit(candidate)
+        if (parsed.scheme == "https" and parsed.hostname == "teams.microsoft.com"
+                and parsed.username is None and parsed.password is None and parsed.port in (None, 443)):
+            return candidate
+    except ValueError:
+        pass
+    return ""
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -41,6 +56,7 @@ class Settings:
     seed_synthetic: bool = False
     cors_origins: tuple[str, ...] = ("http://localhost:8000", "http://localhost:5173")
     log_level: str = "INFO"
+    pai_bot_teams_url: str = field(default="", repr=False)
     api_key: str | None = None
     private_evidence_token: str | None = None
     public_read_only: bool = False
@@ -60,6 +76,10 @@ class Settings:
     pps_base_url: str = "https://apis.data.go.kr/1230000"
     pps_notice_operation: str = "ad/BidPublicInfoService/getBidPblancListInfoServcPPSSrch"
     pps_award_operation: str = "as/ScsbidInfoService/getScsbidListSttusServcPPSSrch"
+
+    @property
+    def safe_pai_bot_teams_url(self) -> str:
+        return _safe_teams_url(self.pai_bot_teams_url)
 
     @property
     def public_manual_analysis_token_valid(self) -> bool:
@@ -112,6 +132,7 @@ class Settings:
             cors_origins=_csv(os.getenv("PAI_LOOP_CORS_ORIGINS"))
             or ("http://localhost:8000", "http://localhost:5173"),
             log_level=os.getenv("PAI_LOOP_LOG_LEVEL", "INFO"),
+            pai_bot_teams_url=os.getenv("PAI_BOT_TEAMS_URL", ""),
             api_key=os.getenv("PAI_LOOP_API_KEY") or None,
             private_evidence_token=(
                 os.getenv("PAI_LOOP_PRIVATE_EVIDENCE_TOKEN") or None
