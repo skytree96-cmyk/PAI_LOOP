@@ -12,11 +12,6 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from .auth import require_api_key, require_private_evidence_access
-from .manual_analysis import (
-    _manual_feature_enabled,
-    _require_manual_operator,
-    _same_origin_request,
-)
 from .models import CompanyPerformanceRecord, Evidence
 
 
@@ -310,19 +305,11 @@ def _operator_access(request: Request, *, mutation: bool) -> bool:
     ):
         require_private_evidence_access(request)
         return True
-    if _manual_feature_enabled(request):
-        if mutation and not _same_origin_request(request):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="홈페이지와 동일한 출처에서만 실적을 변경할 수 있습니다.",
-            )
-        fetch_site = request.headers.get("sec-fetch-site", "").strip().casefold()
-        if fetch_site and fetch_site not in {"same-origin", "none"}:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="홈페이지와 동일한 출처에서만 실적을 조회할 수 있습니다.",
-            )
-        _require_manual_operator(request)
+    from .accounts import authenticated_account, enabled
+    if enabled(request):
+        authenticated_account(request, mutation=mutation)
+        if mutation:
+            raise HTTPException(403, "실적 원장 변경에는 별도 증빙 관리 권한이 필요합니다.")
         return False
     require_api_key(request)
     return False

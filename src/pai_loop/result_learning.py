@@ -14,11 +14,6 @@ from .auth import require_api_key
 from .accounts import Identity, authenticated_account, audit, enabled, serial_transaction
 from .outcome_write_lock import lock_outcome_notice
 from .notice_freshness import authoritative_pps_notice_is_cancelled
-from .manual_analysis import (
-    _manual_feature_enabled,
-    _require_manual_operator,
-    _same_origin_request,
-)
 from .models import BidOutcome, Notice
 from .outcome_identity import PpsOpeningIdentity, normalise_opening_identity
 from .outcome_participation import PARTICIPATION_KIND, provider_participation_verified
@@ -267,28 +262,11 @@ DbSession = Annotated[Session, Depends(get_session)]
 
 
 def _operator_access(request: Request, *, mutation: bool) -> Identity | None:
-    if enabled(request):
-        if request.headers.get("x-pai-loop-api-key"):
-            require_api_key(request)
-            return None
-        return authenticated_account(request, mutation=mutation, department_write=mutation)
     if request.headers.get("x-pai-loop-api-key"):
         require_api_key(request)
-        return
-    if _manual_feature_enabled(request):
-        if mutation and not _same_origin_request(request):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="홈페이지와 동일한 출처에서만 결과 학습을 변경할 수 있습니다.",
-            )
-        fetch_site = request.headers.get("sec-fetch-site", "").strip().casefold()
-        if fetch_site and fetch_site not in {"same-origin", "none"}:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="홈페이지와 동일한 출처에서만 결과 학습을 조회할 수 있습니다.",
-            )
-        _require_manual_operator(request)
-        return
+        return None
+    if enabled(request):
+        return authenticated_account(request, mutation=mutation, department_write=mutation)
     require_api_key(request)
 
 

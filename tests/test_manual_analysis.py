@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from pai_loop.accounts import departments
 from pai_loop.analysis_api import AnalysisBatchResponse
 from pai_loop.integrations.openai_extraction import (
     OpenAIAttemptTelemetry,
@@ -30,6 +31,27 @@ SAME_ORIGIN_HEADERS = {
     "Sec-Fetch-Site": "same-origin",
 }
 EXTRACTION_ALLOWED = {"run_extraction": True}
+
+
+def _login_department(client: TestClient, *, paid: bool = True) -> dict[str, str]:
+    # Synthetic account only, bootstrapped into this test's disposable database.
+    password = "SYN-account-fixture-password-0908"
+    accounts = [{"username": "SYN_MANUAL_DEPT", "password": password, "role": "DEPARTMENT",
+                 "department_id": next(iter(departments())), "active": True,
+                 "paid_analysis_allowed": paid}]
+    server_headers = SERVER_HEADERS
+    preview = client.post("/api/v1/accounts/bootstrap", headers=server_headers, json={"accounts": accounts})
+    assert preview.status_code == 200, preview.text
+    applied = client.post("/api/v1/accounts/bootstrap", headers=server_headers,
+                          json={"accounts": accounts, "dry_run": False, "preview_id": preview.json()["preview_id"]})
+    assert applied.status_code == 200, applied.text
+    origin = {"Origin": "https://testserver", "Sec-Fetch-Site": "same-origin"}
+    login = client.post("/api/v1/accounts/login", headers=origin,
+                        json={"username": "SYN_MANUAL_DEPT", "password": password})
+    assert login.status_code == 200, login.text
+    assert login.json()["authenticated"] is True
+    assert login.json()["account"]["paid_analysis_allowed"] is paid
+    return {**origin, "X-CSRF-Token": login.json()["csrf_token"]}
 
 
 def _app(monkeypatch, *, enabled: bool = True, openai_configured: bool = True):
@@ -874,16 +896,17 @@ def test_zero_call_intent_rejects_a_state_that_requires_openai(monkeypatch) -> N
             ).count() == 0
 
 
-def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) -> None:
+def test_production_manual_analysis_requires_department_cookie_and_csrf(monkeypatch) -> None:
     app = _app(monkeypatch)
     app.state.settings = replace(
         app.state.settings,
         environment="production",
+        department_accounts_enabled=True,
         public_manual_analysis_token="2468",
     )
     monkeypatch.setattr(
         "pai_loop.manual_analysis.run_notice_analysis_batch",
-        lambda _payload, _request: _review_batch("batch-job-production-token"),
+        lambda _payload, _request: _review_batch("SYN-batch-job-production-account"),
     )
     production_origin = {
         "Origin": "https://testserver",
@@ -908,12 +931,21 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
             json=EXTRACTION_ALLOWED,
         )
         assert wrong.status_code == 401
+        retired_pin = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers={**production_origin, "X-PAI-Manual-Token": "2468"},
+            json=EXTRACTION_ALLOWED,
+        )
+        assert retired_pin.status_code == 401
+        account_headers = _login_department(client)
+        missing_csrf = client.post(
+            "/api/v1/notices/PPS-MANUAL-001/analysis/request",
+            headers=production_origin, json=EXTRACTION_ALLOWED,
+        )
+        assert missing_csrf.status_code == 403
         queued = client.post(
             "/api/v1/notices/PPS-MANUAL-001/analysis/request",
-            headers={
-                **production_origin,
-                "X-PAI-Manual-Token": "2468",
-            },
+            headers=account_headers,
             json=EXTRACTION_ALLOWED,
         )
         assert queued.status_code == 200, queued.text
@@ -925,14 +957,16 @@ def test_production_manual_analysis_requires_scoped_operator_token(monkeypatch) 
             assert "2468" not in str(job.request_json)
 
 
-def test_production_manual_analysis_is_hidden_until_token_is_configured(
-    monkeypatch,
+@pytest.mark.parametrize("retired_pin", [None, "2468", "1357"])
+def test_production_manual_analysis_is_hidden_when_accounts_are_disabled(
+    monkeypatch, retired_pin,
 ) -> None:
     app = _app(monkeypatch)
     app.state.settings = replace(
         app.state.settings,
         environment="production",
-        public_manual_analysis_token=None,
+        department_accounts_enabled=False,
+        public_manual_analysis_token=retired_pin,
     )
     production_origin = {
         "Origin": "https://testserver",
@@ -951,13 +985,14 @@ def test_production_manual_analysis_is_hidden_until_token_is_configured(
         assert response.status_code == 404
 
 
-def test_quantitative_diagnostics_requires_same_origin_pin_and_disables_cache(
+def test_quantitative_diagnostics_requires_same_origin_account_and_disables_cache(
     monkeypatch,
 ) -> None:
     app = _app(monkeypatch)
     app.state.settings = replace(
         app.state.settings,
         environment="production",
+        department_accounts_enabled=True,
         public_manual_analysis_token="2468",
     )
     production_origin = {
@@ -973,21 +1008,20 @@ def test_quantitative_diagnostics_requires_same_origin_pin_and_disables_cache(
             headers={"Origin": "https://attacker.invalid"},
         )
         assert cross_origin.status_code == 403
-        missing_pin = client.post(path, headers=production_origin)
-        assert missing_pin.status_code == 401
-        missing_notice_without_pin = client.post(
+        missing_session = client.post(path, headers=production_origin)
+        assert missing_session.status_code == 401
+        missing_notice_without_session = client.post(
             "/api/v1/notices/PPS-MISSING/analysis/quantitative-diagnostics",
             headers=production_origin,
         )
-        assert missing_notice_without_pin.status_code == 401
+        assert missing_notice_without_session.status_code == 401
 
-        response = client.post(
-            path,
-            headers={
-                **production_origin,
-                "X-PAI-Manual-Token": "2468",
-            },
-        )
+        for retired_pin in ("1357", "2468"):
+            retired = client.post(path, headers={**production_origin, "X-PAI-Manual-Token": retired_pin})
+            assert retired.status_code == 401
+        account_headers = _login_department(client, paid=False)
+        assert client.post(path, headers=production_origin).status_code == 403
+        response = client.post(path, headers=account_headers)
         assert response.status_code == 200, response.text
         assert response.headers["cache-control"] == "no-store"
         assert response.json() == {

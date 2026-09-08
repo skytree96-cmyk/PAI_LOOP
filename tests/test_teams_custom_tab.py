@@ -95,8 +95,8 @@ def test_table_and_card_detail_actions_open_the_full_screen_view() -> None:
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".detail-link-button" in styles
     assert "width: 100vw" in styles
-    assert "styles.css?v=20260908-teams-sidebar-v1" in html
-    assert "app.js?v=20260908-teams-sidebar-v1" in html
+    assert "styles.css?v=20260908-account-cutover-v1" in html
+    assert "app.js?v=20260908-account-cutover-v1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:
@@ -111,11 +111,8 @@ def test_manual_analysis_actions_are_functional() -> None:
     assert "requestBody.recompute_current = true" in source
     assert "requestBody.retry_reviewed = true" in source
     assert "body: JSON.stringify(requestBody)" in source
-    assert '"X-PAI-Manual-Token": state.manualAnalysisToken' in source
-    assert 'id="manualAnalysisTokenInput" type="password"' in html
-    assert 'inputmode="numeric"' in html
-    assert 'pattern="[0-9]{4}"' in html
-    assert 'minlength="4" maxlength="4"' in html
+    assert "X-PAI-Manual-Token" not in source
+    assert 'id="accountPassword" name="password" type="password"' in html
     assert "window.prompt" not in source
     assert "/analysis/requests/${encodeURIComponent(requestId)}`" in source
     assert "for (let poll = 0; poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1)" in source

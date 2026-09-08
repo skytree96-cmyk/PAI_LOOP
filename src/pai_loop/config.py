@@ -62,6 +62,7 @@ class Settings:
     public_read_only: bool = False
     department_accounts_enabled: bool = False
     public_manual_analysis_enabled: bool = False
+    # Deprecated deployment compatibility only; never authenticates a request.
     public_manual_analysis_token: str | None = None
     # Zero disables the aggregate hourly demo quota. Per-notice cooldown,
     # advisory locking, idempotency, and bounded attachment/call budgets remain.

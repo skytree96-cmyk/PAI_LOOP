@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from pai_loop.accounts import departments, router as accounts_router
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import (
@@ -45,12 +46,32 @@ _TOKEN = "2468"
 _HEADERS = {
     "Origin": "https://testserver",
     "Sec-Fetch-Site": "same-origin",
-    "X-PAI-Manual-Token": _TOKEN,
 }
 _SAFE_URL = (
     "https://www.g2b.go.kr/pn/pnz/pnza/UntyAtchFile/downloadFile.do"
     "?bfSpecRegNo=R26BD00999999&fileSeq=1&fileType=BFDTL"
 )
+
+
+def _login_department(client: TestClient, *, paid: bool = True) -> dict[str, str]:
+    # Synthetic account only, bootstrapped into this test's disposable database.
+    password = "SYN-account-fixture-password-0908"
+    accounts = [{"username": "SYN_PRESPEC_DEPT", "password": password, "role": "DEPARTMENT",
+                 "department_id": next(iter(departments())), "active": True,
+                 "paid_analysis_allowed": paid}]
+    server_headers = {"X-PAI-LOOP-API-KEY": "server-api-key"}
+    preview = client.post("/api/v1/accounts/bootstrap", headers=server_headers, json={"accounts": accounts})
+    assert preview.status_code == 200, preview.text
+    applied = client.post("/api/v1/accounts/bootstrap", headers=server_headers,
+                          json={"accounts": accounts, "dry_run": False, "preview_id": preview.json()["preview_id"]})
+    assert applied.status_code == 200, applied.text
+    origin = _HEADERS
+    login = client.post("/api/v1/accounts/login", headers=origin,
+                        json={"username": "SYN_PRESPEC_DEPT", "password": password})
+    assert login.status_code == 200, login.text
+    assert login.json()["authenticated"] is True
+    assert login.json()["account"]["paid_analysis_allowed"] is paid
+    return {**origin, "X-CSRF-Token": login.json()["csrf_token"]}
 
 
 def _safe_url(registry_no: str, *, slot: int = 1) -> str:
@@ -241,6 +262,7 @@ def prespec_client(tmp_path: Path) -> Iterator[TestClient]:
     app = FastAPI()
     app.state.settings = Settings(
         environment="production",
+        department_accounts_enabled=True,
         database_url=database_url,
         api_key="server-api-key",
         public_read_only=True,
@@ -256,6 +278,7 @@ def prespec_client(tmp_path: Path) -> Iterator[TestClient]:
     app.state.prespec_client_factory = _FakePreSpecificationClient
     app.state.prespec_document_fetcher = _FakeDocumentFetcher()
     app.state.prespec_openai_client_factory = _FakeOpenAIClient
+    app.include_router(accounts_router)
     app.include_router(prespec_router)
     _FakePreSpecificationClient.records = [_record()]
     _FakePreSpecificationClient.hit_page_limit_value = False
@@ -265,6 +288,7 @@ def prespec_client(tmp_path: Path) -> Iterator[TestClient]:
     _FakeDocumentFetcher.calls = 0
     _FakeOpenAIClient.calls = 0
     with TestClient(app, base_url="https://testserver") as client:
+        client.headers["X-CSRF-Token"] = _login_department(client)["X-CSRF-Token"]
         yield client
     engine.dispose()
 

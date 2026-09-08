@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from pai_loop.accounts import departments, router as accounts_router
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.analysis_api import (
@@ -35,8 +36,28 @@ _OPERATOR_TOKEN = "2468"
 _HEADERS = {
     "Origin": "https://testserver",
     "Sec-Fetch-Site": "same-origin",
-    "X-PAI-Manual-Token": _OPERATOR_TOKEN,
 }
+
+
+def _login_department(client: TestClient, *, paid: bool = True) -> dict[str, str]:
+    # Synthetic account only, bootstrapped into this test's disposable database.
+    password = "SYN-account-fixture-password-0908"
+    accounts = [{"username": "SYN_DISCOVERY_DEPT", "password": password, "role": "DEPARTMENT",
+                 "department_id": next(iter(departments())), "active": True,
+                 "paid_analysis_allowed": paid}]
+    server_headers = {"X-PAI-LOOP-API-KEY": "SYN-discovery-bootstrap-only"}
+    preview = client.post("/api/v1/accounts/bootstrap", headers=server_headers, json={"accounts": accounts})
+    assert preview.status_code == 200, preview.text
+    applied = client.post("/api/v1/accounts/bootstrap", headers=server_headers,
+                          json={"accounts": accounts, "dry_run": False, "preview_id": preview.json()["preview_id"]})
+    assert applied.status_code == 200, applied.text
+    origin = _HEADERS
+    login = client.post("/api/v1/accounts/login", headers=origin,
+                        json={"username": "SYN_DISCOVERY_DEPT", "password": password})
+    assert login.status_code == 200, login.text
+    assert login.json()["authenticated"] is True
+    assert login.json()["account"]["paid_analysis_allowed"] is paid
+    return {**origin, "X-CSRF-Token": login.json()["csrf_token"]}
 
 
 def _raw_attachment(notice_no: str) -> dict[str, str]:
@@ -107,7 +128,9 @@ def discovery_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     session_factory = build_session_factory(engine)
     settings = Settings(
         environment="production",
+        department_accounts_enabled=True,
         database_url=f"sqlite:///{database_path.as_posix()}",
+        api_key="SYN-discovery-bootstrap-only",
         public_read_only=True,
         public_manual_analysis_enabled=True,
         public_manual_analysis_token=_OPERATOR_TOKEN,
@@ -118,6 +141,7 @@ def discovery_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.include_router(accounts_router)
     app.include_router(pps_discovery_router)
     app.include_router(manual_analysis_router)
     monkeypatch.setattr("pai_loop.pps_discovery.PpsClient", _FakeDiscoveryClient)
@@ -139,6 +163,7 @@ def discovery_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
         _candidate("20260820002", day=29, title="공공기관 리더십 교육 용역"),
     ]
     with TestClient(app, base_url="https://testserver") as client:
+        client.headers["X-CSRF-Token"] = _login_department(client)["X-CSRF-Token"]
         yield client
     engine.dispose()
 
@@ -156,7 +181,7 @@ def _search(client: TestClient):
     )
 
 
-def test_search_requires_same_origin_operator_token_and_writes_nothing(
+def test_search_requires_same_origin_account_and_writes_nothing(
     discovery_client: TestClient,
 ) -> None:
     denied_origin = discovery_client.post(
@@ -169,16 +194,17 @@ def test_search_requires_same_origin_operator_token_and_writes_nothing(
     )
     assert denied_origin.status_code == 403
 
-    denied_token = discovery_client.post(
-        "/api/v1/pps-discovery/search",
-        headers={"Origin": "https://testserver"},
-        json={
-            "query": "교육 용역",
-            "from_date": "2026-08-01",
-            "to_date": "2026-08-23",
-        },
-    )
-    assert denied_token.status_code == 401
+    with TestClient(discovery_client.app, base_url="https://testserver") as anonymous:
+        for retired_pin in (None, "1357", _OPERATOR_TOKEN):
+            headers = {"Origin": "https://testserver"}
+            if retired_pin is not None:
+                headers["X-PAI-Manual-Token"] = retired_pin
+            denied = anonymous.post(
+                "/api/v1/pps-discovery/search", headers=headers,
+                json={"query": "교육 용역", "from_date": "2026-08-01", "to_date": "2026-08-23"},
+            )
+            assert denied.status_code == 401
+    assert _FakeDiscoveryClient.requests == []
 
     response = _search(discovery_client)
     assert response.status_code == 200

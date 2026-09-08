@@ -31,7 +31,7 @@ globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,login
  hydrateDepartmentDecisionList,hydrateOperatorDecisions,normalizeNotice,normalizeResultLearningNotice,
  loadResultLearning,openResultLearningDialog,saveResultLearning,saveDecision,
  submittedRatePreview,updateResultLearningRate,resultLearningRateCalculation,resultLearningRateLabel,
- bindResultLearningOpeningEvents,
+ bindResultLearningOpeningEvents,manualAnalysisAuthHeaders,clearManualAnalysisToken,loadPerformanceEditor,loadManagedAccounts,activateManagedAccount,
  renderDecision:originalRenderExistingDecision,updateDecisionButton:originalUpdateDecisionButton,
  renderResults:originalRenderResultLearning,formatBudget,
  setView,
@@ -450,15 +450,14 @@ assert.equal(resultRequests().length,1);
 ''')
 
 
-def test_results_initial_pin_mode_uses_existing_pin_once_after_runtime():
+def test_results_initial_paused_accounts_never_reuse_old_pin():
     _run_behavior(RESULT_BOOTSTRAP_SETUP + r'''
 context.window.sessionStorage.getItem=()=> 'SYN-existing-pin';
 respond(requests[1],200,{department_accounts_enabled:false,manual_analysis_auth_required:true});
 await bootstrap;await tick();
 assert.equal(requests.some(r=>r.path.endsWith('/accounts/me')),false);
-assert.equal(resultRequests().length,1);
-assert.equal(resultRequests()[0].options.headers.get('X-PAI-Manual-Token'),'SYN-existing-pin');
-respond(resultRequests()[0],200,{records:[],total:0});await tick();
+assert.equal(resultRequests().length,0);
+assert.equal(u.state.accountSession.authenticated,false);
 ''')
 
 
@@ -723,3 +722,64 @@ assert.equal(u.canWriteDecision(),true);
 '''
     result = subprocess.run(['node', '-e', script], input=APP.read_text(encoding='utf-8'), capture_output=True, text=True, encoding='utf-8')
     assert result.returncode == 0, result.stderr
+
+
+def test_pin_removed_and_external_actions_require_paid_cookie_without_provider_call():
+    _run_behavior(r'''
+const removed=[];context.window.sessionStorage.removeItem=k=>removed.push(k);
+u.clearManualAnalysisToken();assert.deepEqual(removed,['pai-loop-operator-pin']);
+u.state.accountSession={enabled:false,authenticated:false,capabilities:{}};
+assert.equal(await u.manualAnalysisAuthHeaders(),null);
+assert.equal(requests.length,0);
+login();
+assert.equal(await u.manualAnalysisAuthHeaders({external:true}),null);
+assert.equal(requests.length,0);
+u.state.accountSession.capabilities.request_paid_analysis=true;
+assert.equal((await u.manualAnalysisAuthHeaders({external:true}))['X-CSRF-Token'],'SYN-CSRF-SYN-A');
+assert.equal(requests.length,0);
+''')
+
+
+def test_sanitized_performance_late_read_cannot_restore_logged_out_records():
+    _run_behavior(r'''
+const read=u.loadPerformanceEditor();await tick();assert.equal(requests.length,1);
+u.applyAccountSession({enabled:true,authenticated:false});
+respond(requests[0],200,{records:[{id:'SYN-private-state',project_name:'SYN-old'}],total:1});
+await read;assert.equal(u.state.performanceEditor.records.length,0);
+assert.equal(u.state.performanceEditor.loaded,false);
+''')
+
+
+def test_admin_activation_sends_only_revision_and_active_and_never_retries_ambiguous_write():
+    _run_behavior(r'''
+const admin=payload('SYN-ADMIN');admin.account.role='ADMIN';admin.account.department_id=null;
+admin.capabilities={manage_accounts:true,read_department_records:true};u.applyAccountSession(admin);
+const row={id:'SYN-DEPT',username:'SYN-KMA',role:'DEPARTMENT',department_name:'SYN dept',active:false,paid_analysis_allowed:false,revision:1};
+const loading=u.loadManagedAccounts();await tick();assert.equal(requests[0].path,'/api/v1/accounts');
+respond(requests[0],200,{accounts:[row]});await loading;
+assert.match(u.els.accountManagementList.innerHTML,/data-activate-account/);
+const apply=u.activateManagedAccount('SYN-DEPT');await tick();
+assert.equal(requests[1].options.method,'PATCH');
+assert.deepEqual(JSON.parse(requests[1].options.body),{expected_revision:1,active:true});
+assert.equal(requests[1].options.headers.get('X-CSRF-Token'),'SYN-CSRF-SYN-ADMIN');
+respond(requests[1],503,{detail:'SYN ambiguous'});await apply;
+await u.activateManagedAccount('SYN-DEPT');assert.equal(requests.length,2);
+assert.equal(u.state.managedAccounts.records.length,0);
+assert.match(u.els.accountManagementStatus.textContent,/새로고침/);
+const reload=u.loadManagedAccounts();await tick();
+respond(requests[2],200,{accounts:[{...row,active:true,revision:2}]});await reload;
+await u.activateManagedAccount('SYN-DEPT');assert.equal(requests.length,3);
+assert.doesNotMatch(u.els.accountManagementList.innerHTML,/data-activate-account/);
+''')
+
+
+def test_department_cannot_activate_and_late_admin_list_is_cleared_on_logout():
+    _run_behavior(r'''
+u.state.managedAccounts.records=[{id:'SYN-other',role:'DEPARTMENT',active:false,revision:1}];
+await u.activateManagedAccount('SYN-other');assert.equal(requests.length,0);
+const admin=payload('SYN-ADMIN');admin.account.role='ADMIN';admin.capabilities={manage_accounts:true};u.applyAccountSession(admin);
+const read=u.loadManagedAccounts();await tick();
+u.applyAccountSession({enabled:true,authenticated:false});
+respond(requests[0],200,{accounts:[{id:'SYN-other',role:'DEPARTMENT',active:false,revision:1}]});await read;
+assert.equal(u.state.managedAccounts.records.length,0);assert.equal(u.els.accountManagementList.innerHTML,'');
+''')

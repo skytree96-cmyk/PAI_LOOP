@@ -2413,7 +2413,7 @@ svg {
 
 .notice-search-help-cost strong { color: var(--orange-deep); }
 
-.manual-token-field {
+.account-credential-field {
   display: grid;
   gap: 8px;
   margin-top: 14px;
@@ -2422,7 +2422,7 @@ svg {
   font-weight: 700;
 }
 
-.manual-token-field input {
+.account-credential-field input {
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--line);
@@ -2433,7 +2433,7 @@ svg {
   font: inherit;
 }
 
-.manual-token-field input:focus-visible {
+.account-credential-field input:focus-visible {
   border-color: var(--teal);
   outline: 3px solid rgb(20 184 166 / 18%);
 }
@@ -7477,3 +7477,10 @@ textarea:focus,
   .performance-pagination nav { display: none !important; }
 }
 .department-decision-list{list-style:none;padding:0;display:grid;gap:12px}.department-decision-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;padding:18px;border:1px solid var(--line);border-radius:16px;overflow-wrap:anywhere}.department-decision-list p,.department-decision-list small{grid-column:1/-1;margin:0}.department-decision-list small{color:var(--muted)}
+
+/* The admin list fits the existing scrollable account dialog on narrow screens. */
+.account-management-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.account-management-list li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.account-management-list li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.account-management-list small { display: block; margin-top: 4px; color: var(--ink-soft); }
+.account-management-list button { flex-shrink: 0; white-space: nowrap; }

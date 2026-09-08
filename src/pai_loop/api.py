@@ -1251,14 +1251,13 @@ def runtime_profile(request: Request) -> dict[str, Any]:
         and (
             settings.department_accounts_enabled
             or settings.environment.casefold() != "production"
-            or settings.public_manual_analysis_token_valid
         )
     )
     return {
         "access_mode": "PUBLIC_READ_ONLY" if public_mode else "SERVER_AUTHENTICATED",
         "department_accounts_enabled": settings.department_accounts_enabled,
-        "write_controls_enabled": not public_mode and not settings.department_accounts_enabled,
-        "operator_decisions_enabled": settings.department_accounts_enabled or manual_analysis_enabled or not public_mode,
+        "write_controls_enabled": False,
+        "operator_decisions_enabled": settings.department_accounts_enabled,
         "analysis_provider": (
             "CLAUDE_VIA_N8N"
             if settings.llm_provider == "n8n_claude"

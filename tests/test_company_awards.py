@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 import threading
 import time
 from dataclasses import replace
@@ -13,8 +14,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import pai_loop.company_awards as company_awards_api
+from pai_loop.accounts import departments, router as accounts_router
 from pai_loop.company_awards import router
 from pai_loop.config import Settings
+from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.company_awards import (
     AWARD_SCOPE_OPERATIONS,
     PpsCompanyAwardClient,
@@ -26,7 +29,6 @@ TOKEN = "2468"
 AUTH_HEADERS = {
     "Origin": "https://testserver",
     "Sec-Fetch-Site": "same-origin",
-    "X-PAI-Manual-Token": TOKEN,
 }
 
 
@@ -73,13 +75,53 @@ def _app() -> FastAPI:
     app = FastAPI()
     app.state.settings = Settings(
         environment="production",
+        department_accounts_enabled=True,
+        api_key="SYN-awards-bootstrap-only",
         pps_api_key="server-side-pps-key",
         public_read_only=True,
         public_manual_analysis_enabled=True,
         public_manual_analysis_token=TOKEN,
     )
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    app.state.engine = engine
+    app.state.session_factory = build_session_factory(engine)
+    app.include_router(accounts_router)
     app.include_router(router)
     return app
+
+
+def _login_department(client: TestClient, *, paid: bool = True) -> dict[str, str]:
+    # Synthetic account only, bootstrapped into this test's disposable database.
+    password = "SYN-account-fixture-password-0908"
+    accounts = [{"username": "SYN_AWARDS_DEPT", "password": password, "role": "DEPARTMENT",
+                 "department_id": next(iter(departments())), "active": True,
+                 "paid_analysis_allowed": paid}]
+    server_headers = {"X-PAI-LOOP-API-KEY": "SYN-awards-bootstrap-only"}
+    preview = client.post("/api/v1/accounts/bootstrap", headers=server_headers, json={"accounts": accounts})
+    assert preview.status_code == 200, preview.text
+    applied = client.post("/api/v1/accounts/bootstrap", headers=server_headers,
+                          json={"accounts": accounts, "dry_run": False, "preview_id": preview.json()["preview_id"]})
+    assert applied.status_code == 200, applied.text
+    origin = AUTH_HEADERS
+    login = client.post("/api/v1/accounts/login", headers=origin,
+                        json={"username": "SYN_AWARDS_DEPT", "password": password})
+    assert login.status_code == 200, login.text
+    assert login.json()["authenticated"] is True
+    assert login.json()["account"]["paid_analysis_allowed"] is paid
+    return {**origin, "X-CSRF-Token": login.json()["csrf_token"]}
+
+
+@contextmanager
+def _client(app: FastAPI | None = None, *, authenticated: bool = True):
+    app = app or _app()
+    try:
+        with TestClient(app, base_url="https://testserver") as client:
+            if authenticated:
+                client.headers["X-CSRF-Token"] = _login_department(client)["X-CSRF-Token"]
+            yield client
+    finally:
+        app.state.engine.dispose()
 
 
 @pytest.mark.parametrize(
@@ -428,14 +470,14 @@ class _FakeCompanyAwardClient:
         }
 
 
-def test_company_award_endpoint_requires_same_origin_and_scoped_token(
+def test_company_award_endpoint_requires_same_origin_account_and_csrf(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _FakeCompanyAwardClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client(authenticated=False) as client:
         cross_origin = client.post(
             "/api/v1/company-awards/search",
             headers={**AUTH_HEADERS, "Origin": "https://attacker.test"},
@@ -449,6 +491,16 @@ def test_company_award_endpoint_requires_same_origin_and_scoped_token(
             json={"start_date": "2026-08-01", "end_date": "2026-08-01"},
         )
         assert no_token.status_code == 401
+        for retired_pin in ("1357", TOKEN):
+            retired = client.post("/api/v1/company-awards/search",
+                                  headers={**AUTH_HEADERS, "X-PAI-Manual-Token": retired_pin},
+                                  json={"start_date": "2026-08-01", "end_date": "2026-08-01"})
+            assert retired.status_code == 401
+        account_headers = _login_department(client)
+        missing_csrf = client.post("/api/v1/company-awards/search", headers=AUTH_HEADERS,
+                                   json={"start_date": "2026-08-01", "end_date": "2026-08-01"})
+        assert missing_csrf.status_code == 403
+        client.headers["X-CSRF-Token"] = account_headers["X-CSRF-Token"]
 
         response = client.post(
             "/api/v1/company-awards/search",
@@ -476,7 +528,7 @@ def test_company_award_endpoint_default_three_calendar_year_window_is_valid(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _FakeCompanyAwardClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -493,7 +545,7 @@ def test_company_award_endpoint_rejects_invalid_or_excessive_queries(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         lambda **_kwargs: pytest.fail("PPS must not be called for rejected input"),
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         invalid_number = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -524,7 +576,7 @@ def test_company_award_endpoint_requires_server_pps_key(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         lambda **_kwargs: pytest.fail("client must not receive a missing key"),
     )
-    with TestClient(app, base_url="https://testserver") as client:
+    with _client(app) as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -548,7 +600,7 @@ def test_company_award_endpoint_returns_public_safe_provider_error(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _FailingCompanyAwardClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -577,7 +629,7 @@ def test_company_award_endpoint_marks_failed_window_as_partial(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _PartialCompanyAwardClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -633,7 +685,7 @@ def test_company_award_endpoint_uses_per_scope_window_stats_without_negative_del
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _PerScopeWindowStatsClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -660,7 +712,7 @@ def test_company_award_endpoint_returns_502_when_every_window_failed(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _PerScopeWindowStatsClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -686,7 +738,7 @@ def test_company_award_endpoint_is_hidden_when_manual_feature_is_disabled(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         lambda **_kwargs: pytest.fail("disabled feature must not call PPS"),
     )
-    with TestClient(app, base_url="https://testserver") as client:
+    with _client(app) as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -711,7 +763,7 @@ def test_company_award_endpoint_marks_wall_time_limit_as_partial(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _TimeLimitedCompanyAwardClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,
@@ -761,7 +813,7 @@ def test_company_award_endpoint_caps_unique_response_records_at_500(
         "pai_loop.company_awards.PpsCompanyAwardClient",
         _ManyCompanyAwardClient,
     )
-    with TestClient(_app(), base_url="https://testserver") as client:
+    with _client() as client:
         response = client.post(
             "/api/v1/company-awards/search",
             headers=AUTH_HEADERS,

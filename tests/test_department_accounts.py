@@ -423,7 +423,7 @@ def test_server_to_server_contract_and_private_evidence_boundary(account_client)
     assert response.status_code == 201
     assert response.json()["department_id"] is None
     headers, _ = _login(account_client)
-    assert account_client.get("/api/v1/performance-records", headers=headers).status_code in {401, 403}
+    assert account_client.get("/api/v1/performance-records", headers=headers).status_code == 200
     assert account_client.post("/api/v1/notices/analysis/batch", headers=headers, json={"notice_keys": [NOTICE]}).status_code == 401
     assert account_client.get(f"/api/v1/notices/{NOTICE}/decisions").status_code == 401
 

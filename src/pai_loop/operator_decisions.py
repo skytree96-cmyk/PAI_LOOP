@@ -10,11 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .auth import require_api_key
 from .accounts import Identity, authenticated_account, enabled
 from .decision_persistence import persist_current_evaluation_decision
-from .manual_analysis import (
-    _manual_feature_enabled,
-    _require_manual_operator,
-    _same_origin_request,
-)
+from .manual_analysis import _same_origin_request
 from .models import Notice, UserDecision
 from .schemas import DecisionCreate, DecisionOut
 
@@ -55,30 +51,11 @@ def batch_read_decisions(payload: DecisionBatchRead, request: Request, session: 
 
 
 def _operator_access(request: Request, *, mutation: bool) -> Identity | None:
-    if enabled(request):
-        if request.headers.get("x-pai-loop-api-key"):
-            require_api_key(request)
-            return None
-        return authenticated_account(request, mutation=mutation, department_write=mutation)
-    """Allow the server key or the existing, narrowly scoped demo operator PIN."""
-
     if request.headers.get("x-pai-loop-api-key"):
         require_api_key(request)
-        return
-    if _manual_feature_enabled(request):
-        if mutation and not _same_origin_request(request):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="홈페이지와 동일한 출처에서만 최종 판단을 저장할 수 있습니다.",
-            )
-        fetch_site = request.headers.get("sec-fetch-site", "").strip().casefold()
-        if fetch_site and fetch_site not in {"same-origin", "none"}:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="홈페이지와 동일한 출처에서만 최종 판단을 조회할 수 있습니다.",
-            )
-        _require_manual_operator(request)
-        return
+        return None
+    if enabled(request):
+        return authenticated_account(request, mutation=mutation, department_write=mutation)
     require_api_key(request)
 
 

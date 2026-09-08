@@ -23,6 +23,9 @@ from .department_ranking import load_department_keyword_profiles
 
 SESSION_COOKIE = "pai_department_session"
 CSRF_COOKIE = "pai_department_csrf"
+# Reject pre-cutover cookies on the new app. Initial activation also revokes
+# their stored sessions. Login buckets keep their existing hash namespace.
+SESSION_HASH_NAMESPACE = "account-login-cutover-v1:"
 SESSION_SECONDS = 8 * 60 * 60
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_BUCKET_LIMIT = 1024
@@ -76,6 +79,10 @@ def require_server_bootstrap(request: Request) -> None:
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _session_hash(value: str) -> str:
+    return _hash(SESSION_HASH_NAMESPACE + value)
 
 
 def password_hash(password: str) -> str:
@@ -142,7 +149,7 @@ def authenticated_account(request: Request, *, mutation: bool = False, departmen
     if not token or len(token) > 128:
         raise HTTPException(401, "부서 계정 로그인이 필요합니다.")
     with request.app.state.session_factory() as session:
-        row = session.scalar(select(AccountSession).where(AccountSession.token_hash == _hash(token)))
+        row = session.scalar(select(AccountSession).where(AccountSession.token_hash == _session_hash(token)))
         account = session.get(DepartmentAccount, row.account_id) if row else None
         if not row or row.revoked_at or row.expires_at <= now_utc() or not account or not account.active:
             raise HTTPException(401, "로그인이 만료되었습니다. 다시 로그인해 주세요.")
@@ -152,7 +159,7 @@ def authenticated_account(request: Request, *, mutation: bool = False, departmen
         if mutation:
             csrf = request.headers.get("x-csrf-token", "")
             cookie_csrf = request.cookies.get(CSRF_COOKIE, "")
-            if not csrf or len(csrf) > 128 or not secrets.compare_digest(csrf, cookie_csrf) or not secrets.compare_digest(_hash(csrf), row.csrf_hash):
+            if not csrf or len(csrf) > 128 or not secrets.compare_digest(csrf, cookie_csrf) or not secrets.compare_digest(_session_hash(csrf), row.csrf_hash):
                 raise HTTPException(403, "요청 인증을 새로 확인해 주세요.")
         if department_write and account.role != "DEPARTMENT":
             raise HTTPException(403, "부서 계정만 자기 부서 기록을 작성할 수 있습니다.")
@@ -251,14 +258,14 @@ def login(payload: Login, request: Request, response: Response) -> dict:
         session.execute(delete(AccountSession).where(AccountSession.expires_at < now - timedelta(days=1)))
         old = request.cookies.get(SESSION_COOKIE, "")
         if old:
-            previous = session.scalar(select(AccountSession).where(AccountSession.token_hash == _hash(old)))
+            previous = session.scalar(select(AccountSession).where(AccountSession.token_hash == _session_hash(old)))
             if previous:
                 previous.revoked_at = now
         live = list(session.scalars(select(AccountSession).where(AccountSession.account_id == account.id, AccountSession.revoked_at.is_(None), AccountSession.expires_at > now).order_by(AccountSession.created_at)).all())
         for previous in live[:-7] if len(live) >= 8 else []:
             previous.revoked_at = now
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        row = AccountSession(account_id=account.id, token_hash=_hash(token), csrf_hash=_hash(csrf), created_at=now, expires_at=now + timedelta(seconds=SESSION_SECONDS))
+        row = AccountSession(account_id=account.id, token_hash=_session_hash(token), csrf_hash=_session_hash(csrf), created_at=now, expires_at=now + timedelta(seconds=SESSION_SECONDS))
         session.add(row)
         session.flush()
         identity = Identity(account.id, account.username, account.role, account.department_id, departments().get(account.department_id), account.paid_analysis_allowed, row.id)
@@ -359,6 +366,69 @@ def bootstrap(payload: Bootstrap, request: Request) -> dict:
             preview_id = preview.id
         session.commit()
     return {"dry_run": payload.dry_run, "preview_id": preview_id, "accounts": results}
+
+
+class InitialAdminActivation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
+    dry_run: bool = True
+    preview_id: str | None = Field(default=None, max_length=36)
+
+    @field_validator("username")
+    @classmethod
+    def canonical_username(cls, value: str) -> str:
+        return value.upper()
+
+
+@router.post("/initial-admin-activation")
+def activate_initial_admin(payload: InitialAdminActivation, request: Request) -> dict:
+    """Activate an unchanged, inactive initial admin with a single-use preview.
+
+    This is a server-only escape from the no-active-admin bootstrap deadlock,
+    not an account reset or a way to reactivate deliberately disabled users.
+    """
+    require_server_bootstrap(request)
+    now = now_utc()
+    with request.app.state.session_factory() as session:
+        serial_transaction(session)
+        row = session.scalar(select(DepartmentAccount).where(DepartmentAccount.username == payload.username))
+        if row is None or row.role != "ADMIN" or row.department_id is not None:
+            raise HTTPException(409, "등록된 초기 관리자 정보를 확인해 주세요.")
+        if row.active:
+            if not payload.dry_run:
+                raise HTTPException(409, "이미 활성화되어 있습니다. 조회로 상태를 확인해 주세요.")
+            return {"dry_run": True, "status": "ALREADY_ACTIVE", "preview_id": None, "account": _admin_account(row)}
+        active_admins = session.scalar(select(func.count()).select_from(DepartmentAccount).where(DepartmentAccount.role == "ADMIN", DepartmentAccount.active.is_(True)))
+        if active_admins or row.revision != 1 or row.paid_analysis_allowed:
+            raise HTTPException(409, "초기 활성화 조건이 변경되었습니다. 기존 관리자에게 문의해 주세요.")
+        # Separate from registration preview digests; bind the exact saved row
+        # and revision without asking for, returning, or changing its password.
+        plan = {"action": "INITIAL_ADMIN_ACTIVATION_V1", "account": _admin_account(row)}
+        digest = hmac.new(request.app.state.settings.api_key.encode(), json.dumps(plan, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+        session.execute(delete(AccountBootstrapPreview).where(AccountBootstrapPreview.expires_at <= now))
+        if payload.dry_run:
+            count = session.scalar(select(func.count()).select_from(AccountBootstrapPreview))
+            if count >= 100:
+                raise HTTPException(429, "등록 미리보기가 많습니다. 잠시 후 다시 시도해 주세요.")
+            preview = AccountBootstrapPreview(digest=digest, expires_at=now + timedelta(minutes=15))
+            session.add(preview)
+            session.flush()
+            result = {"dry_run": True, "status": "WOULD_ACTIVATE", "preview_id": preview.id, "account": _admin_account(row)}
+        else:
+            preview = session.get(AccountBootstrapPreview, payload.preview_id) if payload.preview_id else None
+            if not preview or preview.consumed_at or preview.expires_at <= now or not hmac.compare_digest(preview.digest, digest):
+                raise HTTPException(409, "유효한 초기 활성화 미리보기가 필요합니다.")
+            preview.consumed_at = now
+            row.active = True
+            row.revision += 1
+            # Revoke persisted pre-cutover sessions too, so reverting an app
+            # version cannot resurrect those cookies after activation.
+            for saved in session.scalars(select(AccountSession).where(AccountSession.revoked_at.is_(None))):
+                saved.revoked_at = now
+            audit(session, "INITIAL_ADMIN_ACTIVATED", target=row.id)
+            result = {"dry_run": False, "status": "ACTIVATED", "preview_id": None, "account": _admin_account(row)}
+        session.commit()
+        return result
 
 
 def _admin_account(row: DepartmentAccount) -> dict:

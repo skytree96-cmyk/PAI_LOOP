@@ -15,7 +15,7 @@ from pai_loop.decision_persistence import _begin_current_evaluation_snapshot
 from pai_loop.models import Evaluation, Notice, PpsNoticeAuthority, UserDecision
 
 
-def test_public_operator_pin_can_persist_and_reload_final_decision(
+def test_server_operator_route_can_persist_and_reload_final_decision(
     client: TestClient,
 ) -> None:
     assert client.post("/api/v1/ingestion/replay").status_code == 200
@@ -50,9 +50,9 @@ def test_public_operator_pin_can_persist_and_reload_final_decision(
             "X-PAI-Manual-Token": token,
         },
         json={"choice": "HOLD", "rationale": "추가 증빙 확인"},
-    ).status_code == 403
+    ).status_code == 401
 
-    headers = {**origin, "X-PAI-Manual-Token": token}
+    headers = {"X-PAI-LOOP-API-KEY": "server-only-api-key"}
     missing_evaluation = client.post(
         endpoint,
         headers=headers,
@@ -79,7 +79,7 @@ def test_public_operator_pin_can_persist_and_reload_final_decision(
     assert [item["choice"] for item in history.json()] == ["HOLD"]
 
 
-def test_final_decision_rejects_a_stale_evaluation_for_pin_and_server_routes(
+def test_final_decision_rejects_a_stale_evaluation_for_both_server_routes(
     client: TestClient,
 ) -> None:
     assert client.post("/api/v1/ingestion/replay").status_code == 200
@@ -114,11 +114,7 @@ def test_final_decision_rejects_a_stale_evaluation_for_pin_and_server_routes(
     operator_endpoint = (
         f"https://testserver/api/v1/operator-decisions/notices/{notice_key}"
     )
-    operator_headers = {
-        "Origin": "https://testserver",
-        "Sec-Fetch-Site": "same-origin",
-        "X-PAI-Manual-Token": token,
-    }
+    operator_headers = server_headers
     stale_operator = client.post(
         operator_endpoint,
         headers=operator_headers,
@@ -144,7 +140,7 @@ def test_final_decision_rejects_a_stale_evaluation_for_pin_and_server_routes(
     assert current.json()["evaluation_id"] == current_evaluation_id
 
 
-def test_public_operator_pin_failures_are_throttled_without_limiting_valid_runs(
+def test_retired_operator_pin_never_authorizes_even_after_repeated_requests(
     client: TestClient,
 ) -> None:
     client.app.state.settings = replace(
@@ -164,16 +160,15 @@ def test_public_operator_pin_failures_are_throttled_without_limiting_valid_runs(
 
     assert [client.get(endpoint, headers=headers).status_code for _ in range(5)] == [401] * 5
     locked = client.get(endpoint, headers=headers)
-    assert locked.status_code == 429
-    assert locked.headers["Retry-After"] == "600"
+    assert locked.status_code == 401
     valid_after_attack = client.get(
         endpoint,
         headers={**headers, "X-PAI-Manual-Token": "2468"},
     )
-    assert valid_after_attack.status_code == 404
+    assert valid_after_attack.status_code == 401
 
 
-def test_runtime_profile_exposes_pin_gated_decisions(client: TestClient) -> None:
+def test_runtime_profile_does_not_reenable_retired_pin_decisions(client: TestClient) -> None:
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",
@@ -187,7 +182,7 @@ def test_runtime_profile_exposes_pin_gated_decisions(client: TestClient) -> None
 
     assert profile.status_code == 200
     assert profile.json()["write_controls_enabled"] is False
-    assert profile.json()["operator_decisions_enabled"] is True
+    assert profile.json()["operator_decisions_enabled"] is False
 
 
 def test_sqlite_decision_snapshot_serializes_a_concurrent_evaluation_writer(
@@ -294,11 +289,9 @@ def test_postgres_decision_snapshot_uses_evaluation_insert_barrier() -> None:
 
 SERVER_KEY = "server-only-api-key"
 OPERATOR_PIN = "2468"
-OPERATOR_HEADERS = {
-    "Origin": "https://testserver",
-    "Sec-Fetch-Site": "same-origin",
-    "X-PAI-Manual-Token": OPERATOR_PIN,
-}
+# Human cookie/CAS coverage is in test_department_accounts; these cases keep
+# checking evaluation invariants through the retained server operator route.
+OPERATOR_HEADERS = {"X-PAI-LOOP-API-KEY": SERVER_KEY}
 
 
 def _production_settings(client: TestClient) -> None:

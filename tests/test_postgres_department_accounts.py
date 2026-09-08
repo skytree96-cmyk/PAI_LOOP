@@ -26,7 +26,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
 from pai_loop.account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
-from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, departments, now_utc, password_hash
+from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, _session_hash, departments, now_utc, password_hash
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_session_factory
 from pai_loop import migrations
@@ -118,7 +118,7 @@ def postgres_account_app(postgres_account_engine):
             session.add(account)
             session.flush()
             token, csrf = "SYN-session-" + uuid.uuid4().hex, "SYN-csrf-" + uuid.uuid4().hex
-            session.add(AccountSession(account_id=account.id, token_hash=hashlib.sha256(token.encode()).hexdigest(), csrf_hash=hashlib.sha256(csrf.encode()).hexdigest(), created_at=now, expires_at=now + timedelta(hours=1)))
+            session.add(AccountSession(account_id=account.id, token_hash=_session_hash(token), csrf_hash=_session_hash(csrf), created_at=now, expires_at=now + timedelta(hours=1)))
             authenticated.append({"account_id": account.id, "department_id": department_id, "department_name": department_name, "token": token, "csrf": csrf})
         session.commit()
     return app, notice_key, authenticated
