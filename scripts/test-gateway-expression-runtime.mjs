@@ -47,7 +47,7 @@ for (const [name, successAllowed] of [["Respond Gateway Success", true], ["Respo
     const expected = successAllowed && isValid
       ? { status: 200, body: { ...input, usage: { input_tokens: input.usage.input_tokens ?? null,
         output_tokens: input.usage.output_tokens ?? null, total_tokens: input.usage.total_tokens ?? null } } }
-      : { status: 500, body: !successAllowed && failures.includes(input) ? input : fallback };
+      : { status: 500, body: failures.includes(input) && (!successAllowed || input.gateway_error.stage === "MODEL_EXECUTION") ? input : fallback };
     assert.deepEqual(result, expected, `${name} must preserve the bounded terminal response`);
     assert.notEqual(result.body, input);
     assert(!JSON.stringify(result).includes(canary));
@@ -72,6 +72,20 @@ for (const [name, successAllowed] of [["Respond Gateway Success", true], ["Respo
     assert.deepEqual(result, { status: 500, body: fallback });
     assert(!JSON.stringify(result).includes(canary));
     checked += 1;
+  }
+  for (const [stop_reason, detail_code] of [["end_turn", "OUTPUT_JSON_INVALID"],
+    ["max_tokens", "NATIVE_STOP_MAX_TOKENS"], ["refusal", "NATIVE_STOP_REFUSAL"], ["tool_use", "NATIVE_STOP_UNSUPPORTED"]]) {
+    const input = { gateway_error: { ...fallback.gateway_error, stop_reason, detail_code,
+      usage: { input_tokens: 12, output_tokens: 6, total_tokens: 18 } } };
+    assert.deepEqual(evaluate(input), { status: 500, body: input });
+    checked += 1;
+    for (const patch of [{ stop_reason: canary }, { usage: { input_tokens: true, output_tokens: 6, total_tokens: 7 } },
+      { usage: { input_tokens: 12, output_tokens: 6, total_tokens: 99 } }, { usage: { private: canary } },
+      { stop_details: { explanation: canary } }, { detail_code: null }]) {
+      const result = evaluate({ gateway_error: { ...input.gateway_error, ...patch } });
+      assert.deepEqual(result, { status: 500, body: fallback });
+      assert(!JSON.stringify(result).includes(canary)); checked += 1;
+    }
   }
 }
 console.log(`Gateway Tournament 1.9.0: ${checked} terminal cases and all four legacy-expression failures verified`);

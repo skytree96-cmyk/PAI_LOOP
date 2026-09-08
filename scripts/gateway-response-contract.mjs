@@ -18,7 +18,9 @@ export function guardGatewayResponse(value, successAllowed) {
       if (!keys(value, ["gateway_error"])) return failure();
       const item = value.gateway_error;
       const fields = ["version", "stage", "code", "upstream_http_status"];
-      if (!keys(item, fields) && !keys(item, [...fields, "detail_code"])) return failure();
+      const optional = ["detail_code", "stop_reason", "usage"];
+      if (!object(item) || fields.some(key => !Object.hasOwn(item, key))
+        || Object.keys(item).some(key => !fields.includes(key) && !optional.includes(key))) return failure();
       const pairs = { INPUT_VALIDATION: "REQUEST_REJECTED", MODEL_EXECUTION: "MODEL_EXECUTION_FAILED",
         OUTPUT_NORMALIZATION: "OUTPUT_REJECTED" };
       if (item.version !== "gateway-failure-v1" || !Object.hasOwn(pairs, item.stage)
@@ -29,13 +31,34 @@ export function guardGatewayResponse(value, successAllowed) {
       const detail = item.detail_code;
       const details = ["OUTPUT_EMPTY", "OUTPUT_TYPE_INVALID", "OUTPUT_TOO_LARGE",
         "OUTPUT_FENCE_INVALID", "OUTPUT_JSON_INVALID", "OUTPUT_NOT_OBJECT",
-        "EXECUTION_CONTEXT_INVALID", "NORMALIZER_EXCEPTION", "TERMINAL_GUARD_REJECTED"];
+        "EXECUTION_CONTEXT_INVALID", "NORMALIZER_EXCEPTION", "TERMINAL_GUARD_REJECTED",
+        "NATIVE_RESPONSE_INVALID", "NATIVE_CONTENT_INVALID", "NATIVE_SCHEMA_DECODE_INVALID",
+        "NATIVE_STOP_MAX_TOKENS", "NATIVE_STOP_REFUSAL", "NATIVE_STOP_UNSUPPORTED"];
       if (detail !== undefined && detail !== null
         && (item.stage !== "OUTPUT_NORMALIZATION" || !details.includes(detail))) return failure();
-      if (successAllowed && (item.stage !== "OUTPUT_NORMALIZATION" || !details.includes(detail))) return failure();
+      if (successAllowed && !(item.stage === "OUTPUT_NORMALIZATION" && details.includes(detail))
+        && !(item.stage === "MODEL_EXECUTION" && detail == null && item.stop_reason == null && item.usage == null)) return failure();
+      // A native HTTP response may also reach main[0] with a safe model failure.
+      const stop = item.stop_reason;
+      const usage = item.usage;
+      const stops = ["end_turn", "max_tokens", "refusal", "stop_sequence", "tool_use", "pause_turn", "model_context_window_exceeded"];
+      if ((stop !== undefined && stop !== null) || (usage !== undefined && usage !== null)) {
+        if (item.stage !== "OUTPUT_NORMALIZATION" || !details.includes(detail) || !stops.includes(stop)
+          || !keys(usage, ["input_tokens", "output_tokens", "total_tokens"])
+          || !Object.values(usage).every(counter)) return failure();
+        const requiredDetail = stop === "max_tokens" ? "NATIVE_STOP_MAX_TOKENS"
+          : stop === "refusal" ? "NATIVE_STOP_REFUSAL" : stop === "end_turn" ? null : "NATIVE_STOP_UNSUPPORTED";
+        if ((requiredDetail && detail !== requiredDetail) || (!requiredDetail && detail?.startsWith("NATIVE_STOP_"))) return failure();
+        if (usage.input_tokens != null && usage.output_tokens != null && usage.total_tokens != null
+          && usage.total_tokens !== usage.input_tokens + usage.output_tokens) return failure();
+      } else if (detail?.startsWith("NATIVE_STOP_")) return failure();
       return { status: 500, body: { gateway_error: { version: "gateway-failure-v1",
         stage: item.stage, code: item.code, upstream_http_status: status,
-        ...(detail === undefined || detail === null ? {} : { detail_code: detail }) } } };
+        ...(detail === undefined || detail === null ? {} : { detail_code: detail }),
+        ...(stop === undefined || stop === null ? {} : { stop_reason: stop, usage: {
+          input_tokens: usage.input_tokens ?? null, output_tokens: usage.output_tokens ?? null,
+          total_tokens: usage.total_tokens ?? null,
+        } }) } } };
     }
     if (!keys(value, ["id", "status", "model", "output_text", "usage"])
       || value.status !== "completed" || value.model !== "claude-sonnet-5"

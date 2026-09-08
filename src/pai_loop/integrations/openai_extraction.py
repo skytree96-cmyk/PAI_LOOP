@@ -669,10 +669,8 @@ class OpenAIExtractionClient:
         timeout_seconds: float = 180,
         max_retries: int = 2,
         max_input_chars: int = 120_000,
-        # The current n8n Anthropic sub-node uses the non-streaming SDK path.
-        # Its ten-minute duration guard requires max_tokens <= 21,333, so 20k
-        # leaves a safe margin while retaining room for adaptive thinking and
-        # the final strict JSON object.
+        # Keep the existing 20k output budget when moving to the native Messages
+        # gateway. Adaptive thinking shares this budget with the final JSON.
         max_output_tokens: int = 20_000,
         max_total_api_calls: int = 2,
         transport: httpx.BaseTransport | None = None,
@@ -843,7 +841,15 @@ class OpenAIExtractionClient:
             except ValueError:
                 decoded_payload = None
                 json_valid = False
+            gateway_failure = (
+                safe_gateway_failure(decoded_payload.get("gateway_error"))
+                if self.provider == "n8n_claude" and response.status_code == 500
+                and isinstance(decoded_payload, dict) and set(decoded_payload) == {"gateway_error"}
+                else None
+            )
             usage = self._provider_usage(decoded_payload)
+            if gateway_failure is not None and gateway_failure.usage is not None:
+                usage = self._provider_usage({"usage": gateway_failure.usage.model_dump()})
             attempts.append(
                 OpenAIAttemptTelemetry(
                     attempt=api_calls,
@@ -866,12 +872,6 @@ class OpenAIExtractionClient:
                 continue
             if response.status_code >= 400:
                 telemetry = aggregate_openai_attempts(attempts)
-                gateway_failure = (
-                    safe_gateway_failure(decoded_payload.get("gateway_error"))
-                    if self.provider == "n8n_claude" and response.status_code == 500
-                    and isinstance(decoded_payload, dict) and set(decoded_payload) == {"gateway_error"}
-                    else None
-                )
                 return None, self._review(
                     "HTTP_ERROR",
                     f"모델 API가 HTTP {response.status_code}를 반환했습니다.",

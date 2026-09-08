@@ -125,6 +125,10 @@ def test_server_read_keeps_gateway_failure_inside_selected_current_attempt(diagn
 @pytest.mark.parametrize("detail", get_args(GatewayOutputDetail))
 def test_fixed_output_detail_survives_consumer_without_additional_calls(detail):
     failure = {**OUTPUT_FAILURE, "detail_code": detail}
+    if detail.startswith("NATIVE_STOP_"):
+        failure.update(stop_reason={"NATIVE_STOP_MAX_TOKENS": "max_tokens", "NATIVE_STOP_REFUSAL": "refusal",
+                                    "NATIVE_STOP_UNSUPPORTED": "tool_use"}[detail],
+                       usage={"input_tokens": 12, "output_tokens": 6, "total_tokens": 18})
     result = outcome({"gateway_error": failure})
     assert result.gateway_failure.model_dump() == failure
     assert result.response_id is None and not result.corrective_retry_used
@@ -148,3 +152,32 @@ def test_output_detail_rejects_unknown_text_types_stages_and_private_extras(chan
 def test_absent_or_null_detail_keeps_legacy_serialized_shape():
     assert safe_gateway_failure(FAILURE).model_dump() == FAILURE
     assert safe_gateway_failure({**FAILURE, "detail_code": None}).model_dump() == FAILURE
+
+
+def test_native_stopped_request_preserves_bounded_usage_without_retry():
+    failure = {**OUTPUT_FAILURE, "detail_code": "NATIVE_STOP_MAX_TOKENS", "stop_reason": "max_tokens",
+               "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}}
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure.model_dump() == failure
+    assert result.openai_telemetry.attempts[0].usage.input_tokens == 12
+    assert result.openai_telemetry.attempts[0].usage.output_tokens == 6
+    assert result.openai_telemetry.attempts[0].usage.total_tokens == 18
+    assert result.openai_telemetry.attempts[0].usage.reasoning_output_tokens is None
+    assert result.response_id is None and not result.corrective_retry_used
+
+
+@pytest.mark.parametrize("changes", [
+    {"stop_reason": CANARY}, {"stop_reason": "refusal"}, {"usage": None},
+    {"usage": {"input_tokens": True, "output_tokens": 6, "total_tokens": 7}},
+    {"usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 99}},
+    {"usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18, "thinking": CANARY}},
+    {"usage": {"input_tokens": 10_000_001, "output_tokens": 6, "total_tokens": None}},
+    {"detail_code": "OUTPUT_JSON_INVALID"}, {"stop_details": {"explanation": CANARY}},
+])
+def test_native_usage_stop_contract_rejects_wrong_pairs_or_private_values(changes):
+    failure = {**OUTPUT_FAILURE, "detail_code": "NATIVE_STOP_MAX_TOKENS", "stop_reason": "max_tokens",
+               "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}, **changes}
+    assert safe_gateway_failure(failure) is None
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure is None and result.openai_telemetry.attempts[0].usage is None
+    assert CANARY not in result.model_dump_json()
