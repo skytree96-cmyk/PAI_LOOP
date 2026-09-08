@@ -39,6 +39,11 @@ from .integrations.openai_extraction import (
     merge_openai_telemetry,
 )
 from .models import Notice, NoticeVersion
+from .long_output_policy import (
+    LONG_OUTPUT_ONCE, LONG_OUTPUT_TOKENS, LONG_OUTPUT_TIMEOUT_SECONDS, LONG_OUTPUT_MAX_CALLS,
+    eligible_long_output_failure, long_output_consumed, consume_long_output, mark_long_output_dispatch,
+    long_output_source_boundary,
+)
 from .notice_freshness import authoritative_pps_cancelled_notice_keys
 from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
 from .quantitative_rule_extraction import (
@@ -781,6 +786,7 @@ def _failed_retry_attempt_digest(version: NoticeVersion) -> str:
 def failed_attachment_retry_snapshot(
     versions: list[NoticeVersion], *, error_codes: list[str], max_attachments: int,
     notice_key: str, revision_no: str,
+    budget_policy: str | None = None, session: Session | None = None, source_boundary: str | None = None,
 ) -> dict[str, Any]:
     """Freeze only explicitly selected failed bindings; never accepted reviews."""
     attachments, invalid, attempts = _current_manifest_attempts(versions, validate_accepted=False)
@@ -811,13 +817,29 @@ def failed_attachment_retry_snapshot(
     data = {"notice_key": notice_key, "revision_no": revision_no,
             "error_codes": codes, "max_attachments": max_attachments,
             "targets": targets, "version_ids": version_ids}
+    if budget_policy is not None:
+        selected_version = next((v for v in versions if v.id == targets[0]["version_id"]), None)
+        if (budget_policy != LONG_OUTPUT_ONCE or max_attachments != 1 or len(targets) != 1
+            or codes != ["HTTP_ERROR"] or selected_version is None
+            or not eligible_long_output_failure(selected_version) or session is None
+            or not isinstance(source_boundary, str) or not re.fullmatch(r"[a-f0-9]{64}", source_boundary)):
+            raise ValueError("LONG_OUTPUT_FAILURE_NOT_ELIGIBLE")
+        if long_output_consumed(session, selected_version.id):
+            raise ValueError("LONG_OUTPUT_ALREADY_CONSUMED")
+        data["budget_policy"] = LONG_OUTPUT_ONCE
+        data["source_boundary"] = source_boundary
     return {**data, "scope_sha256": _digest(data)}
 
 
 def valid_failed_attachment_retry_scope(scope: object) -> bool:
-    if not isinstance(scope, dict) or set(scope) != {"notice_key", "revision_no", "error_codes", "max_attachments", "targets", "version_ids", "scope_sha256"}:
+    fields = {"notice_key", "revision_no", "error_codes", "max_attachments", "targets", "version_ids", "scope_sha256"}
+    if not isinstance(scope, dict) or set(scope) not in (fields, fields | {"budget_policy", "source_boundary"}):
         return False
     try:
+        if "budget_policy" in scope and (scope["budget_policy"] != LONG_OUTPUT_ONCE
+            or scope["max_attachments"] != 1 or len(scope["targets"]) != 1 or scope["error_codes"] != ["HTTP_ERROR"]
+            or not isinstance(scope["source_boundary"], str) or not re.fullmatch(r"[a-f0-9]{64}", scope["source_boundary"])):
+            return False
         return (isinstance(scope["notice_key"], str) and scope["notice_key"].startswith("PPS-")
                 and isinstance(scope["revision_no"], str)
                 and type(scope["max_attachments"]) is int and 1 <= scope["max_attachments"] <= 3
@@ -3169,6 +3191,8 @@ def _enrich_selected_pps_attachment(
     openai_max_retries: int,
     retry_reviewed_version_ids: frozenset[str] = frozenset(),
     retry_failed_version_no: int | None = None,
+    long_output_scope: dict[str, Any] | None = None,
+    long_output_deadline: float | None = None,
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
@@ -3403,6 +3427,46 @@ def _enrich_selected_pps_attachment(
             warnings=["OPENAI_KEY_MISSING"],
         )
 
+    long_options = {}
+    if long_output_scope is not None:
+        if long_output_deadline is None or long_output_deadline - time.monotonic() < LONG_OUTPUT_TIMEOUT_SECONDS + ATTACHMENT_TIMEOUT_GUARD_SECONDS:
+            return PpsEnrichmentResult(status="REVIEW", attachments_discovered=attachments_discovered,
+                downloaded_bytes=len(content), source_characters=len(source_text),
+                analysis_input_characters=selection.selected_characters,
+                source_read_complete=extraction.complete, analysis_input_complete=selection.complete,
+                warnings=["ATTACHMENT_CONTINUATION_REQUIRED", "ATTACHMENT_COVERAGE_INCOMPLETE"])
+        # Persist consumption before constructing the client; no ambiguous retry.
+        long_output_target = long_output_scope["targets"][0]
+        long_output_version_id = long_output_target["version_id"]
+        def validate_current_failure(version):
+            active = session.get(Notice, notice_id, populate_existing=True)
+            current_metadata = session.scalar(select(NoticeVersion).where(
+                NoticeVersion.notice_id == notice_id,
+                NoticeVersion.source_payload["kind"].as_string() == PPS_METADATA_KIND,
+            ).order_by(NoticeVersion.version_no.desc()).limit(1).execution_options(populate_existing=True))
+            latest = session.scalar(select(NoticeVersion).where(
+                NoticeVersion.notice_id == notice_id,
+                NoticeVersion.source_payload["kind"].as_string() == "OPENAI_REQUIREMENT_EXTRACTION",
+                NoticeVersion.source_payload["attachment_id"].as_string() == attachment["attachment_id"],
+                NoticeVersion.source_payload["current_manifest_sha256"].as_string() == current_manifest_sha256,
+            ).order_by(NoticeVersion.version_no.desc()).limit(1))
+            return bool(active and active.status == "OPEN" and _as_utc(active.deadline) >= datetime.now(timezone.utc)
+                and active.notice_key == long_output_scope["notice_key"]
+                and active.revision_no == long_output_scope["revision_no"]
+                and long_output_source_boundary(active, current_metadata) == long_output_scope["source_boundary"]
+                and not authoritative_pps_cancelled_notice_keys(session, [active])
+                and latest and latest.id == version.id
+                and _failed_retry_attempt_digest(version) == long_output_target["attempt_sha256"]
+                and all(version.source_payload["document_processing"].get(key) == processing_audit.get(key)
+                        and isinstance(processing_audit.get(key), str)
+                        for key in ("source_text_sha256", "analysis_input_sha256"))
+                and _manifest_binding_is_current(session, notice_id=notice_id, attachment=attachment,
+                    manifest_sha256=manifest_sha256, current_manifest_sha256=current_manifest_sha256))
+        claim_id = consume_long_output(session, version_id=long_output_version_id, validate_current=validate_current_failure)
+        processing_audit["retry_budget_policy"] = LONG_OUTPUT_ONCE
+        long_options = {"budget_policy": LONG_OUTPUT_ONCE, "max_output_tokens": LONG_OUTPUT_TOKENS,
+                        "max_total_api_calls": LONG_OUTPUT_MAX_CALLS,
+                        "before_request": lambda: mark_long_output_dispatch(session, claim_id, long_output_version_id)}
     with openai_client_factory(
         api_key=openai_api_key,
         model=openai_model,
@@ -3410,13 +3474,14 @@ def _enrich_selected_pps_attachment(
         base_url=llm_gateway_base_url,
         timeout_seconds=openai_timeout_seconds,
         max_retries=openai_max_retries,
+        **long_options,
     ) as client:
         outcome = client.extract(
             document_text=selection.text,
             allowed_attachment_ids={attachment["attachment_id"]},
         )
     try:
-        if outcome.api_calls > MAX_OPENAI_CALLS_PER_ATTACHMENT:
+        if outcome.api_calls > (LONG_OUTPUT_MAX_CALLS if long_output_scope else MAX_OPENAI_CALLS_PER_ATTACHMENT):
             raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")
         quantitative_record = (
             validate_quantitative_attachment_extraction(
@@ -3677,6 +3742,7 @@ def enrich_notice_from_pps(
         discovered = len(raw_manifest_values)
     base_warnings = ["INVALID_ATTACHMENT_MANIFEST"] if invalid_count else []
     retry_targets = None
+    long_output_once = bool(failed_attachment_retry and failed_attachment_retry.get("budget_policy") == LONG_OUTPUT_ONCE)
     if failed_attachment_retry is not None:
         if not valid_failed_attachment_retry_scope(failed_attachment_retry) or set(failed_attachment_retry["version_ids"]) != set(retry_reviewed_version_ids):
             return PpsEnrichmentResult(status="REVIEW", warnings=["FAILED_RETRY_SCOPE_INVALID"])
@@ -3783,6 +3849,9 @@ def enrich_notice_from_pps(
                       or not _manifest_binding_is_current(session, notice_id=notice_id, attachment=attachment,
                                                          manifest_sha256=_digest(attachment), current_manifest_sha256=current_manifest_sha256)):
                     stop_code = "FAILED_RETRY_SCOPE_STALE"
+                elif long_output_once and (not eligible_long_output_failure(stored_version)
+                                          or long_output_consumed(session, target["version_id"])):
+                    stop_code = "LONG_OUTPUT_ALREADY_CONSUMED_OR_INELIGIBLE"
             if stop_code:
                 audits.append(_audit_result_for_attachment(attachment, PpsEnrichmentResult(status="REVIEW", warnings=[stop_code]), attempted=False))
                 warnings.append(stop_code)
@@ -3792,9 +3861,11 @@ def enrich_notice_from_pps(
         # corrective Responses call. Start it only when the enclosing request
         # still has enough time for that complete bounded unit. Successfully
         # persisted siblings remain durable and the notice is re-leased.
+        target_timeout = LONG_OUTPUT_TIMEOUT_SECONDS if long_output_once else openai_timeout_seconds
+        target_call_limit = LONG_OUTPUT_MAX_CALLS if long_output_once else MAX_OPENAI_CALLS_PER_ATTACHMENT
         worst_case_seconds = (
             (download_timeout_seconds * 3)
-            + (openai_timeout_seconds * MAX_OPENAI_CALLS_PER_ATTACHMENT)
+            + (target_timeout * target_call_limit)
             + ATTACHMENT_TIMEOUT_GUARD_SECONDS
         )
         if new_attempts >= MAX_NEW_ATTACHMENTS_PER_REQUEST or (
@@ -3854,10 +3925,11 @@ def enrich_notice_from_pps(
                     transport=transport,
                     openai_client_factory=openai_client_factory,
                     download_timeout_seconds=download_timeout_seconds,
-                    openai_timeout_seconds=openai_timeout_seconds,
+                    openai_timeout_seconds=target_timeout,
                     openai_max_retries=openai_max_retries,
                     retry_reviewed_version_ids=retry_reviewed_version_ids,
                     **({"retry_failed_version_no": target["version_no"]} if target is not None else {}),
+                    **({"long_output_scope": failed_attachment_retry, "long_output_deadline": deadline_monotonic} if long_output_once else {}),
                 )
             except PpsPostOpenAIProcessingError as exc:
                 # The provider already processed a paid request.  Even if a

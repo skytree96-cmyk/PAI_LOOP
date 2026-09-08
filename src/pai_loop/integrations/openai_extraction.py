@@ -15,6 +15,7 @@ from pydantic_core import PydanticCustomError
 
 from ..extraction_contracts import CURRENT_EXTRACTION_CONTRACT
 from ..gateway_diagnostics import GatewayFailure, safe_gateway_failure
+from ..long_output_policy import LONG_OUTPUT_ONCE, LONG_OUTPUT_TOKENS, LONG_OUTPUT_TIMEOUT_SECONDS
 
 PROMPT_VERSION = CURRENT_EXTRACTION_CONTRACT.prompt
 SCHEMA_VERSION = CURRENT_EXTRACTION_CONTRACT.schema
@@ -673,6 +674,8 @@ class OpenAIExtractionClient:
         # gateway. Adaptive thinking shares this budget with the final JSON.
         max_output_tokens: int = 20_000,
         max_total_api_calls: int = 2,
+        budget_policy: Literal["LONG_OUTPUT_ONCE"] | None = None,
+        before_request: Callable[[], None] | None = None,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -717,8 +720,16 @@ class OpenAIExtractionClient:
         # caller may still perform the one evidence-correction attempt.
         self.max_retries = 0 if selected_provider == "n8n_claude" else max_retries
         self.max_input_chars = max_input_chars
-        if not 256 <= max_output_tokens <= 20_000:
+        if budget_policy is not None:
+            if (budget_policy != LONG_OUTPUT_ONCE or selected_provider != "n8n_claude"
+                or type(max_output_tokens) is not int or max_output_tokens != LONG_OUTPUT_TOKENS
+                or timeout_seconds != LONG_OUTPUT_TIMEOUT_SECONDS or max_total_api_calls != 1
+                or not callable(before_request)):
+                raise ValueError("invalid LONG_OUTPUT_ONCE execution contract")
+        elif before_request is not None or not 256 <= max_output_tokens <= 20_000:
             raise ValueError("max_output_tokens must be between 256 and 20000")
+        self.budget_policy = budget_policy
+        self._before_request = before_request
         self.max_output_tokens = max_output_tokens
         if not 1 <= max_total_api_calls <= 2:
             raise ValueError("max_total_api_calls must be between 1 and 2")
@@ -809,6 +820,9 @@ class OpenAIExtractionClient:
         api_calls = 0
         attempts: list[OpenAIAttemptTelemetry] = []
         for attempt in range(attempts_allowed):
+            if self._before_request is not None:
+                # A durable CAS dispatch intent is required before any paid I/O.
+                self._before_request()
             api_calls += 1
             can_retry = attempt + 1 < attempts_allowed
             started_at = self._monotonic()
@@ -1260,6 +1274,7 @@ class OpenAIExtractionClient:
             "service_tier": "default",
             "store": False,
             "max_output_tokens": self.max_output_tokens,
+            **({"budget_policy": self.budget_policy} if self.budget_policy is not None else {}),
             "input": [
                 {
                     "role": "system",
