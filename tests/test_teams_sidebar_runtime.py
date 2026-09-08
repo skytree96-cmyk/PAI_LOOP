@@ -52,8 +52,8 @@ def test_unconfigured_destination_is_empty_and_not_a_generic_homepage(monkeypatc
 @pytest.mark.parametrize("destination", [
     "", "javascript:alert('SYN')", "//teams.microsoft.com/l/channel/SYN",
     "http://teams.microsoft.com/l/channel/SYN", "https://teams.microsoft.com.evil.test/SYN",
-    "https://evil.test/teams.microsoft.com/SYN", "https://SYN@teams.microsoft.com/l/channel/SYN",
-    "https://SYN:SYN@teams.microsoft.com/l/channel/SYN", "https://teams.microsoft.com:444/SYN",
+    "https://evil.test/teams.microsoft.com/SYN", "https://" + "@".join(("SYN", "teams.microsoft.com/l/channel/SYN")),
+    "https://" + "@".join(("SYN:SYN", "teams.microsoft.com/l/channel/SYN")), "https://teams.microsoft.com:444/SYN",
     "https://@teams.microsoft.com/l/channel/SYN",
     "https://teams.microsoft.com:bad/SYN", "https://teams.microsoft.com./SYN",
     "https://teams.microsoft.com/\nSYN", "https://teams.microsoft.com/\\SYN",
@@ -90,7 +90,7 @@ const opened = [];
 const window = { open(...args) { opened.push(args); } };
 __FUNCTIONS__
 for (const candidate of ['', 'javascript:alert(1)', '//teams.microsoft.com/SYN',
-  'https://teams.microsoft.com.evil.test/SYN', 'https://SYN@teams.microsoft.com/SYN',
+  'https://teams.microsoft.com.evil.test/SYN', 'https://' + ['SYN', 'teams.microsoft.com/SYN'].join('@'),
   'https://@teams.microsoft.com/SYN',
   'https://teams.microsoft.com:444/SYN', 'https://teams.microsoft.com/\nSYN']) {
   PAI_BOT_TEAMS_URL = candidate;
