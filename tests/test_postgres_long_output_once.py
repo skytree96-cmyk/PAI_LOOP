@@ -18,7 +18,7 @@ def test_postgres_only_one_reservation_and_one_dispatch_across_sessions(postgres
     Base.metadata.create_all(postgres_account_engine)
     factory = build_session_factory(postgres_account_engine)
     with factory() as session:
-        notice = Notice(notice_key="PPS-SYN-LONG-PG", title="SYN", agency="SYN", status="OPEN",
+        notice = Notice(notice_key="PPS-SYN-LONG-PG", bid_notice_no="SYN-LONG-PG", title="SYN", agency="SYN", status="OPEN",
                         deadline=datetime.now(timezone.utc) + timedelta(days=3))
         session.add(notice)
         session.flush()
