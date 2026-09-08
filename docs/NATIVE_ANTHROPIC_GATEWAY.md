@@ -12,7 +12,7 @@ this transport has not yet passed a real provider request. Merging this code is
 not evidence of n8n publication, provider schema acceptance, or extraction recovery.
 Deployment remains the root operator's separately controlled manual operation.
 
-## Why exactly two fields use omission
+## Why exactly two fields use required transport arrays
 
 The actual `EXTRACTION_SCHEMA` has 18 nullable `anyOf` parameters. Anthropic's
 documented union limit is 16 and includes both `anyOf` and type arrays. Replacing
@@ -20,19 +20,33 @@ documented union limit is 16 and includes both `anyOf` and type arrays. Replacin
 all 18 parameters would create 34 optional locations if references are expanded,
 exceeding the documented optional-parameter limit of 24.
 
-Only `$defs.EvidenceAnchor.page` and `.section` become optional, non-null provider
-properties. Every other nullable remains unchanged. The resulting schema has:
+The first projection made only `$defs.EvidenceAnchor.page` and `.section`
+optional and non-null. A root-operated full-schema synthetic provider request
+returned HTTP 400 with the fixed reason `compiled grammar is too large` despite
+meeting the public union/optional limits. This confirms grammar compilation
+rejection for that request, not a document extraction failure or proof that any
+one schema feature caused it. The adapter now keeps both fields required and
+transports each as an array: `[]` explicitly means null, `[value]` means the
+original integer page or string section. Every other nullable, property,
+enum and quantitative structure remains unchanged. The resulting schema has:
 
 | Count interpretation | Union parameters | Optional parameters |
 | --- | ---: | ---: |
-| Unique definitions | 16 | 2 |
-| References expanded per use | 16 | 18 |
+| Unique definitions | 16 | 0 |
+| References expanded per use | 16 | 0 |
 
-The prompt explains that omission of these two fields means unknown. The decoder
-walks the exact original schema, including referenced objects and arrays, and
-restores only these two absent fields to `null`. It preserves explicit values,
-including explicit nulls. It never fills missing text, evidence, scores, arrays,
-or other required fields. Missing non-nullable/other required fields, unknown
+The trusted system note states the two-field representation and explicitly
+overrides only those types in the complete original schema supplied with the
+user source. Its characters are included in the existing combined-input cap.
+The final provider system message, including this note, must also fit 12,000 characters.
+The decoder walks the exact original schema, including referenced objects and
+arrays, and converts only these two exact EvidenceAnchor paths. Missing fields,
+bare null/scalar values, arrays longer than one, nested arrays, booleans,
+fractional/string pages and non-string sections are rejected without coercion.
+Only an explicitly present empty array becomes null. All other arrays are left
+structurally unchanged, and no missing field is filled. JSON integer semantics
+apply: a parsed numeric `2.0` is indistinguishable from `2`, while `2.5` fails.
+Missing required fields, unknown
 properties, wrong structural types, invalid enums, cycles, external references,
 unknown schema keywords, oversized schemas, or cap violations fail closed.
 
@@ -40,15 +54,20 @@ The adapter moves only the unsupported keywords present in the production schema
 (`minimum`, `maximum`, `exclusiveMinimum`, `minLength`, `maxLength`, `maxItems`)
 into descriptions. It keeps the complete original schema in the prompt and
 passes the decoded object to the unchanged backend validation. For example,
-explicit `page:0` is preserved by the transport and rejected by Pydantic's
+explicit `page:[0]` decodes to `page:0` and is rejected by Pydantic's
 original `page >= 1` rule. No constraint is converted into a factual assertion.
+The provider does not support `maxItems`; the transport array's 0..1 cardinality
+is explained in the schema description/system note and enforced by the decoder,
+not expressed as an unsupported provider keyword.
 
 Schema size remains bounded at 64,000 characters; source/system limits remain
 140,000/12,000 characters. The 210,000 combined-character cap now also counts the
 native schema and transport convention, so native formatting cannot silently
 increase the request budget. Internal provider grammar/compilation limits can
-still reject a schema inside these public caps. A full-schema synthetic probe
-is required before any real document is retried.
+still reject a schema inside these public caps. Removing the repeated optional
+anchor branches is a targeted reduction, not a guarantee of provider acceptance.
+A new full-schema synthetic probe is required before any real document is retried;
+the manifest promotion remains pending.
 
 ## Request and response contract
 
@@ -130,8 +149,8 @@ restore the PR129 node version; do not automatically retry a paid request.
 
 `tests/test_native_gateway_schema.py` runs the actual Python schema through the
 JavaScript adapter/decoder and then original Pydantic validation using only SYN
-source/output. The Node tests cover topology, limits, nullable preservation,
-missing/explicit fields, cycles/references, HTTP and stop failures, thinking/usage,
+source/output. The Node tests cover topology, limits, explicit empty/single-item transport,
+missing/invalid fields, cycles/references, HTTP and stop failures, thinking/usage,
 credential boundaries, and both native and pinned Tournament terminal evaluation.
 These are local tests; a real Anthropic request and deployed n8n execution remain
 unverified until root's separately authorized synthetic probe.

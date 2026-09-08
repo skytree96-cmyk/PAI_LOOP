@@ -30,13 +30,15 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   const schemaJson = JSON.stringify(schema);
   if (!schemaJson || schemaJson.length > 64000) throw new Error('response JSON schema is oversized');
   const projection = projectSchema(schema, 'project');
-  const convention = '\n\nNATIVE TRANSPORT CONVENTION: Only EvidenceAnchor.page and EvidenceAnchor.section may be omitted when their original value would be null. Omission means unknown, never zero or fabricated text. Keep every other required field, explicit value, nullable field, and evidence unchanged. The server restores only these two omitted fields to null and validates the original schema and source evidence.';
-  const schemaInstruction = `\n\nReturn only one JSON object matching the original schema below, with the two-field transport convention. Do not wrap it in Markdown. ORIGINAL RESPONSE JSON SCHEMA:\n${schemaJson}${convention}`;
-  const combinedCharacters = systemPrompt.length + userPrompt.length + schemaInstruction.length + JSON.stringify(projection.schema).length;
+  const convention = '\n\nTRUSTED NATIVE TRANSPORT CONVENTION: Only EvidenceAnchor.page and EvidenceAnchor.section use required arrays instead of their original nullable primitive types. For these two fields only, return [] for an explicit null or [value] for one original non-null value (integer page, string section). Always include both fields. Never return a bare primitive, bare null, multiple items, fabricated value, or omit either field. This transport representation overrides their types in the original schema below; every other field, array, enum, nullable value and evidence rule is unchanged. The server decodes only these exact EvidenceAnchor fields, rejects invalid representations, and validates the complete original schema and source evidence.';
+  const schemaInstruction = `\n\nReturn only one JSON object matching the original schema below except for the two EvidenceAnchor field representations specified in the trusted system transport convention. Do not wrap it in Markdown. ORIGINAL RESPONSE JSON SCHEMA:\n${schemaJson}`;
+  const providerSystem = systemPrompt + convention;
+  if (providerSystem.length > 12000) throw new Error('combined system prompt is oversized');
+  const combinedCharacters = providerSystem.length + userPrompt.length + schemaInstruction.length + JSON.stringify(projection.schema).length;
   if (combinedCharacters > 210000) throw new Error('combined Claude request is oversized');
   return [{ json: { original_schema: schema, provider_request: {
     model: 'claude-sonnet-5', max_tokens: body.max_output_tokens,
-    system: systemPrompt, messages: [{ role: 'user', content: userPrompt + schemaInstruction }],
+    system: providerSystem, messages: [{ role: 'user', content: userPrompt + schemaInstruction }],
     thinking: { type: 'adaptive' }, output_config: { effort: 'medium', format: { type: 'json_schema', schema: projection.schema } },
     stream: false,
   } } }];

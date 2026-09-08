@@ -42,8 +42,9 @@ export function nativeGatewaySchema(original, mode, value) {
       const branch = nullable(node);
       const expectedType = pointer.endsWith("/page") ? "integer" : "string";
       if (branch.type !== expectedType) fail();
-      node = { ...branch, ...(node.title === undefined ? {} : { title: node.title }),
-        description: `${node.description ?? ""} Transport convention: omit this property only when its original value would be null.` };
+      node = { type: "array", items: branch,
+        ...(node.title === undefined ? {} : { title: node.title }),
+        description: `${node.description ?? ""} Required transport array: exactly zero or one item. [] explicitly represents null; [value] represents the original non-null value. Never omit this property.` };
     }
     const output = {};
     const annotations = [];
@@ -62,7 +63,7 @@ export function nativeGatewaySchema(original, mode, value) {
       else if (key === "items") output[key] = clone(item, `${pointer}/items`, depth + 1);
       else if (key === "required") {
         if (!Array.isArray(item) || item.some(name => typeof name !== "string") || new Set(item).size !== item.length) fail();
-        output[key] = item.filter(name => !projectedPaths.has(`${pointer}/properties/${name}`));
+        output[key] = [...item];
       } else if (key === "enum") {
         if (!Array.isArray(item) || !item.length || item.length > 100 || item.some(entry => typeof entry !== "string")) fail();
         output[key] = [...item];
@@ -74,6 +75,8 @@ export function nativeGatewaySchema(original, mode, value) {
     if (node.type === "object") {
       if (node.additionalProperties !== false || !object(node.properties) || !Array.isArray(node.required)
         || node.required.some(name => !own(node.properties, name))) fail();
+      if (pointer === "#/$defs/EvidenceAnchor" && ["page", "section"].some(name =>
+        !own(node.properties, name) || !node.required.includes(name))) fail();
     } else if (node.properties !== undefined || node.required !== undefined || node.additionalProperties !== undefined) fail();
     if (node.type === "array" && !object(node.items)) fail();
     if (annotations.length) output.description = `${output.description ?? ""} Original constraints (validated by the server): ${annotations.join("; ")}.`.trim();
@@ -125,6 +128,10 @@ export function nativeGatewaySchema(original, mode, value) {
       if (stack.includes(node.$ref)) fail();
       return decode(data, resolve(node.$ref), node.$ref, depth + 1, [...stack, node.$ref]);
     }
+    if (projectedPaths.has(pointer)) {
+      if (!Array.isArray(data) || data.length > 1 || (data.length === 1 && !own(data, 0))) fail();
+      return data.length === 0 ? null : decode(data[0], nullable(node), `${pointer}/transportItem`, depth + 1, stack);
+    }
     if (node.anyOf) {
       const branch = nullable(node);
       return data === null ? null : decode(data, branch, `${pointer}/anyOf/nonnull`, depth + 1, stack);
@@ -135,8 +142,7 @@ export function nativeGatewaySchema(original, mode, value) {
       for (const [name, child] of Object.entries(node.properties)) {
         const path = `${pointer}/properties/${name}`;
         if (!own(data, name)) {
-          if (projectedPaths.has(path)) output[name] = null;
-          else if (node.required.includes(name)) fail();
+          if (node.required.includes(name)) fail();
         } else output[name] = decode(data[name], child, path, depth + 1, stack);
       }
       return output;
