@@ -134,6 +134,50 @@ def normalise_award(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_SHAPE_LIMIT = 32
+_SHAPE_ROW_LIMIT = 1000
+_MISSING = object()
+
+
+def _json_shape(value: object) -> str:
+    if value is _MISSING:
+        return "MISSING"
+    return {
+        type(None): "NULL", bool: "BOOLEAN", int: "INTEGER", float: "NUMBER",
+        str: "STRING", list: "ARRAY", dict: "OBJECT",
+    }.get(type(value), "OTHER")
+
+
+def _award_page_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    """Describe only fixed paths/types/counts; never retain provider values."""
+    response = payload.get("response", _MISSING)
+    header = response.get("header", _MISSING) if isinstance(response, dict) else _MISSING
+    body = response.get("body", _MISSING) if isinstance(response, dict) else _MISSING
+    total = body.get("totalCount", _MISSING) if isinstance(body, dict) else _MISSING
+    items = body.get("items", _MISSING) if isinstance(body, dict) else _MISSING
+    item = items.get("item", _MISSING) if isinstance(items, dict) else _MISSING
+    rows = item if isinstance(items, dict) else items
+    return {
+        "response_type": _json_shape(response),
+        "header_type": _json_shape(header),
+        "result_code_type": _json_shape(header.get("resultCode", _MISSING) if isinstance(header, dict) else _MISSING),
+        "body_type": _json_shape(body),
+        "total_count_type": _json_shape(total),
+        "total_count_explicit_zero": (type(total) in (int, float) and total == 0) or (type(total) is str and total == "0"),
+        "items_type": _json_shape(items),
+        "item_type": _json_shape(item),
+        "array_length": min(len(rows), _SHAPE_ROW_LIMIT) if isinstance(rows, list) else None,
+        "object_rows": sum(isinstance(row, dict) for row in rows[:_SHAPE_ROW_LIMIT]) if isinstance(rows, list) else (1 if isinstance(rows, dict) else None),
+        "array_length_capped": isinstance(rows, list) and len(rows) > _SHAPE_ROW_LIMIT,
+    }
+
+
+class _AwardPageParseError(PpsApiError):
+    def __init__(self, error: PpsApiError, payload: dict[str, Any]) -> None:
+        super().__init__(*error.args, **error.safe_metadata())
+        self.page_shape = _award_page_shape(payload)
+
+
 class PpsAwardClient(PpsClient):
     """Bounded client for service-award history using the common PPS envelope."""
 
@@ -143,6 +187,18 @@ class PpsAwardClient(PpsClient):
         self.window_errors: list[str] = []
         self.hit_incomplete_response = False
         self._window_error_counts: Counter = Counter()
+        self._page_shape_counts: Counter = Counter()
+        self._suppressed_page_shapes = 0
+
+    @property
+    def page_shape_diagnostics(self) -> dict[str, Any]:
+        return {
+            "counts": [
+                {"phase": phase, "error_type": kind, "shape": dict(shape), "count": count}
+                for (phase, kind, shape), count in self._page_shape_counts.items()
+            ],
+            "suppressed_count": self._suppressed_page_shapes,
+        }
 
     @property
     def window_error_counts(self) -> list[dict[str, Any]]:
@@ -158,6 +214,12 @@ class PpsAwardClient(PpsClient):
     def _record_window_error(self, phase: str, error: PpsApiError) -> None:
         metadata = error.safe_metadata()
         self._window_error_counts[(phase, metadata["error_type"], metadata["http_status"], metadata["provider_code"])] += 1
+        if isinstance(error, _AwardPageParseError):
+            key = (phase, metadata["error_type"], tuple(error.page_shape.items()))
+            if key in self._page_shape_counts or len(self._page_shape_counts) < _SHAPE_LIMIT:
+                self._page_shape_counts[key] += 1
+            else:
+                self._suppressed_page_shapes += 1
 
     def _fetch_window(
         self,
@@ -195,15 +257,18 @@ class PpsAwardClient(PpsClient):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
                 return results
-            raw_items, total = parse_paged_response(payload)
-            body = payload["response"]["body"]
-            container = body.get("items")
-            raw = container.get("item", []) if isinstance(container, dict) else container
-            raw = [raw] if isinstance(raw, dict) else raw
-            if raw in (None, "") and total == 0 and "items" in body:
-                raw = []
-            if not isinstance(raw, list) or len(raw) != len(raw_items) or not str(body["totalCount"]).isdigit():
-                raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.", error_type="AWARD_PAGE_INVALID")
+            try:
+                raw_items, total = parse_paged_response(payload)
+                body = payload["response"]["body"]
+                container = body.get("items")
+                raw = container.get("item", []) if isinstance(container, dict) else container
+                raw = [raw] if isinstance(raw, dict) else raw
+                if raw in (None, "") and total == 0 and "items" in body:
+                    raw = []
+                if not isinstance(raw, list) or len(raw) != len(raw_items) or not str(body["totalCount"]).isdigit():
+                    raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.", error_type="AWARD_PAGE_INVALID")
+            except PpsApiError as exc:
+                raise _AwardPageParseError(exc, payload) from exc
             incomplete = (
                 (expected_total is not None and total != expected_total)
                 or len(raw_items) != min(rows, max(0, total - (page - 1) * rows))
@@ -396,6 +461,8 @@ class PpsAwardClient(PpsClient):
         self.window_errors = []
         self.hit_incomplete_response = False
         self._window_error_counts.clear()
+        self._page_shape_counts.clear()
+        self._suppressed_page_shapes = 0
         for window in split_date_range(start, end, max_days=max_window_days):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True

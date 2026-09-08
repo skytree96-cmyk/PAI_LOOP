@@ -676,6 +676,46 @@ class AwardHistoryRefreshRequest(ApiModel):
         return " ".join(value.split()) if value else None
 
 
+JsonFieldShape = Literal["MISSING", "NULL", "BOOLEAN", "INTEGER", "NUMBER", "STRING", "ARRAY", "OBJECT", "OTHER"]
+
+
+class AwardPageShape(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    response_type: JsonFieldShape
+    header_type: JsonFieldShape
+    result_code_type: JsonFieldShape
+    body_type: JsonFieldShape
+    total_count_type: JsonFieldShape
+    total_count_explicit_zero: bool
+    items_type: JsonFieldShape
+    item_type: JsonFieldShape
+    array_length: int | None = Field(ge=0, le=1000)
+    object_rows: int | None = Field(ge=0, le=1000)
+    array_length_capped: bool
+
+
+class AwardPageShapeCount(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    phase: Literal["PRIMARY", "FALLBACK"]
+    error_type: PpsErrorType
+    shape: AwardPageShape
+    count: int = Field(ge=1)
+
+
+class AwardShapeDiagnostics(ApiModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    counts: list[AwardPageShapeCount] = Field(max_length=32)
+    suppressed_count: int = Field(ge=0)
+
+
+class AwardJobDiagnosticsOut(ApiModel):
+    job_id: str
+    diagnostics: AwardShapeDiagnostics | None
+
+
 class AwardWindowErrorCount(ApiModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

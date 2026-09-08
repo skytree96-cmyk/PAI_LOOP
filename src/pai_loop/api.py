@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, raiseload, selectinload
@@ -94,6 +95,8 @@ from .schemas import (
     AwardIntelligenceOut,
     AwardHistoryRefreshOut,
     AwardHistoryRefreshRequest,
+    AwardJobDiagnosticsOut,
+    AwardShapeDiagnostics,
     CompanyFactCreate,
     DecisionCreate,
     DecisionOut,
@@ -2745,6 +2748,23 @@ def list_ingestion_jobs(
     )
 
 
+@router.get("/ingestion/jobs/{job_id}/award-diagnostics", response_model=AwardJobDiagnosticsOut)
+def award_job_diagnostics(job_id: str, session: DbSession) -> AwardJobDiagnosticsOut:
+    """Server-authenticated, read-only projection; never expose request_json."""
+    job = session.scalar(select(IngestionJob).where(IngestionJob.id == job_id, IngestionJob.source == "PPS_AWARD"))
+    if job is None:
+        raise HTTPException(status_code=404, detail="낙찰 조회 작업을 찾을 수 없습니다.")
+    config = job.request_json
+    if config is not None and not isinstance(config, dict):
+        raise HTTPException(status_code=409, detail="저장된 낙찰 진단 형식을 확인할 수 없습니다.")
+    stored = (config or {}).get("award_page_shape_diagnostics")
+    try:
+        diagnostics = AwardShapeDiagnostics.model_validate(stored) if stored is not None else None
+    except ValidationError:
+        raise HTTPException(status_code=409, detail="저장된 낙찰 진단 형식을 확인할 수 없습니다.") from None
+    return AwardJobDiagnosticsOut(job_id=job.id, diagnostics=diagnostics)
+
+
 _AWARD_TITLE_STOPWORDS = {
     "공고",
     "긴급",
@@ -2975,6 +2995,9 @@ def refresh_award_history(
             fallback_window_count = client.fallback_window_count
             window_errors = list(client.window_errors)
             window_error_counts = list(getattr(client, "window_error_counts", []))
+            page_shape_diagnostics = getattr(client, "page_shape_diagnostics", None)
+            if page_shape_diagnostics is not None:
+                page_shape_diagnostics = AwardShapeDiagnostics.model_validate(page_shape_diagnostics).model_dump(mode="json")
             hit_time_limit = getattr(client, "hit_time_limit", False)
             hit_incomplete_response = getattr(client, "hit_incomplete_response", False)
     except PpsApiError as exc:
@@ -3169,6 +3192,8 @@ def refresh_award_history(
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
     job.request_json = {**(job.request_json or {}), "window_error_counts": window_error_counts}
+    if page_shape_diagnostics is not None:
+        job.request_json = {**job.request_json, "award_page_shape_diagnostics": page_shape_diagnostics}
     job.matched = len(candidates)
     job.created_count = created
     job.updated_count = updated
