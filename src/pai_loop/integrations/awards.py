@@ -292,6 +292,15 @@ class PpsAwardClient(PpsClient):
                 raw = [raw] if isinstance(raw, dict) else raw
                 if raw in (None, "") and total == 0 and "items" in body:
                     raw = []
+                # The common parser has already validated the success envelope.
+                # An omitted collection is empty only with an exact explicit zero;
+                # do not infer zero from bool/float/null/blank or a missing count.
+                count = body["totalCount"]
+                if "items" not in body and (
+                    (type(count) is int and count == 0)
+                    or (type(count) is str and count == "0")
+                ):
+                    raw = []
                 if not isinstance(raw, list) or len(raw) != len(raw_items) or not str(body["totalCount"]).isdigit():
                     raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.", error_type="AWARD_PAGE_INVALID")
             except PpsApiError as exc:
