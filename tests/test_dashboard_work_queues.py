@@ -181,9 +181,12 @@ def test_legacy_evaluation_without_current_attachment_coverage_is_not_qualificat
 
 @pytest.mark.parametrize("path", ["/fail", "/cancelled"])
 def test_dashboard_queue_routes_serve_application(client, path):
+    from conftest import login_department_reader
+    assert 'id="entryLoginForm"' in client.get(path).text
+    login_department_reader(client)
     response = client.get(path)
     assert response.status_code == 200
-    assert "20260908-required-login-v1" in response.text
+    assert "20260908-paid-access-v1" in response.text
 
 
 def _assert_frontend_queue_parity(rows, dashboard):

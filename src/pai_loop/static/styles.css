@@ -7481,7 +7481,8 @@ textarea:focus,
 
 /* The admin list fits the existing scrollable account dialog on narrow screens. */
 .account-management-list { list-style: none; margin: 12px 0 0; padding: 0; }
-.account-management-list li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-.account-management-list li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.account-management-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.account-management-list li > span { flex: 1 1 190px; min-width: 0; overflow-wrap: anywhere; }
+.account-management-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .account-management-list small { display: block; margin-top: 4px; color: var(--ink-soft); }
 .account-management-list button { flex-shrink: 0; white-space: nowrap; }
