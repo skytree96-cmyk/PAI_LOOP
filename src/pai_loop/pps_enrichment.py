@@ -1756,13 +1756,12 @@ def _extract_hwpx_text(content: bytes) -> str:
             raise PpsEnrichmentError("HWPX_UNCOMPRESSED_LIMIT")
         for item in entries:
             name = item.filename
-            path = PurePath(name.replace("/", "\\"))
             if (
                 not name
                 or "\x00" in name
                 or "\\" in name
                 or name.startswith("/")
-                or ".." in path.parts
+                or ".." in name.split("/")
             ):
                 raise PpsEnrichmentError("HWPX_INVALID_ENTRY_PATH")
             if item.flag_bits & 0x1:

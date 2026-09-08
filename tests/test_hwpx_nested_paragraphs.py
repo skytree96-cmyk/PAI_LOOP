@@ -97,6 +97,9 @@ def test_archive_limits_still_precede_paragraph_processing(monkeypatch, setting,
 
 @pytest.mark.parametrize("members,error", [
     ({"../unsafe.xml": b"SYN"}, "HWPX_INVALID_ENTRY_PATH"),
+    ({"dir/../unsafe.xml": b"SYN"}, "HWPX_INVALID_ENTRY_PATH"),
+    ({"/absolute.xml": b"SYN"}, "HWPX_INVALID_ENTRY_PATH"),
+    ({"..\\unsafe.xml": b"SYN"}, "HWPX_INVALID_ENTRY_PATH"),
     ({"Scripts/default.js": b"SYN"}, "HWPX_ACTIVE_CONTENT_NOT_EXTRACTED"),
     ({"BinData/embedded.pdf": b"%PDF-SYN"}, "HWPX_EMBEDDED_ATTACHMENT_NOT_EXTRACTED"),
     ({"Contents/section0.xml.rels": b"<Relationships><Relationship TargetMode='External'/></Relationships>"},
