@@ -7,18 +7,21 @@ from pathlib import Path
 from urllib.parse import parse_qsl
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import text
 
 from . import __version__
 from .analysis_api import router as analysis_persistence_router
 from .api import router
 from .accounts import router as accounts_router
+from .accounts import authenticated_account
+from .app_access import FRONTEND_PATHS, require_app_access
 from .company_awards import router as company_awards_router
 from .config import Settings
 from .database import Base, build_engine, build_session_factory
@@ -140,7 +143,15 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     @application.middleware("http")
     async def teams_tab_security_headers(request: Request, call_next):
         _scrub_private_performance_search_query(request)
-        response = await call_next(request)
+        try:
+            await run_in_threadpool(require_app_access, request)
+        except HTTPException as error:
+            response = JSONResponse(status_code=error.status_code, content={"detail": error.detail}, headers=error.headers)
+            response.headers["Cache-Control"] = "no-store"
+        else:
+            response = await call_next(request)
+        if request.url.path.startswith("/api/") or request.url.path in FRONTEND_PATHS:
+            response.headers["Cache-Control"] = "no-store"
         if request.url.path == recovery_diagnostics_path:
             response.headers["Cache-Control"] = "no-store"
         # Teams tabs are first-party HTTPS pages rendered by Microsoft inside
@@ -229,7 +240,11 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     if (static_dir / "index.html").exists():
         index_file = static_dir / "index.html"
 
-        def frontend_index() -> HTMLResponse:
+        def frontend_index(request: Request) -> HTMLResponse:
+            try:
+                authenticated_account(request)
+            except HTTPException:
+                return HTMLResponse((static_dir / "login.html").read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
             runtime_json = json.dumps({"paiBotTeamsUrl": settings.safe_pai_bot_teams_url}, ensure_ascii=True)
             # JSON is embedded in an inert script element; literal HTML delimiters
             # must not terminate it, even in an approved destination's query/path.
@@ -237,21 +252,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             html = index_file.read_text(encoding="utf-8").replace('{"paiBotTeamsUrl":""}', runtime_json, 1)
             return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
-        frontend_routes = (
-            "/",
-            "/index.html",
-            "/notices",
-            "/reviews",
-            "/urgent",
-            "/fail",
-            "/cancelled",
-            "/result-missing",
-            "/decisions",
-            "/results",
-            "/awards",
-            "/prespec",
-            "/performance",
-        )
+        frontend_routes = FRONTEND_PATHS
         for frontend_route in frontend_routes:
             route_name = frontend_route.strip("/").replace("/", "-") or "dashboard"
             application.add_api_route(

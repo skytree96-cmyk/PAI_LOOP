@@ -73,7 +73,7 @@ def test_teams_iframe_headers_allow_only_declared_microsoft_hosts(monkeypatch) -
     with TestClient(app) as client:
         for path in ("/", "/teams-config.html", "/api/v1/runtime-profile"):
             response = client.get(path)
-            assert response.status_code == 200
+            assert response.status_code == (200 if path == "/" else 401)
             csp = response.headers["Content-Security-Policy"]
             assert "frame-ancestors 'self'" in csp
             assert "https://teams.microsoft.com" in csp
@@ -95,8 +95,8 @@ def test_table_and_card_detail_actions_open_the_full_screen_view() -> None:
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".detail-link-button" in styles
     assert "width: 100vw" in styles
-    assert "styles.css?v=20260908-mobile-sidebar-v1" in html
-    assert "app.js?v=20260908-mobile-sidebar-v1" in html
+    assert "styles.css?v=20260908-required-login-v1" in html
+    assert "app.js?v=20260908-required-login-v1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:

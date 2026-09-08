@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 import pytest
 from sqlalchemy import select
 
@@ -130,7 +131,7 @@ def test_award_intelligence_api_reads_stored_rows_without_live_client(monkeypatc
 
     monkeypatch.setattr("pai_loop.api.PpsAwardClient", forbidden)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         created = client.post("/api/v1/notices", json={
             "notice_key": "SYNTHETIC-INTEL",
             "bid_notice_no": "SYN-TARGET",
@@ -210,7 +211,7 @@ def test_packaged_public_award_seed_is_safe_tamper_evident_and_idempotent() -> N
         raise AssertionError("digest tampering must fail closed")
 
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         with app.state.session_factory() as session:
             import_public_notice_seed(session)
             first = import_public_award_seed(session)

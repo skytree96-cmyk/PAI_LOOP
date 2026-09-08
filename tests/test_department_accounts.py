@@ -35,6 +35,7 @@ def _bootstrap(client, accounts):
 @pytest.fixture
 def account_client(client):
     assert client.post("/api/v1/notices", json={"notice_key": NOTICE, "bid_notice_no": NOTICE, "revision_no": "00", "title": "SYN 부서 계정 테스트", "agency": "SYN 기관", "deadline": "2027-01-01T00:00:00Z", "status": "OPEN"}).status_code == 201
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(client.app.state.settings, department_accounts_enabled=True, public_read_only=True, public_manual_analysis_enabled=True, public_manual_analysis_token="2468", api_key=SERVER["X-PAI-LOOP-API-KEY"])
     catalog = list(departments())
     accounts = [{"username": f"SYN_KMA{index + 1}", "password": PASSWORD, "role": "DEPARTMENT", "department_id": department, "active": True} for index, department in enumerate(catalog[:2])]
@@ -44,6 +45,7 @@ def account_client(client):
 
 
 def _login(client, username="SYN_KMA1"):
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     result = client.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": username, "password": PASSWORD})
     assert result.status_code == 200, result.text
     return {**ORIGIN, "X-CSRF-Token": result.json()["csrf_token"]}, result.json()
@@ -67,7 +69,7 @@ def test_account_flag_is_disabled_by_default_and_me_is_no_store(client):
     assert me.headers["cache-control"] == "no-store"
     assert client.get("/api/v1/runtime-profile").json()["department_accounts_enabled"] is False
     assert client.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": "SYN_KMA1", "password": PASSWORD}).status_code == 404
-    assert client.post("/api/v1/accounts/bootstrap", json={"accounts": [{"username": "SYN_ADMIN", "password": PASSWORD, "role": "ADMIN"}]}).status_code == 401
+    assert _peer(client).post("/api/v1/accounts/bootstrap", json={"accounts": [{"username": "SYN_ADMIN", "password": PASSWORD, "role": "ADMIN"}]}).status_code == 401
 
 
 def test_bootstrap_requires_preview_and_is_new_only(account_client):
@@ -584,9 +586,10 @@ def test_account_decision_keeps_stale_evaluation_and_reason_guards(account_clien
     server = _peer(account_client)
     assert server.post("/api/v1/ingestion/replay", headers=SERVER).status_code == 200
     key = "SYN-REVIEW-001"
+    assert account_client.get(f"/api/v1/notices/{key}").status_code == 401
+    headers, _ = _login(account_client)
     stale = account_client.get(f"/api/v1/notices/{key}").json()["latest_evaluation"]["id"]
     current = server.post(f"/api/v1/notices/{key}/evaluate", headers=SERVER, json={"ruleset_version": "SYN-account-current"}).json()["id"]
-    headers, _ = _login(account_client)
     payload = {"choice": "HOLD", "rationale": "SYN rationale", "expected_decision_id": None, "evaluation_id": stale}
     endpoint = f"/api/v1/operator-decisions/notices/{key}"
     assert account_client.post(endpoint, headers=headers, json=payload).status_code == 409

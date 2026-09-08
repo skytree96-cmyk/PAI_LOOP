@@ -64,6 +64,7 @@ def _operator_headers(token: str = PRIVATE_TOKEN) -> dict[str, str]:
 
 
 def _enable_production_operator(client: TestClient) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(
         client.app.state.settings,
         environment="production",

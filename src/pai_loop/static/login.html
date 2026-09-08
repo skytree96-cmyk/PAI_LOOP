@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#0f4c81" />
+    <title>로그인 · PAI 업무 시스템</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/login-gate.css?v=20260908-required-login-v1" />
+    <script src="/login.js?v=20260908-required-login-v1" defer></script>
+  </head>
+  <body class="login-page">
+    <main class="login-card" aria-labelledby="loginTitle">
+      <div class="login-brand" aria-label="PAI 업무 시스템"><span aria-hidden="true">P</span> PAI <small>업무 시스템</small></div>
+      <h1 id="loginTitle">로그인</h1>
+      <p class="login-intro">발급받은 부서 계정으로 로그인해 주세요.</p>
+      <form id="entryLoginForm">
+        <label for="entryUsername">아이디</label>
+        <input id="entryUsername" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" required />
+        <label for="entryPassword">비밀번호</label>
+        <input id="entryPassword" name="password" type="password" autocomplete="current-password" maxlength="256" required />
+        <p class="login-status" id="entryLoginStatus" role="status" aria-live="polite">로그인 상태를 확인하고 있습니다.</p>
+        <button id="entryLoginSubmit" type="submit" disabled>로그인</button>
+      </form>
+      <button class="login-retry" id="entryLoginRetry" type="button" hidden>상태 다시 확인</button>
+      <p class="login-help">계정 이용 문의는 관리자에게 연락해 주세요.</p>
+      <noscript><p>로그인하려면 브라우저의 JavaScript를 켜 주세요.</p></noscript>
+    </main>
+  </body>
+</html>

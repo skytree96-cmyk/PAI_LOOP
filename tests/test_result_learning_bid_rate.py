@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from conftest import login_department_reader
 from datetime import datetime, timezone
 import threading
 
@@ -66,8 +67,11 @@ def test_auto_bid_rate_is_server_calculated_and_allowlisted(client, amount, basi
     listing = client.get(ENDPOINT).json()
     assert "history" not in str(listing) and "SYN-not-public" not in str(listing)
     client.app.state.settings = replace(client.app.state.settings, public_read_only=True, api_key="SYN-rate-server-key")
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     assert client.get(f"/api/v1/notices/{NOTICE_KEY}/outcomes").status_code == 401
     assert client.get(ENDPOINT).status_code == 401
+    assert client.get(f"/api/v1/notices/{NOTICE_KEY}").status_code == 401
+    login_department_reader(client)
     public = client.get(f"/api/v1/notices/{NOTICE_KEY}")
     assert public.status_code == 200, public.text
     assert "basis_reference" not in public.text and "SYN-not-public" not in public.text

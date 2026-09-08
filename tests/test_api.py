@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 from sqlalchemy import select
 
 import pytest
@@ -1106,7 +1107,7 @@ def test_live_pps_ingestion_is_idempotent_and_discards_raw_payload(
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsClient", _FakePpsClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         payload = {
             "from_date": "2026-08-16",
             "to_date": "2026-08-16",
@@ -1194,7 +1195,7 @@ def test_direct_contract_is_audited_but_excluded_from_open_analysis_queue(
 
     monkeypatch.setattr("pai_loop.api.PpsClient", _DirectContractClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
@@ -1256,7 +1257,7 @@ def test_existing_open_notice_is_closed_when_provider_marks_it_direct(
     monkeypatch.setattr("pai_loop.api.PpsClient", _ReclassifiedContractClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200
         assert len(first.json()["created_notice_keys"]) == 1
@@ -1274,7 +1275,7 @@ def test_existing_open_notice_is_closed_when_provider_marks_it_direct(
 def test_live_pps_ingestion_requires_server_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PPS_API_KEY", raising=False)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as unconfigured_client:
+    with internal_server_client(app) as unconfigured_client:
         response = unconfigured_client.post(
             "/api/v1/ingestion/pps/notices",
             json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
@@ -1288,7 +1289,7 @@ def test_profile_ingestion_queries_every_department_with_bounded_terms(
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsClient", _FakePpsClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={
@@ -1319,7 +1320,7 @@ def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
         SimpleNamespace(monotonic=lambda: next(clock, 200.0)),
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={
@@ -1345,7 +1346,7 @@ def test_pps_page_cap_is_never_reported_as_complete(
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsClient", _PageLimitedPpsClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={
@@ -1371,7 +1372,7 @@ def test_pps_unexpected_client_error_finishes_failed_audit(
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
     monkeypatch.setattr("pai_loop.api.PpsClient", _BrokenPpsClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app, raise_server_exceptions=False) as live_client:
+    with internal_server_client(app, raise_server_exceptions=False) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
@@ -1414,7 +1415,7 @@ def test_new_pps_revision_closes_prior_row_and_open_filter_hides_it(
     monkeypatch.setattr("pai_loop.api.PpsClient", _RevisionClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         assert live_client.post("/api/v1/ingestion/pps/notices", json=payload).status_code == 200
         run["revision"] = "01"
         assert live_client.post("/api/v1/ingestion/pps/notices", json=payload).status_code == 200
@@ -1458,7 +1459,7 @@ def test_pps_cancel_notice_closes_existing_row_and_never_creates_open_candidate(
     monkeypatch.setattr("pai_loop.api.PpsClient", _CancellationClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200
         assert first.json()["created"] == 1
@@ -1574,7 +1575,7 @@ def test_multi_keyword_ingestion_persists_all_query_provenance(
 
     monkeypatch.setattr("pai_loop.api.PpsClient", _MultiKeywordDuplicateClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={
@@ -1673,7 +1674,7 @@ def test_historical_cancellation_does_not_suppress_newer_re_registration(
 
     monkeypatch.setattr("pai_loop.api.PpsClient", _CancelledThenRegisteredClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
@@ -1722,7 +1723,7 @@ def test_newer_expired_revision_closes_older_still_open_revision(
 
     monkeypatch.setattr("pai_loop.api.PpsClient", _NewerExpiredRevisionClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         response = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={"from_date": "2026-08-16", "to_date": "2026-08-16"},
@@ -1774,7 +1775,7 @@ def test_deadline_extension_with_same_revision_supersedes_and_requeues(
     monkeypatch.setattr("pai_loop.api.PpsClient", _DeadlineExtensionClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         original_key = first.json()["created_notice_keys"][0]
@@ -1846,7 +1847,7 @@ def test_cancel_after_extension_projects_one_representative_and_blocks_all_write
     monkeypatch.setattr("pai_loop.api.PpsClient", _ExtendedThenCancelledClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         registered = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert registered.status_code == 200, registered.text
         historical_key = registered.json()["created_notice_keys"][0]
@@ -2039,7 +2040,7 @@ def test_same_key_provider_update_hides_stale_evaluation_and_recommendation(
     monkeypatch.setattr("pai_loop.api.PpsClient", _SameKeyMaterialUpdateClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         notice_key = first.json()["created_notice_keys"][0]
@@ -2141,7 +2142,7 @@ def test_keyword_and_changed_clock_only_aggregate_provenance_without_reanalysis(
     monkeypatch.setattr("pai_loop.api.PpsClient", _ProvenanceOnlyClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     base = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post(
             "/api/v1/ingestion/pps/notices",
             json={**base, "keywords": ["교육"]},
@@ -2245,7 +2246,7 @@ def test_same_key_canonical_material_change_versions_and_requeues(
     monkeypatch.setattr("pai_loop.api.PpsClient", _CanonicalChangeClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         notice_key = first.json()["created_notice_keys"][0]
@@ -2307,7 +2308,7 @@ def test_cross_run_cancellation_tombstone_survives_retention_and_blocks_stale_op
     monkeypatch.setattr("pai_loop.api.PpsClient", _CrossRunCancelClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post(
             "/api/v1/ingestion/pps/notices", json=payload
         )
@@ -2422,7 +2423,7 @@ def test_cross_run_extension_authority_blocks_stale_original_deadline(
     monkeypatch.setattr("pai_loop.api.PpsClient", _CrossRunExtensionClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         phase["value"] = "extended"
@@ -2469,7 +2470,7 @@ def test_dry_run_previews_lifecycle_close_and_stale_authority_like_live(
     monkeypatch.setattr("pai_loop.api.PpsClient", _DryRunAuthorityClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     base_payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post(
             "/api/v1/ingestion/pps/notices", json=base_payload
         )
@@ -2563,7 +2564,7 @@ def test_malformed_authority_is_fail_closed_only_when_newer_revision(
     monkeypatch.setattr("pai_loop.api.PpsClient", _MalformedAuthorityClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         phase["value"] = "malformed-00"
@@ -2626,7 +2627,7 @@ def test_same_revision_newer_dated_registration_reopens_after_cancellation(
     monkeypatch.setattr("pai_loop.api.PpsClient", _SameRevisionReopenClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post(
             "/api/v1/ingestion/pps/notices", json=payload
         )
@@ -2743,7 +2744,7 @@ def test_direct_contract_tie_cannot_reopen_from_partial_provider_row(
     monkeypatch.setattr("pai_loop.api.PpsClient", _DirectTieClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         assert live_client.get(
@@ -2828,7 +2829,7 @@ def test_legacy_direct_contract_metadata_blocks_equal_partial_reopen(
     monkeypatch.setattr("pai_loop.api.PpsClient", _LegacyDirectClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         first = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert first.status_code == 200, first.text
         assert live_client.get(
@@ -2906,7 +2907,7 @@ def test_never_seen_cancellation_authority_survives_retention(
     monkeypatch.setattr("pai_loop.api.PpsClient", _NeverSeenCancellationClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         cancelled = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert cancelled.status_code == 200, cancelled.text
         assert live_client.get("/api/v1/notices").json() == []
@@ -2976,7 +2977,7 @@ def test_cancelled_notice_default_teams_card_suppresses_historical_current_facts
     monkeypatch.setattr("pai_loop.api.PpsClient", _CancelledTeamsClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     payload = {"from_date": "2026-08-16", "to_date": "2026-08-16"}
-    with TestClient(app) as live_client:
+    with internal_server_client(app) as live_client:
         registered = live_client.post("/api/v1/ingestion/pps/notices", json=payload)
         assert registered.status_code == 200, registered.text
         notice_key = registered.json()["created_notice_keys"][0]
@@ -3095,7 +3096,7 @@ def test_openai_public_document_extraction_is_versioned_and_idempotent(
         "공개 입찰공고입니다. 입찰참가자격은 유효한 사업자등록을 보유한 업체입니다. "
         "제출 마감 전까지 관련 증빙을 제출해야 합니다."
     )
-    with TestClient(app) as extraction_client:
+    with internal_server_client(app) as extraction_client:
         notice = extraction_client.post(
             "/api/v1/notices",
             json={
@@ -3157,7 +3158,7 @@ def test_cancelled_pps_extraction_is_rejected_before_openai_or_version_write(
 
     monkeypatch.setattr("pai_loop.api.OpenAIExtractionClient", _ForbiddenOpenAIClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as extraction_client:
+    with internal_server_client(app) as extraction_client:
         created = extraction_client.post(
             "/api/v1/notices",
             json={
@@ -3239,7 +3240,7 @@ def test_openai_extraction_discards_result_when_notice_cancels_in_flight(
         "공개 입찰공고입니다. 입찰참가자격은 유효한 사업자등록을 보유한 업체입니다. "
         "제출 마감 전까지 관련 증빙을 제출해야 합니다."
     )
-    with TestClient(app) as extraction_client:
+    with internal_server_client(app) as extraction_client:
         created = extraction_client.post(
             "/api/v1/notices",
             json={
@@ -3272,7 +3273,7 @@ def test_review_extraction_is_not_reused_as_a_success(
     monkeypatch.setenv("OPENAI_API_KEY", "server-side-openai-key")
     monkeypatch.setattr("pai_loop.api.OpenAIExtractionClient", _ReviewOpenAIExtractionClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as extraction_client:
+    with internal_server_client(app) as extraction_client:
         notice = extraction_client.post(
             "/api/v1/notices",
             json={

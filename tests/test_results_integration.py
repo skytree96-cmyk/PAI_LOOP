@@ -98,7 +98,11 @@ def test_department_rate_and_opening_histories_preserve_actor_basis_and_cas(acco
     assert after_note["_submitted_bid_rate"] == final["_submitted_bid_rate"]
     assert "_opening_identity_history" not in note.text and "_submitted_bid_rate" not in note.text
     assert _evidence(account_client, original_id) == {"SYN-original": True}
-    public = _peer(account_client).get(f"/api/v1/notices/{NOTICE}")
+    reader = _peer(account_client)
+    assert reader.get(f"/api/v1/notices/{NOTICE}").status_code == 401
+    _login(reader)
+    public = reader.get(f"/api/v1/notices/{NOTICE}")
+    reader.close()
     assert public.status_code == 200
     assert "opening_identity" not in public.text and "basis_reference" not in public.text
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 from sqlalchemy import func, select
 
 from pai_loop.database import Base, build_engine, build_session_factory
@@ -254,7 +255,7 @@ def test_explicit_import_is_idempotent_and_excludes_private_models(tmp_path: Pat
 def test_imported_seed_drives_requirement_policy_api_without_startup_seed(tmp_path: Path) -> None:
     database_url = f"sqlite:///{(tmp_path / 'policy-api.db').as_posix()}"
     app = create_app(database_url=database_url, seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         before = client.get(
             f"/api/v1/notices/{PUBLIC_NOTICE_SOURCE_KEY}/analysis/requirement-policy"
         )

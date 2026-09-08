@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from pai_loop.config import Settings, _safe_teams_url
 from pai_loop.main import create_app
+from conftest import login_department_reader
 
 
 ROOT = Path(__file__).parents[1]
@@ -27,6 +28,11 @@ def test_runtime_destination_and_icon_work_on_every_frontend_entry(monkeypatch):
     monkeypatch.setenv("PAI_BOT_TEAMS_URL", DESTINATION)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as client:
+        anonymous = client.get("/")
+        assert 'id="paiLoopRuntimeConfig"' not in anonymous.text
+        assert DESTINATION not in anonymous.text
+        assert 'src="./login.js' in anonymous.text or 'src="/login.js' in anonymous.text
+        login_department_reader(client)
         for path in ("/", "/index.html", "/notices", "/reviews", "/urgent", "/fail", "/cancelled",
                      "/result-missing", "/decisions", "/results", "/awards", "/prespec", "/performance"):
             response = client.get(path)
@@ -46,6 +52,7 @@ def test_unconfigured_destination_is_empty_and_not_a_generic_homepage(monkeypatc
     monkeypatch.delenv("PAI_BOT_TEAMS_URL", raising=False)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as client:
+        login_department_reader(client)
         assert runtime_config(client.get("/").text) == {"paiBotTeamsUrl": ""}
 
 
@@ -72,6 +79,7 @@ def test_script_delimiters_in_an_allowed_url_cannot_escape_runtime_json(monkeypa
     assert _safe_teams_url(destination) == destination
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as client:
+        login_department_reader(client)
         response = client.get("/index.html")
         assert runtime_config(response.text) == {"paiBotTeamsUrl": destination}
         assert "<script>SYN-CANARY" not in response.text

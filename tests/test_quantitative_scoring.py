@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
+from conftest import login_department_reader
 
 from pai_loop.main import create_app
 from pai_loop.integrations.openai_extraction import ExtractionPayload
@@ -594,6 +595,7 @@ def test_public_read_only_can_read_public_safe_quantitative_result(monkeypatch) 
     monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             import_public_notice_seed(session)
         response = public_client.get(
@@ -670,6 +672,7 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
         fake_estimate,
     )
     with TestClient(app) as public_client:
+        login_department_reader(public_client)
         with app.state.session_factory() as session:
             session.add(
                 Notice(
@@ -695,6 +698,7 @@ def test_public_dynamic_quantitative_projection_redacts_company_and_source_bindi
         public_response = public_client.get(
             "/api/v1/notices/PUBLIC-DYNAMIC-QUANT/quantitative-estimate"
         )
+        public_client.cookies.clear()  # Internal server authority has no browser cookie.
         authenticated_response = public_client.get(
             "/api/v1/notices/PUBLIC-DYNAMIC-QUANT/quantitative-estimate",
             headers={"X-PAI-LOOP-API-KEY": "server-only-secret"},

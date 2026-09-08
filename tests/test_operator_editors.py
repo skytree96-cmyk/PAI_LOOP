@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 
 from fastapi.testclient import TestClient
+from conftest import login_department_reader
 from sqlalchemy import select
 
 from pai_loop import performance_records, result_learning
@@ -248,10 +249,13 @@ def test_performance_filters_pagination_conflicts_and_patch_validation(client: T
         assert created.status_code == 201, created.text
         records.append(created.json()["record"])
 
-    keyword_filter = client.get(
+    reader = TestClient(client.app)
+    login_department_reader(reader)
+    keyword_filter = reader.get(
         "/api/v1/performance-records",
         params={"q": "교육", "record_status": "DRAFT"},
     )
+    reader.close()
     assert keyword_filter.status_code == 200
     assert keyword_filter.json()["total"] == 1
     assert keyword_filter.json()["records"][0]["project_name"] == "디지털 교육 과정"
@@ -681,6 +685,7 @@ def test_result_learning_preserves_automatic_source_as_immutable_basis(client: T
 
 
 def test_operator_editors_reject_retired_pin_in_public_production(client: TestClient) -> None:
+    client.headers.pop("X-PAI-LOOP-API-KEY", None)
     client.app.state.settings = replace(client.app.state.settings, environment="production",
         public_read_only=True, public_manual_analysis_enabled=True,
         public_manual_analysis_token="2468", api_key="server-only-api-key")

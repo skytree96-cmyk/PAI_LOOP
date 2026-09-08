@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 
 from pai_loop.award_intelligence import (
     ANNUAL_AWARD_TABLE_VERSION,
@@ -509,7 +510,7 @@ def award_client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         database_url=f"sqlite:///{(tmp_path / 'awards.db').as_posix()}",
         seed_synthetic=False,
     )
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         yield client
 
 

@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from conftest import internal_server_client
 from sqlalchemy import select
 
 from pai_loop.integrations.outcome_feedback import (
@@ -265,7 +266,7 @@ def test_exact_company_win_is_idempotently_fed_back_without_openai(
         _WinningFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-WIN",
@@ -341,7 +342,7 @@ def test_company_identity_conflict_is_reviewed_and_name_fallback_can_win(
         _IdentityBoundaryFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-CONFLICT",
@@ -385,7 +386,7 @@ def test_other_winner_becomes_lost_only_after_stored_submission(
         _OtherWinnerFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-LOSS",
@@ -476,7 +477,7 @@ def test_service_boundary_rejects_adapter_revision_mismatch(
         _MismatchingFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-MISMATCH",
@@ -501,7 +502,7 @@ def test_dry_run_reports_would_create_without_persisting(
         _WinningFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-DRY-RUN",
@@ -540,7 +541,7 @@ def test_dry_run_update_is_non_mutating_then_live_update_is_idempotent(
     )
     monkeypatch.setattr(_MutableWinningFeedbackClient, "award_amount", 98_000_000.0)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-MUTABLE",
@@ -590,7 +591,7 @@ def test_full_opening_key_preserves_legacy_schema_key_and_remains_schema_indepen
     ).hexdigest()[:40]
     legacy_key = f"pps-final-award:{legacy_digest}"
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-LEGACY-KEY",
@@ -658,7 +659,7 @@ def test_automatic_batches_rotate_past_recently_checked_notices(
         _WinningFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-ROTATE-A",
@@ -694,7 +695,7 @@ def test_automatic_rotation_is_oldest_first_across_the_twenty_four_hour_boundary
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     now = datetime.now(timezone.utc)
     keys = [f"PPS-OUTCOME-ROUND-{index:02d}" for index in range(12)]
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         for index, key in enumerate(keys):
             _create_ended_pps_notice(
                 client,
@@ -769,7 +770,7 @@ def test_non_pps_open_and_invalid_authority_notices_are_ineligible_before_fetch(
         _NoFetchFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="MANUAL-NOT-PPS",
@@ -854,7 +855,7 @@ def test_cancelled_notice_is_skipped_before_provider_call(
         _MustNotRunClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-CANCELLED",
@@ -886,7 +887,7 @@ def test_superseded_stored_revision_is_skipped_before_fetch(
         _WinningFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-SUPERSEDED",
@@ -968,7 +969,7 @@ def test_batch_reports_partial_provider_failure_and_keeps_success(
         _PartialFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-ERROR",
@@ -1004,7 +1005,7 @@ def test_provider_limits_are_partial_and_preserve_sanitised_audit_warnings(
         _LimitedFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-LIMITED",
@@ -1043,7 +1044,7 @@ def test_all_provider_failures_report_failed_without_openai(
         _AllFailFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-ALL-FAILED",
@@ -1079,7 +1080,7 @@ def test_unexpected_client_failure_marks_durable_audit_failed(
         _FatalFeedbackClient,
     )
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with internal_server_client(app, raise_server_exceptions=False) as client:
         _create_ended_pps_notice(
             client,
             notice_key="PPS-OUTCOME-FATAL",
@@ -1105,7 +1106,7 @@ def test_refresh_requires_server_side_pps_configuration(
 ) -> None:
     monkeypatch.delenv("PPS_API_KEY", raising=False)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
-    with TestClient(app) as client:
+    with internal_server_client(app) as client:
         response = client.post(
             "/api/v1/outcome-feedback/pps/refresh",
             json={"notice_keys": ["PPS-NOT-PRESENT"]},

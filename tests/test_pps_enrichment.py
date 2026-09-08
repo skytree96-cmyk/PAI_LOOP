@@ -2758,12 +2758,14 @@ def test_attachment_cards_use_current_manifest_and_current_attempt_only() -> Non
 ))
 def test_public_notice_detail_exposes_only_fixed_attachment_failure_reasons(monkeypatch, error, expected) -> None:
     from fastapi.testclient import TestClient
+    from conftest import login_department_reader
     from pai_loop.main import create_app
     monkeypatch.setenv("PAI_LOOP_ENV", "development")
     monkeypatch.setenv("PAI_LOOP_PUBLIC_READ_ONLY", "true")
     monkeypatch.setenv("PAI_LOOP_API_KEY", "SYN-server-only-secret")
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as client:
+        login_department_reader(client)
         with app.state.session_factory() as session:
             notice = Notice(notice_key="SYN-CARD-API", bid_notice_no="SYN-CARD-API", title="합성 첨부 검사", agency="합성 기관", status="OPEN",
                             deadline=datetime(2027, 1, 1, tzinfo=timezone.utc))
