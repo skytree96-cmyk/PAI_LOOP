@@ -1,5 +1,9 @@
 # Gateway output rejection details
 
+This records the PR129 prompt-only gateway behavior retained for rollback. The
+pending native transport accepts strict JSON without fence removal and extends
+the bounded failure diagnostics; see [Native Anthropic gateway](NATIVE_ANTHROPIC_GATEWAY.md).
+
 The optional `detail_code` field extends the existing `gateway-failure-v1`
 failure object. Its stage must be `OUTPUT_NORMALIZATION`, its code must be
 `OUTPUT_REJECTED`, and `upstream_http_status` must be null. The HTTP response

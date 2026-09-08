@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
+import { assertNativeGatewayWorkflow, isNativeAnthropicNode, nativeNodeName,
+  assertPendingNativeSelection, assertPendingNativeInactive, nativeCanaryWorkflowKeys } from "./native-gateway-contract.mjs";
 
 const validateOnly = process.argv.includes("--validate-only");
 const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
@@ -136,113 +137,18 @@ function validateRepositorySafetyContracts(definitions) {
   ) || (
     claudeGateway.config.publish === true
     && claudeGateway.config.promotionState === "verified-live-e2e"
+  ) || (
+    claudeGateway.config.publish === true
+    && claudeGateway.config.contractVersion === "claude-extraction-gateway-2.0-native-json"
+    && claudeGateway.config.promotionState === "awaiting-native-live-e2e"
+    && claudeGateway.config.nativeCanaryState === "awaiting-root-synthetic-schema-probe"
   );
   assert(
     validClaudePromotion,
-    "workflow 13 may publish only after both credentials are bound and verified-live-e2e",
+    "workflow 13 must retain a verified release or explicitly identify the pending native canary",
   );
 
-  const claudeNodes = new Map(
-    claudeGateway.workflow.nodes.map((node) => [node.name, node]),
-  );
-  const claudeWebhook = claudeNodes.get("Claude Extraction Webhook");
-  const claudeValidation = claudeNodes.get("Validate Gateway Request");
-  const claudeChain = claudeNodes.get("Claude JSON Extraction");
-  const claudeModel = claudeNodes.get("Claude Sonnet 5");
-  const claudeResponse = claudeNodes.get("Normalize Gateway Response");
-  assert(
-    claudeGateway.workflow.nodes.length === 10
-      && claudeWebhook?.type === "n8n-nodes-base.webhook"
-      && claudeValidation?.type === "n8n-nodes-base.code"
-      && claudeChain?.type === "@n8n/n8n-nodes-langchain.chainLlm"
-      && claudeModel?.type === "@n8n/n8n-nodes-langchain.lmChatAnthropic"
-      && claudeResponse?.type === "n8n-nodes-base.code",
-    "workflow 13 must contain the five extraction nodes and five bounded failure/response nodes",
-  );
-  assert(
-    claudeWebhook.parameters?.httpMethod === "POST"
-      && claudeWebhook.parameters?.path === "pai-loop-claude/responses"
-      && claudeWebhook.parameters?.authentication === "headerAuth"
-      && claudeWebhook.parameters?.responseMode === "responseNode"
-      && claudeWebhook.parameters?.options?.responseData === "firstEntryJson",
-    "workflow 13 webhook must be the authenticated bounded response endpoint",
-  );
-  assert(
-    claudeModel.parameters?.model?.value === "claude-sonnet-5"
-      && claudeModel.parameters?.options?.maxTokensToSample === "={{ $json.max_output_tokens }}"
-      && claudeModel.parameters?.options?.thinkingMode === "adaptive"
-      && claudeModel.parameters?.options?.effort === "medium"
-      && !("temperature" in claudeModel.parameters.options)
-      && !("topP" in claudeModel.parameters.options)
-      && !("topK" in claudeModel.parameters.options)
-      && !("thinkingBudget" in claudeModel.parameters.options),
-    "workflow 13 must pin Claude Sonnet 5 with bounded adaptive thinking and default sampling",
-  );
-  const claudeSerialised = JSON.stringify(claudeGateway.workflow);
-  for (const [source, suffix, stage, code, success] of [
-    ["Validate Gateway Request", "Input Failure", "INPUT_VALIDATION", "REQUEST_REJECTED", "Claude JSON Extraction"],
-    ["Claude JSON Extraction", "Model Failure", "MODEL_EXECUTION", "MODEL_EXECUTION_FAILED", "Normalize Gateway Response"],
-    ["Normalize Gateway Response", "Output Failure", "OUTPUT_NORMALIZATION", "OUTPUT_REJECTED", "Respond Gateway Success"],
-  ]) {
-    const safeName = `Sanitize Gateway ${suffix}`;
-    const sanitizer = claudeNodes.get(safeName);
-    const outputs = claudeGateway.workflow.connections[source]?.main;
-    assert(claudeNodes.get(source)?.onError === "continueErrorOutput"
-      && !claudeNodes.get(source)?.retryOnFail
-      && JSON.stringify(outputs) === JSON.stringify([
-        [{ node: success, type: "main", index: 0 }], [{ node: safeName, type: "main", index: 0 }],
-      ]) && sanitizer?.type === "n8n-nodes-base.code"
-      && sanitizer.parameters.jsCode.includes(`stage: '${stage}', code: '${code}'`)
-      && sanitizer.parameters.jsCode.includes("version: 'gateway-failure-v1'")
-      && JSON.stringify(claudeGateway.workflow.connections[safeName]?.main) === JSON.stringify([
-        [{ node: "Respond Gateway Failure", type: "main", index: 0 }],
-      ]), "gateway failure branches must remain isolated from success and provider calls");
-  }
-  for (const [suffix, allowed] of [["Success", true], ["Failure", false]]) {
-    const response = claudeNodes.get(`Respond Gateway ${suffix}`);
-    assert(response?.type === "n8n-nodes-base.respondToWebhook"
-      && response.parameters.respondWith === "json"
-      && response.parameters.responseBody === gatewayResponseExpression(allowed, "body")
-      && response.parameters.options.responseCode === gatewayResponseExpression(allowed, "status"),
-    "gateway terminal expressions must validate and reconstruct body and HTTP status");
-  }
-  assert(
-    claudeSerialised.includes("request fields do not match the extraction gateway contract")
-      && claudeSerialised.includes("body.max_output_tokens > 20000")
-      && claudeSerialised.includes("body.input.length !== 2")
-      && claudeSerialised.includes("format.type !== 'json_schema'")
-      && claudeSerialised.includes("format.strict !== true")
-      && claudeSerialised.includes("schemaJson.length > 64000")
-      && claudeSerialised.includes("combinedCharacters > 210000")
-      && claudeSerialised.includes("rawOutput.length > 500000")
-      && claudeSerialised.includes("const fenced = /^```(?:json)?")
-      && claudeSerialised.includes("without prose")
-      && claudeSerialised.includes("JSON.parse(outputText)")
-      && claudeSerialised.includes("Array.isArray(parsed)")
-      && claudeSerialised.includes("outputText = JSON.stringify(parsed)")
-      && !claudeSerialised.includes("Object.getPrototypeOf(parsed)")
-      && claudeSerialised.includes("status: 'completed'")
-      && claudeSerialised.includes("output_text: outputText")
-      && claudeSerialised.includes("input_tokens: inputTokens")
-      && claudeSerialised.includes("output_tokens: outputTokens"),
-    "workflow 13 must validate the OpenAI-style request and return the provider-neutral envelope",
-  );
-  assert(
-    claudeGateway.workflow.settings?.saveDataSuccessExecution === "none"
-      && claudeGateway.workflow.settings?.saveDataErrorExecution === "none"
-      && claudeGateway.workflow.settings?.saveManualExecutions === false,
-    "workflow 13 must not persist document prompts or model outputs in n8n executions",
-  );
-  assert(
-    !claudeGateway.workflow.nodes.some((node) => (
-      node.type === "n8n-nodes-base.scheduleTrigger"
-      || node.type === "n8n-nodes-base.httpRequest"
-      || node.type.includes("agent")
-      || node.type.includes("memory")
-      || node.type.includes("Tool")
-    )),
-    "workflow 13 must remain a tool-free, stateless, request-only Claude gateway",
-  );
+  assertNativeGatewayWorkflow(claudeGateway.workflow);
   assert(daily.workflow.settings?.timezone === "Asia/Seoul", "daily workflow timezone must be Asia/Seoul");
   const schedules = daily.workflow.nodes.filter(
     (node) => node.type === "n8n-nodes-base.scheduleTrigger",
@@ -781,6 +687,19 @@ function validateRepositorySafetyContracts(definitions) {
     !rejectedMigrationProbe.nodes[0].credentials,
     "Claude credential migration must remain restricted to the exact W13 contract",
   );
+  const nativeTarget = { name: nativeNodeName, type: "n8n-nodes-base.httpRequest" };
+  const nativeCredential = { anthropicApi: { id: "SYN-native-reference", name: "SYN approved" } };
+  const nativeExact = preserveRemoteNodeCredentials(claudeGatewayKey,
+    { nodes: [nativeTarget] }, { nodes: [{ ...nativeTarget, credentials: nativeCredential }] });
+  assert(nativeExact.nodes[0].credentials === nativeCredential, "native binding must survive exact name/type preservation");
+  for (const prior of [
+    { name: nativeNodeName, type: claudeModelNodeType, credentials: nativeCredential },
+    { name: claudeNewModelNodeName, type: claudeModelNodeType, credentials: nativeCredential },
+    { name: "SYN lookalike native", type: nativeTarget.type, credentials: nativeCredential },
+  ]) {
+    const rejected = preserveRemoteNodeCredentials(claudeGatewayKey, { nodes: [nativeTarget] }, { nodes: [prior] });
+    assert(!rejected.nodes[0].credentials, "native HTTP credential must never migrate by type, fuzzy name, or old model identity");
+  }
 }
 
 function validateWorkflow(key, workflow) {
@@ -959,7 +878,7 @@ function preserveRemoteNodeCredentials(key, payload, remote) {
 function assertClaudeGatewayCredentialBindings(workflow, expectedWorkflow = undefined) {
   assert(workflow?.name === claudeGatewayWorkflowName, "workflow 13 remote name is invalid");
   const webhook = exactNamedNode(workflow, claudeWebhookNodeName);
-  const model = exactNamedNode(workflow, claudeNewModelNodeName);
+  const model = exactNamedNode(workflow, nativeNodeName);
   assert(
     webhook?.type === "n8n-nodes-base.webhook"
       && webhook.parameters?.authentication === "headerAuth"
@@ -967,14 +886,14 @@ function assertClaudeGatewayCredentialBindings(workflow, expectedWorkflow = unde
     "workflow 13 webhook must retain one Generic Header credential",
   );
   assert(
-    model?.type === claudeModelNodeType
-      && model.parameters?.model?.value === claudeNewModelId
+    isNativeAnthropicNode(model)
+      && Object.keys(model.credentials ?? {}).join(",") === "anthropicApi"
       && validCredentialReference(model.credentials?.anthropicApi),
     "workflow 13 Sonnet 5 node must retain one Anthropic credential",
   );
   if (!expectedWorkflow) return;
   const expectedWebhook = exactNamedNode(expectedWorkflow, claudeWebhookNodeName);
-  const expectedModel = exactNamedNode(expectedWorkflow, claudeNewModelNodeName);
+  const expectedModel = exactNamedNode(expectedWorkflow, nativeNodeName);
   assert(
     webhook.credentials.httpHeaderAuth.id === expectedWebhook?.credentials?.httpHeaderAuth?.id,
     "workflow 13 webhook credential changed during PUT",
@@ -1038,6 +957,10 @@ for (const workflow of remoteWorkflows) {
 const selectedDefinitions = definitions.filter(
   (definition) => !onlyKey || definition.key === onlyKey,
 );
+// Inspect the global gateway state even when only a producer was selected.
+const pendingNativeCanary = assertPendingNativeSelection(
+  definitions.find(({ key }) => key === claudeGatewayKey).config, onlyKey,
+);
 const unpublishedClaudeGateway = definitions.find(
   ({ key }) => key === claudeGatewayKey,
 )?.config.publish === false;
@@ -1081,6 +1004,26 @@ async function loadRemoteDefinitionForPreflight(definition, required = false) {
 const claudeGatewayDefinition = definitions.find(({ key }) => key === claudeGatewayKey);
 assert(claudeGatewayDefinition, "Claude gateway definition is missing");
 const remoteClaudeGateway = await loadRemoteDefinitionForPreflight(claudeGatewayDefinition);
+if (pendingNativeCanary) {
+  const remotes = new Map();
+  for (const key of nativeCanaryWorkflowKeys) {
+    const definition = definitions.find(item => item.key === key);
+    remotes.set(key, key === claudeGatewayKey ? remoteClaudeGateway : await loadRemoteDefinitionForPreflight(definition, true));
+  }
+  // This check is independent of legacy node detection and precedes all writes.
+  assertPendingNativeInactive(remotes);
+}
+if (remoteClaudeGateway && isNativeAnthropicNode(exactNamedNode(claudeGatewayDefinition.workflow, nativeNodeName))
+    && remoteClaudeGateway.nodes?.some(node => ["Claude JSON Extraction", "Claude Sonnet 5", "Claude Sonnet 4.6"].includes(node.name))) {
+  // A node-type migration must never silently move a provider credential or
+  // publish producers while root is staging the native node in the n8n UI.
+  assert(onlyKey === claudeGatewayKey, "native gateway migration requires --only=pai-loop-13-claude-extraction-gateway");
+  for (const upstreamKey of claudeMigrationUpstreamKeys) {
+    const definition = definitions.find(({ key }) => key === upstreamKey);
+    const remote = upstreamKey === claudeGatewayKey ? remoteClaudeGateway : await loadRemoteDefinitionForPreflight(definition, true);
+    assert(remote.active === false, `${upstreamKey} must be inactive before native gateway migration`);
+  }
+}
 if (
   remoteClaudeGateway
   && approvedClaudeModelMigrationRequired(

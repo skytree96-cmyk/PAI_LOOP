@@ -1,3 +1,4 @@
+import { isNativeAnthropicNode, nativeNodeName } from "./native-gateway-contract.mjs";
 const dryRun = process.argv.includes("--dry-run");
 const selfTest = process.argv.includes("--self-test");
 const baseUrl = process.env.N8N_BASE_URL?.trim().replace(/\/$/, "");
@@ -7,8 +8,8 @@ const anthropicCredentialName = process.env.PAI_LOOP_N8N_CLAUDE_CREDENTIAL_NAME?
 const gatewayWorkflowName = "PAI_LOOP 13 - Claude Extraction Gateway";
 const dailyWorkflowName = "PAI_LOOP 10 - Daily Opportunity Briefing";
 const webhookNodeName = "Claude Extraction Webhook";
-const modelNodeName = "Claude Sonnet 5";
-const anthropicNodeType = "@n8n/n8n-nodes-langchain.lmChatAnthropic";
+const modelNodeName = nativeNodeName;
+const anthropicNodeType = "n8n-nodes-base.httpRequest";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -57,8 +58,7 @@ function assertGatewayCredentialBindings(
     "gateway webhook credential binding is invalid",
   );
   assert(
-    model.type === anthropicNodeType
-      && model.parameters?.model?.value === "claude-sonnet-5"
+    isNativeAnthropicNode(model)
       && validCredentialReference(model.credentials?.anthropicApi),
     "gateway Anthropic credential binding is invalid",
   );
@@ -90,7 +90,8 @@ function runSelfTest() {
       {
         name: modelNodeName,
         type: anthropicNodeType,
-        parameters: { model: { value: "claude-sonnet-5" } },
+        typeVersion: 4.2,
+        parameters: { method: "POST", url: "https://api.anthropic.com/v1/messages", authentication: "predefinedCredentialType", nodeCredentialType: "anthropicApi", jsonBody: "={{ $json.provider_request }}" },
       },
       { name: "Unrelated", type: "n8n-nodes-base.code", parameters: {} },
     ],
@@ -98,6 +99,13 @@ function runSelfTest() {
   const bound = { ...gateway, nodes: bindGatewayNodes(gateway, backend, anthropic) };
   assertGatewayCredentialBindings(bound, backend, anthropic);
   assert(!bound.nodes[2].credentials, "binding must not attach credentials to unrelated nodes");
+  for (const patch of [{ type: "@n8n/n8n-nodes-langchain.lmChatAnthropic" },
+    { name: "SYN lookalike native" }, { parameters: { ...bound.nodes[1].parameters, url: "https://syn-invalid.example/messages" } }]) {
+    const invalid = { ...bound, nodes: bound.nodes.map((node, index) => index === 1 ? { ...node, ...patch } : node) };
+    let rejected = false;
+    try { assertGatewayCredentialBindings(invalid, backend, anthropic); } catch (ignored) { rejected = true; }
+    assert(rejected, "native binder must reject wrong name, type, or provider URL");
+  }
   console.log("Claude gateway credential binder self-test passed");
 }
 
@@ -183,14 +191,13 @@ assert(
   "remote gateway webhook contract is invalid",
 );
 assert(
-  modelNode?.type === anthropicNodeType
-    && modelNode.parameters?.model?.value === "claude-sonnet-5",
+  isNativeAnthropicNode(modelNode),
   "remote gateway Claude model contract is invalid",
 );
 assert(
   !gateway.nodes.some((node) => (
     node.type === "n8n-nodes-base.scheduleTrigger"
-    || node.type === "n8n-nodes-base.httpRequest"
+    || (node.type === "n8n-nodes-base.httpRequest" && !isNativeAnthropicNode(node))
     || node.type.includes("agent")
     || node.type.includes("memory")
     || node.type.includes("Tool")
