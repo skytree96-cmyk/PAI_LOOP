@@ -513,6 +513,110 @@ def source_label_document_types(value: str | None) -> tuple[str, ...]:
     )
 
 
+# The classifiers above transcribe one observed sentence each and match with
+# ``fullmatch``. Model-authored gap prose is free text, so that shape cannot
+# keep up: measured against 3,027 distinct production statements it recognised
+# 6. The predicate below classifies instead of transcribing. A gap blocks the
+# quantitative path only when it names a scoring artifact *and* claims that
+# artifact is absent or unreadable. A missing submission deadline, page number,
+# or contract term cannot change an objective score program, so it must not
+# withhold one.
+_SCORING_ARTIFACT_RE = re.compile(
+    r"배점|평가\s*표|평가\s*기준\s*표|채점|"
+    r"(?:점수|평가|배점|등급)\s*구간|점수\s*(?:기준|산정)|"
+    r"(?:등급|항목|구간)\s*별?\s*점수|"
+    r"정량\s*(?:적)?\s*(?:평가|기준|테이블)|평점\s*산식|가중치|만점|"
+    r"등급\s*(?:별)?\s*기준|산식"
+)
+# ``정량 테이블에서 제외`` names the artifact a row was kept out of. That is a
+# scoping decision about where a row went, not a claim that the table is gone.
+_EXCLUSION_TARGET_RE = re.compile(
+    r"정량(?:적)?\s*(?:평가\s*)?(?:테이블|기준표|배점표|평가표|표)"
+    r"\s*(?:에서|에|으로|로)?\s*"
+    r"(?:제외|전사하지\s*않|반영하지\s*않|포함하지\s*않)"
+)
+# ``정성평가표``/``정성 판단 항목`` belong to the qualitative half of a mixed
+# sentence. Only the artifact directly qualified by 정성 is masked, so
+# ``정성평가 기준과 정량평가표의 …`` keeps its quantitative subject.
+_QUALITATIVE_ARTIFACT_RE = re.compile(
+    r"정성(?:적)?\s*(?:평가|판단)?\s*(?:세부\s*)?(?:평가\s*)?(?:배점\s*)?"
+    r"(?:표|항목|기준(?:표)?|점수|요소|구간)"
+)
+# Unreadable source blocks scoring whatever the sentence names: nothing in the
+# table can be verified against an original nobody could read.
+_SOURCE_UNREADABLE_RE = re.compile(
+    r"판독\s*(?:이\s*)?(?:할\s*수\s*)?(?:없|불가)|훼손|흐려|흐림|"
+    r"식별\s*(?:할\s*수\s*)?(?:없|불가)|불명확"
+)
+# A second clause raising its own gap keeps the whole statement blocking, so an
+# irrelevant lead sentence cannot carry a real omission through with it.
+_SECONDARY_GAP_CLAIM_RE = re.compile(
+    # ``·`` is a Korean word joiner (입찰·계약, 판단·서술), never a clause break.
+    r"(?:[.;]|그리고|또한|아울러|하며|으며)\s*\S.{0,200}?"
+    r"(?:확인(?:할\s*수)?\s*(?:없|불가)|판독\s*(?:할\s*수\s*)?(?:없|불가)|"
+    r"정보가\s*없음|내용이\s*없음)"
+)
+_ABSENCE_CLAIM_RE = re.compile(
+    # ``-되지 않다`` and ``-되어 있지 않다`` share one stem alternation so a new
+    # verb cannot be added with only half of the negation attached.
+    r"(?:포함|첨부|제공|수록|명시|기재|제시|서술|전사|반영|확인)"
+    r"되(?:어\s*있)?지\s*않|"
+    r"미포함|부재|누락|결락|"
+    r"없(?:음|으며|고|어|다|는)|"
+    r"(?:확인|파악|판독|식별|특정|전사)(?:할\s*수\s*)?\s*(?:없|불가)|"
+    r"불명확|훼손"
+)
+# A deliberate qualitative exclusion is a scoping decision, not a source defect.
+_QUALITATIVE_SCOPE_RE = re.compile(
+    r"정성(?:적)?|등급\s*척도|매우우수|서술형|판단[·ㆍ/]?\s*서술|주관적"
+)
+_DELIBERATE_EXCLUSION_RE = re.compile(
+    r"제외|전사하지\s*않|반영하지\s*않|포함하지\s*않|대상(?:이)?\s*아(?:님|니)"
+)
+# An explicit omission blocks whatever it names. ``정성평가 일부가 누락되어 정량
+# 테이블에서 제외`` reads as a scoping decision but states a real source omission
+# first, and an attachment missing part of itself cannot prove its table whole.
+_OMISSION_RE = re.compile(r"누락|결락|빠(?:져|짐|뜨)")
+def _has_unqualified_scoring_artifact(gap: str) -> bool:
+    """True when a scoring artifact is named as its own missing subject.
+
+    Artifacts that only appear as the destination of a qualitative exclusion,
+    or that 정성 directly qualifies, are masked out first. Masking beats a
+    proximity window: ``정성평가 기준과 정량평가표의 …`` puts a quantitative
+    subject within a few characters of 정성 while still asserting a real gap.
+    """
+
+    masked = _QUALITATIVE_ARTIFACT_RE.sub(" ", _EXCLUSION_TARGET_RE.sub(" ", gap))
+    return bool(_SCORING_ARTIFACT_RE.search(masked))
+
+
+def asserts_scoring_artifact_absence(value: str) -> bool:
+    """True when the gap withholds something an objective score needs.
+
+    Exposed so the attachment diagnostics and the corpus regression can assert
+    the same predicate the aggregate gate uses.
+    """
+
+    gap = normalise_source_gap(value)
+    if not gap:
+        return False
+    if (
+        _SOURCE_UNREADABLE_RE.search(gap)
+        or _OMISSION_RE.search(gap)
+        or _SECONDARY_GAP_CLAIM_RE.search(gap)
+    ):
+        return True
+    if (
+        _QUALITATIVE_SCOPE_RE.search(gap)
+        and _DELIBERATE_EXCLUSION_RE.search(gap)
+        and not _has_unqualified_scoring_artifact(gap)
+    ):
+        return False
+    return bool(
+        _has_unqualified_scoring_artifact(gap) and _ABSENCE_CLAIM_RE.search(gap)
+    )
+
+
 def is_quantitative_irrelevant_gap(value: str) -> bool:
     """Keep only source gaps that can change an objective score program."""
 
@@ -520,6 +624,7 @@ def is_quantitative_irrelevant_gap(value: str) -> bool:
         is_explicit_qualitative_only_exclusion(value)
         or is_explicit_qualitative_table_local_absence(value)
         or is_explicit_non_quantitative_notice_schedule_gap(value)
+        or not asserts_scoring_artifact_absence(value)
     )
 
 
@@ -529,6 +634,7 @@ __all__ = [
     "is_explicit_quantitative_table_local_absence",
     "is_explicit_qualitative_only_exclusion",
     "is_explicit_qualitative_table_local_absence",
+    "asserts_scoring_artifact_absence",
     "is_quantitative_irrelevant_gap",
     "normalise_source_gap",
     "quantitative_table_local_absence_targets",
