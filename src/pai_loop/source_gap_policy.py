@@ -558,17 +558,16 @@ _SECONDARY_GAP_CLAIM_RE = re.compile(
     r"정보가\s*없음|내용이\s*없음)"
 )
 _ABSENCE_CLAIM_RE = re.compile(
-    # Korean negates these three ways and the vocabulary has to carry all of
-    # them: ``-되지 않다``, ``-되어 있지 않다``, and the ``미-`` prefix. Sharing one
-    # stem alternation stops a verb from arriving with only part of its
-    # negation - ``배점표 미제공`` went unrecognised while ``미포함`` was listed.
-    r"(?:포함|첨부|제공|수록|명시|기재|제시|서술|전사|반영|확인)"
-    r"되(?:어\s*있)?지\s*않|"
+    # Match the negation form, not a list of verbs. Enumerating stems leaked
+    # repeatedly - ``배점표 미제공``, ``배점표가 존재하지 않음``, ``산식 추출 불가``
+    # and ``판독되지 않음`` each named a scoring artifact and each was read as
+    # irrelevant, releasing a score with no rule behind it. Over-recognising an
+    # absence only withholds a score, which is the safe direction here, and the
+    # artifact requirement in the caller already keeps the scope narrow.
+    r"[가-힣]지\s*않|"
     r"미(?:포함|제공|첨부|기재|명시|제시|확인|수록|산정|공개)|"
-    r"부재|누락|결락|"
-    r"없(?:음|으며|고|어|다|는)|"
-    r"(?:확인|파악|판독|식별|특정|전사)(?:할\s*수\s*)?\s*(?:없|불가)|"
-    r"불명확|훼손"
+    r"불가|부재|누락|결락|손상|훼손|불명확|"
+    r"없(?:음|으며|고|어|다|는|이)"
 )
 # A deliberate qualitative exclusion is a scoping decision, not a source defect.
 _QUALITATIVE_SCOPE_RE = re.compile(

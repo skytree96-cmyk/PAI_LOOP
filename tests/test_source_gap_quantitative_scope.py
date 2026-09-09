@@ -83,15 +83,22 @@ def test_unrelated_omission_no_longer_withholds_a_score(gap: str) -> None:
         "가격평가 산식 미제공",
         "평가 기준 및 정량평가표 미확인",
         "제안요청서 본문(세부과업내용, 제출서류, 평가배점표) 미첨부",
+        # -하지 않다 / 불가 / 손상 (verbatim production statements)
+        "정량평가(배점표) 관련 내용이 본 문서에 존재하지 않음",
+        "가격점수 산식의 구체적 수식 기호(분수식)가 HWP 표 이미지로 되어 있어 텍스트로 추출 불가",
+        "입찰가격 평점산식의 계산식 기호가 OCR 손상으로 완전히 판독되지 않음",
+        "입찰가격 평가 계산식의 분수 서식이 표 손상으로 완전히 재현되지 않음",
     ],
 )
 def test_every_negation_form_of_an_absence_claim_is_recognised(gap: str) -> None:
-    """Korean negates three ways and all three must count as an absence.
+    """Match the negation form, not a list of verbs.
 
-    ``-되지 않다``, ``-되어 있지 않다``, and the ``미-`` prefix. Each was once only
-    half-covered: a plain ``제시되지 않음`` and every ``배점표 미제공`` slipped
-    through and would have released a score with no rule behind it. 46 distinct
-    production statements named a scoring artifact and negated it with ``미-``.
+    Enumerating stems leaked three times over: ``제시되지 않음`` (only the
+    ``-어 있지`` form was listed), every ``배점표 미제공`` (only ``미포함`` was),
+    then ``존재하지 않음`` / ``추출 불가`` / ``판독되지 않음``. Each named a scoring
+    artifact and each was read as irrelevant, which releases a score with no
+    rule behind it. 46 distinct production statements failed on the ``미-`` case
+    alone.
     """
 
     assert asserts_scoring_artifact_absence(gap) is True
