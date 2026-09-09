@@ -517,10 +517,11 @@ def source_label_document_types(value: str | None) -> tuple[str, ...]:
 # ``fullmatch``. Model-authored gap prose is free text, so that shape cannot
 # keep up: measured against 3,027 distinct production statements it recognised
 # 6. The predicate below classifies instead of transcribing. A gap blocks the
-# quantitative path only when it names a scoring artifact *and* claims that
-# artifact is absent or unreadable. A missing submission deadline, page number,
-# or contract term cannot change an objective score program, so it must not
-# withhold one.
+# quantitative path when the source is unreadable, when an omission is stated
+# outright, when a second clause raises its own gap, or when it names a scoring
+# artifact and claims that artifact is absent. A missing submission deadline,
+# page number, or contract term does none of those and cannot change an
+# objective score program, so it must not withhold one.
 _SCORING_ARTIFACT_RE = re.compile(
     r"배점|평가\s*표|평가\s*기준\s*표|채점|"
     r"(?:점수|평가|배점|등급)\s*구간|점수\s*(?:기준|산정)|"
@@ -577,6 +578,8 @@ _DELIBERATE_EXCLUSION_RE = re.compile(
 # 테이블에서 제외`` reads as a scoping decision but states a real source omission
 # first, and an attachment missing part of itself cannot prove its table whole.
 _OMISSION_RE = re.compile(r"누락|결락|빠(?:져|짐|뜨)")
+
+
 def _has_unqualified_scoring_artifact(gap: str) -> bool:
     """True when a scoring artifact is named as its own missing subject.
 
