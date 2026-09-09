@@ -6202,6 +6202,29 @@ def _inline_binary_bracket_claim_conflict(
 
 
 
+def _points_are_score_marked(points: float, text: str) -> bool:
+    """True when ``points`` appears in ``text`` stated as a score.
+
+    A bare digit match is not enough here. Criterion prose routinely carries
+    unrelated small numbers (``최근 3년``, ``단일건 3천만원``), so any of those
+    would prove a 3-point bracket by coincidence. Require the value to sit
+    against a score marker: ``9점``, ``배점 9``, or a ``(9)`` scoring cell.
+    """
+
+    value = _decimal(points)
+    if value is None or not text:
+        return False
+    digits = re.escape(format(value.normalize(), "f"))
+    return bool(
+        re.search(
+            rf"배\s*점\s*[:：]?\s*{digits}(?![0-9.])"
+            rf"|(?<![0-9.]){digits}\s*점"
+            rf"|\(\s*{digits}\s*\)",
+            unicodedata.normalize("NFKC", text),
+        )
+    )
+
+
 def _bracket_points_match_literal(
     candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
     bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
@@ -6217,7 +6240,20 @@ def _bracket_points_match_literal(
         return bool(literal[:award.start()].strip() and rate is not None
                     and Decimal(0) <= rate <= Decimal(100) and maximum is not None
                     and points == maximum * rate / Decimal(100))
-    return _literal_contains_number(bracket.points, bracket.literal)
+    if _literal_contains_number(bracket.points, bracket.literal):
+        return True
+    # A scoring table keeps the condition and its award in separate cells, so a
+    # row literal is frequently the condition alone (``5건 이상``) while the award
+    # sits one column over. Accept the award when another source-bound string
+    # for the same criterion states it as a score.
+    return any(
+        _points_are_score_marked(bracket.points, text)
+        for text in (
+            candidate.criterion_literal,
+            bracket.evidence.quote,
+            candidate.evidence.quote,
+        )
+    )
 
 
 def _validate_brackets(
