@@ -71,21 +71,42 @@ def test_unrelated_omission_no_longer_withholds_a_score(gap: str) -> None:
 @pytest.mark.parametrize(
     "gap",
     [
+        # -되지 않다 / -되어 있지 않다
         "배점표가 본문에 포함되지 않음",
         "배점표가 본문에 포함되어 있지 않음",
         "배점표가 본문에 제시되지 않음",
         "배점표가 본문에 명시되지 않았습니다",
         "채점 기준이 원문에서 확인되지 않음",
+        # 미- 접두 (verbatim production statements)
+        "기술평가 세부 배점표(항목별 점수) 미제공",
+        "신용평가등급확인서 등급 기준표 미제시",
+        "가격평가 산식 미제공",
+        "평가 기준 및 정량평가표 미확인",
+        "제안요청서 본문(세부과업내용, 제출서류, 평가배점표) 미첨부",
     ],
 )
 def test_every_negation_form_of_an_absence_claim_is_recognised(gap: str) -> None:
-    """``-되지 않다`` and ``-되어 있지 않다`` must both count as an absence.
+    """Korean negates three ways and all three must count as an absence.
 
-    Half of the stems once carried only the ``-어 있지`` form, so a plain
-    ``제시되지 않음`` slipped through and released a score with no rule behind it.
+    ``-되지 않다``, ``-되어 있지 않다``, and the ``미-`` prefix. Each was once only
+    half-covered: a plain ``제시되지 않음`` and every ``배점표 미제공`` slipped
+    through and would have released a score with no rule behind it. 46 distinct
+    production statements named a scoring artifact and negated it with ``미-``.
     """
 
     assert asserts_scoring_artifact_absence(gap) is True
+
+
+def test_a_missing_submission_document_is_not_a_scoring_artifact() -> None:
+    """``증빙 미제공`` is procedural: paperwork, not a rule the score reads.
+
+    Of the 8 production statements naming 증빙, the scoring-relevant ones say
+    배점 outright and block on that; the rest are submission-document notes.
+    """
+
+    assert asserts_scoring_artifact_absence("필요한 증빙 미제공") is False
+    assert asserts_scoring_artifact_absence("제출서류 및 증빙 요건 미확인") is False
+    assert asserts_scoring_artifact_absence("가점사항 증빙서류의 구체적 배점 기준이 본 문서에 명시되지 않음") is True
 
 
 def test_empty_and_whitespace_gaps_are_not_absence_claims() -> None:

@@ -558,11 +558,14 @@ _SECONDARY_GAP_CLAIM_RE = re.compile(
     r"정보가\s*없음|내용이\s*없음)"
 )
 _ABSENCE_CLAIM_RE = re.compile(
-    # ``-되지 않다`` and ``-되어 있지 않다`` share one stem alternation so a new
-    # verb cannot be added with only half of the negation attached.
+    # Korean negates these three ways and the vocabulary has to carry all of
+    # them: ``-되지 않다``, ``-되어 있지 않다``, and the ``미-`` prefix. Sharing one
+    # stem alternation stops a verb from arriving with only part of its
+    # negation - ``배점표 미제공`` went unrecognised while ``미포함`` was listed.
     r"(?:포함|첨부|제공|수록|명시|기재|제시|서술|전사|반영|확인)"
     r"되(?:어\s*있)?지\s*않|"
-    r"미포함|부재|누락|결락|"
+    r"미(?:포함|제공|첨부|기재|명시|제시|확인|수록|산정|공개)|"
+    r"부재|누락|결락|"
     r"없(?:음|으며|고|어|다|는)|"
     r"(?:확인|파악|판독|식별|특정|전사)(?:할\s*수\s*)?\s*(?:없|불가)|"
     r"불명확|훼손"
