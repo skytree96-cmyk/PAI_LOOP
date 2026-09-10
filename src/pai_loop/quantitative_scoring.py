@@ -1668,7 +1668,13 @@ _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
     "PERFORMANCE_COUNT": {
         "fact_key": "company.performance.count",
         "canonical_unit": "COUNT",
-        "unit_scales": {"건": Decimal("1"), "회": Decimal("1"), "개": Decimal("1")},
+        # 교육여행 배점표는 학교 단위로 실적을 센다: 한 개교가 실적 한 건이다.
+        "unit_scales": {
+            "건": Decimal("1"),
+            "회": Decimal("1"),
+            "개": Decimal("1"),
+            "개교": Decimal("1"),
+        },
     },
     "PERSONNEL_COUNT": {
         "fact_key": "company.personnel.count",

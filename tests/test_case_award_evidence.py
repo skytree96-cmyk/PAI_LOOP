@@ -274,3 +274,59 @@ def test_a_line_break_still_proves_a_repeated_number_the_space_cannot():
     record, _, request = validate(raw, source)
     assert record.status == "AVAILABLE"
     assert request.activation_status == "AUTO_ACTIVE"
+
+
+def school_count_payload():
+    """교육여행 실적표. 학교 단위로 실적을 센다.
+
+    ``A.5개교이상 15`` 는 서울시교육청 소규모테마형교육여행 공고의 실제 행이다.
+    """
+
+    raw, _ = synthetic_payload("missing", metric="PERFORMANCE_COUNT")
+    table = raw["quantitative_tables"][0]
+    criterion = table["criteria"][0]
+    criterion["unit"] = "개교"
+    header = "소규모테마형교육여행 수행실적 15점"
+    criterion["criterion_literal"] = header
+    criterion["evidence"]["quote"] = header
+    criterion["max_points"] = 15
+    table["total_points"] = 15
+    total = "정량평가 총점 15점"
+    table["total_evidence"]["quote"] = total
+    for case in criterion["cases"]:
+        count = case["comparison_value"]
+        award = count + 8
+        case["award_value"] = award
+        bound = {"GTE": "이상", "LTE": "이하", "EQ": ""}[case["operator"]]
+        case["literal"] = f"{count}개교{bound} {award}"
+        case["evidence"]["quote"] = case["literal"]
+    source = chr(10).join(
+        [header, *(case["literal"] for case in criterion["cases"]), total]
+    )
+    return raw, source
+
+
+def test_a_school_is_a_performance_count_the_condition_can_read():
+    """개교는 실적 건수 단위다. 배율표와 조건 어휘가 함께 알아야 한다."""
+
+    raw, source = school_count_payload()
+    record, profile, _ = validate(raw, source)
+    # 자동 활성화는 실적 인정범위를 따로 요구하므로 여기서는 묻지 않는다.
+    assert record.status == "AVAILABLE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    # 7개교 이상 15점 / 5개교 13점 / 3개교 이하 11점
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        11,
+        11,
+        13,
+        15,
+        15,
+    ]
+
+
+def test_a_school_counts_as_one_and_not_as_some_other_scale():
+    """한 개교는 실적 한 건이다. 배율이 1이 아니면 구간이 어긋난다."""
+
+    assert _CANONICAL_METRIC_REGISTRY["PERFORMANCE_COUNT"]["unit_scales"]["개교"] == 1
+    # 시상 건수는 학교로 세지 않으므로 같은 단위를 물려받지 않는다.
+    assert "개교" not in _CANONICAL_METRIC_REGISTRY["AWARD_COUNT"]["unit_scales"]
