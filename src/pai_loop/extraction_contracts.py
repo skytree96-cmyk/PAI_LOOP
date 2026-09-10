@@ -17,7 +17,11 @@ class ExtractionContract(NamedTuple):
 
 
 CURRENT_EXTRACTION_CONTRACT = ExtractionContract(
-    "pai-loop-extraction-0.5.5",
+    # 0.5.6 asks the model to omit judgment-scored rows outright instead of
+    # emitting them with an ambiguity_reason, and to carry each row's award cell
+    # into its literal. Both change what a stored payload should contain, so the
+    # prompt identity moves and older payloads stop being reusable.
+    "pai-loop-extraction-0.5.6",
     "pai-loop-requirements-0.4.1",
     "pai-loop-quantitative-attachment-validator-0.6.18",
     "pps-document-processing-0.5.0",
