@@ -156,7 +156,10 @@ def test_normal_serialized_proof_survives_without_provider_or_extraction_version
     reread = ValidatedQuantitativeAttachmentRecord.model_validate_json(record.model_dump_json())
     assert reread == record
     # Count-domain execution advanced; persisted extraction proofs did not.
-    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.7.5"
+    # 1.8.0 adds roster-derived personnel facts, which changes what a score
+    # comes out as and so must invalidate cached scores -- but the proof above
+    # round-trips unchanged, so no re-extraction follows from the bump.
+    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.0"
 
 
 @pytest.mark.parametrize("metric,unit,condition,label", [

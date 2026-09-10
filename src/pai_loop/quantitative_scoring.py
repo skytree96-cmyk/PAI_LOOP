@@ -76,9 +76,15 @@ from .quantitative_financial import (
     load_financial_statement,
     parse_financial_recognition_scope,
 )
+from .quantitative_personnel import (
+    PersonnelRecognitionScope,
+    derive_personnel_value,
+    load_personnel_roster,
+    parse_personnel_recognition_scope,
+)
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.5"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -294,6 +300,7 @@ class QuantitativeCriterion(QuantModel):
     case_table: CompiledCaseTable | None = None
     performance_scope: PerformanceRecognitionScope | None = None
     financial_scope: FinancialRecognitionScope | None = None
+    personnel_scope: PersonnelRecognitionScope | None = None
     rule_floor_points: float = Field(default=0, ge=0)
     floor_condition: str | None = Field(default=None, max_length=1_000)
     rule_base_points: float | None = Field(default=None, ge=0)
@@ -2308,6 +2315,57 @@ def resolve_financial_register_facts(
     return resolved
 
 
+def _top_bracket_threshold(criterion: QuantitativeCriterion) -> float | None:
+    """The value at which a larger count can no longer improve the score."""
+
+    thresholds = [
+        bracket.min_value
+        for bracket in (criterion.brackets or [])
+        if bracket.min_value is not None
+    ]
+    return max(thresholds) if thresholds else None
+
+
+def resolve_personnel_register_facts(
+    criteria: Sequence[QuantitativeCriterion],
+    company_facts: Iterable[CompanyFact],
+    *,
+    as_of: datetime,
+) -> list[QuantitativeFact]:
+    """Apply the operator roster to criteria that count the company payroll.
+
+    Only criteria whose source binds the count to the payroll produce a scope,
+    so a row scored from ``사업수행인력 투입계획`` is skipped here and stays
+    manual: no company record can say who will be assigned to one bid.
+    """
+
+    roster = load_personnel_roster(list(company_facts))
+    resolved: list[QuantitativeFact] = []
+    for criterion in criteria:
+        scope = criterion.personnel_scope
+        if scope is None:
+            continue
+        derived = derive_personnel_value(
+            scope,
+            roster,
+            as_of=as_of,
+            sufficiency_value=_top_bracket_threshold(criterion),
+        )
+        resolved.append(
+            QuantitativeFact(
+                metric_key=criterion.metric_key,
+                status=derived.status,
+                value=derived.value,
+                evidence_key=criterion.metric_key,
+                evidence_reference=derived.evidence_reference,
+                fact_binding_sha256=criterion.fact_binding_sha256,
+                confidence=0.85 if derived.status == "ESTIMATED" else 0,
+                rationale=derived.rationale,
+            )
+        )
+    return resolved
+
+
 def _scaled_value(value: float | None, scale: Decimal) -> float | None:
     if value is None:
         return None
@@ -3716,6 +3774,25 @@ def quantitative_request_from_candidate_profile(
             ),
             metric_key=str(spec["fact_key"]),
         )
+        personnel_scope = parse_personnel_recognition_scope(
+            " ".join(
+                value
+                for value in (
+                    # The label alone can carry the disqualifier: rows headed
+                    # ``참여인력`` describe the assigned team however the body
+                    # is worded.
+                    candidate.label,
+                    candidate.criterion_literal,
+                    candidate.formula_literal or "",
+                    *(item.literal for item in candidate.cases),
+                )
+                if value
+            ),
+            metric_key=str(spec["fact_key"]),
+            recognition_literal=" ".join(
+                item.literal for item in candidate.recognition_conditions if item.literal
+            ),
+        )
         scoring_fields: dict[str, Any]
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
@@ -3793,6 +3870,7 @@ def quantitative_request_from_candidate_profile(
                 **scoring_fields,
                 performance_scope=performance_scope,
                 financial_scope=financial_scope,
+                personnel_scope=personnel_scope,
                 source_anchor=SourceAnchor(
                     document_label=candidate.source_attachment_id,
                     document_sha256=bindings.get(candidate.source_attachment_id),
@@ -4150,6 +4228,13 @@ def estimate_for_notice(
             )
             register_facts.extend(
                 resolve_financial_register_facts(
+                    request.criteria,
+                    company_facts,
+                    as_of=notice.deadline,
+                )
+            )
+            register_facts.extend(
+                resolve_personnel_register_facts(
                     request.criteria,
                     company_facts,
                     as_of=notice.deadline,
