@@ -922,6 +922,18 @@ _CASE_AWARD_CONDITION_UNIT_PATTERN = (
 )
 
 
+def _condition_numbers(text: str) -> list[float]:
+    """Every number the condition side already states, commas and all."""
+
+    values: list[float] = []
+    for match in _NUMBER_RE.finditer(text):
+        try:
+            values.append(float(match.group(0).replace(",", "")))
+        except ValueError:
+            continue
+    return values
+
+
 def _case_award_matches_literal(
     candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
     case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
@@ -992,6 +1004,36 @@ def _case_award_matches_literal(
         # A complete numeric condition may span number/unit/comparator cells;
         # its exact grammar, not the bare final number, proves the separation.
         return condition_matches("\n".join(condition_lines))
+
+    if len(lines) == 1:
+        # A flattened table row puts the award in the same line as its
+        # condition -- ``C.2~3개교 11`` -- with the cell boundary reduced to a
+        # space. The split branch above proves such a row by two facts: the
+        # last cell reads as this row's award, and the remainder stands alone
+        # as a complete condition. Both are available here too, but a space is
+        # weaker evidence of a boundary than a line break, so a third fact is
+        # required: the award must not repeat a number the condition already
+        # states. ``A. 7명 이상 7`` therefore stays unproven, because nothing
+        # in the row distinguishes a restated comparison from a score cell.
+        head, separator, tail = value.rpartition(" ")
+        if (
+            separator
+            and head.strip()
+            and case.award_value is not None
+            and _score_cell_matches(
+                tail,
+                value=case.award_value,
+                percent=case.award_kind == "PERCENT_OF_MAX",
+            )
+            and not any(
+                found == float(case.award_value)
+                for found in _condition_numbers(head)
+            )
+            and condition_matches(head)
+        ):
+            # Only a proof returns here. A row this branch cannot prove still
+            # has the inline-award grammar below to answer for it.
+            return True
 
     explicit_award = (
         rf"(?<![\d.,+\-])(?:배점\s*(?:의\s*)?{_NUM_PATTERN}\s*(?:점|%|퍼센트)?"

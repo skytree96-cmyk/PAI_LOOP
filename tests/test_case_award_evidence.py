@@ -210,3 +210,67 @@ def test_supported_english_year_condition_retains_explicit_points():
     assert request.activation_status == "AUTO_ACTIVE"
 
 
+def flattened_payload(joiner, *, award_offset=8):
+    """조건값과 배점이 다른 표. 배점 칸이 joiner 로만 분리돼 있다.
+
+    실제 PDF 표는 행을 한 줄로 눌러 ``C.2~3개교 11`` 처럼 내보낸다. 기본 합성
+    payload 는 비교값과 배점을 같은 수로 만들므로 여기서 떼어 놓는다.
+    """
+
+    raw, _ = synthetic_payload("missing")
+    table = raw["quantitative_tables"][0]
+    criterion = table["criteria"][0]
+    top = max(case["comparison_value"] for case in criterion["cases"]) + award_offset
+    header = f"SYN 평가항목 {top}점"
+    criterion["criterion_literal"] = header
+    criterion["evidence"]["quote"] = header
+    criterion["max_points"] = top
+    table["total_points"] = top
+    total = f"정량평가 총점 {top}점"
+    table["total_evidence"]["quote"] = total
+    for case in criterion["cases"]:
+        award = case["comparison_value"] + award_offset
+        case["award_value"] = award
+        case["literal"] = case["literal"] + joiner + str(award)
+        case["evidence"]["quote"] = case["literal"]
+    source = chr(10).join(
+        [header, *(case["literal"] for case in criterion["cases"]), total]
+    )
+    return raw, source
+
+
+@pytest.mark.parametrize("joiner", [" ", chr(10)])
+def test_award_cell_proves_the_row_whether_a_space_or_a_line_break_splits_it(joiner):
+    """``C.2~3개교 11`` 은 줄바꿈판과 같은 행이다. 셀 경계만 공백으로 눌렸다."""
+
+    raw, source = flattened_payload(joiner)
+    record, profile, request = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    assert request.activation_status == "AUTO_ACTIVE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        11,
+        11,
+        13,
+        15,
+        15,
+    ]
+
+
+def test_a_space_split_award_that_repeats_the_comparison_stays_unproven():
+    """배점이 조건값을 되풀이하면 그 숫자가 배점 칸이라는 근거가 없다."""
+
+    raw, source = flattened_payload(" ", award_offset=0)
+    record, _, request = validate(raw, source)
+    assert record.status != "AVAILABLE"
+    assert "CASE_NUMBER_MISMATCH" in {issue.code for issue in record.issues}
+    assert request.activation_status == "REVIEW_REQUIRED"
+
+
+def test_a_line_break_still_proves_a_repeated_number_the_space_cannot():
+    """같은 값이라도 줄바꿈이면 셀 경계가 원문에 남아 있어 증명된다."""
+
+    raw, source = flattened_payload(chr(10), award_offset=0)
+    record, _, request = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    assert request.activation_status == "AUTO_ACTIVE"
