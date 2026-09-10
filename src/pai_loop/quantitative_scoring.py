@@ -70,6 +70,12 @@ from .quantitative_performance import (
     derive_performance_value,
     parse_performance_recognition_scope,
 )
+from .quantitative_financial import (
+    FinancialRecognitionScope,
+    derive_financial_value,
+    load_financial_statement,
+    parse_financial_recognition_scope,
+)
 
 
 QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.5"
@@ -287,6 +293,7 @@ class QuantitativeCriterion(QuantModel):
     deterministic_formula: DeterministicFormula | None = None
     case_table: CompiledCaseTable | None = None
     performance_scope: PerformanceRecognitionScope | None = None
+    financial_scope: FinancialRecognitionScope | None = None
     rule_floor_points: float = Field(default=0, ge=0)
     floor_condition: str | None = Field(default=None, max_length=1_000)
     rule_base_points: float | None = Field(default=None, ge=0)
@@ -1232,16 +1239,41 @@ def estimate_quantitative_score(
             separation_notice=separation_notice,
         )
 
+    # A fact bound to one criterion's exact text belongs to that criterion, so
+    # it is addressed by its binding and never competes for the metric key.
+    # Two 자기자본비율 and 유동비율 rows in one table share
+    # ``company.financial.ratio``; without this they would collide and both
+    # would be withheld as ambiguous.
+    facts_by_binding: dict[str, QuantitativeFact] = {}
+    duplicate_bindings: set[str] = set()
     facts: dict[str, QuantitativeFact] = {}
     duplicate_keys: set[str] = set()
     for fact in request.facts:
+        if fact.fact_binding_sha256:
+            if fact.fact_binding_sha256 in facts_by_binding:
+                duplicate_bindings.add(fact.fact_binding_sha256)
+            facts_by_binding[fact.fact_binding_sha256] = fact
+            continue
         if fact.metric_key in facts:
             duplicate_keys.add(fact.metric_key)
         facts[fact.metric_key] = fact
 
     estimates: list[CriterionEstimate] = []
     for criterion in request.criteria:
-        if criterion.metric_key in duplicate_keys:
+        binding = criterion.fact_binding_sha256
+        if binding and binding in duplicate_bindings:
+            estimates.append(
+                _criterion_unscored(
+                    criterion,
+                    status="REVIEW",
+                    rationale="동일 평가항목에 결합된 회사 데이터가 중복되어 적용 대상을 확정할 수 없습니다.",
+                )
+            )
+            continue
+        bound = facts_by_binding.get(binding) if binding else None
+        if bound is not None:
+            estimates.append(_estimate_criterion(criterion, bound))
+        elif criterion.metric_key in duplicate_keys:
             estimates.append(
                 _criterion_unscored(
                     criterion,
@@ -2236,6 +2268,41 @@ def resolve_performance_register_facts(
                 fact_binding_sha256=criterion.fact_binding_sha256,
                 confidence=(0.8 if saturated_lower_bound else (0.85 if derived.status == "ESTIMATED" else 0)),
                 rationale=rationale,
+            )
+        )
+    return resolved
+
+
+def resolve_financial_register_facts(
+    criteria: Sequence[QuantitativeCriterion],
+    company_facts: Iterable[CompanyFact],
+    *,
+    as_of: datetime,
+) -> list[QuantitativeFact]:
+    """Apply the operator statement to criteria that name the ratio they score.
+
+    A ratio is a company-level scalar, so the value derived here is the value
+    for this criterion and may carry its binding. Criteria whose source never
+    names a ratio produce no scope and are skipped, leaving them manual.
+    """
+
+    statement = load_financial_statement(list(company_facts))
+    resolved: list[QuantitativeFact] = []
+    for criterion in criteria:
+        scope = criterion.financial_scope
+        if scope is None:
+            continue
+        derived = derive_financial_value(scope, statement, as_of=as_of)
+        resolved.append(
+            QuantitativeFact(
+                metric_key=criterion.metric_key,
+                status=derived.status,
+                value=derived.value,
+                evidence_key=criterion.metric_key,
+                evidence_reference=derived.evidence_reference,
+                fact_binding_sha256=criterion.fact_binding_sha256,
+                confidence=0.85 if derived.status == "ESTIMATED" else 0,
+                rationale=derived.rationale,
             )
         )
     return resolved
@@ -3636,6 +3703,19 @@ def quantitative_request_from_candidate_profile(
             if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS
             else None
         )
+        financial_scope = parse_financial_recognition_scope(
+            " ".join(
+                value
+                for value in (
+                    candidate.criterion_literal,
+                    candidate.formula_literal or "",
+                    *(item.literal for item in candidate.cases),
+                    *(item.literal for item in candidate.recognition_conditions),
+                )
+                if value
+            ),
+            metric_key=str(spec["fact_key"]),
+        )
         scoring_fields: dict[str, Any]
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
@@ -3712,6 +3792,7 @@ def quantitative_request_from_candidate_profile(
                 formula=candidate.criterion_literal,
                 **scoring_fields,
                 performance_scope=performance_scope,
+                financial_scope=financial_scope,
                 source_anchor=SourceAnchor(
                     document_label=candidate.source_attachment_id,
                     document_sha256=bindings.get(candidate.source_attachment_id),
@@ -4066,6 +4147,13 @@ def estimate_for_notice(
                 performance_records,
                 as_of=notice.deadline,
                 bid_notice_at=getattr(notice, "published_at", None),
+            )
+            register_facts.extend(
+                resolve_financial_register_facts(
+                    request.criteria,
+                    company_facts,
+                    as_of=notice.deadline,
+                )
             )
             register_by_key = {item.metric_key: item for item in register_facts}
             # An exact immutable CompanyFact remains authoritative.  A generic

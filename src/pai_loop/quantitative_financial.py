@@ -27,6 +27,9 @@ FinancialRatioKind = Literal[
 ]
 FinancialFiscalBasis = Literal["LATEST", "PRIOR_YEAR"]
 FINANCIAL_METRIC_KEY = "company.financial.ratio"
+# Raw operator input, not a scoreable fact: derivation reads it and stamps the
+# criterion's own binding on the value it produces.
+FINANCIAL_STATEMENT_FACT_KEY = "company.financial.statement"
 
 
 class FinancialQuantModel(BaseModel):
@@ -206,8 +209,49 @@ def derive_financial_value(
     )
 
 
+def load_financial_statement(
+    facts: object,
+) -> list[CompanyFinancialYear]:
+    """Read the operator statement from the ``company.financial.statement`` fact.
+
+    The statement is six figures a year, so it lives as one JSON company fact
+    rather than its own table. It is raw input to derivation, never a scoreable
+    fact itself, so it needs no criterion binding.
+    """
+
+    years: list[CompanyFinancialYear] = []
+    for fact in facts or ():  # type: ignore[union-attr]
+        if getattr(fact, "fact_key", None) != FINANCIAL_STATEMENT_FACT_KEY:
+            continue
+        raw = getattr(fact, "value", None)
+        rows = raw.get("years") if isinstance(raw, dict) else None
+        for row in rows or ():
+            if not isinstance(row, dict):
+                continue
+            try:
+                years.append(
+                    CompanyFinancialYear(
+                        fiscal_year=int(row["fiscal_year"]),
+                        total_assets=Decimal(str(row["total_assets"])),
+                        equity=Decimal(str(row["equity"])),
+                        current_assets=Decimal(str(row["current_assets"])),
+                        current_liabilities=Decimal(str(row["current_liabilities"])),
+                        non_current_liabilities=Decimal(
+                            str(row.get("non_current_liabilities", 0))
+                        ),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                # One malformed year must not silently reshape the others.
+                return []
+    by_year = {item.fiscal_year: item for item in years}
+    return sorted(by_year.values(), key=lambda item: item.fiscal_year)
+
+
 __all__ = [
+    "FINANCIAL_STATEMENT_FACT_KEY",
     "CompanyFinancialYear",
+    "load_financial_statement",
     "DerivedFinancialValue",
     "FINANCIAL_METRIC_KEY",
     "FinancialRatioKind",

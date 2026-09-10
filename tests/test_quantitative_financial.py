@@ -12,6 +12,14 @@ from decimal import Decimal
 
 import pytest
 
+from pai_loop.quantitative_scoring import (
+    QuantitativeCriterion,
+    QuantitativeEstimateRequest,
+    QuantitativeFact,
+    ScoreBracket,
+    SourceAnchor,
+    estimate_quantitative_score,
+)
 from pai_loop.quantitative_financial import (
     FINANCIAL_METRIC_KEY,
     CompanyFinancialYear,
@@ -134,3 +142,86 @@ def test_no_usable_statement_refuses_rather_than_guesses() -> None:
     derived = derive_financial_value(scope, [], as_of=AS_OF)
     assert derived.status == "REVIEW"
     assert derived.value is None
+
+
+def _ratio_criterion(criterion_id: str, binding: str) -> QuantitativeCriterion:
+    """Two ratio rows in one table share company.financial.ratio."""
+
+    return QuantitativeCriterion(
+        criterion_id=criterion_id,
+        category="FINANCIAL_RATIO",
+        label=criterion_id,
+        max_points=10,
+        metric_key=FINANCIAL_METRIC_KEY,
+        unit="PERCENT",
+        formula_type="BRACKET",
+        formula="100 이상 10점",
+        brackets=[
+            ScoreBracket(bracket_id="hi", label="100 이상", min_value=100, points=10),
+            ScoreBracket(bracket_id="lo", label="100 미만", max_value=100, points=4),
+        ],
+        required_evidence_keys=[FINANCIAL_METRIC_KEY],
+        fact_binding_sha256=binding,
+        source_anchor=SourceAnchor(
+            document_label="ATT-FIN-1",
+            document_sha256="d" * 64,
+            section="경영상태",
+            quote=f"{criterion_id} 100 이상 10점",
+        ),
+    )
+
+
+def _bound_fact(binding: str, value: float) -> QuantitativeFact:
+    return QuantitativeFact(
+        metric_key=FINANCIAL_METRIC_KEY,
+        status="ESTIMATED",
+        value=value,
+        evidence_key=FINANCIAL_METRIC_KEY,
+        fact_binding_sha256=binding,
+        confidence=0.85,
+        rationale="derived for this criterion",
+    )
+
+
+def test_two_ratio_rows_in_one_table_each_score_from_their_own_fact() -> None:
+    """자기자본비율 and 유동비율 share a metric key but not a binding.
+
+    Addressing facts only by metric key made them collide, so both rows were
+    withheld as ambiguous even though each had a value derived for it.
+    """
+
+    equity, current = "a" * 64, "b" * 64
+    request = QuantitativeEstimateRequest(
+        ruleset_version="financial-binding-test",
+        rule_source_status="AVAILABLE",
+        source_validation_status="SOURCE_VALIDATED",
+        activation_status="AUTO_ACTIVE",
+        criteria=[
+            _ratio_criterion("자기자본비율", equity),
+            _ratio_criterion("유동비율", current),
+        ],
+        facts=[_bound_fact(equity, 52.25), _bound_fact(current, 190.89)],
+    )
+    result = estimate_quantitative_score(request)
+
+    by_id = {item.criterion_id: item for item in result.criteria}
+    assert by_id["자기자본비율"].estimated_points == 4
+    assert by_id["유동비율"].estimated_points == 10
+
+
+def test_two_facts_on_one_binding_still_fail_closed() -> None:
+    """Contradictory values for the same row must not resolve to either one."""
+
+    binding = "c" * 64
+    request = QuantitativeEstimateRequest(
+        ruleset_version="financial-binding-test",
+        rule_source_status="AVAILABLE",
+        source_validation_status="SOURCE_VALIDATED",
+        activation_status="AUTO_ACTIVE",
+        criteria=[_ratio_criterion("자기자본비율", binding)],
+        facts=[_bound_fact(binding, 52.25), _bound_fact(binding, 190.89)],
+    )
+    result = estimate_quantitative_score(request)
+
+    assert result.criteria[0].estimated_points is None
+    assert "중복" in result.criteria[0].rationale
