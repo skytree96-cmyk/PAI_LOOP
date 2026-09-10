@@ -54,10 +54,16 @@ MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 # executable scoring semantics, such as the credit-range DSL above, intentionally
 # bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
-    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v2",
+    # v3: the gap gate now classifies the declaration instead of transcribing
+    # observed sentences, so a record that stored this issue must be revalidated
+    # before its gap can be trusted either way.
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v3",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
-    "BRACKET_NUMBER_MISMATCH": "bracket-percent-award-proof-v1",
+    # A bracket award stated as a score anywhere in its own criterion is now
+    # provable, so a record that stored this issue must be revalidated. The
+    # separate 배점의 content trigger below keeps its own revision.
+    "BRACKET_NUMBER_MISMATCH": "criterion-scored-award-proof-v1",
     "BRACKET_COMPARATOR_MISMATCH": "inline-binary-bracket-proof-v1",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
