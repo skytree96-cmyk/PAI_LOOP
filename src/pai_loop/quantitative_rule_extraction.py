@@ -937,6 +937,44 @@ def _condition_numbers(text: str) -> list[float]:
     return values
 
 
+# 배점 칸이 조건보다 앞에 오는 표가 있다. ``10점 : 5개교 이상`` 은 배점 열을
+# 먼저 인쇄한 원문을 그대로 옮긴 것이고, 순서를 바꾸면 인용문의 부분집합이라는
+# 앵커가 깨지므로 추출 쪽에서 고칠 수 있는 형태가 아니다. 한 행만 보면 뒤집힌
+# 추출과 구분할 수 없지만, 표는 행마다 열 순서가 같다. 그래서 증거는 항목 전체가
+# 쥐고 있다: 모든 행이 같은 모양일 때만 그것을 열 순서로 읽는다.
+_LEADING_AWARD_RE = re.compile(
+    rf"^\s*(?:배점\s*(?:의\s*)?)?(?P<award>{_NUM_PATTERN})\s*(?P<unit>점|%|퍼센트)"
+    r"(?!\s*(?:이상|이하|미만|초과))\s*[:：|/]?\s*"
+)
+
+
+def _leading_award_split(literal: str) -> tuple[str, str] | None:
+    """앞자리 배점과 나머지 조건으로 가른다. 비교어가 붙으면 조건이므로 제외한다."""
+
+    text = " ".join(literal.split())
+    match = _LEADING_AWARD_RE.match(text)
+    if match is None:
+        return None
+    condition = text[match.end() :].strip()
+    if not condition:
+        return None
+    return match.group("award") + match.group("unit"), condition
+
+
+def _table_prints_the_award_first(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    """이 항목의 모든 행이 배점으로 시작하는가.
+
+    한 행만 뒤집혀 있다면 열 순서가 아니라 그 행의 추출 오류다.
+    """
+
+    cases = list(candidate.cases or ())
+    if len(cases) < 2:
+        return False
+    return all(_leading_award_split(case.literal) is not None for case in cases)
+
+
 def _case_award_matches_literal(
     candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
     case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
@@ -1007,6 +1045,26 @@ def _case_award_matches_literal(
         # A complete numeric condition may span number/unit/comparator cells;
         # its exact grammar, not the bare final number, proves the separation.
         return condition_matches("\n".join(condition_lines))
+
+    if len(lines) == 1 and _table_prints_the_award_first(candidate):
+        # 열 순서가 배점 먼저인 표. 나머지 증거는 뒤에 붙은 경우와 똑같이 요구한다.
+        split = _leading_award_split(value)
+        if split is not None:
+            head, condition = split
+            if (
+                case.award_value is not None
+                and _score_cell_matches(
+                    head,
+                    value=case.award_value,
+                    percent=case.award_kind == "PERCENT_OF_MAX",
+                )
+                and not any(
+                    found == float(case.award_value)
+                    for found in _condition_numbers(condition)
+                )
+                and condition_matches(condition)
+            ):
+                return True
 
     if len(lines) == 1:
         # A flattened table row puts the award in the same line as its
