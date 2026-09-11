@@ -330,3 +330,83 @@ def test_a_school_counts_as_one_and_not_as_some_other_scale():
     assert _CANONICAL_METRIC_REGISTRY["PERFORMANCE_COUNT"]["unit_scales"]["개교"] == 1
     # 시상 건수는 학교로 세지 않으므로 같은 단위를 물려받지 않는다.
     assert "개교" not in _CANONICAL_METRIC_REGISTRY["AWARD_COUNT"]["unit_scales"]
+
+
+def award_first_payload(*, reverse_only_first=False, award_offset=8):
+    """배점 열을 먼저 인쇄한 표. ``10점 : 5개교 이상`` 은 실제 공고 행이다.
+
+    reverse_only_first 는 조건-먼저 행들 틈에 한 행만 뒤집힌 모양을 만든다.
+    표의 열 순서가 아니라 그 행의 추출 오류인 경우다.
+    """
+
+    raw, source = flattened_payload(" ", award_offset=award_offset)
+    criterion = raw["quantitative_tables"][0]["criteria"][0]
+    rewritten = []
+    for index, case in enumerate(criterion["cases"]):
+        text = " ".join(case["literal"].split())
+        condition, _, award = text.rpartition(" ")
+        if reverse_only_first and index > 0:
+            rewritten.append(case["literal"])
+            continue
+        flipped = "%s점 : %s" % (award, condition)
+        case["literal"] = flipped
+        case["evidence"]["quote"] = flipped
+        rewritten.append(flipped)
+    header = criterion["criterion_literal"]
+    total = raw["quantitative_tables"][0]["total_evidence"]["quote"]
+    return raw, chr(10).join([header, *rewritten, total])
+
+
+def test_a_table_that_prints_the_award_first_is_read_in_its_own_order():
+    """모든 행이 같은 모양이면 그것이 표의 열 순서다."""
+
+    raw, source = award_first_payload()
+    record, profile, _ = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        11,
+        11,
+        13,
+        15,
+        15,
+    ]
+
+
+def test_one_reversed_row_among_condition_first_rows_stays_unproven():
+    """열 순서라면 행마다 같아야 한다. 하나만 뒤집힌 것은 추출 오류다."""
+
+    raw, source = award_first_payload(reverse_only_first=True)
+    record, _, request = validate(raw, source)
+    assert record.status != "AVAILABLE"
+    assert request.activation_status == "REVIEW_REQUIRED"
+
+
+def test_an_award_first_row_may_repeat_its_own_comparison():
+    """``5점 : 5명 이상`` 은 임계값과 우연히 같은 배점 열일 뿐이다.
+
+    뒤에 붙은 배점은 경계의 증거가 공백뿐이라 값이 겹치면 가릴 수 없지만,
+    앞자리는 모든 행이 같은 모양이라는 표 단위 증거가 이미 열 순서를 정한다.
+    """
+
+    raw, source = award_first_payload(award_offset=0)
+    record, profile, _ = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    # 7명 이상 7점 / 5명 5점 / 3명 이하 3점
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        3,
+        3,
+        5,
+        7,
+        7,
+    ]
+
+
+def test_a_leading_number_carrying_a_comparison_is_a_condition_not_an_award():
+    """``60%이상`` 은 기준비율 조건이지 배점이 아니다."""
+
+    from pai_loop.quantitative_rule_extraction import _leading_award_split
+
+    assert _leading_award_split("60%이상-10점") is None
+    assert _leading_award_split("10점 : 5개교 이상") == ("10점", "5개교 이상")
