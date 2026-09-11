@@ -156,7 +156,10 @@ def test_normal_serialized_proof_survives_without_provider_or_extraction_version
     reread = ValidatedQuantitativeAttachmentRecord.model_validate_json(record.model_dump_json())
     assert reread == record
     # Count-domain execution advanced; persisted extraction proofs did not.
-    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.7.5"
+    # 1.8.0 adds roster-derived personnel facts, which changes what a score
+    # comes out as and so must invalidate cached scores -- but the proof above
+    # round-trips unchanged, so no re-extraction follows from the bump.
+    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.0"
 
 
 @pytest.mark.parametrize("metric,unit,condition,label", [
@@ -207,3 +210,123 @@ def test_supported_english_year_condition_retains_explicit_points():
     assert request.activation_status == "AUTO_ACTIVE"
 
 
+def flattened_payload(joiner, *, award_offset=8):
+    """조건값과 배점이 다른 표. 배점 칸이 joiner 로만 분리돼 있다.
+
+    실제 PDF 표는 행을 한 줄로 눌러 ``C.2~3개교 11`` 처럼 내보낸다. 기본 합성
+    payload 는 비교값과 배점을 같은 수로 만들므로 여기서 떼어 놓는다.
+    """
+
+    raw, _ = synthetic_payload("missing")
+    table = raw["quantitative_tables"][0]
+    criterion = table["criteria"][0]
+    top = max(case["comparison_value"] for case in criterion["cases"]) + award_offset
+    header = f"SYN 평가항목 {top}점"
+    criterion["criterion_literal"] = header
+    criterion["evidence"]["quote"] = header
+    criterion["max_points"] = top
+    table["total_points"] = top
+    total = f"정량평가 총점 {top}점"
+    table["total_evidence"]["quote"] = total
+    for case in criterion["cases"]:
+        award = case["comparison_value"] + award_offset
+        case["award_value"] = award
+        case["literal"] = case["literal"] + joiner + str(award)
+        case["evidence"]["quote"] = case["literal"]
+    source = chr(10).join(
+        [header, *(case["literal"] for case in criterion["cases"]), total]
+    )
+    return raw, source
+
+
+@pytest.mark.parametrize("joiner", [" ", chr(10)])
+def test_award_cell_proves_the_row_whether_a_space_or_a_line_break_splits_it(joiner):
+    """``C.2~3개교 11`` 은 줄바꿈판과 같은 행이다. 셀 경계만 공백으로 눌렸다."""
+
+    raw, source = flattened_payload(joiner)
+    record, profile, request = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    assert request.activation_status == "AUTO_ACTIVE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        11,
+        11,
+        13,
+        15,
+        15,
+    ]
+
+
+def test_a_space_split_award_that_repeats_the_comparison_stays_unproven():
+    """배점이 조건값을 되풀이하면 그 숫자가 배점 칸이라는 근거가 없다."""
+
+    raw, source = flattened_payload(" ", award_offset=0)
+    record, _, request = validate(raw, source)
+    assert record.status != "AVAILABLE"
+    assert "CASE_NUMBER_MISMATCH" in {issue.code for issue in record.issues}
+    assert request.activation_status == "REVIEW_REQUIRED"
+
+
+def test_a_line_break_still_proves_a_repeated_number_the_space_cannot():
+    """같은 값이라도 줄바꿈이면 셀 경계가 원문에 남아 있어 증명된다."""
+
+    raw, source = flattened_payload(chr(10), award_offset=0)
+    record, _, request = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    assert request.activation_status == "AUTO_ACTIVE"
+
+
+def school_count_payload():
+    """교육여행 실적표. 학교 단위로 실적을 센다.
+
+    ``A.5개교이상 15`` 는 서울시교육청 소규모테마형교육여행 공고의 실제 행이다.
+    """
+
+    raw, _ = synthetic_payload("missing", metric="PERFORMANCE_COUNT")
+    table = raw["quantitative_tables"][0]
+    criterion = table["criteria"][0]
+    criterion["unit"] = "개교"
+    header = "소규모테마형교육여행 수행실적 15점"
+    criterion["criterion_literal"] = header
+    criterion["evidence"]["quote"] = header
+    criterion["max_points"] = 15
+    table["total_points"] = 15
+    total = "정량평가 총점 15점"
+    table["total_evidence"]["quote"] = total
+    for case in criterion["cases"]:
+        count = case["comparison_value"]
+        award = count + 8
+        case["award_value"] = award
+        bound = {"GTE": "이상", "LTE": "이하", "EQ": ""}[case["operator"]]
+        case["literal"] = f"{count}개교{bound} {award}"
+        case["evidence"]["quote"] = case["literal"]
+    source = chr(10).join(
+        [header, *(case["literal"] for case in criterion["cases"]), total]
+    )
+    return raw, source
+
+
+def test_a_school_is_a_performance_count_the_condition_can_read():
+    """개교는 실적 건수 단위다. 배율표와 조건 어휘가 함께 알아야 한다."""
+
+    raw, source = school_count_payload()
+    record, profile, _ = validate(raw, source)
+    # 자동 활성화는 실적 인정범위를 따로 요구하므로 여기서는 묻지 않는다.
+    assert record.status == "AVAILABLE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    # 7개교 이상 15점 / 5개교 13점 / 3개교 이하 11점
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        11,
+        11,
+        13,
+        15,
+        15,
+    ]
+
+
+def test_a_school_counts_as_one_and_not_as_some_other_scale():
+    """한 개교는 실적 한 건이다. 배율이 1이 아니면 구간이 어긋난다."""
+
+    assert _CANONICAL_METRIC_REGISTRY["PERFORMANCE_COUNT"]["unit_scales"]["개교"] == 1
+    # 시상 건수는 학교로 세지 않으므로 같은 단위를 물려받지 않는다.
+    assert "개교" not in _CANONICAL_METRIC_REGISTRY["AWARD_COUNT"]["unit_scales"]

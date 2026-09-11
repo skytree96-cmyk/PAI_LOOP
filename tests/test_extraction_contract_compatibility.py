@@ -78,7 +78,10 @@ def source_payload(attachment_id, *, tail="EQ", gap=False):
                          *(case["literal"] for case in cases), "정량평가 총점 5점"])
     result = ExtractionPayload(document_type="RFP", summary="SYN 정량 근거",
         requirements=[], quantitative_tables=[table], quantitative_table_not_applicable=None,
-        missing_or_unreadable=["SYN 필요한 증빙 미제공"] if gap else [])
+        # Names a scoring artifact, so the gap gate holds this record open.
+        # ``증빙 미제공`` alone would not: a missing submission document is a
+        # procedural note, not a rule the score reads.
+        missing_or_unreadable=["SYN 배점표 미제공"] if gap else [])
     return result, source
 
 

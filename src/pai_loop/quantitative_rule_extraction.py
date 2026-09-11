@@ -54,10 +54,16 @@ MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
 # executable scoring semantics, such as the credit-range DSL above, intentionally
 # bump the global validator version so an older AVAILABLE record cannot be reused.
 _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
-    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v2",
+    # v3: the gap gate now classifies the declaration instead of transcribing
+    # observed sentences, so a record that stored this issue must be revalidated
+    # before its gap can be trusted either way.
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v3",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
-    "BRACKET_NUMBER_MISMATCH": "bracket-percent-award-proof-v1",
+    # A bracket award stated as a score anywhere in its own criterion is now
+    # provable, so a record that stored this issue must be revalidated. The
+    # separate 배점의 content trigger below keeps its own revision.
+    "BRACKET_NUMBER_MISMATCH": "criterion-scored-award-proof-v1",
     "BRACKET_COMPARATOR_MISMATCH": "inline-binary-bracket-proof-v1",
     "SOURCEWIDE_AMBIGUITY_SIGNATURE_UNSUPPORTED": (
         "sourcewide-structural-signature-v1"
@@ -273,9 +279,12 @@ _PLACEHOLDER_NORMALISED = {
 }
 
 _NUM_PATTERN = r"-?(?:\d[\d,]*)(?:\.\d+)?"
+# 엔진이 배율을 아는 단위는 조건 쪽에서도 읽을 수 있어야 한다. 배점 쪽
+# 어휘와 unit_scales 는 이미 인·억·천·만 같은 맨 단위를 받는데 이 목록만
+# 빠져 있어서, ``A. 5인이상`` 이나 ``5억 이상`` 이 조건으로 인식되지 않았다.
 _UNIT_PATTERN = (
-    r"(?:원|천\s*원|만\s*원|백만\s*원|천만\s*원|억\s*원|건|명|개|점|%|"
-    r"퍼센트|년|개월|회|등급|㎡|m2|m²|㎥)"
+    r"(?:원|천\s*원|만\s*원|백만\s*원|천만\s*원|억\s*원|건|명|인|개교|개|점|%|"
+    r"퍼센트|년|개월|회|등급|억|천만|백만|만|천|㎡|m2|m²|㎥)"
 )
 _KOREAN_BOUND_RE = re.compile(
     rf"(?P<num>{_NUM_PATTERN})\s*(?:{_UNIT_PATTERN})?\s*"
@@ -916,6 +925,18 @@ _CASE_AWARD_CONDITION_UNIT_PATTERN = (
 )
 
 
+def _condition_numbers(text: str) -> list[float]:
+    """Every number the condition side already states, commas and all."""
+
+    values: list[float] = []
+    for match in _NUMBER_RE.finditer(text):
+        try:
+            values.append(float(match.group(0).replace(",", "")))
+        except ValueError:
+            continue
+    return values
+
+
 def _case_award_matches_literal(
     candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
     case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
@@ -986,6 +1007,36 @@ def _case_award_matches_literal(
         # A complete numeric condition may span number/unit/comparator cells;
         # its exact grammar, not the bare final number, proves the separation.
         return condition_matches("\n".join(condition_lines))
+
+    if len(lines) == 1:
+        # A flattened table row puts the award in the same line as its
+        # condition -- ``C.2~3개교 11`` -- with the cell boundary reduced to a
+        # space. The split branch above proves such a row by two facts: the
+        # last cell reads as this row's award, and the remainder stands alone
+        # as a complete condition. Both are available here too, but a space is
+        # weaker evidence of a boundary than a line break, so a third fact is
+        # required: the award must not repeat a number the condition already
+        # states. ``A. 7명 이상 7`` therefore stays unproven, because nothing
+        # in the row distinguishes a restated comparison from a score cell.
+        head, separator, tail = value.rpartition(" ")
+        if (
+            separator
+            and head.strip()
+            and case.award_value is not None
+            and _score_cell_matches(
+                tail,
+                value=case.award_value,
+                percent=case.award_kind == "PERCENT_OF_MAX",
+            )
+            and not any(
+                found == float(case.award_value)
+                for found in _condition_numbers(head)
+            )
+            and condition_matches(head)
+        ):
+            # Only a proof returns here. A row this branch cannot prove still
+            # has the inline-award grammar below to answer for it.
+            return True
 
     explicit_award = (
         rf"(?<![\d.,+\-])(?:배점\s*(?:의\s*)?{_NUM_PATTERN}\s*(?:점|%|퍼센트)?"
@@ -6202,6 +6253,29 @@ def _inline_binary_bracket_claim_conflict(
 
 
 
+def _points_are_score_marked(points: float, text: str) -> bool:
+    """True when ``points`` appears in ``text`` stated as a score.
+
+    A bare digit match is not enough here. Criterion prose routinely carries
+    unrelated small numbers (``최근 3년``, ``단일건 3천만원``), so any of those
+    would prove a 3-point bracket by coincidence. Require the value to sit
+    against a score marker: ``9점``, ``배점 9``, or a ``(9)`` scoring cell.
+    """
+
+    value = _decimal(points)
+    if value is None or not text:
+        return False
+    digits = re.escape(format(value.normalize(), "f"))
+    return bool(
+        re.search(
+            rf"배\s*점\s*[:：]?\s*{digits}(?![0-9.])"
+            rf"|(?<![0-9.]){digits}\s*점"
+            rf"|\(\s*{digits}\s*\)",
+            unicodedata.normalize("NFKC", text),
+        )
+    )
+
+
 def _bracket_points_match_literal(
     candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
     bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
@@ -6217,7 +6291,20 @@ def _bracket_points_match_literal(
         return bool(literal[:award.start()].strip() and rate is not None
                     and Decimal(0) <= rate <= Decimal(100) and maximum is not None
                     and points == maximum * rate / Decimal(100))
-    return _literal_contains_number(bracket.points, bracket.literal)
+    if _literal_contains_number(bracket.points, bracket.literal):
+        return True
+    # A scoring table keeps the condition and its award in separate cells, so a
+    # row literal is frequently the condition alone (``5건 이상``) while the award
+    # sits one column over. Accept the award when another source-bound string
+    # for the same criterion states it as a score.
+    return any(
+        _points_are_score_marked(bracket.points, text)
+        for text in (
+            candidate.criterion_literal,
+            bracket.evidence.quote,
+            candidate.evidence.quote,
+        )
+    )
 
 
 def _validate_brackets(

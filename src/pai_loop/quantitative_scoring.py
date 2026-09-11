@@ -70,12 +70,30 @@ from .quantitative_performance import (
     derive_performance_value,
     parse_performance_recognition_scope,
 )
+from .quantitative_financial import (
+    FinancialRecognitionScope,
+    derive_financial_value,
+    load_financial_statement,
+    parse_financial_recognition_scope,
+)
+from .quantitative_out_of_scope import out_of_scope_reason
+from .quantitative_personnel import (
+    PersonnelRecognitionScope,
+    derive_personnel_value,
+    load_personnel_roster,
+    parse_personnel_recognition_scope,
+)
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.7.5"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
+# 개별 항목만 가질 수 있는 추가 상태. 회사 데이터(fact)는 이 값을 쓸 수 없고,
+# 공고 전체 판정에도 쓰이지 않는다.
+CriterionStatus = Literal[
+    "CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW", "OUT_OF_SCOPE"
+]
 ReadinessBand = Literal["GREEN", "YELLOW", "RED", "GRAY"]
 SourceValidationStatus = Literal[
     "SOURCE_VALIDATED",
@@ -158,7 +176,7 @@ class PublicQuantitativeCriterionSnapshot(QuantModel):
     estimated_points: float | None = Field(ge=0)
     lower_points: float = Field(ge=0)
     upper_points: float = Field(ge=0)
-    status: EstimateStatus
+    status: CriterionStatus
 
     @model_validator(mode="before")
     @classmethod
@@ -287,6 +305,8 @@ class QuantitativeCriterion(QuantModel):
     deterministic_formula: DeterministicFormula | None = None
     case_table: CompiledCaseTable | None = None
     performance_scope: PerformanceRecognitionScope | None = None
+    financial_scope: FinancialRecognitionScope | None = None
+    personnel_scope: PersonnelRecognitionScope | None = None
     rule_floor_points: float = Field(default=0, ge=0)
     floor_condition: str | None = Field(default=None, max_length=1_000)
     rule_base_points: float | None = Field(default=None, ge=0)
@@ -397,7 +417,7 @@ class CriterionEstimate(QuantModel):
     lower_points: float
     upper_points: float
     confidence: float
-    status: EstimateStatus
+    status: CriterionStatus
     rationale: str
     assumptions: list[str] = Field(default_factory=list)
 
@@ -429,6 +449,8 @@ class QuantitativeEstimateResult(QuantModel):
     lower_points: float | None
     upper_points: float | None
     unscorable_points: float | None
+    # 정성·총괄·가격처럼 산정 대상에서 뺀 배점. 범위 상한에는 들어가 있다.
+    out_of_scope_points: float = 0
     evidence_coverage_pct: float
     readiness_pct: float | None
     readiness_band: ReadinessBand
@@ -1232,16 +1254,49 @@ def estimate_quantitative_score(
             separation_notice=separation_notice,
         )
 
+    # A fact bound to one criterion's exact text belongs to that criterion, so
+    # it is addressed by its binding and never competes for the metric key.
+    # Two 자기자본비율 and 유동비율 rows in one table share
+    # ``company.financial.ratio``; without this they would collide and both
+    # would be withheld as ambiguous.
+    facts_by_binding: dict[str, QuantitativeFact] = {}
+    duplicate_bindings: set[str] = set()
     facts: dict[str, QuantitativeFact] = {}
     duplicate_keys: set[str] = set()
     for fact in request.facts:
+        if fact.fact_binding_sha256:
+            if fact.fact_binding_sha256 in facts_by_binding:
+                duplicate_bindings.add(fact.fact_binding_sha256)
+            facts_by_binding[fact.fact_binding_sha256] = fact
+            continue
         if fact.metric_key in facts:
             duplicate_keys.add(fact.metric_key)
         facts[fact.metric_key] = fact
 
     estimates: list[CriterionEstimate] = []
     for criterion in request.criteria:
-        if criterion.metric_key in duplicate_keys:
+        binding = criterion.fact_binding_sha256
+        set_aside = out_of_scope_reason(
+            label=criterion.label,
+            criterion_literal=criterion.formula,
+            metric_in_registry=criterion.category in _CANONICAL_METRIC_REGISTRY,
+        )
+        if set_aside is not None:
+            estimates.append(_criterion_set_aside(criterion, set_aside))
+            continue
+        if binding and binding in duplicate_bindings:
+            estimates.append(
+                _criterion_unscored(
+                    criterion,
+                    status="REVIEW",
+                    rationale="동일 평가항목에 결합된 회사 데이터가 중복되어 적용 대상을 확정할 수 없습니다.",
+                )
+            )
+            continue
+        bound = facts_by_binding.get(binding) if binding else None
+        if bound is not None:
+            estimates.append(_estimate_criterion(criterion, bound))
+        elif criterion.metric_key in duplicate_keys:
             estimates.append(
                 _criterion_unscored(
                     criterion,
@@ -1300,8 +1355,14 @@ def estimate_quantitative_score(
     confirmed_weight = sum(
         item.max_points for item in estimates if item.status == "CONFIRMED"
     )
-    coverage = _round_points((confirmed_weight / total_max) * 100) if total_max else 0
-    readiness = _round_points((lower / total_max) * 100) if total_max else None
+    # Rows set aside are not failures of the company data, so they stay out of
+    # the denominators. Counting 정성 배점 there would read a perfect
+    # quantitative fit as a near-total miss.
+    scored = [item for item in estimates if item.status != "OUT_OF_SCOPE"]
+    scored_max = _round_points(sum(item.max_points for item in scored))
+    out_of_scope = _round_points(total_max - scored_max)
+    coverage = _round_points((confirmed_weight / scored_max) * 100) if scored_max else 0
+    readiness = _round_points((lower / scored_max) * 100) if scored_max else None
     if readiness is None:
         band: ReadinessBand = "GRAY"
     elif readiness < 70 or coverage < 60:
@@ -1311,7 +1372,11 @@ def estimate_quantitative_score(
     else:
         band = "GREEN"
 
-    statuses = {item.status for item in estimates}
+    statuses = {item.status for item in scored}
+    if not scored:
+        # 산정할 수 있는 행이 하나도 없다. 만점 가정만 남은 상태를 확정으로
+        # 보고할 수는 없다.
+        statuses = {"UNSCORABLE"}
     if "REVIEW" in statuses:
         overall: EstimateStatus = "REVIEW"
     elif "UNSCORABLE" in statuses:
@@ -1328,9 +1393,16 @@ def estimate_quantitative_score(
         elif upper < request.minimum_score:
             meets_minimum = False
 
-    weighted_confidence = sum(item.confidence * item.max_points for item in estimates)
-    confidence = _round_points(weighted_confidence / total_max) if total_max else 0
+    weighted_confidence = sum(item.confidence * item.max_points for item in scored)
+    confidence = _round_points(weighted_confidence / scored_max) if scored_max else 0
     estimated_points = lower if lower == upper and overall in {"CONFIRMED", "ESTIMATED"} else None
+
+    if out_of_scope:
+        assumptions = list(assumptions) + [
+            "정성·총괄·가격 등 자동 산정 대상이 아닌 %g점은 만점을 받는다고 가정해 "
+            "범위 상한에만 반영했고, 준비도·커버리지 계산에서는 제외했습니다."
+            % out_of_scope
+        ]
 
     if partial_activation_is_safe:
         opinion = (
@@ -1359,6 +1431,7 @@ def estimate_quantitative_score(
         lower_points=lower,
         upper_points=upper,
         unscorable_points=unscorable,
+        out_of_scope_points=out_of_scope,
         evidence_coverage_pct=coverage,
         readiness_pct=readiness,
         readiness_band=band,
@@ -1595,7 +1668,13 @@ _CANONICAL_METRIC_REGISTRY: dict[str, dict[str, Any]] = {
     "PERFORMANCE_COUNT": {
         "fact_key": "company.performance.count",
         "canonical_unit": "COUNT",
-        "unit_scales": {"건": Decimal("1"), "회": Decimal("1"), "개": Decimal("1")},
+        # 교육여행 배점표는 학교 단위로 실적을 센다: 한 개교가 실적 한 건이다.
+        "unit_scales": {
+            "건": Decimal("1"),
+            "회": Decimal("1"),
+            "개": Decimal("1"),
+            "개교": Decimal("1"),
+        },
     },
     "PERSONNEL_COUNT": {
         "fact_key": "company.personnel.count",
@@ -2241,6 +2320,92 @@ def resolve_performance_register_facts(
     return resolved
 
 
+def resolve_financial_register_facts(
+    criteria: Sequence[QuantitativeCriterion],
+    company_facts: Iterable[CompanyFact],
+    *,
+    as_of: datetime,
+) -> list[QuantitativeFact]:
+    """Apply the operator statement to criteria that name the ratio they score.
+
+    A ratio is a company-level scalar, so the value derived here is the value
+    for this criterion and may carry its binding. Criteria whose source never
+    names a ratio produce no scope and are skipped, leaving them manual.
+    """
+
+    statement = load_financial_statement(list(company_facts))
+    resolved: list[QuantitativeFact] = []
+    for criterion in criteria:
+        scope = criterion.financial_scope
+        if scope is None:
+            continue
+        derived = derive_financial_value(scope, statement, as_of=as_of)
+        resolved.append(
+            QuantitativeFact(
+                metric_key=criterion.metric_key,
+                status=derived.status,
+                value=derived.value,
+                evidence_key=criterion.metric_key,
+                evidence_reference=derived.evidence_reference,
+                fact_binding_sha256=criterion.fact_binding_sha256,
+                confidence=0.85 if derived.status == "ESTIMATED" else 0,
+                rationale=derived.rationale,
+            )
+        )
+    return resolved
+
+
+def _top_bracket_threshold(criterion: QuantitativeCriterion) -> float | None:
+    """The value at which a larger count can no longer improve the score."""
+
+    thresholds = [
+        bracket.min_value
+        for bracket in (criterion.brackets or [])
+        if bracket.min_value is not None
+    ]
+    return max(thresholds) if thresholds else None
+
+
+def resolve_personnel_register_facts(
+    criteria: Sequence[QuantitativeCriterion],
+    company_facts: Iterable[CompanyFact],
+    *,
+    as_of: datetime,
+) -> list[QuantitativeFact]:
+    """Apply the operator roster to criteria that count the company payroll.
+
+    Only criteria whose source binds the count to the payroll produce a scope,
+    so a row scored from ``사업수행인력 투입계획`` is skipped here and stays
+    manual: no company record can say who will be assigned to one bid.
+    """
+
+    roster = load_personnel_roster(list(company_facts))
+    resolved: list[QuantitativeFact] = []
+    for criterion in criteria:
+        scope = criterion.personnel_scope
+        if scope is None:
+            continue
+        derived = derive_personnel_value(
+            scope,
+            roster,
+            as_of=as_of,
+            sufficiency_value=_top_bracket_threshold(criterion),
+        )
+        resolved.append(
+            QuantitativeFact(
+                metric_key=criterion.metric_key,
+                status=derived.status,
+                value=derived.value,
+                evidence_key=criterion.metric_key,
+                evidence_reference=derived.evidence_reference,
+                fact_binding_sha256=criterion.fact_binding_sha256,
+                confidence=0.85 if derived.status == "ESTIMATED" else 0,
+                rationale=derived.rationale,
+            )
+        )
+    return resolved
+
+
 def _scaled_value(value: float | None, scale: Decimal) -> float | None:
     if value is None:
         return None
@@ -2363,6 +2528,39 @@ def _compiled_formula_contract(
             source_unit_scale=float(scale),
         ),
         None,
+    )
+
+
+def _criterion_set_aside(
+    criterion: QuantitativeCriterion, reason: str
+) -> CriterionEstimate:
+    """Keep the row's points in the range but out of the scored denominator."""
+
+    return CriterionEstimate(
+        criterion_id=criterion.criterion_id,
+        category=criterion.category,
+        label=criterion.label,
+        max_points=_round_points(criterion.max_points),
+        formula=criterion.formula,
+        rule_floor_points=0,
+        floor_condition=None,
+        rule_base_points=None,
+        base_condition=None,
+        source_anchor=criterion.source_anchor,
+        evidence_key=None,
+        evidence_reference=None,
+        evidence_sha256=None,
+        fact_binding_sha256=None,
+        estimated_points=None,
+        lower_points=0,
+        upper_points=_round_points(criterion.max_points),
+        confidence=0,
+        status="OUT_OF_SCOPE",
+        rationale=reason,
+        assumptions=[
+            "이 배점은 만점을 받는다고 가정해 범위 상한에만 넣었고, "
+            "자동 산정 대상에서는 제외했습니다."
+        ],
     )
 
 
@@ -3636,6 +3834,38 @@ def quantitative_request_from_candidate_profile(
             if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS
             else None
         )
+        financial_scope = parse_financial_recognition_scope(
+            " ".join(
+                value
+                for value in (
+                    candidate.criterion_literal,
+                    candidate.formula_literal or "",
+                    *(item.literal for item in candidate.cases),
+                    *(item.literal for item in candidate.recognition_conditions),
+                )
+                if value
+            ),
+            metric_key=str(spec["fact_key"]),
+        )
+        personnel_scope = parse_personnel_recognition_scope(
+            " ".join(
+                value
+                for value in (
+                    # The label alone can carry the disqualifier: rows headed
+                    # ``참여인력`` describe the assigned team however the body
+                    # is worded.
+                    candidate.label,
+                    candidate.criterion_literal,
+                    candidate.formula_literal or "",
+                    *(item.literal for item in candidate.cases),
+                )
+                if value
+            ),
+            metric_key=str(spec["fact_key"]),
+            recognition_literal=" ".join(
+                item.literal for item in candidate.recognition_conditions if item.literal
+            ),
+        )
         scoring_fields: dict[str, Any]
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
@@ -3712,6 +3942,8 @@ def quantitative_request_from_candidate_profile(
                 formula=candidate.criterion_literal,
                 **scoring_fields,
                 performance_scope=performance_scope,
+                financial_scope=financial_scope,
+                personnel_scope=personnel_scope,
                 source_anchor=SourceAnchor(
                     document_label=candidate.source_attachment_id,
                     document_sha256=bindings.get(candidate.source_attachment_id),
@@ -4066,6 +4298,20 @@ def estimate_for_notice(
                 performance_records,
                 as_of=notice.deadline,
                 bid_notice_at=getattr(notice, "published_at", None),
+            )
+            register_facts.extend(
+                resolve_financial_register_facts(
+                    request.criteria,
+                    company_facts,
+                    as_of=notice.deadline,
+                )
+            )
+            register_facts.extend(
+                resolve_personnel_register_facts(
+                    request.criteria,
+                    company_facts,
+                    as_of=notice.deadline,
+                )
             )
             register_by_key = {item.metric_key: item for item in register_facts}
             # An exact immutable CompanyFact remains authoritative.  A generic
