@@ -1215,6 +1215,31 @@ def _manifest_item(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 한 요청의 보강 예산은 첨부 한두 개에서 끝나므로, 어느 것을 먼저 읽는지가
+# 그 요청이 배점표를 얻는지를 가른다. 저장된 첨부에서 정량표가 나온 비율은
+# 제안요청서 95%(276개 중 262), 입찰공고·공고문 26%(706개 중 187),
+# 과업지시서 14%(127개 중 18)였다. 과업지시서는 과업을 어떻게 수행할지를
+# 적은 문서라 배점표가 실리는 일이 드물고, 이름 없는 첨부(12%)와 다르지 않다.
+# 순번은 훨씬 약한 신호였으므로(1번 29% … 5번 17%) 이름을 먼저 본다.
+_SCORING_TABLE_LIKELIHOOD = (
+    (3, re.compile(r"제안\s*요청")),
+    (2, re.compile(r"입찰\s*공고|공고문|안내\s*공고|재공고")),
+    (1, re.compile(r"제안서")),
+)
+
+
+def _scoring_table_reading_order(attachment: dict[str, Any]) -> tuple[int, int]:
+    """배점표가 있을 법한 순서. 같은 등급 안에서는 원래의 순번을 지킨다."""
+
+    name = " ".join(str(attachment.get("file_name") or "").split())
+    rank = 0
+    for weight, pattern in _SCORING_TABLE_LIKELIHOOD:
+        if pattern.search(name):
+            rank = weight
+            break
+    return (-rank, int(attachment.get("slot") or 0))
+
+
 def _validated_manifest_attachments(
     manifest: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
@@ -3790,7 +3815,8 @@ def enrich_notice_from_pps(
     members_discovered = members_processed = 0
     new_attempts = 0
     last_version_id: str | None = None
-    for attachment in attachments:
+    # 커버리지는 그대로다. 예산이 끊기기 전에 배점표를 만날 확률만 높인다.
+    for attachment in sorted(attachments, key=_scoring_table_reading_order):
         stored_version = current_attempts.get(attachment["attachment_id"])
         target = retry_targets.get(attachment["attachment_id"]) if retry_targets is not None else None
         can_retry = retry_targets is None or (target is not None and stored_version is not None
