@@ -382,13 +382,25 @@ def test_one_reversed_row_among_condition_first_rows_stays_unproven():
     assert request.activation_status == "REVIEW_REQUIRED"
 
 
-def test_an_award_first_row_that_repeats_its_comparison_stays_unproven():
-    """``5점 : 5명 이상`` 은 앞의 5가 배점인지 조건의 반복인지 가릴 수 없다."""
+def test_an_award_first_row_may_repeat_its_own_comparison():
+    """``5점 : 5명 이상`` 은 임계값과 우연히 같은 배점 열일 뿐이다.
+
+    뒤에 붙은 배점은 경계의 증거가 공백뿐이라 값이 겹치면 가릴 수 없지만,
+    앞자리는 모든 행이 같은 모양이라는 표 단위 증거가 이미 열 순서를 정한다.
+    """
 
     raw, source = award_first_payload(award_offset=0)
-    record, _, request = validate(raw, source)
-    assert record.status != "AVAILABLE"
-    assert request.activation_status == "REVIEW_REQUIRED"
+    record, profile, _ = validate(raw, source)
+    assert record.status == "AVAILABLE"
+    program = _compiled_case_table_contract(profile.available_candidates[0])
+    # 7명 이상 7점 / 5명 5점 / 3명 이하 3점
+    assert [case_table_points(program, value) for value in (1, 3, 5, 7, 9)] == [
+        3,
+        3,
+        5,
+        7,
+        7,
+    ]
 
 
 def test_a_leading_number_carrying_a_comparison_is_a_condition_not_an_award():

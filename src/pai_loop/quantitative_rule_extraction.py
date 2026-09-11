@@ -1058,12 +1058,14 @@ def _case_award_matches_literal(
                     value=case.award_value,
                     percent=case.award_kind == "PERCENT_OF_MAX",
                 )
-                and not any(
-                    found == float(case.award_value)
-                    for found in _condition_numbers(condition)
-                )
                 and condition_matches(condition)
             ):
+                # The table order is already proven by every row leading with
+                # its award, so a leading value that happens to equal the
+                # comparison needs no separate guard here. 5점 : 5명 이상 is a
+                # score column that coincides with its own threshold, not an
+                # ambiguity; the trailing reading keeps that guard because it
+                # has no table-level proof to lean on.
                 return True
 
     if len(lines) == 1:
