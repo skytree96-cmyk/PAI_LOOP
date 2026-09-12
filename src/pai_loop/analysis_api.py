@@ -71,9 +71,16 @@ from .pps_enrichment import (
 # attachment unit is now 401 seconds (three download hops, two 180-second Claude
 # responses, and guard time), so it fits inside the 450-second enrichment
 # boundary. A second unit starts only when the first returned quickly enough
-# that another full 401 seconds remain. The outer 150 seconds stay reserved for
-# HTTP/DB overhead and a resumable PARTIAL response.
-ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 450
+# that another full 401 seconds remain, so a 450-second budget admitted one
+# attachment and handed the rest to a continuation. Measured over nineteen
+# notices a unit actually takes 86 seconds at the median and 219 at the worst,
+# far short of the 401 it has to reserve, and the reading order now puts the
+# 제안요청서 first and the 공고문 second. 550 seconds lets one request finish
+# both of those instead of only the first, which is what a summary needs
+# alongside a score. The outer margin narrows from 150 seconds to 50; a
+# request that overruns loses its response to the n8n timeout rather than its
+# work, and the continuation poll reclaims the segment.
+ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 550
 N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS = 600
 # A disconnected n8n request can leave its durable child audit in RUNNING
 # after the application process is replaced. Never reclaim that child within
