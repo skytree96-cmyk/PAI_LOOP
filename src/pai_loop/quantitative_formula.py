@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 
 class FormulaModel(BaseModel):
@@ -52,7 +52,7 @@ class CategoryScore(FormulaModel):
         return self
 
 
-CaseTableOperator = Literal["GTE", "EQ", "IN", "LTE", "LT"]
+CaseTableOperator = Literal["GTE", "EQ", "IN", "LTE", "LT", "BETWEEN", "NOT_SUBMITTED"]
 CaseTableAwardKind = Literal["POINTS", "PERCENT_OF_MAX"]
 CaseTableValueKind = Literal["NUMERIC", "DISCRETE", "CATEGORICAL", "CREDIT_RATING"]
 
@@ -117,12 +117,13 @@ class CaseTableRowLiteral(FormulaModel):
 
     operator: CaseTableOperator
     comparison_value: float | None = None
+    comparison_upper_value: float | None = None
     category_values: tuple[str, ...] = Field(default=(), max_length=100)
     source_literal: str | None = Field(default=None, max_length=1_000)
     award_kind: CaseTableAwardKind = "POINTS"
     award_value: float = Field(ge=0)
 
-    @field_validator("comparison_value", "award_value", mode="before")
+    @field_validator("comparison_value", "comparison_upper_value", "award_value", mode="before")
     @classmethod
     def reject_boolean_numbers(cls, value: object) -> object:
         if isinstance(value, bool):
@@ -131,7 +132,17 @@ class CaseTableRowLiteral(FormulaModel):
 
     @model_validator(mode="after")
     def validate_row_shape(self) -> "CaseTableRowLiteral":
-        if self.operator in {"GTE", "EQ", "LTE", "LT"}:
+        if self.operator == "BETWEEN":
+            bounds = (self.comparison_value, self.comparison_upper_value)
+            if (any(v is None or v < 0 or not v.is_integer() for v in bounds)
+                or bounds[0] >= bounds[1] or self.category_values):
+                raise ValueError("BETWEEN requires two increasing nonnegative integer bounds")
+        elif self.comparison_upper_value is not None:
+            raise ValueError("upper bound is only valid for BETWEEN")
+        elif self.operator == "NOT_SUBMITTED":
+            if self.comparison_value is not None or self.category_values or self.award_kind != "POINTS" or self.award_value != 0:
+                raise ValueError("NOT_SUBMITTED requires a separate zero-point submission state")
+        elif self.operator in {"GTE", "EQ", "LTE", "LT"}:
             if self.comparison_value is None or self.category_values:
                 raise ValueError("numeric case rows require only comparison_value")
         elif self.comparison_value is not None or not self.category_values:
@@ -148,8 +159,18 @@ class CaseTableRowLiteral(FormulaModel):
 class CompiledCaseTableRow(FormulaModel):
     operator: CaseTableOperator
     comparison_value: float | None = None
+    comparison_upper_value: float | None = None
     category_values: tuple[str, ...] = Field(default=(), max_length=100)
     points: float = Field(ge=0)
+
+    @model_serializer(mode="wrap")
+    def serialize_without_unused_upper_bound(self, handler):
+        # Released numeric/category programs have fixed canonical hashes.
+        # A default for a newly supported range must not change their bytes.
+        data = handler(self)
+        if self.comparison_upper_value is None:
+            data.pop("comparison_upper_value", None)
+        return data
 
 
 class CompiledCaseTable(FormulaModel):
@@ -794,6 +815,43 @@ def _case_table_rows_are_safe(
     if any(point < 0 or (maximum is not None and point > maximum) for point in points):
         return False
 
+    # Submission state is not count zero, a default, or a missing company fact.
+    # It is preserved separately and can only be executed by an explicit input.
+    if any(row.operator == "NOT_SUBMITTED" for row in rows):
+        tail = rows[-1]
+        if (value_kind != "DISCRETE" or len(rows) < 2
+            or tail.operator != "NOT_SUBMITTED" or tail.points != 0
+            or tail.comparison_value is not None or tail.comparison_upper_value is not None
+            or tail.category_values or any(r.operator == "NOT_SUBMITTED" for r in rows[:-1])):
+            return False
+        return _case_table_rows_are_safe(rows[:-1], value_kind=value_kind, maximum_points=maximum_points)
+
+    if any(row.operator == "BETWEEN" for row in rows):
+        if value_kind != "DISCRETE" or any(right > left for left, right in zip(points, points[1:], strict=False)):
+            return False
+        previous_lower: Decimal | None = None
+        for index, row in enumerate(rows):
+            if row.operator not in {"GTE", "EQ", "BETWEEN"} or row.category_values:
+                return False
+            if row.operator == "GTE" and index != 0:
+                return False
+            if row.operator != "BETWEEN" and row.comparison_upper_value is not None:
+                return False
+            try:
+                lower = _decimal(row.comparison_value)
+                upper = (_decimal(row.comparison_upper_value) if row.operator == "BETWEEN" else lower)
+            except (ValueError, TypeError):
+                return False
+            if (lower < 0 or lower != lower.to_integral_value() or upper != upper.to_integral_value()
+                or upper < lower or (row.operator == "BETWEEN" and upper == lower)
+                or (previous_lower is not None and upper >= previous_lower)):
+                return False
+            previous_lower = lower
+        return True
+
+    if any(row.comparison_upper_value is not None for row in rows):
+        return False
+
     if value_kind in {"CATEGORICAL", "CREDIT_RATING"}:
         seen: set[str] = set()
         flattened_credit_values: list[str] = []
@@ -842,6 +900,15 @@ def _case_table_rows_are_safe(
         return False
 
     if any(row.operator in {"LTE", "LT"} for row in rows):
+        if value_kind == "NUMERIC":
+            # Continuous ratios have no integer predecessor. Only an explicit
+            # complementary LT at the last GTE boundary closes this program;
+            # arbitrary numeric lower tails and LTE overlap remain rejected.
+            return bool(len(rows) >= 2 and rows[-1].operator == "LT"
+                        and all(row.operator == "GTE" for row in rows[:-1])
+                        and comparisons[-1] == comparisons[-2]
+                        and _case_table_rows_are_safe(rows[:-1], value_kind=value_kind,
+                                                     maximum_points=maximum_points))
         # A source-explicit lower count row is not an ELSE. Restrict the new
         # grammar to one final, nonempty integer interval below an otherwise
         # unchanged leading-GTE/exact-count program. Gaps remain unscorable.
@@ -927,6 +994,7 @@ def compile_case_table(
                 CompiledCaseTableRow(
                     operator=row.operator,
                     comparison_value=row.comparison_value,
+                    comparison_upper_value=row.comparison_upper_value,
                     category_values=category_values,
                     points=round(float(award), 6),
                 )
@@ -942,9 +1010,17 @@ def compile_case_table(
 
 def case_table_points(
     table: CompiledCaseTable,
-    value: int | float | Decimal | str | bool,
+    value: int | float | Decimal | str | bool | None,
+    *,
+    submission_status: Literal["NOT_SUBMITTED"] | None = None,
 ) -> float | None:
     """Return the first explicit matching row, or ``None`` when unscorable."""
+
+    if submission_status is not None:
+        if (submission_status != "NOT_SUBMITTED" or value is not None
+            or table.value_kind != "DISCRETE" or table.rows[-1].operator != "NOT_SUBMITTED"):
+            return None
+        return table.rows[-1].points
 
     if table.value_kind in {"CATEGORICAL", "CREDIT_RATING"}:
         if not isinstance(value, str):
@@ -973,14 +1049,20 @@ def case_table_points(
     # Only the new lower-tail grammar introduces a match below the smallest
     # cutoff. It must never turn a missing or invalid negative count into a
     # score. Preserve the execution of legacy GTE/EQ/IN-only programs.
-    if actual < 0 and table.rows[-1].operator in {"LTE", "LT"}:
+    if table.value_kind == "DISCRETE" and actual < 0 and any(
+        row.operator in {"LTE", "LT", "BETWEEN", "NOT_SUBMITTED"} for row in table.rows
+    ):
         return None
     for row in table.rows:
+        if row.operator == "NOT_SUBMITTED":
+            continue
         assert row.comparison_value is not None
         comparison = _decimal(row.comparison_value)
         if row.operator == "GTE" and actual >= comparison:
             return row.points
         if row.operator == "EQ" and actual == comparison:
+            return row.points
+        if row.operator == "BETWEEN" and comparison <= actual <= _decimal(row.comparison_upper_value):
             return row.points
         if row.operator == "LTE" and actual <= comparison:
             return row.points

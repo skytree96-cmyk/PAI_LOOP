@@ -157,7 +157,21 @@ _MAX_SINGLE_AMOUNT_RE = re.compile(
     r"(?:단일\s*(?:용역|계약)(?:\s*의)?\s*(?:최고|최대)\s*(?:계약\s*)?금액"
     r"|(?:최고|최대)\s*단일\s*(?:용역|계약)\s*(?:계약\s*)?금액)"
 )
-_BID_NOTICE_ANCHOR_RE = re.compile(r"입찰\s*공고일(?:자)?(?:을|를)?\s*기준")
+_BID_NOTICE_ANCHOR_RE = re.compile(
+    # Preserve attached qualifiers such as 본입찰공고일 in the established
+    # explicit 입찰 form; only the newly supported bare 공고일 needs a boundary.
+    r"(?:입찰\s*공고일|(?<![가-힣A-Za-z0-9])공고일)(?:자)?(?:을|를)?\s*기준"
+)
+_BID_NOTICE_PRIOR_DAY_RE = re.compile(
+    r"(?:입찰\s*공고일|(?<![가-힣A-Za-z0-9])공고일)(?:자)?\s*전일까지\s*완료"
+)
+_PARTICIPANT_BOUND_RE = re.compile(
+    r"\d[\d,]*\s*(?:인|명)\s*(?:이상|초과|이하|미만)"
+    r"|최소\s*\d[\d,]*\s*(?:인|명)(?![가-힣])"
+)
+_ANNUAL_CONTRACT_AMOUNT_RE = re.compile(
+    r"연간\s*(?:기준\s*)?(?:총\s*)?계약\s*금액"
+)
 _DEADLINE_ANCHOR_RE = re.compile(
     r"(?:제안서\s*)?(?:제출\s*)?(?:마감|마감일|기한)(?:을|를)?\s*기준"
 )
@@ -307,6 +321,17 @@ def _lookback_anchor_basis(text: str) -> PerformanceLookbackAnchor | None:
     return anchors[0] if anchors else "UNSPECIFIED"
 
 
+def _unsupported_recognition_reason(text: str) -> str | None:
+    # These are source-bound eligibility dimensions, not project-description
+    # keywords. The register has no attested per-contract participant count or
+    # annual contract-amount basis; a total amount/overview cannot prove them.
+    if _PARTICIPANT_BOUND_RE.search(text):
+        return "원문 실적 인정조건의 참여 인원 기준을 실적별 검증자료에 연결할 수 없어 자동 집계를 중지했습니다."
+    if _ANNUAL_CONTRACT_AMOUNT_RE.search(text):
+        return "원문 실적 인정조건의 연간 계약금액 기준을 실적별 검증자료에 연결할 수 없어 자동 집계를 중지했습니다."
+    return None
+
+
 def parse_performance_recognition_scope(
     literal: str,
     *,
@@ -323,6 +348,8 @@ def parse_performance_recognition_scope(
         return None
     text = re.sub(r"\s+", " ", literal).strip()
     if not text or len(text) > 2_000:
+        return None
+    if _unsupported_recognition_reason(text) is not None:
         return None
     lookback = _LOOKBACK_RE.search(text)
     keywords = _scope_keywords(text)
@@ -497,7 +524,7 @@ def _performance_register_digest(
 ) -> str:
     payload = {
         "binding_schema": "pai-loop-performance-quantitative-binding-1.1.0",
-        "algorithm_version": "performance-recognition-0.3.0",
+        "algorithm_version": "performance-recognition-0.3.1",
         "evaluation": {
             "as_of_basis": as_of_basis,
             "as_of_date": as_of_date.isoformat(),
@@ -670,6 +697,20 @@ def derive_performance_value(
     as_of: datetime,
     as_of_basis: PerformanceLookbackAnchor = "UNSPECIFIED",
 ) -> DerivedPerformanceValue:
+    unsupported_reason = _unsupported_recognition_reason(scope.source_literal)
+    if unsupported_reason is not None:
+        # Recheck stored scopes too. No numeric lower bound is safe here: even
+        # a large register subset cannot establish an unmodeled condition.
+        return DerivedPerformanceValue(status="REVIEW", rationale=unsupported_reason)
+    source_anchor = _lookback_anchor_basis(scope.source_literal)
+    if source_anchor is None or (
+        source_anchor != "UNSPECIFIED"
+        and source_anchor != scope.lookback_anchor_basis
+    ):
+        return DerivedPerformanceValue(
+            status="REVIEW",
+            rationale="원문 실적 인정기간 기준일과 저장된 인정조건이 일치하지 않아 자동 계산을 중지했습니다.",
+        )
     if as_of_basis not in {
         "UNSPECIFIED",
         "BID_NOTICE_DATE",
@@ -697,6 +738,14 @@ def derive_performance_value(
     )
     deadline = normalized_as_of.astimezone(_KST).date()
     start = _date_years_before(deadline, scope.lookback_years)
+    completion_cutoff = deadline
+    if scope.completion_required and _BID_NOTICE_PRIOR_DAY_RE.search(scope.source_literal):
+        if as_of_basis != "BID_NOTICE_DATE":
+            return DerivedPerformanceValue(
+                status="REVIEW",
+                rationale="원문은 공고일 전일까지 완료된 실적을 요구하지만 전달된 공고일을 확인할 수 없어 자동 계산을 중지했습니다.",
+            )
+        completion_cutoff -= timedelta(days=1)
     matched: list[tuple[Any, Decimal]] = []
     candidate_records: list[tuple[Any, Decimal]] = []
     excluded_uncertain: list[str] = []
@@ -763,7 +812,7 @@ def derive_performance_value(
         if not isinstance(basis_date, date) or isinstance(basis_date, datetime):
             excluded_uncertain.append(record_key)
             continue
-        if not start <= basis_date <= deadline:
+        if not start <= basis_date <= completion_cutoff:
             continue
         if scope.completion_required and not bool(getattr(record, "completed", False)):
             continue

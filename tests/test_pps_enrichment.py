@@ -483,7 +483,7 @@ def test_pdf_extraction_replaces_lone_surrogates_before_json_transport(
     # surrogates. They are valid Python string contents but cannot be emitted
     # in the UTF-8 JSON body used by the model client.
     monkeypatch.setattr(
-        "pai_loop.pps_enrichment._extract_pdf_text",
+        "pai_loop.pps_enrichment._extract_pdf_content",
         lambda _content: "입찰 참가 자격과 제출 요건을 확인합니다.\udb80추가 조건입니다.",
     )
 

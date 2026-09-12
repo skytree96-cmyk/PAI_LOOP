@@ -140,8 +140,9 @@ class QuantitativeCaseLiteral(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     literal: str = Field(min_length=1, max_length=1_000)
-    operator: Literal["GTE", "EQ", "IN", "LTE", "LT"]
+    operator: Literal["GTE", "EQ", "IN", "LTE", "LT", "BETWEEN", "NOT_SUBMITTED"]
     comparison_value: float | None
+    comparison_upper_value: float | None = None
     category_values: list[str] = Field(
         max_length=100,
         description=(
@@ -159,7 +160,7 @@ class QuantitativeCaseLiteral(BaseModel):
     row_order: int = Field(ge=1, le=100)
     evidence: EvidenceAnchor
 
-    @field_validator("comparison_value", "award_value", mode="before")
+    @field_validator("comparison_value", "comparison_upper_value", "award_value", mode="before")
     @classmethod
     def reject_boolean_case_numbers(cls, value: object) -> object:
         if isinstance(value, bool):
@@ -168,7 +169,17 @@ class QuantitativeCaseLiteral(BaseModel):
 
     @model_validator(mode="after")
     def validate_case_shape(self) -> "QuantitativeCaseLiteral":
-        if self.operator in {"GTE", "EQ", "LTE", "LT"}:
+        if self.operator == "BETWEEN":
+            bounds = (self.comparison_value, self.comparison_upper_value)
+            if (any(v is None or v < 0 or not v.is_integer() for v in bounds)
+                or bounds[0] >= bounds[1] or self.category_values):
+                raise PydanticCustomError("CASE_NUMERIC_SHAPE_INVALID", "BETWEEN requires two increasing nonnegative integer bounds")
+        elif self.comparison_upper_value is not None:
+            raise PydanticCustomError("CASE_NUMERIC_SHAPE_INVALID", "upper bound is only valid for BETWEEN")
+        elif self.operator == "NOT_SUBMITTED":
+            if self.comparison_value is not None or self.category_values or self.award_kind != "POINTS" or self.award_value != 0:
+                raise PydanticCustomError("CASE_CATEGORY_SHAPE_INVALID", "NOT_SUBMITTED is a separate explicit zero-point submission state")
+        elif self.operator in {"GTE", "EQ", "LTE", "LT"}:
             if self.comparison_value is None or self.category_values:
                 raise PydanticCustomError("CASE_NUMERIC_SHAPE_INVALID", "numeric CASE rows require only comparison_value")
         elif self.comparison_value is not None or not self.category_values:
@@ -275,6 +286,9 @@ _rule_schema = EXTRACTION_SCHEMA["$defs"]["QuantitativeRuleCandidate"]
 _rule_schema["required"] = list(_rule_schema["properties"])
 for _strict_rule_field in ("cases", "recognition_conditions"):
     _rule_schema["properties"][_strict_rule_field].pop("default", None)
+_case_schema = EXTRACTION_SCHEMA["$defs"]["QuantitativeCaseLiteral"]
+_case_schema["required"] = list(_case_schema["properties"])
+_case_schema["properties"]["comparison_upper_value"].pop("default", None)
 
 
 _SCHEMA_DIAGNOSTIC_FIELDS = frozenset(EXTRACTION_SCHEMA["properties"]) | frozenset(
@@ -1203,15 +1217,28 @@ class OpenAIExtractionClient:
             "Transcribe quantitative scoring tables as literal source rules only: never insert or "
             "apply company facts, never calculate a company score, and never decide GO/NO-GO. "
             "Emit one logical quantitative table for each actual objective scoring program even when "
-            "its detail rows continue across pages or physical subtables. When a summary row is fully "
+            "its rules are stated in prose or formulas, or its detail rows continue across pages or "
+            "physical subtables. A physical grid is not required. Follow explicit references to "
+            "detailed criteria, appendices and performance forms within SOURCE, and attach their "
+            "applicable recognition conditions to the owning criterion. A reference whose target "
+            "is absent remains a source gap, not a reason to invent a rule. When a summary row is fully "
             "expanded by later detail rows with the same subtotal, emit the leaf detail criteria only; "
             "do not duplicate both summary and detail as scored rows, and leave table ambiguity_reason "
             "null unless a decision-bearing choice still remains. "
+            "Do not add the full subtotal once for each alternative or dimension underneath it. "
+            "For example, an operating-performance subtotal of 5 with facility and revenue bands "
+            "each reaching 5 does not establish two additive 5-point criteria. Preserve the "
+            "printed subtotal and mark an unspecified combining rule for review. A passing score "
+            "for total technical evaluation (including qualitative points) is not a minimum for "
+            "its objective subtotal. Set minimum_score only when the source explicitly binds it "
+            "to that objective scoring program. "
             "A row belongs in quantitative_tables only when its award is decided by a verifiable "
             "company fact: a count, an amount, a ratio, a rating, a certificate, a date. A row whose "
             "award is decided by an evaluator's judgment does not belong there at all. Omit it "
             "entirely - 사업 이해도, 추진전략의 적정성, 실현 가능성, 계획의 충실성, and any row scored "
-            "only by a 매우우수/우수/보통/미흡 grade scale. Never emit such a row and then explain it "
+            "only by a 매우우수/우수/보통/미흡 grade scale without objective conditions. Those same "
+            "labels are quantitative when explicit counts, ratios or other verifiable facts "
+            "determine the grade; preserve those conditions and awards. Never emit a judgment-only row and then explain it "
             "in ambiguity_reason: 'this row has no quantitative criterion' means the row was out of "
             "scope, not that the table was ambiguous. Bind total_points to the objective subtotal that "
             "remains once those rows are omitted, anchor total_evidence to the source text stating "
@@ -1252,7 +1279,19 @@ class OpenAIExtractionClient:
             "For example, 1건 이하 1점 is LTE 1 with POINTS 1; 2건 미만 1점 is LT 2. "
             "Never encode a numeric count comparison as an IN category. Lower-tail LTE/LT "
             "is supported only as the final row after descending GTE and optional EQ count rows; "
-            "do not invent missing rows or use it for amounts, ratios, years or categories. For "
+            "do not invent missing rows. For continuous numeric criteria, a final LT is supported "
+            "only as the exact complement of the last descending GTE cutoff: 100% 이상, 60% 이상, "
+            "60% 미만 uses GTE 100, GTE 60, LT 60. Preserve these ordered lower cutoffs rather than "
+            "inventing unprinted upper bounds. Never use a category or a discrete count interval "
+            "to represent a continuous ratio. A shared scoring cell may apply to two separately "
+            "named financial ratios only when the source establishes that association; do not "
+            "guess an association from missing text or borrow another criterion's bands. "
+            "For PERFORMANCE_COUNT explicit inclusive ranges (for example, 5건∼6건 4.5점), use "
+            "BETWEEN with comparison_value=5, comparison_upper_value=6 and empty category_values. "
+            "GTE/EQ/IN/LTE/LT use comparison_upper_value=null. Preserve an explicit 미제출 0점 "
+            "row as NOT_SUBMITTED with both comparisons null, category_values=[], and POINTS 0; "
+            "never map it to count zero or invent this row. BETWEEN and NOT_SUBMITTED currently "
+            "apply only to PERFORMANCE_COUNT. Preserve exact full-row quotes and source row order. For "
             "CREDIT_RATING range rows, copy each complete source-cell range phrase into "
             "category_values exactly as written, including 이상/초과/이하/미만 (for example, "
             "A- 이상 or BBB- 미만). Never expand a range into implied grades and never return only "

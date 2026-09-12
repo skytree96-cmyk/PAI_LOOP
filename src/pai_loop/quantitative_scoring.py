@@ -322,6 +322,9 @@ class QuantitativeFact(QuantModel):
     value: float | bool | str | None = None
     lower_value: float | None = None
     upper_value: float | None = None
+    # Only an independently verified submission audit may set this. Missing
+    # company records, empty documents and numeric zero never imply this state.
+    submission_status: Literal["NOT_SUBMITTED"] | None = None
     evidence_key: str | None = Field(default=None, max_length=240)
     evidence_reference: str | None = Field(default=None, max_length=240)
     evidence_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -331,6 +334,13 @@ class QuantitativeFact(QuantModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> "QuantitativeFact":
+        if self.submission_status is not None and (
+            self.status != "CONFIRMED" or self.value is not None
+            or self.lower_value is not None or self.upper_value is not None
+            or not self.evidence_reference or not self.evidence_sha256
+            or not self.fact_binding_sha256
+        ):
+            raise ValueError("submission status requires an explicit confirmed, evidenced criterion binding without a numeric value")
         if (
             self.lower_value is not None
             and self.upper_value is not None
@@ -820,6 +830,12 @@ def _points_for_numeric_range(
                 sample_values.add(comparison)
                 if table.value_kind == "DISCRETE" and comparison - 1 >= lower:
                     sample_values.add(comparison - 1)
+            if row.comparison_upper_value is not None:
+                upper_comparison = float(row.comparison_upper_value)
+                if lower <= upper_comparison <= upper:
+                    sample_values.add(upper_comparison)
+                    if table.value_kind == "DISCRETE" and upper_comparison + 1 <= upper:
+                        sample_values.add(upper_comparison + 1)
         resolved = [_points_for_value(criterion, value) for value in sample_values]
         # The CASE DSL has no implicit ELSE. If either endpoint, a cutoff, or
         # a representative discrete gap is undefined, the entire company
@@ -1090,7 +1106,18 @@ def _estimate_criterion(
     lower_bound_saturates_max = _performance_lower_bound_saturates_max(
         criterion, fact.lower_value
     )
-    if criterion.formula_type in {"BRACKET", "THRESHOLD", "FORMULA", "CASE_TABLE"} and fact.status == "ESTIMATED" and (
+    if fact.submission_status is not None:
+        if (criterion.metric_key != "company.performance.count"
+            or criterion.fact_binding_sha256 is None
+            or criterion.formula_type != "CASE_TABLE" or criterion.case_table is None):
+            return _criterion_unscored(criterion, status="REVIEW",
+                rationale="미제출 상태에 대응하는 검증된 실적 평가항목이 없습니다.", **fact_audit)
+        points = case_table_points(criterion.case_table, None, submission_status=fact.submission_status)
+        if points is None:
+            return _criterion_unscored(criterion, status="REVIEW",
+                rationale="원문에 해당 미제출 상태의 배점이 명시되어 있지 않습니다.", **fact_audit)
+        lower_points = upper_points = _round_points(points)
+    elif criterion.formula_type in {"BRACKET", "THRESHOLD", "FORMULA", "CASE_TABLE"} and fact.status == "ESTIMATED" and (
         fact.lower_value is not None or fact.upper_value is not None
     ):
         if fact.lower_value is not None and fact.upper_value is None and lower_bound_saturates_max:
@@ -2417,11 +2444,18 @@ def _candidate_fact_binding_sha256(
     *,
     document_sha256: str,
 ) -> str:
+    binding_candidate = candidate.model_dump(mode="json")
+    for case in binding_candidate["cases"]:
+        # No upper bound has the same meaning before and after the additive
+        # interval schema. Preserve existing company-fact bindings; a populated
+        # bound (and every new operator) still changes the identity.
+        if case.get("comparison_upper_value") is None:
+            case.pop("comparison_upper_value", None)
     return _canonical_digest(
         {
             "binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
             "document_sha256": document_sha256,
-            "candidate": candidate.model_dump(mode="json"),
+            "candidate": binding_candidate,
         }
     )
 
@@ -2601,6 +2635,10 @@ def _compiled_case_table_contract(
                 _scaled_value(item.comparison_value, scale)
                 if item.comparison_value is not None
                 else None
+            ),
+            comparison_upper_value=(
+                _scaled_value(item.comparison_upper_value, scale)
+                if item.comparison_upper_value is not None else None
             ),
             category_values=item.category_values,
             source_literal=item.literal,

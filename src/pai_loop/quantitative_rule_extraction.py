@@ -45,7 +45,10 @@ from .source_gap_policy import (
 
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
-from .extraction_contracts import CURRENT_EXTRACTION_CONTRACT, classify_record_contract
+from .extraction_contracts import (
+    CURRENT_EXTRACTION_CONTRACT, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
+    classify_record_contract,
+)
 
 QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = CURRENT_EXTRACTION_CONTRACT.validator
 MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
@@ -157,8 +160,9 @@ class ImmutableQuantitativeThreshold(FrozenModel):
 
 class ImmutableQuantitativeCase(FrozenModel):
     literal: str
-    operator: Literal["GTE", "EQ", "IN", "LTE", "LT"]
+    operator: Literal["GTE", "EQ", "IN", "LTE", "LT", "BETWEEN", "NOT_SUBMITTED"]
     comparison_value: float | None
+    comparison_upper_value: float | None = None
     category_values: tuple[str, ...]
     award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
     award_value: float = Field(ge=0)
@@ -858,6 +862,50 @@ def _amount_gte_condition_matches(
     )
 
 
+_COUNT_CLOSED_RANGE_RE = re.compile(
+    r"(?P<lower>\d{1,9})\s*(?:건|회)?\s*"
+    r"(?:[~∼～-]\s*(?P<upper>\d{1,9})\s*(?:건|회)?|"
+    r"이상\s*(?P<upper_words>\d{1,9})\s*(?:건|회)?\s*이하)"
+)
+
+
+def _explicit_count_case_matches(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
+    literal: str,
+) -> bool:
+    """Prove the whole condition and a separate award; never expand an IN row.
+
+    Closed ranges and non-submission are different source languages. Neither
+    an omitted count nor a count outside the printed intervals is a status.
+    """
+    if candidate.metric != "PERFORMANCE_COUNT" or case.award_kind != "POINTS" or case.category_values:
+        return False
+    value = unicodedata.normalize("NFKC", literal).strip()
+    lines = value.splitlines()
+    if len(lines) >= 2 and _score_cell_matches(lines[-1], value=case.award_value, percent=False):
+        condition = "\n".join(lines[:-1]).strip()
+    else:
+        match = re.fullmatch(r"(?P<condition>.+?)\s+(?P<award>\d+(?:\.\d+)?)\s*점", value)
+        if match is None or Decimal(match.group("award")) != _decimal(case.award_value):
+            return False
+        condition = match.group("condition").strip()
+    if case.operator == "NOT_SUBMITTED":
+        return bool(case.comparison_value is None and case.comparison_upper_value is None
+                    and case.award_value == 0
+                    and re.fullmatch(r"(?:실적\s*증명[서원]\s*)?미제출", condition))
+    if case.operator != "BETWEEN":
+        return False
+    match = _COUNT_CLOSED_RANGE_RE.fullmatch(condition)
+    if match is None:
+        return False
+    lower = Decimal(match.group("lower"))
+    upper = Decimal(match.group("upper") or match.group("upper_words"))
+    return bool(lower is not None and upper is not None and 0 <= lower < upper
+                and lower == _decimal(case.comparison_value)
+                and upper == _decimal(case.comparison_upper_value))
+
+
 def _case_condition_matches(
     candidate: QuantitativeRuleCandidate,
     case: QuantitativeCaseLiteral,
@@ -890,6 +938,8 @@ def _case_comparison_matches(
     case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
     literal: str,
 ) -> bool:
+    if case.operator in {"BETWEEN", "NOT_SUBMITTED"}:
+        return _explicit_count_case_matches(candidate, case, literal)
     if case.comparison_value is None:
         return True
     lines = literal.splitlines()
@@ -987,6 +1037,8 @@ def _case_award_matches_literal(
     The remainder must independently retain the declared condition. This check
     uses only persisted literal/evidence structure and also protects old proofs.
     """
+    if case.operator in {"BETWEEN", "NOT_SUBMITTED"}:
+        return _explicit_count_case_matches(candidate, case, literal)
     value = unicodedata.normalize("NFKC", literal).strip()
     if not value or len(value) > 1_000:
         return False
@@ -5904,6 +5956,7 @@ def _assert_available_candidate_invariants(
                 CaseTableRowLiteral(
                     operator=case.operator,
                     comparison_value=case.comparison_value,
+                    comparison_upper_value=case.comparison_upper_value,
                     category_values=case.category_values,
                     source_literal=case.literal,
                     award_kind=case.award_kind,
@@ -6747,6 +6800,7 @@ def _validate_cases(
             compiled_row = CaseTableRowLiteral(
                 operator=case.operator,
                 comparison_value=case.comparison_value,
+                comparison_upper_value=case.comparison_upper_value,
                 category_values=tuple(case.category_values),
                 source_literal=case.literal,
                 award_kind=case.award_kind,
@@ -6768,6 +6822,7 @@ def _validate_cases(
                 literal=case.literal,
                 operator=case.operator,
                 comparison_value=case.comparison_value,
+                comparison_upper_value=case.comparison_upper_value,
                 category_values=tuple(case.category_values),
                 award_kind=case.award_kind,
                 award_value=case.award_value,
@@ -7648,6 +7703,28 @@ def _targeted_record_fingerprint_revisions(
 
 def _record_fingerprint_data(data: Mapping[str, object]) -> str:
     canonical_data = dict(data)
+    if (
+        data.get("prompt_version"), data.get("extraction_schema_version"),
+        data.get("validator_version"),
+    ) in {
+        (contract.prompt, contract.schema, contract.validator)
+        for contract in (LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT)
+    }:
+        # This optional field did not exist in the two exact predecessors.
+        # Remove only its absent-value default from their canonical proof.
+        # A non-null new bound remains fingerprinted and is rejected by the
+        # predecessor vocabulary check below. Never rewrite persisted records.
+        canonical_data["available_candidates"] = [
+            {
+                **candidate,
+                "cases": [
+                    {key: value for key, value in case.items()
+                     if key != "comparison_upper_value" or value is not None}
+                    for case in candidate.get("cases", ())
+                ],
+            }
+            for candidate in canonical_data.get("available_candidates", ())
+        ]
     targeted_revisions = _targeted_record_fingerprint_revisions(canonical_data)
     if targeted_revisions:
         canonical_data["_targeted_validator_revisions"] = targeted_revisions
@@ -7837,7 +7914,12 @@ def quantitative_record_contract_is_usable(
         return False
 
     def old_case_shape(case: QuantitativeCaseLiteral | ImmutableQuantitativeCase) -> bool:
-        if case.operator in {"GTE", "EQ"}:
+        if case.comparison_upper_value is not None:
+            return False
+        numeric_operators = {"GTE", "EQ"}
+        if kind == "LEGACY_CASE_V2":
+            numeric_operators.update({"LTE", "LT"})
+        if case.operator in numeric_operators:
             return case.comparison_value is not None and not case.category_values
         return (
             case.operator == "IN" and case.comparison_value is None
@@ -7865,10 +7947,12 @@ def quantitative_record_contract_is_usable(
         for current_case, prior_case in zip(candidate.cases, prior.cases):
             if (
                 current_case.operator, current_case.comparison_value,
+                current_case.comparison_upper_value,
                 tuple(current_case.category_values), current_case.award_kind,
                 current_case.award_value, current_case.row_order,
             ) != (
                 prior_case.operator, prior_case.comparison_value,
+                prior_case.comparison_upper_value,
                 tuple(prior_case.category_values), prior_case.award_kind,
                 prior_case.award_value, prior_case.row_order,
             ):

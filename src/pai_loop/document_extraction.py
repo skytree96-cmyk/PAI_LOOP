@@ -22,8 +22,6 @@ from typing import Callable, Mapping
 from xml.etree import ElementTree
 
 
-LeafExtractor = Callable[[str, bytes], str]
-
 # Both packages declare the OSI-approved BSD license in their distribution
 # metadata. Keep this explicit so an AGPL HWP parser cannot enter the
 # proprietary deployment transitively without a deliberate license review.
@@ -89,6 +87,21 @@ class DocumentExtractionResult:
     members_processed: int
     complete: bool
     member_issues: tuple[MemberIssue, ...] = field(default_factory=tuple)
+    # Generated document/page/section labels remain in text for anchors, but
+    # must not inflate the minimum body text required for a paid analysis.
+    # None preserves compatibility with existing third-party leaf extractors.
+    content_characters: int | None = None
+
+    @property
+    def analysis_content_characters(self) -> int:
+        return (
+            self.content_characters
+            if self.content_characters is not None
+            else len(self.text.strip())
+        )
+
+
+LeafExtractor = Callable[[str, bytes], str | DocumentExtractionResult]
 
 
 @dataclass(slots=True)
@@ -143,6 +156,7 @@ class _ParsedText:
     warnings: tuple[str, ...] = ()
     complete: bool = True
     member_issues: tuple[MemberIssue, ...] = field(default_factory=tuple)
+    content_characters: int | None = None
 
 
 _BUILTIN_EXTENSIONS = {
@@ -271,12 +285,13 @@ def _extract(
         return _result_from_parsed(_extract_xls(content), file_name)
     if extension in leaf_extractors:
         try:
-            text = leaf_extractors[extension](file_name, content)
+            leaf = leaf_extractors[extension](file_name, content)
+            text = leaf.text if isinstance(leaf, DocumentExtractionResult) else leaf
             if not isinstance(text, str) or not text.strip():
                 raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
         except Exception as exc:  # the leaf boundary must not leak raw errors
             return _issue_result(file_name, _safe_exception_code(exc, "LEAF_EXTRACTION_FAILED"))
-        return _single_result(text)
+        return leaf if isinstance(leaf, DocumentExtractionResult) else _single_result(text)
     if extension == ".docx":
         return _result_from_parsed(_extract_docx(content, budget), file_name)
     if extension in {".xlsx", ".xlsm"}:
@@ -354,6 +369,7 @@ def _extract_generic_zip(
         issues: list[MemberIssue] = []
         discovered = 0
         processed = 0
+        content_characters = 0
         for member in sorted(members, key=lambda item: item.filename.casefold()):
             member_name = _safe_member_name(member.filename)
             extension = PurePosixPath(member_name).suffix.casefold()
@@ -379,6 +395,7 @@ def _extract_generic_zip(
                 )
             discovered += child.members_discovered
             processed += child.members_processed
+            content_characters += child.analysis_content_characters
             warnings.extend(child.warnings)
             issues.extend(child.member_issues)
             if child.text.strip():
@@ -393,6 +410,7 @@ def _extract_generic_zip(
             members_processed=processed,
             complete=complete,
             member_issues=tuple(issues),
+            content_characters=content_characters,
         )
 
 
@@ -566,6 +584,7 @@ def _extract_hwp5(content: bytes, budget: _Budget) -> _ParsedText:
             _unique(warnings),
             not issues,
             tuple(issues),
+            content_characters=len("\n".join(semantic_texts).strip()),
         )
     except DocumentExtractionError:
         raise
@@ -868,6 +887,7 @@ def _extract_xls(content: bytes) -> _ParsedText:
             text,
             warnings=("XLS_FORMULA_EXPRESSIONS_UNAVAILABLE",),
             complete=False,
+            content_characters=len("\n".join(semantic_values).strip()),
         )
     except DocumentExtractionError:
         raise
@@ -932,6 +952,7 @@ def _extract_docx(content: bytes, budget: _Budget) -> _ParsedText:
         ]
         parts.sort(key=lambda item: _natural_key(item.filename))
         lines: list[str] = []
+        content_lines: list[str] = []
         for item in parts:
             root = _parse_xml(
                 _read_member(archive, item, budget.limits),
@@ -948,6 +969,7 @@ def _extract_docx(content: bytes, budget: _Budget) -> _ParsedText:
             if part_lines:
                 lines.append(f"[DOCX {item.filename}]")
                 lines.extend(part_lines)
+                content_lines.extend(part_lines)
         if not lines and not issues:
             raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
         return _ParsedText(
@@ -955,6 +977,7 @@ def _extract_docx(content: bytes, budget: _Budget) -> _ParsedText:
             _unique(warnings),
             not issues,
             tuple(issues),
+            content_characters=len("\n".join(content_lines).strip()),
         )
 
 
@@ -977,6 +1000,7 @@ def _extract_pptx(content: bytes, budget: _Budget) -> _ParsedText:
         ]
         parts.sort(key=lambda item: _natural_key(item.filename))
         lines: list[str] = []
+        content_lines: list[str] = []
         for item in parts:
             root = _parse_xml(
                 _read_member(archive, item, budget.limits),
@@ -986,6 +1010,7 @@ def _extract_pptx(content: bytes, budget: _Budget) -> _ParsedText:
             if part_lines:
                 lines.append(f"[PPTX {item.filename}]")
                 lines.extend(part_lines)
+                content_lines.extend(part_lines)
         if not lines and not issues:
             raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
         return _ParsedText(
@@ -993,6 +1018,7 @@ def _extract_pptx(content: bytes, budget: _Budget) -> _ParsedText:
             _unique(warnings),
             not issues,
             tuple(issues),
+            content_characters=len("\n".join(content_lines).strip()),
         )
 
 
@@ -1110,6 +1136,7 @@ def _extract_xlsx(content: bytes, budget: _Budget) -> _ParsedText:
         ]
         sheet_parts.sort(key=lambda item: _natural_key(item.filename))
         lines: list[str] = []
+        content_lines: list[str] = []
         for index, item in enumerate(sheet_parts, start=1):
             root = _parse_xml(
                 _read_member(archive, item, budget.limits),
@@ -1117,7 +1144,9 @@ def _extract_xlsx(content: bytes, budget: _Budget) -> _ParsedText:
             )
             label = sheet_names.get(item.filename, f"Sheet {index}")
             lines.append(f"[SHEET {label}]")
-            lines.extend(_xlsx_rows(root, shared_strings))
+            rows = _xlsx_rows(root, shared_strings)
+            lines.extend(rows)
+            content_lines.extend(rows)
         if not lines or not any(not line.startswith("[SHEET ") for line in lines):
             raise DocumentExtractionError("DOCUMENT_TEXT_EMPTY")
         for lowered, actual in sorted(names.items()):
@@ -1133,6 +1162,7 @@ def _extract_xlsx(content: bytes, budget: _Budget) -> _ParsedText:
             _unique(warnings),
             not issues,
             tuple(issues),
+            content_characters=len("\n".join(content_lines).strip()),
         )
 
 
@@ -1451,6 +1481,7 @@ def _single_result(text: str) -> DocumentExtractionResult:
         members_discovered=1,
         members_processed=1,
         complete=True,
+        content_characters=len(text.strip()),
     )
 
 
@@ -1462,6 +1493,7 @@ def _issue_result(path: str, reason: str) -> DocumentExtractionResult:
         members_processed=0,
         complete=False,
         member_issues=(MemberIssue(path, reason),),
+        content_characters=0,
     )
 
 
@@ -1485,6 +1517,7 @@ def _result_from_parsed(parsed: _ParsedText, path: str) -> DocumentExtractionRes
         members_processed=processed,
         complete=parsed.complete,
         member_issues=tuple(issues),
+        content_characters=parsed.content_characters,
     )
 
 
