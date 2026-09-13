@@ -43,8 +43,8 @@ def test_shared_200_second_client_wait_leaves_gateway_response_return_margin():
     assert calls == [{'connect':200, 'read':200, 'write':200, 'pool':200}]
     assert outcome.api_calls == 1
     workflow = json.loads((Path(__file__).parents[1]/'workflows/pai-loop-13-claude-extraction-gateway.json').read_text(encoding='utf-8'))
-    provider = next(node for node in workflow['nodes'] if 'provider_request.max_tokens' in str(node.get('parameters', {}).get('options', {}).get('timeout', '')))
-    assert provider['parameters']['options']['timeout'] == '={{ $json.provider_request.max_tokens === 32000 ? 300000 : 180000 }}'
+    provider = next(node for node in workflow['nodes'] if node['name'] == 'Claude Sonnet 5 Native JSON')
+    assert provider['parameters']['options']['timeout'] == '={{ $json.gateway_timeout_ms }}'
     assert provider['retryOnFail'] is False
     assert 180 < DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS
 

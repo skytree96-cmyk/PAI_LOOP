@@ -3,6 +3,7 @@ import { nativeGatewaySchema } from "./native-gateway-schema.mjs";
 import { validateNativeGatewayRequest } from "./native-gateway-request.mjs";
 import { normalizeNativeGatewayResponse } from "./native-gateway-response.mjs";
 import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
+import { nativeTimeoutExpression } from "./native-gateway-contract.mjs";
 
 const path = "workflows/pai-loop-13-claude-extraction-gateway.json";
 const workflow = JSON.parse(fs.readFileSync(path, "utf8"));
@@ -26,7 +27,7 @@ for (const node of workflow.nodes) {
       sendHeaders: true, headerParameters: { parameters: [
         { name: "anthropic-version", value: "2023-06-01" }, { name: "Content-Type", value: "application/json" },
       ] }, sendBody: true, contentType: "json", specifyBody: "json", jsonBody: "={{ $json.provider_request }}",
-      options: { timeout: 180000, response: { response: { fullResponse: true, neverError: true, responseFormat: "json" } },
+      options: { timeout: nativeTimeoutExpression, response: { response: { fullResponse: true, neverError: true, responseFormat: "json" } },
         redirect: { redirect: { followRedirects: false } } },
     };
   }

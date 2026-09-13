@@ -258,7 +258,8 @@ def test_untrusted_context_is_separate_data_and_cannot_supply_evidence():
     assert source == review.selected_source
 
 
-def test_probe_with_context_passes_the_real_gateway_request_validator():
+@pytest.mark.parametrize("extended_wait", [False, True])
+def test_probe_with_context_passes_the_real_gateway_request_validator(extended_wait):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the gateway's JavaScript contract")
@@ -267,7 +268,9 @@ def test_probe_with_context_passes_the_real_gateway_request_validator():
     def handler(request):
         requests.append(json.loads(request.content))
         return response(payload)
-    with make_client(handler, model="claude-sonnet-5") as client:
+    options = dict(budget_policy="QUANTITATIVE_PROBE_ONCE", max_output_tokens=20_000,
+                   timeout_seconds=320, before_request=lambda: None) if extended_wait else {}
+    with make_client(handler, model="claude-sonnet-5", **options) as client:
         client.extract_quantitative_probe(review_input=review, allowed_attachment_ids={ATT},
                                           untrusted_source_context="SYN separate geometry fragments")
     program = """
@@ -276,7 +279,11 @@ const workflow = JSON.parse(fs.readFileSync('workflows/pai-loop-13-claude-extrac
 const node = workflow.nodes.find(n => n.name === 'Validate Gateway Request');
 const validate = new Function('$json', '$input', node.parameters.jsCode);
 const body = JSON.parse(fs.readFileSync(0, 'utf8'));
-const result = validate({body}, {all: () => [{}]})[0].json.provider_request;
+const validated = validate({body}, {all: () => [{}]})[0].json;
+const result = validated.provider_request;
+if (validated.gateway_timeout_ms !== (body.budget_policy === 'QUANTITATIVE_PROBE_ONCE' ? 300000 : 180000)
+    || result.max_tokens !== 20000 || 'request_scope' in result || 'budget_policy' in result)
+    throw Error('Probe policy escaped its gateway boundary');
 if (result.messages.length !== 1 || !result.messages[0].content.includes('SYN separate geometry fragments')
     || !result.system.includes('QUANTITATIVE-ONLY DIAGNOSTIC')) throw Error('Probe content lost');
 process.stdout.write('SYN-GATEWAY-PASS');

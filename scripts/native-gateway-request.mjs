@@ -3,10 +3,19 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   const body = json?.body && typeof json.body === 'object' && !Array.isArray(json.body) ? json.body : null;
   if (!body) throw new Error('request body must be a JSON object');
   const allowedTopLevel = ['input','max_output_tokens','model','service_tier','store','text'];
-  const longOutputOnce = Object.hasOwn(body, 'budget_policy');
-  if (longOutputOnce) {
-    if (body.budget_policy !== 'LONG_OUTPUT_ONCE' || body.max_output_tokens !== 32000) throw new Error('invalid one-shot output policy');
-    allowedTopLevel.push('budget_policy'); allowedTopLevel.sort();
+  const longOutputOnce = body.budget_policy === 'LONG_OUTPUT_ONCE';
+  const quantitativeProbeOnce = body.budget_policy === 'QUANTITATIVE_PROBE_ONCE';
+  if (Object.hasOwn(body, 'budget_policy')) {
+    if ((!longOutputOnce && !quantitativeProbeOnce)
+      || body.max_output_tokens !== (longOutputOnce ? 32000 : 20000)) throw new Error('invalid one-shot output policy');
+    allowedTopLevel.push('budget_policy');
+    if (quantitativeProbeOnce) {
+      // Scope is an explicit request contract, never inferred from source or
+      // prompt prose. Only this diagnostic policy may carry the scope field.
+      if (body.request_scope !== 'QUANTITATIVE_PROBE_ONLY') throw new Error('invalid quantitative probe scope');
+      allowedTopLevel.push('request_scope');
+    }
+    allowedTopLevel.sort();
   }
   const actualTopLevel = Object.keys(body).sort();
   if (actualTopLevel.length !== allowedTopLevel.length || actualTopLevel.some((key, index) => key !== allowedTopLevel[index])) throw new Error('request fields do not match the extraction gateway contract');
@@ -27,7 +36,7 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   if (!systemPrompt.startsWith('You extract procurement requirements as evidence only.')) throw new Error('system prompt identity is invalid');
   const initialPrompt = userPrompt.startsWith('Allowed attachment IDs:');
   const correctivePrompt = userPrompt.startsWith('FINAL CORRECTIVE RETRY.') && userPrompt.includes('Allowed attachment IDs:');
-  if (longOutputOnce && !initialPrompt) throw new Error('one-shot policy forbids corrective calls');
+  if ((longOutputOnce || quantitativeProbeOnce) && !initialPrompt) throw new Error('one-shot policy forbids corrective calls');
   if ((!initialPrompt && !correctivePrompt) || !userPrompt.includes('\n\nSOURCE:\n')) throw new Error('user prompt identity is invalid');
   const format = body.text?.format;
   if (!format || format.type !== 'json_schema' || format.name !== 'pai_loop_requirements' || format.strict !== true) throw new Error('strict response format is invalid');
@@ -42,7 +51,10 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   if (providerSystem.length > 12000) throw new Error('combined system prompt is oversized');
   const combinedCharacters = providerSystem.length + userPrompt.length + schemaInstruction.length + JSON.stringify(projection.schema).length;
   if (combinedCharacters > 210000) throw new Error('combined Claude request is oversized');
-  return [{ json: { original_schema: schema, provider_request: {
+  // Derived transport metadata stays outside the Anthropic request. The body
+  // allowlist forbids callers from supplying an arbitrary timeout or retry cap.
+  const gatewayTimeoutMs = longOutputOnce || quantitativeProbeOnce ? 300000 : 180000;
+  return [{ json: { original_schema: schema, gateway_timeout_ms: gatewayTimeoutMs, provider_request: {
     model: 'claude-sonnet-5', max_tokens: body.max_output_tokens,
     system: providerSystem, messages: [{ role: 'user', content: userPrompt + schemaInstruction }],
     thinking: { type: 'adaptive' }, output_config: { effort: 'medium', format: { type: 'json_schema', schema: projection.schema } },

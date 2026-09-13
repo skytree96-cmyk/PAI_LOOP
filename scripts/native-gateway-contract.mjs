@@ -5,7 +5,7 @@ import { normalizeNativeGatewayResponse } from "./native-gateway-response.mjs";
 import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
 
 export const nativeNodeName = "Claude Sonnet 5 Native JSON";
-export const nativeTimeoutExpression = "={{ $json.provider_request.max_tokens === 32000 ? 300000 : 180000 }}";
+export const nativeTimeoutExpression = "={{ $json.gateway_timeout_ms }}";
 export const nativeCanaryWorkflowKeys = ["pai-loop-10-daily-opportunity-briefing", "pai-loop-11-analysis-backfill",
   "pai-loop-12-teams-daily-delivery", "pai-loop-13-claude-extraction-gateway"];
 export function assertPendingNativeSelection(config, onlyKey) {
