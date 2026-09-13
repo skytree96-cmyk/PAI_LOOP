@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from conftest import internal_server_client
 import pytest
+from award_scope_helpers import attach_award_scope
 from sqlalchemy import select
 
 from pai_loop.main import create_app
@@ -142,6 +143,7 @@ def test_award_intelligence_api_reads_stored_rows_without_live_client(monkeypatc
             "estimated_amount": 120000000,
         })
         assert created.status_code == 201
+        attach_award_scope(client, "SYNTHETIC-INTEL", demand_agency_name="합성 발주기관")
         with app.state.session_factory() as session:
             notice = session.scalar(select(Notice).where(Notice.notice_key == "SYNTHETIC-INTEL"))
             for index, item in enumerate(_records(), start=1):
@@ -219,9 +221,22 @@ def test_packaged_public_award_seed_is_safe_tamper_evident_and_idempotent() -> N
             assert first.created == 59
             assert second.created == 0
             assert second.existing == 59
+            notice = session.scalar(select(Notice).where(Notice.notice_key == "MANUAL-INCHON-2025-17"))
+            # Keep the original seed/model regression across its complete audit
+            # sample while the endpoint now applies explicit agency AND keyword.
+            seed_risk = build_award_intelligence(
+                list(session.scalars(select(AwardHistoryItem).where(AwardHistoryItem.target_notice_id == notice.id))),
+                as_of=notice.published_at, target_estimated_price=notice.estimated_amount,
+            )["competition_risk"]
+        attach_award_scope(client, "MANUAL-INCHON-2025-17",
+                           demand_agency_name="인천광역시 인재개발원")
         actual = client.get("/api/v1/notices/MANUAL-INCHON-2025-17/award-intelligence")
         assert actual.status_code == 200
-        risk = actual.json()["competition_risk"]
+        assert actual.json()["search_criteria"]["status"] == "AVAILABLE"
+        assert actual.json()["record_count"] == 1
+        assert actual.json()["competition_risk"]["status"] == "UNKNOWN"
+        assert actual.json()["competition_risk"]["score"] is None
+        risk = seed_risk
         assert risk["status"] == "MODEL_ESTIMATE"
         assert risk["sample_count"] == 57
         assert risk["score"] == 31.93

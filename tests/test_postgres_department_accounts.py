@@ -262,6 +262,7 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
         migrations.INDEPENDENT_DECISION_MIGRATION_ID: migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
         migrations.AWARD_OPENING_RESULT_MIGRATION_ID: migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM,
         migrations.ACCOUNT_MIGRATION_ID: migrations.ACCOUNT_MIGRATION_CHECKSUM,
+        migrations.AWARD_AGENCY_METADATA_MIGRATION_ID: migrations.AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM,
     }
     with ThreadPoolExecutor(max_workers=2) as pool:
         with _hold_department_lock(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY):
@@ -269,7 +270,7 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
             _assert_waiters(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY, 2)
         applied = [future.result(timeout=20) for future in futures]
     assert sum(bool(result) for result in applied) == 1
-    assert [key for result in applied for key in result][-3:] == list(expected)
+    assert [key for result in applied for key in result][-len(expected):] == list(expected)
     assert apply_additive_migrations(engine) == [] and pending_migrations(engine) == []
     with engine.connect() as connection:
         ledger = dict(connection.execute(select(schema_migrations.c.migration_id, schema_migrations.c.checksum)).all())

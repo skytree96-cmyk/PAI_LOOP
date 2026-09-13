@@ -6,6 +6,7 @@ from datetime import date
 
 import httpx
 import pytest
+from award_scope_helpers import attach_award_scope
 from sqlalchemy import select
 
 from conftest import login_department_reader
@@ -103,6 +104,7 @@ def test_refresh_keeps_contract_and_ops_projection_is_read_only_server_only(clie
     key = "PPS-SYN-AWARD-SHAPE"
     assert client.post("/api/v1/notices", json={"notice_key": key, "bid_notice_no": key,
         "title": "SYN 교육", "agency": "SYN 기관", "deadline": "2099-01-01T00:00:00Z"}).status_code == 201
+    attach_award_scope(client, key, demand_agency_name="SYN 기관")
     client.app.state.settings = replace(client.app.state.settings, pps_api_key="SYN-provider")
     calls = []
     class Provider(PpsAwardClient):

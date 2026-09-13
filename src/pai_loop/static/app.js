@@ -7199,6 +7199,16 @@
       els.historyStatusText.textContent = "현재 3개 연도 표에 표시할 저장 기록이 없습니다. 미수집 여부는 별도 확인이 필요합니다.";
     }
 
+    const criteria = meta.intelligence?.search_criteria;
+    if (criteria && status !== "loading" && status !== "error" && status !== "demo") {
+      if (criteria.status === "UNAVAILABLE") {
+        els.historyStatusLabel.textContent = "발주처 확인 필요";
+        els.historyStatusText.textContent = "실제 발주처가 확인되면 사업 키워드와 함께 최근 3년 낙찰을 조회합니다.";
+      } else {
+        els.historyStatusText.textContent = `최근 3년 · ${criteria.demand_agency_name || "동일 발주처"} · ${criteria.keyword || "사업 키워드"} 기준입니다.`;
+      }
+    }
+
     renderAnnualAwardTable(meta.intelligence, status);
 
     // Retain the legacy element ID for panel consumers; the annual table is
@@ -7209,8 +7219,8 @@
 
   const AWARD_TABLE_BASIS_LABELS = {
     SAME_PROJECT_AND_AGENCY: "동일 사업명 · 동일 발주기관",
-    SIMILAR_CANDIDATES_ONLY: "유사 사업 후보만 확인",
-    MIXED_BY_YEAR: "연도별 동일 사업 우선 · 일부 연도 유사 후보",
+    SIMILAR_CANDIDATES_ONLY: "동일 발주처 · 유사 사업 후보",
+    MIXED_BY_YEAR: "동일 발주처 · 연도별 동일 사업 우선",
     NONE: "표시할 기록 없음",
   };
   const AWARD_PARTICIPATION_LABELS = { WINNER: "낙찰", PARTICIPANT: "참여", UNKNOWN: "구분 미확인" };
@@ -7411,7 +7421,7 @@
     }).join("") || '<p class="history-award-project__empty">최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다.</p>';
     els.historyAwardGroups.hidden = selection.view !== "group";
     els.historyAwardFlat.hidden = selection.view !== "flat";
-    els.historyAwardTableNotes.innerHTML = "<p>미확인은 자료가 없는 항목입니다. 참여업체는 조회된 범위만 표시합니다. 기술평가는 입찰의 기술점수입니다.</p><details><summary>자료 범위와 점수 표기 기준</summary><ul><li>유사 사업 후보는 같은 사업·같은 발주기관의 과거 낙찰로 확정된 자료가 아닙니다.</li><li>금액 단위는 원이며 평가점수는 소수점 둘째 자리까지 표시합니다. 미확인은 0점이 아니며, 투찰금액을 최종 낙찰금액으로 대신하지 않습니다.</li><li>점수 확인은 기술·가격·종합 중 하나 이상의 값이 있는 참여 기록 수입니다. 회사 정량평가 점수와 다릅니다.</li><li>참여 기록은 저장된 업체 행 수이며 고유 업체 수나 전체 경쟁업체 수를 뜻하지 않습니다.</li><li>결과일은 낙찰일 우선이며, 낙찰일이 없으면 개찰일입니다.</li></ul></details>";
+    els.historyAwardTableNotes.innerHTML = "<p>미확인은 자료가 없는 항목입니다. 참여업체는 조회된 범위만 표시합니다. 기술평가는 입찰의 기술점수입니다.</p><details><summary>자료 범위와 점수 표기 기준</summary><ul><li>동일 발주처의 키워드 일치 후보이며, 같은 사업의 반복 발주로 확정된 자료는 아닙니다.</li><li>금액 단위는 원이며 평가점수는 소수점 둘째 자리까지 표시합니다. 미확인은 0점이 아니며, 투찰금액을 최종 낙찰금액으로 대신하지 않습니다.</li><li>점수 확인은 기술·가격·종합 중 하나 이상의 값이 있는 참여 기록 수입니다. 회사 정량평가 점수와 다릅니다.</li><li>참여 기록은 저장된 업체 행 수이며 고유 업체 수나 전체 경쟁업체 수를 뜻하지 않습니다.</li><li>결과일은 낙찰일 우선이며, 낙찰일이 없으면 개찰일입니다.</li></ul></details>";
   }
 
   function renderHistory(item) {

@@ -35,6 +35,7 @@ from .models import (
     PerformanceNormalizationBatch,
     PerformanceNormalizationRevision,
     NoticeAnalysisPolicy,
+    NoticeAwardAgencyMetadata,
     RecommendationSnapshot,
     ReferenceDataVersion,
     RequirementResultSnapshot,
@@ -97,6 +98,11 @@ AWARD_OPENING_RESULT_MIGRATION_CONTRACT = (
 )
 AWARD_OPENING_RESULT_MIGRATION_CHECKSUM = hashlib.sha256(
     AWARD_OPENING_RESULT_MIGRATION_CONTRACT.encode("utf-8")
+).hexdigest()
+AWARD_AGENCY_METADATA_MIGRATION_ID = "20260913_01_notice_award_agency_metadata"
+AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM = hashlib.sha256(
+    b"notice_award_agency_metadata:v1;append-only:exact-notice-revision-current-pps-version;"
+    b"award_history_items:demand_agency_code:varchar500|null"
 ).hexdigest()
 PRESPEC_MIGRATION_ID = "20260823_04_pre_specifications"
 PRESPEC_MIGRATION_CONTRACT = (
@@ -170,6 +176,11 @@ _migrations = (
         (),
     ),
     (ACCOUNT_MIGRATION_ID, ACCOUNT_MIGRATION_CHECKSUM, _account_tables),
+    (
+        AWARD_AGENCY_METADATA_MIGRATION_ID,
+        AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM,
+        (NoticeAwardAgencyMetadata.__table__,),
+    ),
 )
 _required_base_tables = {
     "notices",
@@ -560,6 +571,24 @@ def _account_identity_columns(connection: Connection, *, validate_only: bool = F
             raise MigrationError("department revision uniqueness is missing")
 
 
+def _award_agency_metadata_columns(connection: Connection, *, validate_only: bool = False) -> None:
+    table_name = AwardHistoryItem.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        raise MigrationError("award_history_items is missing for demand-agency migration")
+    columns = {row["name"]: row for row in inspect(connection).get_columns(table_name)}
+    column = columns.get("demand_agency_code")
+    if column is None:
+        if validate_only:
+            raise MigrationError("award demand_agency_code is missing")
+        connection.exec_driver_sql(
+            'ALTER TABLE "award_history_items" ADD COLUMN "demand_agency_code" VARCHAR(500) NULL'
+        )
+    elif not isinstance(column["type"], String) or column["nullable"] is not True:
+        raise MigrationError("award demand_agency_code must be a nullable string")
+    if NoticeAwardAgencyMetadata.__tablename__ not in inspect(connection).get_table_names():
+        raise MigrationError("notice_award_agency_metadata is missing")
+
+
 def pending_migrations(engine: Engine) -> list[str]:
     """Return pending migration IDs without creating or changing any table."""
 
@@ -586,6 +615,8 @@ def pending_migrations(engine: Engine) -> list[str]:
                 _validate_applied_award_opening_result_migration(connection)
             if migration_id == ACCOUNT_MIGRATION_ID:
                 _account_identity_columns(connection, validate_only=True)
+            if migration_id == AWARD_AGENCY_METADATA_MIGRATION_ID:
+                _award_agency_metadata_columns(connection, validate_only=True)
         return pending
 
 
@@ -633,6 +664,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     _validate_applied_award_opening_result_migration(connection)
                 if migration_id == ACCOUNT_MIGRATION_ID:
                     _account_identity_columns(connection, validate_only=True)
+                if migration_id == AWARD_AGENCY_METADATA_MIGRATION_ID:
+                    _award_agency_metadata_columns(connection, validate_only=True)
                 continue
             for table in tables:
                 table.create(connection, checkfirst=True)
@@ -644,6 +677,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                 _add_award_opening_result_columns(connection)
             if migration_id == ACCOUNT_MIGRATION_ID:
                 _account_identity_columns(connection)
+            if migration_id == AWARD_AGENCY_METADATA_MIGRATION_ID:
+                _award_agency_metadata_columns(connection)
             connection.execute(
                 schema_migrations.insert().values(
                     migration_id=migration_id,

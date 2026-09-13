@@ -16,6 +16,7 @@ COMBINED_MIGRATIONS = (
     (migrations.INDEPENDENT_DECISION_MIGRATION_ID, migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM),
     (migrations.AWARD_OPENING_RESULT_MIGRATION_ID, migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM),
     (migrations.ACCOUNT_MIGRATION_ID, migrations.ACCOUNT_MIGRATION_CHECKSUM),
+    (migrations.AWARD_AGENCY_METADATA_MIGRATION_ID, migrations.AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM),
 )
 
 
@@ -183,7 +184,7 @@ def test_legacy_decisions_awards_and_accounts_upgrade_together_without_losing_ro
     engine, original_decision, original_award, original_outcome = _legacy_combined_database(tmp_path)
     try:
         applied = migrations.apply_additive_migrations(engine)
-        assert applied[-3:] == [key for key, _ in COMBINED_MIGRATIONS]
+        assert applied[-len(COMBINED_MIGRATIONS):] == [key for key, _ in COMBINED_MIGRATIONS]
         _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
     finally:
         engine.dispose()
@@ -227,7 +228,7 @@ def test_concurrent_combined_legacy_upgrades_apply_each_migration_once(tmp_path)
         with ThreadPoolExecutor(max_workers=2) as pool:
             applied = list(pool.map(lambda _: migrations.apply_additive_migrations(engine), range(2)))
         assert sum(bool(result) for result in applied) == 1
-        assert [key for result in applied for key in result][-3:] == [key for key, _ in COMBINED_MIGRATIONS]
+        assert [key for result in applied for key in result][-len(COMBINED_MIGRATIONS):] == [key for key, _ in COMBINED_MIGRATIONS]
         _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
     finally:
         engine.dispose()

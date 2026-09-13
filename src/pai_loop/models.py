@@ -79,6 +79,10 @@ class Notice(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="AwardHistoryItem.awarded_at",
     )
+    award_agency_metadata: Mapped[list["NoticeAwardAgencyMetadata"]] = relationship(
+        back_populates="notice", cascade="all, delete-orphan",
+        order_by="NoticeAwardAgencyMetadata.observed_at",
+    )
     analysis_runs: Mapped[list["AnalysisRun"]] = relationship(
         back_populates="notice",
         cascade="all, delete-orphan",
@@ -113,6 +117,29 @@ class NoticeVersion(Base):
         back_populates="notice_version", cascade="all, delete-orphan", order_by="AtomicRequirement.sequence"
     )
     analysis_runs: Mapped[list["AnalysisRun"]] = relationship(back_populates="notice_version")
+
+
+class NoticeAwardAgencyMetadata(Base):
+    """Append-only exact-notice agency observations outside analysis versions."""
+
+    __tablename__ = "notice_award_agency_metadata"
+    __table_args__ = (
+        Index("ix_notice_award_agency_basis", "notice_id", "notice_version_id", "observed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    notice_id: Mapped[str] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), index=True)
+    notice_version_id: Mapped[str] = mapped_column(ForeignKey("notice_versions.id"), index=True)
+    bid_notice_no: Mapped[str] = mapped_column(String(80))
+    revision_no: Mapped[str] = mapped_column(String(20))
+    demand_agency_name: Mapped[str | None] = mapped_column(String(500))
+    demand_agency_code: Mapped[str | None] = mapped_column(String(500))
+    announcing_agency_name: Mapped[str | None] = mapped_column(String(500))
+    announcing_agency_code: Mapped[str | None] = mapped_column(String(500))
+    source: Mapped[str] = mapped_column(String(32), default="PPS_NOTICE_LOOKUP")
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+
+    notice: Mapped[Notice] = relationship(back_populates="award_agency_metadata")
 
 
 class Evidence(Base, TimestampMixin):
@@ -351,6 +378,8 @@ class AwardHistoryItem(Base):
     revision_no: Mapped[str] = mapped_column(String(20), default="000")
     title: Mapped[str] = mapped_column(String(500))
     agency: Mapped[str] = mapped_column(String(255), default="")
+    # Internal exact-match identity; legacy rows remain unknown until verified.
+    demand_agency_code: Mapped[str | None] = mapped_column(String(500))
     winner_name: Mapped[str] = mapped_column(String(255))
     participant_count: Mapped[int | None] = mapped_column(Integer)
     award_amount: Mapped[float | None] = mapped_column(Float)

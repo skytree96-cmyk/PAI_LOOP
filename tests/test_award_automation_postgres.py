@@ -18,6 +18,7 @@ from pai_loop.award_automation_models import AwardRefreshAttempt, AwardRefreshSt
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_session_factory
 from pai_loop.models import IngestionJob, Notice, new_id
+from test_award_automation import add_scope_version
 from test_postgres_department_accounts import _assert_waiters, postgres_account_engine
 
 BASE = "/api/v1/operations/award-refresh"
@@ -40,6 +41,8 @@ def _app(engine, monkeypatch):
             title="SYN 가상 교육", agency="SYN 가상 기관", category="용역", status="OPEN",
             deadline=now + timedelta(days=10), published_at=now)
         session.add(notice)
+        session.flush()
+        add_scope_version(session, notice)
         session.commit()
         notice_id = notice.id
     assert _post(app, "plan")["pending"] == 1
