@@ -58,14 +58,14 @@ def _active_deadline_iso() -> str:
 
 
 def test_analysis_timeout_contract_fits_one_complete_unit_below_n8n_boundary() -> None:
-    assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 180
-    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 401
+    assert inspect.signature(OpenAIExtractionClient).parameters["timeout_seconds"].default == 200
+    assert ATTACHMENT_UNIT_WORST_CASE_SECONDS == 441
     assert ATTACHMENT_UNIT_WORST_CASE_SECONDS <= ANALYSIS_ENRICHMENT_BUDGET_SECONDS
     assert ATTACHMENT_UNIT_WORST_CASE_SECONDS * 2 > ANALYSIS_ENRICHMENT_BUDGET_SECONDS
     # 550 still admits exactly one worst-case unit and no second one, which is
-    # what this contract is for. It buys 149 seconds of slack instead of 49, so
-    # a request whose first attachment runs at the measured median can start a
-    # second. The outer margin below the n8n boundary narrows to 50 seconds.
+    # what this contract is for. A second unit can start only if at most 109
+    # seconds have elapsed (23 seconds of margin for the historical 86-second
+    # example, not a timing guarantee). The outer margin remains 50 seconds.
     assert ANALYSIS_ENRICHMENT_BUDGET_SECONDS == 550
     assert N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS == 600
     assert ANALYSIS_CHILD_ORPHAN_STALE_AFTER_SECONDS == 720

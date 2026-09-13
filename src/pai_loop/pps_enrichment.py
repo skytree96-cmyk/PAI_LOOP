@@ -27,6 +27,10 @@ from .department_ranking import (
     get_department_profile,
     load_department_keyword_profiles,
 )
+from .extraction_time_budget import (
+    DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS,
+    attachment_start_reservation_seconds,
+)
 from .integrations.openai_extraction import (
     CORRECTIVE_PROMPT_VERSION,
     SCHEMA_CORRECTIVE_PROMPT_VERSION,
@@ -81,7 +85,7 @@ MAX_OPENAI_CALLS_PER_NOTICE = (
 # can start. Fast text/form attachments should not stop at an arbitrary two.
 MAX_NEW_ATTACHMENTS_PER_REQUEST = MAX_ATTACHMENTS_IN_MANIFEST
 DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS = 12
-DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS = 180
+DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS = DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS
 ATTACHMENT_TIMEOUT_GUARD_SECONDS = 5
 from .document_extraction import (
     DocumentExtractionError,
@@ -3906,10 +3910,11 @@ def enrich_notice_from_pps(
         # persisted siblings remain durable and the notice is re-leased.
         target_timeout = LONG_OUTPUT_TIMEOUT_SECONDS if long_output_once else openai_timeout_seconds
         target_call_limit = LONG_OUTPUT_MAX_CALLS if long_output_once else MAX_OPENAI_CALLS_PER_ATTACHMENT
-        worst_case_seconds = (
-            (download_timeout_seconds * 3)
-            + (target_timeout * target_call_limit)
-            + ATTACHMENT_TIMEOUT_GUARD_SECONDS
+        worst_case_seconds = attachment_start_reservation_seconds(
+            download_timeout_seconds=download_timeout_seconds,
+            model_timeout_seconds=target_timeout,
+            max_model_calls=target_call_limit,
+            guard_seconds=ATTACHMENT_TIMEOUT_GUARD_SECONDS,
         )
         if new_attempts >= MAX_NEW_ATTACHMENTS_PER_REQUEST or (
             deadline_monotonic is not None
