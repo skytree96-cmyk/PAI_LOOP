@@ -46,7 +46,7 @@ from .source_gap_policy import (
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
 from .extraction_contracts import (
-    CURRENT_EXTRACTION_CONTRACT, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
+    CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
     classify_record_contract,
 )
 
@@ -8144,9 +8144,10 @@ def quantitative_record_contract_is_usable(
     kind = classify_record_contract(source_payload, raw)
     if kind == "UNSUPPORTED":
         return False
-    if kind == "CURRENT":
+    if kind in CURRENT_SEMANTICS_KINDS:
         # Existing current records are validated against caller-owned bindings;
-        # optional redundant payload digest fields do not change that contract.
+        # the exact processing-only predecessor has the same CASE vocabulary.
+        # Optional redundant payload digest fields do not change that contract.
         return True
     if not (
         source_payload.get("attachment_id") == attachment_id

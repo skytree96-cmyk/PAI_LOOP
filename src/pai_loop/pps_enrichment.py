@@ -94,7 +94,8 @@ from .document_extraction import (
     extract_document_content,
 )
 from .extraction_contracts import (
-    CURRENT_EXTRACTION_CONTRACT, EXTRACTION_READ_POLICY_VERSION, LEGACY_CASE_KINDS, classify_attempt_header,
+    BOUND_PREDECESSOR_KINDS, CURRENT_EXTRACTION_CONTRACT, EXTRACTION_READ_POLICY_VERSION,
+    classify_attempt_header,
 )
 
 PPS_PROCESSING_VERSION = CURRENT_EXTRACTION_CONTRACT.processing
@@ -633,6 +634,7 @@ def _current_manifest_attempts(
     }
     attempts: dict[str, NoticeVersion] = {}
     current_generation_seen: set[str] = set()
+    new_processing_generation_seen: set[str] = set()
     for version in sorted(versions, key=lambda item: item.version_no, reverse=True):
         payload = version.source_payload
         if (
@@ -654,8 +656,17 @@ def _current_manifest_attempts(
         contract_kind = classify_attempt_header(payload)
         if contract_kind == "UNSUPPORTED":
             current_generation_seen.add(attachment_id)
+            new_processing_generation_seen.add(attachment_id)
             continue
         if contract_kind == "CURRENT":
+            current_generation_seen.add(attachment_id)
+            new_processing_generation_seen.add(attachment_id)
+        elif contract_kind == "EXACT_PREVIOUS_PROCESSING":
+            # A new parser generation must not revive its older source text.
+            # Within the exact previous processing generation, retain the
+            # established fallback to an older valid same-generation attempt.
+            if attachment_id in new_processing_generation_seen:
+                continue
             current_generation_seen.add(attachment_id)
         elif attachment_id in current_generation_seen:
             # A new-contract attempt is an authoritative generation barrier.
@@ -1715,6 +1726,74 @@ def _extract_pdf_text(content: bytes) -> str:
     return _extract_pdf_content(content).text
 
 
+def _hwpx_paragraph_text(
+    root: ElementTree.Element, *, maximum: int = MAX_EXTRACTED_DOCUMENT_CHARS,
+) -> list[str]:
+    """Read each character node once, including paragraphs inside table cells.
+
+    A table belongs to a containing hp:p, but its cell paragraphs own their
+    text. Descendant-wide itertext for every paragraph prints the entire table
+    glued together and then prints its cells again. Traverse XML occurrences,
+    never deduplicate equal strings: repeated awards and footnotes are real.
+    """
+    parts: list[str] = []
+    fragments: list[str] = []
+    total = 0
+
+    def local(node: ElementTree.Element) -> str:
+        return str(node.tag).rsplit("}", 1)[-1]
+
+    def has_owned_text(paragraph: ElementTree.Element) -> bool:
+        pending = list(paragraph)
+        while pending:
+            node = pending.pop()
+            if local(node) == "p":
+                continue
+            if local(node) == "t":
+                return True
+            pending.extend(node)
+        return False
+
+    def flush() -> None:
+        nonlocal total
+        text = unicodedata.normalize("NFC", "".join(fragments))
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            total += len(text) + 1
+            if total > maximum:
+                raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
+            parts.append(text)
+        fragments.clear()
+
+    # Explicit enter/exit events preserve XML order without using Python's
+    # recursion limit for an untrusted nested container.
+    pending = [("enter", root, False, False)]
+    while pending:
+        event, node, in_paragraph, capture = pending.pop()
+        if event == "exit":
+            flush()
+            continue
+        if event == "tail":
+            if capture and node.tail:
+                fragments.append(node.tail)
+            continue
+        tag = local(node)
+        if tag == "p":
+            flush()
+            in_paragraph = True
+            # Preserve minimal producers with direct paragraph character data.
+            capture = not has_owned_text(node)
+            pending.append(("exit", node, in_paragraph, capture))
+        elif tag == "t" and in_paragraph:
+            capture = True
+        if capture and node.text:
+            fragments.append(node.text)
+        for child in reversed(node):
+            pending.append(("tail", child, in_paragraph, capture))
+            pending.append(("enter", child, in_paragraph, capture))
+    return parts
+
+
 def _extract_hwpx_text(content: bytes) -> str:
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
@@ -1782,29 +1861,9 @@ def _extract_hwpx_text(content: bytes) -> str:
                 root = ElementTree.fromstring(archive.read(name))
             except ElementTree.ParseError as exc:
                 raise PpsEnrichmentError("HWPX_XML_INVALID") from exc
-            # HWPX commonly splits one word across multiple hp:run/hp:t nodes.
-            # Joining every XML text node with a space turns e.g. ``과업지시서``
-            # into ``과 업 지 시 서`` and also removes all paragraph boundaries.
-            # Rebuild each hp:p from its hp:t descendants without inventing
-            # characters, then keep paragraph boundaries for reliable quotes.
-            for paragraph in root.iter():
-                if str(paragraph.tag).rsplit("}", 1)[-1] != "p":
-                    continue
-                fragments: list[str] = []
-                found_text_node = False
-                for text_node in paragraph.iter():
-                    if str(text_node.tag).rsplit("}", 1)[-1] != "t":
-                        continue
-                    found_text_node = True
-                    fragments.extend(text_node.itertext())
-                # Minimal/legacy HWPX producers (and our format fixtures) may
-                # place character data directly below the paragraph element.
-                if not found_text_node:
-                    fragments.extend(paragraph.itertext())
-                text = unicodedata.normalize("NFC", "".join(fragments))
-                text = re.sub(r"\s+", " ", text).strip()
-                if not text:
-                    continue
+            for text in _hwpx_paragraph_text(
+                root, maximum=MAX_EXTRACTED_DOCUMENT_CHARS - total,
+            ):
                 total += len(text) + 1
                 if total > MAX_EXTRACTED_DOCUMENT_CHARS:
                     raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
@@ -2051,7 +2110,7 @@ def safe_public_bound_extraction(
     """Publish predecessor evidence only from its selected current manifest."""
     if not isinstance(payload, dict):
         return None
-    if classify_attempt_header(payload) not in LEGACY_CASE_KINDS:
+    if classify_attempt_header(payload) not in BOUND_PREDECESSOR_KINDS:
         return safe_public_live_extraction(payload)
     attachments, invalid_count, attempts = _current_manifest_attempts(versions)
     if invalid_count:
@@ -2080,7 +2139,7 @@ def safe_public_live_extraction(
     if not isinstance(payload, dict):
         return None
     contract_kind = classify_attempt_header(payload)
-    if contract_kind in LEGACY_CASE_KINDS and not (
+    if contract_kind in BOUND_PREDECESSOR_KINDS and not (
         version is not None and version.source_payload is payload
         and current_manifest_sha256 is not None
         and attachment_manifest_sha256 is not None
