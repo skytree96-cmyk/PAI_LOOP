@@ -67,19 +67,14 @@ from .pps_enrichment import (
 )
 
 
-# W10/W11 bound each analysis HTTP node at 600 seconds. One complete durable
-# attachment unit is now 401 seconds (three download hops, two 180-second Claude
-# responses, and guard time), so it fits inside the 450-second enrichment
-# boundary. A second unit starts only when the first returned quickly enough
-# that another full 401 seconds remain, so a 450-second budget admitted one
-# attachment and handed the rest to a continuation. Measured over nineteen
-# notices a unit actually takes 86 seconds at the median and 219 at the worst,
-# far short of the 401 it has to reserve, and the reading order now puts the
-# 제안요청서 first and the 공고문 second. 550 seconds lets one request finish
-# both of those instead of only the first, which is what a summary needs
-# alongside a score. The outer margin narrows from 150 seconds to 50; a
-# request that overruns loses its response to the n8n timeout rather than its
-# work, and the continuation poll reclaims the segment.
+# W10/W11 bound each analysis HTTP request at 600 seconds. Admission reserves
+# three 12-second download hops, two 200-second client responses and 5 seconds
+# guard: 441 seconds. The provider remains at 180 seconds; the client margin
+# permits the gateway to return a sanitized failure without a blind retry.
+# Under 550 seconds, another attachment may start only while at least 441
+# remain (elapsed <=109). The historical 86-second median fits that window;
+# it is not a runtime guarantee. These are admission reservations, not hard
+# cancellation deadlines. The existing durable continuation guards remain.
 ANALYSIS_ENRICHMENT_BUDGET_SECONDS = 550
 N8N_ANALYSIS_HTTP_TIMEOUT_SECONDS = 600
 # A disconnected n8n request can leave its durable child audit in RUNNING

@@ -4686,6 +4686,7 @@
             ${notice.historicalAnalysis ? `<span class="notice-analysis-reason" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 120))}</span>` : analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
+          ${renderNoticeQuantitativeSummary(notice)}
           ${manualAnalysisAction(notice, "table")}
         </td>
         <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}<small>${escapeHtml(deadline.date)} ${escapeHtml(deadline.time || "시각 미확인")} KST</small></span></td>
@@ -4724,6 +4725,7 @@
             <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 제출 준비도" : "제출 준비도"}</small><strong class="${displayAnalyzed ? "" : "metric-pending"}">${displayAnalyzed ? `${formatScore(notice.readinessScore)}/100` : "미산정"}</strong></span>
             <span class="notice-card__metric"><small>${historicalAnalyzed ? "당시 리스크" : "리스크"}</small><strong class="${displayAnalyzed && notice.riskScore !== null ? "" : "metric-pending"}">${displayAnalyzed ? riskDisplayValue(notice) : "미산정"}</strong></span>
           </span>
+          ${renderNoticeQuantitativeSummary(notice)}
         </button>
         <footer class="notice-card__foot">
           <span class="notice-card__axes">${analysisRecommendationPill(notice)}${operatorDecisionIndicator(notice)}</span>
@@ -4739,7 +4741,7 @@
     const label = escapeAttribute(notice.title);
     return resultEntry
       ? `<span class="result-entry-actions"><button class="button button--primary" type="button" data-open-notice aria-label="${label} 결과 입력">결과 입력</button><button class="button button--ghost" type="button" data-open-notice data-result-detail aria-label="${label} 전체 상세 보기">공고 상세</button></span>`
-      : `<button class="detail-link-button" type="button" data-open-notice aria-label="${label} 전체 상세 보기">전체 상세 보기</button>`;
+      : `${noticeQuantitativeAction(notice)}<button class="detail-link-button" type="button" data-open-notice aria-label="${label} 전체 상세 보기">전체 상세 보기</button>`;
   }
 
   function manualAnalysisAvailability(
@@ -5277,6 +5279,16 @@
   }
 
   function handleNoticeActivation(event) {
+    const quantitativeButton = event.target.closest("[data-load-quantitative]");
+    if (quantitativeButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const noticeKey = quantitativeButton.dataset.loadQuantitative;
+      if (noticeKey && state.quantitativeEstimates[noticeKey]?.status !== "loading") {
+        void loadQuantitativeEstimate(noticeKey, { force: true });
+      }
+      return;
+    }
     if (event.target.closest("[data-manual-analysis]")) return;
     const explicitTarget = event.target.closest("[data-open-notice]");
     const row = event.target.closest("[data-notice-key]");
@@ -6289,6 +6301,7 @@
   function invalidateQuantitativeEstimate(noticeKey, { forceReload = false } = {}) {
     if (!noticeKey) return;
     delete state.quantitativeEstimates[noticeKey];
+    refreshNoticeQuantitativeSummary(noticeKey);
     if (forceReload && state.source === "api") {
       void loadQuantitativeEstimate(noticeKey, { force: true });
     }
@@ -6300,6 +6313,7 @@
     if (!force && ["loading", "ready"].includes(current?.status)) return;
     const requestToken = Symbol(noticeKey);
     state.quantitativeEstimates[noticeKey] = { status: "loading", data: null, message: "", requestToken };
+    refreshNoticeQuantitativeSummary(noticeKey);
     if (state.selectedNotice?.noticeKey === noticeKey) renderQuantAndRisk(state.selectedNotice);
     try {
       const data = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}/quantitative-estimate`);
@@ -6310,6 +6324,7 @@
       state.quantitativeEstimates[noticeKey] = { status: "error", data: null, message: humanizeError(error), requestToken };
     } finally {
       if (state.quantitativeEstimates[noticeKey]?.requestToken !== requestToken) return;
+      refreshNoticeQuantitativeSummary(noticeKey);
       if (state.selectedNotice?.noticeKey === noticeKey) {
         renderQuantAndRisk(state.selectedNotice);
         renderManualAnalysisDetailAction(state.selectedNotice);
@@ -6749,6 +6764,98 @@
 
   function quantReadinessLabel(value) {
     return ({ GREEN: "준비됨", YELLOW: "보완 필요", RED: "위험", GRAY: "산정 보류" })[String(value || "").toUpperCase()] || "산정 보류";
+  }
+
+  function noticeQuantitativeSummary(notice) {
+    const pending = (value, reason) => ({ value, reason, status: "pending", label: "미확정" });
+    if (isCancelledNotice(notice)) return pending("산정 제외", "취소 공고의 점수를 현재 점수로 표시하지 않습니다.");
+    if (notice.historicalAnalysis) return pending("현재 점수 미산정", "과거 분석 결과는 상세에서 확인하세요.");
+    const cached = state.quantitativeEstimates[notice.noticeKey];
+    if (!cached) return pending("미조회", "정량 점수 확인을 눌러 점수와 미확정 사유를 조회하세요.");
+    if (cached.status === "loading") return pending("조회 중…", "기존 분석 결과를 확인하고 있습니다.");
+    if (cached.status === "error") return pending("조회 실패", "점수를 확인하지 못했습니다. 다시 조회하세요.");
+    const data = cached.data;
+    if (!data || cached.status !== "ready") return pending("미산정", "정량 결과가 아직 확인되지 않았습니다.");
+    const reasons = Array.isArray(data.activation_reasons) ? data.activation_reasons : [];
+    const ruleSource = String(data.rule_source_status || "").toUpperCase();
+    const validation = String(data.source_validation_status || (ruleSource === "AVAILABLE" ? "SOURCE_VALIDATED" : ruleSource)).toUpperCase();
+    const activation = String(data.activation_status || "").toUpperCase();
+    const overall = String(data.overall_status || "").toUpperCase();
+    if ([ruleSource, validation, activation].includes("NOT_APPLICABLE")) {
+      return { value: "비적용", reason: "이 공고에는 회사 정량점수를 적용하지 않습니다.", status: "pending", label: "비적용" };
+    }
+    const reasonLabels = {
+      QUANTITATIVE_TABLE_NOT_ESTABLISHED: "현재 추출 결과에서 배점 기준을 확보하지 못했습니다. 원문 확인이 필요합니다.",
+      CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE: "현재 공고의 첨부 검증이 모두 끝나지 않았습니다.",
+      FACT_DIMENSIONS_UNMODELED: "실적 인정기간·유사사업·금액 기준 등 적용 조건을 확인해야 합니다.",
+      FACT_KEY_AMBIGUOUS: "회사 자료를 어느 평가항목에 적용할지 확인해야 합니다.",
+      REQUIRED_EVIDENCE_INCOMPLETE: "점수 계산에 필요한 회사 증빙이 부족합니다.",
+      ALTERNATIVE_TABLE_AMBIGUOUS: "이 공고에 적용할 평가 기준을 확인해야 합니다.",
+      TABLE_TOTAL_INCOMPLETE: "정량 평가의 총배점을 완전히 확인하지 못했습니다.",
+      PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 분석에 미확정 항목이 있어 잠정 점수로 표시합니다.",
+    };
+    const unresolved = Array.isArray(data.criteria) ? data.criteria.find((item) => item.status !== "CONFIRMED" && item.rationale) : null;
+    const reason = reasons.length
+      ? reasonLabels[reasons[0]] || "평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다."
+      : unresolved?.rationale || data.opinion || "회사 증빙이 모두 확정되지 않아 보수 기준으로 표시합니다.";
+    const points = (value) => (typeof value === "number" || (typeof value === "string" && value.trim()))
+      && numberOrNull(value) !== null && numberOrNull(value) >= 0 ? numberOrNull(value) : null;
+    const lower = points(data.lower_points), upper = points(data.upper_points), total = points(data.total_max_points);
+    const activated = ruleSource === "AVAILABLE" && (
+      (activation === "AUTO_ACTIVE" && validation === "SOURCE_VALIDATED" && !reasons.length)
+      || (activation === "PARTIAL_ACTIVE" && validation === "REVIEW_REQUIRED" && reasons.length > 0)
+    );
+    if (!activated || reasons.includes("QUANTITATIVE_TABLE_NOT_ESTABLISHED")
+      || lower === null || upper === null || upper < lower || total === null || total <= 0 || total < upper) {
+      return pending("미산정", reason);
+    }
+    const confirmed = overall === "CONFIRMED" && lower === upper && validation === "SOURCE_VALIDATED"
+      && activation === "AUTO_ACTIVE" && !reasons.length;
+    return {
+      value: `${formatNumber(lower, 1)} / ${formatNumber(total, 1)}점`,
+      status: confirmed ? "confirmed" : "estimated",
+      label: confirmed ? "확정" : "잠정 · 보수 기준",
+      reason: confirmed ? "현재 근거로 확정된 정량점수입니다. 참가자격·담당자 판단과는 별도입니다." : `미확정 사유: ${reason}`,
+    };
+  }
+
+  function noticeQuantitativeContent(notice) {
+    const summary = noticeQuantitativeSummary(notice);
+    return `<span class="notice-quantitative__line"><small>정량 점수</small><strong>${escapeHtml(summary.value)}</strong><span class="notice-quantitative__status is-${summary.status}">${escapeHtml(summary.label)}</span></span><span class="notice-quantitative__reason" title="${escapeAttribute(summary.reason)}">${escapeHtml(summary.reason)}</span>`;
+  }
+
+  function renderNoticeQuantitativeSummary(notice) {
+    if (state.source !== "api") return "";
+    return `<span class="notice-quantitative" data-notice-quantitative="${escapeAttribute(notice.noticeKey)}" role="status" aria-live="polite">${noticeQuantitativeContent(notice)}</span>`;
+  }
+
+  function noticeQuantitativeAction(notice) {
+    if (state.source !== "api" || isCancelledNotice(notice) || notice.historicalAnalysis) return "";
+    const cached = state.quantitativeEstimates[notice.noticeKey];
+    const label = cached?.status === "loading" ? "정량 조회 중…" : cached?.status === "ready" ? "정량 점수 새로 확인" : "정량 점수 확인";
+    return `<button class="detail-link-button notice-quantitative-action" type="button" data-load-quantitative="${escapeAttribute(notice.noticeKey)}" aria-disabled="${cached?.status === "loading"}" aria-busy="${cached?.status === "loading"}" aria-label="${escapeAttribute(notice.title)} ${label}">${label}</button>`;
+  }
+
+  function refreshNoticeQuantitativeSummary(noticeKey) {
+    const notice = state.notices.find((item) => item.noticeKey === noticeKey);
+    if (!notice || !document.querySelectorAll) return;
+    // Update only the score region/button, preserving list filters, scroll and
+    // the focused action. An old request cannot reach here after cache reset.
+    document.querySelectorAll("[data-notice-quantitative]").forEach((element) => {
+      if (element.dataset.noticeQuantitative === noticeKey) element.innerHTML = noticeQuantitativeContent(notice);
+    });
+    document.querySelectorAll("[data-load-quantitative]").forEach((button) => {
+      if (button.dataset.loadQuantitative !== noticeKey) return;
+      const cached = state.quantitativeEstimates[noticeKey];
+      const loading = cached?.status === "loading";
+      // Native disabled blurs the focused control. The click handler guards
+      // duplicate requests while aria-disabled keeps keyboard focus stable.
+      button.setAttribute("aria-disabled", String(loading));
+      button.setAttribute("aria-busy", String(loading));
+      const label = loading ? "정량 조회 중…" : cached?.status === "ready" ? "정량 점수 새로 확인" : "정량 점수 확인";
+      button.textContent = label;
+      button.setAttribute("aria-label", `${notice.title} ${label}`);
+    });
   }
 
   function renderQuantitativeEstimateRow(item, { publicEvidenceHidden = false } = {}) {

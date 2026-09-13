@@ -13,6 +13,7 @@ import pytest
 from pai_loop.document_extraction import (
     BINARY_READER_DEPENDENCIES,
     DocumentExtractionError,
+    DocumentExtractionResult,
     ExtractionLimits,
     extract_document_content,
 )
@@ -28,6 +29,64 @@ def _archive(
         for name, value in entries.items():
             archive.writestr(name, value.encode("utf-8") if isinstance(value, str) else value)
     return buffer.getvalue()
+
+
+def test_content_count_excludes_nested_zip_and_docx_labels_without_changing_text() -> None:
+    body = "SYN qualification required."
+    nested = _archive({"SYN-requirements.docx": _minimal_docx(body)})
+    result = extract_document_content(
+        "SYN-outer.zip", _archive({"SYN-inner.zip": nested})
+    )
+
+    assert result.complete is True
+    assert result.members_discovered == result.members_processed == 1
+    assert result.analysis_content_characters == len(body)
+    assert result.text == (
+        "[DOCUMENT SYN-inner.zip]\n[DOCUMENT SYN-requirements.docx]\n"
+        "[DOCX word/document.xml]\n" + body
+    )
+
+
+def test_content_count_does_not_strip_marker_shaped_source_prose() -> None:
+    body = "[PAGE 123]"
+    result = extract_document_content("SYN-source.docx", _minimal_docx(body))
+
+    assert result.analysis_content_characters == len(body)
+    assert body in result.text
+
+
+def test_zip_content_count_retains_zero_body_and_unsupported_member_audit() -> None:
+    def leaf(_name: str, _content: bytes) -> DocumentExtractionResult:
+        return DocumentExtractionResult(
+            text="[PAGE 12345678901234567890]",
+            warnings=(), members_discovered=1, members_processed=1,
+            complete=True, content_characters=0,
+        )
+
+    result = extract_document_content(
+        "SYN-bundle.zip",
+        _archive({"SYN-page.pdf": b"SYN-page", "SYN-unsupported.bin": b"SYN"}),
+        leaf_extractors={".pdf": leaf},
+    )
+
+    assert len(result.text) > 20
+    assert result.analysis_content_characters == 0
+    assert result.complete is False
+    assert result.members_discovered == 2
+    assert result.members_processed == 1
+    assert result.warnings == ("UNSUPPORTED_ARCHIVE_MEMBER_TYPE",)
+    assert result.member_issues[0].member_path == "SYN-unsupported.bin"
+
+
+def test_content_count_preserves_legacy_leaf_and_result_constructors() -> None:
+    body = "SYN qualification required."
+    legacy = DocumentExtractionResult(body, (), 1, 1, True)
+    result = extract_document_content(
+        "SYN-source.txt", b"SYN", leaf_extractors={".txt": lambda _name, _bytes: body}
+    )
+
+    assert legacy.content_characters is None
+    assert legacy.analysis_content_characters == result.analysis_content_characters == len(body)
 
 
 def _corrupt_stored_member(content: bytes, member_name: str) -> bytes:

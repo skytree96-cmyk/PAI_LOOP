@@ -48,4 +48,4 @@ No historical qualification is promoted into a current decision or recommendatio
 
 Summary deadlines explicitly include UTC so browser-local time zones cannot
 change lifecycle or KST calendar-day queue membership. The frontend cache key is
-`20260913-dashboard-counts-v1`.
+`20260913-quantitative-v2` (shared with the result-entry fixes).

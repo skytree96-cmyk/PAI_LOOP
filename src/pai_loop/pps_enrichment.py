@@ -27,6 +27,10 @@ from .department_ranking import (
     get_department_profile,
     load_department_keyword_profiles,
 )
+from .extraction_time_budget import (
+    DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS,
+    attachment_start_reservation_seconds,
+)
 from .integrations.openai_extraction import (
     CORRECTIVE_PROMPT_VERSION,
     SCHEMA_CORRECTIVE_PROMPT_VERSION,
@@ -81,7 +85,7 @@ MAX_OPENAI_CALLS_PER_NOTICE = (
 # can start. Fast text/form attachments should not stop at an arbitrary two.
 MAX_NEW_ATTACHMENTS_PER_REQUEST = MAX_ATTACHMENTS_IN_MANIFEST
 DEFAULT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS = 12
-DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS = 180
+DEFAULT_OPENAI_RESPONSE_TIMEOUT_SECONDS = DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS
 ATTACHMENT_TIMEOUT_GUARD_SECONDS = 5
 from .document_extraction import (
     DocumentExtractionError,
@@ -90,7 +94,7 @@ from .document_extraction import (
     extract_document_content,
 )
 from .extraction_contracts import (
-    CURRENT_EXTRACTION_CONTRACT, EXTRACTION_READ_POLICY_VERSION, classify_attempt_header,
+    CURRENT_EXTRACTION_CONTRACT, EXTRACTION_READ_POLICY_VERSION, LEGACY_CASE_KINDS, classify_attempt_header,
 )
 
 PPS_PROCESSING_VERSION = CURRENT_EXTRACTION_CONTRACT.processing
@@ -1650,7 +1654,7 @@ def download_public_attachment(
     raise PpsEnrichmentError("ATTACHMENT_REDIRECT_LIMIT")
 
 
-def _extract_pdf_text(content: bytes) -> str:
+def _extract_pdf_content(content: bytes) -> DocumentExtractionResult:
     try:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - deployment dependency check
@@ -1680,6 +1684,7 @@ def _extract_pdf_text(content: bytes) -> str:
         if len(reader.pages) > MAX_PDF_PAGES:
             raise PpsEnrichmentError("PDF_PAGE_LIMIT")
         parts: list[str] = []
+        content_parts: list[str] = []
         total = 0
         for index, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
@@ -1689,11 +1694,25 @@ def _extract_pdf_text(content: bytes) -> str:
                 if total > MAX_EXTRACTED_DOCUMENT_CHARS:
                     raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
                 parts.append(part)
+                content_parts.append(text.strip())
     except PpsEnrichmentError:
         raise
     except Exception as exc:
         raise PpsEnrichmentError("PDF_TEXT_EXTRACTION_FAILED") from exc
-    return "".join(parts).strip()
+    return DocumentExtractionResult(
+        text="".join(parts).strip(),
+        warnings=(),
+        members_discovered=1,
+        members_processed=1,
+        complete=True,
+        content_characters=len("\n".join(content_parts)),
+    )
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    """Compatibility projection retaining the generated evidence page labels."""
+
+    return _extract_pdf_content(content).text
 
 
 def _extract_hwpx_text(content: bytes) -> str:
@@ -1805,7 +1824,7 @@ def extract_pps_document_content(
             filename,
             content,
             leaf_extractors={
-                ".pdf": lambda _name, value: _extract_pdf_text(value),
+                ".pdf": lambda _name, value: _extract_pdf_content(value),
                 ".hwpx": lambda _name, value: _extract_hwpx_text(value),
             },
             limits=ExtractionLimits(
@@ -1831,6 +1850,7 @@ def extract_pps_document_content(
         members_processed=result.members_processed,
         complete=result.complete,
         member_issues=result.member_issues,
+        content_characters=result.content_characters,
     )
 
 
@@ -1838,7 +1858,7 @@ def extract_document_text(file_name: str, content: bytes) -> str:
     """Compatibility text projection; enrichment consumes structured audit."""
 
     result = extract_pps_document_content(file_name, content)
-    if len(result.text.strip()) < 20:
+    if result.analysis_content_characters < 20:
         error_code = result.warnings[0] if result.warnings else "DOCUMENT_TEXT_EMPTY_OR_SHORT"
         raise PpsEnrichmentError(error_code)
     return result.text
@@ -2031,7 +2051,7 @@ def safe_public_bound_extraction(
     """Publish predecessor evidence only from its selected current manifest."""
     if not isinstance(payload, dict):
         return None
-    if classify_attempt_header(payload) != "LEGACY_CASE_V1":
+    if classify_attempt_header(payload) not in LEGACY_CASE_KINDS:
         return safe_public_live_extraction(payload)
     attachments, invalid_count, attempts = _current_manifest_attempts(versions)
     if invalid_count:
@@ -2060,7 +2080,7 @@ def safe_public_live_extraction(
     if not isinstance(payload, dict):
         return None
     contract_kind = classify_attempt_header(payload)
-    if contract_kind == "LEGACY_CASE_V1" and not (
+    if contract_kind in LEGACY_CASE_KINDS and not (
         version is not None and version.source_payload is payload
         and current_manifest_sha256 is not None
         and attachment_manifest_sha256 is not None
@@ -3108,6 +3128,7 @@ def _document_processing_audit(
         "source_read_complete": bool(result.complete and source_text),
         "analysis_input_complete": bool(selection and selection.complete),
         "source_characters": len(source_text),
+        "source_content_characters": result.analysis_content_characters,
         "analysis_input_characters": selection.selected_characters if selection else 0,
         "source_text_sha256": (
             hashlib.sha256(source_text.encode("utf-8")).hexdigest()
@@ -3299,7 +3320,7 @@ def _enrich_selected_pps_attachment(
     source_text = extraction.text.strip()
     selection = (
         select_document_analysis_input(source_text)
-        if len(source_text) >= 20
+        if extraction.analysis_content_characters >= 20
         else None
     )
     processing_audit = _document_processing_audit(extraction, selection)
@@ -3889,10 +3910,11 @@ def enrich_notice_from_pps(
         # persisted siblings remain durable and the notice is re-leased.
         target_timeout = LONG_OUTPUT_TIMEOUT_SECONDS if long_output_once else openai_timeout_seconds
         target_call_limit = LONG_OUTPUT_MAX_CALLS if long_output_once else MAX_OPENAI_CALLS_PER_ATTACHMENT
-        worst_case_seconds = (
-            (download_timeout_seconds * 3)
-            + (target_timeout * target_call_limit)
-            + ATTACHMENT_TIMEOUT_GUARD_SECONDS
+        worst_case_seconds = attachment_start_reservation_seconds(
+            download_timeout_seconds=download_timeout_seconds,
+            model_timeout_seconds=target_timeout,
+            max_model_calls=target_call_limit,
+            guard_seconds=ATTACHMENT_TIMEOUT_GUARD_SECONDS,
         )
         if new_attempts >= MAX_NEW_ATTACHMENTS_PER_REQUEST or (
             deadline_monotonic is not None
