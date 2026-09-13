@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260913-dashboard-charts-v2" />
+    <link rel="stylesheet" href="./styles.css?v=20260913-award-projects-v1" />
     <link rel="stylesheet" href="./top-navigation.css?v=20260913-dashboard-charts-v2" />
   </head>
   <body hidden>
@@ -1029,7 +1029,33 @@
               <h4 id="historyAwardTableHeading">최근 3년 낙찰 표</h4>
               <span class="history-award-table__basis" id="historyAwardTableBasis">기준 확인 중</span>
             </div>
-            <div class="history-award-table__scroll" tabindex="0" role="region" aria-labelledby="historyAwardTableHeading" aria-describedby="historyAwardTableNotes">
+            <div class="history-award-summary" id="historyAwardSummary" hidden>
+              <div class="history-award-summary__item">
+                <span class="history-award-summary__label">조회된 사업</span>
+                <strong id="historyAwardProjectCount">—</strong>
+                <small id="historyAwardRange"></small>
+              </div>
+              <div class="history-award-summary__item">
+                <span class="history-award-summary__label">업체별 기록</span>
+                <strong id="historyAwardRowCount">—</strong>
+                <small>저장된 업체 행 기준</small>
+              </div>
+              <div class="history-award-summary__item">
+                <span class="history-award-summary__label">점수 확인</span>
+                <strong id="historyAwardScoreCount">—</strong>
+                <small>기술·가격·종합 중 하나 이상</small>
+              </div>
+            </div>
+            <div class="history-award-toolbar" id="historyAwardToolbar" hidden>
+              <div class="history-award-year-filters" id="historyAwardYearFilters" role="group" aria-label="조회 연도"></div>
+              <div class="history-award-view-buttons" id="historyAwardViewButtons" role="group" aria-label="표 보기 방식">
+                <button type="button" data-award-view="group" aria-pressed="true" aria-controls="historyAwardGroups">사업별 정리</button>
+                <button type="button" data-award-view="flat" aria-pressed="false" aria-controls="historyAwardFlat">전체표</button>
+              </div>
+            </div>
+            <p class="history-award-table__state" id="historyAwardTableState" role="status" hidden></p>
+            <div class="history-award-groups" id="historyAwardGroups" hidden></div>
+            <div class="history-award-table__scroll" id="historyAwardFlat" tabindex="0" role="region" aria-labelledby="historyAwardTableHeading" aria-describedby="historyAwardTableNotes">
               <table class="award-table">
                 <caption class="sr-only">연도별 사업, 업체, 투찰금액, 기술·가격·종합 평가와 낙찰 여부</caption>
                 <thead>
@@ -1377,6 +1403,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260913-dashboard-charts-v2" defer></script>
+    <script src="./app.js?v=20260913-award-projects-v1" defer></script>
   </body>
 </html>

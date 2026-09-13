@@ -52,6 +52,7 @@
     teamsLogMeta: {},
     privateMatchPreviews: {},
     awardHistoryMeta: {},
+    awardHistoryView: { noticeKey: null, year: "all", view: "group" },
     quantitativeEstimates: {},
     departmentCatalog: null,
     accessMode: "UNKNOWN",
@@ -283,6 +284,7 @@
       "detailTags", "detailTitle", "detailAgency", "detailFacts", "decisionSummary", "recommendationCondition", "analysisPipeline", "evidenceCount",
       "detailSummary", "briefEvidenceLabel", "documentAnalysisCard", "documentAnalysisState", "documentAnalysisList", "privateMatchSection", "privateMatchBadge", "privateMatchRetryButton", "privateMatchBody", "privateMatchNote", "eligibilityOverall", "requirementList", "actionCard", "actionList", "evidenceList", "scoreOverview",
       "quantSeparationNote", "quantSourceStatus", "quantOpinion", "quantSourceAnchor", "quantAssumptionList", "quantTableBody", "quantObservationList", "riskTotalLabel", "riskBars", "historyList", "historyStatusLabel", "historyStatusText", "historyAwardTableBasis", "historyAwardTableBody", "historyAwardTableNotes", "decisionForm", "decisionExisting", "toggleCommentButton", "decisionDockToggle", "decisionDockBody",
+      "historyAwardSummary", "historyAwardProjectCount", "historyAwardRowCount", "historyAwardScoreCount", "historyAwardRange", "historyAwardToolbar", "historyAwardYearFilters", "historyAwardViewButtons", "historyAwardGroups", "historyAwardFlat", "historyAwardTableState",
       "commentField", "decisionComment", "commentCount", "saveDecisionButton", "toastRegion", "skeletonRowTemplate",
       "teamsMockSource", "teamsMockTitle", "teamsMockAgency", "teamsMockStatus", "teamsMockDeadline", "teamsMockReason",
       "teamsMockReadiness", "teamsMockRisk", "teamsMockRecommendation", "teamsPreviewOpenButton", "teamsPreviewDecisionButton",
@@ -677,6 +679,8 @@
       button.addEventListener("click", () => selectTab(button.dataset.tab));
       button.addEventListener("keydown", handleTabKeydown);
     });
+    els.historyAwardYearFilters.addEventListener("click", handleAwardHistoryViewChange);
+    els.historyAwardViewButtons.addEventListener("click", handleAwardHistoryViewChange);
     [els.requirementList, els.actionList].forEach((list) => {
       list.addEventListener("click", (event) => {
         const button = event.target.closest("[data-evidence-jump]");
@@ -7162,6 +7166,9 @@
   }
 
   function renderAwardHistoryPanel(notice) {
+    if (state.awardHistoryView.noticeKey !== notice.noticeKey) {
+      state.awardHistoryView = { noticeKey: notice.noticeKey, year: "all", view: "group" };
+    }
     const items = notice.awardHistory;
     const meta = state.awardHistoryMeta[notice.noticeKey] || {};
     const annualRows = meta.intelligence?.annual_award_table?.rows;
@@ -7175,7 +7182,7 @@
     } else if (status === "ready" || status === "stored") {
       els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : `저장본 ${items.length}건`;
       els.historyStatusLabel.classList.add("is-ready");
-      els.historyStatusText.textContent = "연도별 같은 사업을 먼저 표시하며, 유사 사업은 따로 표시합니다.";
+      els.historyStatusText.textContent = "사업을 펼쳐 참여업체와 평가점수를 비교하세요. 유사 사업은 후보로 구분합니다.";
     } else if (status === "error") {
       els.historyStatusLabel.textContent = Array.isArray(annualRows) ? `저장본 ${annualRows.length}행` : items.length ? `저장본 ${items.length}건` : "미수집";
       els.historyStatusLabel.classList.add("is-error");
@@ -7242,7 +7249,7 @@
         <th scope="row">
           <strong>${escapeHtml(year)}</strong>
           <span>${escapeHtml(row.project_title || "사업명 미확인")}</span>
-          <small>${escapeHtml(row.agency || "발주기관 미확인")}${row.event_date ? ` · ${escapeHtml(row.event_date)}` : ""}</small>
+          <small>${escapeHtml(row.agency || "발주기관 미확인")}${row.event_date ? ` · 결과일 ${escapeHtml(row.event_date)}` : ""}</small>
           <small>${sourceLine} · 개찰자료 ${escapeHtml(row.source_status === "COLLECTED" ? "수집됨" : row.source_status === "PARTIAL" ? "부분 응답 · 이전 저장본 또는 미확인" : row.source_status === "ERROR" ? "조회 실패 · 이전 저장본 또는 미확인" : row.source_status === "UNAVAILABLE" ? "응답 업체 행 없음" : "미수집")}</small>
           ${candidate ? `<em class="award-table__candidate-flag">유사 사업 후보${similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`} · 동일 발주 확정 아님</em>` : ""}
         </th>
@@ -7255,17 +7262,104 @@
       </tr>`;
   }
 
+  function groupAnnualAwardRows(rows) {
+    const groups = new Map();
+    rows.forEach((row, index) => {
+      // The server groups companies from one stored award result, including
+      // separate classifications/rebids under the same notice and revision.
+      // An older response without that key cannot safely combine company rows.
+      const key = row.result_group_key
+        ? JSON.stringify([row.year, row.result_group_key])
+        : JSON.stringify([row.year, "ungrouped", index]);
+      if (!groups.has(key)) groups.set(key, { key, year: row.year, row, rows: [] });
+      groups.get(key).rows.push(row);
+    });
+    return [...groups.values()].map((group) => ({
+      ...group,
+      rows: [...group.rows].sort((a, b) => Number(b.participation_kind === "WINNER") - Number(a.participation_kind === "WINNER")
+        || (numberOrNull(a.opening_rank) ?? Infinity) - (numberOrNull(b.opening_rank) ?? Infinity)),
+    })).sort((a, b) => b.year - a.year || String(b.row.event_date || "").localeCompare(String(a.row.event_date || "")));
+  }
+
+  function renderAwardProject(group, open) {
+    const row = group.row;
+    const candidate = row.match_kind !== "SAME_PROJECT";
+    const winner = group.rows.find((item) => item.participation_kind === "WINNER");
+    const link = safeHttpUrl(row.source_notice_url || "");
+    const reference = [row.bid_notice_no, row.revision_no].filter(Boolean).join("-");
+    const source = link
+      ? `<a class="history-award-project__source" href="${escapeAttribute(link)}" target="_blank" rel="noopener noreferrer">공고 원문 열기${reference ? ` · ${escapeHtml(reference)}` : ""}</a>`
+      : `<span class="history-award-project__source">${escapeHtml(reference || "공고번호 미확인")}</span>`;
+    const sourceLabels = { COLLECTED: "수집됨", PARTIAL: "부분 응답 · 이전 저장본 또는 미확인", ERROR: "조회 실패 · 이전 저장본 또는 미확인", UNAVAILABLE: "응답 업체 행 없음", NOT_COLLECTED: "미수집" };
+    const sources = [...new Set(group.rows.map((item) => sourceLabels[item.source_status] || "미수집"))];
+    const similarity = numberOrNull(row.similarity_score);
+    const candidateNote = candidate
+      ? `유사 사업 후보${similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`} · 동일 발주 확정 아님`
+      : "동일 사업명 · 동일 발주기관";
+    const companyRows = group.rows.map((item) => {
+      const participation = AWARD_PARTICIPATION_LABELS[item.participation_kind] || AWARD_PARTICIPATION_LABELS.UNKNOWN;
+      const rank = numberOrNull(item.opening_rank);
+      return `<tr class="award-table__row ${item.participation_kind === "WINNER" ? "is-winner" : ""}">
+        <th scope="row"><span class="history-award-project__company">${rank === null ? "" : `<span class="history-award-project__rank" aria-label="개찰 순위 ${escapeAttribute(rank)}위">${escapeHtml(rank)}</span>`}${escapeHtml(item.company_name || "업체명 미확인")}</span></th>
+        <td>${awardTableAmount(item.bid_amount)}</td><td>${awardTableScore(item.technical_evaluation)}</td>
+        <td>${awardTableScore(item.price_evaluation)}</td><td>${awardTableScore(item.total_evaluation)}</td>
+        <td><span class="award-table__participation is-${escapeAttribute(String(item.participation_kind || "UNKNOWN").toLowerCase())}">${escapeHtml(participation)}</span></td></tr>`;
+    }).join("");
+    return `<details class="history-award-project"${open ? " open" : ""}>
+      <summary><div><span class="history-award-project__title">${escapeHtml(row.project_title || "사업명 미확인")} <span class="history-award-project__badge ${candidate ? "is-candidate" : "is-same-project"}">${candidate ? "유사 후보" : "동일 사업 · 기관"}</span></span>
+        <span class="history-award-project__meta"><span>${escapeHtml(row.agency || "발주기관 미확인")}</span><span>결과일 ${escapeHtml(row.event_date || "미확인")}</span><span>참여 기록 ${formatNumber(group.rows.length)}건</span></span></div>
+        <div class="history-award-project__winner"><small>낙찰 업체</small><strong>${escapeHtml(winner?.company_name || "미확인")}</strong></div>
+        <div class="history-award-project__amount"><small>낙찰사 투찰금액</small><strong>${awardTableAmount(winner?.bid_amount)}</strong></div>
+        <span class="history-award-project__chevron" aria-hidden="true">⌄</span></summary>
+      <div class="history-award-project__body"><div class="history-award-project__head"><strong>업체별 평가 비교</strong>${source}</div>
+        <p class="history-award-project__status">${escapeHtml(candidateNote)} · 개찰자료 ${escapeHtml(sources.join(" / "))}</p>
+        <div class="history-award-table__scroll" tabindex="0" role="region" aria-label="${escapeAttribute(row.project_title || "사업명 미확인")} 업체별 평가 비교" aria-describedby="historyAwardTableNotes">
+          <table class="award-table award-table--grouped"><caption class="sr-only">${escapeHtml(row.project_title || "사업명 미확인")} 참여업체의 투찰금액과 제공기관 평가점수</caption>
+            <thead><tr><th scope="col">업체명</th><th scope="col">투찰금액</th><th scope="col">기술평가</th><th scope="col">가격평가</th><th scope="col">종합평가</th><th scope="col">구분</th></tr></thead>
+            <tbody>${companyRows}</tbody></table></div></div></details>`;
+  }
+
+  function handleAwardHistoryViewChange(event) {
+    const button = event.target.closest("button[data-award-year], button[data-award-view]");
+    if (!button || !event.currentTarget.contains(button) || !state.selectedNotice) return;
+    const meta = state.awardHistoryMeta[state.selectedNotice.noticeKey] || {};
+    const years = meta.intelligence?.annual_award_table?.years;
+    if (!Array.isArray(years)) return;
+    if (button.dataset.awardYear !== undefined) {
+      const year = button.dataset.awardYear;
+      if (year !== "all" && !years.some((item) => String(item) === year)) return;
+      state.awardHistoryView.year = year;
+    } else if (["group", "flat"].includes(button.dataset.awardView)) {
+      state.awardHistoryView.view = button.dataset.awardView;
+    } else return;
+    renderAnnualAwardTable(meta.intelligence, meta.status || "ready");
+    // Year buttons are redrawn; keep keyboard focus on the selected control.
+    const selector = button.dataset.awardYear !== undefined ? "[data-award-year][aria-pressed='true']" : "[data-award-view][aria-pressed='true']";
+    event.currentTarget.querySelector(selector)?.focus({ preventScroll: true });
+  }
+
   function renderAnnualAwardTable(intelligence, status) {
     const table = intelligence?.annual_award_table;
+    els.historyAwardSummary.hidden = !table;
+    els.historyAwardToolbar.hidden = !table;
+    els.historyAwardGroups.hidden = true;
+    els.historyAwardFlat.hidden = true;
+    els.historyAwardGroups.innerHTML = "";
+    els.historyAwardTableState.hidden = true;
+    els.historyAwardTableState.textContent = "";
     if (status === "loading" && !table) {
       els.historyAwardTableBasis.textContent = "기준 확인 중";
       els.historyAwardTableBody.innerHTML = awardTableMessageRow("저장된 낙찰 기록을 읽고 있습니다.");
+      els.historyAwardTableState.textContent = "저장된 낙찰 기록을 읽고 있습니다.";
+      els.historyAwardTableState.hidden = false;
       els.historyAwardTableNotes.innerHTML = "";
       return;
     }
     if (status === "error" && !table) {
       els.historyAwardTableBasis.textContent = "조회 실패";
       els.historyAwardTableBody.innerHTML = awardTableMessageRow("저장 이력을 확인하지 못했습니다. 이 화면에서 외부 조회를 시작하지 않았습니다.");
+      els.historyAwardTableState.textContent = "저장 이력을 확인하지 못했습니다. 이 화면에서 외부 조회를 시작하지 않았습니다.";
+      els.historyAwardTableState.hidden = false;
       els.historyAwardTableNotes.innerHTML = "";
       return;
     }
@@ -7276,6 +7370,8 @@
           ? "데모 이력에는 서버 계산 결과를 적용하지 않습니다."
           : "저장된 최근 3년 낙찰 표가 없습니다.",
       );
+      els.historyAwardTableState.textContent = status === "demo" ? "데모 이력에는 서버 계산 결과를 적용하지 않습니다." : "저장된 최근 3년 낙찰 표가 없습니다.";
+      els.historyAwardTableState.hidden = false;
       els.historyAwardTableNotes.innerHTML = "";
       return;
     }
@@ -7283,16 +7379,39 @@
     const basis = AWARD_TABLE_BASIS_LABELS[table.match_basis] || AWARD_TABLE_BASIS_LABELS.NONE;
     els.historyAwardTableBasis.textContent = years.length ? `${years.join(" · ")} · ${basis}` : basis;
     const rows = Array.isArray(table.rows) ? table.rows : [];
+    const groups = groupAnnualAwardRows(rows);
+    const selection = state.awardHistoryView;
+    if (selection.year !== "all" && !years.some((year) => String(year) === String(selection.year))) selection.year = "all";
+    const selectedYears = selection.year === "all" ? years : years.filter((year) => String(year) === String(selection.year));
+    const visibleGroups = groups.filter((group) => selectedYears.includes(group.year));
+    els.historyAwardProjectCount.textContent = `${formatNumber(groups.length)}건`;
+    els.historyAwardRowCount.textContent = `${formatNumber(rows.length)}건`;
+    els.historyAwardScoreCount.textContent = `${formatNumber(rows.filter((row) => [row.technical_evaluation, row.price_evaluation, row.total_evaluation].some((value) => value !== null && value !== undefined)).length)}건`;
+    els.historyAwardRange.textContent = years.length ? `${Math.min(...years)}–${Math.max(...years)}년 저장 자료` : "저장 자료";
+    els.historyAwardYearFilters.innerHTML = [{ value: "all", label: "전체", count: groups.length }, ...years.map((year) => ({ value: String(year), label: `${year}년`, count: groups.filter((group) => group.year === year).length }))]
+      .map((year) => `<button type="button" data-award-year="${escapeAttribute(year.value)}" aria-pressed="${String(selection.year) === year.value}">${escapeHtml(year.label)} <span>${formatNumber(year.count)}</span></button>`).join("");
+    els.historyAwardViewButtons.querySelectorAll("button[data-award-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.awardView === selection.view)));
     const retained = status === "loading" ? awardTableMessageRow("저장본을 다시 확인하는 동안 이전 표를 유지합니다.")
       : status === "error" ? awardTableMessageRow("재조회 실패 · 이전 저장본을 표시합니다.") : "";
     els.historyAwardTableBody.innerHTML = retained + (rows.length
-      ? years.map((year) => {
+      ? selectedYears.map((year) => {
         const annualRows = rows.filter((row) => row.year === year);
         return annualRows.length ? annualRows.map(renderAwardTableRow).join("")
           : awardTableMessageRow(`${year}년 · 표시할 저장 기록이 없습니다. 실제 낙찰·참여 이력이 없다는 뜻은 아닙니다.`);
       }).join("")
       : awardTableMessageRow("최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다."));
-    els.historyAwardTableNotes.innerHTML = "<p>미확인은 자료가 없는 항목입니다. 참여업체는 조회된 범위만 표시합니다. 기술평가는 입찰의 기술점수입니다.</p>";
+    els.historyAwardTableState.textContent = status === "loading" ? "저장본을 다시 확인하는 동안 이전 표를 유지합니다." : status === "error" ? "재조회 실패 · 이전 저장본을 표시합니다." : "";
+    els.historyAwardTableState.hidden = !els.historyAwardTableState.textContent;
+    let first = true;
+    els.historyAwardGroups.innerHTML = selectedYears.map((year) => {
+      const annualGroups = visibleGroups.filter((group) => group.year === year);
+      return `<section aria-label="${escapeAttribute(year)}년 낙찰 이력"><h5 class="history-award-year">${escapeHtml(year)} <span class="history-award-year__count">${formatNumber(annualGroups.length)}개 사업</span></h5>${annualGroups.length
+        ? annualGroups.map((group) => { const open = first; first = false; return renderAwardProject(group, open); }).join("")
+        : `<p class="history-award-project__empty">${escapeHtml(year)}년 · 표시할 저장 기록이 없습니다. 실제 낙찰·참여 이력이 없다는 뜻은 아닙니다.</p>`}</section>`;
+    }).join("") || '<p class="history-award-project__empty">최근 3년 창에 표시할 저장 기록이 없습니다. 이 화면은 외부 조회를 시작하지 않습니다.</p>';
+    els.historyAwardGroups.hidden = selection.view !== "group";
+    els.historyAwardFlat.hidden = selection.view !== "flat";
+    els.historyAwardTableNotes.innerHTML = "<p>미확인은 자료가 없는 항목입니다. 참여업체는 조회된 범위만 표시합니다. 기술평가는 입찰의 기술점수입니다.</p><details><summary>자료 범위와 점수 표기 기준</summary><ul><li>유사 사업 후보는 같은 사업·같은 발주기관의 과거 낙찰로 확정된 자료가 아닙니다.</li><li>금액 단위는 원이며 평가점수는 소수점 둘째 자리까지 표시합니다. 미확인은 0점이 아니며, 투찰금액을 최종 낙찰금액으로 대신하지 않습니다.</li><li>점수 확인은 기술·가격·종합 중 하나 이상의 값이 있는 참여 기록 수입니다. 회사 정량평가 점수와 다릅니다.</li><li>참여 기록은 저장된 업체 행 수이며 고유 업체 수나 전체 경쟁업체 수를 뜻하지 않습니다.</li><li>결과일은 낙찰일 우선이며, 낙찰일이 없으면 개찰일입니다.</li></ul></details>";
   }
 
   function renderHistory(item) {

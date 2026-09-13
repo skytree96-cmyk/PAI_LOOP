@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 
 ANALYTICS_VERSION = "award-intelligence-1.1.0"
 COMPETITION_RISK_VERSION = "competition-risk-1.0.0"
-ANNUAL_AWARD_TABLE_VERSION = "annual-award-table-1.0.0"
+ANNUAL_AWARD_TABLE_VERSION = "annual-award-table-1.1.0"
 
 # Year tokens a procurement title carries so the same recurring project can be
 # recognised across editions: a bare year, a Korean-suffixed year, a two-digit
@@ -627,7 +627,7 @@ def build_annual_award_table(
     similar: list[dict[str, Any]] = []
     undated = 0
 
-    for row in records:
+    for record_index, row in enumerate(records):
         occurred_at = _event_date(row)
         year = _row_year(occurred_at)
         if year is not None and year not in years:
@@ -652,6 +652,11 @@ def build_annual_award_table(
             or ("NOT_COLLECTED" if companies is None else "COLLECTED" if companies else "UNAVAILABLE")
         )
         base = {
+            # Response-local ordinal: companies from one stored result share
+            # a key, even when independent lots/rebids share notice/date fields.
+            # This is not a stable cross-response identity and discloses no
+            # database ID, provider identity, or internal digest.
+            "result_group_key": f"award-{record_index + 1}",
             "year": year,
             "project_title": title,
             "agency": agency,
@@ -705,11 +710,11 @@ def build_annual_award_table(
         else "NONE"
     )
     not_collected = len({
-        (item["bid_notice_no"], item["revision_no"])
+        item["result_group_key"]
         for item in selected if item["source_status"] == "NOT_COLLECTED"
     })
     empty_openings = len({
-        (item["bid_notice_no"], item["revision_no"])
+        item["result_group_key"]
         for item in selected if item["source_status"] == "UNAVAILABLE"
     })
 
