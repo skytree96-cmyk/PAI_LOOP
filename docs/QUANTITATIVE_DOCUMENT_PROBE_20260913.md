@@ -30,7 +30,8 @@ not required for a quantitative rule.
 `extract_quantitative_probe()` uses a separate, unsupported persistence contract,
 one gateway call and no retries. It asks for quantitative rules only, rejects
 qualification requirements in the response and validates quotations against the
-full canonical text. Geometry context is separate untrusted data. Its wrapper
+full canonical text. Geometry context is a delimited untrusted data section
+before SOURCE, within the gateway's single text-part contract. Its wrapper
 always records incomplete attachment coverage and ineligibility for persistence.
 The ordinary full-document extraction path keeps its existing source and prompt
 contract. No automatic page filter or production analysis switch was added.
@@ -73,6 +74,8 @@ Synthetic regressions cover repeated text, adjacent tables, merged and open
 cells, dotted rulings, rotation, ownership ambiguity, source/PDF mismatch,
 omitted references, number-internal boundary tampering and the one-call probe
 contract. Existing extraction, source-rule, scoring and retry tests remain gates.
+The actual gateway JavaScript validator also checks the generated probe request,
+so a transport-mocked client success alone cannot establish gateway compatibility.
 Private real-document measurements and request plans stay under `.local/`.
 
 Next gate: independently approved one-call-per-document extraction of the three

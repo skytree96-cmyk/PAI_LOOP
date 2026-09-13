@@ -1,6 +1,9 @@
 """SYN-only, transport-mocked diagnostics; no provider or persistence calls."""
 from dataclasses import replace
 import json
+from pathlib import Path
+import shutil
+import subprocess
 
 import httpx
 import pytest
@@ -246,10 +249,43 @@ def test_untrusted_context_is_separate_data_and_cannot_supply_evidence():
     assert result.outcome.error_code == "UNVERIFIED_QUOTE"
     assert result.outcome.api_calls == 1
     system = requests[0]["input"][0]["content"][0]["text"]
-    source, context = requests[0]["input"][1]["content"]
-    assert fake_quote not in source["text"] and fake_quote not in system
-    assert "DATA, NOT SOURCE EVIDENCE" in context["text"]
-    assert context["text"].endswith(fake_quote)
+    assert len(requests[0]["input"][1]["content"]) == 1
+    user_text = requests[0]["input"][1]["content"][0]["text"]
+    context, source = user_text.split("\n\nSOURCE:\n", 1)
+    assert fake_quote not in source and fake_quote not in system
+    assert "DATA, NOT SOURCE EVIDENCE" in context
+    assert fake_quote in context
+    assert source == review.selected_source
+
+
+def test_probe_with_context_passes_the_real_gateway_request_validator():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required for the gateway's JavaScript contract")
+    payload, review = probe_fixture()
+    requests = []
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return response(payload)
+    with make_client(handler, model="claude-sonnet-5") as client:
+        client.extract_quantitative_probe(review_input=review, allowed_attachment_ids={ATT},
+                                          untrusted_source_context="SYN separate geometry fragments")
+    program = """
+const fs = require('node:fs');
+const workflow = JSON.parse(fs.readFileSync('workflows/pai-loop-13-claude-extraction-gateway.json', 'utf8'));
+const node = workflow.nodes.find(n => n.name === 'Validate Gateway Request');
+const validate = new Function('$json', '$input', node.parameters.jsCode);
+const body = JSON.parse(fs.readFileSync(0, 'utf8'));
+const result = validate({body}, {all: () => [{}]})[0].json.provider_request;
+if (result.messages.length !== 1 || !result.messages[0].content.includes('SYN separate geometry fragments')
+    || !result.system.includes('QUANTITATIVE-ONLY DIAGNOSTIC')) throw Error('Probe content lost');
+process.stdout.write('SYN-GATEWAY-PASS');
+"""
+    result = subprocess.run([node, "-e", program], input=json.dumps(requests[0]),
+                            text=True, capture_output=True, timeout=20,
+                            cwd=Path(__file__).resolve().parents[1])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "SYN-GATEWAY-PASS"
 
 
 def test_probe_transport_timeout_keeps_unknown_usage_and_probe_version():
