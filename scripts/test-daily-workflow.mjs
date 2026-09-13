@@ -41,6 +41,8 @@ assert.equal(runtime.maxAttachmentsPerNotice, 10);
 assert.equal(runtime.ppsPageSize, 999);
 assert.equal(runtime.ppsMaxPages, 3);
 assert.equal(runtime.useProfileKeywords, true);
+assert.equal(runtime.awardRefreshEnabled, false, "W14 owns scheduled award history refresh");
+assert.equal(runtime.awardRefreshWriteEnabled, false, "W10 must not duplicate W14 award refresh");
 assert.equal(runtime.collectionWindowDays, 8);
 assert.deepEqual(runtime.collectionKeywords, ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]);
 assert.match(

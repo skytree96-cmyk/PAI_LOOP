@@ -218,10 +218,10 @@ u.state.notices=notices;
 const data=u.normalizeDashboard(input.dashboard,notices), before=JSON.stringify(notices);
 for(const [queue,key,field] of [["fail","fail","failCount"],["review","review","reviewCount"],
  ["urgent","urgent","urgentCount"],["result-missing","result_missing","resultMissingCount"],
- ["cancelled","cancelled","cancelledCount"]]) {
+ ["cancelled","cancelled","cancelledCount"],["go","go","goCount"]]) {
   u.state.currentView=queue;
   u.applyFilters();
-  assert.equal(data[field],input.dashboard.work_queue_counts[key],`${queue} card`);
+  assert.equal(data[field],key==="go"?input.dashboard.go_count:input.dashboard.work_queue_counts[key],`${queue} card`);
   assert.equal(u.state.filteredNotices.length,data[field],`${queue} list`);
   u.els.searchInput.value="SYN";
   u.applyFilters();

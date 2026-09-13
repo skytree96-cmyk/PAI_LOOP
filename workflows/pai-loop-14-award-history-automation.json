@@ -1,0 +1,420 @@
+{
+  "name": "PAI_LOOP 14 - Award History Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "# 14 · Three-Year Award History Automation\n\nEvery ten minutes: enrol stored real notices and refresh up to ten eligible OPEN notices serially. Closed notices are preserved without new provider calls. Backend owns durable claims, retry backoff, freshness, three-year history and opening bidders/scores.\n\nKST calendar-day provider budget: 1,000 calls, reset at 00:00 KST, including same-day award and outcome jobs and outstanding reservations. The legacy api_calls_24h and budget_reserved_24h fields now describe this calendar day. Stateless manual company-award searches remain outside the audit ledger; provider quota errors are preserved as incomplete results. Each notice reserves up to 150 calls, reduced to the remaining budget; require at least 50 to start. The entire batch shares 480 seconds; no next notice starts with less than 60 seconds remaining.\n\nManual execution runs a synthetic offline fixture with zero network calls. Scheduled execution uses only protected award operations, native JSON bodies and the approved W10 Generic Header credential. The historical HTTP node name Refresh One Queued Award Notice is retained exactly for credential binding, but now invokes a bounded batch. No AI, analysis, Teams or direct provider calls exist here. Emergency switch: PAI_LOOP_EMERGENCY_DISABLE=true.\n\nHTTP timeout 520 seconds; no retry or redirect. Final outputs contain validated aggregates only. Identifiers and source rows are omitted; n8n payload storage is disabled. Backend persists audit and progress.",
+        "width": 1200,
+        "height": 430,
+        "color": 6
+      },
+      "id": "award-automation-0",
+      "name": "Award automation contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1000,
+        -400
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "award-automation-1",
+      "name": "Run Award Automation Offline Fixture",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function awardOfflineFixture() {\n  return [{ json: {\n    schema_version: 'award-refresh-automation-1.0', status: 'IDLE',\n    total: 3, complete: 1, no_results: 1, partial: 0, pending: 1, running: 0,\n    failed: 0, unsupported: 0, skipped: 0, unplanned: 0, eligible: 1,\n    api_calls_24h: 0, budget_reserved_24h: 0, ai_calls: 0,\n    attempted: 0, notice_key: null, job_id: null, api_calls: 0, records: 0,\n  } }];\n}\nreturn awardOfflineFixture();"
+      },
+      "id": "award-automation-2",
+      "name": "Load Offline Award Fixture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "award-automation-3",
+      "name": "Every Ten Minutes KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1000,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function awardRuntime(environment) {\n  const read = (name) => { try { return String(environment[name] ?? '').trim(); } catch { return ''; } };\n  const origin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\n  if (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?\\/?$/.test(origin)) throw new Error('Award backend origin must be an HTTP(S) origin without credentials, path, or query');\n  const enabled = read('PAI_LOOP_EMERGENCY_DISABLE').toLowerCase() !== 'true';\n  return [{ json: { runtime: { apiBaseUrl: origin.replace(/\\/$/, ''), enabled } } }];\n}\nreturn awardRuntime($env);"
+      },
+      "id": "award-automation-4",
+      "name": "Build Scheduled Award Runtime",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "award-enabled",
+              "leftValue": "={{ $json.runtime.enabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "award-automation-5",
+      "name": "Award Automation Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -520,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { schema_version: 'award-refresh-automation-1.0', status: 'DISABLED', attempted: 0, api_calls: 0, ai_calls: 0 } }];"
+      },
+      "id": "award-automation-6",
+      "name": "Record Award Automation Disabled",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/award-refresh/plan' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-award-automation-v1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"refresh_after_days\":30}",
+        "options": {
+          "timeout": 520000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      },
+      "id": "award-automation-7",
+      "name": "Enroll New and Stale Award Notices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -260,
+        300
+      ],
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "function validateAwardAggregate(input, phase) {\n  const body = input?.body ?? input;\n  const fail = () => { throw new Error('Award automation aggregate contract failed'); };\n  if (!body || typeof body !== 'object' || Array.isArray(body)) fail();\n  const countFields = ['total', 'complete', 'no_results', 'partial', 'pending', 'running',\n    'failed', 'unsupported', 'skipped', 'unplanned', 'eligible', 'api_calls_24h',\n    'budget_reserved_24h', 'ai_calls'];\n  const extraFields = phase === 'plan' ? ['enrolled', 'requeued'] : ['attempted', 'notice_key', 'job_id', 'api_calls', 'records'];\n  const allowed = ['schema_version', 'status', ...countFields, ...extraFields];\n  if (Object.keys(body).length !== allowed.length || Object.keys(body).some(key => !allowed.includes(key))) fail();\n  if (body.schema_version !== 'award-refresh-automation-1.0' || body.ai_calls !== 0) fail();\n  const count = value => Number.isSafeInteger(value) && value >= 0;\n  if (countFields.some(key => !count(body[key]))) fail();\n  if (phase === 'plan') {\n    if (body.status !== 'PLANNED' || !count(body.enrolled) || !count(body.requeued)) fail();\n  } else {\n    if (!['COMPLETED', 'PARTIAL', 'FAILED', 'IDLE', 'BUSY', 'DAILY_BUDGET_REACHED'].includes(body.status)) fail();\n    if (!count(body.attempted) || body.attempted > 10 || !count(body.api_calls) || !count(body.records)) fail();\n    for (const field of ['notice_key', 'job_id']) {\n      if (body[field] !== null && (typeof body[field] !== 'string' || !body[field] || body[field].length > 160 || /[\\u0000-\\u001f\\u007f]/.test(body[field]))) fail();\n    }\n  }\n  // IDs are validated but never emitted. No source rows or messages enter output.\n  const summary = { schema_version: body.schema_version, status: body.status };\n  for (const key of countFields) summary[key] = body[key];\n  for (const key of extraFields) if (!['notice_key', 'job_id'].includes(key)) summary[key] = body[key];\n  return summary;\n}\nfunction awardPlanDecision(input, runtime, validate) {\n  const summary = validate(input, 'plan');\n  return [{ json: {\n    runtime,\n    summary,\n    canRun: runtime.enabled === true && summary.eligible > 0 && summary.running === 0\n      && summary.api_calls_24h + summary.budget_reserved_24h + 50 <= 1000,\n  } }];\n}\nreturn awardPlanDecision($json, $node['Build Scheduled Award Runtime'].json.runtime, validateAwardAggregate);"
+      },
+      "id": "award-automation-8",
+      "name": "Validate Award Plan and Budget",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "award-ready",
+              "leftValue": "={{ $json.canRun }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "award-automation-9",
+      "name": "Award Queue and Budget Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json.summary, status: 'WAITING', attempted: 0, api_calls: 0, records: 0 } }];"
+      },
+      "id": "award-automation-10",
+      "name": "Record Award Queue Waiting",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.runtime.apiBaseUrl + '/api/v1/operations/award-refresh/run' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-PAI-Request-Source",
+              "value": "n8n-award-automation-v1"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"max_notices\":10,\"daily_api_budget\":1000,\"per_notice_api_budget\":150}",
+        "options": {
+          "timeout": 520000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false,
+              "responseFormat": "json"
+            }
+          },
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        }
+      },
+      "id": "award-automation-11",
+      "name": "Refresh One Queued Award Notice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        240
+      ],
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "function validateAwardAggregate(input, phase) {\n  const body = input?.body ?? input;\n  const fail = () => { throw new Error('Award automation aggregate contract failed'); };\n  if (!body || typeof body !== 'object' || Array.isArray(body)) fail();\n  const countFields = ['total', 'complete', 'no_results', 'partial', 'pending', 'running',\n    'failed', 'unsupported', 'skipped', 'unplanned', 'eligible', 'api_calls_24h',\n    'budget_reserved_24h', 'ai_calls'];\n  const extraFields = phase === 'plan' ? ['enrolled', 'requeued'] : ['attempted', 'notice_key', 'job_id', 'api_calls', 'records'];\n  const allowed = ['schema_version', 'status', ...countFields, ...extraFields];\n  if (Object.keys(body).length !== allowed.length || Object.keys(body).some(key => !allowed.includes(key))) fail();\n  if (body.schema_version !== 'award-refresh-automation-1.0' || body.ai_calls !== 0) fail();\n  const count = value => Number.isSafeInteger(value) && value >= 0;\n  if (countFields.some(key => !count(body[key]))) fail();\n  if (phase === 'plan') {\n    if (body.status !== 'PLANNED' || !count(body.enrolled) || !count(body.requeued)) fail();\n  } else {\n    if (!['COMPLETED', 'PARTIAL', 'FAILED', 'IDLE', 'BUSY', 'DAILY_BUDGET_REACHED'].includes(body.status)) fail();\n    if (!count(body.attempted) || body.attempted > 10 || !count(body.api_calls) || !count(body.records)) fail();\n    for (const field of ['notice_key', 'job_id']) {\n      if (body[field] !== null && (typeof body[field] !== 'string' || !body[field] || body[field].length > 160 || /[\\u0000-\\u001f\\u007f]/.test(body[field]))) fail();\n    }\n  }\n  // IDs are validated but never emitted. No source rows or messages enter output.\n  const summary = { schema_version: body.schema_version, status: body.status };\n  for (const key of countFields) summary[key] = body[key];\n  for (const key of extraFields) if (!['notice_key', 'job_id'].includes(key)) summary[key] = body[key];\n  return summary;\n}\nconst summary = validateAwardAggregate($json, 'run');\nif (summary.status === 'FAILED') throw new Error('Award automation backend failed; inspect protected award refresh status');\nreturn [{ json: summary }];"
+      },
+      "id": "award-automation-12",
+      "name": "Validate Award Run Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Run Award Automation Offline Fixture": {
+      "main": [
+        [
+          {
+            "node": "Load Offline Award Fixture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Offline Award Fixture": {
+      "main": [
+        [
+          {
+            "node": "Validate Award Run Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Ten Minutes KST": {
+      "main": [
+        [
+          {
+            "node": "Build Scheduled Award Runtime",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Scheduled Award Runtime": {
+      "main": [
+        [
+          {
+            "node": "Award Automation Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Award Automation Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Enroll New and Stale Award Notices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Award Automation Disabled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enroll New and Stale Award Notices": {
+      "main": [
+        [
+          {
+            "node": "Validate Award Plan and Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Award Plan and Budget": {
+      "main": [
+        [
+          {
+            "node": "Award Queue and Budget Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Award Queue and Budget Ready?": {
+      "main": [
+        [
+          {
+            "node": "Refresh One Queued Award Notice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Award Queue Waiting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh One Queued Award Notice": {
+      "main": [
+        [
+          {
+            "node": "Validate Award Run Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "executionTimeout": 570,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  }
+}

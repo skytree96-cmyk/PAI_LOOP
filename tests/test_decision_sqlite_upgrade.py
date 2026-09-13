@@ -12,10 +12,13 @@ from pai_loop.models import BidOutcome, Evaluation, Notice, NoticeVersion
 
 ACCOUNT_COLUMNS = ("account_id", "department_id", "department_name", "department_revision")
 ACCOUNT_TABLES = ("account_sessions", "account_audit", "account_login_buckets", "account_bootstrap_previews", "department_accounts")
+# Drop descendants first when constructing a database predating personal Teams.
+TEAMS_TABLES = ("teams_follow_deliveries", "teams_follows", "teams_link_codes", "teams_session_links", "teams_recipients")
 COMBINED_MIGRATIONS = (
     (migrations.INDEPENDENT_DECISION_MIGRATION_ID, migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM),
     (migrations.AWARD_OPENING_RESULT_MIGRATION_ID, migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM),
     (migrations.ACCOUNT_MIGRATION_ID, migrations.ACCOUNT_MIGRATION_CHECKSUM),
+    (migrations.TEAMS_FOLLOWUPS_MIGRATION_ID, migrations.TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM),
 )
 
 
@@ -136,7 +139,7 @@ def _legacy_combined_database(tmp_path):
         connection.exec_driver_sql("DROP INDEX uq_outcome_notice_department_revision")
         for column in ACCOUNT_COLUMNS:
             connection.exec_driver_sql(f'ALTER TABLE bid_outcomes DROP COLUMN "{column}"')
-        for table in ACCOUNT_TABLES:
+        for table in (*TEAMS_TABLES, *ACCOUNT_TABLES):
             connection.exec_driver_sql(f'DROP TABLE "{table}"')
         connection.exec_driver_sql("""INSERT INTO award_history_items
             (id,target_notice_id,external_identity,bid_notice_no,revision_no,title,agency,
@@ -173,7 +176,8 @@ def _assert_combined_upgrade(engine, original_decision, original_award, original
         assert {key: value for key, value in award.items() if key not in original_award} == {
             "opening_results": None, "opening_results_status": None, "opening_results_read_at": None,
         }
-        assert all(connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{table}"').scalar_one() == 0 for table in ACCOUNT_TABLES)
+        assert all(connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{table}"').scalar_one() == 0
+                   for table in (*ACCOUNT_TABLES, *TEAMS_TABLES))
         assert connection.exec_driver_sql("SELECT COUNT(*) FROM SYN_decision_audit").scalar_one() == 1
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
         assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
@@ -183,7 +187,7 @@ def test_legacy_decisions_awards_and_accounts_upgrade_together_without_losing_ro
     engine, original_decision, original_award, original_outcome = _legacy_combined_database(tmp_path)
     try:
         applied = migrations.apply_additive_migrations(engine)
-        assert applied[-3:] == [key for key, _ in COMBINED_MIGRATIONS]
+        assert applied[-len(COMBINED_MIGRATIONS):] == [key for key, _ in COMBINED_MIGRATIONS]
         _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
     finally:
         engine.dispose()
@@ -210,7 +214,7 @@ def test_combined_legacy_upgrade_rolls_back_every_migration_after_account_failur
             assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
             assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         tables = inspect(engine).get_table_names()
-        assert not set(ACCOUNT_TABLES) & set(tables)
+        assert not set((*ACCOUNT_TABLES, *TEAMS_TABLES)) & set(tables)
         assert "schema_migrations" not in tables and "__pai_user_decisions_nullable" not in tables
         columns = {column["name"]: column for column in inspect(engine).get_columns("user_decisions")}
         assert not columns["evaluation_id"]["nullable"] and "analysis_snapshot" not in columns
@@ -227,7 +231,7 @@ def test_concurrent_combined_legacy_upgrades_apply_each_migration_once(tmp_path)
         with ThreadPoolExecutor(max_workers=2) as pool:
             applied = list(pool.map(lambda _: migrations.apply_additive_migrations(engine), range(2)))
         assert sum(bool(result) for result in applied) == 1
-        assert [key for result in applied for key in result][-3:] == [key for key, _ in COMBINED_MIGRATIONS]
+        assert [key for result in applied for key in result][-len(COMBINED_MIGRATIONS):] == [key for key, _ in COMBINED_MIGRATIONS]
         _assert_combined_upgrade(engine, original_decision, original_award, original_outcome)
     finally:
         engine.dispose()

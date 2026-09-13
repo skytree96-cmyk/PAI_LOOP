@@ -1029,8 +1029,96 @@ def _comparable_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _dashboard_department_statistics(
+    session: Session,
+    *,
+    department: dict[str, Any] | None,
+    total_notice_count: int,
+    active_notice_ids: list[str],
+) -> dict[str, Any]:
+    """Count discovery relevance and explicit department selections separately.
+
+    Ranking uses the same keyword policy as the notice board, independently
+    of eligibility or system GO. Human selections survive closed notices and
+    re-analysis; only a newer decision by that same department supersedes one.
+    Read scalar columns so historical decision/evidence payloads stay unloaded.
+    """
+
+    catalog = load_department_keyword_profiles()
+    profile = department or catalog["baseline"]
+    decision_statement = select(
+        UserDecision.notice_id,
+        UserDecision.choice,
+        func.row_number().over(
+            partition_by=(UserDecision.notice_id, UserDecision.department_id),
+            order_by=(
+                func.coalesce(UserDecision.department_revision, -1).desc(),
+                UserDecision.created_at.desc(),
+                UserDecision.id.desc(),
+            ),
+        ).label("decision_rank"),
+    ).where(
+        UserDecision.department_id.in_(
+            [department["id"]] if department else [item["id"] for item in catalog["departments"]]
+        )
+    ).subquery()
+    selected_ids = set(session.scalars(
+        select(decision_statement.c.notice_id).where(
+            decision_statement.c.decision_rank == 1,
+            decision_statement.c.choice.in_(("GO", "CONDITIONAL_GO")),
+        ).distinct()
+    ).all())
+
+    recommended_count = 0
+    selected_recommended_count = 0
+    for offset in range(0, len(active_notice_ids), _NOTICE_SUMMARY_BATCH_SIZE):
+        rows = session.execute(select(
+            Notice.id, Notice.title, Notice.agency, Notice.category,
+        ).where(Notice.id.in_(active_notice_ids[offset:offset + _NOTICE_SUMMARY_BATCH_SIZE]))).all()
+        for row in rows:
+            if department is None:
+                views = rank_notice_department_views(
+                    title=row.title, agency=row.agency, category=row.category or "",
+                    top_limit=1, review_limit=0, region_limit=1,
+                )
+                recommended = bool(views["top_department_rankings"] or views["region_routing"])
+            else:
+                ranking = rank_notice_for_department(
+                    title=row.title, agency=row.agency, category=row.category or "",
+                    _department_profile=department,
+                )
+                recommended = ranking["recommendation_tier"] in {"TOP", "ROUTING"}
+            recommended_count += int(recommended)
+            selected_recommended_count += int(recommended and row.id in selected_ids)
+
+    return {
+        "department_id": profile["id"],
+        "department_name": profile["name"],
+        "total_notice_count": total_notice_count,
+        "recommended_count": recommended_count,
+        "selected_count": len(selected_ids),
+        "selected_recommended_count": selected_recommended_count,
+        "recommended_ratio": recommended_count / total_notice_count if total_notice_count else None,
+        "selected_ratio": len(selected_ids) / total_notice_count if total_notice_count else None,
+        "selection_rate": selected_recommended_count / recommended_count if recommended_count else None,
+        "recommended_definition": "OPEN_KEYWORD_TOP_OR_REGION_ROUTING",
+        "selected_definition": "LATEST_DEPARTMENT_GO_OR_CONDITIONAL_GO",
+        "recommendation_scope": "OPEN_NOT_CANCELLED",
+        "selection_scope": "ALL_STORED_NOTICES",
+        "selection_available": True,
+    }
+
+
 @router.get("/dashboard")
-def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
+def dashboard(
+    request: Request,
+    session: DbSession,
+    department_id: Annotated[str | None, Query(max_length=80)] = None,
+) -> dict[str, Any]:
+    try:
+        selected_department = get_department_profile(department_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="부서를 확인하세요.") from exc
     now = datetime.now(timezone.utc)
     # Response generation and source ingestion are separate clocks. Only a
     # successful live PPS notice run proves a completed source synchronisation.
@@ -1065,6 +1153,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     soon_date = today + timedelta(days=5)
     work_queue_counts = {key: 0 for key in ("fail", "review", "urgent", "result_missing", "cancelled")}
     active_count = 0
+    active_department_notice_ids: list[str] = []
     deadline_soon = 0
     recent_notices: list[dict[str, Any]] = []
     analysis_statistics = {
@@ -1127,9 +1216,10 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     )
                 elif valid_qualification == Eligibility.FAIL.value:
                     work_queue_counts["fail"] += 1
-                run = latest_current_analysis_run(notice) if effective_status == "OPEN" else None
-                if effective_status == "OPEN":
+                run = latest_current_analysis_run(notice) if effective_status == "OPEN" and not is_cancelled else None
+                if effective_status == "OPEN" and not is_cancelled:
                     open_runs.append(run)
+                    active_department_notice_ids.append(notice.id)
                 if effective_status == "OPEN" and not is_cancelled and _source_kind(notice) == "PPS":
                     stats = analysis_statistics
                     reason = public_analysis_reason(notice.versions, evaluated=latest is not None)
@@ -1218,6 +1308,12 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "generated_at": now,
         "last_sync": _comparable_utc(last_sync) if last_sync is not None else None,
         "analysis_statistics": analysis_statistics,
+        "department_statistics": _dashboard_department_statistics(
+            session,
+            department=selected_department,
+            total_notice_count=len(notice_ids),
+            active_notice_ids=active_department_notice_ids,
+        ),
         "work_queue_counts": work_queue_counts,
         "totals": {
             "notices": len(notice_ids),
@@ -2931,6 +3027,8 @@ def refresh_award_history(
     eligibility or bid decision.
     """
 
+    from .integrations.pps import PpsApiCallBudget, PpsApiCallBudgetExceeded
+
     notice = _load_notice(session, notice_key)
     settings = request.app.state.settings
     if not settings.pps_api_key:
@@ -2964,6 +3062,9 @@ def refresh_award_history(
             "include_opening_results": payload.include_opening_results,
             "max_opening_result_notices": payload.max_opening_result_notices,
             "opening_result_max_pages": payload.opening_result_max_pages,
+            **({"max_api_calls": payload.max_api_calls} if payload.max_api_calls is not None else {}),
+            **({"automation_attempt_id": request.state.award_automation_attempt_id}
+               if getattr(request.state, "award_automation_attempt_id", None) else {}),
             **({"diagnostic_probe": True} if payload.diagnostic_probe else {}),
         },
         notice_keys=[notice.notice_key],
@@ -2973,13 +3074,39 @@ def refresh_award_history(
     session.commit()
     session.refresh(job)
 
+    budget = PpsApiCallBudget(payload.max_api_calls) if payload.max_api_calls is not None else None
+    budget_options = {"request_budget": budget} if budget is not None else {}
+    award_job_id = job.id
+    client = None
+    opening_client = None
+
+    def mark_failed(error_code: str, warning: str) -> None:
+        # Roll back pending business writes, then commit failure and consumed
+        # calls together so recovery never sees a failed paid attempt as free.
+        calls = budget.consumed if budget is not None else (
+            int(getattr(client, "request_count", 0)) + int(getattr(opening_client, "request_count", 0))
+        )
+        session.rollback()
+        failed_job = session.get(IngestionJob, award_job_id)
+        if failed_job is not None:
+            failed_job.status = "FAILED"
+            failed_job.error_code = error_code
+            failed_job.warnings = [warning]
+            failed_job.completed_at = datetime.now(timezone.utc)
+            failed_job.api_calls = calls
+            session.commit()
+
     try:
         award_deadline = time.monotonic() + 480
+        shared_deadline = getattr(request.state, "award_automation_deadline", None)
+        if isinstance(shared_deadline, (int, float)):
+            award_deadline = min(award_deadline, shared_deadline)
         with PpsAwardClient(
             service_key=settings.pps_api_key,
             base_url=settings.pps_base_url,
             timeout_seconds=12,
             max_retries=0,
+            **budget_options,
             **({"diagnostic_probe": True} if payload.diagnostic_probe else {}),
         ) as client:
             fetched_rows = list(
@@ -3004,18 +3131,15 @@ def refresh_award_history(
                 page_shape_diagnostics = AwardShapeDiagnostics.model_validate(page_shape_diagnostics).model_dump(mode="json")
             hit_time_limit = getattr(client, "hit_time_limit", False)
             hit_incomplete_response = getattr(client, "hit_incomplete_response", False)
+            hit_api_call_limit = getattr(client, "hit_api_call_limit", False)
     except PpsApiError as exc:
-        _mark_pps_job_failed(
-            session,
-            job_id=job.id,
+        mark_failed(
             error_code="PPS_AWARD_API_ERROR",
             warning="조달청 낙찰정보 API 호출이 실패했습니다. 키와 승인 상태를 확인하세요.",
         )
         raise HTTPException(status_code=502, detail="조달청 낙찰정보 API 호출에 실패했습니다.") from exc
     except Exception:
-        _mark_pps_job_failed(
-            session,
-            job_id=job.id,
+        mark_failed(
             error_code="PPS_AWARD_CLIENT_ERROR",
             warning="조달청 낙찰정보 클라이언트가 예기치 않게 종료되었습니다.",
         )
@@ -3037,7 +3161,7 @@ def refresh_award_history(
         warnings.append(
             "진단 제한 시간에 도달했습니다. 수신한 응답 구조만 기록하고 낙찰 기록은 저장하지 않았습니다."
             if payload.diagnostic_probe else
-            "총 480초 수집 제한에서 중단했으며 확보한 낙찰 후보만 저장했습니다."
+            "수집 제한 시간에서 중단했으며 확보한 낙찰 후보만 저장했습니다."
         )
 
     quarantined = 0
@@ -3073,6 +3197,7 @@ def refresh_award_history(
                 base_url=settings.pps_base_url,
                 timeout_seconds=12,
                 max_retries=0,
+                **budget_options,
             ) as opening_client:
                 for identity, item in selected:
                     if time.monotonic() >= award_deadline:
@@ -3080,6 +3205,7 @@ def refresh_award_history(
                         hit_time_limit = True
                         break
                     opening_requested += 1
+                    before_opening_calls = opening_client.request_count
                     try:
                         opening_by_identity[identity] = opening_client.fetch_opening_results(
                             bid_notice_no=item["bid_notice_no"],
@@ -3090,6 +3216,13 @@ def refresh_award_history(
                             max_pages=payload.opening_result_max_pages,
                             deadline_monotonic=award_deadline,
                         )
+                    except PpsApiCallBudgetExceeded:
+                        if opening_client.request_count == before_opening_calls:
+                            opening_requested -= 1
+                        hit_api_call_limit = True
+                        opening_failures[identity] = "PARTIAL"
+                        opening_failed += 1
+                        break
                     except OpeningResultsIncomplete:
                         opening_failed += 1
                         opening_failures[identity] = "PARTIAL"
@@ -3101,9 +3234,7 @@ def refresh_award_history(
                         opening_failures[identity] = "ERROR"
                 api_calls += opening_client.request_count
         except Exception:
-            _mark_pps_job_failed(
-                session,
-                job_id=job.id,
+            mark_failed(
                 error_code="PPS_OPENING_RESULT_CLIENT_ERROR",
                 warning="조달청 개찰결과 클라이언트가 예기치 않게 종료되었습니다.",
             )
@@ -3112,6 +3243,9 @@ def refresh_award_history(
             warnings.append(f"{opening_failed}건의 개찰 결과 조회가 실패하거나 불완전해 기존 저장본을 유지했습니다. 신규 건은 미확인입니다.")
     elif payload.include_opening_results and payload.dry_run:
         warnings.append("dry_run이므로 개찰 결과 조회를 실행하지 않았습니다.")
+
+    if hit_api_call_limit:
+        warnings.append("AWARD_API_CALL_BUDGET_EXHAUSTED: 실제 API 호출 상한에서 중단했습니다. 미조회 구간·개찰 결과는 미확인으로 남기고 기존 저장본을 유지합니다.")
 
     created = 0
     updated = 0
@@ -3195,7 +3329,7 @@ def refresh_award_history(
         )
     job.status = "PARTIAL" if (
         window_errors or hit_time_limit or hit_page_limit or hit_incomplete_response or quarantined
-        or opening_failed or opening_limited or payload.diagnostic_probe
+        or opening_failed or opening_limited or hit_api_call_limit or payload.diagnostic_probe
     ) else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
@@ -3212,9 +3346,7 @@ def refresh_award_history(
     try:
         session.commit()
     except Exception:
-        _mark_pps_job_failed(
-            session,
-            job_id=job.id,
+        mark_failed(
             error_code="PPS_AWARD_PERSISTENCE_ERROR",
             warning="낙찰 후보 저장 중 오류가 발생해 실행을 실패 처리했습니다.",
         )

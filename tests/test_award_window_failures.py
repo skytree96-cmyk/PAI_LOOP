@@ -27,7 +27,7 @@ def _client(handler, **kwargs):
 
 def _read(client, days=1, **kwargs):
     return list(client.iter_awards(start=date(2025, 1, 1), end=date(2025, 1, days),
-        keyword="SYN", continue_on_window_error=True, **kwargs))
+        keyword="SYN", continue_on_window_error=True, max_window_days=30, **kwargs))
 
 
 def test_short_failed_window_is_not_requested_twice():
