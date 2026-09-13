@@ -6721,7 +6721,7 @@
       REQUIRED_EVIDENCE_INCOMPLETE: "점수 계산에 필요한 회사 증빙이 아직 충분하지 않습니다.",
       TABLE_TOTAL_INCOMPLETE: "평가표 총점을 완전하게 확인하지 못했습니다.",
       UNKNOWN_METRIC: "제안서·제품·수기평가 항목이라 회사 사실만으로 자동 계산할 수 없습니다.",
-      PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 최신 분석에 미확정 항목이 있어 점수 범위로 표시합니다.",
+      PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
     };
     // Preserve the server blockers; only omit the legacy display fallback when
     // the more specific extraction-gap diagnosis is present.
@@ -6792,7 +6792,7 @@
       REQUIRED_EVIDENCE_INCOMPLETE: "점수 계산에 필요한 회사 증빙이 부족합니다.",
       ALTERNATIVE_TABLE_AMBIGUOUS: "이 공고에 적용할 평가 기준을 확인해야 합니다.",
       TABLE_TOTAL_INCOMPLETE: "정량 평가의 총배점을 완전히 확인하지 못했습니다.",
-      PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 분석에 미확정 항목이 있어 잠정 점수로 표시합니다.",
+      PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
     };
     const unresolved = Array.isArray(data.criteria) ? data.criteria.find((item) => item.status !== "CONFIRMED" && item.rationale) : null;
     const reason = reasons.length

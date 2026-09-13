@@ -88,6 +88,19 @@ setData({...data,lower_points:12});assert.equal(u.noticeQuantitativeSummary(qnot
 ''')
 
 
+def test_public_review_without_numeric_points_does_not_claim_a_provisional_score():
+    _run(r'''
+setData({...data,ruleset_version:'public-quantitative-summary-v1',overall_status:'REVIEW',
+ activation_status:'REVIEW_REQUIRED',source_validation_status:'REVIEW_REQUIRED',
+ lower_points:null,upper_points:null,total_max_points:null,
+ activation_reasons:['PUBLIC_ANALYSIS_REVIEW_REQUIRED']});
+const summary=u.noticeQuantitativeSummary(qnotice);
+assert.equal(summary.value,'미산정');
+assert.equal(summary.reason,'저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.');
+assert.doesNotMatch(u.renderNoticeQuantitativeSummary(qnotice),/잠정 점수로 표시|점수 범위로 표시/);
+''')
+
+
 def test_cancelled_or_historical_estimates_are_not_presented_as_current_scores():
     _run(r'''
 setData(data);
