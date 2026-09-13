@@ -63,6 +63,13 @@ class Notice(Base, TimestampMixin):
     versions: Mapped[list["NoticeVersion"]] = relationship(
         back_populates="notice", cascade="all, delete-orphan", order_by="NoticeVersion.version_no"
     )
+    award_scope_versions: Mapped[list["NoticeVersion"]] = relationship(
+        primaryjoin=lambda: (
+            (Notice.id == NoticeVersion.notice_id)
+            & (NoticeVersion.source_payload["kind"].as_string() == "PPS_NOTICE_METADATA")
+        ),
+        viewonly=True, order_by="NoticeVersion.version_no",
+    )
     evaluations: Mapped[list["Evaluation"]] = relationship(
         back_populates="notice", cascade="all, delete-orphan", order_by="Evaluation.evaluated_at"
     )

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from pai_loop import award_automation as module
 from pai_loop.award_automation_models import AwardRefreshAttempt, AwardRefreshState
@@ -84,6 +84,28 @@ def post(client, path, body=None):
     result = client.post(f"{BASE}/{path}", json=body or {})
     assert result.status_code == 200, result.text
     return result.json()
+
+
+def test_plan_never_materializes_unrelated_extraction_version_payloads(client, setup):
+    _clock, add = setup
+    notice_id = add()
+    with client.app.state.session_factory() as session:
+        session.add(NoticeVersion(
+            notice_id=notice_id, version_no=2, file_sha256="b" * 64,
+            source_payload={"kind": "OPENAI_REQUIREMENT_EXTRACTION", "result": "SYN-LARGE" * 20_000},
+        ))
+        session.commit()
+    loaded = []
+
+    def inspect_version(version, _context):
+        loaded.append(version.source_payload.get("kind"))
+
+    event.listen(NoticeVersion, "load", inspect_version)
+    try:
+        assert post(client, "plan")["pending"] == 1
+    finally:
+        event.remove(NoticeVersion, "load", inspect_version)
+    assert loaded and set(loaded) == {"PPS_NOTICE_METADATA"}
 
 
 def test_plan_all_lifecycles_sources_and_idempotency(client, setup):

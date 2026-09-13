@@ -251,7 +251,7 @@ def plan_award_refresh(payload: PlanRequest, session: DbSession) -> dict:
         _recover_expired(session, now)
         states = {state.notice_id: state for state in session.scalars(select(AwardRefreshState))}
         notices = list(session.scalars(select(Notice).options(
-            selectinload(Notice.versions), selectinload(Notice.award_agency_metadata),
+            selectinload(Notice.award_scope_versions), selectinload(Notice.award_agency_metadata),
         ).order_by(Notice.created_at, Notice.id)))
         active_ids = _active_notice_ids(session, notices, now)
         for notice in notices:
@@ -293,7 +293,7 @@ def _run_one(payload: RunRequest, request: Request, session: Session) -> dict:
         if session.scalar(select(AwardRefreshState.notice_id).where(AwardRefreshState.status == "RUNNING").limit(1)):
             return _run_result(session, "BUSY")
         selections = list(session.execute(select(AwardRefreshState, Notice).join(Notice, Notice.id == AwardRefreshState.notice_id)
-            .options(selectinload(Notice.versions), selectinload(Notice.award_agency_metadata))
+            .options(selectinload(Notice.award_scope_versions), selectinload(Notice.award_agency_metadata))
             .where(AwardRefreshState.status.in_(["PENDING", "PARTIAL", "FAILED"]),
                    AwardRefreshState.next_attempt_at <= now)
             .order_by(case((AwardRefreshState.attempts == 0, 0), else_=1),

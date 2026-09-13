@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING, TypeVar
 
+from sqlalchemy import inspect
+from sqlalchemy.orm.attributes import NO_VALUE
+
 if TYPE_CHECKING:
     from .models import Notice
 
@@ -154,8 +157,17 @@ def resolve_notice_award_scope(notice: Notice) -> AwardScope:
     for missing demand agency. Callers should preload both relationships when
     resolving a batch; this resolver performs no requests or persistence.
     """
+    instance = inspect(notice, raiseerr=False)
+    if instance is None:
+        available_versions = notice.versions
+    else:
+        # Detail/analysis readers may already have loaded the full relationship.
+        # Reuse it, but never lazy-load extraction bodies to resolve agency scope.
+        available_versions = instance.attrs.versions.loaded_value
+        if available_versions is NO_VALUE:
+            available_versions = notice.award_scope_versions
     versions = [
-        version for version in notice.versions
+        version for version in available_versions
         if isinstance(version.source_payload, dict)
         and version.source_payload.get("kind") == _PPS_METADATA_KIND
     ]

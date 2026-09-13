@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import inspect, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, raiseload, selectinload
+from sqlalchemy.orm.attributes import NO_VALUE
 
 from pai_loop.award_scope import (
     AWARD_AGENCY_UNAVAILABLE,
@@ -100,6 +102,45 @@ def test_current_explicit_demand_metadata_wins_and_does_not_merge_sidecar_fields
     assert scope.demand_agency_name == "SYN 수요기관"
     assert scope.demand_agency_code is None
     assert scope.announcing_agency_name is None
+
+
+def test_plain_scope_input_keeps_its_explicit_versions_contract() -> None:
+    notice = SimpleNamespace(
+        bid_notice_no="SYN-scope", revision_no="000",
+        versions=[_version(1, demand_agency_name="SYN 수요기관")],
+    )
+    assert resolve_notice_award_scope(notice).demand_agency_name == "SYN 수요기관"
+
+
+def test_scope_reads_only_metadata_or_reuses_the_already_loaded_full_relationship() -> None:
+    engine = build_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            notice = _notice()
+            extraction = _version(2)
+            extraction.source_payload = {"kind": "OPENAI_REQUIREMENT_EXTRACTION", "result": "SYN-LARGE" * 20_000}
+            notice.versions = [_version(1, demand_agency_name="SYN 수요기관"), extraction]
+            session.add(notice)
+            session.commit()
+        with Session(engine) as session:
+            notice = session.scalar(select(Notice).options(
+                selectinload(Notice.award_scope_versions), raiseload(Notice.versions),
+            ))
+            assert inspect(notice).attrs.versions.loaded_value is NO_VALUE
+            assert [version.version_no for version in notice.award_scope_versions] == [1]
+            assert resolve_notice_award_scope(notice).demand_agency_name == "SYN 수요기관"
+            assert inspect(notice).attrs.versions.loaded_value is NO_VALUE
+            assert not any(isinstance(row, NoticeVersion) and row.version_no == 2 for row in session.identity_map.values())
+        with Session(engine) as session:
+            notice = session.scalar(select(Notice).options(
+                selectinload(Notice.versions), raiseload(Notice.award_scope_versions),
+            ))
+            assert len(notice.versions) == 2
+            assert resolve_notice_award_scope(notice).demand_agency_name == "SYN 수요기관"
+            assert inspect(notice).attrs.award_scope_versions.loaded_value is NO_VALUE
+    finally:
+        engine.dispose()
 
 
 def test_no_current_metadata_or_mismatching_declared_identity_cannot_resolve_scope() -> None:
