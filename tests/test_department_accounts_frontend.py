@@ -53,9 +53,10 @@ const fields=new Map();
 function field(){return {value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,listeners:{},
  addEventListener(type,handler){(this.listeners[type]??=[]).push(handler);},
  dispatchEvent(event){for(const handler of this.listeners[event.type]||[])handler(event);},
- dataset:{},classList:{contains(){return false;},toggle(){},add(){},remove(){}},setAttribute(){},
+ dataset:{},classList:{contains(){return false;},toggle(){},add(){},remove(){}},setAttribute(){},removeAttribute(){},
  replaceChildren(){this.innerHTML='';this.textContent='';},reset(){},focus(){},closest(){return null;},
  setCustomValidity(message){this.validationMessage=message;},reportValidity(){return !this.validationMessage;},
+ checkValidity(){return true;},querySelector(){return null;},
  showModal(){this.open=true;},close(){this.open=false;}};}
 Object.setPrototypeOf(u.els,new Proxy({}, {get(_,key){if(!fields.has(key))fields.set(key,field());return fields.get(key);}}));
 u.els.decisionInputs=[{value:'GO',checked:false},{value:'HOLD',checked:true},{value:'NO_GO',checked:false}];
@@ -162,6 +163,7 @@ def test_opening_correction_clears_custom_error_before_browser_submit(event_type
     _run_behavior('const eventType=' + json.dumps(event_type) + ';const editedField=' + json.dumps(edited_field) + ';' + r'''
 u.bindResultLearningOpeningEvents();
 u.openResultLearningDialog(u.normalizeResultLearningNotice({notice_key:'SYN-N',bid_notice_no:'SYN-NUMBER',revision_no:'0',outcomes:[]}));
+u.els.resultLearningStatus.value='SUBMITTED';
 const changed=u.els['resultLearningOpening'+editedField];
 const other=u.els['resultLearningOpening'+(editedField==='Rebid'?'Classification':'Rebid')];
 other.value='0';
@@ -686,18 +688,19 @@ let saving=u.saveResultLearning({preventDefault(){}});await tick();
 assert.match(requests[0].path,/\/result-learning\/SYN-A2$/);assert.equal(requests[0].options.method,'PATCH');
 assert.equal(JSON.parse(requests[0].options.body).expected_updated_at,own.updated_at);
 respond(requests[0],409,{detail:'SYN stale result'});await tick();
-assert.equal(u.els.resultLearningDialog.open,false);
-respond(requests[1],200,{records:[],total:0});await saving;
+assert.equal(u.els.resultLearningDialog.open,true);
+assert.equal(u.els.resultLearningOperatorNote.value,'SYN own note');
+assert.equal(requests.length,1);await saving;
 n=u.normalizeResultLearningNotice({notice_key:'SYN-N',outcomes:[other],latest_outcome:other});
 u.openResultLearningDialog(n);assert.equal(u.els.resultLearningOperatorNote.value,'');
 u.els.resultLearningOperatorNote.value='SYN first own note';
+u.els.resultLearningStatus.value='SUBMITTED';
 saving=u.saveResultLearning({preventDefault(){}});await tick();
-assert.equal(requests[2].options.method,'POST');
-const sent=JSON.parse(requests[2].options.body);
+assert.equal(requests[1].options.method,'POST');
+const sent=JSON.parse(requests[1].options.body);
 assert.equal(sent.expected_outcome_id,null);assert.equal(sent.basis_outcome_id,undefined);
 assert.equal(sent.operator_note,'SYN first own note');
-respond(requests[2],200,{id:'SYN-A1'});await tick();
-respond(requests[3],200,{records:[],total:0});await saving;
+respond(requests[1],200,{id:'SYN-A1'});await saving;
 ''')
 
 
