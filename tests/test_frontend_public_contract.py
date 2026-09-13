@@ -239,8 +239,8 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260908-login-brand-v1"' in html
-    assert 'src="./app.js?v=20260908-login-brand-v1"' in html
+    assert 'href="./styles.css?v=20260913-integrated-v1"' in html
+    assert 'src="./app.js?v=20260913-integrated-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -283,7 +283,10 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     assert "recommendation-pill recommendation-pill" not in row_body
     assert 'tabindex="0" role="link"' not in row_body
     assert 'class="notice-title-button" type="button" data-open-notice' in row_body
-    assert 'class="detail-link-button" type="button" data-open-notice' in row_body
+    assert 'noticeListActions(notice, resultEntry)' in row_body
+    actions_body = _function_body(source, "noticeListActions", "manualAnalysisAvailability")
+    assert 'class="detail-link-button" type="button" data-open-notice' in actions_body
+    assert 'data-result-detail' in actions_body
     assert "전체 상세 보기" in row_body
     assert "<th scope=\"col\">AI 판단</th>" in html
     assert "<th scope=\"col\">담당자 판단</th>" in html

@@ -24,6 +24,9 @@
     source: "loading",
     sourceReason: "",
     dashboard: {},
+    dashboardStatus: "idle",
+    dashboardRequestSequence: 0,
+    keywordProfilesAvailable: false,
     notices: [],
     filteredNotices: [],
     selectedNotice: null,
@@ -114,7 +117,7 @@
     managedAccounts: { records: [], loading: false, pending: false },
     resultLearning: {
       records: [], total: 0, offset: 0, limit: 40, loaded: false, loading: false,
-      editingNotice: null, editingOutcome: null,
+      editingNotice: null, editingOutcome: null, opening: null, saving: false,
     },
   };
 
@@ -266,6 +269,7 @@
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
+      "dashboardSummary", "dashboardSummaryTitle", "dashboardSummaryDetail", "dashboardSummaryTotals", "dashboardRetryButton",
       "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
       "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "operatorDecisionFilter", "operatorDecisionFilterHelp", "sortSelect",
       "ppsSearchSuggestion", "ppsSearchSuggestionButton", "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
@@ -303,6 +307,7 @@
       "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
       "resultLearningRateMode", "resultLearningRateBasisKind", "resultLearningRateBasisAmount", "resultLearningRateBasisReference", "resultLearningRateStatus",
       "resultLearningOpeningNotice", "resultLearningOpeningRevision", "resultLearningOpeningClassification", "resultLearningOpeningRebid",
+      "resultLearningFields", "resultLearningError", "detailResultButton",
     ];
 
     ids.forEach((id) => {
@@ -573,16 +578,18 @@
     els.resultLearningPreviousButton.addEventListener("click", () => changeResultLearningPage(-1));
     els.resultLearningNextButton.addEventListener("click", () => changeResultLearningPage(1));
     els.resultLearningForm.addEventListener("submit", saveResultLearning);
+    ["input", "change"].forEach((type) => els.resultLearningForm.addEventListener(type, updateResultLearningValidation));
+    els.resultLearningForm.addEventListener("invalid", (event) => showResultLearningError(event.target.validationMessage), true);
+    els.resultLearningDialog.addEventListener("cancel", (event) => {
+      if (state.resultLearning.saving) event.preventDefault();
+      else closeResultLearningDialog();
+    });
+    els.detailResultButton.addEventListener("click", () => {
+      if (state.selectedNotice) void openNoticeResultLearning(state.selectedNotice.noticeKey, els.detailResultButton);
+    });
     bindResultLearningOpeningEvents();
     [els.resultLearningSubmittedAmount, els.resultLearningRateBasisAmount, els.resultLearningRateBasisReference].forEach((input) => input.addEventListener("input", updateResultLearningRate));
     [els.resultLearningRateMode, els.resultLearningRateBasisKind].forEach((input) => input.addEventListener("change", updateResultLearningRate));
-    els.resultLearningStatus.addEventListener("change", () => {
-      if (els.resultLearningStatus.value !== "NO_BID") return;
-      [els.resultLearningSubmittedAmount, els.resultLearningSubmittedRate, els.resultLearningWinningAmount, els.resultLearningWinningRate, els.resultLearningTechnicalScore, els.resultLearningPriceScore, els.resultLearningTotalScore, els.resultLearningRank].forEach((input) => { input.value = ""; });
-      els.resultLearningWinner.value = "";
-      els.resultLearningRateMode.value = "MANUAL";
-      updateResultLearningRate();
-    });
     els.resultLearningCloseButton.addEventListener("click", closeResultLearningDialog);
     els.resultLearningCancelButton.addEventListener("click", closeResultLearningDialog);
 
@@ -594,6 +601,7 @@
       setView(button.dataset.kpiView);
       window.requestAnimationFrame(() => els.noticeSection.scrollIntoView({ behavior: "smooth", block: "start" }));
     }));
+    els.dashboardRetryButton.addEventListener("click", retryDashboardTotals);
     els.layoutButtons.forEach((button) => button.addEventListener("click", () => setLayout(button.dataset.layout)));
 
     els.noticeTableBody.addEventListener("click", handleNoticeActivation);
@@ -693,6 +701,8 @@
   async function loadApplicationData({ forceApi = false } = {}) {
     if (applicationLocked || !state.accountSession.authenticated) return;
     const sequence = ++state.requestSequence;
+    state.dashboardRequestSequence += 1;
+    state.dashboardStatus = "loading";
     const requestedStatusScope = noticeStatusScopeForView(state.currentView);
     state.noticeStatusScope = requestedStatusScope;
     setLoading(true);
@@ -747,12 +757,13 @@
       state.quantitativeEstimates = {};
       const list = extractList(noticesResult.value);
       const previousNotices = new Map(state.notices.map((notice) => [notice.noticeKey, notice]));
+      const previousDashboard = state.source === "api" ? state.dashboard : {};
       state.source = "api";
       state.notices = list.map((raw) => {
         const notice = normalizeNotice(raw);
         return preserveOperatorDecision(notice, previousNotices.get(notice.noticeKey));
       }).filter((notice) => notice.noticeKey);
-      state.dashboard = dashboardWithoutGlobalTotals(state.notices);
+      state.dashboard = dashboardWithoutGlobalTotals(state.notices, previousDashboard);
       state.sourceReason = "";
       state.lastSuccessfulQueryAt = new Date().toISOString();
       setSystemStatus("loading");
@@ -770,38 +781,60 @@
   }
 
   async function hydrateApplicationMetadata({ sequence, requestedStatusScope }) {
-    const [dashboardResult, profilesResult] = await Promise.allSettled([
-      apiRequest("/dashboard", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
+    const epoch = state.accountEpoch;
+    const [, profilesResult] = await Promise.allSettled([
+      loadDashboardTotals({ sequence, requestedStatusScope }),
       apiRequest("/departments/keyword-profiles"),
     ]);
+    if (epoch !== state.accountEpoch) return;
     if (sequence !== state.requestSequence) return;
     if (requestedStatusScope !== noticeStatusScopeForView(state.currentView)) return;
     if (state.source !== "api") return;
 
-    if (profilesResult.status === "fulfilled") {
+    state.keywordProfilesAvailable = profilesResult.status === "fulfilled";
+    if (state.keywordProfilesAvailable) {
       state.departmentCatalog = unwrapObject(profilesResult.value);
       populateDepartmentProfiles(state.departmentCatalog);
     }
-    if (dashboardResult.status === "fulfilled") {
-      state.dashboard = normalizeDashboard(dashboardResult.value, state.notices);
-      state.sourceReason = "";
-    } else {
-      state.sourceReason = "전체 집계 조회가 지연되었습니다. 공고 목록은 조회됐으며 전체 통계는 새로고침이 필요합니다.";
-    }
-    setSystemStatus(dashboardResult.status === "fulfilled" && profilesResult.status === "fulfilled" && state.runtimeProfileAvailable ? "online" : "partial");
+    setSystemStatus(state.dashboardStatus === "ready" && state.keywordProfilesAvailable && state.runtimeProfileAvailable ? "online" : "partial");
     renderAll();
+  }
+
+  async function loadDashboardTotals({ sequence = state.requestSequence, requestedStatusScope = state.noticeStatusScope } = {}) {
+    const request = ++state.dashboardRequestSequence;
+    const epoch = state.accountEpoch;
+    const current = () => request === state.dashboardRequestSequence && sequence === state.requestSequence
+      && epoch === state.accountEpoch && requestedStatusScope === state.noticeStatusScope
+      && state.source === "api";
+    state.dashboardStatus = "loading";
+    renderKpis();
+    try {
+      const payload = await apiRequest("/dashboard", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
+      if (!current()) return;
+      state.dashboard = normalizeDashboard(payload, state.notices);
+      state.dashboardStatus = ["totalNotices", "totalEvaluations", "failCount", "cancelledCount", "resultMissingCount"]
+        .some((key) => state.dashboard[key] === null) ? "partial" : "ready";
+      state.sourceReason = state.dashboardStatus === "ready" ? "" : "일부 전체 집계를 확인하지 못했습니다. 집계 다시 조회로 확인해 주세요.";
+    } catch (_) {
+      if (!current()) return;
+      state.dashboard = dashboardWithoutGlobalTotals(state.notices, state.dashboard);
+      state.dashboardStatus = "error";
+      state.sourceReason = "전체 집계 조회에 실패했습니다. 공고 목록은 조회됐으며 집계 다시 조회로 확인할 수 있습니다.";
+    }
+    setSystemStatus(state.dashboardStatus === "ready" && state.keywordProfilesAvailable && state.runtimeProfileAvailable ? "online" : "partial");
+    renderAll();
+  }
+
+  async function retryDashboardTotals() {
+    if (state.source !== "api" || state.loading || state.dashboardStatus === "loading"
+      || !state.accountSession.authenticated) return;
+    await loadDashboardTotals();
   }
 
   async function refreshDashboardAfterMutation() {
     if (state.source === "api") {
-      try {
-        const payload = await apiRequest("/dashboard", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
-        state.dashboard = normalizeDashboard(payload, state.notices);
-        return;
-      } catch (_) {
-        // The mutation has already succeeded. Preserve server totals instead
-        // of replacing the whole dashboard with an incomplete local shape.
-      }
+      await loadDashboardTotals();
+      return;
     }
     state.dashboard = dashboardWithoutGlobalTotals(state.notices, state.dashboard);
   }
@@ -812,6 +845,7 @@
     state.source = "error";
     state.sourceReason = reason;
     state.dashboard = {};
+    state.dashboardStatus = "error";
     state.notices = [];
     state.filteredNotices = [];
     els.refreshButton.disabled = false;
@@ -1174,6 +1208,10 @@
 
   function clearAccountPrivateState() {
     state.accountEpoch += 1;
+    state.dashboard = {};
+    state.dashboardStatus = "idle";
+    state.dashboardRequestSequence += 1;
+    state.keywordProfilesAvailable = false;
     els.sidebarAccount.hidden = true;
     els.sidebarAccountLabel.textContent = "";
     els.sidebarAccountRole.textContent = "";
@@ -1191,12 +1229,17 @@
     state.performanceEditor.records = [];
     state.performanceEditor.loaded = false;
     state.performanceEditor.loading = false;
+    state.resultLearning.saving = false;
     closeResultLearningDialog();
     state.resultLearning.records = [];
     state.resultLearning.loaded = false;
     state.resultLearning.loading = false;
     state.resultLearning.offset = 0;
     state.resultLearning.total = 0;
+    state.resultLearning.opening = null;
+    els.resultLearningFields.disabled = false;
+    els.resultLearningCloseButton.disabled = false;
+    els.resultLearningCancelButton.disabled = false;
     els.resultLearningUnlockButton.disabled = false;
     els.resultLearningSaveButton.disabled = false;
     els.resultLearningPagination.hidden = true;
@@ -3060,8 +3103,33 @@
     if (notice) openResultLearningDialog(notice);
   }
 
+  async function openNoticeResultLearning(noticeKey, trigger = null) {
+    if (state.resultLearning.opening || state.resultLearning.saving) return;
+    const epoch = state.accountEpoch;
+    const flight = {};
+    state.resultLearning.opening = flight;
+    trigger?.setAttribute("aria-busy", "true");
+    try {
+      const headers = await manualAnalysisAuthHeaders();
+      if (!headers || epoch !== state.accountEpoch) return;
+      if (!canWriteResults()) {
+        showToast("결과 조회 전용", "결과 입력 권한이 있는 부서 계정으로 로그인해 주세요.", "warning");
+        return;
+      }
+      const raw = unwrapObject(await apiRequest(`/result-learning/notices/${encodeURIComponent(noticeKey)}`, { headers }));
+      if (epoch !== state.accountEpoch) return;
+      if (raw.notice_key !== noticeKey) throw new Error("공고 정보를 확인하지 못했습니다.");
+      openResultLearningDialog(normalizeResultLearningNotice(raw));
+    } catch (error) {
+      if (epoch === state.accountEpoch) showToast("결과 입력창 열기 실패", editorErrorMessage(error), "error");
+    } finally {
+      trigger?.removeAttribute("aria-busy");
+      if (state.resultLearning.opening === flight) state.resultLearning.opening = null;
+    }
+  }
+
   function openResultLearningDialog(notice) {
-    if (!canWriteResults()) return;
+    if (!canWriteResults() || state.resultLearning.saving) return;
     const outcome = notice.outcome;
     const isManualRecord = outcome?.source === "MANUAL_UI";
     state.resultLearning.editingNotice = notice;
@@ -3073,7 +3141,7 @@
     els.resultLearningOpeningClassification.value = outcome?.openingIdentity?.classification_no ?? "";
     els.resultLearningOpeningRebid.value = outcome?.openingIdentity?.rebid_no ?? "";
     els.resultLearningOpeningClassification.setCustomValidity("");
-    els.resultLearningStatus.value = outcome?.status || "NO_BID";
+    els.resultLearningStatus.value = outcome?.status || "";
     els.resultLearningRecordStatus.value = outcome?.recordStatus || "DRAFT";
     els.resultLearningSubmittedAmount.value = outcome?.submittedBidAmount ?? "";
     els.resultLearningSubmittedRate.value = outcome?.submittedBidRate ?? "";
@@ -3095,14 +3163,77 @@
     els.resultLearningSourceReference.value = outcome?.sourceReference || "";
     els.resultLearningOperatorNote.value = outcome?.operatorNote || "";
     els.resultLearningDialog.dataset.requestKey = isManualRecord ? "" : newIdempotencyKey("result");
+    updateResultLearningValidation();
+    showResultLearningError("");
     els.resultLearningDialog.showModal();
     window.requestAnimationFrame(() => els.resultLearningStatus.focus());
   }
 
   function closeResultLearningDialog() {
+    if (state.resultLearning.saving) return;
     if (els.resultLearningDialog.open) els.resultLearningDialog.close();
     state.resultLearning.editingNotice = null;
     state.resultLearning.editingOutcome = null;
+  }
+
+  function showResultLearningError(message) {
+    els.resultLearningError.textContent = message;
+    els.resultLearningError.hidden = !message;
+  }
+
+  function updateResultLearningValidation() {
+    const status = els.resultLearningStatus.value;
+    const validated = els.resultLearningRecordStatus.value === "VALIDATED";
+    const fields = [els.resultLearningStatus, els.resultLearningSourceReference, els.resultLearningWinner,
+      els.resultLearningSubmittedAmount, els.resultLearningWinningAmount, els.resultLearningLossReason, els.resultLearningTotalScore];
+    fields.forEach((field) => field.setCustomValidity(""));
+    els.resultLearningSourceReference.required = validated;
+    els.resultLearningWinner.required = validated && status === "WON";
+    els.resultLearningLossReason.required = validated && status === "LOST";
+    const hasValue = (field) => String(field.value ?? "").trim() !== "";
+    const fail = (field, message) => { field.setCustomValidity(message); return false; };
+    els.resultLearningSaveButton.textContent = state.resultLearning.saving ? "저장 중…" : validated ? "검증 완료 저장" : els.resultLearningRecordStatus.value === "ARCHIVED" ? "보관 저장" : "초안 저장";
+    showResultLearningError("");
+    if (!status) return fail(els.resultLearningStatus, "입찰 결과를 선택해 주세요. 낙찰 정보를 입력하려면 ‘낙찰’을 선택하세요.");
+    if (status === "NO_BID" && [els.resultLearningSubmittedAmount, els.resultLearningSubmittedRate,
+      els.resultLearningWinningAmount, els.resultLearningWinningRate, els.resultLearningTechnicalScore,
+      els.resultLearningPriceScore, els.resultLearningTotalScore, els.resultLearningRank, els.resultLearningWinner].some(hasValue)) {
+      return fail(els.resultLearningStatus, "미참여에는 투찰·낙찰·점수·순위를 저장할 수 없습니다. 결과를 바꾸거나 입력값을 비워 주세요.");
+    }
+    const [technical, price, total] = [els.resultLearningTechnicalScore, els.resultLearningPriceScore, els.resultLearningTotalScore].map((field) => nullableNumber(field.value));
+    if ([technical, price, total].every((value) => value !== null) && Math.abs(technical + price - total) > 0.11) {
+      return fail(els.resultLearningTotalScore, "기술점수와 가격점수의 합이 총점과 일치하지 않습니다.");
+    }
+    if (validated) {
+      if (!hasValue(els.resultLearningSourceReference)) return fail(els.resultLearningSourceReference, "검증 완료에는 출처 또는 근거 참조가 필요합니다. 출처를 나중에 입력하려면 ‘초안’으로 저장하세요.");
+      if (status === "SUBMITTED" && !hasValue(els.resultLearningSubmittedAmount) && !hasValue(els.resultLearningSubmittedRate)) return fail(els.resultLearningSubmittedAmount, "제출 완료에는 우리 투찰금액 또는 투찰률이 필요합니다.");
+      if (status === "WON") {
+        if (!hasValue(els.resultLearningWinner)) return fail(els.resultLearningWinner, "낙찰자를 입력해 주세요.");
+        if (!hasValue(els.resultLearningWinningAmount) && !hasValue(els.resultLearningWinningRate)) return fail(els.resultLearningWinningAmount, "낙찰금액 또는 낙찰률을 입력해 주세요.");
+      }
+      if (status === "LOST" && !hasValue(els.resultLearningLossReason)) return fail(els.resultLearningLossReason, "검증 완료에는 미낙찰 사유가 필요합니다.");
+    }
+    return true;
+  }
+
+  function resultLearningSaveError(error) {
+    if (error?.status === 422) {
+      const detail = error.payload?.detail;
+      const labels = { status: "입찰 결과", record_status: "기록 상태", source_reference: "출처 또는 근거 참조", submitted_bid_amount: "우리 투찰금액", submitted_bid_rate: "우리 투찰률", winning_bid_amount: "낙찰금액", winning_bid_rate: "낙찰률", technical_score: "기술점수", price_score: "가격점수", total_score: "총점", rank: "순위", winner_name: "낙찰자", occurred_at: "결과 발생일", loss_reason: "결과·미낙찰 사유", opening_identity: "개찰 회차", submitted_rate_calculation: "투찰률 계산 기준", operator_note: "담당자 메모" };
+      const messages = (Array.isArray(detail) ? detail.map((item) => {
+        const field = arrayValue(item.loc).find((part) => Object.hasOwn(labels, part));
+        return typeof item.msg === "string" && /[가-힣]/.test(item.msg) ? item.msg : field ? `${labels[field]} 입력값을 확인해 주세요.` : "";
+      }) : [detail])
+        .filter((message) => typeof message === "string" && /[가-힣]/.test(message))
+        .map((message) => message.replace(/^Value error,\s*/, ""));
+      if (messages.length) return [...new Set(messages)].join(" ");
+    }
+    if (error?.status === 409) {
+      const detail = error.payload?.detail;
+      if (typeof detail === "string" && /[가-힣]/.test(detail)) return `${detail} 입력 내용은 유지했습니다.`;
+      return "다른 결과가 먼저 저장되었습니다. 입력 내용은 유지했습니다. 현재 내용을 확인한 후 창을 닫고 다시 열어 최신 기록과 비교해 주세요.";
+    }
+    return editorErrorMessage(error);
   }
 
   function resultLearningRateLabel(outcome) {
@@ -3192,19 +3323,16 @@
     const epoch = state.accountEpoch;
     const notice = state.resultLearning.editingNotice;
     const outcome = state.resultLearning.editingOutcome;
-    if (!notice || !canWriteResults()) return;
+    if (!notice || !canWriteResults() || state.resultLearning.saving) return;
+    const validOutcome = updateResultLearningValidation();
     const openingIdentity = resultLearningOpeningIdentity();
-    if (openingIdentity === undefined) {
-      els.resultLearningForm.reportValidity();
-      return;
-    }
-    if (!updateResultLearningRate()) {
+    if (!validOutcome || openingIdentity === undefined || !updateResultLearningRate() || !els.resultLearningForm.checkValidity()) {
+      const invalidField = els.resultLearningForm.querySelector("input:invalid, select:invalid, textarea:invalid");
+      showResultLearningError(invalidField?.validationMessage || "입력값과 필수 항목을 확인해 주세요.");
       els.resultLearningForm.reportValidity();
       return;
     }
     const isManualRecord = outcome?.source === "MANUAL_UI";
-    const headers = await manualAnalysisAuthHeaders();
-    if (!headers || epoch !== state.accountEpoch) return;
     const occurredDate = els.resultLearningOccurredAt.value;
     // Editing a rate must not truncate the original result timestamp to midnight.
     const occurredAt = occurredDate === (outcome?.occurredAt?.slice(0, 10) || "")
@@ -3228,28 +3356,48 @@
       if (state.accountSession?.enabled) payload.expected_outcome_id = notice.expectedOutcomeId;
       if (outcome) payload.basis_outcome_id = outcome.id;
     }
+    state.resultLearning.saving = true;
+    els.resultLearningFields.disabled = true;
     els.resultLearningSaveButton.disabled = true;
+    els.resultLearningCloseButton.disabled = true;
+    els.resultLearningCancelButton.disabled = true;
+    els.resultLearningSaveButton.textContent = "저장 중…";
+    showResultLearningError("");
+    let saved = false;
     try {
+      const headers = await manualAnalysisAuthHeaders();
+      if (!headers || epoch !== state.accountEpoch) return;
       await apiRequest(path, { method: isManualRecord ? "PATCH" : "POST", headers, body: JSON.stringify(payload) });
       if (epoch !== state.accountEpoch) return;
-      closeResultLearningDialog();
-      await loadResultLearning({ force: true });
-      if (epoch !== state.accountEpoch) return;
-      showToast(
-        isManualRecord ? "결과 기록 수정 완료" : (outcome ? "담당자 검토본 저장 완료" : "결과 기록 저장 완료"),
-        !isManualRecord && outcome ? "자동 환류 원본은 변경하지 않고 검토본을 별도로 저장했습니다." : "검증 상태와 출처를 함께 저장했습니다.",
-        "success",
-      );
+      saved = true;
     } catch (error) {
       if (epoch !== state.accountEpoch) return;
-      if (state.accountSession?.enabled && error?.status === 409) {
-        closeResultLearningDialog();
-        await loadResultLearning({ force: true });
-        if (epoch !== state.accountEpoch) return;
-      }
-      showToast("결과 기록 저장 실패", editorErrorMessage(error), "error");
+      showResultLearningError(resultLearningSaveError(error));
+      els.resultLearningError.focus();
     } finally {
-      if (epoch === state.accountEpoch) els.resultLearningSaveButton.disabled = false;
+      if (epoch === state.accountEpoch) {
+        state.resultLearning.saving = false;
+        els.resultLearningFields.disabled = false;
+        els.resultLearningSaveButton.disabled = false;
+        els.resultLearningCloseButton.disabled = false;
+        els.resultLearningCancelButton.disabled = false;
+        els.resultLearningSaveButton.textContent = els.resultLearningRecordStatus.value === "VALIDATED" ? "검증 완료 저장" : els.resultLearningRecordStatus.value === "ARCHIVED" ? "보관 저장" : "초안 저장";
+      }
+    }
+    if (!saved || epoch !== state.accountEpoch) return;
+    closeResultLearningDialog();
+    showToast(
+      isManualRecord ? "결과 기록 수정 완료" : (outcome ? "담당자 검토본 저장 완료" : "결과 기록 저장 완료"),
+      !isManualRecord && outcome ? "자동 환류 원본은 변경하지 않고 검토본을 별도로 저장했습니다." : "검증 상태와 출처를 함께 저장했습니다.",
+      "success",
+    );
+    // Finish the editor before reloading: a slow refresh must not lock a newly opened form.
+    try {
+      if (state.currentView === "closed" || state.resultLearning.loaded) await loadResultLearning({ force: true });
+      if (epoch !== state.accountEpoch) return;
+      if (state.source === "api") await loadApplicationData({ forceApi: true });
+    } catch (error) {
+      if (epoch === state.accountEpoch) showToast("목록 새로고침 필요", "결과는 저장되었습니다. 목록을 새로고침해 주세요.", "warning");
     }
   }
 
@@ -4007,13 +4155,15 @@
     const totals = firstObject(source.totals, kpis.totals);
     const eligibilityCounts = firstObject(source.eligibility_counts, source.eligibilityCounts);
     const readinessCounts = firstObject(source.readiness_counts, source.readinessCounts);
-    const workQueues = globalNoticeSearchActive() ? {} : firstObject(source.work_queue_counts);
+    const localQueues = globalNoticeSearchActive() || state.source === "demo";
+    const workQueues = localQueues ? {} : firstObject(source.work_queue_counts);
     const derived = deriveDashboard(notices);
     return {
+      queueScope: localQueues ? "LOCAL" : "GLOBAL",
       newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.active, totals.notices)) ?? derived.newCount,
       // Dashboard work queues use explicit stored qualification. Global
       // analysis totals still include missing evaluations and failed notices.
-      failCount: numberOrNull(workQueues.fail) ?? derived.failCount,
+      failCount: localQueues ? derived.failCount : numberOrNull(workQueues.fail),
       reviewCount: derived.reviewCount,
       qualityReviewCount: derived.qualityReviewCount,
       // These clickable KPIs must match their OPEN-only board filters. The
@@ -4021,13 +4171,13 @@
       // deadline, so use the loaded notice projection for both counts.
       goCount: derived.goCount,
       urgentCount: derived.urgentCount,
-      cancelledCount: numberOrNull(workQueues.cancelled) ?? derived.cancelledCount,
-      endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? derived.endedCount,
-      resultMissingCount: numberOrNull(workQueues.result_missing) ?? derived.resultMissingCount,
+      cancelledCount: localQueues ? derived.cancelledCount : numberOrNull(workQueues.cancelled),
+      endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? (localQueues ? derived.endedCount : null),
+      resultMissingCount: localQueues ? derived.resultMissingCount : numberOrNull(workQueues.result_missing),
       undecidedCount: derived.undecidedCount,
-      totalNotices: numberOrNull(totals.notices) ?? notices.length,
-      totalEvaluations: numberOrNull(totals.evaluations) ?? notices.filter((notice) => notice.evaluationId).length,
-      totalDecisions: numberOrNull(totals.decisions) ?? notices.filter((notice) => notice.decision).length,
+      totalNotices: numberOrNull(totals.notices) ?? (state.source === "demo" ? derived.totalNotices : null),
+      totalEvaluations: numberOrNull(totals.evaluations) ?? (state.source === "demo" ? derived.totalEvaluations : null),
+      totalDecisions: numberOrNull(totals.decisions) ?? (state.source === "demo" ? derived.totalDecisions : null),
       eligibilityCounts,
       readinessCounts,
       analysisStatistics: source.analysis_statistics || null,
@@ -4042,9 +4192,14 @@
     // A filtered board cannot prove whole-database counts. Retain an observed
     // aggregate after a mutation, or show unavailable until the API responds.
     const result = deriveDashboard(notices);
-    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "failCount", "cancelledCount", "endedCount", "resultMissingCount"]) {
+    for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "endedCount"]) {
       result[key] = numberOrNull(previous[key]);
     }
+    const globalQueues = !globalNoticeSearchActive();
+    for (const key of ["failCount", "cancelledCount", "resultMissingCount"]) {
+      result[key] = globalQueues && previous.queueScope === "GLOBAL" ? numberOrNull(previous[key]) : null;
+    }
+    result.queueScope = globalQueues ? "GLOBAL" : "LOCAL";
     result.analysisStatistics = previous.analysisStatistics || null;
     result.lastSync = previous.lastSync || null;
     result.generatedAt = previous.generatedAt || null;
@@ -4128,7 +4283,30 @@
     els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "자격 FAIL";
     els.kpiReviewTrend.textContent = "처리 필요";
     els.kpiGoTrend.textContent = "AI 판단";
+    renderDashboardSummary();
     renderAnalysisProgress(data.analysisStatistics);
+  }
+
+  function renderDashboardSummary() {
+    if (!els.dashboardSummary) return;
+    const data = state.dashboard;
+    const loading = state.dashboardStatus === "loading";
+    const failed = ["error", "partial"].includes(state.dashboardStatus);
+    const hasPrevious = data.generatedAt && ["loading", "error"].includes(state.dashboardStatus);
+    els.dashboardSummary.hidden = state.source !== "api";
+    els.dashboardSummary.classList.toggle("is-warning", failed);
+    els.dashboardRetryButton.hidden = !failed;
+    els.dashboardRetryButton.disabled = loading || state.loading;
+    els.dashboardSummaryTitle.textContent = loading ? "전체 공고 수를 집계하고 있습니다."
+      : failed ? "일부 공고 수를 확인하지 못했습니다." : "전체 저장 현황";
+    els.dashboardSummaryTotals.textContent = `전체 저장 공고 ${displayNumber(data.totalNotices)}건 · 저장된 판정 이력 ${displayNumber(data.totalEvaluations)}건${hasPrevious ? ` · 마지막 확인 ${formatKstDateTime(data.generatedAt)}` : ""}`;
+    const scope = `${globalNoticeSearchActive() ? "카드 수는 현재 검색 결과 기준입니다. " : "아래 카드는 조건별 업무 대상 수입니다. "}검토 대기·마감 임박·결과 입력은 PASS·REVIEW 기준입니다.`;
+    els.dashboardSummaryDetail.textContent = loading || failed
+      ? `공고 목록 ${formatNumber(state.notices.length)}건은 조회됐습니다. ‘—’는 0건이 아니라 아직 확인하지 못한 집계입니다.${hasPrevious ? " 전체 저장 현황과 결과 입력·FAIL·취소 수는 마지막 확인값입니다." : ""} ${scope}`
+      : `${scope} 판정 이력에는 같은 공고의 재분석 기록이 포함됩니다.`;
+    for (const [id, key] of [["kpiNew", "failCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiEnded", "cancelledCount"]]) {
+      els[id].setAttribute("aria-label", data[key] == null ? "집계 확인 필요" : `${formatNumber(data[key])}건${hasPrevious ? " · 마지막 확인값" : ""}`);
+    }
   }
 
   function renderAnalysisProgress(stats) {
@@ -4136,8 +4314,8 @@
     const valueIds = ["analysisAttachmentValue", "analysisEligibilityValue", "analysisScoreValue"];
     if (!stats || stats.scope !== "OPEN_PPS_NOT_CANCELLED") {
       valueIds.forEach((id) => { els[id].textContent = "—"; });
-      els.analysisProgressScope.textContent = state.source === "api" && state.sourceReason
-        ? "전체 통계 조회 실패 · 공고 목록은 조회됐습니다. 상단 새로고침으로 다시 조회해 주세요."
+      els.analysisProgressScope.textContent = state.source === "api" && ["error", "partial"].includes(state.dashboardStatus)
+        ? "전체 통계 조회 실패 · 공고 목록은 조회됐습니다. 집계 다시 조회로 확인해 주세요."
         : "전체 통계 조회 대기 · 상단 새로고침으로 다시 조회할 수 있습니다.";
       ["analysisAttachmentDetail", "analysisEligibilityDetail", "analysisScoreDetail"].forEach((id) => { els[id].textContent = "집계 결과가 아직 없습니다."; });
       return;
@@ -4490,6 +4668,7 @@
   }
 
   function renderNoticeRow(notice) {
+    const resultEntry = state.currentView === "result-missing" && canWriteResults();
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
@@ -4501,7 +4680,7 @@
     return `
       <tr class="notice-row ${operatorDecisionClass(notice)}" data-notice-key="${escapeAttribute(notice.noticeKey)}">
         <td>
-          <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">
+          <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} ${resultEntry ? "결과 입력" : "전체 상세 보기"}">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
             <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.demandAgency || notice.agency)}</span></span>
             ${notice.historicalAnalysis ? `<span class="notice-analysis-reason" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 120))}</span>` : analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
@@ -4517,14 +4696,13 @@
         <td>${analysisRecommendationPill(notice)}</td>
         <td>${operatorDecisionIndicator(notice)}</td>
         <td>
-          <button class="detail-link-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">
-            전체 상세 보기
-          </button>
+          ${noticeListActions(notice, resultEntry)}
         </td>
       </tr>`;
   }
 
   function renderNoticeCard(notice) {
+    const resultEntry = state.currentView === "result-missing" && canWriteResults();
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
@@ -4533,7 +4711,7 @@
     const pendingLabel = notice.analysisState === "ANALYZED" ? "판단 대기 사유" : "미분석 사유";
     return `
       <article class="notice-card ${operatorDecisionClass(notice)}" data-notice-key="${escapeAttribute(notice.noticeKey)}">
-        <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">
+        <button class="notice-card__body" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} ${resultEntry ? "결과 입력" : "전체 상세 보기"}">
           <span class="notice-card__head">
             <span>${sourceKindBadge(notice)} ${noticeLifecycleBadge(notice)} ${analysisStatusPill(notice)}</span>
             <span class="notice-card__deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}</span>
@@ -4551,10 +4729,17 @@
           <span class="notice-card__axes">${analysisRecommendationPill(notice)}${operatorDecisionIndicator(notice)}</span>
           <span class="notice-card__actions">
             ${manualAnalysisAction(notice, "card")}
-            <button class="detail-link-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} 전체 상세 보기">전체 상세 보기</button>
+            ${noticeListActions(notice, resultEntry)}
           </span>
         </footer>
       </article>`;
+  }
+
+  function noticeListActions(notice, resultEntry) {
+    const label = escapeAttribute(notice.title);
+    return resultEntry
+      ? `<span class="result-entry-actions"><button class="button button--primary" type="button" data-open-notice aria-label="${label} 결과 입력">결과 입력</button><button class="button button--ghost" type="button" data-open-notice data-result-detail aria-label="${label} 전체 상세 보기">공고 상세</button></span>`
+      : `<button class="detail-link-button" type="button" data-open-notice aria-label="${label} 전체 상세 보기">전체 상세 보기</button>`;
   }
 
   function manualAnalysisAvailability(
@@ -5097,6 +5282,10 @@
     const row = event.target.closest("[data-notice-key]");
     if (!row) return;
     if (!explicitTarget && event.target.closest("button, a, input, select, textarea")) return;
+    if (state.currentView === "result-missing" && canWriteResults() && !event.target.closest("[data-result-detail]")) {
+      void openNoticeResultLearning(row.dataset.noticeKey, explicitTarget || row);
+      return;
+    }
     openDetail(row.dataset.noticeKey, explicitTarget || row);
   }
 
@@ -5213,7 +5402,8 @@
     if ((event.key === "Enter" || event.key === " ") && event.target.closest(".notice-row") && !event.target.closest("button")) {
       event.preventDefault();
       const row = event.target.closest(".notice-row");
-      openDetail(row.dataset.noticeKey, row);
+      if (state.currentView === "result-missing" && canWriteResults()) void openNoticeResultLearning(row.dataset.noticeKey, row);
+      else openDetail(row.dataset.noticeKey, row);
     }
   }
 
@@ -5395,6 +5585,8 @@
     els.detailSourceBadge.textContent = sourceKindLabel(notice, true);
     els.detailSourceBadge.classList.toggle("is-demo", notice.isSynthetic);
     els.detailNoticeId.textContent = `공고번호 ${notice.noticeNumber}`;
+    els.detailResultButton.hidden = !isEndedNotice(notice) || isCancelledNotice(notice) || !canWriteResults();
+    els.detailResultButton.textContent = notice.hasBidOutcome ? "결과 확인·수정" : "결과 입력";
     renderDetailPosition(notice);
     els.openSourceDialogButton.title = notice.sourceUrl ? "나라장터 원문 링크 확인" : "공개 가능한 원문 링크 상태 확인";
     renderManualAnalysisDetailAction(notice);
