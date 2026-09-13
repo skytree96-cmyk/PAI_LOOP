@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { createGunzip } from "node:zlib";
 import { assertAwardAutomationWorkflow, awardWorkflowKey, validateAwardAggregate } from "./award-automation-workflow-contract.mjs";
 
 const workflow = JSON.parse(await fs.readFile(`workflows/${awardWorkflowKey}.json`, "utf8"));
@@ -8,6 +9,17 @@ const manifest = JSON.parse(await fs.readFile("manifest.json", "utf8"));
 const config = manifest.workflows[awardWorkflowKey];
 assertAwardAutomationWorkflow(workflow, config);
 const nodes = new Map(workflow.nodes.map(node => [node.name, node]));
+for (const [name, expected] of [
+  ["Enroll New and Stale Award Notices", { refresh_after_days: 30 }],
+  ["Refresh One Queued Award Notice", { max_notices: 1, daily_api_budget: 700, per_notice_api_budget: 150 }],
+]) {
+  const parameters = nodes.get(name).parameters;
+  assert.equal(parameters.contentType, "json", "raw-body mode returns an unresolved n8n response stream");
+  assert.equal(parameters.specifyBody, "json");
+  assert.deepEqual(JSON.parse(parameters.jsonBody), expected);
+  assert.equal(parameters.options.response.response.responseFormat, "json");
+  assert(!("body" in parameters)); assert(!("rawContentType" in parameters));
+}
 const blocked = new Proxy({}, { get() { throw new Error("SYN external access forbidden"); } });
 function code(name, input = {}, env = blocked, context = blocked) {
   return new Function("$json", "$env", "$node", nodes.get(name).parameters.jsCode)(input, env, context)[0].json;
@@ -47,6 +59,15 @@ for (const field of ["attempted", "notice_key", "job_id", "api_calls", "records"
 const decide = value => code("Validate Award Plan and Budget", value, blocked, { "Build Scheduled Award Runtime": { json: { runtime } } });
 assert.equal(decide(plan).canRun, true);
 assert.equal(decide({ body: plan }).canRun, true);
+// Real live failure shape: raw HTTP request mode returned a decompression stream
+// in body despite responseFormat=json. Keep rejecting it instead of weakening
+// the aggregate allowlist or trying to inspect internal transport buffers.
+const unresolvedResponse = createGunzip();
+try {
+  assert.throws(() => decide({ body: unresolvedResponse }), /aggregate contract failed/);
+} finally {
+  unresolvedResponse.destroy();
+}
 for (const value of [{ ...plan, eligible: 0 }, { ...plan, running: 1 }, { ...plan, api_calls_24h: 551 }, { ...plan, budget_reserved_24h: 551 }, { ...plan, api_calls_24h: 500, budget_reserved_24h: 51 }]) {
   assert.equal(decide(value).canRun, false);
 }
@@ -79,7 +100,12 @@ for (const mutate of [
   item => { item.connections["Load Offline Award Fixture"].main[0][0].node = "Refresh One Queued Award Notice"; },
   item => { item.nodes.find(node => node.name === "Load Offline Award Fixture").parameters.jsCode += "\nfetch('https://syn.example');"; },
   item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").retryOnFail = true; },
-  item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").parameters.body = '{"max_notices":2}'; },
+  item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").parameters.jsonBody = '{"max_notices":2}'; },
+  item => {
+    const parameters = item.nodes.find(node => node.name === "Enroll New and Stale Award Notices").parameters;
+    parameters.contentType = "raw"; parameters.rawContentType = "application/json";
+    parameters.body = parameters.jsonBody; delete parameters.jsonBody; delete parameters.specifyBody;
+  },
   item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").parameters.url = "https://syn.example/analysis"; },
   item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").credentials = { httpHeaderAuth: { id: privateValue } }; },
   item => { item.settings.saveDataSuccessExecution = "all"; },
@@ -94,7 +120,7 @@ for (const [key, entry] of Object.entries(manifest.workflows)) if (/pai-loop-0[0
 // Fully intercept deploy's fetch in a child process. No HTTP server or network
 // is used. Prove isolated W14 create/update and credential identity preservation
 // while pending native-Claude metadata remains in the real manifest.
-for (const scenario of ["create", "update", "wrong-binding", "wrong-source", "lookalike-source", "wrong-source-type"]) {
+for (const scenario of ["create", "update", "update-active", "wrong-binding", "wrong-source", "lookalike-source", "wrong-source-type"]) {
   const harness = `
     import assert from 'node:assert/strict';
     import fs from 'node:fs/promises';
@@ -111,7 +137,7 @@ for (const scenario of ["create", "update", "wrong-binding", "wrong-source", "lo
     if(scenario === 'wrong-source') daily.name = 'SYN wrong source';
     if(scenario === 'lookalike-source') for(const node of daily.nodes) node.name = 'SYN lookalike ' + node.name;
     if(scenario === 'wrong-source-type') for(const node of daily.nodes) if(node.credentials) node.type = 'SYN wrong type';
-    let remote = scenario === 'create' ? undefined : {...award, id:'SYN-award-workflow', active:false};
+    let remote = scenario === 'create' ? undefined : {...award, id:'SYN-award-workflow', active:scenario==='update-active', versionId:'SYN-prior-version', activeVersionId:scenario==='update-active'?'SYN-prior-version':null};
     if(remote) for(const node of remote.nodes) if(node.type === 'n8n-nodes-base.httpRequest') node.credentials = scenario === 'wrong-binding' ? {httpHeaderAuth:{id:'SYN-wrong-reference',name:'SYN wrong'}} : credential;
     const mutations = [];
     const response = body => ({ok:true,status:200,text:async()=>JSON.stringify(body)});
@@ -124,18 +150,22 @@ for (const scenario of ["create", "update", "wrong-binding", "wrong-source", "lo
       mutations.push([method,route]);
       if((method === 'POST' && route === '/api/v1/workflows') || (method === 'PUT' && route === '/api/v1/workflows/SYN-award-workflow')) {
         const payload = JSON.parse(options.body); assert.equal(payload.name,award.name);
-        remote = {...payload,id:'SYN-award-workflow',active:false}; return response(remote);
+        remote = {...payload,id:'SYN-award-workflow',active:remote?.active??false,versionId:'SYN-saved-version',activeVersionId:remote?.activeVersionId??null}; return response(remote);
       }
-      if(method === 'POST' && route === '/api/v1/workflows/SYN-award-workflow/activate') {remote.active=true;return response(remote);}
+      if(method === 'POST' && route === '/api/v1/workflows/SYN-award-workflow/activate') {
+        assert.deepEqual(JSON.parse(options.body),{versionId:'SYN-saved-version'});
+        remote.active=true;remote.activeVersionId='SYN-saved-version';return response(remote);
+      }
       throw new Error('SYN unapproved route');
     };
     process.argv.push('--only=' + awardKey);
     let error; try { await import('./scripts/deploy-workflows.mjs'); } catch(caught) { error=caught; }
-    if(['create','update'].includes(scenario)) {
+    if(['create','update','update-active'].includes(scenario)) {
       if(error) throw error;
       assert.equal(mutations.length,2); assert.equal(mutations[0][0],scenario==='create'?'POST':'PUT');
       assert.equal(mutations[1][1],'/api/v1/workflows/SYN-award-workflow/activate');
       assert.equal(remote.active,true);
+      assert.equal(remote.activeVersionId,remote.versionId,'W14 must run the saved draft after active updates');
       for(const node of remote.nodes) if(node.type==='n8n-nodes-base.httpRequest') assert.deepEqual(node.credentials,credential);
     } else {assert(error,'SYN invalid credential source must fail');assert.deepEqual(mutations,[]);}
     assert.equal(daily.active,false);

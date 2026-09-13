@@ -1231,6 +1231,24 @@ for (const { key, config, workflow } of selectedDefinitions) {
     assertAwardCredentialBindings(remote, sharedBackendCredential);
     // Strip environment-owned references solely for readback contract checking.
     assertAwardAutomationWorkflow({ ...remote, nodes: remote.nodes.map(({ credentials, ...node }) => node) }, config);
+    const savedVersionId = remote.versionId;
+    assert(typeof savedVersionId === "string" && savedVersionId, "W14 saved version must be identifiable before publication");
+    const publishedVersionId = remote.activeVersionId ?? remote.activeVersion?.versionId;
+    if (remote.active !== true || publishedVersionId !== savedVersionId) {
+      // Updating an active workflow saves a draft. Publish this exact version,
+      // otherwise the schedule can continue running the previous node config.
+      await request(`/workflows/${encodeURIComponent(workflowId)}/activate`, {
+        method: "POST", body: JSON.stringify({ versionId: savedVersionId }),
+      });
+      console.log(`Activated ${key} (published saved version)`);
+    }
+    remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
+    assert(remote.active === true && remote.versionId === savedVersionId
+      && (remote.activeVersionId ?? remote.activeVersion?.versionId) === savedVersionId,
+    "W14 must publish the exact saved version without concurrent draft changes");
+    assertAwardCredentialBindings(remote, sharedBackendCredential);
+    assertAwardAutomationWorkflow({ ...remote, nodes: remote.nodes.map(({ credentials, ...node }) => node) }, config);
+    continue;
   }
 
   if (config.publish === true) {

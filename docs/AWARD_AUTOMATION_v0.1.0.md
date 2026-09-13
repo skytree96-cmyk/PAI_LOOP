@@ -77,6 +77,15 @@ W14는 응답의 정확한 필드와 타입을 검증한다. 식별자는 검증
 따라 다음 예약으로 이어진다. `running > 0`, `eligible == 0`, 예산 부족 시
 `/run`을 호출하지 않는다. backend는 두 요청 사이의 경쟁 조건도 다시 검증한다.
 
+두 HTTP node는 요청 본문에도 `contentType: json`, `specifyBody: json`,
+`jsonBody`를 사용한다. 2026-09-13 예약 실행 점검에서 raw 요청 모드가 HTTP 200의
+응답을 JSON 대신 압축 해제 stream 객체로 반환하여 plan validator에서 멈춘
+사실을 확인했다. n8n의 [HTTP Request 구현](https://github.com/n8n-io/n8n/blob/master/packages/nodes-base/nodes/HttpRequest/V3/HttpRequestV3.node.ts)은
+raw 요청 모드에서 `useStream=true`를 강제하므로 `responseFormat: json`만으로는
+이를 막지 못한다. 기본 JSON 요청 모드로 전환하여 응답 JSON 처리를 유지한다.
+수집 예산·요청 필드·인증·응답 allowlist는 그대로다. stream 객체는 계속 거부하며
+내부 buffer를 해석하거나 원문을 출력하지 않는다.
+
 수동 `Run Award Automation Offline Fixture` 경로는 합성 응답만 실행하고
 환경변수·인증·네트워크를 사용하지 않는다. n8n 성공/실패/수동 실행 payload
 저장은 꺼져 있으며, 상태 확인의 기준은 backend의 영속 집계·audit다.
@@ -90,7 +99,10 @@ W14는 응답의 정확한 필드와 타입을 검증한다. 식별자는 검증
    `node scripts/deploy-workflows.mjs --only=pai-loop-14-award-history-automation`
    를 실행한다. 스크립트는 정확한 W10 이름·HTTP node 이름·타입으로 기존
    Generic Header credential 참조를 선택한다. W14의 정확한 두 HTTP node에만
-   연결하고 원격 재조회로 계약·동일 credential을 확인한 뒤 활성화한다.
+   연결하고 원격 재조회로 계약·동일 credential을 확인한 뒤 저장된 정확한
+   `versionId`를 게시한다. 이미 활성인 W14를 수정한 경우에도 새 draft를 게시하고
+   `activeVersionId == versionId`를 재조회하여 실제 예약 실행 버전을 확인한다.
+   이 게시 처리의 변경은 W14에만 적용한다.
 4. 별도로 현재 원격 W10의 위 두 award runtime flag만 `false`로 바꾸고
    나머지 runtime, credential, 활성 상태가 보존됐는지 확인한다. 로컬 W10
    전체를 덮어쓰는 배포로 다른 작업의 최신 설정을 되돌리지 않는다.

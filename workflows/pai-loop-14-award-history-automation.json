@@ -141,9 +141,9 @@
           ]
         },
         "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "{\"refresh_after_days\":30}",
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"refresh_after_days\":30}",
         "options": {
           "timeout": 520000,
           "response": {
@@ -250,9 +250,9 @@
           ]
         },
         "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "{\"max_notices\":1,\"daily_api_budget\":700,\"per_notice_api_budget\":150}",
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"max_notices\":1,\"daily_api_budget\":700,\"per_notice_api_budget\":150}",
         "options": {
           "timeout": 520000,
           "response": {
