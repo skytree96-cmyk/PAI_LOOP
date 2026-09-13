@@ -82,21 +82,25 @@ def test_teams_iframe_headers_allow_only_declared_microsoft_hosts(monkeypatch) -
             assert "x-frame-options" not in response.headers
 
 
-def test_table_and_card_detail_actions_open_the_full_screen_view() -> None:
+def test_table_and_card_actions_keep_detail_view_and_label_direct_result_entry() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     assert 'class="notice-title-button" type="button" data-open-notice' in source
     assert 'class="detail-link-button" type="button" data-open-notice' in source
     assert 'class="notice-card__body" type="button" data-open-notice' in source
-    assert 'aria-label="${escapeAttribute(notice.title)} 전체 상세 보기"' in source
+    # Result-missing rows/cards open the editor; ordinary notices and the
+    # separate detail action retain the full-screen detail path.
+    assert source.count(
+        'aria-label="${escapeAttribute(notice.title)} ${resultEntry ? "결과 입력" : "전체 상세 보기"}"'
+    ) == 2
     assert source.count("전체 상세 보기") >= 4
     assert 'els.noticeTableBody.addEventListener("click", handleNoticeActivation)' in source
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".detail-link-button" in styles
     assert "width: 100vw" in styles
-    assert "styles.css?v=20260908-login-brand-v1" in html
-    assert "app.js?v=20260908-login-brand-v1" in html
+    assert "styles.css?v=20260913-integrated-v1" in html
+    assert "app.js?v=20260913-integrated-v1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:

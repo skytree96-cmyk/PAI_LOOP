@@ -174,6 +174,7 @@ def test_prior_generic_record_enters_frozen_retry_and_new_version_stops_continua
         if legacy:
             data["prompt_version"]=LEGACY_CASE_CONTRACT.prompt
             data["schema_version"]=LEGACY_CASE_CONTRACT.schema
+            data["processing_version"]=LEGACY_CASE_CONTRACT.processing
             raw=data["quantitative_validation_record"]
             raw.update(prompt_version=LEGACY_CASE_CONTRACT.prompt,extraction_schema_version=LEGACY_CASE_CONTRACT.schema,validator_version=LEGACY_CASE_CONTRACT.validator)
             record=quant.ValidatedQuantitativeAttachmentRecord.model_validate(raw)

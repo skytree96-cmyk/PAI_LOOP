@@ -12,6 +12,7 @@ from sqlalchemy import select, func
 
 from pai_loop.extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT as CURRENT, LEGACY_CASE_CONTRACT as LEGACY,
+    PREVIOUS_CASE_CONTRACT as PREVIOUS,
     classify_attempt_header, classify_record_contract,
 )
 from pai_loop.integrations.openai_extraction import (
@@ -85,7 +86,7 @@ def source_payload(attachment_id, *, tail="EQ", gap=False):
     return result, source
 
 
-def notice_fixture(*, legacy=True, tail="EQ", gap=False, neutral=False):
+def notice_fixture(*, legacy=True, tail="EQ", gap=False, neutral=False, contract=None):
     manifest = build_attachment_manifest(dict(
         bidNtceNo="SYN-CASE", bidNtceOrd="000", ntceSpecFileNm1="SYN 제안요청서.pdf",
         ntceSpecDocUrl1="https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=SYN-CASE&bidPbancOrd=000&fileSeq=1&fileType=1&prcmBsneSeCd=01",
@@ -101,10 +102,10 @@ def notice_fixture(*, legacy=True, tail="EQ", gap=False, neutral=False):
     manifest_sha = digest(manifest)
     record = validate_quantitative_attachment_extraction(result, source_text=source,
         attachment_id=aid, document_sha256=file_sha, manifest_sha256=manifest_sha)
-    contract = LEGACY if legacy else CURRENT
-    if legacy:
-        record = record.model_copy(update=dict(prompt_version=LEGACY.prompt,
-            extraction_schema_version=LEGACY.schema, validator_version=LEGACY.validator))
+    contract = contract or (LEGACY if legacy else CURRENT)
+    if contract != CURRENT:
+        record = record.model_copy(update=dict(prompt_version=contract.prompt,
+            extraction_schema_version=contract.schema, validator_version=contract.validator))
         record = record.model_copy(update=dict(
             validation_fingerprint_sha256=validated_quantitative_record_fingerprint(record)))
     payload = dict(kind="OPENAI_REQUIREMENT_EXTRACTION", source_kind="PPS_PUBLIC_ATTACHMENT",
@@ -150,11 +151,11 @@ def merge(attempt, record, *, include_payload=True):
         source_payloads={record.attachment_id: payload} if include_payload else None)
 
 
-@pytest.mark.parametrize("parts", list(product((False, True), repeat=3)))
+@pytest.mark.parametrize("parts", list(product((False, True), repeat=4)))
 def test_only_released_tuple_combinations_are_readable(parts):
     contracts = [CURRENT if current else LEGACY for current in parts]
     payload = dict(prompt_version=contracts[0].prompt, schema_version=contracts[1].schema,
-                   processing_version=CURRENT.processing)
+                   processing_version=contracts[3].processing)
     raw = dict(prompt_version=payload["prompt_version"],
                extraction_schema_version=payload["schema_version"], validator_version=contracts[2].validator)
     expected = "CURRENT" if all(parts) else "LEGACY_CASE_V1" if not any(parts) else "UNSUPPORTED"
@@ -207,6 +208,65 @@ def test_legacy_label_cannot_claim_new_case_vocabulary(tail):
     assert merge(attempt, record).status != "AVAILABLE"
 
 
+@pytest.mark.parametrize("options", [{}, {"tail": "LT"}, {"gap": True}, {"neutral": True}])
+def test_exact_previous_contract_keeps_its_original_proof_and_status(options):
+    notice, _, attempt, record = notice_fixture(contract=PREVIOUS, **options)
+    assert classify_attempt_header(attempt.source_payload) == "LEGACY_CASE_V2"
+    assert usable(attempt, record)
+    assert _current_pps_manifest_basis(notice.versions, prompt_version=PROMPT_VERSION)["selected_attempt_ids"] == [attempt.id]
+    assert _parse_source(attempt, prompt_version=PROMPT_VERSION, allow_compatible_pps=True).materializable
+    assert bool(merge(attempt, record).available_candidates) == bool(record.available_candidates)
+    # Recreate pre-upgrade JSON: the new optional field was absent, not null.
+    raw = record.model_dump(mode="json")
+    for candidate in raw["available_candidates"]:
+        for case in candidate["cases"]:
+            case.pop("comparison_upper_value", None)
+    restored = ValidatedQuantitativeAttachmentRecord.model_validate(raw)
+    assert restored.validation_fingerprint_sha256 == validated_quantitative_record_fingerprint(restored)
+    assert usable(attempt, restored)
+
+
+@pytest.mark.parametrize("contract", [LEGACY, PREVIOUS])
+@pytest.mark.parametrize("gap", [False, True])
+@pytest.mark.parametrize("mutation", ["upper", "between", "not_submitted"])
+def test_predecessors_cannot_smuggle_new_case_semantics(contract, gap, mutation):
+    _, _, attempt, record = notice_fixture(contract=contract, gap=gap)
+    case = attempt.source_payload["result"]["quantitative_tables"][0]["criteria"][0]["cases"][0]
+    if mutation == "upper":
+        case["comparison_upper_value"] = 6
+    elif mutation == "between":
+        case.update(operator="BETWEEN", comparison_value=5, comparison_upper_value=6)
+    else:
+        case.update(operator="NOT_SUBMITTED", comparison_value=None, award_value=0)
+    assert not usable(attempt, record)
+
+
+@pytest.mark.parametrize("field", ["prompt", "schema", "validator", "processing"])
+def test_previous_tuple_cannot_mix_with_current_contract(field):
+    parts = PREVIOUS._asdict()
+    parts[field] = getattr(CURRENT, field)
+    payload = dict(prompt_version=parts["prompt"], schema_version=parts["schema"], processing_version=parts["processing"])
+    record = dict(prompt_version=parts["prompt"], extraction_schema_version=parts["schema"], validator_version=parts["validator"])
+    assert classify_record_contract(payload, record) == "UNSUPPORTED"
+
+
+def test_additive_empty_upper_bound_preserves_existing_company_fact_identity():
+    from pai_loop.quantitative_scoring import _candidate_fact_binding_sha256, _canonical_digest
+    _, _, _, record = notice_fixture(contract=PREVIOUS)
+    candidate = record.available_candidates[0]
+    legacy_json = candidate.model_dump(mode="json")
+    for case in legacy_json["cases"]:
+        case.pop("comparison_upper_value", None)
+    old_digest = _canonical_digest({"binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
+        "document_sha256": record.document_sha256, "candidate": legacy_json})
+    assert _candidate_fact_binding_sha256(candidate, document_sha256=record.document_sha256) == old_digest
+    changed = candidate.model_copy(update={"cases": (
+        candidate.cases[0].model_copy(update={"operator": "BETWEEN", "comparison_upper_value": 6}),
+        *candidate.cases[1:],
+    )})
+    assert _candidate_fact_binding_sha256(changed, document_sha256=record.document_sha256) != old_digest
+
+
 def test_legacy_review_original_case_rows_cannot_hide_new_vocabulary():
     _, _, attempt, record = notice_fixture(gap=True)
     assert record.status != "AVAILABLE"
@@ -256,6 +316,7 @@ def test_new_generation_never_resurrects_old_available(status):
     notice, _, old, record = notice_fixture()
     payload = deepcopy(old.source_payload)
     payload.update(prompt_version=CURRENT.prompt, schema_version=CURRENT.schema,
+                   processing_version=CURRENT.processing,
                    status="REVIEW" if status == "REVIEW" else "ACCEPTED",
                    error_code="SCHEMA_VALIDATION_ERROR", result=None,
                    quantitative_validation_record=None)
@@ -412,6 +473,7 @@ def test_mixed_legacy_current_attachment_contracts_share_one_current_manifest():
         "attachment_id": second_attachment["attachment_id"], "source_label": "SYN 공고문.pdf",
         "document_sha256": "c"*64, "manifest_sha256": digest(second_attachment),
         "prompt_version": CURRENT.prompt, "schema_version": CURRENT.schema,
+        "processing_version": CURRENT.processing,
         "result": empty_result.model_dump(mode="json"),
         "quantitative_validation_record": second_record.model_dump(mode="json")}
     NoticeVersion(id="SYN-SECOND", notice=notice, version_no=3, file_sha256="c"*64,
@@ -438,7 +500,7 @@ def test_legacy_review_retry_reuses_the_new_current_review_on_continuation():
     notice, _, old, record = notice_fixture(gap=True)
     retry_ids = current_retryable_review_version_ids(notice.versions)
     payload = {**deepcopy(old.source_payload), "prompt_version": CURRENT.prompt,
-        "schema_version": CURRENT.schema, "status": "REVIEW",
+        "schema_version": CURRENT.schema, "processing_version": CURRENT.processing, "status": "REVIEW",
         "error_code": "SCHEMA_VALIDATION_ERROR", "result": None,
         "quantitative_validation_record": None}
     new = NoticeVersion(id="SYN-RETRY-RESULT", notice=notice, version_no=3,

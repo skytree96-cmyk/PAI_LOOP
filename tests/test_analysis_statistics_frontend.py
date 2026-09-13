@@ -102,6 +102,7 @@ renderAnalysisProgress(null);
 const missing = JSON.parse(JSON.stringify(els));
 state.source = 'api';
 state.sourceReason = 'SYN-dashboard-unavailable';
+state.dashboardStatus = 'error';
 renderAnalysisProgress(null);
 console.log(JSON.stringify({loaded,missing,failed:els}));
 """
@@ -131,10 +132,11 @@ def test_dashboard_timeout_never_labels_filtered_board_size_as_database_total() 
     script = """
 const deriveDashboard = rows => ({totalNotices: rows.length, cancelledCount:0, resultMissingCount:0, reviewCount:2, lastSync:'invented-now'});
 const numberOrNull = n => Number.isFinite(n) ? n : null;
+const globalNoticeSearchActive = () => false;
 """ + source[start:end] + """
 const rows = [{},{}];
 const pending = dashboardWithoutGlobalTotals(rows);
-const previous = {totalNotices:740,cancelledCount:15,resultMissingCount:443,lastSync:'observed-time',analysisStatistics:{notice_count:282}};
+const previous = {queueScope:'GLOBAL',totalNotices:740,cancelledCount:15,resultMissingCount:443,lastSync:'observed-time',analysisStatistics:{notice_count:282}};
 const retained = dashboardWithoutGlobalTotals(rows, previous);
 console.log(JSON.stringify({pending,retained,previous}));
 """

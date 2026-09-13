@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260908-login-brand-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260913-integrated-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -187,6 +187,14 @@
           </section>
 
           <section class="kpi-grid" id="opportunityKpis" aria-label="오늘 할 일과 참고 현황">
+            <div class="dashboard-summary" id="dashboardSummary" hidden>
+              <div role="status" aria-live="polite">
+                <strong id="dashboardSummaryTitle">전체 공고 수를 집계하고 있습니다.</strong>
+                <p class="dashboard-summary__totals" id="dashboardSummaryTotals">전체 저장 공고·판정 이력 확인 대기</p>
+                <p id="dashboardSummaryDetail">‘—’는 0건이 아니라 아직 확인하지 못한 집계입니다.</p>
+              </div>
+              <button class="button button--secondary" id="dashboardRetryButton" type="button" hidden>집계 다시 조회</button>
+            </div>
             <article class="kpi-card kpi-card--action kpi-card--accent">
               <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="분석 및 자격 검토 대기 공고 보기" aria-pressed="false"><span class="sr-only">분석 및 자격 검토 대기 공고 보기</span></button>
               <div class="kpi-card__head"><span>검토 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
@@ -771,6 +779,7 @@
           <button class="button button--ghost" id="nextNoticeButton" type="button" aria-label="다음 공고">다음</button>
         </nav>
         <div class="drawer-header__actions">
+          <button class="button button--primary" type="button" id="detailResultButton" hidden>결과 입력</button>
           <button class="button button--primary manual-analysis-detail" type="button" id="manualAnalyzeButton" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><path d="m5.6 5.6 2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1" /><circle cx="12" cy="12" r="3.5" /></svg>
             <span>문서 분석 실행</span>
@@ -1061,14 +1070,12 @@
     <dialog class="source-link-dialog record-editor-dialog" id="resultLearningDialog" aria-labelledby="resultLearningDialogTitle">
       <form class="source-link-dialog__panel record-editor-form" id="resultLearningForm">
         <header class="source-link-dialog__header"><div><p class="section-kicker">입찰 결과</p><h2 id="resultLearningDialogTitle">입찰 결과 입력</h2><p id="resultLearningDialogNotice">공고를 확인합니다.</p></div><button class="icon-button" id="resultLearningCloseButton" type="button" aria-label="결과 편집 닫기">×</button></header>
-        <div class="source-link-dialog__body record-editor-grid">
-          <label class="record-field"><span>개찰 공고번호</span><input id="resultLearningOpeningNotice" readonly /></label>
-          <label class="record-field"><span>공고 차수</span><input id="resultLearningOpeningRevision" readonly /></label>
-          <label class="record-field"><span>개찰 분류번호</span><input id="resultLearningOpeningClassification" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
-          <label class="record-field"><span>재입찰번호</span><input id="resultLearningOpeningRebid" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
-          <p class="record-editor-note record-field--wide" id="resultLearningOpeningHelp">개찰결과에서 확인한 분류번호와 재입찰번호를 함께 입력하세요. 미확인은 두 칸을 비워 두며, 0은 확인한 경우에만 입력합니다. 수기 입력만으로 나라장터 참여 확인이 되지는 않습니다.</p>
-          <label class="record-field"><span>결과 *</span><select id="resultLearningStatus" required><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
+        <div class="source-link-dialog__body result-learning-body">
+        <fieldset class="record-editor-grid" id="resultLearningFields" aria-label="입찰 결과 입력 항목">
+          <label class="record-field"><span>결과 *</span><select id="resultLearningStatus" required><option value="">결과를 선택해 주세요</option><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
           <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">초안</option><option value="VALIDATED">검증 완료</option><option value="ARCHIVED">보관</option></select></label>
+          <label class="record-field record-field--wide"><span>출처 또는 근거 참조 (검증 완료 시 필수)</span><input id="resultLearningSourceReference" maxlength="1000" aria-describedby="resultLearningSourceHelp" placeholder="나라장터 결과 식별자, 평가결과 공문 등" /></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningSourceHelp">확인한 항목부터 초안으로 저장할 수 있습니다. 출처를 입력하고 필수 결과 정보를 확인한 뒤 ‘검증 완료’로 변경하세요.</p>
           <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="number" min="0" step="any" /></label>
           <label class="record-field"><span>우리 투찰률 입력 방식</span><select id="resultLearningRateMode"><option value="MANUAL">수기 입력</option><option value="AUTO">기준가격으로 자동 계산</option></select></label>
           <label class="record-field result-rate-basis" hidden><span>계산 기준 종류 *</span><select id="resultLearningRateBasisKind"><option value="">선택해 주세요</option><option value="PLANNED_PRICE">예정가격</option><option value="BASE_AMOUNT">기초금액</option></select></label>
@@ -1086,11 +1093,17 @@
           <label class="record-field"><span>낙찰자</span><input id="resultLearningWinner" maxlength="255" /></label>
           <label class="record-field"><span>결과 발생일</span><input id="resultLearningOccurredAt" type="date" /></label>
           <label class="record-field record-field--wide"><span>결과·미낙찰 사유</span><textarea id="resultLearningLossReason" rows="2" maxlength="4000"></textarea></label>
-          <label class="record-field record-field--wide"><span>출처 또는 근거 참조</span><input id="resultLearningSourceReference" maxlength="1000" placeholder="나라장터 결과 식별자, 평가결과 공문 등" /></label>
           <label class="record-field record-field--wide"><span>담당자 메모</span><textarea id="resultLearningOperatorNote" rows="2" maxlength="2000"></textarea></label>
+          <label class="record-field"><span>개찰 공고번호</span><input id="resultLearningOpeningNotice" readonly /></label>
+          <label class="record-field"><span>공고 차수</span><input id="resultLearningOpeningRevision" readonly /></label>
+          <label class="record-field"><span>개찰 분류번호 (선택)</span><input id="resultLearningOpeningClassification" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
+          <label class="record-field"><span>재입찰번호 (선택)</span><input id="resultLearningOpeningRebid" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningOpeningHelp">개찰결과에서 확인한 분류번호와 재입찰번호를 함께 입력하세요. 미확인은 두 칸을 비워 두며, 0은 확인한 경우에만 입력합니다. 수기 입력만으로 나라장터 참여 확인이 되지는 않습니다.</p>
           <p class="record-editor-note record-field--wide">검증 완료로 저장하려면 결과의 출처가 필요합니다. 수기 비율은 근거 참조에 기준가격도 함께 적어주세요.</p>
+        </fieldset>
         </div>
-        <footer class="source-link-dialog__actions"><button class="button button--secondary" id="resultLearningCancelButton" type="button">취소</button><button class="button button--primary" id="resultLearningSaveButton" type="submit">결과 저장</button></footer>
+        <p class="result-learning-error" id="resultLearningError" role="alert" tabindex="-1" hidden></p>
+        <footer class="source-link-dialog__actions"><button class="button button--secondary" id="resultLearningCancelButton" type="button">취소</button><button class="button button--primary" id="resultLearningSaveButton" type="submit">초안 저장</button></footer>
       </form>
     </dialog>
 
@@ -1264,6 +1277,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260908-login-brand-v1" defer></script>
+    <script src="./app.js?v=20260913-integrated-v1" defer></script>
   </body>
 </html>

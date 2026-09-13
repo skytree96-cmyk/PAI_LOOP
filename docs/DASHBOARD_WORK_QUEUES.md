@@ -20,6 +20,15 @@ available with their existing denominators. `deadline_soon` now matches the
 qualified D+5 urgent queue. `/fail` and `/cancelled` open their respective lists;
 the existing `/result-missing` route remains stable.
 
+The board shows a separate aggregate status and server-observed stored notice and
+evaluation totals. A dash is an unconfirmed value, not zero. While the aggregate
+loads or fails, scoped list counts can still be available; an aggregate-only retry
+does not reload the notice list or trigger analysis. Previously observed totals
+are explicitly dated when retained during refresh. An incomplete API aggregate
+must not turn missing whole-database values into filtered-list counts. See the
+[September 13 diagnosis](dashboard-counts-diagnosis-2026-09-13.md) for measured
+production evidence and its limits.
+
 Summary/detail `qualification_status` requires a stored evaluation selected by
 `latest_current_evaluation`: the evaluation must match current PPS material and
 the deadline snapshot. PPS qualification additionally requires complete current
@@ -39,4 +48,4 @@ No historical qualification is promoted into a current decision or recommendatio
 
 Summary deadlines explicitly include UTC so browser-local time zones cannot
 change lifecycle or KST calendar-day queue membership. The frontend cache key is
-`20260908-dashboard-v1`.
+`20260913-integrated-v1` (shared with the result-entry fixes).

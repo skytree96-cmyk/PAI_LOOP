@@ -573,6 +573,45 @@ def _notice(session: Session, notice_key: str) -> Notice:
     return notice
 
 
+def _notice_out(notice: Notice, *, include_outcomes: bool) -> ResultLearningNoticeOut:
+    latest = _latest_outcome(notice)
+    return ResultLearningNoticeOut(
+        notice_key=notice.notice_key,
+        bid_notice_no=notice.bid_notice_no,
+        revision_no=notice.revision_no,
+        title=notice.title,
+        agency=notice.agency,
+        deadline=notice.deadline,
+        notice_status=_effective_notice_status(notice),
+        latest_outcome=_out(latest) if latest else None,
+        outcomes=[
+            _out(item)
+            for item in sorted(
+                notice.bid_outcomes,
+                key=lambda item: (_utc(item.observed_at), item.id),
+                reverse=True,
+            )
+        ] if include_outcomes else [],
+    )
+
+
+@router.get("/notices/{notice_key}", response_model=ResultLearningNoticeOut)
+def get_result_learning_notice(
+    notice_key: str,
+    request: Request,
+    session: DbSession,
+) -> ResultLearningNoticeOut:
+    _operator_access(request, mutation=False)
+    notice = session.scalar(
+        select(Notice)
+        .where(Notice.notice_key == notice_key)
+        .options(selectinload(Notice.bid_outcomes))
+    )
+    if notice is None:
+        raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
+    return _notice_out(notice, include_outcomes=enabled(request))
+
+
 @router.get("", response_model=ResultLearningListOut)
 def list_result_learning(
     request: Request,
@@ -617,18 +656,8 @@ def list_result_learning(
         offset=offset,
         limit=limit,
         records=[
-            ResultLearningNoticeOut(
-                notice_key=notice.notice_key,
-                bid_notice_no=notice.bid_notice_no,
-                revision_no=notice.revision_no,
-                title=notice.title,
-                agency=notice.agency,
-                deadline=notice.deadline,
-                notice_status=_effective_notice_status(notice),
-                latest_outcome=_out(latest) if latest else None,
-                outcomes=[_out(item) for item in sorted(notice.bid_outcomes, key=lambda item: (_utc(item.observed_at), item.id), reverse=True)] if enabled(request) else [],
-            )
-            for notice, latest in page
+            _notice_out(notice, include_outcomes=enabled(request))
+            for notice, _latest in page
         ],
     )
 
