@@ -8,7 +8,7 @@ from sqlalchemy import select
 from pai_loop import api, award_automation as module
 from pai_loop.award_automation_models import AwardRefreshAttempt, AwardRefreshState
 from pai_loop.models import AwardHistoryItem, IngestionJob, Notice, PpsNoticeAuthority, new_id
-from test_award_automation import BASE, NOW, fake_collector, post, setup
+from test_award_automation import BASE, NOW, add_scope_version, fake_collector, post, setup
 
 
 def test_ten_notice_batch_aggregates_actual_counts(client, setup, monkeypatch):
@@ -24,6 +24,20 @@ def test_ten_notice_batch_aggregates_actual_counts(client, setup, monkeypatch):
     assert result["notice_key"] == captured[-1][0] and result["ai_calls"] == 0
     with client.app.state.session_factory() as session:
         assert len(list(session.scalars(select(AwardRefreshAttempt)))) == 10
+
+
+def test_general_notice_lookup_usage_does_not_consume_award_quota(client, setup, monkeypatch):
+    _clock, add = setup
+    add()
+    fake_collector(client, monkeypatch, calls=36)
+    with client.app.state.session_factory() as session:
+        session.add(IngestionJob(source="PPS", mode="LIVE", status="COMPLETED", window_json={},
+            request_json={}, api_calls=1000, created_at=NOW))
+        session.commit()
+    assert post(client, "plan")["api_calls_24h"] == 0
+    result = post(client, "run")
+    assert result["status"] == "COMPLETED" and result["attempted"] == 1
+    assert result["api_calls_24h"] == result["api_calls"] == 36
 
 
 @pytest.mark.parametrize("remaining,per_notice,expected_attempts", [(70, 150, 1), (49, 150, 0), (49, 40, 1)])
@@ -121,6 +135,8 @@ def test_authoritative_cancellation_and_extension_reactivate_only_current_revisi
         old, current = session.get(Notice, old_id), session.get(Notice, current_id)
         old.bid_notice_no = current.bid_notice_no = "SYN-LOGICAL"
         old.revision_no, current.revision_no = "00", "01"
+        add_scope_version(session, old, version_no=2)
+        add_scope_version(session, current, version_no=2)
         session.add(PpsNoticeAuthority(bid_notice_no="SYN-LOGICAL", revision_no="01", disposition="CANCELLED",
             event_kind="취소공고", required_fields_complete=True, deadline=NOW+timedelta(days=20),
             provider_changed_at=NOW, authority_sha256="a"*64))
@@ -145,6 +161,8 @@ def test_legacy_reissued_expired_revision_cannot_resurrect_old_open_revision(cli
         old, new = session.get(Notice, old_id), session.get(Notice, new_id_value)
         old.bid_notice_no = new.bid_notice_no = "SYN-REISSUED"
         old.revision_no, new.revision_no = "00", "01"
+        add_scope_version(session, old, version_no=2)
+        add_scope_version(session, new, version_no=2)
         new.deadline = NOW-timedelta(seconds=1)
         session.commit()
     assert post(client, "plan")["skipped"] == 2

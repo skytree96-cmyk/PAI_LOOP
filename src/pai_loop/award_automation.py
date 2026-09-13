@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from collections import Counter
@@ -11,13 +12,14 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, or_, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .api import (DbSession, _comparable_utc, _derive_award_keyword,
                   _pps_authorities_by_notice_id, _pps_authority_notice_projection,
                   _revision_preference, _source_kind, _stored_notice_authority_row, refresh_award_history)
 from .auth import require_api_key
 from .award_automation_models import AwardRefreshAttempt, AwardRefreshState
+from .award_scope import AWARD_SCOPE_VERSION, resolve_notice_award_scope
 from .models import IngestionJob, Notice, PpsNoticeAuthority, new_id
 from .schemas import AwardHistoryRefreshRequest
 
@@ -74,6 +76,8 @@ def _classification(notice: Notice, active_ids: set[str]) -> tuple[str, str | No
     category = (notice.category or "").strip().upper()
     if category not in _SERVICE_CATEGORIES:
         return "UNSUPPORTED", "UNSUPPORTED_AWARD_CATEGORY" if category else "SERVICE_CATEGORY_UNCONFIRMED"
+    if not resolve_notice_award_scope(notice).available:
+        return "UNSUPPORTED", "AWARD_AGENCY_UNAVAILABLE"
     try:
         _derive_award_keyword(notice.title)
     except HTTPException:
@@ -124,7 +128,24 @@ def _active_notice_ids(session: Session, notices: list[Notice], now: datetime) -
 
 
 def _basis(notice: Notice) -> str:
-    return hashlib.sha256(f"{notice.notice_key}\n{notice.category}\n{notice.title}".encode()).hexdigest()
+    scope = resolve_notice_award_scope(notice)
+    try:
+        keyword = _derive_award_keyword(notice.title)
+    except HTTPException:
+        keyword = None
+    # The search scope is part of freshness. A completed legacy title-only
+    # search cannot satisfy a demand-agency-and-keyword refresh.
+    identity = {
+        "scope_version": AWARD_SCOPE_VERSION,
+        "notice_key": notice.notice_key,
+        "category": notice.category,
+        "title": notice.title,
+        "demand_agency_code": scope.demand_agency_code,
+        "demand_agency_name": scope.demand_agency_name,
+        "keyword": keyword,
+    }
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
 
 
 def _backoff(state: AwardRefreshState, now: datetime) -> None:
@@ -229,7 +250,9 @@ def plan_award_refresh(payload: PlanRequest, session: DbSession) -> dict:
         session.expire_all()
         _recover_expired(session, now)
         states = {state.notice_id: state for state in session.scalars(select(AwardRefreshState))}
-        notices = list(session.scalars(select(Notice).order_by(Notice.created_at, Notice.id)))
+        notices = list(session.scalars(select(Notice).options(
+            selectinload(Notice.award_scope_versions), selectinload(Notice.award_agency_metadata),
+        ).order_by(Notice.created_at, Notice.id)))
         active_ids = _active_notice_ids(session, notices, now)
         for notice in notices:
             classification, reason = _classification(notice, active_ids)
@@ -270,6 +293,7 @@ def _run_one(payload: RunRequest, request: Request, session: Session) -> dict:
         if session.scalar(select(AwardRefreshState.notice_id).where(AwardRefreshState.status == "RUNNING").limit(1)):
             return _run_result(session, "BUSY")
         selections = list(session.execute(select(AwardRefreshState, Notice).join(Notice, Notice.id == AwardRefreshState.notice_id)
+            .options(selectinload(Notice.award_scope_versions), selectinload(Notice.award_agency_metadata))
             .where(AwardRefreshState.status.in_(["PENDING", "PARTIAL", "FAILED"]),
                    AwardRefreshState.next_attempt_at <= now)
             .order_by(case((AwardRefreshState.attempts == 0, 0), else_=1),
@@ -296,6 +320,7 @@ def _run_one(payload: RunRequest, request: Request, session: Session) -> dict:
         allocated = min(payload.per_notice_api_budget, remaining)
         token = new_id()
         state.status, state.reason = "RUNNING", None
+        state.basis_sha256 = _basis(notice)
         state.lease_token, state.leased_until = token, now + timedelta(seconds=LEASE_SECONDS)
         state.attempts += 1
         state.cycle_attempts += 1
@@ -351,6 +376,9 @@ def _run_one(payload: RunRequest, request: Request, session: Session) -> dict:
         session.flush()
         result = _run_result(session, "COMPLETED" if outcome == "NO_RESULTS" else outcome,
             notice_key=notice_key, job_id=job_id, attempted=1, api_calls=actual_calls or 0, records=records)
+        if response is not None and any(str(warning).startswith("AWARD_PROVIDER_RATE_LIMIT:")
+                                        for warning in getattr(response, "warnings", ())):
+            result["provider_rate_limited"] = True
     return result
 
 
@@ -376,6 +404,8 @@ def run_award_refresh(payload: RunRequest, request: Request, session: DbSession)
         api_calls += result["api_calls"]
         records += result["records"]
         outcomes.append(result["status"])
+        if result.get("provider_rate_limited"):
+            break
     if last_result is None:
         return _run_result(session, "IDLE")
     outcome = "FAILED" if "FAILED" in outcomes else "PARTIAL" if "PARTIAL" in outcomes else "COMPLETED"

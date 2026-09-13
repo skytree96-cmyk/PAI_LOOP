@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from award_scope_helpers import attach_award_scope
 from fastapi.testclient import TestClient
 from conftest import internal_server_client
 
@@ -568,6 +569,8 @@ def _stored_notice_with_awards(client: TestClient) -> str:
         },
     )
     assert created.status_code == 201, created.text
+    attach_award_scope(client, notice_key, demand_agency_name=TARGET_AGENCY,
+                       demand_agency_code="SYN-AWARD-TABLE-AGENCY")
     with client.app.state.session_factory() as session:
         notice = session.query(Notice).filter(Notice.notice_key == notice_key).one()
         session.add_all([
@@ -799,6 +802,7 @@ def test_a_failed_opening_read_never_overwrites_a_stored_competitor_set(
                 "rebid_no": "000",
                 "title": "2025년 SYN 리더십 교육과정 위탁운영",
                 "agency": "",
+                "demand_agency_code": "SYN-AWARD-TABLE-AGENCY",
                 "winner_name": "SYN-기관A",
                 "award_amount": None,
                 "award_rate": None,

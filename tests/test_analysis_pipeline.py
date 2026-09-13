@@ -460,8 +460,13 @@ def test_pipeline_merges_sources_and_persists_full_immutable_snapshot(db_session
         "sha256",
     ):
         assert forbidden_field not in public_criteria_text
-    assert scores["competition.risk"].status == "MODEL_ESTIMATE"
-    assert scores["pricing.award_rate_prediction"].status == "MODEL_ESTIMATE"
+    # These legacy awards have no verified demand-agency evidence. Keep them
+    # as stored audit records without using them to estimate competition/prices.
+    assert scores["competition.risk"].status == "UNKNOWN"
+    assert scores["competition.risk"].value is None
+    assert scores["pricing.award_rate_prediction"].status == "INSUFFICIENT_DATA"
+    assert scores["pricing.award_rate_prediction"].value is None
+    assert run.input_manifest["award_history_ids"] == []
     assert scores["pricing.submitted_bid_rate_prediction"].status == "INSUFFICIENT_DATA"
     assert scores["pricing.method"].status == "AVAILABLE"
     assert scores["business.risk"].value == 23.5
@@ -599,7 +604,7 @@ def test_missing_industry_code_is_persisted_as_fail_not_review(db_session: Sessi
     assert requirement_row.required_value == "1263"
 
 
-def test_pipeline_derives_competition_and_profitability_only_from_stored_award_basis(
+def test_pipeline_excludes_unverified_agency_awards_from_competition_and_profitability(
     db_session: Session,
 ) -> None:
     notice = _notice(db_session, notice_key="DERIVED-RISK", title="AI 교육 용역")
@@ -628,13 +633,11 @@ def test_pipeline_derives_competition_and_profitability_only_from_stored_award_b
 
     assert business_risk.status == "AVAILABLE"
     assert business_risk.value is not None
-    assert business_risk.basis_json["evidenced_axis_count"] == 6
-    assert business_risk.basis_json["axis_basis"]["competition"]["source"] == (
-        "STORED_3Y_AWARD_HISTORY"
-    )
-    assert business_risk.basis_json["axis_basis"]["profitability"]["source"] == (
-        "STORED_3Y_AWARD_RATE_PREDICTION"
-    )
+    assert business_risk.basis_json["evidenced_axis_count"] == 4
+    assert "competition" not in business_risk.basis_json["axis_basis"]
+    assert "profitability" not in business_risk.basis_json["axis_basis"]
+    assert run.input_manifest["award_history_ids"] == []
+    assert db_session.scalar(select(func.count()).select_from(AwardHistoryItem)) == 6
 
 
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(

@@ -3,6 +3,7 @@ import subprocess
 from dataclasses import replace
 
 import pytest
+from award_scope_helpers import attach_award_scope
 
 
 @pytest.mark.parametrize("diagnostics", ["empty", "recovered", "partial"])
@@ -12,6 +13,7 @@ def test_real_award_refresh_response_passes_w10_without_promoting_partial(client
         "notice_key": key, "bid_notice_no": key, "title": "SYN 교육", "agency": "SYN 기관",
         "deadline": "2027-01-01T00:00:00Z",
     }).status_code == 201
+    attach_award_scope(client, key, demand_agency_name="SYN 기관")
     client.app.state.settings = replace(client.app.state.settings, pps_api_key="SYN-provider", api_key="SYN-server")
 
     class Provider:

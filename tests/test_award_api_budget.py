@@ -7,6 +7,7 @@ from threading import Lock
 
 import httpx
 import pytest
+from award_scope_helpers import attach_award_scope
 from pydantic import ValidationError
 from sqlalchemy import select
 
@@ -24,7 +25,8 @@ def envelope(items, total=None):
 
 def award():
     return {"bidNtceNo": "SYN-AWARD", "bidNtceOrd": "000", "bidClsfcNo": "0",
-            "rbidNo": "000", "bidNtceNm": "SYN 교육", "bidwinnrNm": "SYN winner"}
+            "rbidNo": "000", "bidNtceNm": "SYN 교육", "bidwinnrNm": "SYN winner",
+            "dminsttNm": "SYN agency"}
 
 
 @pytest.mark.parametrize("value", [0, 2001, -1, True, 1.5, "10"])
@@ -113,11 +115,12 @@ def target(client):
     response = client.post("/api/v1/notices", json={"notice_key": key, "bid_notice_no": key,
         "title": "SYN 교육", "agency": "SYN agency", "deadline": "2099-01-01T00:00:00Z"})
     assert response.status_code == 201
+    attach_award_scope(client, key, demand_agency_name="SYN agency")
     client.app.state.settings = replace(client.app.state.settings, pps_api_key="SYN-key")
     with client.app.state.session_factory() as session:
         notice = session.scalar(select(Notice).where(Notice.notice_key == key))
         session.add(AwardHistoryItem(target_notice_id=notice.id, external_identity="SYN-AWARD|000|0|000",
-            bid_notice_no="SYN-AWARD", title="SYN 교육", winner_name="SYN winner", similarity_score=1,
+            bid_notice_no="SYN-AWARD", title="SYN 교육", agency="SYN agency", winner_name="SYN winner", similarity_score=1,
             opening_results=[{"company_name": "SYN stored", "bid_amount": 7000}],
             opening_results_status="COLLECTED"))
         session.commit()

@@ -6,8 +6,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from conftest import internal_server_client
+from award_scope_helpers import attach_award_scope
 
-from pai_loop.api import _award_similarity
+from pai_loop.api import _award_similarity, _derive_award_keyword
 from pai_loop.integrations import awards as awards_module
 from pai_loop.integrations.awards import (
     DEFAULT_AWARD_OPERATION,
@@ -72,6 +73,11 @@ def test_korean_compound_title_similarity_uses_core_phrase_not_only_token_bounda
     assert _award_similarity(target, target) == 100
     assert _award_similarity(target, compound) > _award_similarity(target, unrelated)
     assert _award_similarity(target, compound) > 0
+
+
+@pytest.mark.parametrize("year", ["2026", "2026년", "2026년도"])
+def test_award_keyword_drops_year_labels_before_historical_matching(year):
+    assert _derive_award_keyword(f"{year} SYN 리더십 교육 위탁운영 용역") == "SYN 리더십 교육".lower()
 
 
 def test_award_client_uses_bounded_windows_keyword_and_current_array_shape() -> None:
@@ -386,6 +392,7 @@ class _FakeAwardClient:
             "bid_notice_no": "AWARD-002",
             "revision_no": "001",
             "title": "7급 승진후보자 역량 교육",
+            "agency": "합성 발주기관",
             "winner_name": "",
         }
 
@@ -409,6 +416,7 @@ def _create_award_target(client: TestClient) -> None:
         },
     )
     assert response.status_code == 201
+    attach_award_scope(client, "PUBLIC-AWARD-TARGET", demand_agency_name="합성 발주기관")
 
 
 def test_award_history_refresh_is_idempotent_and_visible_in_detail(
