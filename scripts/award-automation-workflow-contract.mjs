@@ -97,8 +97,10 @@ export function awardHttpParameters(phase) {
     authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth",
     sendHeaders: true,
     headerParameters: { parameters: [{ name: "Accept", value: "application/json" }, { name: "X-PAI-Request-Source", value: "n8n-award-automation-v1" }] },
-    sendBody: true, contentType: "raw", rawContentType: "application/json",
-    body: phase === "plan" ? '{"refresh_after_days":30}' : '{"max_notices":1,"daily_api_budget":700,"per_notice_api_budget":150}',
+    // n8n's raw-body branch forces useStream=true even for JSON responses.
+    // Native JSON mode preserves the parsed aggregate response contract.
+    sendBody: true, contentType: "json", specifyBody: "json",
+    jsonBody: phase === "plan" ? '{"refresh_after_days":30}' : '{"max_notices":1,"daily_api_budget":700,"per_notice_api_budget":150}',
     options: { timeout: 520000,
       response: { response: { fullResponse: true, neverError: false, responseFormat: "json" } },
       redirect: { redirect: { followRedirects: false } },
