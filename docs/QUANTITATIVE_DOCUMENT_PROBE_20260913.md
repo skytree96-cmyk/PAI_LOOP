@@ -1,8 +1,9 @@
 # Quantitative document diagnostic, 2026-09-13
 
 This branch preserves the earlier quantitative source-rule fixes on the deployed
-UX baseline. The new work prepares a bounded extraction experiment. It does not
-establish that production scoring is fixed or authorize a deployment.
+UX baseline. The diagnostic work prepares a bounded extraction experiment. It
+does not establish that production scoring is fixed. A later user instruction
+authorized deployment and five stored-input analysis checks, described below.
 
 ## Measured failure and change
 
@@ -81,8 +82,33 @@ Private real-document measurements and request plans stay under `.local/`.
 Next gate: independently approved one-call-per-document extraction of the three
 reviewed PDFs, followed by source-rule validation and comparison with the manual
 reference criteria. Only then assess production integration, current-manifest
-company evidence registration and broader re-extraction. No production DB write,
-quantitative deployment or workflow activation is part of this diagnostic.
+company evidence registration and broader re-extraction. The diagnostic probe
+itself cannot persist production results or activate a workflow.
+
+## Main-page release and five stored-input checks
+
+The main card and table now offer an explicit quantitative-result lookup using
+the existing GET endpoint and shared detail cache. Initial list rendering does
+not issue one request per notice. A validated result shows the conservative lower
+bound, with confirmed and provisional labels kept distinct. Missing, stale,
+cancelled, historical and failed results cannot become a current numeric score.
+The main view includes a review reason; result entry and aggregate retry behavior
+remain separate. JS and CSS share cache version `20260913-quantitative-v2`.
+
+Public GET reads a current stored score snapshot. Deployment alone does not
+refresh that snapshot. The five selected active notices are to be processed once
+through the normal analysis batch with `enrich_missing=false`, with zero model
+calls, then checked against the main page. This is a result-storage check, not
+full source re-extraction. Read-only prediction with the new engine found all
+five still blocked at source validation; numeric scores are not the expected
+outcome of this bounded check.
+
+Existing duplicate-content enrichment can rebuild an old validator record
+without a provider call only when its exact stored source and extraction
+contract are compatible. The selected records do not meet the current prompt
+and schema prerequisites. There is no free-only API option: ordinary enrichment
+may continue to a paid call when reuse fails, so it stays disabled for this run.
+The separately prepared three-PDF paid probe still requires fresh approval.
 
 The geometry dependency is [pdfplumber](https://github.com/jsvine/pdfplumber),
 under its [MIT license](https://github.com/jsvine/pdfplumber/blob/stable/LICENSE.txt).
