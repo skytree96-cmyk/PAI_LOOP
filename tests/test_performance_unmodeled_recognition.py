@@ -58,7 +58,15 @@ def _criterion(scope) -> QuantitativeCriterion:
 def test_unmodeled_source_dimensions_block_new_and_stored_scopes(
     metric: str, clause: str, reason: str
 ) -> None:
-    assert parse_performance_recognition_scope(BASE + clause, metric_key=metric) is None
+    parsed = parse_performance_recognition_scope(BASE + clause, metric_key=metric)
+    assert parsed is not None
+    assert parsed.manual_verification_conditions
+    # Representing the rule is not proof of company eligibility. Both freshly
+    # parsed and old stored scopes must still produce no register-derived number.
+    current = derive_performance_value(parsed, [_record()], as_of=AS_OF)
+    assert current.status == "REVIEW"
+    assert current.value is current.lower_value is current.upper_value is None
+    assert current.score_band_input is None
     prior_scope = parse_performance_recognition_scope(BASE, metric_key=metric)
     assert prior_scope is not None
     # A prior parser could have persisted a scope that ignored this clause.

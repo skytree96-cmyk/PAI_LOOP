@@ -1066,6 +1066,13 @@ class OpenAIExtractionClient:
         except ValidationError as error:
             return schema_failure(_safe_schema_error_summary(error))
 
+        # Dense count rows may need their source-owned recognition context to
+        # form a verifiable quote. This changes evidence only; ordinary anchor
+        # checks and corrective-retry structure checks still apply below.
+        from pai_loop.quantitative_rule_extraction import bind_quantitative_case_source_context
+
+        data = bind_quantitative_case_source_context(data, source=document_text)
+
         if parsed_payloads is not None:
             parsed_payloads.append(data)
 

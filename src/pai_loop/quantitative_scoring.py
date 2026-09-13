@@ -26,6 +26,7 @@ from .eligibility_policy import load_public_company_profile
 from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
+    evidence_quote_matches_source,
 )
 from .models import AnalysisRun, CompanyFact, CompanyPerformanceRecord, Notice, ScoreSnapshot
 from .pps_enrichment import (
@@ -48,6 +49,7 @@ from .quantitative_rule_extraction import (
     _case_award_matches_literal,
     _normalise_anchor_text,
     _score_cell_matches,
+    _short_count_literal_has_owned_context,
 )
 from .public_performance import load_public_performance_seed
 from .quantitative_formula import (
@@ -67,6 +69,7 @@ from .quantitative_formula import (
 )
 from .quantitative_performance import (
     PerformanceRecognitionScope,
+    _unsupported_recognition_reason,
     derive_performance_value,
     parse_performance_recognition_scope,
 )
@@ -85,7 +88,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.1"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -1075,7 +1078,7 @@ def _estimate_criterion(
         "evidence_reference": fact.evidence_reference,
         "evidence_sha256": fact.evidence_sha256,
     }
-    if fact.evidence_key not in criterion.required_evidence_keys:
+    if fact.metric_key != criterion.metric_key or fact.evidence_key not in criterion.required_evidence_keys:
         return _criterion_unscored(
             criterion,
             status="REVIEW",
@@ -1100,6 +1103,30 @@ def _estimate_criterion(
             criterion,
             status=fact.status,
             rationale=fact.rationale or "증빙 상태상 점수를 계산할 수 없습니다.",
+            **fact_audit,
+        )
+
+    if criterion.performance_scope is not None and (
+        criterion.performance_scope.manual_verification_conditions
+        or _unsupported_recognition_reason(criterion.performance_scope.source_literal) is not None
+    ) and (
+        fact.status != "CONFIRMED"
+        or not (fact.evidence_reference or "").strip()
+        or not fact.evidence_sha256
+        or criterion.fact_binding_sha256 is None
+        or fact.fact_binding_sha256 != criterion.fact_binding_sha256
+    ):
+        # These conditions require an attested aggregate for this exact source
+        # rule. A register estimate or a saturated lower bound cannot prove
+        # per-contract participants or annual contract amounts. Recheck the
+        # original text for stored scopes that predate the explicit field.
+        return _criterion_unscored(
+            criterion,
+            status="REVIEW",
+            rationale=(
+                "참여 인원·연간 계약금액 등 추가 실적 인정조건은 이 평가항목에 "
+                "결합된 확인 증빙값이 필요하여 잠정값으로 점수를 계산하지 않았습니다."
+            ),
             **fact_audit,
         )
 
@@ -1286,15 +1313,16 @@ def estimate_quantitative_score(
     # Two 자기자본비율 and 유동비율 rows in one table share
     # ``company.financial.ratio``; without this they would collide and both
     # would be withheld as ambiguous.
-    facts_by_binding: dict[str, QuantitativeFact] = {}
-    duplicate_bindings: set[str] = set()
+    facts_by_binding: dict[tuple[str, str], QuantitativeFact] = {}
+    duplicate_bindings: set[tuple[str, str]] = set()
     facts: dict[str, QuantitativeFact] = {}
     duplicate_keys: set[str] = set()
     for fact in request.facts:
         if fact.fact_binding_sha256:
-            if fact.fact_binding_sha256 in facts_by_binding:
-                duplicate_bindings.add(fact.fact_binding_sha256)
-            facts_by_binding[fact.fact_binding_sha256] = fact
+            identity = (fact.metric_key, fact.fact_binding_sha256)
+            if identity in facts_by_binding:
+                duplicate_bindings.add(identity)
+            facts_by_binding[identity] = fact
             continue
         if fact.metric_key in facts:
             duplicate_keys.add(fact.metric_key)
@@ -1311,7 +1339,8 @@ def estimate_quantitative_score(
         if set_aside is not None:
             estimates.append(_criterion_set_aside(criterion, set_aside))
             continue
-        if binding and binding in duplicate_bindings:
+        identity = (criterion.metric_key, binding) if binding else None
+        if identity in duplicate_bindings:
             estimates.append(
                 _criterion_unscored(
                     criterion,
@@ -1320,7 +1349,7 @@ def estimate_quantitative_score(
                 )
             )
             continue
-        bound = facts_by_binding.get(binding) if binding else None
+        bound = facts_by_binding.get(identity) if identity else None
         if bound is not None:
             estimates.append(_estimate_criterion(criterion, bound))
         elif criterion.metric_key in duplicate_keys:
@@ -2186,12 +2215,28 @@ def resolve_verified_quantitative_facts(
     """Bridge only exact canonical, effective and evidence-verified facts."""
 
     stored_facts = tuple(company_facts)
+    active_bindings = {
+        (criterion.metric_key, criterion.fact_binding_sha256)
+        for criterion in criteria if criterion.fact_binding_sha256
+    }
     resolved: list[QuantitativeFact] = []
     for criterion in criteria:
         confirmed: list[QuantitativeFact] = []
         value_errors: list[tuple[str, str | None]] = []
         for fact in stored_facts:
             if fact.fact_key != criterion.metric_key or not fact.verified:
+                continue
+            raw_binding = (
+                str(fact.value.get("fact_binding_sha256") or "").casefold()
+                if isinstance(fact.value, dict) else ""
+            )
+            if (
+                criterion.fact_binding_sha256 is not None
+                and raw_binding != criterion.fact_binding_sha256
+                and (fact.fact_key, raw_binding) in active_bindings
+            ):
+                # Another criterion's explicitly addressed value is neither
+                # input nor an error for this row, even when the metric agrees.
                 continue
             if not fact_is_effective(fact, as_of):
                 continue
@@ -2247,7 +2292,7 @@ def resolve_verified_quantitative_facts(
                     metric_key=criterion.metric_key,
                     status="UNSCORABLE",
                     evidence_key=criterion.metric_key,
-                    fact_binding_sha256=binding,
+                    fact_binding_sha256=criterion.fact_binding_sha256 or binding,
                     confidence=0,
                     rationale=rationale,
                 )
@@ -2347,6 +2392,31 @@ def resolve_performance_register_facts(
     return resolved
 
 
+def _financial_statement_years_conflict(company_facts: Sequence[CompanyFact]) -> bool:
+    years: dict[int, tuple[Decimal, ...]] = {}
+    fields = ("total_assets", "equity", "current_assets", "current_liabilities",
+              "non_current_liabilities")
+    for fact in company_facts:
+        raw = getattr(fact, "value", None)
+        if getattr(fact, "fact_key", None) != "company.financial.statement" or not isinstance(raw, dict):
+            continue
+        for row in raw.get("years") or ():
+            if not isinstance(row, dict):
+                continue
+            try:
+                year = int(row["fiscal_year"])
+                values = tuple(Decimal(str(row.get(field, 0))) for field in fields)
+            except (KeyError, ValueError, TypeError, InvalidOperation):
+                # The statement loader already rejects malformed years.
+                continue
+            if not all(value.is_finite() for value in values):
+                continue
+            if year in years and years[year] != values:
+                return True
+            years[year] = values
+    return False
+
+
 def resolve_financial_register_facts(
     criteria: Sequence[QuantitativeCriterion],
     company_facts: Iterable[CompanyFact],
@@ -2360,11 +2430,22 @@ def resolve_financial_register_facts(
     names a ratio produce no scope and are skipped, leaving them manual.
     """
 
-    statement = load_financial_statement(list(company_facts))
+    stored_facts = list(company_facts)
+    statement_conflict = _financial_statement_years_conflict(stored_facts)
+    statement = load_financial_statement(stored_facts)
     resolved: list[QuantitativeFact] = []
     for criterion in criteria:
         scope = criterion.financial_scope
         if scope is None:
+            continue
+        if statement_conflict:
+            resolved.append(QuantitativeFact(
+                metric_key=criterion.metric_key, status="REVIEW",
+                evidence_key=criterion.metric_key,
+                fact_binding_sha256=criterion.fact_binding_sha256,
+                confidence=0,
+                rationale="동일 회계연도의 재무제표 값이 상충하여 적용할 재무비율을 확정할 수 없습니다.",
+            ))
             continue
         derived = derive_financial_value(scope, statement, as_of=as_of)
         resolved.append(
@@ -2604,7 +2685,10 @@ def _compiled_case_table_contract(
     if candidate.scoring_method != "CASE_TABLE" or not candidate.cases:
         return None
     if any(
-        _normalise_anchor_text(case.literal) not in _normalise_anchor_text(case.evidence.quote)
+        (
+            not evidence_quote_matches_source(case.literal, case.evidence.quote)
+            and not _short_count_literal_has_owned_context(candidate, case)
+        )
         or not _case_award_matches_literal(candidate, case, case.literal)
         for case in candidate.cases
     ):
@@ -3520,6 +3604,38 @@ def _logical_quantitative_program(
     )
 
 
+def _candidate_financial_scope(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> FinancialRecognitionScope | None:
+    spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
+    if spec is None:
+        return None
+    return parse_financial_recognition_scope(
+        " ".join(value for value in (
+            candidate.criterion_literal, candidate.formula_literal or "",
+            *(item.literal for item in candidate.cases),
+            *(item.literal for item in candidate.recognition_conditions),
+        ) if value),
+        metric_key=str(spec["fact_key"]),
+    )
+
+
+def _shared_fact_key_is_explicitly_scoped(
+    candidates: Sequence[ImmutableQuantitativeRuleCandidate],
+) -> bool:
+    # A distinct digest alone does not explain duplicate metrics. Permit only
+    # separately named financial inputs that the register bridge understands;
+    # unnamed/composite ratios and repeated copies of one scope stay ambiguous.
+    scopes = [_candidate_financial_scope(candidate) for candidate in candidates]
+    if any(scope is None for scope in scopes):
+        return False
+    identities = {
+        (scope.ratio_kind, scope.fiscal_basis, scope.benchmark_pct)
+        for scope in scopes if scope is not None
+    }
+    return len(identities) == len(candidates)
+
+
 def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[str]:
     """Return stable fail-closed codes for the machine activation contract."""
 
@@ -3542,12 +3658,14 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
     table_candidates = list(program.candidates)
 
     binding_ids = {item.attachment_id for item in profile.document_bindings}
-    canonical_fact_keys = [
-        str(spec["fact_key"])
-        for candidate in table_candidates
-        if (spec := _CANONICAL_METRIC_REGISTRY.get(candidate.metric)) is not None
-    ]
-    if len(canonical_fact_keys) != len(set(canonical_fact_keys)):
+    candidates_by_fact: dict[str, list[ImmutableQuantitativeRuleCandidate]] = {}
+    for candidate in table_candidates:
+        if (spec := _CANONICAL_METRIC_REGISTRY.get(candidate.metric)) is not None:
+            candidates_by_fact.setdefault(str(spec["fact_key"]), []).append(candidate)
+    if any(
+        len(candidates) > 1 and not _shared_fact_key_is_explicitly_scoped(candidates)
+        for candidates in candidates_by_fact.values()
+    ):
         reasons.add("FACT_KEY_AMBIGUOUS")
     for candidate in table_candidates:
         scoring_anchors = [item.evidence for item in candidate.brackets]
@@ -3872,19 +3990,7 @@ def quantitative_request_from_candidate_profile(
             if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS
             else None
         )
-        financial_scope = parse_financial_recognition_scope(
-            " ".join(
-                value
-                for value in (
-                    candidate.criterion_literal,
-                    candidate.formula_literal or "",
-                    *(item.literal for item in candidate.cases),
-                    *(item.literal for item in candidate.recognition_conditions),
-                )
-                if value
-            ),
-            metric_key=str(spec["fact_key"]),
-        )
+        financial_scope = _candidate_financial_scope(candidate)
         personnel_scope = parse_personnel_recognition_scope(
             " ".join(
                 value
@@ -4351,7 +4457,10 @@ def estimate_for_notice(
                     as_of=notice.deadline,
                 )
             )
-            register_by_key = {item.metric_key: item for item in register_facts}
+            register_identities = {
+                (item.metric_key, item.fact_binding_sha256) for item in register_facts
+            }
+            register_metrics = {item.metric_key for item in register_facts}
             # An exact immutable CompanyFact remains authoritative.  A generic
             # CompanyFact that failed the dynamic binding contract must not,
             # however, suppress the notice-scoped value derived from the
@@ -4360,17 +4469,20 @@ def estimate_for_notice(
                 item
                 for item in verified_facts
                 if item.status == "CONFIRMED"
-                or item.metric_key not in register_by_key
+                or (
+                    (item.metric_key, item.fact_binding_sha256) not in register_identities
+                    and (item.fact_binding_sha256 is not None or item.metric_key not in register_metrics)
+                )
             ]
-            confirmed_keys = {
-                item.metric_key
+            confirmed_identities = {
+                (item.metric_key, item.fact_binding_sha256)
                 for item in verified_facts
                 if item.status == "CONFIRMED"
             }
             merged_facts.extend(
                 item
                 for item in register_facts
-                if item.metric_key not in confirmed_keys
+                if (item.metric_key, item.fact_binding_sha256) not in confirmed_identities
             )
             request = request.model_copy(
                 update={

@@ -22,7 +22,7 @@ CURRENT_EXTRACTION_CONTRACT = ExtractionContract(
     # not turn already audited attachments into another paid extraction queue.
     "pai-loop-extraction-0.5.7",
     "pai-loop-requirements-0.4.2",
-    "pai-loop-quantitative-attachment-validator-0.6.19",
+    "pai-loop-quantitative-attachment-validator-0.6.20",
     "pps-document-processing-0.5.1",
 )
 PREVIOUS_CASE_CONTRACT = ExtractionContract(

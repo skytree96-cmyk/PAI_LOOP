@@ -53,8 +53,10 @@ per-member audit remain unchanged. Empty or short archive members remain visible
 as review conditions and cannot inflate a wrapper into provider-eligible input.
 Supported archive documents containing enough actual text are still eligible.
 
-The new contract is prompt `0.5.7`, schema `0.4.2`, validator `0.6.19`, processing
-`0.5.1`. Exact predecessor `0.5.6 / 0.4.1 / 0.6.18 / 0.5.0` records remain readable
+The new contract is prompt `0.5.7`, schema `0.4.2`, validator `0.6.20`, processing
+`0.5.1` after the original-document follow-up;
+the earlier `0.6.19` version of this unmerged PR was not deployed.
+Exact predecessor `0.5.6 / 0.4.1 / 0.6.18 / 0.5.0` records remain readable
 as `LEGACY_CASE_V2`, alongside the existing `LEGACY_CASE_V1` contract. This is a
 read policy, not a rewrite or a revalidation without original source text.
 
@@ -80,3 +82,34 @@ state versus missing facts, unsupported performance dimensions and date cutoffs,
 zero provider calls for label-inflated short content, useful archive text, exact
 predecessor reuse, fact-binding stability and stale/vocabulary rejection.
 Private procurement documents and company ledgers are not test fixtures.
+
+## Original-document follow-up
+
+Distinct financial ratios can share the canonical metric while retaining separate
+source-bound scopes and fact bindings. Activation accepts this only when each
+ratio has an explicit, distinct financial scope; unknown, composite and duplicate
+scopes remain ambiguous. Fact selection and merging use metric plus criterion
+binding, so an equity ratio cannot overwrite a current ratio or suppress its
+register-derived value.
+
+Participant thresholds and annual-contract requirements are preserved as
+`manual_verification_conditions` in the recognition scope. A mechanically valid
+scoring rule can reach the engine before company evidence is available. The
+performance register still returns REVIEW with no numeric bounds for those
+conditions. Only a separately verified, exact-criterion-bound aggregate company
+fact can supply the missing count; an overview, a large register or absent
+documents cannot establish it.
+
+A deliberate exclusion note is ignored for objective scoring only when its
+complete grammar identifies qualitative/price subjects, their matching methods,
+and their exclusion from the objective table. Actual missing content, mixed
+objective subjects and additional absence claims remain blockers. Full manifest
+coverage requirements are unchanged.
+
+Dense source rows may recover context only through bounded structural proofs:
+an exact ordered count program immediately follows its unique source recognition
+clause, or complete credit rows follow the unique ordered bond/paper/enterprise
+header and precede their terminal footnote. The original quote is preserved;
+operators, categories, thresholds, awards and row order never change. Unproven
+column selection, missing categories, duplicate anchors and overlapping claims
+remain failures. The score engine consumes the same source proof as validation.
