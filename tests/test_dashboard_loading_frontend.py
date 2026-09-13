@@ -22,7 +22,7 @@ apiRequest=(...args)=>globalThis.request(...args);
 renderAll=renderKpis;renderAnalysisProgress=()=>{};
 setSystemStatus=value=>globalThis.status(value);populateDepartmentProfiles=()=>{};
 globalThis.ui={state,els,normalizeDashboard,dashboardWithoutGlobalTotals,renderKpis,
- dashboardShare,formatDashboardShare,renderDepartmentDashboard,selectedDashboardDepartmentId,
+ dashboardShare,formatDashboardShare,renderDashboardShare,renderDepartmentDashboard,renderDepartmentComparisonChart,selectedDashboardDepartmentId,
  applyDashboardDepartmentSelection,initializeDashboardDepartmentSelection,
  useDepartmentReloadSpy(){loadApplicationData=options=>globalThis.onDepartmentReload(options);},
  loadDashboardTotals,retryDashboardTotals,hydrateApplicationMetadata,refreshDashboardAfterMutation,
@@ -34,7 +34,8 @@ globalThis.ui={state,els,normalizeDashboard,dashboardWithoutGlobalTotals,renderK
 vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
 const u=context.ui;
 function element(){return {value:"",textContent:"",hidden:false,disabled:false,attributes:{},
- classList:{toggle(){}},setAttribute(key,value){this.attributes[key]=value;},
+ classList:{values:new Set(),toggle(name,enabled){if(enabled)this.values.add(name);else this.values.delete(name);},contains(name){return this.values.has(name);}},
+ setAttribute(key,value){this.attributes[key]=value;},removeAttribute(key){delete this.attributes[key];},
  replaceChildren(){},reset(){},close(){}};}
 const fields=new Map();
 Object.setPrototypeOf(u.els,new Proxy({}, {get(_,key){if(!fields.has(key))fields.set(key,element());return fields.get(key);}}));
@@ -54,7 +55,7 @@ const payload={totals:{notices:800,evaluations:1500,decisions:90},go_count:3,
 const tick=()=>new Promise(setImmediate);
 function enableDashboardElements(){
  const nodes=new Map();
- const get=id=>{if(!nodes.has(id))nodes.set(id,{...element(),style:{},parentElement:{classList:{toggle(){}}}});return nodes.get(id);};
+ const get=id=>{if(!nodes.has(id))nodes.set(id,{...element(),style:{},parentElement:{classList:element().classList}});return nodes.get(id);};
  context.document.getElementById=get;
  context.document.createElement=()=>({value:"",textContent:"",cloneNode(){return {...this};}});
  u.els.departmentSelect.children=[];
@@ -204,11 +205,17 @@ u.renderKpis();
 assert.equal(get("dashboardTotalNotices").textContent,"800");
 assert.equal(get("kpiReviewShare").textContent,"0.3%");
 assert.equal(get("kpiNewShare").textContent,"0.5%");
-assert.equal(get("kpiNewProgress").style.width,"0.5%");
+assert.equal(get("kpiNewProgress").attributes["stroke-dasharray"],"0.5 99.5");
+assert.equal(get("kpiNewProgress").attributes.visibility,"visible");
 assert.equal(get("departmentRecommendedCount").textContent,"200");
 assert.equal(get("departmentRecommendedShare").textContent,"25%");
 assert.equal(get("departmentSelectedShare").textContent,"10%");
 assert.equal(get("departmentSelectionRate").textContent,"20%");
+assert.equal(get("departmentRecommendedPoint").attributes.cy,"170");
+assert.equal(get("departmentSelectedPoint").attributes.cy,"200");
+assert.equal(get("departmentRecommendedStem").attributes.y2,"170");
+assert.equal(get("departmentSelectedStem").attributes.y2,"200");
+assert.match(get("departmentComparisonChart").attributes["aria-label"],/전사 공통.*추천 공고 200건.*25%.*선택한 공고 80건.*10%/);
 assert.match(get("departmentSelectionDetail").textContent,/추천 200건 중 40건 선택/);
 assert.match(u.els.dashboardSummaryDetail.textContent,/조건별 공고는 중복/);
 const original=JSON.stringify(payload);
@@ -231,13 +238,18 @@ u.state.dashboard=u.dashboardWithoutGlobalTotals(u.state.notices);u.state.dashbo
 u.renderKpis();
 assert.equal(get("dashboardTotalNotices").textContent,"—");
 assert.equal(get("kpiReviewShare").textContent,"—");
-assert.equal(get("kpiReviewProgress").style.width,"0%");
+assert.equal(get("kpiReviewProgress").attributes["stroke-dasharray"],"0 100");
+assert.equal(get("kpiReviewProgress").attributes.visibility,"hidden");
 u.state.dashboard=u.normalizeDashboard({...payload,department_statistics:{...payload.department_statistics,selection_available:false}},u.state.notices);
 u.state.dashboardStatus="ready";u.renderKpis();
 assert.equal(get("departmentRecommendedShare").textContent,"25%");
 assert.equal(get("departmentSelectedCount").textContent,"—");
 assert.equal(get("departmentSelectedShare").textContent,"—");
 assert.equal(get("departmentSelectionRate").textContent,"—");
+assert.equal(get("departmentRecommendedPoint").attributes.visibility,"visible");
+assert.equal(get("departmentSelectedPoint").attributes.visibility,"hidden");
+assert.equal(get("departmentSelectedStem").attributes.visibility,"hidden");
+assert.match(get("departmentComparisonEmpty").textContent,/선택한 공고 집계 확인 필요/);
 assert.match(get("departmentDashboardMeta").textContent,/조회 권한 필요/);
 ''')
 
@@ -262,6 +274,81 @@ u.els.departmentSelect.value="SYN-C";u.renderKpis();
 assert.equal(get("departmentRecommendedCount").textContent,"—");
 assert.equal(get("departmentSelectedShare").textContent,"—");
 assert.equal(get("kpiNewShare").textContent,"0.5%");
+''')
+
+
+def test_independent_doughnuts_show_zero_full_and_overlapping_notice_shares():
+    _run(r'''
+const get=enableDashboardElements();
+u.renderDashboardShare("kpiReview",0,800);
+assert.equal(get("kpiReviewShare").textContent,"0%");
+assert.equal(get("kpiReviewProgress").attributes["stroke-dasharray"],"0 100");
+assert.equal(get("kpiReviewProgress").attributes.visibility,"hidden");
+assert.equal(get("kpiReviewProgress").parentElement.classList.contains("is-unavailable"),false);
+u.renderDashboardShare("kpiReview",800,800);
+assert.equal(get("kpiReviewProgress").attributes["stroke-dasharray"],"100 0");
+assert.equal(get("kpiReviewProgress").attributes.visibility,"visible");
+u.renderDashboardShare("kpiGo",600,800);
+u.renderDashboardShare("kpiUrgent",700,800);
+assert.equal(get("kpiGoProgress").attributes["stroke-dasharray"],"75 25");
+assert.equal(get("kpiUrgentProgress").attributes["stroke-dasharray"],"87.5 12.5");
+assert.equal(get("kpiGoShare").textContent,"75%");
+assert.equal(get("kpiUrgentShare").textContent,"87.5%");
+// GO and urgent may overlap. Each ring retains the whole database denominator.
+u.renderDashboardShare("kpiReview",null,800);
+assert.equal(get("kpiReviewShare").textContent,"—");
+assert.equal(get("kpiReviewProgress").attributes["stroke-dasharray"],"0 100");
+assert.equal(get("kpiReviewProgress").attributes.visibility,"hidden");
+assert.equal(get("kpiReviewProgress").parentElement.classList.contains("is-unavailable"),true);
+''')
+
+
+def test_department_chart_uses_common_zero_to_one_hundred_axis_and_removes_unknown_points():
+    _run(r'''
+const get=enableDashboardElements();
+get("departmentRecommendedPoint").setAttribute("hidden","");
+get("departmentRecommendedStem").setAttribute("hidden","");
+u.renderDepartmentComparisonChart("SYN 부서",0,800,800);
+assert.equal(get("departmentRecommendedPoint").attributes.hidden,undefined);
+assert.equal(get("departmentRecommendedStem").attributes.hidden,undefined);
+assert.equal(get("departmentRecommendedPoint").attributes.cy,"220");
+assert.equal(get("departmentRecommendedPoint").attributes.visibility,"visible");
+assert.equal(get("departmentRecommendedStem").attributes.y2,"220");
+assert.equal(get("departmentSelectedPoint").attributes.cy,"20");
+assert.equal(get("departmentSelectedStem").attributes.y2,"20");
+assert.match(get("departmentSelectedPointTitle").textContent,/SYN 부서.*선택한 공고 800건.*100%/);
+assert.equal(get("departmentComparisonEmpty").attributes.visibility,"hidden");
+u.renderDepartmentComparisonChart("SYN 부서",0,0,0);
+for(const key of ["Recommended","Selected"]){
+ assert.equal(get(`department${key}Point`).attributes.visibility,"hidden");
+ assert.equal(get(`department${key}Point`).attributes.cy,undefined);
+ assert.equal(get(`department${key}Stem`).attributes.visibility,"hidden");
+ assert.equal(get(`department${key}Stem`).attributes.y2,undefined);
+}
+assert.equal(get("departmentComparisonEmpty").attributes.visibility,"visible");
+assert.match(get("departmentComparisonChart").attributes["aria-label"],/추천 공고 집계 확인 필요.*선택한 공고 집계 확인 필요/);
+u.renderDepartmentComparisonChart("SYN 부서",40,null,100);
+assert.equal(get("departmentRecommendedPoint").attributes.cy,"140");
+assert.equal(get("departmentSelectedPoint").attributes.visibility,"hidden");
+assert.equal(get("departmentComparisonEmpty").textContent,"선택한 공고 집계 확인 필요");
+''')
+
+
+def test_dashboard_retains_visible_error_and_bootstrap_retry_without_the_notice_list():
+    _run(r'''
+const get=enableDashboardElements(),reloads=[];
+context.onDepartmentReload=options=>reloads.push(options);u.useDepartmentReloadSpy();
+Object.assign(u.state,{source:"error",dashboard:{},dashboardStatus:"error",sourceReason:"SYN connection unavailable"});
+u.renderKpis();
+assert.equal(u.els.dashboardSummary.hidden,false);
+assert.match(u.els.dashboardSummaryTitle.textContent,/실데이터를 불러오지 못/);
+assert.match(u.els.dashboardSummaryDetail.textContent,/SYN connection unavailable/);
+assert.equal(u.els.dashboardRetryButton.hidden,false);
+assert.equal(u.els.dashboardRetryButton.textContent,"서버 연결 다시 시도");
+assert.equal(get("departmentRecommendedPoint").attributes.visibility,"hidden");
+await u.retryDashboardTotals();
+assert.equal(reloads.length,1);assert.equal(reloads[0].forceApi,true);
+assert.equal(requests.length,0);
 ''')
 
 

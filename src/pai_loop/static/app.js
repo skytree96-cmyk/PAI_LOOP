@@ -873,8 +873,13 @@
   }
 
   async function retryDashboardTotals() {
-    if (state.source !== "api" || state.loading || state.dashboardStatus === "loading"
+    if (state.loading || state.dashboardStatus === "loading"
       || !state.accountSession.authenticated) return;
+    if (state.source === "error") {
+      await loadApplicationData({ forceApi: true });
+      return;
+    }
+    if (state.source !== "api") return;
     await loadDashboardTotals();
   }
 
@@ -4416,8 +4421,48 @@
     const share = dashboardShare(count, total);
     if (label) label.textContent = formatDashboardShare(count, total);
     if (progress) {
-      progress.style.width = share === null ? "0%" : `${share}%`;
+      progress.setAttribute("stroke-dasharray", share === null ? "0 100" : `${share} ${100 - share}`);
+      progress.setAttribute("visibility", share > 0 ? "visible" : "hidden");
       progress.parentElement.classList.toggle("is-unavailable", share === null);
+    }
+  }
+
+  function renderDepartmentComparisonChart(departmentName, recommended, selected, total) {
+    const chart = document.getElementById("departmentComparisonChart");
+    if (!chart) return;
+    const missing = [];
+    const descriptions = [];
+    for (const [key, label, count] of [["Recommended", "추천 공고", recommended], ["Selected", "선택한 공고", selected]]) {
+      const share = dashboardShare(count, total);
+      const available = share !== null;
+      const point = document.getElementById(`department${key}Point`);
+      const stem = document.getElementById(`department${key}Stem`);
+      const title = document.getElementById(`department${key}PointTitle`);
+      const description = available
+        ? `${label} ${displayNumber(count)}건 · 전체 ${displayNumber(total)}건 대비 ${formatDashboardShare(count, total)}`
+        : `${label} 집계 확인 필요`;
+      if (!available) missing.push(label);
+      descriptions.push(description);
+      if (point) {
+        point.removeAttribute("hidden");
+        point.setAttribute("visibility", available ? "visible" : "hidden");
+        point.setAttribute("aria-hidden", String(!available));
+        if (available) point.setAttribute("cy", String(220 - 2 * share));
+        else point.removeAttribute("cy");
+      }
+      if (stem) {
+        stem.removeAttribute("hidden");
+        stem.setAttribute("visibility", available ? "visible" : "hidden");
+        if (available) stem.setAttribute("y2", String(220 - 2 * share));
+        else stem.removeAttribute("y2");
+      }
+      if (title) title.textContent = `${departmentName || "전사 공통"} · ${description}`;
+    }
+    chart.setAttribute("aria-label", `${departmentName || "전사 공통"} 공고 비교. ${descriptions.join(". ")}.`);
+    const empty = document.getElementById("departmentComparisonEmpty");
+    if (empty) {
+      empty.setAttribute("visibility", missing.length ? "visible" : "hidden");
+      empty.textContent = missing.length ? `${missing.join("·")} 집계 확인 필요` : "";
     }
   }
 
@@ -4440,6 +4485,7 @@
     document.getElementById("departmentSelectedCount").textContent = displayNumber(selectedCount);
     renderDashboardShare("departmentRecommended", recommended, total);
     renderDashboardShare("departmentSelected", selectedCount, total);
+    renderDepartmentComparisonChart(departmentName, recommended, selectedCount, total);
     document.getElementById("departmentSelectionRate").textContent = formatDashboardShare(selectedRecommended, recommended);
     document.getElementById("departmentSelectionDetail").textContent = available
       ? `추천 ${displayNumber(recommended)}건 중 ${displayNumber(selectedRecommended)}건 선택` : "추천 공고 기준 · 집계 확인 대기";
@@ -4454,19 +4500,24 @@
     const data = state.dashboard;
     const loading = state.dashboardStatus === "loading";
     const failed = ["error", "partial"].includes(state.dashboardStatus);
+    const applicationFailed = state.source === "error";
     const hasPrevious = data.generatedAt && ["loading", "error"].includes(state.dashboardStatus);
     const totalMeta = document.getElementById("dashboardTotalMeta");
     if (totalMeta) totalMeta.textContent = hasPrevious ? `마지막 확인 ${formatKstDateTime(data.generatedAt)}`
       : data.totalNotices == null ? "전체 집계 확인 대기" : state.source === "demo" ? "데모 공고 기준" : "모든 현황 비율의 공통 기준";
-    els.dashboardSummary.hidden = state.source !== "api";
+    els.dashboardSummary.hidden = state.source !== "api" && !applicationFailed;
     els.dashboardSummary.classList.toggle("is-warning", failed);
     els.dashboardRetryButton.hidden = !failed;
     els.dashboardRetryButton.disabled = loading || state.loading;
-    els.dashboardSummaryTitle.textContent = loading ? "전체 공고 수를 집계하고 있습니다."
+    els.dashboardRetryButton.textContent = applicationFailed ? "서버 연결 다시 시도" : "집계 다시 조회";
+    els.dashboardSummaryTitle.textContent = applicationFailed ? "실데이터를 불러오지 못했습니다."
+      : loading ? "전체 공고 수를 집계하고 있습니다."
       : failed ? "일부 공고 수를 확인하지 못했습니다." : "전체 수집 공고 기준";
     els.dashboardSummaryTotals.textContent = `전체 저장 공고 ${displayNumber(data.totalNotices)}건 · 저장된 판정 이력 ${displayNumber(data.totalEvaluations)}건${hasPrevious ? ` · 마지막 확인 ${formatKstDateTime(data.generatedAt)}` : ""}`;
     const scope = "모든 비율은 전체 수집 공고 대비입니다. 조건별 공고는 중복될 수 있습니다. 검토 대기·마감 임박·결과 입력은 PASS·REVIEW 기준입니다.";
-    els.dashboardSummaryDetail.textContent = loading || failed
+    els.dashboardSummaryDetail.textContent = applicationFailed
+      ? `${state.sourceReason || "운영 서버 연결을 확인하지 못했습니다."} 서버 연결 다시 시도로 확인해 주세요.`
+      : loading || failed
       ? `공고 목록 ${formatNumber(state.notices.length)}건은 조회됐습니다. ‘—’는 0건이 아니라 아직 확인하지 못한 집계입니다.${hasPrevious ? " 카드 수와 비율은 마지막 확인값입니다." : ""} ${scope}`
       : `${scope} 판정 이력에는 같은 공고의 재분석 기록이 포함됩니다.`;
     for (const [id, key] of [["kpiReview", "reviewCount"], ["kpiUrgent", "urgentCount"], ["kpiGo", "goCount"], ["kpiNew", "failCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiEnded", "cancelledCount"]]) {
@@ -5355,7 +5406,7 @@
     els.opportunityHero.hidden = !showDashboardCards;
     els.opportunityKpis.hidden = !showDashboardCards;
     if (els.analysisProgress) els.analysisProgress.hidden = !showDashboardCards;
-    els.noticeSection.hidden = customView;
+    els.noticeSection.hidden = customView || showDashboardCards;
     els.resultLearningSection.hidden = !resultLearningView;
     els.awardResultsSection.hidden = !awardsView;
     els.performanceSection.hidden = !performanceView;
@@ -7952,6 +8003,7 @@
     if (handleNavigationKeydown(event)) return;
     if (event.key === "/" && !isEditableTarget(event.target)) {
       event.preventDefault();
+      if (state.currentView === "all") setView("new", { focusMain: false });
       if (state.currentView === "closed") els.resultLearningSearchInput.focus();
       else if (state.currentView === "performance") els.performanceSearchInput.focus();
       else if (state.noticeSearchMode === "prespec") els.prespecStoredSearchInput.focus();

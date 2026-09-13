@@ -106,6 +106,7 @@ jobs:
           required = {
               "pai_loop/static/index.html",
               "pai_loop/static/styles.css",
+              "pai_loop/static/top-navigation.css",
               "pai_loop/static/app.js",
               "pai_loop/static/login.html",
               "pai_loop/static/login.js",

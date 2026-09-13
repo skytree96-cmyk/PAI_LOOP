@@ -11,12 +11,13 @@ const assert=require("node:assert/strict"),vm=require("node:vm");
 const source=require("node:fs").readFileSync(0,"utf8");
 const nodes=new Map(),listeners={},routes=[];
 let mobile=false,viewportChange;
+class HTMLElement {}
 const document={documentElement:{dataset:{}},activeElement:null,
  getElementById(id){return nodes.get(id)||null;},querySelector(){return null;},
  addEventListener(type,handler){(listeners[type]??=[]).push(handler);}};
 function element(id="",parent=null){
  const classes=new Set(),attributes={},events={};
- const el={id,parent,children:[],dataset:{},hidden:false,value:"",textContent:"",
+ const el={id,parent,children:[],dataset:{},hidden:false,value:"",textContent:"",tagName:"DIV",
   classList:{contains:name=>classes.has(name),add:name=>classes.add(name),remove:name=>classes.delete(name),
    toggle(name,enabled){if(enabled??!classes.has(name))classes.add(name);else classes.delete(name);}},
   setAttribute(name,value){attributes[name]=String(value);},getAttribute:name=>attributes[name]??null,
@@ -26,16 +27,18 @@ function element(id="",parent=null){
   contains(target){return target===el||el.children.some(child=>child.contains(target));},
   closest(selector){if(selector==="[data-nav-group]"&&el.dataset.navGroup)return el;return parent?.closest(selector)||null;},
   querySelector(selector){return selector===".nav-group-toggle[aria-controls]"?el.trigger||null:null;},
+  matches(selector){return selector.split(",").some(tag=>tag.trim()===el.tagName.toLowerCase());},
   focus(){document.activeElement=el;},reset(){}};
+ Object.setPrototypeOf(el,HTMLElement.prototype);
  if(id)nodes.set(id,el);if(parent)parent.children.push(el);return el;
 }
 document.body=element("body");
 const media={get matches(){return mobile;},addEventListener(type,handler){assert.equal(type,"change");viewportChange=handler;}};
-const context=vm.createContext({URL,URLSearchParams,Intl,console,document,
+const context=vm.createContext({URL,URLSearchParams,Intl,console,document,HTMLElement,
  window:{location:{search:"",href:"https://syn.invalid/"},matchMedia(query){return query==="(max-width: 1100px)"?media:{matches:false};},setTimeout,clearTimeout}});
 context.recordRoute=view=>routes.push(view);
 const exported=`
-resetNoticeFiltersForView=()=>false;closeDetail=()=>{};renderNoticeSearchMode=()=>{};
+closeDetail=()=>{};renderNoticeSearchMode=()=>{};
 renderPreSpecificationView=()=>{};loadStoredPreSpecifications=async()=>{};
 renderResultLearning=()=>{};loadResultLearning=async()=>{};loadPerformance=async()=>{};
 renderCompanyAwardsView=()=>{};hideDemoBanner=()=>{};showDemoBanner=()=>{};
@@ -119,6 +122,67 @@ key("ArrowUp",decision.trigger);assert.equal(document.activeElement,nodes.get("u
 assert.equal(key("Escape",document.activeElement).prevented,true);assertClosed();
 assert.equal(key("Escape",decision.trigger).prevented,false);
 assert.equal(key("ArrowDown",outside).prevented,false);
+''')
+
+
+def test_home_only_shows_dashboard_and_list_destinations_show_notices() -> None:
+    _run(r'''
+all.fire("click");
+assert.equal(u.state.currentView,"all");
+assert.equal(u.els.noticeSection.hidden,true,"home does not append a notice list below its dashboard");
+for(const id of ["opportunityHero","opportunityKpis","analysisProgress"])
+ assert.equal(u.els[id].hidden,false,id+" is visible on home");
+for(const view of ["new","review","go","urgent","fail","cancelled","result-missing","undecided","collected"]){
+ u.setView(view,{syncRoute:false,focusMain:false});
+ assert.equal(u.els.noticeSection.hidden,false,view+" opens the notice list");
+ for(const id of ["opportunityHero","opportunityKpis","analysisProgress"])
+  assert.equal(u.els[id].hidden,true,view+" hides "+id);
+}
+for(const view of ["closed","awards","performance"]){
+ u.setView(view,{syncRoute:false,focusMain:false});
+ assert.equal(u.els.noticeSection.hidden,true,view+" keeps its dedicated content");
+ assert.equal(u.els.opportunityKpis.hidden,true);
+}
+all.fire("click");
+assert.equal(u.els.noticeSection.hidden,true);
+assert.equal(u.els.opportunityKpis.hidden,false);
+''')
+
+
+def test_view_navigation_preserves_department_while_clearing_notice_filters() -> None:
+    _run(r'''
+u.els.departmentSelect.value="management-planning";
+u.state.departmentSelectionAccountId="SYN-ACCOUNT";
+all.fire("click");
+for(const view of ["new","review","closed","awards","performance","all"]){
+ u.els.searchInput.value="SYN previous search";
+ u.els.priorityKeywordInput.value="SYN previous keyword";
+ u.els.eligibilityFilter.value="FAIL";
+ u.els.recommendationFilter.value="HOLD";
+ u.setView(view,{syncRoute:false,focusMain:false});
+ assert.equal(u.els.departmentSelect.value,"management-planning",view+" preserves chosen department");
+ assert.equal(u.state.departmentSelectionAccountId,"SYN-ACCOUNT");
+ assert.equal(u.els.searchInput.value,"");
+ assert.equal(u.els.priorityKeywordInput.value,"");
+ assert.equal(u.els.eligibilityFilter.value,"all");
+ assert.equal(u.els.recommendationFilter.value,"all");
+}
+''')
+
+
+def test_home_search_shortcut_opens_visible_notice_search_in_selected_department() -> None:
+    _run(r'''
+u.els.departmentSelect.value="management-planning";
+all.fire("click");
+assert.equal(u.els.noticeSection.hidden,true);
+assert.equal(key("/",document.body).prevented,true);
+assert.equal(u.state.currentView,"new");
+assert.equal(u.els.noticeSection.hidden,false);
+assert.equal(u.els.opportunityKpis.hidden,true);
+assert.equal(document.activeElement,u.els.searchInput);
+assert.equal(u.els.departmentSelect.value,"management-planning");
+u.els.searchInput.tagName="INPUT";
+assert.equal(key("/",u.els.searchInput).prevented,false,"typing slash in a search field remains native");
 ''')
 
 

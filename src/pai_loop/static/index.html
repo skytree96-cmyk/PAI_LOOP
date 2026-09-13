@@ -17,8 +17,8 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260913-top-navigation-v1" />
-    <link rel="stylesheet" href="./top-navigation.css?v=20260913-top-navigation-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260913-dashboard-charts-v2" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260913-dashboard-charts-v2" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -48,8 +48,9 @@
           </button>
           <div class="nav-group" data-nav-group="search" aria-label="발견">
             <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupSearchItems">
+              <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m16 8-2.5 5.5L8 16l2.5-5.5L16 8Z" /></svg></span>
               <span>발견</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+              <svg class="nav-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
             <div class="nav-group-items" id="navGroupSearchItems" hidden>
               <button class="nav-item nav-item--sub" type="button" data-view="new">
@@ -63,8 +64,9 @@
           </div>
           <div class="nav-group" data-nav-group="decision" aria-label="판단">
             <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupDecisionItems">
+              <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 3h6v3H9zM9 12l2 2 4-4M9 17h6" /></svg></span>
               <span>판단</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+              <svg class="nav-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
             <div class="nav-group-items" id="navGroupDecisionItems" hidden>
               <button class="nav-item nav-item--sub" type="button" data-view="review">
@@ -85,8 +87,9 @@
           </div>
           <div class="nav-group" data-nav-group="learning" aria-label="결과">
             <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupLearningItems">
+              <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4v16h16M8 16v-4M12 16V8M16 16v-6" /></svg></span>
               <span>결과</span>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+              <svg class="nav-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
             <div class="nav-group-items" id="navGroupLearningItems" hidden>
               <button class="nav-item nav-item--sub" type="button" data-view="closed">
@@ -163,49 +166,91 @@
             <article class="kpi-card kpi-card--action kpi-card--accent">
               <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="분석 및 자격 검토 대기 공고 보기" aria-pressed="false"><span class="sr-only">분석 및 자격 검토 대기 공고 보기</span></button>
               <div class="kpi-card__head"><span>검토 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
-              <strong class="kpi-value" id="kpiReview">—</strong>
-              <div class="kpi-share"><span>전체 대비</span><strong id="kpiReviewShare">—</strong></div>
-              <div class="kpi-progress" aria-hidden="true"><i id="kpiReviewProgress"></i></div>
+              <div class="kpi-visual">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiReview">—</strong><span>전체 수집 공고 대비</span></div>
+                <div class="kpi-donut-chart">
+                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
+                    <circle class="kpi-donut__value" id="kpiReviewProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
+                  </svg>
+                  <div class="kpi-share"><strong id="kpiReviewShare">—</strong></div>
+                </div>
+              </div>
               <p><span class="trend trend--amber" id="kpiReviewTrend">처리 필요</span> PASS·REVIEW 중 첨부·자격 확인 대기</p>
             </article>
             <article class="kpi-card kpi-card--action">
               <button class="kpi-card__action" type="button" data-kpi-view="urgent" aria-label="5일 이내 입찰마감 공고 보기" aria-pressed="false"><span class="sr-only">5일 이내 입찰마감 공고 보기</span></button>
               <div class="kpi-card__head"><span>마감 임박 (5일)</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
-              <strong class="kpi-value" id="kpiUrgent">—</strong>
-              <div class="kpi-share"><span>전체 대비</span><strong id="kpiUrgentShare">—</strong></div>
-              <div class="kpi-progress" aria-hidden="true"><i id="kpiUrgentProgress"></i></div>
+              <div class="kpi-visual">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiUrgent">—</strong><span>전체 수집 공고 대비</span></div>
+                <div class="kpi-donut-chart">
+                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
+                    <circle class="kpi-donut__value" id="kpiUrgentProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
+                  </svg>
+                  <div class="kpi-share"><strong id="kpiUrgentShare">—</strong></div>
+                </div>
+              </div>
               <p class="kpi-scope-note">진행 중 PASS·REVIEW · <span class="trend trend--red">5일</span> 이내 입찰마감 · 한국 날짜 기준</p>
             </article>
             <article class="kpi-card kpi-card--action">
               <button class="kpi-card__action" type="button" data-kpi-view="result-missing" aria-label="결과 입력 필요 공고 보기" aria-pressed="false"><span class="sr-only">결과 입력 필요 공고 보기</span></button>
               <div class="kpi-card__head"><span>결과 입력 필요 공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M9 12h6M12 9v6" /></svg></span></div>
-              <strong class="kpi-value" id="kpiResultMissing">—</strong>
-              <div class="kpi-share"><span>전체 대비</span><strong id="kpiResultMissingShare">—</strong></div>
-              <div class="kpi-progress" aria-hidden="true"><i id="kpiResultMissingProgress"></i></div>
+              <div class="kpi-visual">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiResultMissing">—</strong><span>전체 수집 공고 대비</span></div>
+                <div class="kpi-donut-chart">
+                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
+                    <circle class="kpi-donut__value" id="kpiResultMissingProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
+                  </svg>
+                  <div class="kpi-share"><strong id="kpiResultMissingShare">—</strong></div>
+                </div>
+              </div>
               <p><span class="trend trend--slate">기록 필요</span> PASS·REVIEW 중 마감·종료 후 결과 없음</p>
             </article>
             <article class="kpi-card kpi-card--action" aria-label="자격 FAIL 공고 수">
               <button class="kpi-card__action" type="button" data-kpi-view="fail" aria-label="자격 FAIL 공고 보기" aria-pressed="false"><span class="sr-only">자격 FAIL 공고 보기</span></button>
               <div class="kpi-card__head"><span>FAIL 공고</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h8" /></svg></span></div>
-              <strong class="kpi-value" id="kpiNew">—</strong>
-              <div class="kpi-share"><span>전체 대비</span><strong id="kpiNewShare">—</strong></div>
-              <div class="kpi-progress" aria-hidden="true"><i id="kpiNewProgress"></i></div>
+              <div class="kpi-visual">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiNew">—</strong><span>전체 수집 공고 대비</span></div>
+                <div class="kpi-donut-chart">
+                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
+                    <circle class="kpi-donut__value" id="kpiNewProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
+                  </svg>
+                  <div class="kpi-share"><strong id="kpiNewShare">—</strong></div>
+                </div>
+              </div>
               <p><span class="trend trend--red" id="kpiNewTrend">자격 FAIL</span> 저장된 현재 자격 판정 기준</p>
             </article>
             <article class="kpi-card kpi-card--action" aria-label="AI 판단 GO 후보 수">
               <button class="kpi-card__action" type="button" data-kpi-view="go" aria-label="GO 후보 공고 보기" aria-pressed="false"><span class="sr-only">GO 후보 공고 보기</span></button>
               <div class="kpi-card__head"><span>GO 후보</span><span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></span></div>
-              <strong class="kpi-value" id="kpiGo">—</strong>
-              <div class="kpi-share"><span>전체 대비</span><strong id="kpiGoShare">—</strong></div>
-              <div class="kpi-progress" aria-hidden="true"><i id="kpiGoProgress"></i></div>
+              <div class="kpi-visual">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiGo">—</strong><span>전체 수집 공고 대비</span></div>
+                <div class="kpi-donut-chart">
+                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
+                    <circle class="kpi-donut__value" id="kpiGoProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
+                  </svg>
+                  <div class="kpi-share"><strong id="kpiGoShare">—</strong></div>
+                </div>
+              </div>
               <p><span class="trend trend--up" id="kpiGoTrend">AI 판단</span> 진행 공고 중 GO</p>
             </article>
             <article class="kpi-card kpi-card--action" aria-label="당시 PASS·REVIEW 취소공고 수">
               <button class="kpi-card__action" type="button" data-kpi-view="cancelled" aria-label="당시 PASS·REVIEW 취소공고 보기" aria-pressed="false"><span class="sr-only">당시 PASS·REVIEW 취소공고 보기</span></button>
               <div class="kpi-card__head"><span>취소공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg></span></div>
-              <strong class="kpi-value" id="kpiEnded">—</strong>
-              <div class="kpi-share"><span>전체 대비</span><strong id="kpiEndedShare">—</strong></div>
-              <div class="kpi-progress" aria-hidden="true"><i id="kpiEndedProgress"></i></div>
+              <div class="kpi-visual">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiEnded">—</strong><span>전체 수집 공고 대비</span></div>
+                <div class="kpi-donut-chart">
+                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
+                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
+                    <circle class="kpi-donut__value" id="kpiEndedProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
+                  </svg>
+                  <div class="kpi-share"><strong id="kpiEndedShare">—</strong></div>
+                </div>
+              </div>
               <p><span class="trend trend--slate">당시 PASS·REVIEW</span> 운영 대상에서 제외된 공고</p>
             </article>
             <section class="department-dashboard" aria-labelledby="departmentDashboardTitle">
@@ -213,9 +258,29 @@
                 <div><p class="section-kicker">부서별 공고 현황</p><h3 id="departmentDashboardTitle">우리 부서의 관심 공고</h3><p id="departmentDashboardMeta" aria-live="polite">부서별 현황을 확인하고 있습니다.</p></div>
                 <label class="department-dashboard__select"><span>부서 선택</span><select id="dashboardDepartmentSelect" aria-label="대시보드 부서 선택"><option value="organization">전사 공통 (교육·컨설팅)</option></select></label>
               </div>
+              <div class="department-dashboard__body">
+                <div class="department-plot">
+                  <p class="department-plot__heading">추천 · 선택 비율 비교 <span>전체 수집 공고 = 100%</span></p>
+                  <svg id="departmentComparisonChart" class="department-comparison-chart" viewBox="0 0 480 270" role="img" aria-label="부서 추천·선택 비율 집계 확인 중">
+                    <g class="chart-grid" aria-hidden="true">
+                      <path d="M48 20H448M48 70H448M48 120H448M48 170H448" />
+                    </g>
+                    <path class="chart-axis" d="M48 20V220H448" aria-hidden="true" />
+                    <g class="chart-ticks" aria-hidden="true" text-anchor="end">
+                      <text x="38" y="24">100%</text><text x="38" y="74">75%</text><text x="38" y="124">50%</text><text x="38" y="174">25%</text><text x="38" y="224">0%</text>
+                    </g>
+                    <g class="chart-categories" aria-hidden="true" text-anchor="middle"><text x="148" y="251">추천 공고</text><text x="348" y="251">선택한 공고</text></g>
+                    <line id="departmentRecommendedStem" class="department-chart-stem department-chart-stem--recommended" x1="148" x2="148" y1="220" y2="220" hidden />
+                    <line id="departmentSelectedStem" class="department-chart-stem department-chart-stem--selected" x1="348" x2="348" y1="220" y2="220" hidden />
+                    <circle id="departmentRecommendedPoint" class="department-chart-point department-chart-point--recommended" cx="148" cy="220" r="8" hidden><title id="departmentRecommendedPointTitle">추천 공고 집계 확인 중</title></circle>
+                    <circle id="departmentSelectedPoint" class="department-chart-point department-chart-point--selected" cx="348" cy="220" r="8" hidden><title id="departmentSelectedPointTitle">선택한 공고 집계 확인 중</title></circle>
+                    <text id="departmentComparisonEmpty" class="chart-empty" x="248" y="125" text-anchor="middle">집계를 확인하고 있습니다.</text>
+                  </svg>
+                </div>
               <div class="department-dashboard__metrics">
-                <article class="department-stat"><span>추천 공고</span><div class="department-stat__value"><strong id="departmentRecommendedCount">—</strong><span>건</span><b id="departmentRecommendedShare">—</b></div><div class="department-stat__track" aria-hidden="true"><i id="departmentRecommendedProgress"></i></div><p>전체 수집 공고 대비 · 진행 중 키워드 상위·지역 연관 공고</p></article>
-                <article class="department-stat"><span>선택한 공고</span><div class="department-stat__value"><strong id="departmentSelectedCount">—</strong><span>건</span><b id="departmentSelectedShare">—</b></div><div class="department-stat__track" aria-hidden="true"><i id="departmentSelectedProgress"></i></div><p>전체 수집 공고 대비 · 부서의 최신 GO·조건부 GO 판단</p></article>
+                <article class="department-stat"><span>추천 공고</span><div class="department-stat__value"><strong id="departmentRecommendedCount">—</strong><span>건</span><b id="departmentRecommendedShare">—</b></div><p>전체 수집 공고 대비 · 진행 중 키워드 상위·지역 연관 공고</p></article>
+                <article class="department-stat"><span>선택한 공고</span><div class="department-stat__value"><strong id="departmentSelectedCount">—</strong><span>건</span><b id="departmentSelectedShare">—</b></div><p>전체 수집 공고 대비 · 부서의 최신 GO·조건부 GO 판단</p></article>
+              </div>
               </div>
               <div class="department-dashboard__footer"><span>추천 공고 중 선택 비율</span><strong id="departmentSelectionRate">—</strong><span id="departmentSelectionDetail">추천 공고 기준</span></div>
             </section>
@@ -1312,6 +1377,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260913-top-navigation-v1" defer></script>
+    <script src="./app.js?v=20260913-dashboard-charts-v2" defer></script>
   </body>
 </html>
