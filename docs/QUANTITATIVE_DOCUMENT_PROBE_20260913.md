@@ -93,7 +93,7 @@ not issue one request per notice. A validated result shows the conservative lowe
 bound, with confirmed and provisional labels kept distinct. Missing, stale,
 cancelled, historical and failed results cannot become a current numeric score.
 The main view includes a review reason; result entry and aggregate retry behavior
-remain separate. JS and CSS share cache version `20260913-quantitative-v2`.
+remain separate. JS and CSS share cache version `20260913-quantitative-v3`.
 
 Public GET reads a current stored score snapshot. Deployment alone does not
 refresh that snapshot. The five selected active notices are to be processed once
