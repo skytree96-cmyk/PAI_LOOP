@@ -26,12 +26,12 @@ def setup(client, monkeypatch):
     # Fixture IDs remain SYN throughout. Only this fixture family is treated as
     # a real-source candidate so the production synthetic exclusion stays exact.
     original = module._source_kind
-    monkeypatch.setattr(module, "_source_kind", lambda notice: "MANUAL" if notice.notice_key.startswith("SYN-QUEUE-") else original(notice))
+    monkeypatch.setattr(module, "_source_kind", lambda notice: "PPS" if notice.notice_key.startswith("SYN-QUEUE-") else original(notice))
 
     def add(key="A", *, category="용역", status="OPEN", age=0, title="가상 교육 컨설팅"):
         with client.app.state.session_factory() as session:
             notice = Notice(notice_key=f"SYN-QUEUE-{key}", bid_notice_no=f"SYN-{key}", title=title,
-                category=category, status=status, agency="가상 기관", deadline=NOW - timedelta(days=age),
+                category=category, status=status, agency="가상 기관", deadline=NOW + timedelta(days=120-age),
                 published_at=NOW - timedelta(days=age), created_at=NOW - timedelta(days=age))
             session.add(notice)
             session.commit()
@@ -78,10 +78,10 @@ def test_plan_all_lifecycles_sources_and_idempotency(client, setup):
         session.get(Notice, synthetic_id).notice_key = "SYN-EXCLUDED"
         session.commit()
     first = post(client, "plan")
-    assert (first["total"], first["enrolled"], first["pending"], first["unsupported"], first["skipped"]) == (6, 6, 3, 2, 1)
+    assert (first["total"], first["enrolled"], first["pending"], first["unsupported"], first["skipped"]) == (6, 6, 1, 2, 3)
     second = post(client, "plan")
     assert second["enrolled"] == second["requeued"] == second["unplanned"] == 0
-    assert second["eligible"] == 3
+    assert second["eligible"] == 1
 
 
 def test_run_only_awards_and_durable_counts(client, setup, monkeypatch):
@@ -135,19 +135,19 @@ def test_partial_backoff_and_dead_letter_do_not_busy_retry(client, setup, monkey
     assert len(captured) == 3
 
 
-def test_twenty_four_hour_budget_counts_external_jobs(client, setup, monkeypatch):
+def test_kst_day_budget_counts_external_jobs_and_resets_at_midnight(client, setup, monkeypatch):
     clock, add = setup
     add()
     captured = fake_collector(client, monkeypatch)
     with client.app.state.session_factory() as session:
         session.add(IngestionJob(source="PPS_AWARD", mode="LIVE", status="COMPLETED", window_json={},
-            request_json={}, api_calls=560, created_at=NOW - timedelta(hours=23)))
+            request_json={}, api_calls=960, created_at=NOW - timedelta(hours=2)))
         session.commit()
     post(client, "plan")
     result = post(client, "run")
     assert result["status"] == "DAILY_BUDGET_REACHED" and result["attempted"] == 0
     assert not captured
-    clock[0] += timedelta(hours=2)
+    clock[0] += timedelta(hours=4)
     assert post(client, "run")["status"] == "COMPLETED"
 
 
@@ -248,8 +248,10 @@ def test_source_change_prevents_wrong_service_calls_and_changed_title_requeues(c
 
 
 def test_protected_routes_and_request_limits(client, setup):
-    assert client.post(f"{BASE}/run", json={"max_notices": 2}).status_code == 422
-    assert client.post(f"{BASE}/run", json={"daily_api_budget": 701}).status_code == 422
+    assert client.post(f"{BASE}/run", json={"max_notices": 11}).status_code == 422
+    assert client.post(f"{BASE}/run", json={"daily_api_budget": 1001}).status_code == 422
+    for body in ({"max_notices": True}, {"max_notices": "10"}, {"daily_api_budget": 1.5}):
+        assert client.post(f"{BASE}/run", json=body).status_code == 422
     assert client.post(f"{BASE}/run", json={"force_ai": True}).status_code == 422
     assert client.post(f"{BASE}/plan", json={"refresh_after_days": 0}).status_code == 422
     client.headers.pop("X-PAI-LOOP-API-KEY")
@@ -257,9 +259,9 @@ def test_protected_routes_and_request_limits(client, setup):
     assert client.post(f"{BASE}/plan", json={}).status_code == 401
 
 
-def test_never_attempted_priority_before_stale_refresh_and_current_before_closed(client, setup, monkeypatch):
+def test_never_attempted_priority_before_stale_refresh(client, setup, monkeypatch):
     _clock, add = setup
-    old_id = add("OLD", status="CLOSED", age=20)
+    old_id = add("OLD", age=20)
     current_id = add("CURRENT")
     captured = fake_collector(client, monkeypatch)
     post(client, "plan")

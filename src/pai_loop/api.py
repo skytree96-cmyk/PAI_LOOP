@@ -3098,6 +3098,9 @@ def refresh_award_history(
 
     try:
         award_deadline = time.monotonic() + 480
+        shared_deadline = getattr(request.state, "award_automation_deadline", None)
+        if isinstance(shared_deadline, (int, float)):
+            award_deadline = min(award_deadline, shared_deadline)
         with PpsAwardClient(
             service_key=settings.pps_api_key,
             base_url=settings.pps_base_url,
@@ -3158,7 +3161,7 @@ def refresh_award_history(
         warnings.append(
             "진단 제한 시간에 도달했습니다. 수신한 응답 구조만 기록하고 낙찰 기록은 저장하지 않았습니다."
             if payload.diagnostic_probe else
-            "총 480초 수집 제한에서 중단했으며 확보한 낙찰 후보만 저장했습니다."
+            "수집 제한 시간에서 중단했으며 확보한 낙찰 후보만 저장했습니다."
         )
 
     quarantined = 0
