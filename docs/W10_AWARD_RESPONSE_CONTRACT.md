@@ -1,5 +1,11 @@
 # W10 award refresh diagnostics contract
 
+As of 2026-09-13, W10's scheduled `awardRefreshEnabled` and
+`awardRefreshWriteEnabled` flags are fixed to `false`. Independent W14 owns
+the full stored-notice award queue; see [the current automation contract](AWARD_AUTOMATION_v0.1.0.md).
+The validator and graph below remain as compatibility and regression assets.
+This change does not alter W10 collection, analysis or Teams gates.
+
 `Validate Award Refresh Batch` accepts the additive `window_error_counts` field
 from `AwardHistoryRefreshOut`. Its absence remains compatible with older server
 responses. When present, it must be an array of at most 2,048 records, each with

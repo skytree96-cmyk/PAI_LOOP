@@ -19,6 +19,7 @@ from sqlalchemy import text
 from . import __version__
 from .analysis_api import router as analysis_persistence_router
 from .api import router
+from .award_automation import router as award_automation_router
 from .accounts import router as accounts_router
 from .accounts import authenticated_account
 from .app_access import FRONTEND_PATHS, require_app_access
@@ -172,6 +173,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         return response
 
     application.include_router(router)
+    application.include_router(award_automation_router)
     application.include_router(accounts_router)
     application.include_router(public_performance_router)
     application.include_router(daily_operations_router)

@@ -2931,6 +2931,8 @@ def refresh_award_history(
     eligibility or bid decision.
     """
 
+    from .integrations.pps import PpsApiCallBudget, PpsApiCallBudgetExceeded
+
     notice = _load_notice(session, notice_key)
     settings = request.app.state.settings
     if not settings.pps_api_key:
@@ -2964,6 +2966,9 @@ def refresh_award_history(
             "include_opening_results": payload.include_opening_results,
             "max_opening_result_notices": payload.max_opening_result_notices,
             "opening_result_max_pages": payload.opening_result_max_pages,
+            **({"max_api_calls": payload.max_api_calls} if payload.max_api_calls is not None else {}),
+            **({"automation_attempt_id": request.state.award_automation_attempt_id}
+               if getattr(request.state, "award_automation_attempt_id", None) else {}),
             **({"diagnostic_probe": True} if payload.diagnostic_probe else {}),
         },
         notice_keys=[notice.notice_key],
@@ -2973,6 +2978,28 @@ def refresh_award_history(
     session.commit()
     session.refresh(job)
 
+    budget = PpsApiCallBudget(payload.max_api_calls) if payload.max_api_calls is not None else None
+    budget_options = {"request_budget": budget} if budget is not None else {}
+    award_job_id = job.id
+    client = None
+    opening_client = None
+
+    def mark_failed(error_code: str, warning: str) -> None:
+        # Roll back pending business writes, then commit failure and consumed
+        # calls together so recovery never sees a failed paid attempt as free.
+        calls = budget.consumed if budget is not None else (
+            int(getattr(client, "request_count", 0)) + int(getattr(opening_client, "request_count", 0))
+        )
+        session.rollback()
+        failed_job = session.get(IngestionJob, award_job_id)
+        if failed_job is not None:
+            failed_job.status = "FAILED"
+            failed_job.error_code = error_code
+            failed_job.warnings = [warning]
+            failed_job.completed_at = datetime.now(timezone.utc)
+            failed_job.api_calls = calls
+            session.commit()
+
     try:
         award_deadline = time.monotonic() + 480
         with PpsAwardClient(
@@ -2980,6 +3007,7 @@ def refresh_award_history(
             base_url=settings.pps_base_url,
             timeout_seconds=12,
             max_retries=0,
+            **budget_options,
             **({"diagnostic_probe": True} if payload.diagnostic_probe else {}),
         ) as client:
             fetched_rows = list(
@@ -3004,18 +3032,15 @@ def refresh_award_history(
                 page_shape_diagnostics = AwardShapeDiagnostics.model_validate(page_shape_diagnostics).model_dump(mode="json")
             hit_time_limit = getattr(client, "hit_time_limit", False)
             hit_incomplete_response = getattr(client, "hit_incomplete_response", False)
+            hit_api_call_limit = getattr(client, "hit_api_call_limit", False)
     except PpsApiError as exc:
-        _mark_pps_job_failed(
-            session,
-            job_id=job.id,
+        mark_failed(
             error_code="PPS_AWARD_API_ERROR",
             warning="조달청 낙찰정보 API 호출이 실패했습니다. 키와 승인 상태를 확인하세요.",
         )
         raise HTTPException(status_code=502, detail="조달청 낙찰정보 API 호출에 실패했습니다.") from exc
     except Exception:
-        _mark_pps_job_failed(
-            session,
-            job_id=job.id,
+        mark_failed(
             error_code="PPS_AWARD_CLIENT_ERROR",
             warning="조달청 낙찰정보 클라이언트가 예기치 않게 종료되었습니다.",
         )
@@ -3073,6 +3098,7 @@ def refresh_award_history(
                 base_url=settings.pps_base_url,
                 timeout_seconds=12,
                 max_retries=0,
+                **budget_options,
             ) as opening_client:
                 for identity, item in selected:
                     if time.monotonic() >= award_deadline:
@@ -3080,6 +3106,7 @@ def refresh_award_history(
                         hit_time_limit = True
                         break
                     opening_requested += 1
+                    before_opening_calls = opening_client.request_count
                     try:
                         opening_by_identity[identity] = opening_client.fetch_opening_results(
                             bid_notice_no=item["bid_notice_no"],
@@ -3090,6 +3117,13 @@ def refresh_award_history(
                             max_pages=payload.opening_result_max_pages,
                             deadline_monotonic=award_deadline,
                         )
+                    except PpsApiCallBudgetExceeded:
+                        if opening_client.request_count == before_opening_calls:
+                            opening_requested -= 1
+                        hit_api_call_limit = True
+                        opening_failures[identity] = "PARTIAL"
+                        opening_failed += 1
+                        break
                     except OpeningResultsIncomplete:
                         opening_failed += 1
                         opening_failures[identity] = "PARTIAL"
@@ -3101,9 +3135,7 @@ def refresh_award_history(
                         opening_failures[identity] = "ERROR"
                 api_calls += opening_client.request_count
         except Exception:
-            _mark_pps_job_failed(
-                session,
-                job_id=job.id,
+            mark_failed(
                 error_code="PPS_OPENING_RESULT_CLIENT_ERROR",
                 warning="조달청 개찰결과 클라이언트가 예기치 않게 종료되었습니다.",
             )
@@ -3112,6 +3144,9 @@ def refresh_award_history(
             warnings.append(f"{opening_failed}건의 개찰 결과 조회가 실패하거나 불완전해 기존 저장본을 유지했습니다. 신규 건은 미확인입니다.")
     elif payload.include_opening_results and payload.dry_run:
         warnings.append("dry_run이므로 개찰 결과 조회를 실행하지 않았습니다.")
+
+    if hit_api_call_limit:
+        warnings.append("AWARD_API_CALL_BUDGET_EXHAUSTED: 실제 API 호출 상한에서 중단했습니다. 미조회 구간·개찰 결과는 미확인으로 남기고 기존 저장본을 유지합니다.")
 
     created = 0
     updated = 0
@@ -3195,7 +3230,7 @@ def refresh_award_history(
         )
     job.status = "PARTIAL" if (
         window_errors or hit_time_limit or hit_page_limit or hit_incomplete_response or quarantined
-        or opening_failed or opening_limited or payload.diagnostic_probe
+        or opening_failed or opening_limited or hit_api_call_limit or payload.diagnostic_probe
     ) else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
@@ -3212,9 +3247,7 @@ def refresh_award_history(
     try:
         session.commit()
     except Exception:
-        _mark_pps_job_failed(
-            session,
-            job_id=job.id,
+        mark_failed(
             error_code="PPS_AWARD_PERSISTENCE_ERROR",
             warning="낙찰 후보 저장 중 오류가 발생해 실행을 실패 처리했습니다.",
         )

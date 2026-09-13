@@ -11,6 +11,7 @@ from .pps import (
     DEFAULT_BASE_URL,
     DateWindow,
     PpsApiError,
+    PpsApiCallBudgetExceeded,
     PpsClient,
     _number,
     _parse_datetime,
@@ -197,6 +198,7 @@ class PpsAwardClient(PpsClient):
         self.fallback_window_count = 0
         self.window_errors: list[str] = []
         self.hit_incomplete_response = False
+        self.hit_api_call_limit = False
         self._window_error_counts: Counter = Counter()
         self._page_shape_counts: Counter = Counter()
         self._suppressed_page_shapes = 0
@@ -265,21 +267,25 @@ class PpsAwardClient(PpsClient):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
                 return results
-            payload = self._request(
-                operation_path,
-                {
-                    "inqryDiv": "1",
-                    "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
-                    "inqryEndDt": window.end.strftime("%Y%m%d2359"),
-                    "bidNtceNm": keyword,
-                    "pageNo": page,
-                    "numOfRows": rows,
-                },
-                timeout_seconds=(
-                    max(0.1, deadline_monotonic - time.monotonic())
-                    if deadline_monotonic is not None else None
-                ),
-            )
+            try:
+                payload = self._request(
+                    operation_path,
+                    {
+                        "inqryDiv": "1",
+                        "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
+                        "inqryEndDt": window.end.strftime("%Y%m%d2359"),
+                        "bidNtceNm": keyword,
+                        "pageNo": page,
+                        "numOfRows": rows,
+                    },
+                    timeout_seconds=(
+                        max(0.1, deadline_monotonic - time.monotonic())
+                        if deadline_monotonic is not None else None
+                    ),
+                )
+            except PpsApiCallBudgetExceeded:
+                self.hit_api_call_limit = True
+                return results
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
                 if not self._diagnostic_probe:
@@ -498,6 +504,7 @@ class PpsAwardClient(PpsClient):
         self.fallback_window_count = 0
         self.window_errors = []
         self.hit_incomplete_response = False
+        self.hit_api_call_limit = False
         self._window_error_counts.clear()
         self._page_shape_counts.clear()
         self._suppressed_page_shapes = 0
@@ -556,6 +563,8 @@ class PpsAwardClient(PpsClient):
                         self.window_errors.append(safe_window)
                         if not continue_on_window_error:
                             raise
+                    if self.hit_api_call_limit:
+                        break
             yield from results
-            if self._diagnostic_probe:
+            if self._diagnostic_probe or self.hit_api_call_limit:
                 return

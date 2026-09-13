@@ -661,6 +661,8 @@ class AwardHistoryRefreshRequest(ApiModel):
     years: int = Field(default=3, ge=1, le=3)
     page_size: int = Field(default=100, ge=1, le=100)
     max_pages_per_window: int = Field(default=1, ge=1, le=3)
+    # Shared physical HTTP cap across history, retries, fallback and openings.
+    max_api_calls: int | None = Field(default=None, ge=1, le=2000, strict=True)
     dry_run: bool = False
     diagnostic_probe: bool = Field(default=False, strict=True)
     # Opt-in and hard-capped. Each notice costs at most
