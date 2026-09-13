@@ -8,12 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, text
 
 from pai_loop.account_models import AccountAudit, AccountLoginBucket, AccountSession, DepartmentAccount
-from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, departments, now_utc, password_hash, verify_password
+from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, _session_hash, departments, now_utc, password_hash, verify_password
+from pai_loop.followup_models import TeamsFollow, TeamsFollowDelivery
 from pai_loop.migrations import ACCOUNT_MIGRATION_ID, apply_additive_migrations, pending_migrations, schema_migrations
 from pai_loop.models import BidOutcome, IngestionJob, Notice, UserDecision
+from pai_loop.teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsSessionLink
 
 
 # Synthetic fixture credentials only; no real registration occurs in this suite.
@@ -70,6 +72,61 @@ def test_account_flag_is_disabled_by_default_and_me_is_no_store(client):
     assert client.get("/api/v1/runtime-profile").json()["department_accounts_enabled"] is False
     assert client.post("/api/v1/accounts/login", headers=ORIGIN, json={"username": "SYN_KMA1", "password": PASSWORD}).status_code == 404
     assert _peer(client).post("/api/v1/accounts/bootstrap", json={"accounts": [{"username": "SYN_ADMIN", "password": PASSWORD, "role": "ADMIN"}]}).status_code == 401
+
+
+def test_login_prunes_expired_teams_session_proofs_preserving_personal_alerts(account_client):
+    client = account_client
+    _, me = _login(client)
+    account_id = me["account"]["id"]
+    now = now_utc()
+    old_id, recent_id = "SYN-old-linked-session", "SYN-recent-expired-session"
+    with client.app.state.session_factory() as session:
+        assert session.scalar(text("PRAGMA foreign_keys")) == 1
+        live_id = session.scalar(select(AccountSession.id).where(AccountSession.account_id == account_id))
+        for identifier, expiration in ((old_id, now - timedelta(days=2)), (recent_id, now - timedelta(hours=2))):
+            session.add(AccountSession(id=identifier, account_id=account_id,
+                token_hash=_session_hash(identifier), csrf_hash=_session_hash("SYN-cleanup-csrf"),
+                created_at=expiration - timedelta(hours=8), expires_at=expiration))
+        recipient = TeamsRecipient(id="SYN-cleanup-recipient", account_id=account_id,
+            tenant_id="SYN-cleanup-tenant", aad_object_id="SYN-cleanup-person", active=True,
+            conversation_id="SYN-cleanup-conversation", service_url="https://smba.trafficmanager.net/teams/",
+            created_at=now - timedelta(days=3), updated_at=now - timedelta(days=3))
+        session.add(recipient)
+        session.flush()
+        proof_keys = {old_id: "a" * 64, recent_id: "b" * 64, live_id: "c" * 64}
+        for session_id, code_hash in proof_keys.items():
+            session.add(TeamsSessionLink(session_id=session_id, account_id=account_id,
+                recipient_id=recipient.id, created_at=now - timedelta(days=3)))
+            session.add(TeamsLinkCode(code_hash=code_hash, session_id=session_id, account_id=account_id,
+                created_at=now - timedelta(days=3), expires_at=now - timedelta(days=2)))
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE))
+        deadline = now + timedelta(days=10)
+        follow = TeamsFollow(id="SYN-cleanup-follow", recipient_id=recipient.id, account_id=account_id,
+            notice_id=notice.id, active=True, generation=1, subscribed_at=now - timedelta(days=3),
+            deadline_snapshot=deadline, created_at=now - timedelta(days=3), updated_at=now - timedelta(days=3))
+        session.add(follow)
+        session.flush()
+        delivery = TeamsFollowDelivery(id="SYN-cleanup-delivery", follow_id=follow.id, generation=1,
+            event_kind="D_MINUS_5", status="PENDING", scheduled_at=now + timedelta(days=5),
+            expires_at=deadline, deadline_snapshot=deadline, attempts=0, created_at=now, updated_at=now)
+        session.add(delivery)
+        session.commit()
+        snapshots = {type(row): {column.name: getattr(row, column.name) for column in row.__table__.columns}
+                     for row in (recipient, follow, delivery)}
+
+    # Regression: the later login used to fail when pruning the FK parent session.
+    _login(client)
+    with client.app.state.session_factory() as session:
+        assert session.get(AccountSession, old_id) is None
+        assert session.get(TeamsSessionLink, old_id) is None
+        assert session.get(TeamsLinkCode, proof_keys[old_id]) is None
+        for retained_id in (recent_id, live_id):
+            assert session.get(AccountSession, retained_id) is not None
+            assert session.get(TeamsSessionLink, retained_id) is not None
+            assert session.get(TeamsLinkCode, proof_keys[retained_id]) is not None
+        for model, before in snapshots.items():
+            row = session.get(model, before["id"])
+            assert {column.name: getattr(row, column.name) for column in row.__table__.columns} == before
 
 
 def test_bootstrap_requires_preview_and_is_new_only(account_client):

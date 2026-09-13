@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from .account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from .department_ranking import load_department_keyword_profiles
+from .teams_identity_models import TeamsLinkCode, TeamsSessionLink
 
 SESSION_COOKIE = "pai_department_session"
 CSRF_COOKIE = "pai_department_csrf"
@@ -263,7 +264,12 @@ def login(payload: Login, request: Request, response: Response) -> dict:
             session.commit()
             raise HTTPException(401, "아이디 또는 비밀번호를 확인해 주세요.")
         now = now_utc()
-        session.execute(delete(AccountSession).where(AccountSession.expires_at < now - timedelta(days=1)))
+        expired_sessions = select(AccountSession.id).where(AccountSession.expires_at < now - timedelta(days=1))
+        # Pairing proofs belong to the browser session. Remove those children
+        # before pruning its row; personal recipients and subscribed alerts persist.
+        session.execute(delete(TeamsLinkCode).where(TeamsLinkCode.session_id.in_(expired_sessions)))
+        session.execute(delete(TeamsSessionLink).where(TeamsSessionLink.session_id.in_(expired_sessions)))
+        session.execute(delete(AccountSession).where(AccountSession.id.in_(expired_sessions)))
         old = request.cookies.get(SESSION_COOKIE, "")
         if old:
             previous = session.scalar(select(AccountSession).where(AccountSession.token_hash == _session_hash(old)))
