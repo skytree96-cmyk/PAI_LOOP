@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from pai_loop.integrations.openai_extraction import EXTRACTION_SCHEMA, ExtractionPayload
+from pai_loop.quantitative_rule_extraction import validate_quantitative_attachment_extraction
 
 
 def as_transport(output):
@@ -114,7 +115,8 @@ def complete_output():
             "threshold": {"literal": "SYN", "operator": "GTE", "threshold_value": 1,
                           "points_if_met": 1, "points_if_not_met": None, "evidence": anchor},
             "formula_literal": None, "cases": [{"literal": "SYN", "operator": "IN",
-                "comparison_value": None, "category_values": ["SYN-A", "SYN-B"],
+                "comparison_value": None, "comparison_upper_value": None,
+                "category_values": ["SYN-A", "SYN-B"],
                 "award_kind": "POINTS", "award_value": 1, "row_order": 1, "evidence": anchor}],
             "recognition_conditions": [{"literal": "SYN", "evidence": anchor}],
             "required_evidence": ["SYN-A", "SYN-B"], "evidence": anchor, "ambiguity_reason": None}
@@ -226,3 +228,98 @@ def test_observed_synthetic_provider_payload_decodes_and_validates_original_sche
     validated = ExtractionPayload.model_validate(decoded)
     assert validated.quantitative_tables == []
     assert validated.quantitative_table_not_applicable is None
+
+
+def count_range_output(*, inline=False):
+    """Every transport field is explicit; no model defaults fill provider gaps."""
+    def anchor(quote):
+        return {"attachment_id": "SYN-A1", "page": 1, "section": "SYN",
+                "quote": quote, "confidence": 1}
+
+    heading = "SYN-교육 용역 수행실적 (5점)"
+    scope = "공고일 기준 최근 3년 교육 관련 수행완료 실적의 건수, 부가세 포함, 공동수급 전체 인정"
+    rows = []
+    for index, (operator, lower, upper, points, condition) in enumerate([
+        ("GTE", 3, None, 5, "3건 이상"),
+        ("BETWEEN", 1, 2, 3, "1건 이상 2건 이하"),
+        ("NOT_SUBMITTED", None, None, 0, "미제출"),
+    ], 1):
+        literal = f"{condition} {points}점" if inline else f"{condition}\n{points}"
+        rows.append({"operator": operator, "comparison_value": lower,
+                     "comparison_upper_value": upper, "category_values": [],
+                     "award_kind": "POINTS", "award_value": points, "row_order": index,
+                     "literal": literal, "evidence": anchor(literal)})
+    rule = {"criterion_id": "SYN-C1", "label": "교육 용역 수행실적", "criterion_literal": heading,
+            "max_points": 5, "scoring_method": "CASE_TABLE", "metric": "PERFORMANCE_COUNT",
+            "unit": "건", "brackets": [], "threshold": None, "formula_literal": None,
+            "cases": rows, "recognition_conditions": [{"literal": scope, "evidence": anchor(scope)}],
+            "required_evidence": ["company.performance.count"], "evidence": anchor(heading),
+            "ambiguity_reason": None}
+    output = synthetic_output()
+    output["document_type"] = "RFP"
+    total = "정량평가 합계 5점"
+    output["quantitative_tables"] = [{"table_id": "SYN-T1", "label": "정량평가", "criteria": [rule],
+        "total_points": 5, "total_evidence": anchor(total), "minimum_score": None,
+        "minimum_evidence": None, "ambiguity_reason": None}]
+    return output, "\n".join([heading, scope, *(row["literal"] for row in rows), total])
+
+
+def validate_count_source(decoded, source):
+    return validate_quantitative_attachment_extraction(
+        ExtractionPayload.model_validate(decoded), source_text=source,
+        attachment_id="SYN-A1", document_sha256="a" * 64, manifest_sha256="b" * 64,
+    )
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_new_count_case_transport_round_trip_preserves_bounds_status_and_source_validation(inline):
+    output, source = count_range_output(inline=inline)
+    decoded = transform(output)["decoded"]
+    assert decoded == output
+    validated = validate_count_source(decoded, source)
+    assert validated.status == "AVAILABLE", [issue.code for issue in validated.issues]
+    cases = validated.available_candidates[0].cases
+    assert [(case.operator, case.comparison_value, case.comparison_upper_value)
+            for case in cases] == [("GTE", 3, None), ("BETWEEN", 1, 2), ("NOT_SUBMITTED", None, None)]
+    assert cases[-1].award_value == 0
+
+
+@pytest.mark.parametrize("row_index", [0, 1, 2])
+def test_new_case_transport_never_fills_an_omitted_nullable_upper_bound(row_index):
+    output, _ = count_range_output()
+    del output["quantitative_tables"][0]["criteria"][0]["cases"][row_index]["comparison_upper_value"]
+    with pytest.raises(subprocess.CalledProcessError):
+        transform(output)
+
+
+@pytest.mark.parametrize("upper", [True, "2", [], {}])
+def test_new_case_upper_bound_transport_rejects_type_coercion(upper):
+    output, _ = count_range_output()
+    output["quantitative_tables"][0]["criteria"][0]["cases"][1]["comparison_upper_value"] = upper
+    with pytest.raises(subprocess.CalledProcessError):
+        transform(output)
+
+
+@pytest.mark.parametrize("row_index,patch", [
+    (1, {"comparison_upper_value": None}), (1, {"comparison_upper_value": 1}),
+    (1, {"comparison_upper_value": 1.5}), (2, {"comparison_value": 0}),
+    (2, {"award_value": 1}),
+])
+def test_new_case_transport_does_not_bypass_original_case_shape_validation(row_index, patch):
+    output, _ = count_range_output()
+    output["quantitative_tables"][0]["criteria"][0]["cases"][row_index].update(patch)
+    decoded = transform(output)["decoded"]
+    with pytest.raises(ValidationError):
+        ExtractionPayload.model_validate(decoded)
+
+
+@pytest.mark.parametrize("row_index,literal", [(1, "1건 이상 2건 미만\n3"), (2, "미확인\n0")])
+def test_new_case_valid_transport_still_requires_exact_range_and_submission_source(row_index, literal):
+    output, source = count_range_output()
+    row = output["quantitative_tables"][0]["criteria"][0]["cases"][row_index]
+    source = source.replace(row["literal"], literal)
+    row.update(literal=literal, evidence={**row["evidence"], "quote": literal})
+    decoded = transform(output)["decoded"]
+    validated = validate_count_source(decoded, source)
+    assert not validated.available_candidates
+    assert "CASE_NUMBER_MISMATCH" in {issue.code for issue in validated.issues}

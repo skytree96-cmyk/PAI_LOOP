@@ -120,3 +120,68 @@ def test_empty_and_whitespace_gaps_are_not_absence_claims() -> None:
     for gap in ("", "   ", "​"):
         assert asserts_scoring_artifact_absence(gap) is False
         assert is_quantitative_irrelevant_gap(gap) is True
+
+
+# Synthetic labels/scores vary independently of the scope/method relationship.
+SCOPED_EXCLUSION = (
+    "정성평가(합성기획12, 운영계획18, 지원방안25) 및 가격평가(15)는 "
+    "평가위원 정성 판단 또는 별도 가격산식에 의해 결정되어 "
+    "계량 규칙을 특정할 수 없어 정량 테이블에서 제외함"
+)
+
+
+@pytest.mark.parametrize("gap", [
+    SCOPED_EXCLUSION,
+    SCOPED_EXCLUSION.replace(" ", ""),
+    SCOPED_EXCLUSION.replace("정성평가", "정성적 평가").replace("(15)", "(15점)"),
+    SCOPED_EXCLUSION.replace("정성평가", "정성\u200b평가").replace("(", "（").replace(")", "）"),
+    "가격평가(25점) 및 정성평가(합성내용35점)는 별도의 가격 산식 또는 "
+    "평가위원회의 정성적 판단으로 산정되므로 정량 평가표에서 제외됨.",
+    "가격평가는 별도 가격산식으로 계산하므로 정량 테이블에서 제외함",
+])
+def test_explicit_scope_exclusion_binds_each_subject_to_its_separate_method(gap: str) -> None:
+    assert asserts_scoring_artifact_absence(gap) is False
+    assert is_quantitative_irrelevant_gap(gap) is True
+
+
+@pytest.mark.parametrize("gap", [
+    SCOPED_EXCLUSION.replace("가격평가(15)", "정량평가(15)"),
+    SCOPED_EXCLUSION.replace("합성기획12", "신용등급12"),
+    SCOPED_EXCLUSION.replace("합성기획12", "재무비율12"),
+    SCOPED_EXCLUSION.replace("합성기획12", "정량실적12"),
+    SCOPED_EXCLUSION.replace("가격평가(15)", "가격평가(산식 미제공)"),
+    SCOPED_EXCLUSION.replace("별도 가격산식", "가격산식"),
+    SCOPED_EXCLUSION.replace("별도 가격산식", "별도 산식"),
+    SCOPED_EXCLUSION.replace("별도 가격산식", "판독 불가한 가격산식"),
+    SCOPED_EXCLUSION.replace("제외함", "제외함. 가격평가 산식 미제공"),
+    SCOPED_EXCLUSION + ". 정량 실적 배점표도 누락됨",
+    SCOPED_EXCLUSION + "; 가격평가 산식을 확인할 수 없음",
+    "가격평가 산식이 미제공되어 정성평가와 함께 정량 테이블에서 제외함",
+    "정성평가 및 가격평가의 산식과 정량 배점표를 확인할 수 없어 정량 테이블에서 제외함",
+])
+def test_scope_exclusion_cannot_hide_objective_or_price_source_defects(gap: str) -> None:
+    assert asserts_scoring_artifact_absence(gap) is True
+    assert is_quantitative_irrelevant_gap(gap) is False
+
+
+@pytest.mark.parametrize("extra_gaps,expected_status", [
+    ([], "AVAILABLE"),
+    (["합성 가격평가 산식 미제공"], "INCOMPLETE"),
+    (["합성 정량 실적 배점표 일부 누락"], "INCOMPLETE"),
+])
+def test_scope_note_does_not_change_valid_tables_or_erase_a_separate_gap(
+    extra_gaps: list[str], expected_status: str,
+) -> None:
+    from pai_loop.quantitative_rule_extraction import validate_quantitative_attachment_extraction
+    from test_quantitative_rule_extraction import ATTACHMENT_ID, VALID_SOURCE, payload_with_table
+
+    original = payload_with_table()
+    payload = original.model_copy(update={"missing_or_unreadable": [SCOPED_EXCLUSION, *extra_gaps]})
+    record = validate_quantitative_attachment_extraction(
+        payload, source_text=VALID_SOURCE, attachment_id=ATTACHMENT_ID,
+        document_sha256="a" * 64, manifest_sha256="b" * 64,
+    )
+    assert record.status == expected_status
+    assert bool(extra_gaps) == any(issue.code == "EXTRACTION_DECLARED_INCOMPLETE" for issue in record.issues)
+    assert record.available_candidates
+    assert payload.quantitative_tables == original.quantitative_tables

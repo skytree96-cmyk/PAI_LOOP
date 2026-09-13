@@ -62,7 +62,7 @@ from .models import (
     ScoreSnapshot,
 )
 from .notice_freshness import authoritative_pps_notice_is_cancelled
-from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION
+from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION, LEGACY_CASE_KINDS
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
@@ -413,7 +413,7 @@ def _select_source_versions(
         )
         if (
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-            and classify_attempt_header(payload) == "LEGACY_CASE_V1"
+            and classify_attempt_header(payload) in LEGACY_CASE_KINDS
             and version.version_no < latest_pps_numbers.get(_attachment_identity(payload, version), -1)
         ):
             # Even an unsupported newer header prevents legacy-success fallback.
@@ -432,6 +432,7 @@ def _select_source_versions(
         if (
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
             and payload.get("processing_version") != PPS_PROCESSING_VERSION
+            and not compatible_pps
         ):
             if source_version_ids is not None and version.id in requested:
                 raise AnalysisPipelineSourceError(
@@ -442,7 +443,7 @@ def _select_source_versions(
         if payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
             contract_kind = classify_attempt_header(payload)
             if contract_kind == "UNSUPPORTED" or (
-                contract_kind == "LEGACY_CASE_V1"
+                contract_kind in LEGACY_CASE_KINDS
                 and payload.get("status") == "ACCEPTED"
                 and not _has_valid_quantitative_record(
                     version, attachment_id=attachment_id,
@@ -484,7 +485,7 @@ def _parse_source(
     compatible_pps = bool(
         allow_compatible_pps and prompt_version == PROMPT_VERSION
         and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-        and classify_attempt_header(payload) == "LEGACY_CASE_V1"
+        and classify_attempt_header(payload) in LEGACY_CASE_KINDS
         and _has_valid_quantitative_record(
             version, attachment_id=attachment_id,
             current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
@@ -499,6 +500,7 @@ def _parse_source(
     if (
         payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
         and payload.get("processing_version") != PPS_PROCESSING_VERSION
+        and not compatible_pps
     ):
         warnings.append("PROCESSING_VERSION_MISMATCH")
     if status != "ACCEPTED" or version.extraction_status not in {"ACCEPTED", "COMPLETE"}:

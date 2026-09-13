@@ -64,7 +64,7 @@ class AttachmentDiagnostic(DiagnosticModel):
     processing_warning_codes: list[str] = Field(max_length=20)
     processing_codes_redacted: bool
     manifest_bound_attempt: bool
-    attempt_contract: Literal["CURRENT", "LEGACY_CASE_V1", "NONE"]
+    attempt_contract: Literal["CURRENT", "LEGACY_CASE_V1", "LEGACY_CASE_V2", "NONE"]
     stored_document_digest_matches: bool | None
     stored_download_complete: bool | None
     stored_source_read_complete: bool | None

@@ -45,7 +45,10 @@ from .source_gap_policy import (
 
 
 QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
-from .extraction_contracts import CURRENT_EXTRACTION_CONTRACT, classify_record_contract
+from .extraction_contracts import (
+    CURRENT_EXTRACTION_CONTRACT, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
+    classify_record_contract,
+)
 
 QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION = CURRENT_EXTRACTION_CONTRACT.validator
 MIN_QUANTITATIVE_EVIDENCE_CONFIDENCE = 0.90
@@ -157,8 +160,9 @@ class ImmutableQuantitativeThreshold(FrozenModel):
 
 class ImmutableQuantitativeCase(FrozenModel):
     literal: str
-    operator: Literal["GTE", "EQ", "IN", "LTE", "LT"]
+    operator: Literal["GTE", "EQ", "IN", "LTE", "LT", "BETWEEN", "NOT_SUBMITTED"]
     comparison_value: float | None
+    comparison_upper_value: float | None = None
     category_values: tuple[str, ...]
     award_kind: Literal["POINTS", "PERCENT_OF_MAX"]
     award_value: float = Field(ge=0)
@@ -858,6 +862,50 @@ def _amount_gte_condition_matches(
     )
 
 
+_COUNT_CLOSED_RANGE_RE = re.compile(
+    r"(?P<lower>\d{1,9})\s*(?:건|회)?\s*"
+    r"(?:[~∼～-]\s*(?P<upper>\d{1,9})\s*(?:건|회)?|"
+    r"이상\s*(?P<upper_words>\d{1,9})\s*(?:건|회)?\s*이하)"
+)
+
+
+def _explicit_count_case_matches(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
+    literal: str,
+) -> bool:
+    """Prove the whole condition and a separate award; never expand an IN row.
+
+    Closed ranges and non-submission are different source languages. Neither
+    an omitted count nor a count outside the printed intervals is a status.
+    """
+    if candidate.metric != "PERFORMANCE_COUNT" or case.award_kind != "POINTS" or case.category_values:
+        return False
+    value = unicodedata.normalize("NFKC", literal).strip()
+    lines = value.splitlines()
+    if len(lines) >= 2 and _score_cell_matches(lines[-1], value=case.award_value, percent=False):
+        condition = "\n".join(lines[:-1]).strip()
+    else:
+        match = re.fullmatch(r"(?P<condition>.+?)\s+(?P<award>\d+(?:\.\d+)?)\s*점", value)
+        if match is None or Decimal(match.group("award")) != _decimal(case.award_value):
+            return False
+        condition = match.group("condition").strip()
+    if case.operator == "NOT_SUBMITTED":
+        return bool(case.comparison_value is None and case.comparison_upper_value is None
+                    and case.award_value == 0
+                    and re.fullmatch(r"(?:실적\s*증명[서원]\s*)?미제출", condition))
+    if case.operator != "BETWEEN":
+        return False
+    match = _COUNT_CLOSED_RANGE_RE.fullmatch(condition)
+    if match is None:
+        return False
+    lower = Decimal(match.group("lower"))
+    upper = Decimal(match.group("upper") or match.group("upper_words"))
+    return bool(lower is not None and upper is not None and 0 <= lower < upper
+                and lower == _decimal(case.comparison_value)
+                and upper == _decimal(case.comparison_upper_value))
+
+
 def _case_condition_matches(
     candidate: QuantitativeRuleCandidate,
     case: QuantitativeCaseLiteral,
@@ -890,6 +938,8 @@ def _case_comparison_matches(
     case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
     literal: str,
 ) -> bool:
+    if case.operator in {"BETWEEN", "NOT_SUBMITTED"}:
+        return _explicit_count_case_matches(candidate, case, literal)
     if case.comparison_value is None:
         return True
     lines = literal.splitlines()
@@ -987,6 +1037,8 @@ def _case_award_matches_literal(
     The remainder must independently retain the declared condition. This check
     uses only persisted literal/evidence structure and also protects old proofs.
     """
+    if case.operator in {"BETWEEN", "NOT_SUBMITTED"}:
+        return _explicit_count_case_matches(candidate, case, literal)
     value = unicodedata.normalize("NFKC", literal).strip()
     if not value or len(value) > 1_000:
         return False
@@ -1042,6 +1094,19 @@ def _case_award_matches_literal(
         percent=case.award_kind == "PERCENT_OF_MAX",
     ):
         condition_lines = lines[:-1]
+        if (
+            candidate.metric == "CREDIT_RATING" and case.operator == "IN"
+            and case.award_kind == "POINTS" and candidate.max_points > 0
+            and len(condition_lines) >= 2
+            and _score_cell_matches(
+                condition_lines[-1],
+                value=Decimal(str(case.award_value)) * 100 / Decimal(str(candidate.max_points)),
+                percent=True,
+            )
+        ):
+            # A printed ratio AND points are two explicitly equivalent award
+            # cells, never a rating's zero suffix or an unrelated comparison.
+            condition_lines = condition_lines[:-1]
         # A complete numeric condition may span number/unit/comparator cells;
         # its exact grammar, not the bare final number, proves the separation.
         return condition_matches("\n".join(condition_lines))
@@ -1115,6 +1180,265 @@ def _case_award_matches_literal(
         )
         and condition_matches(match.group("condition").strip())
     )
+
+
+def _compact_source_characters(value: str) -> str:
+    # Whitespace only: do not repair punctuation, aliases, units or digits.
+    return "".join(value.split())
+
+
+def _unique_compact_source_span(source: str, text: str) -> tuple[int, int] | None:
+    needle = _compact_source_characters(text)
+    if not 8 <= len(needle) <= 4_000:
+        return None
+    positions = [index for index, character in enumerate(source) if not character.isspace()]
+    compact = "".join(source[index] for index in positions)
+    start = compact.find(needle)
+    if start < 0 or compact.find(needle, start + 1) >= 0:
+        return None
+    return positions[start], positions[start + len(needle) - 1] + 1
+
+
+def _count_case_sequence(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+) -> str | None:
+    if (
+        candidate.metric != "PERFORMANCE_COUNT" or candidate.scoring_method != "CASE_TABLE"
+        or not 3 <= len(candidate.cases) <= 20
+        or candidate.cases[-1].operator != "NOT_SUBMITTED"
+        or [case.row_order for case in candidate.cases] != list(range(1, len(candidate.cases) + 1))
+        or any(case.operator not in {"GTE", "EQ", "BETWEEN", "NOT_SUBMITTED"}
+               or case.award_kind != "POINTS" for case in candidate.cases)
+    ):
+        return None
+    rows = []
+    for case in candidate.cases:
+        if not (_case_award_matches_literal(candidate, case, case.literal)
+                and _case_comparison_matches(candidate, case, case.literal)):
+            return None
+        rows.append(CaseTableRowLiteral(
+            operator=case.operator, comparison_value=case.comparison_value,
+            comparison_upper_value=case.comparison_upper_value,
+            category_values=tuple(case.category_values), award_kind=case.award_kind,
+            award_value=case.award_value, source_literal=case.literal,
+        ))
+    if compile_case_table(rows, value_kind="DISCRETE", maximum_points=candidate.max_points) is None:
+        return None
+    sequence = _compact_source_characters("".join(case.literal for case in candidate.cases))
+    return sequence if all(
+        _overlapping_substring_count(sequence, _compact_source_characters(case.literal)) == 1
+        for case in candidate.cases
+    ) else None
+
+
+def _short_count_literal_has_owned_context(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    case: QuantitativeCaseLiteral | ImmutableQuantitativeCase,
+) -> bool:
+    """A short row is proved by its complete ordered program AND direct parent.
+
+    The normal eight-character quote floor stays unchanged. This proof is
+    deliberately unavailable for a lone number, arbitrary nearby prose, a
+    partial row set, or a parent separated from its rows by another section.
+    The long exact quote is persisted and rechecked with the frozen candidate.
+    """
+    if len(_compact_source_characters(case.literal)) >= 8:
+        return False
+    sequence = _count_case_sequence(candidate)
+    if sequence is None:
+        return False
+    quote = _compact_source_characters(case.evidence.quote)
+    parents = [condition for condition in candidate.recognition_conditions
+               if "실적" in condition.literal and "건수" in condition.literal
+               and len(_compact_source_characters(condition.literal)) >= 8]
+    return sum(
+        quote == _compact_source_characters(condition.literal) + sequence
+        for condition in parents
+    ) == 1
+
+
+def _other_case_claims_region(candidate, all_candidates, region: str) -> bool:
+    compact = _compact_source_characters(region)
+    return any(
+        other is not candidate
+        and any(_compact_source_characters(case.literal) in compact for case in other.cases)
+        for other in all_candidates
+    )
+
+
+def _bind_short_count_case_context(candidate, *, source: str, all_candidates):
+    sequence = _count_case_sequence(candidate)
+    if sequence is None or not any(
+        len(_compact_source_characters(case.literal)) < 8
+        and not _literal_is_anchored(case.literal, case.evidence, source)
+        for case in candidate.cases
+    ):
+        return candidate
+    matches = []
+    for condition in candidate.recognition_conditions:
+        if "실적" not in condition.literal or "건수" not in condition.literal:
+            continue
+        parent = _compact_source_characters(condition.literal)
+        span = _unique_compact_source_span(source, parent + sequence)
+        if span is None:
+            continue
+        quote = source[span[0]:span[1]]
+        compact = _compact_source_characters(quote)
+        tail = _compact_source_characters(source[span[1]:span[1] + 1_000])
+        # Do not accept a proper prefix of a larger source program. A printed
+        # terminal non-submission row must be followed by a claimed exact
+        # footnote or this group's explicit total, not another unclaimed case.
+        end_is_bound = any(
+            item is not condition and item.literal.lstrip().startswith(("*", "※"))
+            and tail.startswith(_compact_source_characters(item.literal))
+            and _literal_is_anchored(item.literal, item.evidence, source)
+            for item in candidate.recognition_conditions
+        ) or any(tail.startswith(prefix + f"{candidate.max_points:g}점") for prefix in (
+            "정량평가합계", "정량평가총점", "정량평가총배점",
+        ))
+        if (
+            len(quote) > 500 or re.search(r"\n\s*\n|\[HWP SECTION", quote)
+            or not end_is_bound
+            or condition.evidence.attachment_id != candidate.evidence.attachment_id
+            or not _literal_is_anchored(condition.literal, condition.evidence, source)
+            or _other_case_claims_region(candidate, all_candidates, quote)
+            or any(case.evidence.attachment_id != candidate.evidence.attachment_id
+                   or not _compact_source_characters(case.evidence.quote)
+                   or _compact_source_characters(case.evidence.quote) not in compact
+                   or _compact_source_characters(case.literal) not in _compact_source_characters(case.evidence.quote)
+                   for case in candidate.cases)
+        ):
+            continue
+        matches.append(quote)
+    if len(matches) != 1:
+        return candidate
+    return candidate.model_copy(update={"cases": [
+        case.model_copy(update={"evidence": case.evidence.model_copy(update={"quote": matches[0]})})
+        if len(_compact_source_characters(case.literal)) < 8 else case
+        for case in candidate.cases
+    ]})
+
+
+_COMMERCIAL_PAPER_CELL_RE = re.compile(
+    r"(?:A1|A2[+0-]?|A3[+0-]?|B[+0-]?|C)(?:이상|이하|초과|미만)?"
+    r"(?:,(?:A1|A2[+0-]?|A3[+0-]?|B[+0-]?|C))*"
+)
+
+
+def _enterprise_credit_projection(candidate, case) -> str | None:
+    lines = [line.strip() for line in case.literal.splitlines()]
+    if not 4 <= len(lines) <= 12 or any(not line for line in lines):
+        return None
+    if not _score_cell_matches(lines[-1], value=case.award_value,
+                               percent=case.award_kind == "PERCENT_OF_MAX"):
+        return None
+    award_start = len(lines) - 1
+    if case.award_kind == "POINTS" and candidate.max_points > 0 and _score_cell_matches(
+        lines[-2], value=Decimal(str(case.award_value)) * 100 / Decimal(str(candidate.max_points)), percent=True,
+    ):
+        award_start -= 1
+    projections = []
+    for bond_end in range(1, award_start - 1):
+        bond = "\n".join(lines[:bond_end])
+        if compile_credit_rating_values(lines[:bond_end], source_literal=bond) is None:
+            continue
+        for paper_end in range(bond_end + 1, award_start):
+            paper = _compact_source_characters("".join(lines[bond_end:paper_end]))
+            enterprise = "\n".join(lines[paper_end:award_start])
+            if (
+                _COMMERCIAL_PAPER_CELL_RE.fullmatch(paper) is None
+                or compile_credit_rating_values(case.category_values, source_literal=enterprise) is None
+            ):
+                continue
+            projected = "\n".join(lines[paper_end:])
+            if _case_award_matches_literal(candidate, case, projected):
+                projections.append(projected)
+    return projections[0] if len(projections) == 1 else None
+
+
+def _bind_enterprise_credit_column(candidate, *, source: str, all_candidates):
+    """Narrow a quoted three-column row only after an exhaustive source proof.
+
+    Category values, awards and row order never change. The full original row
+    remains the evidence quote. Header order, separate bond/paper grammars,
+    the complete enterprise domain and the terminal footnote prove the selected
+    column; arbitrary alias subsets and neighboring instrument unions cannot.
+    """
+    if (
+        candidate.metric != "CREDIT_RATING" or candidate.scoring_method != "CASE_TABLE"
+        or candidate.unit not in {"등급", "신용등급", "rating"}
+        or tuple(candidate.required_evidence) != ("company.credit_rating",)
+        or sum(other.metric == "CREDIT_RATING" for other in all_candidates) != 1
+        or not 2 <= len(candidate.cases) <= 20
+        or [case.row_order for case in candidate.cases] != list(range(1, len(candidate.cases) + 1))
+        or any(case.operator != "IN" for case in candidate.cases)
+    ):
+        return candidate
+    projected = [_enterprise_credit_projection(candidate, case) for case in candidate.cases]
+    if any(value is None for value in projected):
+        return candidate
+    rows = "".join(case.literal for case in candidate.cases)
+    header = "".join(_CREDIT_RATING_COLUMN_HEADER_CLUSTER)
+    source_compact = _compact_source_characters(source)
+    if _overlapping_substring_count(source_compact, header) != 1:
+        return candidate
+    matches = [_unique_compact_source_span(source, prefix + rows)
+               for prefix in (header, header + "비율배점")]
+    matches = [span for span in matches if span is not None]
+    if len(matches) != 1:
+        return candidate
+    span = matches[0]
+    tail = _compact_source_characters(source[span[1]:span[1] + 160])
+    if not (tail.startswith("[주]") or tail.startswith("*등급별평점이소수점이하의숫자가있는경우")):
+        return candidate
+    region = source[span[0]:span[1]]
+    if re.search(r"\n\s*\n|\[HWP SECTION", region) or _other_case_claims_region(candidate, all_candidates, region):
+        return candidate
+    for case in candidate.cases:
+        if (
+            case.evidence.attachment_id != candidate.evidence.attachment_id
+            or _compact_source_characters(case.literal) != _compact_source_characters(case.evidence.quote)
+            or not _literal_is_anchored(case.literal, case.evidence, source)
+            or _anchor_occurrence_count(case.literal, source) != 1
+        ):
+            return candidate
+    repaired = candidate.model_copy(update={"cases": [
+        case.model_copy(update={"literal": literal})
+        for case, literal in zip(candidate.cases, projected, strict=True)
+    ]})
+    compiled = compile_case_table(tuple(CaseTableRowLiteral(
+        operator=case.operator, category_values=tuple(case.category_values),
+        source_literal=case.literal, award_kind=case.award_kind, award_value=case.award_value,
+    ) for case in repaired.cases), value_kind="CREDIT_RATING", maximum_points=candidate.max_points)
+    return repaired if compiled is not None else candidate
+
+
+def _bind_case_source_context(
+    payload: ExtractionPayload, *, source: str, project_enterprise: bool,
+) -> ExtractionPayload:
+    candidates = tuple(candidate for table in payload.quantitative_tables for candidate in table.criteria)
+    tables = []
+    for table in payload.quantitative_tables:
+        repaired = []
+        for candidate in table.criteria:
+            bound = _bind_short_count_case_context(candidate, source=source, all_candidates=candidates)
+            if bound is candidate and project_enterprise:
+                bound = _bind_enterprise_credit_column(candidate, source=source, all_candidates=candidates)
+            repaired.append(bound)
+        tables.append(table.model_copy(update={"criteria": repaired}))
+    return payload.model_copy(update={"quantitative_tables": tables})
+
+
+def bind_quantitative_case_source_context(payload: ExtractionPayload, *, source: str) -> ExtractionPayload:
+    """Bind only short count quotes before ordinary extraction anchor checks.
+
+    The extraction client imports this at call time to avoid the model-module
+    dependency cycle. Only evidence context may change here: requirements,
+    literals, categories and awards are untouched, including during corrective
+    retries. Credit-column projection belongs to domain validation afterwards.
+    Reapplying the binding produces an equivalent payload.
+    """
+    return _bind_case_source_context(payload, source=source, project_enterprise=False)
 
 
 def _case_row_window_matches(
@@ -5894,7 +6218,7 @@ def _assert_available_candidate_invariants(
         ):
             raise ValueError("AVAILABLE CASE_TABLE row order is invalid")
         for case in candidate.cases:
-            if not evidence_quote_matches_source(case.literal, case.evidence.quote):
+            if not evidence_quote_matches_source(case.literal, case.evidence.quote) and not _short_count_literal_has_owned_context(candidate, case):
                 raise ValueError("AVAILABLE CASE literal is not bound to its anchor")
             if not _case_award_matches_literal(
                 candidate, case, case.literal,
@@ -5904,6 +6228,7 @@ def _assert_available_candidate_invariants(
                 CaseTableRowLiteral(
                     operator=case.operator,
                     comparison_value=case.comparison_value,
+                    comparison_upper_value=case.comparison_upper_value,
                     category_values=case.category_values,
                     source_literal=case.literal,
                     award_kind=case.award_kind,
@@ -6652,7 +6977,10 @@ def _validate_cases(
                 criterion_id=candidate.criterion_id,
             )
         )
-        if not _literal_is_anchored(case.literal, case.evidence, source):
+        if not _literal_is_anchored(case.literal, case.evidence, source) and not (
+            _short_count_literal_has_owned_context(candidate, case)
+            and _anchor_occurrence_count(case.evidence.quote, source) == 1
+        ):
             issues.append(
                 _issue(
                     "CASE_LITERAL_MISMATCH",
@@ -6747,6 +7075,7 @@ def _validate_cases(
             compiled_row = CaseTableRowLiteral(
                 operator=case.operator,
                 comparison_value=case.comparison_value,
+                comparison_upper_value=case.comparison_upper_value,
                 category_values=tuple(case.category_values),
                 source_literal=case.literal,
                 award_kind=case.award_kind,
@@ -6768,6 +7097,7 @@ def _validate_cases(
                 literal=case.literal,
                 operator=case.operator,
                 comparison_value=case.comparison_value,
+                comparison_upper_value=case.comparison_upper_value,
                 category_values=tuple(case.category_values),
                 award_kind=case.award_kind,
                 award_value=case.award_value,
@@ -7316,6 +7646,9 @@ def build_quantitative_candidate_profile(
             source=source_text_by_attachment_id.get(attachment_id, ""),
             attachment_id=attachment_id,
         )
+        payload = _bind_case_source_context(
+            payload, source=source_text_by_attachment_id.get(attachment_id, ""), project_enterprise=True,
+        )
         source_gaps = [
             gap
             for gap in payload.missing_or_unreadable
@@ -7648,6 +7981,28 @@ def _targeted_record_fingerprint_revisions(
 
 def _record_fingerprint_data(data: Mapping[str, object]) -> str:
     canonical_data = dict(data)
+    if (
+        data.get("prompt_version"), data.get("extraction_schema_version"),
+        data.get("validator_version"),
+    ) in {
+        (contract.prompt, contract.schema, contract.validator)
+        for contract in (LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT)
+    }:
+        # This optional field did not exist in the two exact predecessors.
+        # Remove only its absent-value default from their canonical proof.
+        # A non-null new bound remains fingerprinted and is rejected by the
+        # predecessor vocabulary check below. Never rewrite persisted records.
+        canonical_data["available_candidates"] = [
+            {
+                **candidate,
+                "cases": [
+                    {key: value for key, value in case.items()
+                     if key != "comparison_upper_value" or value is not None}
+                    for case in candidate.get("cases", ())
+                ],
+            }
+            for candidate in canonical_data.get("available_candidates", ())
+        ]
     targeted_revisions = _targeted_record_fingerprint_revisions(canonical_data)
     if targeted_revisions:
         canonical_data["_targeted_validator_revisions"] = targeted_revisions
@@ -7837,7 +8192,12 @@ def quantitative_record_contract_is_usable(
         return False
 
     def old_case_shape(case: QuantitativeCaseLiteral | ImmutableQuantitativeCase) -> bool:
-        if case.operator in {"GTE", "EQ"}:
+        if case.comparison_upper_value is not None:
+            return False
+        numeric_operators = {"GTE", "EQ"}
+        if kind == "LEGACY_CASE_V2":
+            numeric_operators.update({"LTE", "LT"})
+        if case.operator in numeric_operators:
             return case.comparison_value is not None and not case.category_values
         return (
             case.operator == "IN" and case.comparison_value is None
@@ -7865,10 +8225,12 @@ def quantitative_record_contract_is_usable(
         for current_case, prior_case in zip(candidate.cases, prior.cases):
             if (
                 current_case.operator, current_case.comparison_value,
+                current_case.comparison_upper_value,
                 tuple(current_case.category_values), current_case.award_kind,
                 current_case.award_value, current_case.row_order,
             ) != (
                 prior_case.operator, prior_case.comparison_value,
+                prior_case.comparison_upper_value,
                 tuple(prior_case.category_values), prior_case.award_kind,
                 prior_case.award_value, prior_case.row_order,
             ):

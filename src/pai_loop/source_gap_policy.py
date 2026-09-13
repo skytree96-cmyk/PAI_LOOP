@@ -581,6 +581,60 @@ _DELIBERATE_EXCLUSION_RE = re.compile(
 # first, and an attachment missing part of itself cannot prove its table whole.
 _OMISSION_RE = re.compile(r"누락|결락|빠(?:져|짐|뜨)")
 
+# An exhaustive scope declaration may exclude both judgment-scored evaluation
+# and a separately calculated price score. Bind those named subjects to their
+# stated methods and the exclusion destination. Merely mentioning 정성 or 가격
+# cannot mask an absent formula, an objective criterion, or a second gap.
+_NON_QUANTITATIVE_SUBJECT_PATTERN = (
+    r"(?:정성(?:적)?|가격)\s*평가\s*(?:항목\s*)?"
+    r"(?:\([^()]{1,160}\)\s*)?"
+)
+_NON_QUANTITATIVE_SUBJECT_RE = re.compile(_NON_QUANTITATIVE_SUBJECT_PATTERN)
+_NON_QUANTITATIVE_METHOD_PATTERN = (
+    r"(?:(?:평가\s*위원(?:회)?(?:의)?\s*)?정성(?:적)?\s*판단|"
+    r"별도(?:의)?\s*가격\s*산식)"
+)
+_NON_QUANTITATIVE_SCOPE_EXCLUSION_RE = re.compile(
+    rf"(?P<subjects>{_NON_QUANTITATIVE_SUBJECT_PATTERN}"
+    rf"(?:\s*(?:및|와|과|[,·/])\s*{_NON_QUANTITATIVE_SUBJECT_PATTERN})*)"
+    r"(?:은|는|이|가)\s*"
+    rf"(?P<methods>{_NON_QUANTITATIVE_METHOD_PATTERN}"
+    rf"(?:\s*(?:또는|및|와|과|[,·/])\s*{_NON_QUANTITATIVE_METHOD_PATTERN})*)"
+    r"\s*(?:에\s*의해|으로|로)\s*(?:결정|산정|계산)"
+    r"(?:되어|되므로|하므로|됨에\s*따라)\s*"
+    r"(?:(?:계량|정량)(?:적)?\s*(?:채점\s*)?규칙(?:을|를)\s*"
+    r"(?:특정|확정)할\s*수\s*없어\s*)?"
+    r"정량(?:적)?\s*(?:평가\s*)?(?:테이블|기준표|배점표|평가표|표)"
+    r"\s*(?:에서|에)\s*(?:제외(?:함|됨|하였음|하였습니다)|"
+    r"(?:전사|반영|포함)하지\s*않(?:음|았습니다))\s*[.]?"
+)
+_OBJECTIVE_EXCLUSION_SUBJECT_RE = re.compile(
+    r"정량|신용|실적|재무|자기\s*자본|유동\s*비율|자격|필수"
+)
+
+
+def _is_explicit_non_quantitative_scope_exclusion(gap: str) -> bool:
+    match = _NON_QUANTITATIVE_SCOPE_EXCLUSION_RE.fullmatch(gap)
+    if match is None:
+        return False
+    subjects = match.group("subjects")
+    if (
+        _OBJECTIVE_EXCLUSION_SUBJECT_RE.search(subjects)
+        or _ABSENCE_CLAIM_RE.search(subjects)
+    ):
+        return False
+    kinds = {
+        "PRICE" if subject.group().startswith("가격") else "QUALITATIVE"
+        for subject in _NON_QUANTITATIVE_SUBJECT_RE.finditer(subjects)
+    }
+    methods = match.group("methods")
+    method_kinds = set()
+    if re.search(r"정성(?:적)?\s*판단", methods):
+        method_kinds.add("QUALITATIVE")
+    if re.search(r"별도(?:의)?\s*가격\s*산식", methods):
+        method_kinds.add("PRICE")
+    return kinds == method_kinds
+
 
 def _has_unqualified_scoring_artifact(gap: str) -> bool:
     """True when a scoring artifact is named as its own missing subject.
@@ -611,6 +665,8 @@ def asserts_scoring_artifact_absence(value: str) -> bool:
         or _SECONDARY_GAP_CLAIM_RE.search(gap)
     ):
         return True
+    if _is_explicit_non_quantitative_scope_exclusion(gap):
+        return False
     if (
         _QUALITATIVE_SCOPE_RE.search(gap)
         and _DELIBERATE_EXCLUSION_RE.search(gap)

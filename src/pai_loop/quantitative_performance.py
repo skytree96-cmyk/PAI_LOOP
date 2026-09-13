@@ -30,7 +30,7 @@ PerformanceLookbackAnchor = Literal[
 class PerformanceRecognitionScope(PerformanceQuantModel):
     metric_key: Literal["company.performance.amount", "company.performance.count"]
     lookback_years: int = Field(ge=1, le=10)
-    similarity_keywords: tuple[str, ...] = Field(min_length=1, max_length=12)
+    similarity_keywords: tuple[str, ...] = Field(default=(), max_length=12)
     match_mode: Literal["ALL", "ANY"] = "ALL"
     counterparty_scope: PerformanceCounterpartyScope = "UNSPECIFIED"
     counterparty_keywords: tuple[str, ...] = Field(default=(), max_length=8)
@@ -41,6 +41,10 @@ class PerformanceRecognitionScope(PerformanceQuantModel):
     aggregation: PerformanceAggregation
     consortium_share_rule: Literal["APPLY_SHARE", "FULL_AMOUNT", "UNSPECIFIED"]
     certificate_required: bool = False
+    # A valid source rule can require facts that the register cannot prove.
+    # Keep those conditions visible while allowing a separately verified,
+    # criterion-bound company fact; never derive counts from the register here.
+    manual_verification_conditions: tuple[str, ...] = Field(default=(), max_length=12)
     source_literal: str = Field(min_length=1, max_length=2_000)
 
     @model_validator(mode="after")
@@ -56,6 +60,13 @@ class PerformanceRecognitionScope(PerformanceQuantModel):
             raise ValueError("public-sector scope requires source-bound counterparty keywords")
         if self.counterparty_scope == "UNSPECIFIED" and self.counterparty_keywords:
             raise ValueError("unspecified counterparty scope must not carry keywords")
+        if not self.similarity_keywords and not self.manual_verification_conditions:
+            raise ValueError("automatic register recognition requires a similarity scope")
+        if self.manual_verification_conditions != _manual_recognition_conditions(self.source_literal):
+            # Old persisted scopes may predate these fields. Loading them is
+            # allowed, but derive_performance_value rechecks the original text.
+            if self.manual_verification_conditions:
+                raise ValueError("manual recognition conditions must match the source")
         return self
 
 
@@ -133,7 +144,7 @@ _AMOUNT_UNIT_PATTERN = (
 )
 _LOOKBACK_RE = re.compile(r"최근\s*(?P<years>\d{1,2})\s*(?:개)?년")
 _MINIMUM_RE = re.compile(
-    r"(?:단일\s*계약|건당|1\s*건당)[^\d]{0,30}"
+    r"(?:단일\s*(?:규모\s*)?계약|건당|1\s*건당)[^\d]{0,30}"
     r"(?P<amount>\d[\d,]*(?:\.\d+)?)\s*"
     rf"(?P<unit>{_AMOUNT_UNIT_PATTERN})\s*이\s*상"
 )
@@ -157,7 +168,25 @@ _MAX_SINGLE_AMOUNT_RE = re.compile(
     r"(?:단일\s*(?:용역|계약)(?:\s*의)?\s*(?:최고|최대)\s*(?:계약\s*)?금액"
     r"|(?:최고|최대)\s*단일\s*(?:용역|계약)\s*(?:계약\s*)?금액)"
 )
-_BID_NOTICE_ANCHOR_RE = re.compile(r"입찰\s*공고일(?:자)?(?:을|를)?\s*기준")
+_BID_NOTICE_ANCHOR_RE = re.compile(
+    # Preserve attached qualifiers such as 본입찰공고일 in the established
+    # explicit 입찰 form; only the newly supported bare 공고일 needs a boundary.
+    r"(?:입찰\s*공고일|(?<![가-힣A-Za-z0-9])공고일)(?:자)?(?:을|를)?\s*기준"
+)
+_BID_NOTICE_PRIOR_DAY_RE = re.compile(
+    r"(?:입찰\s*공고일|(?<![가-힣A-Za-z0-9])공고일)(?:자)?\s*전일까지\s*완료"
+)
+_PARTICIPANT_BOUND_RE = re.compile(
+    r"\d[\d,]*\s*(?:인|명)\s*(?:이상|초과|이하|미만)"
+    r"|최소\s*\d[\d,]*\s*(?:인|명)(?![가-힣])"
+)
+_ANNUAL_CONTRACT_AMOUNT_RE = re.compile(
+    r"연간\s*(?:기준\s*)?(?:총\s*)?계약\s*금액"
+)
+_ANNUAL_CONTRACT_CONDITION_RE = re.compile(
+    _ANNUAL_CONTRACT_AMOUNT_RE.pattern
+    + rf"\s*\d[\d,]*(?:\.\d+)?\s*{_AMOUNT_UNIT_PATTERN}\s*(?:이상|초과|이하|미만)"
+)
 _DEADLINE_ANCHOR_RE = re.compile(
     r"(?:제안서\s*)?(?:제출\s*)?(?:마감|마감일|기한)(?:을|를)?\s*기준"
 )
@@ -307,6 +336,29 @@ def _lookback_anchor_basis(text: str) -> PerformanceLookbackAnchor | None:
     return anchors[0] if anchors else "UNSPECIFIED"
 
 
+def _unsupported_recognition_reason(text: str) -> str | None:
+    # These are source-bound eligibility dimensions, not project-description
+    # keywords. The register has no attested per-contract participant count or
+    # annual contract-amount basis; a total amount/overview cannot prove them.
+    if _PARTICIPANT_BOUND_RE.search(text):
+        return "원문 실적 인정조건의 참여 인원 기준을 실적별 검증자료에 연결할 수 없어 자동 집계를 중지했습니다."
+    if _ANNUAL_CONTRACT_AMOUNT_RE.search(text):
+        return "원문 실적 인정조건의 연간 계약금액 기준을 실적별 검증자료에 연결할 수 없어 자동 집계를 중지했습니다."
+    return None
+
+
+def _manual_recognition_conditions(text: str) -> tuple[str, ...]:
+    """Preserve known, record-unprovable conditions without inventing facts."""
+    normalized = re.sub(r"\s+", " ", text).strip()
+    spans = [(m.start(), m.group()) for m in _PARTICIPANT_BOUND_RE.finditer(normalized)]
+    annual = list(_ANNUAL_CONTRACT_CONDITION_RE.finditer(normalized))
+    if annual:
+        spans.extend((m.start(), m.group()) for m in annual)
+    else:
+        spans.extend((m.start(), m.group()) for m in _ANNUAL_CONTRACT_AMOUNT_RE.finditer(normalized))
+    return tuple(dict.fromkeys(value for _, value in sorted(spans)))
+
+
 def parse_performance_recognition_scope(
     literal: str,
     *,
@@ -324,9 +376,10 @@ def parse_performance_recognition_scope(
     text = re.sub(r"\s+", " ", literal).strip()
     if not text or len(text) > 2_000:
         return None
+    manual_conditions = _manual_recognition_conditions(text)
     lookback = _LOOKBACK_RE.search(text)
     keywords = _scope_keywords(text)
-    if lookback is None or not keywords:
+    if lookback is None or (not keywords and not manual_conditions):
         return None
     parenthetical_keywords = _parenthetical_scope_keywords(text)
     counterparties = _counterparty_keywords(text)
@@ -346,6 +399,9 @@ def parse_performance_recognition_scope(
     if re.search(r"(?:이행|수행|계약)(?:이|가)?\s*완료(?:된|한)?\s*실적", text) or re.search(
         r"완료(?:된|한)?\s*실적",
         text,
+    ) or re.search(
+        r"완성\s*(?:\(\s*준공\s*\))?\s*된\s*(?:용역\s*)?이행\s*실적",
+        text,
     ):
         completion_required = True
     elif re.search(r"완료\s*여부\s*무관", text):
@@ -364,7 +420,7 @@ def parse_performance_recognition_scope(
     if minimum_match is None and minimum_hint is not None:
         return None
     minimum = 0
-    if minimum_match is not None:
+    if minimum_match is not None and not _ANNUAL_CONTRACT_AMOUNT_RE.search(minimum_match.group()):
         parsed_minimum = _amount_from_match(minimum_match)
         if parsed_minimum is None:
             return None
@@ -395,6 +451,7 @@ def parse_performance_recognition_scope(
             aggregation=_performance_aggregation(text, metric_key),
             consortium_share_rule=share_rule,
             certificate_required=bool(re.search(r"실적\s*증명(?:서|원)", text)),
+            manual_verification_conditions=manual_conditions,
             source_literal=text,
         )
     except ValidationError:
@@ -497,7 +554,7 @@ def _performance_register_digest(
 ) -> str:
     payload = {
         "binding_schema": "pai-loop-performance-quantitative-binding-1.1.0",
-        "algorithm_version": "performance-recognition-0.3.0",
+        "algorithm_version": "performance-recognition-0.3.1",
         "evaluation": {
             "as_of_basis": as_of_basis,
             "as_of_date": as_of_date.isoformat(),
@@ -670,6 +727,25 @@ def derive_performance_value(
     as_of: datetime,
     as_of_basis: PerformanceLookbackAnchor = "UNSPECIFIED",
 ) -> DerivedPerformanceValue:
+    unsupported_reason = _unsupported_recognition_reason(scope.source_literal)
+    if unsupported_reason is not None:
+        # Rule parsing is independent of company proof. Recheck stored scopes
+        # too, including scopes created before manual conditions were modeled.
+        # Never return a numeric lower bound that could saturate a score band.
+        return DerivedPerformanceValue(status="REVIEW", rationale=unsupported_reason)
+    if scope.manual_verification_conditions:
+        return DerivedPerformanceValue(
+            status="REVIEW", rationale="저장된 추가 실적인정 조건과 원문이 일치하지 않아 자동 집계를 중지했습니다.",
+        )
+    source_anchor = _lookback_anchor_basis(scope.source_literal)
+    if source_anchor is None or (
+        source_anchor != "UNSPECIFIED"
+        and source_anchor != scope.lookback_anchor_basis
+    ):
+        return DerivedPerformanceValue(
+            status="REVIEW",
+            rationale="원문 실적 인정기간 기준일과 저장된 인정조건이 일치하지 않아 자동 계산을 중지했습니다.",
+        )
     if as_of_basis not in {
         "UNSPECIFIED",
         "BID_NOTICE_DATE",
@@ -697,6 +773,14 @@ def derive_performance_value(
     )
     deadline = normalized_as_of.astimezone(_KST).date()
     start = _date_years_before(deadline, scope.lookback_years)
+    completion_cutoff = deadline
+    if scope.completion_required and _BID_NOTICE_PRIOR_DAY_RE.search(scope.source_literal):
+        if as_of_basis != "BID_NOTICE_DATE":
+            return DerivedPerformanceValue(
+                status="REVIEW",
+                rationale="원문은 공고일 전일까지 완료된 실적을 요구하지만 전달된 공고일을 확인할 수 없어 자동 계산을 중지했습니다.",
+            )
+        completion_cutoff -= timedelta(days=1)
     matched: list[tuple[Any, Decimal]] = []
     candidate_records: list[tuple[Any, Decimal]] = []
     excluded_uncertain: list[str] = []
@@ -763,7 +847,7 @@ def derive_performance_value(
         if not isinstance(basis_date, date) or isinstance(basis_date, datetime):
             excluded_uncertain.append(record_key)
             continue
-        if not start <= basis_date <= deadline:
+        if not start <= basis_date <= completion_cutoff:
             continue
         if scope.completion_required and not bool(getattr(record, "completed", False)):
             continue
