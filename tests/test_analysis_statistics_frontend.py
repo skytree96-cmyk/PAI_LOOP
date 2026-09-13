@@ -144,7 +144,7 @@ console.log(JSON.stringify({pending,retained,previous}));
     result = json.loads(output.stdout)
     for key in ("totalNotices", "cancelledCount", "resultMissingCount", "lastSync", "analysisStatistics"):
         assert result["pending"][key] is None
-    assert result["pending"]["reviewCount"] == 2
+    assert result["pending"]["reviewCount"] is None
     assert result["retained"]["totalNotices"] == 740
     assert result["retained"]["cancelledCount"] == 15
     assert result["retained"]["resultMissingCount"] == 443

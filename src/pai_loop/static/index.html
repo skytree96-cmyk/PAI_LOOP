@@ -17,13 +17,14 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260913-quantitative-v3" />
+    <link rel="stylesheet" href="./styles.css?v=20260913-top-navigation-v1" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260913-top-navigation-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
 
     <div class="app-shell">
-      <aside class="sidebar" aria-label="주요 탐색">
+      <header class="app-header" id="appHeader" aria-label="주요 탐색">
         <a class="brand" href="/" aria-label="PAI 홈">
           <span class="brand-mark" aria-hidden="true">
             <img src="/favicon.svg?v=20260908-login-brand-v1" width="42" height="42" alt="" />
@@ -34,7 +35,11 @@
           </span>
         </a>
 
-        <nav class="nav-list" aria-label="업무 메뉴">
+          <button class="icon-button mobile-menu-button" type="button" id="mobileMenuButton" aria-label="메뉴 열기" aria-expanded="false" aria-controls="primaryNavigation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </button>
+
+        <nav class="nav-list" id="primaryNavigation" aria-label="업무 메뉴">
           <button class="nav-item is-active" type="button" data-view="all" aria-current="page">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z" /></svg>
@@ -42,11 +47,11 @@
             <span>오늘 할 일</span>
           </button>
           <div class="nav-group" data-nav-group="search" aria-label="발견">
-            <button class="nav-group-toggle" type="button" aria-expanded="true" aria-controls="navGroupSearchItems">
+            <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupSearchItems">
               <span>발견</span>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
-            <div class="nav-group-items" id="navGroupSearchItems">
+            <div class="nav-group-items" id="navGroupSearchItems" hidden>
               <button class="nav-item nav-item--sub" type="button" data-view="new">
                 <span class="nav-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18" /></svg>
@@ -57,11 +62,11 @@
             </div>
           </div>
           <div class="nav-group" data-nav-group="decision" aria-label="판단">
-            <button class="nav-group-toggle" type="button" aria-expanded="true" aria-controls="navGroupDecisionItems">
+            <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupDecisionItems">
               <span>판단</span>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
-            <div class="nav-group-items" id="navGroupDecisionItems">
+            <div class="nav-group-items" id="navGroupDecisionItems" hidden>
               <button class="nav-item nav-item--sub" type="button" data-view="review">
                 <span class="nav-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z" /><path d="M12 7v6M12 17h.01" /></svg>
@@ -79,11 +84,11 @@
             </div>
           </div>
           <div class="nav-group" data-nav-group="learning" aria-label="결과">
-            <button class="nav-group-toggle" type="button" aria-expanded="true" aria-controls="navGroupLearningItems">
+            <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupLearningItems">
               <span>결과</span>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
-            <div class="nav-group-items" id="navGroupLearningItems">
+            <div class="nav-group-items" id="navGroupLearningItems" hidden>
               <button class="nav-item nav-item--sub" type="button" data-view="closed">
                 <span class="nav-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><path d="M7 9h10v5.5H7z" /><path d="M7 16.5h10" /><path d="m8 5 2 2 2-2" /></svg>
@@ -106,38 +111,7 @@
           </button>
         </nav>
 
-        <div class="sidebar-status" aria-label="시스템 상태">
-          <div>
-            <span class="status-dot" id="systemStatusDot" aria-hidden="true"></span>
-            <span id="systemStatusText" role="status">데이터 불러오는 중</span>
-          </div>
-          <small id="lastSyncText">동기화 시각 확인 중</small>
-        </div>
-
-            <div class="pai-bot-access sidebar-teams">
-              <button
-                class="button button--teams"
-                type="button"
-                id="paiBotTeamsButton"
-                aria-label="PAI Teams 채널 열기"
-                aria-describedby="paiBotTeamsAccessNote"
-                aria-disabled="true"
-                disabled
-              >
-                <img src="/teams-icon.png" width="28" height="30" alt="" aria-hidden="true" />
-                <span>PAI Teams</span>
-              </button>
-              <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">채널 연결 준비 중</small>
-            </div>
-
-        <div class="sidebar-foot" id="sidebarAccount" role="status" aria-live="polite" hidden>
-          <img class="avatar" src="/favicon.svg?v=20260908-login-brand-v1" width="36" height="36" alt="" aria-hidden="true" />
-          <span>
-            <strong id="sidebarAccountLabel"></strong>
-            <small id="sidebarAccountRole"></small>
-          </span>
-        </div>
-      </aside>
+      </header>
 
       <div class="workspace">
         <div class="demo-banner" id="demoBanner" role="status" hidden>
@@ -150,26 +124,12 @@
         </div>
 
         <header class="topbar">
-          <button class="icon-button mobile-menu-button" type="button" id="mobileMenuButton" aria-label="메뉴 열기" aria-expanded="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
-          </button>
+
           <div class="topbar__context">
             <p>공고·근거·판단 현황</p>
             <h1 id="pageTitle">오늘 할 일</h1>
           </div>
           <div class="topbar__actions">
-            <button class="button button--ghost" type="button" id="accountLoginButton" aria-label="부서 로그인" hidden>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></svg>
-              <span id="accountButtonLabel">부서 로그인</span>
-            </button>
-            <a class="button button--teams" id="paiUserGuideLink" href="https://pai-loop.pages.dev/" target="_blank" rel="noopener noreferrer" aria-label="PAI 사용설명서 (새 탭)">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4V4ZM13 7a3 3 0 0 1 3-3h5v15h-4a4 4 0 0 0-4 2" /></svg>
-              <span>PAI 사용설명서</span>
-            </a>
-            <button class="button button--ghost" type="button" id="refreshButton">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" /></svg>
-              <span>새로고침</span>
-            </button>
             <button class="button button--primary" type="button" id="replayButton" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 14 9-14 9V3Z" /></svg>
               <span>샘플 공고 분석</span>
@@ -180,13 +140,18 @@
         <main id="mainContent" class="main-content" tabindex="-1">
           <section class="hero hero--work" id="opportunityHero" aria-labelledby="heroTitle">
             <div>
-              <span class="eyebrow"><span aria-hidden="true">●</span> 오늘 할 일</span>
-              <h2 id="heroTitle">확인이 필요한 공고부터 처리하세요.</h2>
-              <p>PASS·REVIEW 공고의 검토 대기, 5일 이내 마감, 결과 입력 필요 공고를 업무 순서대로 표시합니다.</p>
+              <span class="eyebrow"><span aria-hidden="true">●</span> 공고 대시보드</span>
+              <h2 id="heroTitle">전체 공고의 흐름을 한눈에.</h2>
+              <p>전체 수집 공고를 기준으로 업무 현황과 부서별 관심 공고를 확인하세요.</p>
             </div>
+            <button class="dashboard-total" type="button" data-dashboard-total-link aria-label="전체 수집 공고 보기">
+              <span>전체 수집 공고</span>
+              <span class="dashboard-total__value"><strong id="dashboardTotalNotices">—</strong><span>건</span></span>
+              <small id="dashboardTotalMeta">아래 지표의 공통 기준</small>
+            </button>
           </section>
 
-          <section class="kpi-grid" id="opportunityKpis" aria-label="오늘 할 일과 참고 현황">
+          <section class="kpi-grid" id="opportunityKpis" aria-label="전체 수집 공고 대비 업무 현황">
             <div class="dashboard-summary" id="dashboardSummary" hidden>
               <div role="status" aria-live="polite">
                 <strong id="dashboardSummaryTitle">전체 공고 수를 집계하고 있습니다.</strong>
@@ -199,37 +164,61 @@
               <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="분석 및 자격 검토 대기 공고 보기" aria-pressed="false"><span class="sr-only">분석 및 자격 검토 대기 공고 보기</span></button>
               <div class="kpi-card__head"><span>검토 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
               <strong class="kpi-value" id="kpiReview">—</strong>
+              <div class="kpi-share"><span>전체 대비</span><strong id="kpiReviewShare">—</strong></div>
+              <div class="kpi-progress" aria-hidden="true"><i id="kpiReviewProgress"></i></div>
               <p><span class="trend trend--amber" id="kpiReviewTrend">처리 필요</span> PASS·REVIEW 중 첨부·자격 확인 대기</p>
             </article>
             <article class="kpi-card kpi-card--action">
               <button class="kpi-card__action" type="button" data-kpi-view="urgent" aria-label="5일 이내 입찰마감 공고 보기" aria-pressed="false"><span class="sr-only">5일 이내 입찰마감 공고 보기</span></button>
               <div class="kpi-card__head"><span>마감 임박 (5일)</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
               <strong class="kpi-value" id="kpiUrgent">—</strong>
-              <p class="kpi-scope-note">현재 조회 PASS·REVIEW 중 <span class="trend trend--red">5일</span> 이내 입찰마감 · 한국 날짜 기준</p>
+              <div class="kpi-share"><span>전체 대비</span><strong id="kpiUrgentShare">—</strong></div>
+              <div class="kpi-progress" aria-hidden="true"><i id="kpiUrgentProgress"></i></div>
+              <p class="kpi-scope-note">진행 중 PASS·REVIEW · <span class="trend trend--red">5일</span> 이내 입찰마감 · 한국 날짜 기준</p>
             </article>
             <article class="kpi-card kpi-card--action">
               <button class="kpi-card__action" type="button" data-kpi-view="result-missing" aria-label="결과 입력 필요 공고 보기" aria-pressed="false"><span class="sr-only">결과 입력 필요 공고 보기</span></button>
               <div class="kpi-card__head"><span>결과 입력 필요 공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M9 12h6M12 9v6" /></svg></span></div>
               <strong class="kpi-value" id="kpiResultMissing">—</strong>
+              <div class="kpi-share"><span>전체 대비</span><strong id="kpiResultMissingShare">—</strong></div>
+              <div class="kpi-progress" aria-hidden="true"><i id="kpiResultMissingProgress"></i></div>
               <p><span class="trend trend--slate">기록 필요</span> PASS·REVIEW 중 마감·종료 후 결과 없음</p>
             </article>
             <article class="kpi-card kpi-card--action" aria-label="자격 FAIL 공고 수">
               <button class="kpi-card__action" type="button" data-kpi-view="fail" aria-label="자격 FAIL 공고 보기" aria-pressed="false"><span class="sr-only">자격 FAIL 공고 보기</span></button>
               <div class="kpi-card__head"><span>FAIL 공고</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h8" /></svg></span></div>
               <strong class="kpi-value" id="kpiNew">—</strong>
+              <div class="kpi-share"><span>전체 대비</span><strong id="kpiNewShare">—</strong></div>
+              <div class="kpi-progress" aria-hidden="true"><i id="kpiNewProgress"></i></div>
               <p><span class="trend trend--red" id="kpiNewTrend">자격 FAIL</span> 저장된 현재 자격 판정 기준</p>
             </article>
-            <article class="kpi-card kpi-card--reference" aria-label="AI 판단 GO 후보 수">
+            <article class="kpi-card kpi-card--action" aria-label="AI 판단 GO 후보 수">
+              <button class="kpi-card__action" type="button" data-kpi-view="go" aria-label="GO 후보 공고 보기" aria-pressed="false"><span class="sr-only">GO 후보 공고 보기</span></button>
               <div class="kpi-card__head"><span>GO 후보</span><span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></span></div>
               <strong class="kpi-value" id="kpiGo">—</strong>
+              <div class="kpi-share"><span>전체 대비</span><strong id="kpiGoShare">—</strong></div>
+              <div class="kpi-progress" aria-hidden="true"><i id="kpiGoProgress"></i></div>
               <p><span class="trend trend--up" id="kpiGoTrend">AI 판단</span> 진행 공고 중 GO</p>
             </article>
             <article class="kpi-card kpi-card--action" aria-label="당시 PASS·REVIEW 취소공고 수">
               <button class="kpi-card__action" type="button" data-kpi-view="cancelled" aria-label="당시 PASS·REVIEW 취소공고 보기" aria-pressed="false"><span class="sr-only">당시 PASS·REVIEW 취소공고 보기</span></button>
               <div class="kpi-card__head"><span>취소공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg></span></div>
               <strong class="kpi-value" id="kpiEnded">—</strong>
+              <div class="kpi-share"><span>전체 대비</span><strong id="kpiEndedShare">—</strong></div>
+              <div class="kpi-progress" aria-hidden="true"><i id="kpiEndedProgress"></i></div>
               <p><span class="trend trend--slate">당시 PASS·REVIEW</span> 운영 대상에서 제외된 공고</p>
             </article>
+            <section class="department-dashboard" aria-labelledby="departmentDashboardTitle">
+              <div class="department-dashboard__header">
+                <div><p class="section-kicker">부서별 공고 현황</p><h3 id="departmentDashboardTitle">우리 부서의 관심 공고</h3><p id="departmentDashboardMeta" aria-live="polite">부서별 현황을 확인하고 있습니다.</p></div>
+                <label class="department-dashboard__select"><span>부서 선택</span><select id="dashboardDepartmentSelect" aria-label="대시보드 부서 선택"><option value="organization">전사 공통 (교육·컨설팅)</option></select></label>
+              </div>
+              <div class="department-dashboard__metrics">
+                <article class="department-stat"><span>추천 공고</span><div class="department-stat__value"><strong id="departmentRecommendedCount">—</strong><span>건</span><b id="departmentRecommendedShare">—</b></div><div class="department-stat__track" aria-hidden="true"><i id="departmentRecommendedProgress"></i></div><p>전체 수집 공고 대비 · 진행 중 키워드 상위·지역 연관 공고</p></article>
+                <article class="department-stat"><span>선택한 공고</span><div class="department-stat__value"><strong id="departmentSelectedCount">—</strong><span>건</span><b id="departmentSelectedShare">—</b></div><div class="department-stat__track" aria-hidden="true"><i id="departmentSelectedProgress"></i></div><p>전체 수집 공고 대비 · 부서의 최신 GO·조건부 GO 판단</p></article>
+              </div>
+              <div class="department-dashboard__footer"><span>추천 공고 중 선택 비율</span><strong id="departmentSelectionRate">—</strong><span id="departmentSelectionDetail">추천 공고 기준</span></div>
+            </section>
           </section>
 
           <section class="analysis-progress" id="analysisProgress" aria-labelledby="analysisProgressHeading">
@@ -758,7 +747,53 @@
       </div>
     </div>
 
-    <div class="sidebar-scrim" id="sidebarScrim" hidden></div>
+    <footer class="utility-dock" aria-label="계정 및 업무 도구">
+      <div class="utility-dock__inner">
+        <button class="button button--ghost" type="button" id="accountLoginButton" aria-label="부서 로그인" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></svg>
+          <span id="accountButtonLabel">부서 로그인</span>
+        </button>
+        <div class="sidebar-status" aria-label="시스템 상태">
+          <div>
+            <span class="status-dot" id="systemStatusDot" aria-hidden="true"></span>
+            <span id="systemStatusText" role="status">데이터 불러오는 중</span>
+          </div>
+          <small id="lastSyncText">동기화 시각 확인 중</small>
+        </div>
+        <div class="utility-dock__actions">
+          <div class="pai-bot-access sidebar-teams">
+            <button
+              class="button button--teams"
+              type="button"
+              id="paiBotTeamsButton"
+              aria-label="PAI Teams 채널 열기"
+              aria-describedby="paiBotTeamsAccessNote"
+              aria-disabled="true"
+              disabled
+              >
+              <img src="/teams-icon.png" width="28" height="30" alt="" aria-hidden="true" />
+              <span>PAI Teams</span>
+            </button>
+            <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">채널 연결 준비 중</small>
+          </div>
+          <div class="sidebar-foot sr-only" id="sidebarAccount" role="status" aria-live="polite" hidden>
+            <img class="avatar" src="/favicon.svg?v=20260908-login-brand-v1" width="36" height="36" alt="" aria-hidden="true" />
+            <span>
+              <strong id="sidebarAccountLabel"></strong>
+              <small id="sidebarAccountRole"></small>
+            </span>
+          </div>
+          <a class="button button--teams" id="paiUserGuideLink" href="https://pai-loop.pages.dev/" target="_blank" rel="noopener noreferrer" aria-label="PAI 사용설명서 (새 탭)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4V4ZM13 7a3 3 0 0 1 3-3h5v15h-4a4 4 0 0 0-4 2" /></svg>
+            <span>PAI 사용설명서</span>
+          </a>
+          <button class="button button--ghost" type="button" id="refreshButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" /></svg>
+            <span>새로고침</span>
+          </button>
+        </div>
+      </div>
+    </footer>
 
     <div class="drawer-scrim" id="drawerScrim" hidden></div>
     <aside class="detail-drawer detail-screen" id="detailDrawer" role="dialog" aria-modal="true" aria-labelledby="detailTitle" aria-hidden="true">
@@ -1277,6 +1312,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260913-quantitative-v3" defer></script>
+    <script src="./app.js?v=20260913-top-navigation-v1" defer></script>
   </body>
 </html>

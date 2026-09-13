@@ -41,7 +41,7 @@ globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,login
   loadApplicationData=originalLoadApplicationData;
   setLoading=value=>{state.loading=value;};setSystemStatus=()=>{};hideDemoBanner=()=>{};
   openNoticeFromRoute=()=>{};hydrateApplicationMetadata=async()=>{};hydrateDepartmentDecisionList=async()=>{};
-  renderNoticeSearchMode=()=>{};revealActiveNavigationGroup=()=>{};closeMobileMenu=()=>{};
+  renderNoticeSearchMode=()=>{};updateActiveNavigationGroup=()=>{};closeMobileMenu=()=>{};
  },
  loadApplicationData:(...args)=>loadApplicationData(...args),
  setOpenDetail(fn){openDetail=fn;},
@@ -50,7 +50,8 @@ context.onToast=args=>toasts.push(args);context.onRender=n=>rendered.push(n);
 vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+'\n})();'),context);
 const u=context.ui;
 const fields=new Map();
-function field(){return {value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,listeners:{},
+function field(){return {value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,listeners:{},options:[],
+ append(option){this.options.push(option);},
  addEventListener(type,handler){(this.listeners[type]??=[]).push(handler);},
  dispatchEvent(event){for(const handler of this.listeners[event.type]||[])handler(event);},
  dataset:{},classList:{contains(){return false;},toggle(){},add(){},remove(){}},setAttribute(){},removeAttribute(){},
