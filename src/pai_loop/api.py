@@ -1029,8 +1029,96 @@ def _comparable_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _dashboard_department_statistics(
+    session: Session,
+    *,
+    department: dict[str, Any] | None,
+    total_notice_count: int,
+    active_notice_ids: list[str],
+) -> dict[str, Any]:
+    """Count discovery relevance and explicit department selections separately.
+
+    Ranking uses the same keyword policy as the notice board, independently
+    of eligibility or system GO. Human selections survive closed notices and
+    re-analysis; only a newer decision by that same department supersedes one.
+    Read scalar columns so historical decision/evidence payloads stay unloaded.
+    """
+
+    catalog = load_department_keyword_profiles()
+    profile = department or catalog["baseline"]
+    decision_statement = select(
+        UserDecision.notice_id,
+        UserDecision.choice,
+        func.row_number().over(
+            partition_by=(UserDecision.notice_id, UserDecision.department_id),
+            order_by=(
+                func.coalesce(UserDecision.department_revision, -1).desc(),
+                UserDecision.created_at.desc(),
+                UserDecision.id.desc(),
+            ),
+        ).label("decision_rank"),
+    ).where(
+        UserDecision.department_id.in_(
+            [department["id"]] if department else [item["id"] for item in catalog["departments"]]
+        )
+    ).subquery()
+    selected_ids = set(session.scalars(
+        select(decision_statement.c.notice_id).where(
+            decision_statement.c.decision_rank == 1,
+            decision_statement.c.choice.in_(("GO", "CONDITIONAL_GO")),
+        ).distinct()
+    ).all())
+
+    recommended_count = 0
+    selected_recommended_count = 0
+    for offset in range(0, len(active_notice_ids), _NOTICE_SUMMARY_BATCH_SIZE):
+        rows = session.execute(select(
+            Notice.id, Notice.title, Notice.agency, Notice.category,
+        ).where(Notice.id.in_(active_notice_ids[offset:offset + _NOTICE_SUMMARY_BATCH_SIZE]))).all()
+        for row in rows:
+            if department is None:
+                views = rank_notice_department_views(
+                    title=row.title, agency=row.agency, category=row.category or "",
+                    top_limit=1, review_limit=0, region_limit=1,
+                )
+                recommended = bool(views["top_department_rankings"] or views["region_routing"])
+            else:
+                ranking = rank_notice_for_department(
+                    title=row.title, agency=row.agency, category=row.category or "",
+                    _department_profile=department,
+                )
+                recommended = ranking["recommendation_tier"] in {"TOP", "ROUTING"}
+            recommended_count += int(recommended)
+            selected_recommended_count += int(recommended and row.id in selected_ids)
+
+    return {
+        "department_id": profile["id"],
+        "department_name": profile["name"],
+        "total_notice_count": total_notice_count,
+        "recommended_count": recommended_count,
+        "selected_count": len(selected_ids),
+        "selected_recommended_count": selected_recommended_count,
+        "recommended_ratio": recommended_count / total_notice_count if total_notice_count else None,
+        "selected_ratio": len(selected_ids) / total_notice_count if total_notice_count else None,
+        "selection_rate": selected_recommended_count / recommended_count if recommended_count else None,
+        "recommended_definition": "OPEN_KEYWORD_TOP_OR_REGION_ROUTING",
+        "selected_definition": "LATEST_DEPARTMENT_GO_OR_CONDITIONAL_GO",
+        "recommendation_scope": "OPEN_NOT_CANCELLED",
+        "selection_scope": "ALL_STORED_NOTICES",
+        "selection_available": True,
+    }
+
+
 @router.get("/dashboard")
-def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
+def dashboard(
+    request: Request,
+    session: DbSession,
+    department_id: Annotated[str | None, Query(max_length=80)] = None,
+) -> dict[str, Any]:
+    try:
+        selected_department = get_department_profile(department_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="부서를 확인하세요.") from exc
     now = datetime.now(timezone.utc)
     # Response generation and source ingestion are separate clocks. Only a
     # successful live PPS notice run proves a completed source synchronisation.
@@ -1065,6 +1153,7 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
     soon_date = today + timedelta(days=5)
     work_queue_counts = {key: 0 for key in ("fail", "review", "urgent", "result_missing", "cancelled")}
     active_count = 0
+    active_department_notice_ids: list[str] = []
     deadline_soon = 0
     recent_notices: list[dict[str, Any]] = []
     analysis_statistics = {
@@ -1127,9 +1216,10 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
                     )
                 elif valid_qualification == Eligibility.FAIL.value:
                     work_queue_counts["fail"] += 1
-                run = latest_current_analysis_run(notice) if effective_status == "OPEN" else None
-                if effective_status == "OPEN":
+                run = latest_current_analysis_run(notice) if effective_status == "OPEN" and not is_cancelled else None
+                if effective_status == "OPEN" and not is_cancelled:
                     open_runs.append(run)
+                    active_department_notice_ids.append(notice.id)
                 if effective_status == "OPEN" and not is_cancelled and _source_kind(notice) == "PPS":
                     stats = analysis_statistics
                     reason = public_analysis_reason(notice.versions, evaluated=latest is not None)
@@ -1218,6 +1308,12 @@ def dashboard(request: Request, session: DbSession) -> dict[str, Any]:
         "generated_at": now,
         "last_sync": _comparable_utc(last_sync) if last_sync is not None else None,
         "analysis_statistics": analysis_statistics,
+        "department_statistics": _dashboard_department_statistics(
+            session,
+            department=selected_department,
+            total_notice_count=len(notice_ids),
+            active_notice_ids=active_department_notice_ids,
+        ),
         "work_queue_counts": work_queue_counts,
         "totals": {
             "notices": len(notice_ids),
