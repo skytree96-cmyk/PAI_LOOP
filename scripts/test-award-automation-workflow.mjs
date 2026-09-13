@@ -35,7 +35,10 @@ const runtime = code("Build Scheduled Award Runtime", {}, {}).runtime;
 assert.equal(runtime.apiBaseUrl, "https://pai-loop-demo.onrender.com"); assert.equal(runtime.enabled, true);
 assert.equal(code("Build Scheduled Award Runtime", {}, { PAI_LOOP_EMERGENCY_DISABLE: "true" }).runtime.enabled, false);
 assert.equal(code("Build Scheduled Award Runtime", {}, { PAI_LOOP_API_BASE_URL: "https://syn.example/" }).runtime.apiBaseUrl, "https://syn.example");
-for (const origin of ["https://SYN:secret@syn.example", "https://syn.example/api", "https://syn.example?x=1", "https://syn.example#x", "ftp://syn.example", "https://syn.example\\other"]) {
+const syntheticUserinfoOrigin = new URL("https://syn.example");
+syntheticUserinfoOrigin.username = "SYN";
+syntheticUserinfoOrigin.password = "SYN-password";
+for (const origin of [syntheticUserinfoOrigin.href, "https://syn.example/api", "https://syn.example?x=1", "https://syn.example#x", "ftp://syn.example", "https://syn.example\\other"]) {
   assert.throws(() => code("Build Scheduled Award Runtime", {}, { PAI_LOOP_API_BASE_URL: origin }), /origin/);
 }
 
