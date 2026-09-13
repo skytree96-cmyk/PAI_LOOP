@@ -15,7 +15,7 @@
   const PRESPEC_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const PRESPEC_ANALYSIS_MAX_POLLS = 40;
   const PRESPEC_ANALYSIS_POLL_MAX_MS = 120000;
-  const NAV_GROUP_STORAGE_KEY = "pai-loop-nav-groups-v1";
+  const MOBILE_NAVIGATION_QUERY = "(max-width: 1100px)";
   const DECIDER_NAME = "KMA 입찰팀";
   const RUNTIME_CONFIG = readRuntimeConfig();
   const PAI_BOT_TEAMS_URL = String(RUNTIME_CONFIG.paiBotTeamsUrl || "").trim();
@@ -219,7 +219,6 @@
     bindEvents();
     const initialView = routeViewFromLocation();
     setView(initialView, { syncRoute: true, replaceRoute: true });
-    restoreNavigationGroups();
     setNoticeSearchMode(initialView === "prespec" ? "prespec" : "stored", {
       announce: false,
       syncView: false,
@@ -267,14 +266,14 @@
   function cacheElements() {
     const ids = [
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
-      "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
+      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
       "dashboardSummary", "dashboardSummaryTitle", "dashboardSummaryDetail", "dashboardSummaryTotals", "dashboardRetryButton",
       "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
       "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "operatorDecisionFilter", "operatorDecisionFilterHelp", "sortSelect",
       "ppsSearchSuggestion", "ppsSearchSuggestionButton", "ppsDiscoverySection", "ppsDiscoveryStatus", "ppsDiscoveryQuery", "ppsDiscoveryForm", "ppsDiscoveryFromDate", "ppsDiscoveryToDate", "ppsDiscoverySearchButton", "ppsDiscoveryResults",
       "resetFiltersButton", "noticePanel", "noticeTableWrap", "noticeTableBody", "noticeCardGrid", "loadingState", "errorState",
-      "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "sidebarScrim", "drawerScrim",
+      "errorStateMessage", "errorRetryButton", "emptyState", "emptyResetButton", "dataSourceLabel", "drawerScrim",
       "detailDrawer", "drawerLoading", "closeDetailButton", "previousNoticeButton", "nextNoticeButton", "detailPosition", "manualAnalyzeButton", "openSourceDialogButton", "copyLinkButton", "detailSourceBadge", "detailNoticeId", "drawerScroll",
       "sourceLinkDialog", "closeSourceLinkDialogButton", "cancelSourceLinkDialogButton", "sourceLinkDialogTitle", "sourceLinkDialogNotice", "sourceLinkDialogMeta", "sourceLinkDialogMessage", "sourceLinkOpenAnchor",
       "accountLoginButton", "accountButtonLabel", "accountDialog", "accountLoginForm", "accountDialogTitle", "accountDialogHelp", "accountDialogClose", "accountUsername", "accountPassword", "accountCredentials", "accountIdentity", "accountError", "accountLogoutButton", "accountSubmitButton",
@@ -313,7 +312,6 @@
     ids.forEach((id) => {
       els[id] = document.getElementById(id);
     });
-    els.sidebar = document.querySelector(".sidebar");
     els.navItems = [...document.querySelectorAll(".nav-item[data-view]")];
     els.navGroupToggles = [...document.querySelectorAll(".nav-group-toggle[aria-controls]")];
     els.kpiViewButtons = [...document.querySelectorAll("[data-kpi-view]")];
@@ -326,22 +324,16 @@
     els.awardScopeInputs = [...document.querySelectorAll("input[name='awardScope']")];
   }
 
-  function restoreNavigationGroups() {
-    let preferences = {};
-    try {
-      const parsed = JSON.parse(window.localStorage.getItem(NAV_GROUP_STORAGE_KEY) || "{}");
-      preferences = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-    } catch (_error) {
-      preferences = {};
-    }
+  function bindNavigationEvents() {
+    els.navItems.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
     els.navGroupToggles.forEach((button) => {
-      const group = button.closest("[data-nav-group]");
-      const groupKey = group?.dataset.navGroup;
-      const expanded = groupKey && typeof preferences[groupKey] === "boolean"
-        ? preferences[groupKey]
-        : true;
-      setNavigationGroupExpanded(button, expanded);
+      button.addEventListener("click", () => toggleNavigationGroup(button));
     });
+    els.mobileMenuButton.addEventListener("click", toggleMobileMenu);
+    document.addEventListener("click", handleNavigationOutsideInteraction);
+    document.addEventListener("focusin", handleNavigationOutsideInteraction);
+    window.matchMedia(MOBILE_NAVIGATION_QUERY).addEventListener("change", handleNavigationViewportChange);
+    closeMobileMenu();
   }
 
   function setNavigationGroupExpanded(button, expanded) {
@@ -350,35 +342,83 @@
     if (!items) return;
     button.setAttribute("aria-expanded", String(Boolean(expanded)));
     items.hidden = !expanded;
-    button.closest("[data-nav-group]")?.classList.toggle("is-collapsed", !expanded);
+    const group = button.closest("[data-nav-group]");
+    group?.classList.toggle("is-open", Boolean(expanded));
+    group?.classList.toggle("is-collapsed", !expanded);
   }
 
-  function persistNavigationGroups() {
-    const preferences = {};
+  function closeNavigationGroups() {
     els.navGroupToggles.forEach((button) => {
-      const groupKey = button.closest("[data-nav-group]")?.dataset.navGroup;
-      if (groupKey) preferences[groupKey] = button.getAttribute("aria-expanded") === "true";
+      setNavigationGroupExpanded(button, false);
     });
-    try {
-      window.localStorage.setItem(NAV_GROUP_STORAGE_KEY, JSON.stringify(preferences));
-    } catch (_error) {
-      // Menu disclosure still works when storage is unavailable.
-    }
   }
 
   function toggleNavigationGroup(button) {
     const expanded = button.getAttribute("aria-expanded") === "true";
+    closeNavigationGroups();
     setNavigationGroupExpanded(button, !expanded);
-    persistNavigationGroups();
   }
 
-  function revealActiveNavigationGroup(view) {
+  function updateActiveNavigationGroup(view) {
     const activeItem = els.navItems.find((item) => item.dataset.view === view);
-    const group = activeItem?.closest("[data-nav-group]");
-    const button = group?.querySelector(".nav-group-toggle[aria-controls]");
-    if (!button || button.getAttribute("aria-expanded") === "true") return;
-    setNavigationGroupExpanded(button, true);
-    persistNavigationGroups();
+    const activeGroup = activeItem?.closest("[data-nav-group]");
+    els.navGroupToggles.forEach((button) => {
+      const group = button.closest("[data-nav-group]");
+      group?.classList.toggle("is-current", group === activeGroup);
+    });
+  }
+
+  function handleNavigationOutsideInteraction(event) {
+    if (!els.primaryNavigation.contains(event.target)) closeNavigationGroups();
+    if (!els.appHeader.contains(event.target)) closeMobileMenu();
+  }
+
+  function handleNavigationViewportChange(event) {
+    const focusedInNavigation = els.primaryNavigation.contains(document.activeElement);
+    const focusedTrigger = document.activeElement?.closest("[data-nav-group]")?.querySelector(".nav-group-toggle[aria-controls]");
+    closeMobileMenu();
+    if (event.matches && focusedInNavigation) els.mobileMenuButton.focus();
+    else if (!event.matches && document.activeElement === els.mobileMenuButton) els.navItems[0]?.focus();
+    else if (!event.matches && focusedTrigger) focusedTrigger.focus();
+  }
+
+  function handleNavigationKeydown(event) {
+    if (event.key === "Escape") {
+      const expanded = els.navGroupToggles.find((button) => button.getAttribute("aria-expanded") === "true");
+      if (expanded) {
+        event.preventDefault();
+        closeNavigationGroups();
+        expanded.focus();
+        return true;
+      }
+      if (els.appHeader.classList.contains("is-open")) {
+        event.preventDefault();
+        closeMobileMenu();
+        els.mobileMenuButton.focus();
+        return true;
+      }
+      return false;
+    }
+    if (!els.primaryNavigation.contains(event.target)) return false;
+    const group = event.target.closest("[data-nav-group]");
+    const trigger = group?.querySelector(".nav-group-toggle[aria-controls]");
+    if (!trigger) return false;
+    const items = els.navItems.filter((item) => item.closest("[data-nav-group]") === group);
+    if (!items.length) return false;
+    if (event.target === trigger && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      closeNavigationGroups();
+      setNavigationGroupExpanded(trigger, true);
+      items[event.key === "ArrowDown" ? 0 : items.length - 1].focus();
+      return true;
+    }
+    const currentIndex = items.indexOf(event.target);
+    if (currentIndex < 0 || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return false;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : (currentIndex + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items[nextIndex].focus();
+    return true;
   }
 
   function readRuntimeConfig() {
@@ -458,6 +498,11 @@
     els.replayButton.addEventListener("click", runReplay);
 
     els.departmentSelect.addEventListener("change", applyDepartmentRanking);
+    document.getElementById("dashboardDepartmentSelect")?.addEventListener("change", applyDashboardDepartmentSelection);
+    document.querySelector("[data-dashboard-total-link]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      setView("collected");
+    });
     els.priorityApplyButton.addEventListener("click", applyDepartmentRanking);
     els.priorityKeywordInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -593,10 +638,7 @@
     els.resultLearningCloseButton.addEventListener("click", closeResultLearningDialog);
     els.resultLearningCancelButton.addEventListener("click", closeResultLearningDialog);
 
-    els.navItems.forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
-    els.navGroupToggles.forEach((button) => {
-      button.addEventListener("click", () => toggleNavigationGroup(button));
-    });
+    bindNavigationEvents();
     els.kpiViewButtons.forEach((button) => button.addEventListener("click", () => {
       setView(button.dataset.kpiView);
       window.requestAnimationFrame(() => els.noticeSection.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -609,9 +651,6 @@
     els.noticeTableBody.addEventListener("keydown", handleNoticeKeydown);
     els.noticeCardGrid.addEventListener("click", handleNoticeActivation);
     els.noticeCardGrid.addEventListener("click", handleManualAnalysisActivation);
-
-    els.mobileMenuButton.addEventListener("click", toggleMobileMenu);
-    els.sidebarScrim.addEventListener("click", closeMobileMenu);
 
     els.closeDetailButton.addEventListener("click", closeDetail);
     els.previousNoticeButton.addEventListener("click", () => moveDetailSelection(-1));
@@ -700,6 +739,7 @@
 
   async function loadApplicationData({ forceApi = false } = {}) {
     if (applicationLocked || !state.accountSession.authenticated) return;
+    initializeDashboardDepartmentSelection();
     const sequence = ++state.requestSequence;
     state.dashboardRequestSequence += 1;
     state.dashboardStatus = "loading";
@@ -803,17 +843,24 @@
   async function loadDashboardTotals({ sequence = state.requestSequence, requestedStatusScope = state.noticeStatusScope } = {}) {
     const request = ++state.dashboardRequestSequence;
     const epoch = state.accountEpoch;
+    const departmentId = selectedDashboardDepartmentId();
     const current = () => request === state.dashboardRequestSequence && sequence === state.requestSequence
       && epoch === state.accountEpoch && requestedStatusScope === state.noticeStatusScope
+      && departmentId === selectedDashboardDepartmentId()
       && state.source === "api";
     state.dashboardStatus = "loading";
     renderKpis();
     try {
-      const payload = await apiRequest("/dashboard", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
+      const params = new URLSearchParams({ department_id: departmentId });
+      const payload = await apiRequest(`/dashboard?${params.toString()}`, { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
       if (!current()) return;
       state.dashboard = normalizeDashboard(payload, state.notices);
-      state.dashboardStatus = ["totalNotices", "totalEvaluations", "failCount", "cancelledCount", "resultMissingCount"]
-        .some((key) => state.dashboard[key] === null) ? "partial" : "ready";
+      const departmentStats = state.dashboard.departmentStatistics;
+      const departmentAvailable = departmentStats?.department_id === departmentId
+        && numberOrNull(departmentStats.total_notice_count) !== null
+        && numberOrNull(departmentStats.recommended_count) !== null;
+      state.dashboardStatus = ["totalNotices", "totalEvaluations", "reviewCount", "urgentCount", "goCount", "failCount", "cancelledCount", "resultMissingCount"]
+        .some((key) => state.dashboard[key] === null) || !departmentAvailable ? "partial" : "ready";
       state.sourceReason = state.dashboardStatus === "ready" ? "" : "일부 전체 집계를 확인하지 못했습니다. 집계 다시 조회로 확인해 주세요.";
     } catch (_) {
       if (!current()) return;
@@ -826,8 +873,13 @@
   }
 
   async function retryDashboardTotals() {
-    if (state.source !== "api" || state.loading || state.dashboardStatus === "loading"
+    if (state.loading || state.dashboardStatus === "loading"
       || !state.accountSession.authenticated) return;
+    if (state.source === "error") {
+      await loadApplicationData({ forceApi: true });
+      return;
+    }
+    if (state.source !== "api") return;
     await loadDashboardTotals();
   }
 
@@ -1930,7 +1982,7 @@
   function populateDepartmentProfiles(catalog) {
     const departments = arrayValue(catalog?.departments);
     if (!departments.length) return;
-    const selected = els.departmentSelect.value || "organization";
+    const selected = selectedDashboardDepartmentId();
     const groups = new Map();
     departments.forEach((profile) => {
       const group = stringValue(profile.group, "기타");
@@ -1957,6 +2009,8 @@
     els.departmentSelect.value = [...els.departmentSelect.options].some((option) => option.value === selected)
       ? selected
       : "organization";
+    state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
+    syncDashboardDepartmentSelect();
     els.rankingProfileVersion.textContent = catalog.version
       ? `키워드 기준 ${catalog.version} · 목록 제외 없음`
       : "키워드 기준 확인됨 · 목록 제외 없음";
@@ -1964,12 +2018,52 @@
   }
 
   function applyDepartmentRanking() {
+    state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
+    syncDashboardDepartmentSelect();
     els.sortSelect.value = "department";
     void loadApplicationData({ forceApi: true });
   }
 
+  function selectedDashboardDepartmentId() {
+    const account = state.accountSession?.account;
+    if (account?.id && state.departmentSelectionAccountId !== account.id) {
+      return account.department_id || "organization";
+    }
+    return els.departmentSelect?.value || "organization";
+  }
+
+  function initializeDashboardDepartmentSelection() {
+    const account = state.accountSession?.account;
+    if (!account?.id || state.departmentSelectionAccountId === account.id) return;
+    const departmentId = account.department_id || "organization";
+    if (account.department_id && !Array.from(els.departmentSelect.options).some((option) => option.value === departmentId)) {
+      const option = document.createElement("option");
+      option.value = departmentId;
+      option.textContent = account.department_name || departmentId;
+      els.departmentSelect.append(option);
+    }
+    els.departmentSelect.value = departmentId;
+    state.departmentSelectionAccountId = account.id;
+    syncDashboardDepartmentSelect();
+  }
+
+  function syncDashboardDepartmentSelect() {
+    const select = document.getElementById("dashboardDepartmentSelect");
+    if (!select || !els.departmentSelect) return;
+    select.replaceChildren(...Array.from(els.departmentSelect.children, (child) => child.cloneNode(true)));
+    select.value = selectedDashboardDepartmentId();
+    select.disabled = !state.keywordProfilesAvailable;
+  }
+
+  function applyDashboardDepartmentSelection(event) {
+    els.departmentSelect.value = event.target.value;
+    applyDepartmentRanking();
+  }
+
   function resetPrioritySearch() {
     els.departmentSelect.value = "organization";
+    state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
+    syncDashboardDepartmentSelect();
     els.priorityKeywordInput.value = "";
     void loadApplicationData({ forceApi: true });
   }
@@ -3764,8 +3858,14 @@
       recommendation: normalizeRecommendation(useHistoricalEvaluation
         ? firstValue(displayEvaluation.risk_band, displayEvaluation.band, displayEvaluation.recommendation)
         : allowCurrentProjection
-          ? firstValue(source.recommendation, source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)
+          ? Object.prototype.hasOwnProperty.call(source, "recommendation")
+            ? source.recommendation
+            : firstValue(source.ai_recommendation, source.recommended_decision, evaluation.risk_band, evaluation.band)
           : null),
+      // The API's current immutable recommendation is independent of the
+      // evaluation projection. Explicit null must not become a legacy risk band.
+      storedSystemRecommendation: Object.prototype.hasOwnProperty.call(source, "recommendation")
+        ? normalizeRecommendation(source.recommendation) : null,
       recommendationConditions: arrayValue(firstValue(source.recommendation_conditions, source.recommendationConditions, []))
         .map((value) => stringValue(value).replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8),
       recommendationEvidenceCount: Math.max(0, numberOrNull(firstValue(
@@ -4155,22 +4255,21 @@
     const totals = firstObject(source.totals, kpis.totals);
     const eligibilityCounts = firstObject(source.eligibility_counts, source.eligibilityCounts);
     const readinessCounts = firstObject(source.readiness_counts, source.readinessCounts);
-    const localQueues = globalNoticeSearchActive() || state.source === "demo";
-    const workQueues = localQueues ? {} : firstObject(source.work_queue_counts);
+    const localQueues = state.source === "demo";
+    const workQueues = firstObject(source.work_queue_counts);
     const derived = deriveDashboard(notices);
     return {
-      queueScope: localQueues ? "LOCAL" : "GLOBAL",
+      queueScope: localQueues ? "DEMO" : "GLOBAL",
       newCount: numberOrNull(firstValue(kpis.new_count, kpis.newCount, kpis.new_notices, kpis.new, totals.active, totals.notices)) ?? derived.newCount,
       // Dashboard work queues use explicit stored qualification. Global
       // analysis totals still include missing evaluations and failed notices.
       failCount: localQueues ? derived.failCount : numberOrNull(workQueues.fail),
-      reviewCount: derived.reviewCount,
+      reviewCount: localQueues ? derived.reviewCount : numberOrNull(workQueues.review),
       qualityReviewCount: derived.qualityReviewCount,
-      // These clickable KPIs must match their OPEN-only board filters. The
-      // backend aggregate can include already-closed notices with a future
-      // deadline, so use the loaded notice projection for both counts.
-      goCount: derived.goCount,
-      urgentCount: derived.urgentCount,
+      // The dashboard stays global when the list is searched or paginated.
+      // API queue predicates match the views opened by the corresponding cards.
+      goCount: localQueues ? derived.goCount : numberOrNull(firstValue(source.go_count, kpis.go_count, kpis.goCount)),
+      urgentCount: localQueues ? derived.urgentCount : numberOrNull(workQueues.urgent),
       cancelledCount: localQueues ? derived.cancelledCount : numberOrNull(workQueues.cancelled),
       endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? (localQueues ? derived.endedCount : null),
       resultMissingCount: localQueues ? derived.resultMissingCount : numberOrNull(workQueues.result_missing),
@@ -4181,6 +4280,7 @@
       eligibilityCounts,
       readinessCounts,
       analysisStatistics: source.analysis_statistics || null,
+      departmentStatistics: source.department_statistics || null,
       lastSync: firstValue(source.last_sync, source.lastSync) || null,
       generatedAt: firstValue(source.generated_at, source.generatedAt) || null,
       systemStatus: stringValue(firstValue(source.system_status, source.status), "online"),
@@ -4195,12 +4295,12 @@
     for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "endedCount"]) {
       result[key] = numberOrNull(previous[key]);
     }
-    const globalQueues = !globalNoticeSearchActive();
-    for (const key of ["failCount", "cancelledCount", "resultMissingCount"]) {
-      result[key] = globalQueues && previous.queueScope === "GLOBAL" ? numberOrNull(previous[key]) : null;
+    for (const key of ["reviewCount", "urgentCount", "goCount", "failCount", "cancelledCount", "resultMissingCount"]) {
+      result[key] = previous.queueScope === "GLOBAL" ? numberOrNull(previous[key]) : null;
     }
-    result.queueScope = globalQueues ? "GLOBAL" : "LOCAL";
+    result.queueScope = "GLOBAL";
     result.analysisStatistics = previous.analysisStatistics || null;
+    result.departmentStatistics = previous.departmentStatistics || null;
     result.lastSync = previous.lastSync || null;
     result.generatedAt = previous.generatedAt || null;
     return result;
@@ -4215,7 +4315,7 @@
       failCount: notices.filter((notice) => matchesDashboardQueue(notice, "fail")).length,
       reviewCount: notices.filter((notice) => matchesDashboardQueue(notice, "review")).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
-      goCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO").length,
+      goCount: notices.filter(isCurrentGoCandidate).length,
       urgentCount: notices.filter((notice) => matchesDashboardQueue(notice, "urgent")).length,
       cancelledCount: notices.filter((notice) => matchesDashboardQueue(notice, "cancelled")).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
@@ -4248,6 +4348,7 @@
   }
 
   function matchesDashboardQueue(notice, queue) {
+    if (queue === "go") return isCurrentGoCandidate(notice);
     const eligibility = dashboardEligibilityStatus(notice);
     if (queue === "fail") return !isCancelledNotice(notice) && eligibility === "FAIL";
     if (!["PASS", "REVIEW"].includes(eligibility)) return false;
@@ -4261,6 +4362,13 @@
       return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
     }
     return false;
+  }
+
+  function isCurrentGoCandidate(notice) {
+    const recommendation = notice.storedSystemRecommendation
+      ?? (notice.historicalAnalysis ? "UNKNOWN" : notice.recommendation);
+    return noticeLifecycleStatus(notice) === "OPEN" && !isCancelledNotice(notice)
+      && recommendation === "GO";
   }
 
   function renderAll() {
@@ -4283,8 +4391,108 @@
     els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "자격 FAIL";
     els.kpiReviewTrend.textContent = "처리 필요";
     els.kpiGoTrend.textContent = "AI 판단";
+    const total = document.getElementById("dashboardTotalNotices");
+    if (total) total.textContent = displayNumber(data.totalNotices);
+    for (const [id, key] of [["kpiReview", "reviewCount"], ["kpiUrgent", "urgentCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiNew", "failCount"], ["kpiGo", "goCount"], ["kpiEnded", "cancelledCount"]]) {
+      renderDashboardShare(id, data[key], data.totalNotices);
+    }
     renderDashboardSummary();
+    renderDepartmentDashboard(data.departmentStatistics);
     renderAnalysisProgress(data.analysisStatistics);
+  }
+
+  function dashboardShare(count, total) {
+    const numerator = numberOrNull(count);
+    const denominator = numberOrNull(total);
+    if (numerator === null || denominator === null || numerator < 0 || denominator <= 0 || numerator > denominator) return null;
+    return numerator / denominator * 100;
+  }
+
+  function formatDashboardShare(count, total) {
+    const share = dashboardShare(count, total);
+    if (share === null) return "—";
+    if (share > 0 && share < 0.1) return "<0.1%";
+    return `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1 }).format(share)}%`;
+  }
+
+  function renderDashboardShare(id, count, total) {
+    const label = document.getElementById(`${id}Share`);
+    const progress = document.getElementById(`${id}Progress`);
+    const share = dashboardShare(count, total);
+    if (label) label.textContent = formatDashboardShare(count, total);
+    if (progress) {
+      progress.setAttribute("stroke-dasharray", share === null ? "0 100" : `${share} ${100 - share}`);
+      progress.setAttribute("visibility", share > 0 ? "visible" : "hidden");
+      progress.parentElement.classList.toggle("is-unavailable", share === null);
+    }
+  }
+
+  function renderDepartmentComparisonChart(departmentName, recommended, selected, total) {
+    const chart = document.getElementById("departmentComparisonChart");
+    if (!chart) return;
+    const missing = [];
+    const descriptions = [];
+    for (const [key, label, count] of [["Recommended", "추천 공고", recommended], ["Selected", "선택한 공고", selected]]) {
+      const share = dashboardShare(count, total);
+      const available = share !== null;
+      const point = document.getElementById(`department${key}Point`);
+      const stem = document.getElementById(`department${key}Stem`);
+      const title = document.getElementById(`department${key}PointTitle`);
+      const description = available
+        ? `${label} ${displayNumber(count)}건 · 전체 ${displayNumber(total)}건 대비 ${formatDashboardShare(count, total)}`
+        : `${label} 집계 확인 필요`;
+      if (!available) missing.push(label);
+      descriptions.push(description);
+      if (point) {
+        point.removeAttribute("hidden");
+        point.setAttribute("visibility", available ? "visible" : "hidden");
+        point.setAttribute("aria-hidden", String(!available));
+        if (available) point.setAttribute("cy", String(220 - 2 * share));
+        else point.removeAttribute("cy");
+      }
+      if (stem) {
+        stem.removeAttribute("hidden");
+        stem.setAttribute("visibility", available ? "visible" : "hidden");
+        if (available) stem.setAttribute("y2", String(220 - 2 * share));
+        else stem.removeAttribute("y2");
+      }
+      if (title) title.textContent = `${departmentName || "전사 공통"} · ${description}`;
+    }
+    chart.setAttribute("aria-label", `${departmentName || "전사 공통"} 공고 비교. ${descriptions.join(". ")}.`);
+    const empty = document.getElementById("departmentComparisonEmpty");
+    if (empty) {
+      empty.setAttribute("visibility", missing.length ? "visible" : "hidden");
+      empty.textContent = missing.length ? `${missing.join("·")} 집계 확인 필요` : "";
+    }
+  }
+
+  function renderDepartmentDashboard(stats) {
+    const title = document.getElementById("departmentDashboardTitle");
+    if (!title) return;
+    syncDashboardDepartmentSelect();
+    const selected = selectedDashboardDepartmentId();
+    const available = stats?.department_id === selected && stats.scope !== "UNAVAILABLE";
+    const total = available ? numberOrNull(stats.total_notice_count) : null;
+    const recommended = available ? numberOrNull(stats.recommended_count) : null;
+    const selectedCount = available && stats.selection_available === true ? numberOrNull(stats.selected_count) : null;
+    const selectedRecommended = available && stats.selection_available === true ? numberOrNull(stats.selected_recommended_count) : null;
+    const departmentName = available ? stats.department_name
+      : els.departmentSelect.selectedOptions?.[0]?.textContent || "부서";
+    const account = state.accountSession?.account;
+    const accountNote = account?.department_name ? ` · 로그인 부서 ${account.department_name}` : "";
+    title.textContent = `${departmentName || "전사 공통"} 공고 현황`;
+    document.getElementById("departmentRecommendedCount").textContent = displayNumber(recommended);
+    document.getElementById("departmentSelectedCount").textContent = displayNumber(selectedCount);
+    renderDashboardShare("departmentRecommended", recommended, total);
+    renderDashboardShare("departmentSelected", selectedCount, total);
+    renderDepartmentComparisonChart(departmentName, recommended, selectedCount, total);
+    document.getElementById("departmentSelectionRate").textContent = formatDashboardShare(selectedRecommended, recommended);
+    document.getElementById("departmentSelectionDetail").textContent = available
+      ? `추천 ${displayNumber(recommended)}건 중 ${displayNumber(selectedRecommended)}건 선택` : "추천 공고 기준 · 집계 확인 대기";
+    const stale = state.dashboard.generatedAt && ["loading", "error"].includes(state.dashboardStatus);
+    document.getElementById("departmentDashboardMeta").textContent = !available
+      ? `${state.dashboardStatus === "loading" ? "선택한 부서의 현황을 집계하고 있습니다." : "부서별 집계를 확인하지 못했습니다. 집계 다시 조회로 확인해 주세요."}${accountNote}`
+      : `전체 수집 공고 ${displayNumber(total)}건 기준${accountNote}${selectedCount === null ? " · 부서 선택 기록 조회 권한 필요" : ""}${stale ? ` · 마지막 확인 ${formatKstDateTime(state.dashboard.generatedAt)}` : ""}`;
   }
 
   function renderDashboardSummary() {
@@ -4292,19 +4500,27 @@
     const data = state.dashboard;
     const loading = state.dashboardStatus === "loading";
     const failed = ["error", "partial"].includes(state.dashboardStatus);
+    const applicationFailed = state.source === "error";
     const hasPrevious = data.generatedAt && ["loading", "error"].includes(state.dashboardStatus);
-    els.dashboardSummary.hidden = state.source !== "api";
+    const totalMeta = document.getElementById("dashboardTotalMeta");
+    if (totalMeta) totalMeta.textContent = hasPrevious ? `마지막 확인 ${formatKstDateTime(data.generatedAt)}`
+      : data.totalNotices == null ? "전체 집계 확인 대기" : state.source === "demo" ? "데모 공고 기준" : "모든 현황 비율의 공통 기준";
+    els.dashboardSummary.hidden = state.source !== "api" && !applicationFailed;
     els.dashboardSummary.classList.toggle("is-warning", failed);
     els.dashboardRetryButton.hidden = !failed;
     els.dashboardRetryButton.disabled = loading || state.loading;
-    els.dashboardSummaryTitle.textContent = loading ? "전체 공고 수를 집계하고 있습니다."
-      : failed ? "일부 공고 수를 확인하지 못했습니다." : "전체 저장 현황";
+    els.dashboardRetryButton.textContent = applicationFailed ? "서버 연결 다시 시도" : "집계 다시 조회";
+    els.dashboardSummaryTitle.textContent = applicationFailed ? "실데이터를 불러오지 못했습니다."
+      : loading ? "전체 공고 수를 집계하고 있습니다."
+      : failed ? "일부 공고 수를 확인하지 못했습니다." : "전체 수집 공고 기준";
     els.dashboardSummaryTotals.textContent = `전체 저장 공고 ${displayNumber(data.totalNotices)}건 · 저장된 판정 이력 ${displayNumber(data.totalEvaluations)}건${hasPrevious ? ` · 마지막 확인 ${formatKstDateTime(data.generatedAt)}` : ""}`;
-    const scope = `${globalNoticeSearchActive() ? "카드 수는 현재 검색 결과 기준입니다. " : "아래 카드는 조건별 업무 대상 수입니다. "}검토 대기·마감 임박·결과 입력은 PASS·REVIEW 기준입니다.`;
-    els.dashboardSummaryDetail.textContent = loading || failed
-      ? `공고 목록 ${formatNumber(state.notices.length)}건은 조회됐습니다. ‘—’는 0건이 아니라 아직 확인하지 못한 집계입니다.${hasPrevious ? " 전체 저장 현황과 결과 입력·FAIL·취소 수는 마지막 확인값입니다." : ""} ${scope}`
+    const scope = "모든 비율은 전체 수집 공고 대비입니다. 조건별 공고는 중복될 수 있습니다. 검토 대기·마감 임박·결과 입력은 PASS·REVIEW 기준입니다.";
+    els.dashboardSummaryDetail.textContent = applicationFailed
+      ? `${state.sourceReason || "운영 서버 연결을 확인하지 못했습니다."} 서버 연결 다시 시도로 확인해 주세요.`
+      : loading || failed
+      ? `공고 목록 ${formatNumber(state.notices.length)}건은 조회됐습니다. ‘—’는 0건이 아니라 아직 확인하지 못한 집계입니다.${hasPrevious ? " 카드 수와 비율은 마지막 확인값입니다." : ""} ${scope}`
       : `${scope} 판정 이력에는 같은 공고의 재분석 기록이 포함됩니다.`;
-    for (const [id, key] of [["kpiNew", "failCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiEnded", "cancelledCount"]]) {
+    for (const [id, key] of [["kpiReview", "reviewCount"], ["kpiUrgent", "urgentCount"], ["kpiGo", "goCount"], ["kpiNew", "failCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiEnded", "cancelledCount"]]) {
       els[id].setAttribute("aria-label", data[key] == null ? "집계 확인 필요" : `${formatNumber(data[key])}건${hasPrevious ? " · 마지막 확인값" : ""}`);
     }
   }
@@ -4316,7 +4532,7 @@
       valueIds.forEach((id) => { els[id].textContent = "—"; });
       els.analysisProgressScope.textContent = state.source === "api" && ["error", "partial"].includes(state.dashboardStatus)
         ? "전체 통계 조회 실패 · 공고 목록은 조회됐습니다. 집계 다시 조회로 확인해 주세요."
-        : "전체 통계 조회 대기 · 상단 새로고침으로 다시 조회할 수 있습니다.";
+        : "전체 통계 조회 대기 · 하단 새로고침으로 다시 조회할 수 있습니다.";
       ["analysisAttachmentDetail", "analysisEligibilityDetail", "analysisScoreDetail"].forEach((id) => { els[id].textContent = "집계 결과가 아직 없습니다."; });
       return;
     }
@@ -4428,11 +4644,10 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)
+      if (["fail", "review", "urgent", "cancelled", "result-missing", "go"].includes(state.currentView)
         && !matchesDashboardQueue(notice, state.currentView)) return false;
       if (!globalSearch) {
         if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
-        if (state.currentView === "go" && effectiveRecommendation(notice) !== "GO") return false;
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
         if (state.currentView === "undecided" && decisionFilterAvailable && operatorDecision === "all" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
@@ -5177,7 +5392,7 @@
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     });
-    revealActiveNavigationGroup(navigationView);
+    updateActiveNavigationGroup(navigationView);
     els.kpiViewButtons.forEach((button) => {
       const active = button.dataset.kpiView === view;
       button.setAttribute("aria-pressed", String(active));
@@ -5191,7 +5406,7 @@
     els.opportunityHero.hidden = !showDashboardCards;
     els.opportunityKpis.hidden = !showDashboardCards;
     if (els.analysisProgress) els.analysisProgress.hidden = !showDashboardCards;
-    els.noticeSection.hidden = customView;
+    els.noticeSection.hidden = customView || showDashboardCards;
     els.resultLearningSection.hidden = !resultLearningView;
     els.awardResultsSection.hidden = !awardsView;
     els.performanceSection.hidden = !performanceView;
@@ -5251,13 +5466,11 @@
     const clearedServerFilters = Boolean(
       els.searchInput.value.trim()
       || els.priorityKeywordInput.value.trim()
-      || els.departmentSelect.value !== "organization"
     );
     window.clearTimeout(state.noticeSearchTimer);
     state.noticeSearchTimer = null;
     els.searchInput.value = "";
     els.priorityKeywordInput.value = "";
-    els.departmentSelect.value = "organization";
     els.eligibilityFilter.value = "all";
     els.recommendationFilter.value = "all";
     els.operatorDecisionFilter.value = "all";
@@ -7757,18 +7970,19 @@
   }
 
   function toggleMobileMenu() {
-    const open = !els.sidebar.classList.contains("is-open");
-    els.sidebar.classList.toggle("is-open", open);
-    els.sidebarScrim.hidden = !open;
+    if (!window.matchMedia(MOBILE_NAVIGATION_QUERY).matches) return;
+    const open = !els.appHeader.classList.contains("is-open");
+    closeNavigationGroups();
+    els.appHeader.classList.toggle("is-open", open);
     els.mobileMenuButton.setAttribute("aria-expanded", String(open));
-    document.body.classList.toggle("is-locked", open);
+    els.mobileMenuButton.setAttribute("aria-label", open ? "메뉴 닫기" : "메뉴 열기");
   }
 
   function closeMobileMenu() {
-    els.sidebar.classList.remove("is-open");
-    els.sidebarScrim.hidden = true;
+    closeNavigationGroups();
+    els.appHeader.classList.remove("is-open");
     els.mobileMenuButton.setAttribute("aria-expanded", "false");
-    if (!els.detailDrawer.classList.contains("is-open")) document.body.classList.remove("is-locked");
+    els.mobileMenuButton.setAttribute("aria-label", "메뉴 열기");
   }
 
   function handleGlobalKeydown(event) {
@@ -7786,8 +8000,10 @@
         return;
       }
     }
+    if (handleNavigationKeydown(event)) return;
     if (event.key === "/" && !isEditableTarget(event.target)) {
       event.preventDefault();
+      if (state.currentView === "all") setView("new", { focusMain: false });
       if (state.currentView === "closed") els.resultLearningSearchInput.focus();
       else if (state.currentView === "performance") els.performanceSearchInput.focus();
       else if (state.noticeSearchMode === "prespec") els.prespecStoredSearchInput.focus();
