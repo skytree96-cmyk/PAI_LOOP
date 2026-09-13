@@ -6638,6 +6638,7 @@
     const total = numberOrNull(data.total_max_points);
     const lower = numberOrNull(data.lower_points);
     const upper = numberOrNull(data.upper_points);
+    const outOfScope = numberOrNull(data.out_of_scope_points);
     const coverage = numberOrNull(data.evidence_coverage_pct) ?? 0;
     const readiness = numberOrNull(data.readiness_pct);
     const ruleSource = String(data.rule_source_status || "").toUpperCase();
@@ -6660,7 +6661,7 @@
         : total === null
           ? "배점표 발견 · 검증 보류"
           : "원문상 조건부 하한~상한";
-    const range = lower === null || upper === null || total === null
+    const range = lower === null || upper === null || total === null || total <= 0
       ? "미산정"
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
     els.scoreOverview.innerHTML = [
@@ -6683,7 +6684,7 @@
       NOT_APPLICABLE: "산정 비적용",
     };
     els.quantSourceStatus.className = `quant-source-status is-${String(activation).toLowerCase().replaceAll("_", "-")}`;
-    const scoreStatusLabel = data.overall_status === "UNSCORABLE" && lower !== null && upper !== null
+    const scoreStatusLabel = data.overall_status === "UNSCORABLE" && total > 0 && lower !== null && upper !== null
       ? "일부 항목 미산정"
       : quantStatusLabel(data.overall_status);
     els.quantSourceStatus.textContent = `${tableNotEstablished ? "추출 결과 미확보" : sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${scoreStatusLabel}`;
@@ -6736,22 +6737,31 @@
       ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 확인 필요로 유지합니다.")
       : notApplicable
         ? emptyPanel("정량평가 비적용", "이 공고에는 회사 정량점수를 적용하지 않습니다.")
-        : total !== null
+        : total !== null && total > 0
           ? emptyPanel("최신 정량 합계 저장본", "회사 사실값과 항목별 원문 근거는 공개하지 않고, 최신 분석의 합계와 범위만 표시합니다.")
         : emptyPanel("자동 산정 가능한 항목 없음", "배점표는 확인했지만 수기 기술평가 또는 검증 보류 항목에 임의 점수를 넣지 않습니다.");
     const publicEvidenceHidden = !sourceMissing && (
       data.ruleset_version === "public-quantitative-summary-v1"
       || (Array.isArray(data.assumptions) && data.assumptions.some((item) => String(item).includes("공개 화면")))
     );
-    els.quantTableBody.innerHTML = Array.isArray(data.criteria) && data.criteria.length
-      ? data.criteria.map((item) => renderQuantitativeEstimateRow(item, { publicEvidenceHidden })).join("")
-      : `<tr><td colspan="4">${emptyCriteria}</td></tr>`;
+    const criteria = Array.isArray(data.criteria) ? data.criteria : [];
+    const quantitativeRows = criteria.filter((item) => item.status !== "OUT_OF_SCOPE");
+    const separateRows = criteria.filter((item) => item.status === "OUT_OF_SCOPE");
+    els.quantTableBody.innerHTML = (quantitativeRows.length
+      ? quantitativeRows.map((item) => renderQuantitativeEstimateRow(item, { publicEvidenceHidden })).join("")
+      : `<tr><td colspan="4">${emptyCriteria}</td></tr>`)
+      + (separateRows.length
+        ? `<tr class="quant-scope-divider"><th colspan="4" scope="colgroup">정량 외 항목 · 아래 배점은 정량 합계에 포함하지 않습니다</th></tr>${separateRows.map((item) => renderQuantitativeEstimateRow(item, { publicEvidenceHidden })).join("")}`
+        : "");
     els.quantObservationList.innerHTML = Array.isArray(data.evidence_observations) && data.evidence_observations.length
       ? data.evidence_observations.map(renderQuantObservation).join("")
       : publicEvidenceHidden
         ? emptyPanel("내부 검증 근거 보존", "회사 사실값과 원문·내부 증빙은 공개 화면에서 숨깁니다.")
         : emptyPanel("적용 전 공개 근거 없음", "공고별 배점 산식과 연결된 공개 근거가 없습니다.");
-    els.quantSeparationNote.textContent = data.separation_notice || "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않습니다.";
+    els.quantSeparationNote.textContent = [
+      outOfScope > 0 ? `정량 외 배점 ${formatNumber(outOfScope, 1)}점은 정량 점수·총배점·예상 상한에서 제외했습니다.` : "",
+      data.separation_notice || "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않습니다.",
+    ].filter(Boolean).join(" ");
   }
 
   function quantSummaryCard(label, value, detail, className) {
@@ -6759,7 +6769,7 @@
   }
 
   function quantStatusLabel(status) {
-    return ({ CONFIRMED: "확정", ESTIMATED: "잠정 범위", UNSCORABLE: "산정 불가", REVIEW: "검토 필요" })[status] || "검토 필요";
+    return ({ CONFIRMED: "확정", ESTIMATED: "잠정 범위", UNSCORABLE: "산정 불가", REVIEW: "검토 필요", OUT_OF_SCOPE: "정량 외" })[status] || "검토 필요";
   }
 
   function quantReadinessLabel(value) {
@@ -6794,7 +6804,7 @@
       TABLE_TOTAL_INCOMPLETE: "정량 평가의 총배점을 완전히 확인하지 못했습니다.",
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
     };
-    const unresolved = Array.isArray(data.criteria) ? data.criteria.find((item) => item.status !== "CONFIRMED" && item.rationale) : null;
+    const unresolved = Array.isArray(data.criteria) ? data.criteria.find((item) => !["CONFIRMED", "OUT_OF_SCOPE"].includes(item.status) && item.rationale) : null;
     const reason = reasons.length
       ? reasonLabels[reasons[0]] || "평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다."
       : unresolved?.rationale || data.opinion || "회사 증빙이 모두 확정되지 않아 보수 기준으로 표시합니다.";
@@ -6861,15 +6871,16 @@
   function renderQuantitativeEstimateRow(item, { publicEvidenceHidden = false } = {}) {
     const lower = numberOrNull(item.lower_points);
     const upper = numberOrNull(item.upper_points);
-    const range = lower === null || upper === null
+    const separate = item.status === "OUT_OF_SCOPE";
+    const range = separate ? "정량 합산 제외" : lower === null || upper === null
       ? "—"
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`}점`;
     const anchor = item.source_anchor;
     const source = anchor
       ? `${anchor.page ? `원문 ${anchor.page}쪽` : "원문 위치 확인됨"}`
       : publicEvidenceHidden ? "원문 위치 세부 비공개" : "원문 위치 없음";
-    const floor = numberOrNull(item.rule_floor_points);
-    const base = numberOrNull(item.rule_base_points);
+    const floor = separate ? null : numberOrNull(item.rule_floor_points);
+    const base = separate ? null : numberOrNull(item.rule_base_points);
     return `<tr>
       <td><strong>${escapeHtml(item.label)}</strong><small class="quant-row-formula">${escapeHtml(item.formula)}</small><small class="quant-row-source">${escapeHtml(source)}</small></td>
       <td>${formatNumber(item.max_points, 1)}</td>

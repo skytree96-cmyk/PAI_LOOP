@@ -1,8 +1,7 @@
-"""Rows set aside must not sink the notice, and must not flatter it either.
+"""Preserve classification boundaries and keep excluded points out of totals.
 
-Every label here is verbatim corpus text. The arithmetic case is the one that
-motivated the change: a notice whose 정성 배점 outweighs its 정량 배점 used to
-return REVIEW with a RED band even when every scoreable row was full marks.
+Synthetic arithmetic cases enforce the approved separation of quantitative
+scores from qualitative/price points, without hiding unverified source rows.
 """
 
 from __future__ import annotations
@@ -14,8 +13,11 @@ from pai_loop.quantitative_scoring import (
     QuantitativeCriterion,
     QuantitativeEstimateRequest,
     QuantitativeFact,
+    QuantitativeReviewCriterion,
     ScoreBracket,
     SourceAnchor,
+    _public_quantitative_projection,
+    build_public_quantitative_criteria_snapshot,
     estimate_quantitative_score,
 )
 
@@ -128,13 +130,18 @@ def _qualitative(points: float) -> QuantitativeCriterion:
     )
 
 
-def _request(*criteria: QuantitativeCriterion, facts=()) -> QuantitativeEstimateRequest:
+def _request(
+    *criteria: QuantitativeCriterion, facts=(), minimum_score=None, review_criteria=()
+) -> QuantitativeEstimateRequest:
     return QuantitativeEstimateRequest(
         ruleset_version="out-of-scope-test",
         rule_source_status="AVAILABLE",
-        source_validation_status="SOURCE_VALIDATED",
-        activation_status="AUTO_ACTIVE",
+        source_validation_status="REVIEW_REQUIRED" if review_criteria else "SOURCE_VALIDATED",
+        activation_status="PARTIAL_ACTIVE" if review_criteria else "AUTO_ACTIVE",
+        activation_reasons=["PARTIAL_QUANTITATIVE_SOURCE_REVIEW"] if review_criteria else [],
+        minimum_score=minimum_score,
         criteria=list(criteria),
+        review_criteria=list(review_criteria),
         facts=list(facts),
     )
 
@@ -171,29 +178,35 @@ def test_a_qualitative_row_no_longer_sinks_the_notice() -> None:
     assert result.out_of_scope_points == 60
 
 
-def test_the_set_aside_points_stay_in_the_range_as_an_assumption() -> None:
+@pytest.mark.parametrize("fact_status", ["CONFIRMED", "ESTIMATED"])
+def test_set_aside_points_are_separate_from_every_quantitative_total(fact_status) -> None:
     binding = "c" * 64
     result = estimate_quantitative_score(
         _request(
             _scoreable(40, binding),
             _qualitative(60),
-            facts=[_full_marks_fact(binding)],
+            facts=[_full_marks_fact(binding).model_copy(update={"status": fact_status})],
         )
     )
 
-    # 하한은 정량만, 상한은 정성 만점을 가정해 100.
+    # 2026-09-13 user policy separates qualitative/price scores from quantitative
+    # scores. The old upper=100 assumption must not survive as a quant estimate.
     assert result.lower_points == 40
-    assert result.upper_points == 100
-    assert result.total_max_points == 100
-    # 범위가 벌어져 있으므로 단일 점수로 확정하지 않는다.
-    assert result.estimated_points is None
-    assert any("만점을 받는다고 가정" in item for item in result.assumptions)
+    assert result.upper_points == 40
+    assert result.total_max_points == 40
+    assert result.confirmed_points == (40 if fact_status == "CONFIRMED" else 0)
+    assert result.estimated_points == 40
+    assert result.overall_status == fact_status
+    assert result.out_of_scope_points == 60
+    assert any("정량 합계·상하한" in item for item in result.assumptions)
 
     row = next(item for item in result.criteria if item.criterion_id == "사업이해도")
     assert row.status == "OUT_OF_SCOPE"
     assert row.lower_points == 0
     assert row.upper_points == 60
     assert "정성평가" in row.rationale
+    assert row.estimated_points is None
+    assert all("만점을 받는다고 가정" not in item for item in [*result.assumptions, *row.assumptions])
 
 
 def test_set_aside_points_are_not_reported_as_unscorable() -> None:
@@ -217,3 +230,123 @@ def test_a_notice_with_nothing_scoreable_is_not_reported_as_confirmed() -> None:
     assert result.overall_status == "UNSCORABLE"
     assert result.out_of_scope_points == 100
     assert result.readiness_pct is None
+    assert result.total_max_points == 0
+    assert result.lower_points == 0
+    assert result.upper_points == 0
+    assert result.estimated_points is None
+    assert result.meets_minimum is None
+
+
+def test_qualitative_and_price_rows_stay_separate_from_quantitative_uncertainty() -> None:
+    binding = "e" * 64
+    price = _qualitative(20).model_copy(update={
+        "criterion_id": "SYN-PRICE", "label": "입찰가격평가", "formula": "입찰가격평가"
+    })
+    result = estimate_quantitative_score(_request(_scoreable(40, binding), _qualitative(40), price))
+    assert result.overall_status == "UNSCORABLE"
+    assert result.total_max_points == 40
+    assert result.lower_points == 0
+    assert result.upper_points == 40
+    assert result.unscorable_points == 40
+    assert result.confirmed_points == 0
+    assert result.estimated_points is None
+    assert result.out_of_scope_points == 60
+    assert result.criteria[0].status == "UNSCORABLE"
+    assert result.criteria[1].status == result.criteria[2].status == "OUT_OF_SCOPE"
+
+
+@pytest.mark.parametrize("label", ["SYN 미검증 실적", "SYN 수행계획"])
+def test_review_source_rows_remain_in_quantitative_upper_bound(label) -> None:
+    """A validation failure is not proof that a row is qualitative or irrelevant."""
+    binding = "f" * 64
+    review = QuantitativeReviewCriterion(
+        criterion_id="SYN-REVIEW", category="UNKNOWN", label=label, max_points=20,
+        issue_codes=["CASE_NUMBER_MISMATCH"],
+    )
+    result = estimate_quantitative_score(_request(
+        _scoreable(20, binding), _qualitative(60), facts=[_full_marks_fact(binding)],
+        review_criteria=[review],
+    ))
+    assert result.overall_status == "REVIEW"
+    assert result.total_max_points == 40
+    assert result.confirmed_points == result.lower_points == 20
+    assert result.upper_points == 40
+    assert result.unscorable_points == 20
+    assert result.out_of_scope_points == 60
+    assert result.estimated_points is None
+    assert result.readiness_pct == result.evidence_coverage_pct == 50
+    row = next(item for item in result.criteria if item.criterion_id == "SYN-REVIEW")
+    assert row.status == "REVIEW" and row.upper_points == 20
+    assert "CASE_NUMBER_MISMATCH" in row.rationale
+    assert build_public_quantitative_criteria_snapshot(result) is not None
+    public = _public_quantitative_projection(result)
+    assert public.total_max_points == public.upper_points == 40
+    assert public.confirmed_points == public.lower_points == 20
+    assert public.out_of_scope_points == 60
+    assert [item.status for item in public.criteria] == ["CONFIRMED", "OUT_OF_SCOPE", "REVIEW"]
+
+
+@pytest.mark.parametrize("minimum", [0, 30, 40, 41, 85])
+def test_mixed_request_cannot_decide_an_unbound_minimum(minimum) -> None:
+    binding = "1" * 64
+    result = estimate_quantitative_score(_request(
+        _scoreable(40, binding), _qualitative(60), facts=[_full_marks_fact(binding)],
+        minimum_score=minimum,
+    ))
+    assert result.minimum_score == minimum
+    assert result.meets_minimum is None
+    assert any("최소점수의 적용 범위" in item for item in result.assumptions)
+
+
+@pytest.mark.parametrize("minimum,expected", [(0, True), (30, True), (40, True), (41, False)])
+def test_pure_quantitative_minimum_comparison_is_unchanged(minimum, expected) -> None:
+    binding = "2" * 64
+    result = estimate_quantitative_score(_request(
+        _scoreable(40, binding), facts=[_full_marks_fact(binding)], minimum_score=minimum,
+    ))
+    assert result.total_max_points == result.lower_points == result.upper_points == 40
+    assert result.out_of_scope_points == 0
+    assert result.meets_minimum is expected
+
+
+@pytest.mark.parametrize("fact_status", ["CONFIRMED", "ESTIMATED", "MISSING"])
+def test_mixed_engine_result_builds_public_rows_without_readding_excluded_points(fact_status) -> None:
+    binding = "3" * 64
+    result = estimate_quantitative_score(_request(
+        _scoreable(40, binding), _qualitative(60),
+        facts=[] if fact_status == "MISSING" else [
+            _full_marks_fact(binding).model_copy(update={"status": fact_status})
+        ],
+    ))
+    snapshot = build_public_quantitative_criteria_snapshot(result)
+    assert snapshot is not None
+    assert [row["max_points"] for row in snapshot["items"]] == [40, 60]
+    assert snapshot["items"][1]["status"] == "OUT_OF_SCOPE"
+    public = _public_quantitative_projection(result)
+    assert public.total_max_points == public.upper_points == 40
+    assert public.out_of_scope_points == 60
+    assert public.lower_points == (0 if fact_status == "MISSING" else 40)
+    assert len(public.criteria) == 2
+    assert public.criteria[1].estimated_points is None
+    assert public.criteria[1].status == "OUT_OF_SCOPE"
+    assert "정량 합계에서 제외" in public.criteria[1].rationale
+    assert public.criteria[1].source_anchor is None
+    # A mismatched excluded aggregate must fail persistence just as a wrong
+    # quantitative total does. Public projection must not launder the mismatch.
+    assert build_public_quantitative_criteria_snapshot(
+        result.model_copy(update={"out_of_scope_points": 59})
+    ) is None
+
+
+def test_all_excluded_engine_result_preserves_public_rows_without_a_zero_score() -> None:
+    result = estimate_quantitative_score(_request(_qualitative(100)))
+    assert build_public_quantitative_criteria_snapshot(result) is not None
+    public = _public_quantitative_projection(result)
+    assert len(public.criteria) == 1
+    assert public.criteria[0].status == "OUT_OF_SCOPE"
+    assert public.out_of_scope_points == 100
+    assert public.total_max_points == 0
+    assert public.overall_status == "UNSCORABLE"
+    assert public.estimated_points is public.readiness_pct is None
+    assert public.readiness_band == "GRAY"
+    assert "RED 구간" not in result.opinion

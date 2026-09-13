@@ -88,7 +88,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.1"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.2"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -240,6 +240,10 @@ class PublicQuantitativeCriterionSnapshot(QuantModel):
             raise ValueError("public exact estimated criterion must retain its estimate")
         if self.status in {"REVIEW", "UNSCORABLE"} and self.estimated_points is not None:
             raise ValueError("public unresolved criterion cannot have an exact estimate")
+        if self.status == "OUT_OF_SCOPE" and (
+            self.lower_points != 0 or self.upper_points != self.max_points
+        ):
+            raise ValueError("public excluded criterion cannot imply an awarded score")
         return self
 
 
@@ -462,7 +466,7 @@ class QuantitativeEstimateResult(QuantModel):
     lower_points: float | None
     upper_points: float | None
     unscorable_points: float | None
-    # 정성·총괄·가격처럼 산정 대상에서 뺀 배점. 범위 상한에는 들어가 있다.
+    # 정성·총괄·가격처럼 정량 합계·상한에서 제외해 별도로 보존한 배점.
     out_of_scope_points: float = 0
     evidence_coverage_pct: float
     readiness_pct: float | None
@@ -1395,28 +1399,33 @@ def estimate_quantitative_score(
             )
         )
 
-    total_max = _round_points(sum(item.max_points for item in estimates))
+    # Quantitative totals describe only the rows within this calculation's
+    # scope. Keep excluded rows for audit, but never assume their full marks
+    # in the quantitative upper bound. Unverified quantitative REVIEW rows
+    # remain in scope and retain their unresolved 0..maximum range.
+    scored = [item for item in estimates if item.status != "OUT_OF_SCOPE"]
+    set_aside_rows = [item for item in estimates if item.status == "OUT_OF_SCOPE"]
+    total_max = _round_points(sum(item.max_points for item in scored))
     confirmed = _round_points(
-        sum(item.lower_points for item in estimates if item.status == "CONFIRMED")
+        sum(item.lower_points for item in scored if item.status == "CONFIRMED")
     )
-    lower = _round_points(sum(item.lower_points for item in estimates))
-    upper = _round_points(sum(item.upper_points for item in estimates))
+    lower = _round_points(sum(item.lower_points for item in scored))
+    upper = _round_points(sum(item.upper_points for item in scored))
     unscorable = _round_points(
         sum(
             item.max_points - item.lower_points
-            for item in estimates
+            for item in scored
             if item.status in {"UNSCORABLE", "REVIEW"}
         )
     )
     confirmed_weight = sum(
-        item.max_points for item in estimates if item.status == "CONFIRMED"
+        item.max_points for item in scored if item.status == "CONFIRMED"
     )
     # Rows set aside are not failures of the company data, so they stay out of
     # the denominators. Counting 정성 배점 there would read a perfect
     # quantitative fit as a near-total miss.
-    scored = [item for item in estimates if item.status != "OUT_OF_SCOPE"]
-    scored_max = _round_points(sum(item.max_points for item in scored))
-    out_of_scope = _round_points(total_max - scored_max)
+    scored_max = total_max
+    out_of_scope = _round_points(sum(item.max_points for item in set_aside_rows))
     coverage = _round_points((confirmed_weight / scored_max) * 100) if scored_max else 0
     readiness = _round_points((lower / scored_max) * 100) if scored_max else None
     if readiness is None:
@@ -1430,8 +1439,7 @@ def estimate_quantitative_score(
 
     statuses = {item.status for item in scored}
     if not scored:
-        # 산정할 수 있는 행이 하나도 없다. 만점 가정만 남은 상태를 확정으로
-        # 보고할 수는 없다.
+        # 산정 대상이 없는 상태를 0점 확보로 확정하지 않는다.
         statuses = {"UNSCORABLE"}
     if "REVIEW" in statuses:
         overall: EstimateStatus = "REVIEW"
@@ -1443,7 +1451,9 @@ def estimate_quantitative_score(
         overall = "CONFIRMED"
 
     meets_minimum: bool | None = None
-    if request.minimum_score is not None:
+    # A mixed request does not bind its minimum to the remaining quantitative
+    # subtotal. Do not compare an overall technical/combined cutoff against it.
+    if request.minimum_score is not None and not set_aside_rows:
         if lower >= request.minimum_score:
             meets_minimum = True
         elif upper < request.minimum_score:
@@ -1453,18 +1463,25 @@ def estimate_quantitative_score(
     confidence = _round_points(weighted_confidence / scored_max) if scored_max else 0
     estimated_points = lower if lower == upper and overall in {"CONFIRMED", "ESTIMATED"} else None
 
-    if out_of_scope:
+    if set_aside_rows:
         assumptions = list(assumptions) + [
-            "정성·총괄·가격 등 자동 산정 대상이 아닌 %g점은 만점을 받는다고 가정해 "
-            "범위 상한에만 반영했고, 준비도·커버리지 계산에서는 제외했습니다."
+            "정성·총괄·가격 등 자동 산정 대상이 아닌 %g점은 별도로 보존하고, "
+            "정량 합계·상하한·준비도·커버리지 계산에서는 제외했습니다."
             % out_of_scope
         ]
+        if request.minimum_score is not None:
+            assumptions.append(
+                "최소점수의 적용 범위가 정량 소계인지 전체 평가인지 확인되지 않아 "
+                "최소점수 충족 여부를 판단하지 않았습니다."
+            )
 
     if partial_activation_is_safe:
         opinion = (
             "원문 검증이 끝난 항목만 부분 산정했습니다. 검토 항목에는 임의 점수를 "
             "넣지 않았으며 해당 배점은 0점부터 만점까지의 미확정 범위로 남겼습니다."
         )
+    elif not scored:
+        opinion = "정량 산정 대상이 없어 점수를 확정하지 않았습니다. 별도로 보존한 평가 항목을 확인하세요."
     elif band == "GREEN":
         opinion = "현재 하한과 검증 커버리지가 기본 GREEN 기준을 충족합니다. 공고별 최소점수와 최종 제출 증빙을 다시 확인하세요."
     elif band == "YELLOW":
@@ -2649,7 +2666,7 @@ def _compiled_formula_contract(
 def _criterion_set_aside(
     criterion: QuantitativeCriterion, reason: str
 ) -> CriterionEstimate:
-    """Keep the row's points in the range but out of the scored denominator."""
+    """Preserve the uncomputed row's own range, outside quantitative totals."""
 
     return CriterionEstimate(
         criterion_id=criterion.criterion_id,
@@ -2673,8 +2690,8 @@ def _criterion_set_aside(
         status="OUT_OF_SCOPE",
         rationale=reason,
         assumptions=[
-            "이 배점은 만점을 받는다고 가정해 범위 상한에만 넣었고, "
-            "자동 산정 대상에서는 제외했습니다."
+            "이 항목의 배점과 미확정 범위는 별도로 보존하며, "
+            "정량 합계와 상하한에는 반영하지 않습니다."
         ],
     )
 
@@ -4584,7 +4601,17 @@ def _public_criteria_match_aggregate(
     upper_points: float | None,
     evidence_coverage_pct: float,
     overall_status: EstimateStatus,
+    out_of_scope_points: float | None = None,
 ) -> bool:
+    scored = [item for item in items if item.status != "OUT_OF_SCOPE"]
+    excluded_total = _sum_public_points(
+        item.max_points for item in items if item.status == "OUT_OF_SCOPE"
+    )
+    if excluded_total is None or (
+        out_of_scope_points is not None
+        and not _public_number_matches(out_of_scope_points, excluded_total)
+    ):
+        return False
     if not items:
         return (
             total_max_points is None
@@ -4603,18 +4630,17 @@ def _public_criteria_match_aggregate(
     ):
         return False
 
-    expected_total = _sum_public_points(item.max_points for item in items)
+    expected_total = _sum_public_points(item.max_points for item in scored)
     expected_confirmed = _sum_public_points(
-        item.lower_points for item in items if item.status == "CONFIRMED"
+        item.lower_points for item in scored if item.status == "CONFIRMED"
     )
-    expected_lower = _sum_public_points(item.lower_points for item in items)
-    expected_upper = _sum_public_points(item.upper_points for item in items)
+    expected_lower = _sum_public_points(item.lower_points for item in scored)
+    expected_upper = _sum_public_points(item.upper_points for item in scored)
     confirmed_weight = _sum_public_points(
-        item.max_points for item in items if item.status == "CONFIRMED"
+        item.max_points for item in scored if item.status == "CONFIRMED"
     )
     if (
         expected_total is None
-        or expected_total <= 0
         or expected_confirmed is None
         or expected_lower is None
         or expected_upper is None
@@ -4622,13 +4648,15 @@ def _public_criteria_match_aggregate(
     ):
         return False
     expected_coverage = _canonical_public_points(
-        (confirmed_weight / expected_total) * 100
+        (confirmed_weight / expected_total) * 100 if expected_total else 0
     )
     if expected_coverage is None:
         return False
-    statuses = {item.status for item in items}
-    if "REVIEW" in statuses:
-        expected_status: EstimateStatus = "REVIEW"
+    statuses = {item.status for item in scored}
+    if not scored:
+        expected_status: EstimateStatus = "UNSCORABLE"
+    elif "REVIEW" in statuses:
+        expected_status = "REVIEW"
     elif "UNSCORABLE" in statuses:
         expected_status = "UNSCORABLE"
     elif "ESTIMATED" in statuses:
@@ -4685,6 +4713,7 @@ def build_public_quantitative_criteria_snapshot(
         upper_points=result.upper_points,
         evidence_coverage_pct=result.evidence_coverage_pct,
         overall_status=result.overall_status,
+        out_of_scope_points=result.out_of_scope_points,
     ):
         return None
     return snapshot.model_dump(mode="json")
@@ -4700,6 +4729,7 @@ def _restore_public_quantitative_criteria_snapshot(
     upper_points: float | None,
     evidence_coverage_pct: float,
     overall_status: EstimateStatus,
+    out_of_scope_points: float | None = None,
 ) -> list[CriterionEstimate] | None:
     try:
         snapshot = PublicQuantitativeCriteriaSnapshot.model_validate(value)
@@ -4714,6 +4744,7 @@ def _restore_public_quantitative_criteria_snapshot(
         upper_points=upper_points,
         evidence_coverage_pct=evidence_coverage_pct,
         overall_status=overall_status,
+        out_of_scope_points=out_of_scope_points,
     ):
         return None
 
@@ -4722,16 +4753,19 @@ def _restore_public_quantitative_criteria_snapshot(
         "ESTIMATED": "저장된 최신 분석의 잠정 점수 또는 범위입니다.",
         "UNSCORABLE": "현재 공개 요약만으로 산정할 수 없는 항목입니다.",
         "REVIEW": "저장된 최신 분석에서 자동 산정을 보류한 항목입니다.",
+        "OUT_OF_SCOPE": "정량 합계에서 제외하고 별도로 보존한 평가 항목입니다. 이 항목의 점수는 산정하지 않았습니다.",
     }
     criteria: list[CriterionEstimate] = []
     for index, item in enumerate(snapshot.items, start=1):
         label = _PUBLIC_CRITERION_LABEL_BY_DISPLAY_CODE[item.display_code]
-        if item.display_code == "OTHER":
+        if item.status == "OUT_OF_SCOPE":
+            label = f"별도 평가 항목 {index}"
+        elif item.display_code == "OTHER":
             label = f"{label} {index}"
         criteria.append(
             CriterionEstimate(
                 criterion_id=f"PUBLIC-CRITERION-{index:03d}",
-                category="PUBLIC_QUANTITATIVE",
+                category=("PUBLIC_OUT_OF_SCOPE" if item.status == "OUT_OF_SCOPE" else "PUBLIC_QUANTITATIVE"),
                 label=label,
                 max_points=item.max_points,
                 formula="공개 화면에서는 세부 원문 산식을 제외합니다.",
@@ -4772,6 +4806,7 @@ def _public_quantitative_projection(
             upper_points=result.upper_points,
             evidence_coverage_pct=result.evidence_coverage_pct,
             overall_status=result.overall_status,
+            out_of_scope_points=result.out_of_scope_points,
         )
         if snapshot is not None
         else None
@@ -4908,10 +4943,13 @@ def public_quantitative_snapshot_projection(
             basis.get("evidence_coverage_pct"), minimum=0, maximum=100
         )
         confidence = public_number(score.confidence, minimum=0, maximum=1)
+        out_of_scope = public_number(basis.get("out_of_scope_points"), minimum=0)
     except ValueError:
         return None
 
     if coverage is None or confidence is None:
+        return None
+    if "out_of_scope_points" in basis and out_of_scope is None:
         return None
     if any(
         number is not None and _canonical_public_points(number) != number
@@ -4923,10 +4961,9 @@ def public_quantitative_snapshot_projection(
             confirmed,
             coverage,
             confidence,
+            out_of_scope,
         )
     ):
-        return None
-    if total_max is not None and total_max <= 0:
         return None
     if (lower is None) != (upper is None):
         return None
@@ -5054,17 +5091,34 @@ def public_quantitative_snapshot_projection(
             upper_points=upper,
             evidence_coverage_pct=coverage,
             overall_status=score.status,
+            out_of_scope_points=out_of_scope,
         )
         if restored_criteria is None:
             return None
         public_criteria = restored_criteria
+        # The bounded public rows preserve excluded weights even for a stored
+        # snapshot without the additive aggregate field. Never infer these
+        # weights from private text or count them as a quantitative score.
+        out_of_scope = _sum_public_points(
+            item.max_points for item in public_criteria if item.status == "OUT_OF_SCOPE"
+        )
+    elif out_of_scope not in {None, 0}:
+        return None
+    if total_max == 0 and (
+        not public_criteria
+        or not out_of_scope
+        or confidence != 0
+    ):
+        return None
 
     activation_reasons = (
         []
         if activation_status == "AUTO_ACTIVE"
         else ["PUBLIC_ANALYSIS_REVIEW_REQUIRED"]
     )
-    if estimated is not None:
+    if total_max == 0:
+        opinion = "저장된 최신 분석에 정량 산정 대상이 없어 점수를 확정하지 않았습니다. 별도 평가 항목을 확인하세요."
+    elif estimated is not None:
         opinion = "저장된 최신 분석에서 확정 가능한 정량 합계를 계산했습니다."
     elif lower is not None:
         opinion = (
@@ -5090,6 +5144,7 @@ def public_quantitative_snapshot_projection(
             lower_points=lower,
             upper_points=upper,
             unscorable_points=None,
+            out_of_scope_points=out_of_scope or 0,
             evidence_coverage_pct=coverage,
             readiness_pct=readiness,
             readiness_band=score.band,

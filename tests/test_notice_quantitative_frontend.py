@@ -8,6 +8,7 @@ HARNESS = DASHBOARD_HARNESS.replace(
     "globalThis.ui={state,els,normalizeDashboard,",
     """globalThis.ui={state,els,normalizeDashboard,
  noticeQuantitativeSummary,renderNoticeQuantitativeSummary,noticeQuantitativeAction,
+ renderQuantitativeEstimate,renderQuantitativeEstimateRow,
  loadQuantitativeEstimate,invalidateQuantitativeEstimate,handleNoticeActivation,
  noticeListActions,renderNoticeCard,renderNoticeRow,""",
 ) + r'''
@@ -152,4 +153,65 @@ u.handleNoticeActivation(event);u.handleNoticeActivation(event);
 assert.equal(requests.length,1);assert.equal(prevented,2);assert.equal(stopped,2);
 requests[0].resolve(data);await tick();
 assert.equal(u.state.quantitativeEstimates[key].status,'ready');
+''')
+
+
+def test_nonquantitative_rows_stay_separate_in_detail_and_do_not_mask_missing_facts():
+    _run(r'''
+const separate={label:'SYN <proposal>',status:'OUT_OF_SCOPE',max_points:60,
+ lower_points:0,upper_points:60,rationale:'SYN proposal assessed separately',
+ rule_floor_points:5,rule_base_points:10};
+const objective={label:'SYN credit',status:'UNSCORABLE',max_points:40,
+ lower_points:0,upper_points:40,rationale:'SYN missing current credit evidence'};
+const mixed={...data,overall_status:'UNSCORABLE',total_max_points:40,
+ lower_points:0,upper_points:40,out_of_scope_points:60,criteria:[separate,objective]};
+setData(mixed);
+assert.equal(u.noticeQuantitativeSummary(qnotice).value,'0 / 40점');
+assert.match(u.noticeQuantitativeSummary(qnotice).reason,/missing current credit evidence/);
+assert.doesNotMatch(u.noticeQuantitativeSummary(qnotice).reason,/proposal assessed separately/);
+u.renderQuantitativeEstimate(mixed);
+assert.match(u.els.scoreOverview.innerHTML,/0–40 \/ 40/);
+assert.doesNotMatch(u.els.scoreOverview.innerHTML,/100/);
+const rows=u.els.quantTableBody.innerHTML;
+assert.ok(rows.indexOf('SYN credit')<rows.indexOf('quant-scope-divider'));
+assert.ok(rows.indexOf('quant-scope-divider')<rows.indexOf('SYN &lt;proposal&gt;'));
+assert.match(rows,/정량 합산 제외/);
+assert.match(u.els.quantSeparationNote.textContent,/정량 외 배점 60점/);
+const row=u.renderQuantitativeEstimateRow(separate);
+assert.match(row,/정량 외/);
+assert.doesNotMatch(row,/0–60점|조건부 하한|가감 전 기본/);
+assert.equal(requests.length,0,'scope display does not request extraction');
+''')
+
+
+def test_separate_points_note_survives_public_summary_and_clears_on_next_notice():
+    _run(r'''
+u.renderQuantitativeEstimate({...data,criteria:[],out_of_scope_points:60,
+ ruleset_version:'public-quantitative-summary-v1'});
+assert.match(u.els.quantSeparationNote.textContent,/정량 외 배점 60점/);
+assert.doesNotMatch(u.els.quantTableBody.innerHTML,/quant-scope-divider/);
+u.renderQuantitativeEstimate({...data,out_of_scope_points:0});
+assert.doesNotMatch(u.els.quantSeparationNote.textContent,/정량 외 배점/);
+u.renderQuantitativeEstimate({...data,rule_source_status:'MISSING',
+ source_validation_status:'MISSING',activation_status:'REVIEW_REQUIRED',
+ total_max_points:null,lower_points:null,upper_points:null,criteria:[]});
+assert.match(u.els.scoreOverview.innerHTML,/미산정/);
+assert.match(u.els.quantSourceStatus.textContent,/배점표 미확보/);
+''')
+
+
+def test_only_separate_items_never_display_confirmed_zero():
+    _run(r'''
+const onlySeparate={...data,total_max_points:0,lower_points:0,upper_points:0,
+ overall_status:'UNSCORABLE',out_of_scope_points:60,readiness_pct:null,readiness_band:'GRAY',
+ criteria:[{label:'SYN proposal',status:'OUT_OF_SCOPE',max_points:60,lower_points:0,upper_points:60}]};
+setData(onlySeparate);
+assert.equal(u.noticeQuantitativeSummary(qnotice).value,'미산정');
+u.renderQuantitativeEstimate(onlySeparate);
+assert.match(u.els.scoreOverview.innerHTML,/미산정/);
+assert.doesNotMatch(u.els.scoreOverview.innerHTML,/0 \/ 0/);
+assert.match(u.els.quantSourceStatus.textContent,/산정 불가/);
+assert.doesNotMatch(u.els.quantSourceStatus.textContent,/일부 항목 미산정/);
+assert.match(u.els.quantTableBody.innerHTML,/자동 산정 가능한 항목 없음/);
+assert.match(u.els.quantTableBody.innerHTML,/정량 합산 제외/);
 ''')

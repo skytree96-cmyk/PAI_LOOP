@@ -2496,6 +2496,7 @@ def run_analysis_pipeline(
                             "activation_status": quantitative.activation_status,
                             "activation_reasons": quantitative.activation_reasons,
                             "total_max_points": quantitative.total_max_points,
+                            "out_of_scope_points": quantitative.out_of_scope_points,
                             "confirmed_points": quantitative.confirmed_points,
                             "evidence_coverage_pct": quantitative.evidence_coverage_pct,
                             "profile_output_sha256": _digest(

@@ -426,6 +426,7 @@ def test_pipeline_merges_sources_and_persists_full_immutable_snapshot(db_session
     assert scores["quantitative.total"].lower_value == 9.7
     assert scores["quantitative.total"].upper_value == 20
     assert scores["quantitative.total"].basis_json["confirmed_points"] == 0
+    assert scores["quantitative.total"].basis_json["out_of_scope_points"] == 0
     public_criteria = scores["quantitative.total"].basis_json["public_criteria"]
     assert public_criteria["schema_version"] == (
         "public-quantitative-criteria-1.0.0"

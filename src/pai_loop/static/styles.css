@@ -3496,6 +3496,8 @@ svg {
 .quant-status.is-estimated,
 .quant-status.is-review { color: #936411; background: var(--amber-pale); }
 .quant-status.is-unscorable { color: var(--red); background: var(--red-pale); }
+.quant-status.is-out_of_scope { color: #61758a; background: #eef2f6; }
+.quant-table .quant-scope-divider th { white-space: normal; text-align: left; }
 
 .quant-separation-note {
   margin-bottom: 12px;
@@ -3513,6 +3515,8 @@ svg {
   margin-top: 12px;
 }
 
+.quant-opinion-card .card-title-row { flex-wrap: wrap; }
+
 .quant-source-status {
   padding: 4px 8px;
   border-radius: 999px;
@@ -3520,7 +3524,9 @@ svg {
   background: var(--surface-soft);
   font-size: var(--fs-2xs);
   font-weight: 800;
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .quant-source-status.is-available { color: var(--green); background: var(--green-pale); }
