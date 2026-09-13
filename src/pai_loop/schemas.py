@@ -335,6 +335,8 @@ class AwardOpeningCompanyOut(ApiModel):
 
 
 class AnnualAwardTableRowOut(ApiModel):
+    # Ordinal grouping within this response only; older payloads may omit it.
+    result_group_key: str | None = None
     year: int | None
     project_title: str
     agency: str
