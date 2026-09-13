@@ -55,7 +55,7 @@
       "file": "workflows/pai-loop-14-award-history-automation.json",
       "publish": true,
       "contractVersion": "award-refresh-automation-1.0",
-      "safetyContract": "award-only-one-notice-zero-ai-v1"
+      "safetyContract": "bounded-batch-zero-ai-v2"
     }
   }
 }

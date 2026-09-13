@@ -106,8 +106,8 @@ def test_award_client_uses_bounded_windows_keyword_and_current_array_shape() -> 
         )
     assert len(requests) == 2
     assert requests[0].url.params["inqryBgnDt"] == "202501010000"
-    assert requests[0].url.params["inqryEndDt"] == "202501302359"
-    assert requests[1].url.params["inqryBgnDt"] == "202501310000"
+    assert requests[0].url.params["inqryEndDt"] == "202501282359"
+    assert requests[1].url.params["inqryBgnDt"] == "202501290000"
     assert len(items) == 2
     assert all(item["winner_name"] == "합성 수주기관" for item in items)
 
@@ -172,6 +172,7 @@ def test_award_client_retries_nonstandard_large_window_in_seven_day_slices() -> 
             start=date(2025, 1, 1),
             end=date(2025, 1, 30),
             keyword="승진후보자",
+            max_window_days=30,
         )
     )
     client.close()

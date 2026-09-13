@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 export const awardWorkflowKey = "pai-loop-14-award-history-automation";
 export const awardContractVersion = "award-refresh-automation-1.0";
-export const awardSafetyContract = "award-only-one-notice-zero-ai-v1";
+export const awardSafetyContract = "bounded-batch-zero-ai-v2";
 export const awardHttpNodeNames = new Set(["Enroll New and Stale Award Notices", "Refresh One Queued Award Notice"]);
 
 export function awardRuntime(environment) {
@@ -40,7 +40,7 @@ export function validateAwardAggregate(input, phase) {
     if (body.status !== 'PLANNED' || !count(body.enrolled) || !count(body.requeued)) fail();
   } else {
     if (!['COMPLETED', 'PARTIAL', 'FAILED', 'IDLE', 'BUSY', 'DAILY_BUDGET_REACHED'].includes(body.status)) fail();
-    if (![0, 1].includes(body.attempted) || !count(body.api_calls) || !count(body.records)) fail();
+    if (!count(body.attempted) || body.attempted > 10 || !count(body.api_calls) || !count(body.records)) fail();
     for (const field of ['notice_key', 'job_id']) {
       if (body[field] !== null && (typeof body[field] !== 'string' || !body[field] || body[field].length > 160 || /[\u0000-\u001f\u007f]/.test(body[field]))) fail();
     }
@@ -58,7 +58,7 @@ export function awardPlanDecision(input, runtime, validate) {
     runtime,
     summary,
     canRun: runtime.enabled === true && summary.eligible > 0 && summary.running === 0
-      && summary.api_calls_24h + summary.budget_reserved_24h + 150 <= 700,
+      && summary.api_calls_24h + summary.budget_reserved_24h + 50 <= 1000,
   } }];
 }
 
@@ -100,7 +100,7 @@ export function awardHttpParameters(phase) {
     // n8n's raw-body branch forces useStream=true even for JSON responses.
     // Native JSON mode preserves the parsed aggregate response contract.
     sendBody: true, contentType: "json", specifyBody: "json",
-    jsonBody: phase === "plan" ? '{"refresh_after_days":30}' : '{"max_notices":1,"daily_api_budget":700,"per_notice_api_budget":150}',
+    jsonBody: phase === "plan" ? '{"refresh_after_days":30}' : '{"max_notices":10,"daily_api_budget":1000,"per_notice_api_budget":150}',
     options: { timeout: 520000,
       response: { response: { fullResponse: true, neverError: false, responseFormat: "json" } },
       redirect: { redirect: { followRedirects: false } },

@@ -481,7 +481,10 @@ class PpsAwardClient(PpsClient):
         keyword: str,
         operation_path: str = DEFAULT_AWARD_OPERATION,
         rows: int = 100,
-        max_window_days: int = 30,
+        # The same PPSSrch operation used by company-award search enforces a
+        # calendar-month range. A 30-day February interval can return code 07;
+        # 28 inclusive days cover every month safely without needless fallback.
+        max_window_days: int = 28,
         max_pages_per_window: int = 1,
         fallback_window_days: int = 7,
         continue_on_window_error: bool = False,

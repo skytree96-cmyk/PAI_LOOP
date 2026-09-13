@@ -30,7 +30,7 @@ def _app(engine, monkeypatch):
     app.state.session_factory = build_session_factory(engine)
     app.state.settings = Settings(api_key=HEADERS["X-PAI-LOOP-API-KEY"], pps_api_key="SYN-no-network-key")
     app.include_router(module.router)
-    monkeypatch.setattr(module, "_source_kind", lambda notice: "MANUAL")
+    monkeypatch.setattr(module, "_source_kind", lambda notice: "PPS")
     # Remove the single-process fallback: these tests must prove that the real
     # PostgreSQL transaction lock alone arbitrates different worker sessions.
     monkeypatch.setattr(module, "_PROCESS_LOCK", nullcontext())

@@ -11,7 +11,7 @@ assertAwardAutomationWorkflow(workflow, config);
 const nodes = new Map(workflow.nodes.map(node => [node.name, node]));
 for (const [name, expected] of [
   ["Enroll New and Stale Award Notices", { refresh_after_days: 30 }],
-  ["Refresh One Queued Award Notice", { max_notices: 1, daily_api_budget: 700, per_notice_api_budget: 150 }],
+  ["Refresh One Queued Award Notice", { max_notices: 10, daily_api_budget: 1000, per_notice_api_budget: 150 }],
 ]) {
   const parameters = nodes.get(name).parameters;
   assert.equal(parameters.contentType, "json", "raw-body mode returns an unresolved n8n response stream");
@@ -68,10 +68,11 @@ try {
 } finally {
   unresolvedResponse.destroy();
 }
-for (const value of [{ ...plan, eligible: 0 }, { ...plan, running: 1 }, { ...plan, api_calls_24h: 551 }, { ...plan, budget_reserved_24h: 551 }, { ...plan, api_calls_24h: 500, budget_reserved_24h: 51 }]) {
+for (const value of [{ ...plan, eligible: 0 }, { ...plan, running: 1 }, { ...plan, api_calls_24h: 951 }, { ...plan, budget_reserved_24h: 951 }, { ...plan, api_calls_24h: 900, budget_reserved_24h: 51 }]) {
   assert.equal(decide(value).canRun, false);
 }
-assert.equal(decide({ ...plan, api_calls_24h: 500, budget_reserved_24h: 50 }).canRun, true);
+assert.equal(decide({ ...plan, api_calls_24h: 950 }).canRun, true, "exactly fifty remaining requests can start the adaptive batch");
+assert.equal(decide({ ...plan, api_calls_24h: 900, budget_reserved_24h: 50 }).canRun, true);
 assert.equal(code("Record Award Queue Waiting", decide({ ...plan, eligible: 0 })).status, "WAITING");
 assert.equal(code("Record Award Automation Disabled").ai_calls, 0);
 for (const status of ["COMPLETED", "PARTIAL", "IDLE", "BUSY", "DAILY_BUDGET_REACHED"]) {
@@ -81,8 +82,14 @@ assert.throws(() => code("Validate Award Run Aggregate", { ...fixture, status: "
 const privateValue = "SYN-PRIVATE-DO-NOT-EMIT";
 const sanitized = code("Validate Award Run Aggregate", { ...fixture, status: "COMPLETED", attempted: 1, notice_key: privateValue, job_id: "SYN-job", api_calls: 4, records: 8 });
 assert(!JSON.stringify(sanitized).includes(privateValue));
+const batch = code("Validate Award Run Aggregate", { ...fixture, status: "COMPLETED", total: 30,
+  complete: 11, pending: 18, eligible: 18, attempted: 10, notice_key: privateValue, job_id: "SYN-last-job",
+  api_calls: 430, api_calls_24h: 430, records: 20 });
+assert.equal(batch.attempted, 10); assert.equal(batch.api_calls, 430); assert.equal(batch.records, 20);
+assert(!JSON.stringify(batch).includes(privateValue)); assert(!("job_id" in batch));
 const invalid = [null, [], true, { ...fixture, raw_payload: privateValue }, { ...fixture, ai_calls: 1 },
-  { ...fixture, status: privateValue }, { ...fixture, attempted: 2 }, { ...fixture, attempted: true },
+  { ...fixture, status: privateValue }, { ...fixture, attempted: 11 }, { ...fixture, attempted: true },
+  { ...fixture, attempted: -1 }, { ...fixture, attempted: 1.5 }, { ...fixture, attempted: "10" },
   { ...fixture, notice_key: { raw: privateValue } }, { ...fixture, job_id: "" }, { ...fixture, job_id: "SYN\nsecret" },
   { ...fixture, schema_version: "wrong" }];
 for (const field of ["total", "eligible", "api_calls_24h", "budget_reserved_24h", "api_calls", "records"]) {
@@ -100,7 +107,8 @@ for (const mutate of [
   item => { item.connections["Load Offline Award Fixture"].main[0][0].node = "Refresh One Queued Award Notice"; },
   item => { item.nodes.find(node => node.name === "Load Offline Award Fixture").parameters.jsCode += "\nfetch('https://syn.example');"; },
   item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").retryOnFail = true; },
-  item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").parameters.jsonBody = '{"max_notices":2}'; },
+  item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").parameters.jsonBody = '{"max_notices":11,"daily_api_budget":1000,"per_notice_api_budget":150}'; },
+  item => { item.nodes.find(node => node.name === "Refresh One Queued Award Notice").parameters.jsonBody = '{"max_notices":10,"daily_api_budget":1001,"per_notice_api_budget":150}'; },
   item => {
     const parameters = item.nodes.find(node => node.name === "Enroll New and Stale Award Notices").parameters;
     parameters.contentType = "raw"; parameters.rawContentType = "application/json";
