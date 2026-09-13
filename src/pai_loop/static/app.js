@@ -64,6 +64,9 @@
     manualAnalysisRequests: new Map(),
     accountSession: { enabled: false, authenticated: false, status: "idle", account: null, csrfToken: "", capabilities: {} },
     accountEpoch: 0,
+    teamsFollowups: { enabled: false, connected: false, deliveryEnabled: null, loaded: false, loading: false,
+      items: [], pending: new Set(), linking: false, error: "", message: "", botChatUrl: "",
+      linkCode: "", linkExpiresAt: "", pendingNoticeKey: "", trigger: null, sequence: 0 },
     ppsDiscovery: {
       query: "",
       fromDate: "",
@@ -227,6 +230,7 @@
     setLayout(state.layout);
     document.body.hidden = false;
     loadApplicationData();
+    void loadTeamsFollowups();
   }
 
   let applicationLocked = false;
@@ -266,6 +270,7 @@
 
   function cacheElements() {
     const ids = [
+      "teamsFollowsButton", "teamsFollowsSummary", "teamsFollowsDialog", "teamsFollowsClose", "teamsFollowsRefresh", "teamsFollowsStatus", "teamsFollowsError", "teamsFollowsDeliveryNotice", "teamsFollowsList", "teamsFollowsEmpty", "teamsLinkButton", "teamsBotChatLink", "teamsLinkCodePanel", "teamsLinkCommand", "teamsLinkExpiry", "teamsLinkCopy", "teamsPendingFollow", "teamsPendingFollowLabel", "teamsPendingFollowButton", "detailFollowButton",
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
       "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
@@ -451,6 +456,7 @@
   }
 
   function bindEvents() {
+    bindTeamsFollowupEvents();
     els.paiBotTeamsButton.addEventListener("click", openPaiBotTeams);
     els.refreshButton.addEventListener("click", refreshCurrentView);
     els.retryApiButton.addEventListener("click", () => loadApplicationData({ forceApi: true }));
@@ -1208,6 +1214,7 @@
 
   function clearAccountPrivateState() {
     state.accountEpoch += 1;
+    clearTeamsFollowups();
     state.dashboard = {};
     state.dashboardStatus = "idle";
     state.dashboardRequestSequence += 1;
@@ -4688,6 +4695,7 @@
           </button>
           ${renderNoticeQuantitativeSummary(notice)}
           ${manualAnalysisAction(notice, "table")}
+          ${teamsFollowAction(notice)}
         </td>
         <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}<small>${escapeHtml(deadline.date)} ${escapeHtml(deadline.time || "시각 미확인")} KST</small></span></td>
         <td><span class="budget-cell">${escapeHtml(formatBudget(notice.budget))}</span></td>
@@ -4730,6 +4738,7 @@
         <footer class="notice-card__foot">
           <span class="notice-card__axes">${analysisRecommendationPill(notice)}${operatorDecisionIndicator(notice)}</span>
           <span class="notice-card__actions">
+            ${teamsFollowAction(notice)}
             ${manualAnalysisAction(notice, "card")}
             ${noticeListActions(notice, resultEntry)}
           </span>
@@ -5279,6 +5288,13 @@
   }
 
   function handleNoticeActivation(event) {
+    const followButton = event.target.closest("[data-teams-follow]");
+    if (followButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void toggleTeamsFollow(followButton.dataset.teamsFollow, followButton);
+      return;
+    }
     const quantitativeButton = event.target.closest("[data-load-quantitative]");
     if (quantitativeButton) {
       event.preventDefault();
@@ -5581,6 +5597,7 @@
   }
 
   function renderDetail(notice) {
+    renderDetailFollowAction(notice);
     // Previous cancelled-copy expression: cancelled ? "과거 분석 참고".
     const deadline = deadlineInfo(notice.deadline);
     const requirements = eligibilityRequirementsForDisplay(notice);
@@ -8449,6 +8466,307 @@
     date.setDate(date.getDate() + days);
     date.setHours(hour, 0, 0, 0);
     return date.toISOString();
+  }
+
+  function bindTeamsFollowupEvents() {
+    els.teamsFollowsButton.addEventListener("click", () => openTeamsFollowups());
+    els.teamsFollowsClose.addEventListener("click", () => els.teamsFollowsDialog.close());
+    els.teamsFollowsDialog.addEventListener("click", (event) => {
+      if (event.target === els.teamsFollowsDialog) els.teamsFollowsDialog.close();
+    });
+    els.teamsFollowsDialog.addEventListener("close", () => {
+      const trigger = state.teamsFollowups.trigger;
+      state.teamsFollowups.trigger = null;
+      clearTeamsLinkCode();
+      if (trigger?.isConnected) trigger.focus();
+    });
+    els.teamsFollowsRefresh.addEventListener("click", () => void loadTeamsFollowups());
+    els.teamsLinkButton.addEventListener("click", () => void createTeamsLinkCode());
+    els.teamsLinkCopy.addEventListener("click", () => void copyTeamsLinkCommand());
+    els.teamsPendingFollowButton.addEventListener("click", () => {
+      const key = state.teamsFollowups.pendingNoticeKey;
+      if (key) void toggleTeamsFollow(key, els.teamsPendingFollowButton);
+    });
+    els.detailFollowButton.addEventListener("click", () => {
+      const key = state.selectedNotice?.noticeKey;
+      if (key) void toggleTeamsFollow(key, els.detailFollowButton);
+    });
+    els.teamsFollowsList.addEventListener("click", (event) => {
+      const remove = event.target.closest("[data-teams-follow]");
+      if (remove) { void toggleTeamsFollow(remove.dataset.teamsFollow, remove); return; }
+      const open = event.target.closest("[data-teams-open-notice]");
+      if (!open) return;
+      els.teamsFollowsDialog.close();
+      void openDetail(open.dataset.teamsOpenNotice, els.teamsFollowsButton);
+    });
+  }
+
+  function clearTeamsLinkCode() {
+    state.teamsFollowups.linkCode = "";
+    state.teamsFollowups.linkExpiresAt = "";
+    if (els.teamsLinkCommand) els.teamsLinkCommand.value = "";
+    if (els.teamsLinkExpiry) els.teamsLinkExpiry.textContent = "";
+    if (els.teamsLinkCodePanel) els.teamsLinkCodePanel.hidden = true;
+  }
+
+  function clearTeamsFollowups() {
+    clearTeamsLinkCode();
+    state.teamsFollowups = { enabled: false, connected: false, deliveryEnabled: null, loaded: false, loading: false,
+      items: [], pending: new Set(), linking: false, error: "", message: "", botChatUrl: "",
+      linkCode: "", linkExpiresAt: "", pendingNoticeKey: "", trigger: null,
+      sequence: state.teamsFollowups.sequence + 1 };
+    if (els.teamsFollowsDialog?.open) els.teamsFollowsDialog.close();
+    if (els.teamsFollowsList) els.teamsFollowsList.replaceChildren();
+    renderTeamsFollowups();
+  }
+
+  async function openTeamsFollowups(noticeKey = "", trigger = null) {
+    if (!state.accountSession.authenticated) { openAccountDialog(); return; }
+    const followups = state.teamsFollowups;
+    followups.pendingNoticeKey = noticeKey;
+    followups.trigger = trigger || document.activeElement;
+    renderTeamsFollowups();
+    if (!els.teamsFollowsDialog.open) els.teamsFollowsDialog.showModal();
+    await loadTeamsFollowups();
+  }
+
+  function teamsFollowItem(noticeKey) {
+    return state.teamsFollowups.items.find((item) => item.active !== false
+      && (item.notice_key === noticeKey || item.notice_id === noticeKey));
+  }
+
+  function teamsFollowButtonState(notice) {
+    const followups = state.teamsFollowups;
+    const following = Boolean(teamsFollowItem(notice.noticeKey));
+    const pending = followups.pending.has(notice.noticeKey);
+    const inactive = !following && noticeLifecycleStatus(notice) !== "OPEN";
+    return { following, disabled: pending || inactive || followups.loading,
+      label: pending ? "처리 중…" : following ? "★ 관심 등록됨" : "☆ 관심 등록",
+      title: inactive ? "진행 중인 공고만 관심 등록할 수 있습니다."
+        : following ? `${notice.title} 관심 해제` : `${notice.title} 관심 등록 · Teams 개인 알림` };
+  }
+
+  function teamsFollowAction(notice) {
+    if (!notice?.noticeKey || state.source === "demo") return "";
+    const button = teamsFollowButtonState(notice);
+    return `<button class="teams-follow-button" type="button" data-teams-follow="${escapeAttribute(notice.noticeKey)}" aria-pressed="${button.following}" aria-label="${escapeAttribute(button.title)}" title="${escapeAttribute(button.title)}" ${button.disabled ? "disabled" : ""}>${button.label}</button>`;
+  }
+
+  function renderDetailFollowAction(notice) {
+    if (!els.detailFollowButton) return;
+    els.detailFollowButton.hidden = !notice || state.source === "demo";
+    if (!notice) return;
+    const button = teamsFollowButtonState(notice);
+    els.detailFollowButton.textContent = button.label;
+    els.detailFollowButton.disabled = button.disabled;
+    els.detailFollowButton.title = button.title;
+    els.detailFollowButton.setAttribute("aria-pressed", String(button.following));
+    els.detailFollowButton.setAttribute("aria-label", button.title);
+  }
+
+  function refreshTeamsFollowButtons() {
+    // Preserve the user's focus, drawer tab and list scroll during requests.
+    document.querySelectorAll("[data-teams-follow]").forEach((button) => {
+      const key = button.dataset.teamsFollow;
+      const notice = state.notices.find((item) => item.noticeKey === key);
+      const value = notice ? teamsFollowButtonState(notice) : null;
+      button.disabled = value ? value.disabled : state.teamsFollowups.pending.has(key) || state.teamsFollowups.loading;
+      button.setAttribute("aria-pressed", String(Boolean(teamsFollowItem(key))));
+      if (value && !button.closest("#teamsFollowsList")) {
+        button.textContent = value.label;
+        button.title = value.title;
+        button.setAttribute("aria-label", value.title);
+      }
+    });
+    renderDetailFollowAction(state.selectedNotice);
+  }
+
+  async function loadTeamsFollowups() {
+    if (!state.accountSession.authenticated || state.teamsFollowups.loading) return;
+    const followups = state.teamsFollowups;
+    const epoch = state.accountEpoch;
+    const sequence = ++followups.sequence;
+    const isCurrent = () => state.teamsFollowups === followups && epoch === state.accountEpoch
+      && followups.sequence === sequence;
+    followups.loading = true;
+    followups.error = "";
+    followups.message = "";
+    renderTeamsFollowups();
+    refreshTeamsFollowButtons();
+    try {
+      const connection = await apiRequest("/teams/connection");
+      if (!isCurrent()) return;
+      if (typeof connection?.enabled !== "boolean" || typeof connection?.connected !== "boolean") {
+        throw new Error("개인 알림 연결 상태를 확인할 수 없습니다.");
+      }
+      followups.enabled = connection.enabled;
+      followups.connected = connection.connected;
+      followups.botChatUrl = safePaiBotTeamsUrl(connection.bot_chat_url);
+      if (followups.connected) {
+        clearTeamsLinkCode();
+        const payload = await apiRequest("/teams/follows");
+        if (!isCurrent()) return;
+        if (!Array.isArray(payload?.items)) throw new Error("관심 공고 목록을 확인할 수 없습니다.");
+        followups.items = payload.items.filter((item) => item.active !== false && (item.notice_key || item.notice_id));
+        followups.deliveryEnabled = typeof payload.enabled === "boolean" ? payload.enabled : null;
+      } else followups.items = [];
+      followups.loaded = true;
+    } catch (error) {
+      if (!isCurrent()) return;
+      followups.error = humanizeError(error);
+      followups.loaded = false;
+    } finally {
+      if (isCurrent()) {
+        followups.loading = false;
+        renderTeamsFollowups();
+        refreshTeamsFollowButtons();
+      }
+    }
+  }
+
+  async function createTeamsLinkCode() {
+    const followups = state.teamsFollowups;
+    const headers = accountMutationHeaders();
+    if (!headers || followups.linking || !followups.enabled) return;
+    const epoch = state.accountEpoch;
+    followups.linking = true;
+    followups.error = "";
+    clearTeamsLinkCode();
+    renderTeamsFollowups();
+    try {
+      const payload = await apiRequest("/teams/link-code", { method: "POST", headers });
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      if (!payload?.code || !payload?.expires_at) throw new Error("개인 연결 코드를 확인할 수 없습니다.");
+      // Pairing codes stay in memory and the visible form only, never storage or URLs.
+      if (els.teamsFollowsDialog?.open) {
+        followups.linkCode = stringValue(payload.code);
+        followups.linkExpiresAt = stringValue(payload.expires_at);
+      }
+      followups.botChatUrl = safePaiBotTeamsUrl(payload.bot_chat_url);
+    } catch (error) {
+      if (epoch === state.accountEpoch && state.teamsFollowups === followups) followups.error = humanizeError(error);
+    } finally {
+      if (epoch === state.accountEpoch && state.teamsFollowups === followups) {
+        followups.linking = false;
+        renderTeamsFollowups();
+      }
+    }
+  }
+
+  async function copyTeamsLinkCommand() {
+    const followups = state.teamsFollowups;
+    if (!followups.linkCode) return;
+    if (Date.parse(followups.linkExpiresAt) <= Date.now()) {
+      clearTeamsLinkCode();
+      followups.error = "연결 코드가 만료되었습니다. 새 코드를 만들어 주세요.";
+      renderTeamsFollowups();
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(`연결 ${followups.linkCode}`);
+      if (state.teamsFollowups === followups) showToast("연결 명령 복사", "PAI 봇 개인 채팅에 붙여넣어 보내세요.", "success");
+    } catch (_) {
+      els.teamsLinkCommand.focus();
+      els.teamsLinkCommand.select();
+      followups.error = "자동 복사를 사용할 수 없습니다. 선택된 명령을 직접 복사해 주세요.";
+      renderTeamsFollowups();
+    }
+  }
+
+  async function toggleTeamsFollow(noticeKey, trigger = null) {
+    const followups = state.teamsFollowups;
+    const headers = accountMutationHeaders();
+    if (!noticeKey || followups.loading || followups.pending.has(noticeKey)) return;
+    if (!headers) { openAccountDialog(); return; }
+    if (!followups.loaded || !followups.connected) { await openTeamsFollowups(noticeKey, trigger); return; }
+    const existing = teamsFollowItem(noticeKey);
+    const epoch = state.accountEpoch;
+    followups.pending.add(noticeKey);
+    followups.error = "";
+    followups.message = "";
+    refreshTeamsFollowButtons();
+    renderTeamsFollowups();
+    try {
+      const payload = await apiRequest(`/teams/follows/${encodeURIComponent(noticeKey)}`, {
+        method: existing ? "DELETE" : "POST", headers,
+      });
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      if (!existing && (!payload || !(payload.notice_key || payload.notice_id))) {
+        throw new Error("관심 등록 결과를 확인할 수 없습니다. 새로고침으로 등록 상태를 확인해 주세요.");
+      }
+      followups.items = followups.items.filter((item) => item !== existing
+        && item.notice_key !== noticeKey && item.notice_id !== noticeKey);
+      if (!existing) followups.items.push(payload);
+      followups.pendingNoticeKey = "";
+      followups.message = existing ? "관심 해제 완료 · 아직 전송되지 않은 예정 알림이 취소됩니다."
+        : "관심 등록 완료 · 관심 공고에서 개인 알림 일정과 전송 상태를 확인할 수 있습니다.";
+      showToast(existing ? "관심 공고 해제" : "관심 공고 등록", followups.message, "success");
+    } catch (error) {
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      followups.error = humanizeError(error);
+      showToast("관심 공고 처리 실패", followups.error, "error");
+      // A revoked connection and an inactive notice both return 409: re-read the
+      // server state instead of treating every conflict as a successful follow.
+      if (error?.status === 409) await loadTeamsFollowups();
+    } finally {
+      if (epoch === state.accountEpoch && state.teamsFollowups === followups) {
+        followups.pending.delete(noticeKey);
+        renderTeamsFollowups();
+        refreshTeamsFollowButtons();
+      }
+    }
+  }
+
+  function renderTeamsFollowupItem(item) {
+    const key = stringValue(item.notice_key || item.notice_id);
+    const events = { REGISTERED: "등록 시", D_MINUS_5: "마감 5일 전", DEADLINE_DAY: "마감일 오전" };
+    const statuses = { PENDING: "예약됨", CLAIMED: "전송 준비 중", SENDING: "전송 처리 중", SENT: "전송됨", RETRY: "재시도 대기", FAILED: "전송 실패", SKIPPED: "건너뜀", CANCELLED: "취소됨", UNKNOWN: "전송 결과 확인 필요" };
+    const deliveries = arrayValue(item.deliveries).map((delivery) => {
+      const label = events[delivery.event_kind] || "공고 알림";
+      const status = statuses[delivery.status] || "상태 확인 필요";
+      const date = delivery.sent_at || delivery.scheduled_at;
+      return `<li><span>${escapeHtml(label)}</span><span>${escapeHtml(status)}${date ? ` · ${escapeHtml(formatKstDateTime(date))}` : ""}</span></li>`;
+    }).join("");
+    return `<li class="teams-follow-item"><div class="teams-follow-item__heading"><strong>${escapeHtml(stringValue(item.notice_title, key))}</strong><button class="teams-follow-button" type="button" data-teams-follow="${escapeAttribute(key)}" aria-label="${escapeAttribute(stringValue(item.notice_title, key))} 관심 해제" ${state.teamsFollowups.pending.has(key) ? "disabled" : ""}>관심 해제</button></div><p>마감 ${item.deadline ? escapeHtml(formatKstDateTime(item.deadline)) : "미확인"}</p><ul class="teams-delivery-list" aria-label="알림 일정과 전송 상태">${deliveries || "<li>알림 일정 확인 필요</li>"}</ul><button class="text-button" type="button" data-teams-open-notice="${escapeAttribute(key)}">공고 상세 보기</button></li>`;
+  }
+
+  function renderTeamsFollowups() {
+    if (!els.teamsFollowsStatus) return;
+    const followups = state.teamsFollowups;
+    const status = followups.loading ? "개인 연결·관심 공고 확인 중"
+      : !followups.loaded ? "개인 알림 상태 확인 필요"
+      : !followups.enabled ? "Teams 개인 알림 서비스 연결 준비 중"
+      : followups.connected ? `Teams 개인 연결됨 · 관심 공고 ${followups.items.length}건`
+      : "내 Teams 개인 채팅을 연결해 주세요";
+    els.teamsFollowsStatus.textContent = followups.message || status;
+    els.teamsFollowsSummary.textContent = status;
+    els.teamsFollowsError.textContent = followups.error;
+    els.teamsFollowsError.hidden = !followups.error;
+    els.teamsFollowsDeliveryNotice.hidden = !followups.connected || followups.deliveryEnabled === true;
+    els.teamsFollowsDeliveryNotice.textContent = followups.deliveryEnabled === false
+      ? "알림 발송이 아직 활성화되지 않았습니다. 관심 등록은 저장됩니다."
+      : "알림 발송 활성화 상태를 확인할 수 없습니다. 새로고침으로 확인해 주세요.";
+    els.teamsFollowsRefresh.disabled = followups.loading || followups.pending.size > 0;
+    els.teamsLinkButton.hidden = followups.connected;
+    els.teamsLinkButton.disabled = !followups.enabled || followups.linking || followups.loading;
+    els.teamsLinkButton.textContent = followups.linking ? "연결 코드 만드는 중…" : followups.linkCode ? "새 연결 코드 만들기" : "개인 연결 코드 만들기";
+    els.teamsBotChatLink.hidden = !followups.botChatUrl;
+    if (followups.botChatUrl) els.teamsBotChatLink.href = followups.botChatUrl;
+    else els.teamsBotChatLink.removeAttribute("href");
+    els.teamsLinkCodePanel.hidden = !followups.linkCode;
+    els.teamsLinkCommand.value = followups.linkCode ? `연결 ${followups.linkCode}` : "";
+    els.teamsLinkExpiry.textContent = followups.linkExpiresAt ? `코드 유효 시간: ${formatKstDateTime(followups.linkExpiresAt)}까지 · 본인 연결에만 사용하세요.` : "";
+    els.teamsFollowsList.innerHTML = followups.items.map(renderTeamsFollowupItem).join("");
+    els.teamsFollowsEmpty.hidden = followups.items.length > 0;
+    els.teamsFollowsEmpty.textContent = !followups.loaded ? "새로고침으로 개인 관심 공고를 확인해 주세요."
+      : !followups.connected ? "본인 Teams를 연결하면 등록한 관심 공고를 확인할 수 있습니다."
+      : "아직 관심 공고가 없습니다. 공고의 관심 등록 버튼을 눌러 시작하세요.";
+    const pendingKey = followups.pendingNoticeKey;
+    const alreadyFollowed = pendingKey && Boolean(teamsFollowItem(pendingKey));
+    els.teamsPendingFollow.hidden = !pendingKey || alreadyFollowed;
+    const pendingNotice = state.notices.find((item) => item.noticeKey === pendingKey);
+    els.teamsPendingFollowLabel.textContent = pendingKey ? `등록할 공고: ${pendingNotice?.title || pendingKey}` : "";
+    els.teamsPendingFollowButton.disabled = !followups.connected || !followups.loaded || followups.loading || followups.pending.has(pendingKey);
   }
 
   function createDemoData() {

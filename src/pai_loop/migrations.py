@@ -26,6 +26,8 @@ from sqlalchemy.engine import Connection, Engine
 
 from .database import Base, build_engine
 from .account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
+from .teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsSessionLink
+from .followup_models import TeamsFollow, TeamsFollowDelivery
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
@@ -127,6 +129,10 @@ _migration_tables = (
 ACCOUNT_MIGRATION_ID = "20260908_02_department_accounts"
 ACCOUNT_MIGRATION_CHECKSUM = hashlib.sha256(b"department_accounts:v1;account_sessions:v1;account_login_buckets:v1;account_audit:v1;account_bootstrap_previews:v1;user_decisions+bid_outcomes:nullable-account_id-department_id-department_name-department_revision:unique-per-department-revision:v1").hexdigest()
 _account_tables = (DepartmentAccount.__table__, AccountSession.__table__, AccountLoginBucket.__table__, AccountAudit.__table__, AccountBootstrapPreview.__table__)
+TEAMS_FOLLOWUPS_MIGRATION_ID = "20260913_01_teams_personal_followups"
+TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM = hashlib.sha256(
+    b"teams_recipients:v1;teams_session_links:v1;teams_link_codes:v1;teams_follows:v1;teams_follow_deliveries:v1"
+).hexdigest()
 _migrations = (
     (MIGRATION_ID, MIGRATION_CHECKSUM, _migration_tables),
     (
@@ -170,6 +176,10 @@ _migrations = (
         (),
     ),
     (ACCOUNT_MIGRATION_ID, ACCOUNT_MIGRATION_CHECKSUM, _account_tables),
+    (TEAMS_FOLLOWUPS_MIGRATION_ID, TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM, (
+        TeamsRecipient.__table__, TeamsSessionLink.__table__, TeamsLinkCode.__table__,
+        TeamsFollow.__table__, TeamsFollowDelivery.__table__,
+    )),
 )
 _required_base_tables = {
     "notices",

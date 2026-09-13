@@ -12,6 +12,11 @@ LLM은 조건과 근거 후보를 구조화할 뿐입니다. 최종 적격성은
 
 ![PAI_LOOP architecture](docs/architecture/PAI_LOOP_architecture.png)
 
+공고별 **관심 등록 → Teams 개인 알림**은
+[개인 관심 공고 알림 안내](docs/TEAMS_PERSONAL_FOLLOWUPS.md)에서 확인할 수 있습니다.
+등록 직후·마감 5일 전·마감일 오전(한국시간)에 최신 분석을 안내하며,
+실제 발송에는 별도 봇 등록·개인 연결·상시 실행 환경 설정이 필요합니다.
+
 ## 현재 구현 범위: v0.10.5 다중 키워드 저장 공고 검색 · 순위 전용 관심 키워드
 
 - FastAPI + SQLAlchemy API, 반응형 한국어 SPA, PostgreSQL 온라인 저장 경계

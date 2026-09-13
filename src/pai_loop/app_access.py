@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import secrets
+import os
 
 from fastapi import HTTPException, Request
 
@@ -28,6 +29,11 @@ def require_app_access(request: Request) -> None:
     path = request.url.path
     if request.method == "OPTIONS":
         return  # CORS preflight contains no application data.
+    if request.method == "POST" and path == "/api/v1/teams/messages":
+        return  # Exact callback validates Microsoft Connector JWT, audience and tenant itself.
+    if (request.method in {"GET", "HEAD"} and path == "/teams-config.html"
+            and os.getenv("PAI_TEAMS_TAB_AUTH_ENABLED", "").lower() == "true"):
+        return  # Data-free tab configuration must load before account login.
     if request.method in {"GET", "HEAD"} and (
         path in FRONTEND_PATHS or path in _ASSETS or path == "/healthz"
     ):

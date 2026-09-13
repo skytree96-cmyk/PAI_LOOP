@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,13 @@ router = APIRouter(prefix="/api/v1/accounts", tags=["department accounts"])
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def session_cookie_samesite(request: Request) -> str:
+    # Teams frames need cross-site cookies. This opt-in never relaxes the
+    # existing same-origin + session-bound CSRF checks on every mutation.
+    return "none" if (request.url.scheme == "https"
+                       and os.getenv("PAI_TEAMS_TAB_AUTH_ENABLED", "").lower() == "true") else "strict"
 
 
 def departments() -> dict[str, str]:
@@ -272,8 +280,9 @@ def login(payload: Login, request: Request, response: Response) -> dict:
         audit(session, "LOGIN_SUCCEEDED", actor=account.id, target=row.id)
         session.commit()
     secure = request.url.scheme == "https" or request.app.state.settings.environment.casefold() == "production"
-    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True, secure=secure, samesite="strict", path="/")
-    response.set_cookie(CSRF_COOKIE, csrf, max_age=SESSION_SECONDS, httponly=False, secure=secure, samesite="strict", path="/")
+    cookie_samesite = session_cookie_samesite(request)
+    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True, secure=secure, samesite=cookie_samesite, path="/")
+    response.set_cookie(CSRF_COOKIE, csrf, max_age=SESSION_SECONDS, httponly=False, secure=secure, samesite=cookie_samesite, path="/")
     response.headers["Cache-Control"] = "no-store"
     return _me(request, identity, csrf=csrf)
 
@@ -294,8 +303,8 @@ def logout(request: Request, response: Response) -> dict:
             row.revoked_at = now_utc()
             audit(session, "LOGOUT", actor=identity.id, target=row.id)
             session.commit()
-    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
-    response.delete_cookie(CSRF_COOKIE, path="/", samesite="strict")
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, secure=request.url.scheme == "https", samesite=session_cookie_samesite(request))
+    response.delete_cookie(CSRF_COOKIE, path="/", secure=request.url.scheme == "https", samesite=session_cookie_samesite(request))
     response.headers["Cache-Control"] = "no-store"
     return {"logged_out": True}
 
