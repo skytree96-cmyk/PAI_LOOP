@@ -4,9 +4,12 @@ import { fileURLToPath } from 'node:url';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const output = path.join(root, 'dist');
 await mkdir(output, { recursive: true });
-const files = ['index.html', 'styles.css', 'app.js', 'favicon.svg', '_headers'];
-const mediaFiles = ['assets/pai-product-tour.webm', 'assets/pai-product-poster.webp'];
-const html = await readFile(path.join(root, 'index.html'), 'utf8');
+const files = ['styles.css', 'open-refinement.css', 'story.css', 'app.js', 'story.js', 'favicon.svg', '_headers'];
+const mediaFiles = ['assets/pai-intro-glass-v2.mp4', 'assets/pai-intro-glass-v2-poster.webp'];
+const template = await readFile(path.join(root, 'index.html'), 'utf8');
+const story = await readFile(path.join(root, 'story.html'), 'utf8');
+if (template.split('<!-- PAI_STORY_COMPONENT -->').length !== 2) throw new Error('Expected one story slot');
+const html = template.replace('<!-- PAI_STORY_COMPONENT -->', story);
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 if (new Set(ids).size !== ids.length) throw new Error('Duplicate HTML id');
 for (const [, target] of html.matchAll(/href="#([^"]+)"/g)) if (!ids.includes(target)) throw new Error(`Missing anchor ${target}`);
@@ -18,10 +21,18 @@ for (const file of mediaFiles) {
   if (!referencedMedia.has(file)) throw new Error(`Missing product-tour reference ${file}`);
   if (!(await stat(path.join(root, file))).isFile()) throw new Error(`Media is not a file: ${file}`);
 }
+for (const [, reference] of html.matchAll(/(?:src|href)="\/(?!assets\/)([^"?#]+)(?:\?[^"#]*)?"/g)) {
+  if (!files.includes(reference)) throw new Error(`Unexpected static reference ${reference}`);
+}
+for (const [, href] of html.matchAll(/href="(https:[^"]+)"/g)) {
+  const url = new URL(href);
+  if (!['pai-loop-demo.onrender.com', 'cdn.jsdelivr.net'].includes(url.hostname)) throw new Error(`Unexpected external link ${url.hostname}`);
+}
+await writeFile(path.join(output, 'index.html'), html);
 for (const file of files) await copyFile(path.join(root, file), path.join(output, file));
 const mediaOutput = path.join(output, 'assets');
 await mkdir(mediaOutput, { recursive: true });
-for (const obsolete of ['pai-loop-background.webm', 'pai-loop-poster.webp']) {
+for (const obsolete of ['pai-loop-background.webm', 'pai-loop-poster.webp', 'pai-product-tour.webm', 'pai-product-poster.webp', 'pai-intro-3d.mp4', 'pai-intro-3d-poster.webp']) {
   await rm(path.join(mediaOutput, obsolete), { force: true });
 }
 for (const entry of await readdir(mediaOutput, { withFileTypes: true })) {
