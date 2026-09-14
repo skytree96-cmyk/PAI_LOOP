@@ -335,6 +335,8 @@ class AwardOpeningCompanyOut(ApiModel):
 
 
 class AnnualAwardTableRowOut(ApiModel):
+    # Ordinal grouping within this response only; older payloads may omit it.
+    result_group_key: str | None = None
     year: int | None
     project_title: str
     agency: str
@@ -446,6 +448,14 @@ class AwardCandidateWindowOut(ApiModel):
     undated_policy: Literal["KEPT_BUT_COVERAGE_GATED"]
 
 
+class AwardSearchCriteriaOut(ApiModel):
+    version: str
+    years: Literal[3]
+    status: Literal["AVAILABLE", "UNAVAILABLE"]
+    demand_agency_name: str | None = None
+    keyword: str | None = None
+
+
 class AwardIntelligenceOut(ApiModel):
     analytics_version: str
     boundary: Literal["STORED_HISTORY_ONLY"]
@@ -465,6 +475,7 @@ class AwardIntelligenceOut(ApiModel):
     target_amount_basis: dict[str, Any]
     pricing_method: dict[str, Any] | None
     warnings: list[str]
+    search_criteria: AwardSearchCriteriaOut | None = None
 
 
 class AttachmentAnalysisStatusOut(ApiModel):
@@ -661,6 +672,8 @@ class AwardHistoryRefreshRequest(ApiModel):
     years: int = Field(default=3, ge=1, le=3)
     page_size: int = Field(default=100, ge=1, le=100)
     max_pages_per_window: int = Field(default=1, ge=1, le=3)
+    # Shared physical HTTP cap across history, retries, fallback and openings.
+    max_api_calls: int | None = Field(default=None, ge=1, le=2000, strict=True)
     dry_run: bool = False
     diagnostic_probe: bool = Field(default=False, strict=True)
     # Opt-in and hard-capped. Each notice costs at most

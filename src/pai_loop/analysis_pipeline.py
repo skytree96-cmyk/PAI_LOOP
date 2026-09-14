@@ -20,6 +20,7 @@ from .award_intelligence import (
     COMPETITION_RISK_VERSION,
     build_award_intelligence,
 )
+from .award_scope import filter_notice_awards
 from .department_ranking import (
     load_department_keyword_profiles,
     rank_notice_across_departments,
@@ -1897,6 +1898,7 @@ def run_analysis_pipeline(
                     .order_by(AwardHistoryItem.awarded_at, AwardHistoryItem.id)
                 ).all()
             )
+            award_history = filter_notice_awards(notice, award_history)
             award_as_of = notice.published_at or notice.deadline
             award_intelligence = build_award_intelligence(
                 award_history,

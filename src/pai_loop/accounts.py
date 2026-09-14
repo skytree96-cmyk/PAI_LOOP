@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from .account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from .department_ranking import load_department_keyword_profiles
+from .teams_identity_models import TeamsLinkCode, TeamsSessionLink
 
 SESSION_COOKIE = "pai_department_session"
 CSRF_COOKIE = "pai_department_csrf"
@@ -34,6 +36,13 @@ router = APIRouter(prefix="/api/v1/accounts", tags=["department accounts"])
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def session_cookie_samesite(request: Request) -> str:
+    # Teams frames need cross-site cookies. This opt-in never relaxes the
+    # existing same-origin + session-bound CSRF checks on every mutation.
+    return "none" if (request.url.scheme == "https"
+                       and os.getenv("PAI_TEAMS_TAB_AUTH_ENABLED", "").lower() == "true") else "strict"
 
 
 def departments() -> dict[str, str]:
@@ -255,7 +264,12 @@ def login(payload: Login, request: Request, response: Response) -> dict:
             session.commit()
             raise HTTPException(401, "아이디 또는 비밀번호를 확인해 주세요.")
         now = now_utc()
-        session.execute(delete(AccountSession).where(AccountSession.expires_at < now - timedelta(days=1)))
+        expired_sessions = select(AccountSession.id).where(AccountSession.expires_at < now - timedelta(days=1))
+        # Pairing proofs belong to the browser session. Remove those children
+        # before pruning its row; personal recipients and subscribed alerts persist.
+        session.execute(delete(TeamsLinkCode).where(TeamsLinkCode.session_id.in_(expired_sessions)))
+        session.execute(delete(TeamsSessionLink).where(TeamsSessionLink.session_id.in_(expired_sessions)))
+        session.execute(delete(AccountSession).where(AccountSession.id.in_(expired_sessions)))
         old = request.cookies.get(SESSION_COOKIE, "")
         if old:
             previous = session.scalar(select(AccountSession).where(AccountSession.token_hash == _session_hash(old)))
@@ -272,8 +286,9 @@ def login(payload: Login, request: Request, response: Response) -> dict:
         audit(session, "LOGIN_SUCCEEDED", actor=account.id, target=row.id)
         session.commit()
     secure = request.url.scheme == "https" or request.app.state.settings.environment.casefold() == "production"
-    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True, secure=secure, samesite="strict", path="/")
-    response.set_cookie(CSRF_COOKIE, csrf, max_age=SESSION_SECONDS, httponly=False, secure=secure, samesite="strict", path="/")
+    cookie_samesite = session_cookie_samesite(request)
+    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True, secure=secure, samesite=cookie_samesite, path="/")
+    response.set_cookie(CSRF_COOKIE, csrf, max_age=SESSION_SECONDS, httponly=False, secure=secure, samesite=cookie_samesite, path="/")
     response.headers["Cache-Control"] = "no-store"
     return _me(request, identity, csrf=csrf)
 
@@ -294,8 +309,8 @@ def logout(request: Request, response: Response) -> dict:
             row.revoked_at = now_utc()
             audit(session, "LOGOUT", actor=identity.id, target=row.id)
             session.commit()
-    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
-    response.delete_cookie(CSRF_COOKIE, path="/", samesite="strict")
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, secure=request.url.scheme == "https", samesite=session_cookie_samesite(request))
+    response.delete_cookie(CSRF_COOKIE, path="/", secure=request.url.scheme == "https", samesite=session_cookie_samesite(request))
     response.headers["Cache-Control"] = "no-store"
     return {"logged_out": True}
 

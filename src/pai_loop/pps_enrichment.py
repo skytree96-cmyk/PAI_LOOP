@@ -168,6 +168,10 @@ _PUBLIC_CONTACT_PATTERN = re.compile(
     r"(?:\s*(?:주무관|과장|팀장|담당자))?"
 )
 _METADATA_FIELDS = {
+    "dminsttNm": "demand_agency_name",
+    "dminsttCd": "demand_agency_code",
+    "ntceInsttNm": "announcing_agency_name",
+    "ntceInsttCd": "announcing_agency_code",
     "ntceKindNm": "notice_kind",
     "bidMethdNm": "bid_method",
     "cntrctCnclsMthdNm": "contract_method",
@@ -449,6 +453,8 @@ def build_notice_metadata(raw_item: dict[str, Any]) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     for provider_key, public_key in _METADATA_FIELDS.items():
         value = raw_item.get(provider_key)
+        if public_key.startswith(("demand_agency_", "announcing_agency_")) and not isinstance(value, str):
+            continue
         if provider_key in {"bidPrceEvlRt", "techAbltEvlRt", "sucsfbidLwltRate"}:
             try:
                 metadata[public_key] = float(str(value).replace(",", ""))

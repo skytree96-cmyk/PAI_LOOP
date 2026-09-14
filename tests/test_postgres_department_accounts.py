@@ -29,12 +29,28 @@ from pai_loop.account_models import AccountAudit, AccountBootstrapPreview, Accou
 from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, _session_hash, departments, now_utc, password_hash
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_session_factory
+from pai_loop.followup_models import TeamsFollow, TeamsFollowDelivery
 from pai_loop import migrations
 from pai_loop.migrations import ACCOUNT_MIGRATION_ID, apply_additive_migrations, pending_migrations, schema_migrations
 from pai_loop.models import AwardHistoryItem, BidOutcome, Evaluation, Notice, NoticeVersion, UserDecision
 from pai_loop.operator_decisions import router as decisions_router
 from pai_loop.result_learning import router as results_router
 from pai_loop.outcome_write_lock import outcome_notice_lock_key
+from pai_loop.teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsSessionLink
+
+
+_TEAMS_TABLES_CHILD_FIRST = (
+    TeamsFollowDelivery.__table__, TeamsFollow.__table__, TeamsSessionLink.__table__,
+    TeamsLinkCode.__table__, TeamsRecipient.__table__,
+)
+
+
+def _drop_empty_teams_tables(connection):
+    # Base.metadata includes these later tables. A pre-account fixture must remove
+    # their account/session FKs first, without CASCADE or discarding business rows.
+    for table in _TEAMS_TABLES_CHILD_FIRST:
+        assert connection.scalar(select(func.count()).select_from(table)) == 0
+        table.drop(connection)
 
 
 def _disposable_postgres_url() -> URL:
@@ -188,19 +204,22 @@ def test_postgres_account_migration_preserves_unassigned_history_and_reapplies(p
         session.commit()
 
     # Reconstruct the actual pre-account schema within this disposable schema.
-    # No migration history or business row is deleted except this test's new
-    # account migration entry; identity values are all null before removal.
+    # Only this test's account and dependent Teams migration entries are removed;
+    # identity values are null and Teams tables are empty before reconstruction.
+    expected_migrations = [ACCOUNT_MIGRATION_ID, migrations.TEAMS_FOLLOWUPS_MIGRATION_ID]
     with engine.begin() as connection:
-        connection.execute(schema_migrations.delete().where(schema_migrations.c.migration_id == ACCOUNT_MIGRATION_ID))
+        connection.execute(schema_migrations.delete().where(schema_migrations.c.migration_id.in_(expected_migrations)))
+        _drop_empty_teams_tables(connection)
         for table in (AccountSession.__table__, AccountAudit.__table__, AccountLoginBucket.__table__, AccountBootstrapPreview.__table__, DepartmentAccount.__table__):
             table.drop(connection)
         for table_name in ("user_decisions", "bid_outcomes"):
             for column in ("account_id", "department_id", "department_name", "department_revision"):
                 connection.exec_driver_sql(f'ALTER TABLE "{table_name}" DROP COLUMN "{column}"')
-    assert pending_migrations(engine) == [ACCOUNT_MIGRATION_ID]
-    assert apply_additive_migrations(engine) == [ACCOUNT_MIGRATION_ID]
+    assert pending_migrations(engine) == expected_migrations
+    assert apply_additive_migrations(engine) == expected_migrations
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
+    assert {table.name for table in _TEAMS_TABLES_CHILD_FIRST} <= set(inspect(engine).get_table_names())
     with factory() as session:
         decision = session.get(UserDecision, "SYN-PG-LEGACY-DECISION")
         outcome = session.get(BidOutcome, "SYN-PG-LEGACY-OUTCOME")
@@ -245,6 +264,7 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
 
     identity_columns = ("account_id", "department_id", "department_name", "department_revision")
     with engine.begin() as connection:
+        _drop_empty_teams_tables(connection)
         for table in (AccountSession.__table__, AccountAudit.__table__, AccountLoginBucket.__table__, AccountBootstrapPreview.__table__, DepartmentAccount.__table__):
             table.drop(connection)
         for table_name in ("user_decisions", "bid_outcomes"):
@@ -262,6 +282,8 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
         migrations.INDEPENDENT_DECISION_MIGRATION_ID: migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
         migrations.AWARD_OPENING_RESULT_MIGRATION_ID: migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM,
         migrations.ACCOUNT_MIGRATION_ID: migrations.ACCOUNT_MIGRATION_CHECKSUM,
+        migrations.AWARD_AGENCY_METADATA_MIGRATION_ID: migrations.AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM,
+        migrations.TEAMS_FOLLOWUPS_MIGRATION_ID: migrations.TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM,
     }
     with ThreadPoolExecutor(max_workers=2) as pool:
         with _hold_department_lock(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY):
@@ -269,8 +291,9 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
             _assert_waiters(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY, 2)
         applied = [future.result(timeout=20) for future in futures]
     assert sum(bool(result) for result in applied) == 1
-    assert [key for result in applied for key in result][-3:] == list(expected)
+    assert [key for result in applied for key in result][-len(expected):] == list(expected)
     assert apply_additive_migrations(engine) == [] and pending_migrations(engine) == []
+    assert {table.name for table in _TEAMS_TABLES_CHILD_FIRST} <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         ledger = dict(connection.execute(select(schema_migrations.c.migration_id, schema_migrations.c.checksum)).all())
         assert {key: ledger[key] for key in expected} == expected

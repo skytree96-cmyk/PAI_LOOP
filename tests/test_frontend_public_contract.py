@@ -181,29 +181,29 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
-    for view in ("fail", "review", "urgent", "result-missing", "cancelled"):
+    for view in ("fail", "review", "urgent", "result-missing", "cancelled", "go"):
         assert f'data-kpi-view="{view}"' in html
-    assert html.count('class="kpi-card__action"') == 5
+    assert html.count('class="kpi-card__action"') == 6
     assert html.count('aria-pressed="false"') >= 3
     assert "els.kpiViewButtons" in bind_body
     assert "setView(button.dataset.kpiView)" in bind_body
     assert "scrollIntoView" in bind_body
-    assert 'state.currentView === "go"' in filter_body
-    assert 'effectiveRecommendation(notice) !== "GO"' in filter_body
+    assert 'if (queue === "go") return isCurrentGoCandidate(notice)' in derived_body
+    assert 'notices.filter(isCurrentGoCandidate)' in derived_body
     assert 'matchesDashboardQueue(notice, state.currentView)' in filter_body
     assert "URGENT_DEADLINE_DAYS" in derived_body
     assert 'timeZone: "Asia/Seoul"' in source
     assert 'state.currentView === "ended"' in filter_body
     assert "isVisibleEndedNotice(notice)" in filter_body
-    assert "urgentCount: derived.urgentCount" in dashboard_body
-    assert "goCount: derived.goCount" in dashboard_body
+    assert "urgentCount: localQueues ? derived.urgentCount : numberOrNull(workQueues.urgent)" in dashboard_body
+    assert "goCount: localQueues ? derived.goCount : numberOrNull(firstValue(source.go_count" in dashboard_body
     assert "endedCount:" in dashboard_body
     assert "visible_ended_count" in dashboard_body
     assert "workQueues.cancelled" in dashboard_body
-    assert "reviewCount: derived.reviewCount" in dashboard_body
+    assert "reviewCount: localQueues ? derived.reviewCount : numberOrNull(workQueues.review)" in dashboard_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in derived_body
     assert 'matchesDashboardQueue(notice, "review")' in derived_body
-    assert 'noticeLifecycleStatus(notice) === "OPEN" && effectiveRecommendation(notice) === "GO"' in derived_body
+    assert 'noticeLifecycleStatus(notice) === "OPEN" && !isCancelledNotice(notice)' in derived_body
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
     assert "resultMissingCount:" in derived_body
     assert (
@@ -212,7 +212,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     )
     assert "workQueues.result_missing" in dashboard_body
     assert "els.kpiNew.textContent = displayNumber(data.failCount)" in source
-    assert '["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)' in filter_body
+    assert '["fail", "review", "urgent", "cancelled", "result-missing", "go"].includes(state.currentView)' in filter_body
     assert 'if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome' in derived_body
     assert "source.has_bid_outcome" in source
     assert "effectiveRecommendation(notice) !== recommendation" in filter_body
@@ -227,7 +227,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "state.source === \"api\" || state.loading" in view_body
     assert "requestNeedsReload" in view_body
     assert 'els.priorityKeywordInput.value = ""' in view_body
-    assert 'els.departmentSelect.value = "organization"' in view_body
+    assert 'els.departmentSelect.value = "organization"' not in view_body
     assert 'els.eligibilityFilter.value = "all"' in view_body
     assert 'els.recommendationFilter.value = "all"' in view_body
     assert ".kpi-card__action:focus-visible" in styles
@@ -239,8 +239,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260913-quantitative-v4"' in html
-    assert 'src="./app.js?v=20260913-quantitative-v4"' in html
+    assert 'href="./styles.css?v=20260914-quantitative-gapclass-v1"' in html
+    assert 'href="./top-navigation.css?v=20260913-dashboard-charts-v2"' in html
+    assert 'src="./app.js?v=20260914-quantitative-gapclass-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -257,7 +258,7 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     keyboard_body = _function_body(source, "handleGlobalKeydown", "updateNoticeRoute")
 
     assert "DECIDE WITH EVIDENCE" not in html
-    assert "확인이 필요한 공고부터 처리하세요" in html
+    assert "전체 공고의 흐름을 한눈에" in html
     assert "검토 대기" in html
     assert "결과 입력 필요 공고" in html
     assert "저장된 전체 공고" in html
@@ -431,10 +432,16 @@ def test_three_track_search_help_cards_and_deep_links_are_explicit() -> None:
     assert ".pps-candidate__detail-link" in styles
 
 
-def test_sidebar_work_groups_are_clickable_persistent_disclosures() -> None:
+def test_top_navigation_groups_start_closed_and_keep_active_view_visible() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8") + STYLES_CSS.with_name("top-navigation.css").read_text(encoding="utf-8")
+
+    assert 'id="appHeader"' in html
+    assert 'id="primaryNavigation"' in html
+    assert 'aria-controls="primaryNavigation"' in html
+    assert 'class="sidebar"' not in html
+    assert 'id="sidebarScrim"' not in html
 
     for group, controls_id in (
         ("search", "navGroupSearchItems"),
@@ -443,17 +450,18 @@ def test_sidebar_work_groups_are_clickable_persistent_disclosures() -> None:
     ):
         assert f'data-nav-group="{group}"' in html
         assert f'aria-controls="{controls_id}"' in html
-        assert f'id="{controls_id}"' in html
+        assert f'id="{controls_id}" hidden' in html
     assert html.count('class="nav-group-toggle"') == 3
-    assert html.count('aria-expanded="true"') >= 3
+    assert html.count('aria-expanded="false"') >= 4
     assert 'document.querySelectorAll(".nav-group-toggle[aria-controls]")' in source
     assert 'button.addEventListener("click", () => toggleNavigationGroup(button))' in source
     assert "items.hidden = !expanded" in source
-    assert "window.localStorage.getItem(NAV_GROUP_STORAGE_KEY)" in source
-    assert "window.localStorage.setItem(NAV_GROUP_STORAGE_KEY" in source
-    assert 'parsed && typeof parsed === "object" && !Array.isArray(parsed)' in source
-    assert source.index("setView(initialView") < source.index("restoreNavigationGroups();")
-    assert "revealActiveNavigationGroup(navigationView)" in source
+    assert "NAV_GROUP_STORAGE_KEY" not in source
+    assert "restoreNavigationGroups" not in source
+    assert "revealActiveNavigationGroup" not in source
+    assert "updateActiveNavigationGroup(navigationView)" in source
+    assert 'classList.toggle("is-current", group === activeGroup)' in source
+    assert 'window.matchMedia(MOBILE_NAVIGATION_QUERY).addEventListener("change", handleNavigationViewportChange)' in source
     assert ".nav-group-toggle" in styles
     assert '.nav-group-toggle[aria-expanded="false"] svg' in styles
     assert ".nav-group-items[hidden]" in styles
@@ -1222,7 +1230,7 @@ def test_urgent_five_day_window_and_operator_filter_preserve_other_axes() -> Non
     urgent_constant = re.search(r"  const URGENT_DEADLINE_DAYS = \d+;", source)
     assert urgent_constant
     assert 'aria-label="5일 이내 입찰마감 공고 보기"' in html
-    assert 'class="kpi-scope-note">현재 조회 PASS·REVIEW 중' in html
+    assert 'class="kpi-scope-note">진행 중 PASS·REVIEW' in html
     assert 'id="replayButton" hidden' in html
     assert 'els.replayButton.hidden = true;' in source
     adapter = urgent_constant.group(0)
@@ -1275,10 +1283,10 @@ applyFilters();
 assert.deepEqual(state.filteredNotices.map(x=>x.noticeKey),
   ["SYN-today","SYN-conditional","SYN-five","SYN-review"]);
 assert.equal(deriveDashboard(notices).urgentCount,4);
-const apiCounts = {totals:{notices:800},deadline_soon:1,kpis:{urgent_count:1}};
-assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,4);
+const apiCounts = {totals:{notices:800},work_queue_counts:{urgent:9},deadline_soon:1,kpis:{urgent_count:1}};
+assert.equal(normalizeDashboard(apiCounts,notices).urgentCount,9);
 const querySubset=notices.filter(x=>x.noticeKey==="SYN-five");
-assert.equal(normalizeDashboard(apiCounts,querySubset).urgentCount,1);
+assert.equal(normalizeDashboard(apiCounts,querySubset).urgentCount,9);
 assert.equal(normalizeDashboard(apiCounts,querySubset).totalNotices,800);
 state.currentView="all";
 els.operatorDecisionFilter.value="NO_GO";

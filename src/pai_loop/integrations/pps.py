@@ -37,6 +37,29 @@ class PpsApiError(RuntimeError):
         return safe_pps_error_metadata(self.error_type, self.http_status, self.provider_code)
 
 
+class PpsApiCallBudgetExceeded(RuntimeError):
+    """Local physical-call limit, not a failure reported by PPS."""
+
+
+class PpsApiCallBudget:
+    """One atomic budget shared by all clients participating in an operation."""
+
+    def __init__(self, maximum: int) -> None:
+        if type(maximum) is not int or maximum < 1:
+            raise ValueError("maximum must be a positive integer")
+        self.maximum = maximum
+        self.consumed = 0
+        self._lock = threading.Lock()
+
+    def reserve(self) -> None:
+        # Reserve each physical attempt, including retries and failed requests,
+        # before HTTP. Separate clients/threads cannot overspend the same budget.
+        with self._lock:
+            if self.consumed >= self.maximum:
+                raise PpsApiCallBudgetExceeded("PPS physical API call budget exhausted")
+            self.consumed += 1
+
+
 @dataclass(frozen=True, slots=True)
 class DateWindow:
     start: date
@@ -235,6 +258,7 @@ class PpsClient:
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        request_budget: PpsApiCallBudget | None = None,
     ) -> None:
         if not service_key.strip():
             raise ValueError("service_key is required")
@@ -246,6 +270,7 @@ class PpsClient:
         self._timeout_seconds = float(timeout_seconds)
         self._max_retries = max_retries
         self._sleep = sleep
+        self._request_budget = request_budget
         self.request_count = 0
         # ``httpx.Client`` is safe to share between threads, and a small
         # number of bounded PPS lookups use that support to keep multi-year
@@ -284,6 +309,8 @@ class PpsClient:
         )
         for attempt in range(self._max_retries + 1):
             try:
+                if self._request_budget is not None:
+                    self._request_budget.reserve()
                 with self._request_count_lock:
                     self.request_count += 1
                 response = self._client.get(

@@ -50,6 +50,12 @@
     "pai-loop-deployment-smoke-test": {
       "file": "workflows/pai-loop-deployment-smoke-test.json",
       "publish": false
+    },
+    "pai-loop-14-award-history-automation": {
+      "file": "workflows/pai-loop-14-award-history-automation.json",
+      "publish": true,
+      "contractVersion": "award-refresh-automation-1.0",
+      "safetyContract": "bounded-batch-zero-ai-v2"
     }
   }
 }

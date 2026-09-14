@@ -6,11 +6,13 @@ from datetime import date
 from math import isfinite
 from typing import Any, Iterator
 
+from ..award_scope import award_agency_is_verifiable, matches_award_agency, normalize_award_agency
 from ..outcome_identity import normalise_opening_identity
 from .pps import (
     DEFAULT_BASE_URL,
     DateWindow,
     PpsApiError,
+    PpsApiCallBudgetExceeded,
     PpsClient,
     _number,
     _parse_datetime,
@@ -129,9 +131,28 @@ def normalise_award(item: dict[str, Any]) -> dict[str, Any]:
         "award_rate": _number(item.get("sucsfbidRate")),
         "opened_at": _parse_datetime(item.get("rlOpengDt")),
         "agency": str(item.get("dminsttNm") or "").strip(),
+        # Internal matching fact, not part of the public award-row schema.
+        "demand_agency_code": str(item.get("dminsttCd") or "").strip() or None,
         "registered_at": _parse_datetime(item.get("rgstDt")),
         "awarded_at": _parse_datetime(item.get("fnlSucsfDate") or item.get("FnlSucsfDate")),
     }
+
+
+def is_pps_rate_limit_error(error: PpsApiError) -> bool:
+    """Official portal code 22 is daily quota, 23 is per-second quota."""
+    metadata = error.safe_metadata()
+    return (
+        metadata["error_type"] == "HTTP_ERROR" and metadata["http_status"] == 429
+    ) or (
+        metadata["error_type"] in {"SERVICE_ERROR", "PROVIDER_RESULT_ERROR"}
+        and metadata["provider_code"] in {"22", "23"}
+    )
+
+
+class _AwardRateLimitReached(PpsApiError):
+    def __init__(self, error: PpsApiError, completed_rows: list[dict[str, Any]]) -> None:
+        super().__init__(*error.args, **error.safe_metadata())
+        self.completed_rows = completed_rows
 
 
 _SHAPE_LIMIT = 32
@@ -197,6 +218,8 @@ class PpsAwardClient(PpsClient):
         self.fallback_window_count = 0
         self.window_errors: list[str] = []
         self.hit_incomplete_response = False
+        self.hit_api_call_limit = False
+        self.hit_rate_limit = False
         self._window_error_counts: Counter = Counter()
         self._page_shape_counts: Counter = Counter()
         self._suppressed_page_shapes = 0
@@ -254,9 +277,13 @@ class PpsAwardClient(PpsClient):
         rows: int,
         max_pages: int,
         deadline_monotonic: float | None = None,
+        demand_agency_name: str | None = None,
+        demand_agency_code: str | None = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         folded_keyword = keyword.casefold()
+        has_agency_filter = bool(normalize_award_agency(demand_agency_name)
+                                 or normalize_award_agency(demand_agency_code))
         page = 1
         expected_total: int | None = None
         while True:
@@ -265,21 +292,33 @@ class PpsAwardClient(PpsClient):
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
                 return results
-            payload = self._request(
-                operation_path,
-                {
-                    "inqryDiv": "1",
-                    "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
-                    "inqryEndDt": window.end.strftime("%Y%m%d2359"),
-                    "bidNtceNm": keyword,
-                    "pageNo": page,
-                    "numOfRows": rows,
-                },
-                timeout_seconds=(
-                    max(0.1, deadline_monotonic - time.monotonic())
-                    if deadline_monotonic is not None else None
-                ),
-            )
+            try:
+                payload = self._request(
+                    operation_path,
+                    {
+                        "inqryDiv": "1",
+                        "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
+                        "inqryEndDt": window.end.strftime("%Y%m%d2359"),
+                        "bidNtceNm": keyword,
+                        "pageNo": page,
+                        "numOfRows": rows,
+                        **({"dminsttCd": demand_agency_code.strip()}
+                           if normalize_award_agency(demand_agency_code) else
+                           {"dminsttNm": demand_agency_name.strip()}
+                           if normalize_award_agency(demand_agency_name) else {}),
+                    },
+                    timeout_seconds=(
+                        max(0.1, deadline_monotonic - time.monotonic())
+                        if deadline_monotonic is not None else None
+                    ),
+                )
+            except PpsApiCallBudgetExceeded:
+                self.hit_api_call_limit = True
+                return results
+            except PpsApiError as exc:
+                if is_pps_rate_limit_error(exc):
+                    raise _AwardRateLimitReached(exc, results) from exc
+                raise
             if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
                 self.hit_time_limit = True
                 if not self._diagnostic_probe:
@@ -304,6 +343,8 @@ class PpsAwardClient(PpsClient):
                 if not isinstance(raw, list) or len(raw) != len(raw_items) or not str(body["totalCount"]).isdigit():
                     raise PpsApiError("낙찰 결과 업체 행 또는 전체 건수가 불완전합니다.", error_type="AWARD_PAGE_INVALID")
             except PpsApiError as exc:
+                if is_pps_rate_limit_error(exc):
+                    raise _AwardRateLimitReached(exc, results) from exc
                 raise _AwardPageParseError(exc, payload) from exc
             incomplete = (
                 (expected_total is not None and total != expected_total)
@@ -312,7 +353,13 @@ class PpsAwardClient(PpsClient):
             expected_total = total
             for raw in raw_items:
                 award = normalise_award(raw)
-                if folded_keyword in award["title"].casefold():
+                if has_agency_filter and not award_agency_is_verifiable(award,
+                        demand_agency_name=demand_agency_name, demand_agency_code=demand_agency_code):
+                    self.hit_incomplete_response = True
+                    continue
+                if (folded_keyword in award["title"].casefold()
+                        and (not has_agency_filter or matches_award_agency(award,
+                            demand_agency_name=demand_agency_name, demand_agency_code=demand_agency_code))):
                     results.append(award)
             if incomplete:
                 self.hit_incomplete_response = True
@@ -475,11 +522,16 @@ class PpsAwardClient(PpsClient):
         keyword: str,
         operation_path: str = DEFAULT_AWARD_OPERATION,
         rows: int = 100,
-        max_window_days: int = 30,
+        # The same PPSSrch operation used by company-award search enforces a
+        # calendar-month range. A 30-day February interval can return code 07;
+        # 28 inclusive days cover every month safely without needless fallback.
+        max_window_days: int = 28,
         max_pages_per_window: int = 1,
         fallback_window_days: int = 7,
         continue_on_window_error: bool = False,
         deadline_monotonic: float | None = None,
+        demand_agency_name: str | None = None,
+        demand_agency_code: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         if not keyword.strip():
             raise ValueError("keyword is required")
@@ -498,6 +550,8 @@ class PpsAwardClient(PpsClient):
         self.fallback_window_count = 0
         self.window_errors = []
         self.hit_incomplete_response = False
+        self.hit_api_call_limit = False
+        self.hit_rate_limit = False
         self._window_error_counts.clear()
         self._page_shape_counts.clear()
         self._suppressed_page_shapes = 0
@@ -513,9 +567,16 @@ class PpsAwardClient(PpsClient):
                     rows=rows,
                     max_pages=max_pages_per_window,
                     deadline_monotonic=deadline_monotonic,
+                    demand_agency_name=demand_agency_name,
+                    demand_agency_code=demand_agency_code,
                 )
             except PpsApiError as exc:
                 self._record_window_error("PRIMARY", exc)
+                if is_pps_rate_limit_error(exc):
+                    self.hit_rate_limit = True
+                    self.window_errors.append(f"{window.start.isoformat()}..{window.end.isoformat()}")
+                    yield from getattr(exc, "completed_rows", [])
+                    return
                 if self._diagnostic_probe:
                     self.window_errors.append(f"{window.start.isoformat()}..{window.end.isoformat()}")
                     return
@@ -548,14 +609,23 @@ class PpsAwardClient(PpsClient):
                                 rows=rows,
                                 max_pages=max_pages_per_window,
                                 deadline_monotonic=deadline_monotonic,
+                                demand_agency_name=demand_agency_name,
+                                demand_agency_code=demand_agency_code,
                             )
                         )
                     except PpsApiError as exc:
                         self._record_window_error("FALLBACK", exc)
                         safe_window = f"{fallback.start.isoformat()}..{fallback.end.isoformat()}"
                         self.window_errors.append(safe_window)
+                        if is_pps_rate_limit_error(exc):
+                            self.hit_rate_limit = True
+                            yield from results
+                            yield from getattr(exc, "completed_rows", [])
+                            return
                         if not continue_on_window_error:
                             raise
+                    if self.hit_api_call_limit:
+                        break
             yield from results
-            if self._diagnostic_probe:
+            if self._diagnostic_probe or self.hit_api_call_limit:
                 return

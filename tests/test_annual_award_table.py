@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from award_scope_helpers import attach_award_scope
 from fastapi.testclient import TestClient
 from conftest import internal_server_client
 
@@ -22,6 +23,7 @@ from pai_loop.integrations.awards import (
 from pai_loop.integrations.pps import PpsApiError
 from pai_loop.main import create_app
 from pai_loop.models import AwardHistoryItem, Notice
+from pai_loop.schemas import AnnualAwardTableOut, AnnualAwardTableRowOut
 
 
 AS_OF = datetime(2026, 9, 8, tzinfo=timezone.utc)
@@ -183,6 +185,45 @@ def test_every_opening_company_becomes_a_row_with_its_own_scores() -> None:
     assert table["rows"][0]["price_evaluation"] == 9.5
     assert table["rows"][0]["total_evaluation"] == 99.5
     assert table["rows"][1]["bid_amount"] == 95_000_000
+
+
+def test_response_local_groups_preserve_independent_same_notice_lots_without_private_identity() -> None:
+    records = [
+        _award(title=TARGET_TITLE, year=2025, winner=winner,
+               opening_results=[_company(winner), _company(participant)])
+        for winner, participant in (("SYN-A", "SYN-B"), ("SYN-C", "SYN-D"))
+    ]
+    for index, record in enumerate(records):
+        # Same public notice, revision, date, title and agency. The stored
+        # results can still refer to different lots or rebids.
+        record["bid_notice_no"] = "SYN-SHARED-NOTICE"
+        record["id"] = f"SYN-private-row-{index}"
+        record["external_identity"] = f"SYN-SHARED-NOTICE|000|{index}|000"
+    table = build_annual_award_table(iter(records), target_title=TARGET_TITLE,
+                                    target_agency=TARGET_AGENCY, as_of=AS_OF)
+    serialized = AnnualAwardTableOut.model_validate(table).model_dump(mode="json")
+    groups = {}
+    for row in serialized["rows"]:
+        groups.setdefault(row["result_group_key"], set()).add(row["company_name"])
+        assert "id" not in row and "external_identity" not in row
+    assert serialized["table_version"] == "annual-award-table-1.1.0"
+    assert groups == {"award-1": {"SYN-A", "SYN-B"}, "award-2": {"SYN-C", "SYN-D"}}
+    # Dict fixtures need no IDs at all; backward-compatible schema accepts a
+    # previous response without pretending that its rows have a proven group.
+    legacy = {key: value for key, value in serialized["rows"][0].items() if key != "result_group_key"}
+    assert AnnualAwardTableRowOut.model_validate(legacy).result_group_key is None
+
+
+@pytest.mark.parametrize("opening_results", [None, []])
+def test_unavailable_result_counts_do_not_merge_same_notice_lots(opening_results) -> None:
+    records = [_award(title=TARGET_TITLE, year=2025, winner="SYN-A", opening_results=opening_results)
+               for _ in range(2)]
+    table = build_annual_award_table(records, target_title=TARGET_TITLE, target_agency=TARGET_AGENCY, as_of=AS_OF)
+    assert {row["result_group_key"] for row in table["rows"]} == {"award-1", "award-2"}
+    if opening_results is None:
+        assert table["opening_results_not_collected"] == 2
+    else:
+        assert any(note.startswith("2건은 개찰 결과 조회에서") for note in table["notes"])
 
 
 def test_opening_rank_alone_never_names_a_winner() -> None:
@@ -528,6 +569,8 @@ def _stored_notice_with_awards(client: TestClient) -> str:
         },
     )
     assert created.status_code == 201, created.text
+    attach_award_scope(client, notice_key, demand_agency_name=TARGET_AGENCY,
+                       demand_agency_code="SYN-AWARD-TABLE-AGENCY")
     with client.app.state.session_factory() as session:
         notice = session.query(Notice).filter(Notice.notice_key == notice_key).one()
         session.add_all([
@@ -592,6 +635,29 @@ def test_award_intelligence_serves_the_annual_table_without_remote_calls(
     # A partially reported company keeps the one score the provider gave.
     assert table["rows"][1]["price_evaluation"] is None
     assert table["rows"][1]["technical_evaluation"] == 80.0
+
+
+def test_api_serializes_separate_same_notice_result_groups(award_client: TestClient) -> None:
+    notice_key = _stored_notice_with_awards(award_client)
+    with award_client.app.state.session_factory() as session:
+        target = session.query(Notice).filter(Notice.notice_key == notice_key).one()
+        session.add(AwardHistoryItem(target_notice_id=target.id,
+            external_identity="SYN-2025|000|1|001", bid_notice_no="SYN-2025", revision_no="000",
+            title="2025년 SYN 리더십 교육과정 위탁운영", agency=TARGET_AGENCY,
+            winner_name="SYN-기관C", awarded_at=datetime(2025, 5, 1, tzinfo=timezone.utc), similarity_score=93,
+            opening_results=[_company("SYN-기관C"), _company("SYN-기관D")], opening_results_status="COLLECTED"))
+        session.commit()
+    response = award_client.get(f"/api/v1/notices/{notice_key}/award-intelligence")
+    assert response.status_code == 200, response.text
+    table = response.json()["annual_award_table"]
+    groups = {}
+    for row in table["rows"]:
+        assert row["result_group_key"].startswith("award-")
+        if row["year"] == 2025:
+            groups.setdefault(row["result_group_key"], set()).add(row["company_name"])
+    assert len(groups) == 2
+    assert {frozenset(names) for names in groups.values()} == {
+        frozenset({"SYN-기관A", "SYN-기관B"}), frozenset({"SYN-기관C", "SYN-기관D"})}
 
 
 def test_stored_award_history_exposes_opening_results_as_nullable(
@@ -736,6 +802,7 @@ def test_a_failed_opening_read_never_overwrites_a_stored_competitor_set(
                 "rebid_no": "000",
                 "title": "2025년 SYN 리더십 교육과정 위탁운영",
                 "agency": "",
+                "demand_agency_code": "SYN-AWARD-TABLE-AGENCY",
                 "winner_name": "SYN-기관A",
                 "award_amount": None,
                 "award_rate": None,

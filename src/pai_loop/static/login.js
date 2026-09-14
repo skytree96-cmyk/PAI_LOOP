@@ -6,6 +6,14 @@
   const submit = document.getElementById("entryLoginSubmit");
   const status = document.getElementById("entryLoginStatus");
   const retry = document.getElementById("entryLoginRetry");
+  const teamsFallback = document.getElementById("teamsBrowserFallback");
+  const teamsBrowserLink = document.getElementById("teamsBrowserLink");
+  if (teamsFallback && teamsBrowserLink) {
+    teamsFallback.hidden = !(window.self !== window.top || new URLSearchParams(window.location.search).get("host") === "teams");
+    const destination = new URL(window.location.href);
+    destination.searchParams.delete("host");
+    teamsBrowserLink.href = destination.toString();
+  }
   let pending = false;
   const message = (text, error = false) => { status.textContent = text; status.dataset.error = String(error); };
   async function request(path, options = {}) {
@@ -50,7 +58,18 @@
         method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" },
         body: JSON.stringify({ username: username.value.trim(), password: password.value }),
       });
-      if (response.ok && payload.enabled === true && payload.authenticated === true && payload.account?.id) { enter(); return; }
+      if (response.ok && payload.enabled === true && payload.authenticated === true && payload.account?.id) {
+        // Confirm that the browser retained cookies before reloading an embedded
+        // tab; blocked third-party cookies must not produce an endless login loop.
+        const verified = await request("me");
+        if (verified.response.ok && verified.payload.authenticated === true
+            && verified.payload.account?.id === payload.account.id
+            && verified.payload.csrf_token && verified.payload.csrf_token === payload.csrf_token) { enter(); return; }
+        message("로그인 쿠키가 차단되었습니다. 브라우저에서 열기로 계속해 주세요.", true);
+        if (teamsFallback) teamsFallback.hidden = false;
+        submit.disabled = false;
+        return;
+      }
       if (response.status === 401) { message("아이디 또는 비밀번호를 확인해 주세요.", true); submit.disabled = false; }
       else if (response.status === 429) { message("로그인 시도가 많습니다. 잠시 후 상태를 다시 확인해 주세요.", true); retry.hidden = false; }
       else throw new Error("Login unconfirmed");

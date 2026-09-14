@@ -1072,19 +1072,30 @@ def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(
         client,
         notice_key="DAILY-RISK",
         published_at="2026-08-16T08:30:00+09:00",
+        title="SYN AI 교육 용역",
+        agency="SYN 공고기관",
     )
     winners = ["합성 수행사 A", "합성 수행사 B", "합성 수행사 A", "합성 수행사 C", "합성 수행사 B", "합성 수행사 A"]
     participants = [2, 3, 2, 4, 3, 2]
     with client.app.state.session_factory() as session:
         notice = session.query(Notice).filter_by(notice_key="DAILY-RISK").one()
+        notice.versions.append(NoticeVersion(
+            version_no=1, file_sha256="f" * 64,
+            source_payload={
+                "kind": PPS_METADATA_KIND,
+                "notice_identity": {"bid_notice_no": notice.bid_notice_no, "revision_no": notice.revision_no},
+                "notice_metadata": {"demand_agency_name": "SYN 수요기관"},
+                "attachment_manifest": [],
+            },
+        ))
         for index, (winner, participant_count) in enumerate(zip(winners, participants), start=1):
             session.add(
                 AwardHistoryItem(
                     target_notice_id=notice.id,
                     external_identity=f"DAILY-RISK-{index}",
                     bid_notice_no=f"SYN-DAILY-{index}",
-                    title=f"합성 AI 교육 {index}",
-                    agency="합성 발주기관",
+                    title=f"SYN AI 교육 {index}",
+                    agency="SYN 수요기관",
                     winner_name=winner,
                     participant_count=participant_count,
                     award_amount=90_000_000 + index,
@@ -1094,6 +1105,12 @@ def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(
                     source="SYNTHETIC_TEST_ONLY",
                 )
             )
+        session.add(AwardHistoryItem(
+            target_notice_id=notice.id, external_identity="SYN-OTHER-AGENCY", bid_notice_no="SYN-OTHER",
+            title="SYN AI 교육", agency="SYN 다른기관", winner_name="SYN 제외업체",
+            participant_count=99, award_rate=1, similarity_score=100,
+            awarded_at=datetime(2025, 1, 1, tzinfo=timezone.utc), source="SYNTHETIC_TEST_ONLY",
+        ))
         session.commit()
 
     response = client.get(
@@ -1103,6 +1120,8 @@ def test_daily_briefing_exposes_competition_risk_without_mixing_eligibility(
     assert response.status_code == 200
     item = response.json()["notices"][0]
     assert item["fit"]["risk_band"] == "UNKNOWN"
+    assert item["award_snapshot"]["observations"] == 6
+    assert item["pricing_intelligence"]["record_count"] == 6
     assert item["competition_risk"]["score"] == 62.83
     assert item["competition_risk"]["band"] == "HIGH"
     assert item["pricing_intelligence"]["competition_risk"] == item["competition_risk"]

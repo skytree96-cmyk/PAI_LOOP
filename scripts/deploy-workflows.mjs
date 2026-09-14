@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { assertNativeGatewayWorkflow, isNativeAnthropicNode, nativeNodeName,
   assertPendingNativeSelection, assertPendingNativeInactive, nativeCanaryWorkflowKeys } from "./native-gateway-contract.mjs";
+import { assertAwardAutomationWorkflow, awardWorkflowKey, awardHttpNodeNames } from "./award-automation-workflow-contract.mjs";
 
 const validateOnly = process.argv.includes("--validate-only");
 const onlyArgument = process.argv.find((argument) => argument.startsWith("--only="));
@@ -97,16 +98,20 @@ function validateRepositorySafetyContracts(definitions) {
   assert(teamsDelivery, "independent Teams delivery workflow is required");
   const claudeGateway = definitions.find(({ key }) => key === "pai-loop-13-claude-extraction-gateway");
   assert(claudeGateway, "isolated Claude extraction gateway workflow is required");
+  const awardAutomation = definitions.find(({ key }) => key === awardWorkflowKey);
+  assert(awardAutomation, "isolated award automation workflow is required");
+  assertAwardAutomationWorkflow(awardAutomation.workflow, awardAutomation.config);
   for (const definition of definitions) {
     if (
       definition.key === daily.key
       || definition.key === continuation.key
       || definition.key === teamsDelivery.key
       || definition.key === claudeGateway.key
+      || definition.key === awardAutomation.key
     ) continue;
     assert(
       definition.config.publish === false,
-      `${definition.key}: only workflows 10 and 11 may be published`,
+      `${definition.key}: only explicitly validated workflows 10 through 14 may be published`,
     );
   }
   if (continuation.config.publish === true) {
@@ -303,6 +308,10 @@ function validateRepositorySafetyContracts(definitions) {
       && serialised.includes("Math.min(3, Math.max(1"),
     "daily award refresh must default to one, hard-cap at three, and use a ten-minute request window",
   );
+  const dailyRuntime = daily.workflow.nodes.find(node => node.name === "Scheduled Runtime Gates");
+  const scheduledAwardGates = new Function("$env", dailyRuntime.parameters.jsCode)({})[0].json.runtime;
+  assert(scheduledAwardGates.awardRefreshEnabled === false && scheduledAwardGates.awardRefreshWriteEnabled === false,
+    "W10 scheduled award hook must stay disabled while W14 owns award automation");
   assert(
     outcomeFeedbackNode?.parameters?.options?.timeout === 120000
       && outcomeFeedbackNode?.retryOnFail === false
@@ -915,13 +924,49 @@ function extractSingleBackendCredential(workflow) {
   return { httpHeaderAuth: credentials[0] };
 }
 
+function extractApprovedAwardBackendCredential(remote, approvedDailyWorkflow) {
+  assert(remote?.name === approvedDailyWorkflow.name, "award credential source must be the exact daily workflow");
+  const approvedNames = new Set(approvedDailyWorkflow.nodes.filter(node =>
+    node.type === "n8n-nodes-base.httpRequest"
+    && node.parameters?.authentication === "genericCredentialType"
+    && node.parameters?.genericAuthType === "httpHeaderAuth").map(node => node.name));
+  const references = [];
+  for (const name of approvedNames) {
+    const node = exactNamedNode(remote, name);
+    if (!node || node.type !== "n8n-nodes-base.httpRequest"
+      || node.parameters?.authentication !== "genericCredentialType"
+      || node.parameters?.genericAuthType !== "httpHeaderAuth") continue;
+    const credential = node.credentials?.httpHeaderAuth;
+    if (validCredentialReference(credential)) references.push(credential);
+  }
+  assert(references.length > 0 && new Set(references.map(item => item.id)).size === 1,
+    "award automation requires one existing header credential from exact approved daily HTTP nodes");
+  return { httpHeaderAuth: references[0] };
+}
+
+function assertAwardCredentialBindings(workflow, expected) {
+  assert(validCredentialReference(expected?.httpHeaderAuth), "award automation backend credential is unavailable");
+  for (const name of awardHttpNodeNames) {
+    const node = exactNamedNode(workflow, name);
+    assert(node?.type === "n8n-nodes-base.httpRequest"
+      && node.parameters?.authentication === "genericCredentialType"
+      && node.parameters?.genericAuthType === "httpHeaderAuth"
+      && Object.keys(node.credentials ?? {}).join(",") === "httpHeaderAuth"
+      && validCredentialReference(node.credentials?.httpHeaderAuth)
+      && node.credentials.httpHeaderAuth.id === expected.httpHeaderAuth.id,
+    "award automation must retain the approved daily backend credential on both exact HTTP nodes");
+  }
+}
+
 function inheritApprovedBackendCredential(payload, credential, approvedNodeNames) {
   if (!approvedNodeNames.size) return payload;
   assert(credential?.httpHeaderAuth?.id, "approved new backend HTTP nodes require an inherited credential");
   return {
     ...payload,
     nodes: payload.nodes.map((node) => (
-      approvedNodeNames.has(node.name)
+      approvedNodeNames.has(node.name) && node.type === "n8n-nodes-base.httpRequest"
+        && node.parameters?.authentication === "genericCredentialType"
+        && node.parameters?.genericAuthType === "httpHeaderAuth"
         ? { ...node, credentials: node.credentials ?? credential }
         : node
     )),
@@ -944,6 +989,7 @@ const approvedCredentialInheritance = new Map([
     "Fetch Stored Briefing for Teams",
     "Reserve Persistent Teams Correlation",
   ])],
+  [awardWorkflowKey, awardHttpNodeNames],
 ]);
 
 const remoteWorkflows = await listAllWorkflows();
@@ -958,7 +1004,11 @@ const selectedDefinitions = definitions.filter(
   (definition) => !onlyKey || definition.key === onlyKey,
 );
 // Inspect the global gateway state even when only a producer was selected.
-const pendingNativeCanary = assertPendingNativeSelection(
+// W14 has an exact, separately validated graph with only two protected award
+// routes. Its isolated deployment cannot change or invoke W10-W13, so an
+// unrelated pending Claude migration must not block award maintenance.
+const isolatedAwardDeployment = onlyKey === awardWorkflowKey;
+const pendingNativeCanary = isolatedAwardDeployment ? false : assertPendingNativeSelection(
   definitions.find(({ key }) => key === claudeGatewayKey).config, onlyKey,
 );
 const unpublishedClaudeGateway = definitions.find(
@@ -1003,7 +1053,7 @@ async function loadRemoteDefinitionForPreflight(definition, required = false) {
 
 const claudeGatewayDefinition = definitions.find(({ key }) => key === claudeGatewayKey);
 assert(claudeGatewayDefinition, "Claude gateway definition is missing");
-const remoteClaudeGateway = await loadRemoteDefinitionForPreflight(claudeGatewayDefinition);
+const remoteClaudeGateway = isolatedAwardDeployment ? undefined : await loadRemoteDefinitionForPreflight(claudeGatewayDefinition);
 if (pendingNativeCanary) {
   const remotes = new Map();
   for (const key of nativeCanaryWorkflowKeys) {
@@ -1078,7 +1128,10 @@ if (
     );
     dailyRemote = (await request(`/workflows/${encodeURIComponent(matches[0].id)}`)).body;
   }
-  sharedBackendCredential = extractSingleBackendCredential(dailyRemote);
+  assert(dailyRemote.name === dailyDefinition.workflow.name, "backend credential source must be the exact remote daily workflow");
+  sharedBackendCredential = isolatedAwardDeployment
+    ? extractApprovedAwardBackendCredential(dailyRemote, dailyDefinition.workflow)
+    : extractSingleBackendCredential(dailyRemote);
   assert(
     sharedBackendCredential,
     "--only deployment requires the approved backend credential on remote workflow 10",
@@ -1143,6 +1196,7 @@ for (const { key, config, workflow } of selectedDefinitions) {
       // credential cannot be deterministically preserved.
       assertClaudeGatewayCredentialBindings(payload);
     }
+    if (key === awardWorkflowKey) assertAwardCredentialBindings(payload, sharedBackendCredential);
     const updated = await request(`/workflows/${encodeURIComponent(workflowId)}`, {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -1161,6 +1215,7 @@ for (const { key, config, workflow } of selectedDefinitions) {
       sharedBackendCredential,
       approvedCredentialInheritance.get(key) ?? new Set(),
     );
+    if (key === awardWorkflowKey) assertAwardCredentialBindings(payload, sharedBackendCredential);
     const created = await request("/workflows", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -1169,6 +1224,31 @@ for (const { key, config, workflow } of selectedDefinitions) {
     workflowId = remote.id;
     remoteByName.set(workflow.name, [remote]);
     console.log(`Created ${key} (${workflowId}); future deploys will match it by exact name`);
+  }
+
+  if (key === awardWorkflowKey) {
+    remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
+    assertAwardCredentialBindings(remote, sharedBackendCredential);
+    // Strip environment-owned references solely for readback contract checking.
+    assertAwardAutomationWorkflow({ ...remote, nodes: remote.nodes.map(({ credentials, ...node }) => node) }, config);
+    const savedVersionId = remote.versionId;
+    assert(typeof savedVersionId === "string" && savedVersionId, "W14 saved version must be identifiable before publication");
+    const publishedVersionId = remote.activeVersionId ?? remote.activeVersion?.versionId;
+    if (remote.active !== true || publishedVersionId !== savedVersionId) {
+      // Updating an active workflow saves a draft. Publish this exact version,
+      // otherwise the schedule can continue running the previous node config.
+      await request(`/workflows/${encodeURIComponent(workflowId)}/activate`, {
+        method: "POST", body: JSON.stringify({ versionId: savedVersionId }),
+      });
+      console.log(`Activated ${key} (published saved version)`);
+    }
+    remote = (await request(`/workflows/${encodeURIComponent(workflowId)}`)).body;
+    assert(remote.active === true && remote.versionId === savedVersionId
+      && (remote.activeVersionId ?? remote.activeVersion?.versionId) === savedVersionId,
+    "W14 must publish the exact saved version without concurrent draft changes");
+    assertAwardCredentialBindings(remote, sharedBackendCredential);
+    assertAwardAutomationWorkflow({ ...remote, nodes: remote.nodes.map(({ credentials, ...node }) => node) }, config);
+    continue;
   }
 
   if (config.publish === true) {

@@ -14,6 +14,7 @@ from .analysis_pipeline import PIPELINE_VERSION
 from .auth import require_api_key
 from .analysis_selection import manual_only_notice_keys
 from .award_intelligence import build_award_intelligence
+from .award_scope import filter_notice_awards
 from .department_ranking import rank_notice_department_views
 from .models import (
     AnalysisRun,
@@ -236,8 +237,9 @@ def _briefing_notice(
     department_score = float(departments[0]["score"]) if departments else 0.0
     readiness_score = float(fit["readiness_score"] or 0.0)
     priority_score = round(min(100.0, eligibility_weight + 0.4 * department_score + 0.3 * readiness_score), 1)
+    scoped_awards = filter_notice_awards(notice, notice.award_history)
     pricing_intelligence = build_award_intelligence(
-        notice.award_history,
+        scoped_awards,
         as_of=as_of,
         target_estimated_price=notice.estimated_amount,
     )
@@ -256,7 +258,7 @@ def _briefing_notice(
         "top_departments": departments,
         "department_review_candidates": department_review_candidates,
         "region_routing": region_routing,
-        "award_snapshot": _award_snapshot(notice.award_history),
+        "award_snapshot": _award_snapshot(scoped_awards),
         "competition_risk": pricing_intelligence["competition_risk"],
         "quantitative_estimate": (
             estimate_for_notice(notice, company_facts, performance_records)
@@ -334,6 +336,7 @@ def daily_briefing(
                         NoticeVersion.created_at,
                     ),
                     selectinload(Notice.award_history),
+                    selectinload(Notice.award_agency_metadata),
                 )
             ).all()
         )

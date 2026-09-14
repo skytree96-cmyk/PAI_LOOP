@@ -106,6 +106,7 @@ jobs:
           required = {
               "pai_loop/static/index.html",
               "pai_loop/static/styles.css",
+              "pai_loop/static/top-navigation.css",
               "pai_loop/static/app.js",
               "pai_loop/static/login.html",
               "pai_loop/static/login.js",
@@ -188,6 +189,7 @@ jobs:
           node scripts/deploy-workflows.mjs --validate-only
           node scripts/bind-claude-gateway-credentials.mjs --self-test
           node scripts/test-daily-workflow.mjs
+          node scripts/test-award-automation-workflow.mjs
           node scripts/test-teams-delivery-workflow.mjs
           node scripts/test-claude-gateway-workflow.mjs
 
