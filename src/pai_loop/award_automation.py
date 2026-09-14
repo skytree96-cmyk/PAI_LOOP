@@ -26,6 +26,9 @@ from .schemas import AwardHistoryRefreshRequest
 SCHEMA = "award-refresh-automation-1.0"
 LEASE_SECONDS = 900  # Longer than the existing 480-second collector wall limit.
 MAX_CYCLE_ATTEMPTS = 3
+# W10 ingests daily, so notices that arrived within this window are the fresh
+# intake and outrank the historical backlog for whatever budget exists.
+NEW_ARRIVAL_WINDOW = timedelta(days=2)
 BATCH_WALL_SECONDS = 480
 MIN_NOTICE_WALL_SECONDS = 60
 _LOCK_KEY = 0x504149415752
@@ -37,6 +40,8 @@ router = APIRouter(prefix="/api/v1/operations/award-refresh", tags=["operations"
 
 class PlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    # Retired: completed coverage is never re-collected on a timer. Accepted and
+    # ignored so the deployed W14 body stays valid; drop once W14 is republished.
     refresh_after_days: int = Field(default=30, ge=1, le=365)
 
 
@@ -265,11 +270,11 @@ def plan_award_refresh(payload: PlanRequest, session: DbSession) -> dict:
                 session.add(state)
                 enrolled += 1
             elif state.status != "RUNNING":
+                # Completed coverage stays completed. Only a changed search
+                # basis re-collects it, so the backfill can actually drain.
                 changed = state.basis_sha256 != basis
-                stale = state.status in {"COMPLETED", "NO_RESULTS"} and state.refreshed_at is not None and (
-                    state.refreshed_at <= now - timedelta(days=payload.refresh_after_days))
                 now_supported = classification == "PENDING" and state.status in {"UNSUPPORTED", "SKIPPED"}
-                if changed or now_supported or (classification != "PENDING" and state.status != classification) or stale:
+                if changed or now_supported or (classification != "PENDING" and state.status != classification):
                     state.status, state.reason, state.basis_sha256 = classification, reason, basis
                     state.next_attempt_at = now if classification == "PENDING" else None
                     state.cycle_attempts, state.updated_at = 0, now
@@ -296,9 +301,18 @@ def _run_one(payload: RunRequest, request: Request, session: Session) -> dict:
             .options(selectinload(Notice.award_scope_versions), selectinload(Notice.award_agency_metadata))
             .where(AwardRefreshState.status.in_(["PENDING", "PARTIAL", "FAILED"]),
                    AwardRefreshState.next_attempt_at <= now)
-            .order_by(case((AwardRefreshState.attempts == 0, 0), else_=1),
+            # Fresh intake first; the backlog then spends what is left starting
+            # with the notices whose deadline is furthest away and still biddable.
+            # Deadline must outrank attempts and next_attempt_at: both of those
+            # encode WHEN a row was enrolled or last failed, so ranking on them
+            # first drains the backlog FIFO by ingest day and never consults the
+            # deadline at all. next_attempt_at is already gated by the WHERE
+            # clause above, so here it is only a tiebreak.
+            .order_by(case((Notice.created_at >= now - NEW_ARRIVAL_WINDOW, 0), else_=1),
                       case(((Notice.status == "OPEN") & (Notice.deadline >= now), 0), else_=1),
-                      AwardRefreshState.next_attempt_at, Notice.published_at.desc().nullslast(), Notice.id)))
+                      Notice.deadline.desc(),
+                      case((AwardRefreshState.attempts == 0, 0), else_=1),
+                      AwardRefreshState.next_attempt_at, Notice.id)))
         active_ids = _active_notice_ids(session, [notice for _state, notice in selections], now)
         selected = None
         for state, notice in selections:
