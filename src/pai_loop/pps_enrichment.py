@@ -1732,71 +1732,92 @@ def _extract_pdf_text(content: bytes) -> str:
     return _extract_pdf_content(content).text
 
 
+def _hwpx_element_events(root: ElementTree.Element) -> Iterator[tuple[bool, ElementTree.Element]]:
+    """Visit each element's start/end in document order without Python recursion."""
+    yield True, root
+    stack = [(root, iter(root))]
+    while stack:
+        node, children = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            yield False, node
+        else:
+            yield True, child
+            stack.append((child, iter(child)))
+
+
+def _hwpx_paragraph_fragments(root: ElementTree.Element) -> Iterator[list[str]]:
+    """Give each text/tail to its nearest paragraph, including around nested tables."""
+    # Preserve the original t-first rule, including t descendants in nested p.
+    # Propagate at paragraph exit instead of walking all ancestors for each t.
+    text_paragraphs: set[ElementTree.Element] = set()
+    paragraphs: list[ElementTree.Element] = []
+    for starting, node in _hwpx_element_events(root):
+        tag = str(node.tag).rsplit("}", 1)[-1]
+        if tag == "p":
+            if starting:
+                paragraphs.append(node)
+            else:
+                paragraphs.pop()
+                if node in text_paragraphs and paragraphs:
+                    text_paragraphs.add(paragraphs[-1])
+        elif starting and tag == "t" and paragraphs:
+            text_paragraphs.add(paragraphs[-1])
+
+    text_depths: list[int] = []
+    owner: ElementTree.Element | None = None
+    fragments: list[str] = []
+    for starting, node in _hwpx_element_events(root):
+        tag = str(node.tag).rsplit("}", 1)[-1]
+        if starting:
+            if tag == "p":
+                paragraphs.append(node)
+                text_depths.append(0)
+            elif tag == "t" and paragraphs:
+                text_depths[-1] += 1
+            fragment = node.text
+        else:
+            if tag == "p":
+                paragraphs.pop()
+                text_depths.pop()
+            elif tag == "t" and paragraphs:
+                text_depths[-1] -= 1
+            # A node's tail belongs to its parent context, never the closed p/t.
+            fragment = node.tail
+        if not paragraphs or not fragment:
+            continue
+        current = paragraphs[-1]
+        if current in text_paragraphs and not text_depths[-1]:
+            # Non-t text includes field/shape metadata, not just indentation.
+            continue
+        if current is not owner:
+            if not fragment.strip():
+                # Empty nested paragraphs must not split their parent's text.
+                continue
+            if fragments:
+                yield fragments
+            owner, fragments = current, []
+        fragments.append(fragment)
+    if fragments:
+        yield fragments
+
+
 def _hwpx_paragraph_text(
     root: ElementTree.Element, *, maximum: int = MAX_EXTRACTED_DOCUMENT_CHARS,
 ) -> list[str]:
-    """Read each character node once, including paragraphs inside table cells.
-
-    A table belongs to a containing hp:p, but its cell paragraphs own their
-    text. Descendant-wide itertext for every paragraph prints the entire table
-    glued together and then prints its cells again. Traverse XML occurrences,
-    never deduplicate equal strings: repeated awards and footnotes are real.
-    """
+    """Preserve paragraph ownership without importing shape/field metadata."""
     parts: list[str] = []
-    fragments: list[str] = []
     total = 0
-
-    def local(node: ElementTree.Element) -> str:
-        return str(node.tag).rsplit("}", 1)[-1]
-
-    def has_owned_text(paragraph: ElementTree.Element) -> bool:
-        pending = list(paragraph)
-        while pending:
-            node = pending.pop()
-            if local(node) == "p":
-                continue
-            if local(node) == "t":
-                return True
-            pending.extend(node)
-        return False
-
-    def flush() -> None:
-        nonlocal total
+    for fragments in _hwpx_paragraph_fragments(root):
         text = unicodedata.normalize("NFC", "".join(fragments))
         text = re.sub(r"\s+", " ", text).strip()
-        if text:
-            total += len(text) + 1
-            if total > maximum:
-                raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
-            parts.append(text)
-        fragments.clear()
-
-    # Explicit enter/exit events preserve XML order without using Python's
-    # recursion limit for an untrusted nested container.
-    pending = [("enter", root, False, False)]
-    while pending:
-        event, node, in_paragraph, capture = pending.pop()
-        if event == "exit":
-            flush()
+        if not text:
             continue
-        if event == "tail":
-            if capture and node.tail:
-                fragments.append(node.tail)
-            continue
-        tag = local(node)
-        if tag == "p":
-            flush()
-            in_paragraph = True
-            # Preserve minimal producers with direct paragraph character data.
-            capture = not has_owned_text(node)
-            pending.append(("exit", node, in_paragraph, capture))
-        elif tag == "t" and in_paragraph:
-            capture = True
-        if capture and node.text:
-            fragments.append(node.text)
-        for child in reversed(node):
-            pending.append(("tail", child, in_paragraph, capture))
-            pending.append(("enter", child, in_paragraph, capture))
+        total += len(text) + 1
+        if total > maximum:
+            raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
+        parts.append(text)
     return parts
 
 
