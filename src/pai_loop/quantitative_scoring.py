@@ -4561,6 +4561,71 @@ def _public_evidence_observations(profile: dict[str, Any] | None) -> list[Eviden
     return observations
 
 
+def bind_quantitative_company_inputs(
+    request: QuantitativeEstimateRequest,
+    company_facts: Iterable[CompanyFact] = (),
+    performance_records: Iterable[CompanyPerformanceRecord] = (),
+    *,
+    as_of: datetime,
+    bid_notice_at: datetime | None = None,
+) -> QuantitativeEstimateRequest:
+    """Resolve company evidence for an already selected, validated rule request.
+
+    This is not source authorization: source validation, coverage and authority
+    selection remain the caller's responsibility. Inactive requests are returned
+    unchanged without reading company inputs. Active requests replace any supplied
+    scoring facts with resolver outputs; neither source nor company inputs mutate.
+    """
+
+    if request.activation_status not in {"AUTO_ACTIVE", "PARTIAL_ACTIVE"}:
+        return request
+
+    # Every company resolver must see the same facts, including when the caller
+    # supplies a one-shot iterator rather than a list.
+    stored_facts = tuple(company_facts)
+    stored_records = tuple(performance_records)
+    verified_facts = resolve_verified_quantitative_facts(
+        request.criteria, stored_facts, as_of=as_of,
+    )
+    register_facts = resolve_performance_register_facts(
+        request.criteria, stored_records, as_of=as_of,
+        bid_notice_at=bid_notice_at,
+    )
+    register_facts.extend(resolve_financial_register_facts(
+        request.criteria, stored_facts, as_of=as_of,
+    ))
+    register_facts.extend(resolve_personnel_register_facts(
+        request.criteria, stored_facts, as_of=as_of,
+    ))
+    register_identities = {
+        (item.metric_key, item.fact_binding_sha256) for item in register_facts
+    }
+    register_metrics = {item.metric_key for item in register_facts}
+    # An exact immutable CompanyFact remains authoritative. A generic fact that
+    # failed the dynamic binding contract must not suppress the notice-scoped
+    # value derived from a validated register.
+    merged_facts = [
+        item
+        for item in verified_facts
+        if item.status == "CONFIRMED"
+        or (
+            (item.metric_key, item.fact_binding_sha256) not in register_identities
+            and (item.fact_binding_sha256 is not None or item.metric_key not in register_metrics)
+        )
+    ]
+    confirmed_identities = {
+        (item.metric_key, item.fact_binding_sha256)
+        for item in verified_facts
+        if item.status == "CONFIRMED"
+    }
+    merged_facts.extend(
+        item
+        for item in register_facts
+        if (item.metric_key, item.fact_binding_sha256) not in confirmed_identities
+    )
+    return request.model_copy(update={"facts": merged_facts})
+
+
 def estimate_for_notice(
     notice: Notice,
     company_facts: Iterable[CompanyFact] = (),
@@ -4569,64 +4634,11 @@ def estimate_for_notice(
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
         request = quantitative_request_from_candidate_profile(dynamic_profile)
-        if request.activation_status in {"AUTO_ACTIVE", "PARTIAL_ACTIVE"}:
-            verified_facts = resolve_verified_quantitative_facts(
-                request.criteria,
-                company_facts,
-                as_of=notice.deadline,
-            )
-            register_facts = resolve_performance_register_facts(
-                request.criteria,
-                performance_records,
-                as_of=notice.deadline,
-                bid_notice_at=getattr(notice, "published_at", None),
-            )
-            register_facts.extend(
-                resolve_financial_register_facts(
-                    request.criteria,
-                    company_facts,
-                    as_of=notice.deadline,
-                )
-            )
-            register_facts.extend(
-                resolve_personnel_register_facts(
-                    request.criteria,
-                    company_facts,
-                    as_of=notice.deadline,
-                )
-            )
-            register_identities = {
-                (item.metric_key, item.fact_binding_sha256) for item in register_facts
-            }
-            register_metrics = {item.metric_key for item in register_facts}
-            # An exact immutable CompanyFact remains authoritative.  A generic
-            # CompanyFact that failed the dynamic binding contract must not,
-            # however, suppress the notice-scoped value derived from the
-            # validated performance register.
-            merged_facts = [
-                item
-                for item in verified_facts
-                if item.status == "CONFIRMED"
-                or (
-                    (item.metric_key, item.fact_binding_sha256) not in register_identities
-                    and (item.fact_binding_sha256 is not None or item.metric_key not in register_metrics)
-                )
-            ]
-            confirmed_identities = {
-                (item.metric_key, item.fact_binding_sha256)
-                for item in verified_facts
-                if item.status == "CONFIRMED"
-            }
-            merged_facts.extend(
-                item
-                for item in register_facts
-                if (item.metric_key, item.fact_binding_sha256) not in confirmed_identities
-            )
-            request = request.model_copy(
-                update={
-                    "facts": merged_facts
-                }
-            )
+        request = bind_quantitative_company_inputs(
+            request, company_facts, performance_records,
+            as_of=notice.deadline,
+            bid_notice_at=getattr(notice, "published_at", None),
+        )
         return estimate_quantitative_score(request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
