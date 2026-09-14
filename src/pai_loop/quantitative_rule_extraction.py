@@ -45,7 +45,7 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.16"
 from .extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
     classify_record_contract,
@@ -61,7 +61,11 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     # v3: the gap gate now classifies the declaration instead of transcribing
     # observed sentences, so a record that stored this issue must be revalidated
     # before its gap can be trusted either way.
-    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v3",
+    # v4: the local-absence classifier replaced the remaining sentence regexes,
+    # so a statement stored as a terminal gap may now be a sibling-resolvable
+    # local absence. Both codes revalidate from the stored extraction.
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v4",
+    "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT": "unnamed-local-table-absence-v1",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
     # A bracket award stated as a score anywhere in its own criterion is now
@@ -8705,9 +8709,25 @@ def merge_validated_quantitative_records(
         *,
         attachment_id: str,
     ) -> bool:
+        if issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT":
+            return False
         if (
-            issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
-            or not issue.required_sibling_document_types
+            not issue.required_sibling_document_types
+            and not issue.required_sibling_label_markers
+        ):
+            # An unnamed local absence: the attachment states the scoring table
+            # is not in it and names no document that must supply one. Requiring
+            # that the declaring record carries no table of its own decides from
+            # the record what the gap wording cannot: a partial defect in a table
+            # this attachment did produce keeps blocking, while a plain "not
+            # here" is satisfied by any current attachment that independently
+            # proves a table.
+            declaring_record = bound_records.get(attachment_id)
+            if declaring_record is None or declaring_record.tables:
+                return False
+            return bool(supplying_attachment_ids - {attachment_id})
+        if (
+            not issue.required_sibling_document_types
             or not issue.required_sibling_label_markers
         ):
             return False

@@ -350,6 +350,160 @@ def _named_quantitative_table_target_terms(
     return targets
 
 
+_LOCAL_CONTAINER_PATTERN = (
+    r"(?:본|이|해당|현)\s*(?:공고서|공고문|공고|문서|첨부|자료|SOURCE|source)|"
+    r"본문|공고문|발췌본|제공된\s*문서|SOURCE|source|"
+    r"제안\s*요청서|과업\s*(?:지시서|내용서)|규격서|사양서|시방서|내역서"
+)
+_LOCAL_CONTAINER_RE = re.compile(_LOCAL_CONTAINER_PATTERN)
+# The container is the attachment being read, and the table must be missing
+# FROM it, so it carries a locative particle. ``제안요청서에 본 SOURCE가 포함되지
+# 않아`` puts a named document in that position and the attachment itself in the
+# subject: the relation is reversed and no sibling may be bound from it.
+_LOCAL_ONLY_CONTAINER_PATTERN = (
+    r"(?:본|이|해당|현)\s*(?:공고서|공고문|공고|문서|첨부|자료|SOURCE|source)|"
+    r"본문|공고문|발췌본|제공된\s*문서|SOURCE|source"
+)
+_LOCAL_CONTAINER_LOCATIVE_RE = re.compile(
+    rf"(?:{_LOCAL_ONLY_CONTAINER_PATTERN})\s*(?:본문\s*)?(?:발췌본\s*)?"
+    r"(?:에는|에도|에서는|에서|에)"
+)
+# A named document in that same locative position is where the table is missing
+# from, never the sibling that must supply it.
+_NAMED_CONTAINER_LOCATIVE_RE = re.compile(
+    r"(?:에는|에도|에서는|에서|에)"
+)
+# A pointer to somewhere else is a claim about which document carries the
+# table. When a named document can be bound the caller binds it; an unbindable
+# pointer stays closed rather than becoming "any table will do".
+_UNBOUND_POINTER_RE = re.compile(r"참조|에서만\s*확인|준용|따르도록|따른다")
+# Only documents that can carry a scoring table may be bound as the sibling
+# that must supply it. 공고문 holds the container role in these statements.
+_STRUCTURAL_SIBLING_MARKERS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("제안요청서", "제안 요청서"), ("RFP",)),
+    (("과업지시서", "과업 지시서", "과업내용서", "과업 내용서"), ("SCOPE",)),
+    (("규격서", "사양서", "세부사양", "시방서", "내역서"), ("RFP", "SCOPE")),
+)
+
+
+def _structural_sibling_terms(gap: str) -> set[str]:
+    """Return the named documents a local absence points at, if any.
+
+    A document named as the container - ``본 제안요청서에 포함되어 있지 않고`` -
+    is where the table is missing from, never the sibling that must supply it.
+    """
+
+    return {
+        marker
+        for markers, _types in _STRUCTURAL_SIBLING_MARKERS
+        for marker in markers
+        for match in re.finditer(re.escape(marker), gap)
+        if not _NAMED_CONTAINER_LOCATIVE_RE.match(
+            gap, match.end(),
+        )
+    }
+# A table this attachment did produce, described as missing one of its parts,
+# leaves the notice's rule set incomplete even when a sibling proves a table of
+# its own. The sentence path blocked these only because no regex matched them;
+# state the test explicitly so the structural path keeps the same answer.
+_PARTIAL_TABLE_SUBJECT_RE = re.compile(
+    r"(?:점수\s*)?구간|행\s*구분|배점\s*기준|세부\s*기준|등급\s*기준|"
+    r"산식|칸|셀|열\s*대응"
+)
+# A conjunct that names scoring itself restates the same missing rule; anything
+# else is a second subject this gap never proved missing.
+_CONJOINED_SCORING_SUBJECT_RE = re.compile(
+    r"배점|채점|평가\s*(?:기준|표|항목)|정량|점수|등급|산식|평점"
+)
+_PARTIAL_SCOPE_RE = re.compile(
+    r"일부|일부분|부분적|완성할\s*수\s*없|나머지|누락된\s*페이지"
+)
+
+
+def _declares_partial_table_defect(
+    gap: str, table_positions: list[re.Match[str]],
+) -> bool:
+    """True when the missing subject is a part of a table, not the table.
+
+    A parenthesis after the table names the same table again - ``배점표(세부
+    평가항목 및 배점 기준)`` - so it is removed before the test. Only a part
+    asserted as its own subject outside that apposition counts.
+    """
+
+    if _PARTIAL_SCOPE_RE.search(gap):
+        return True
+    last_table_end = max(table.end() for table in table_positions)
+    tail = re.sub(r"\([^()]{0,200}\)", " ", gap[last_table_end:])
+    return bool(_PARTIAL_TABLE_SUBJECT_RE.search(tail))
+
+
+def _conjoined_with_a_non_scoring_subject(
+    gap: str, table_positions: list[re.Match[str]],
+) -> bool:
+    """Reject only a conjunct that is not itself a scoring artifact.
+
+    ``배점표와 수행계획`` joins a second, unproved subject; ``배점표 및 정량
+    평가기준`` names the same missing rule twice. The shared sentence-path guard
+    cannot tell them apart because it never looks at what was joined.
+    """
+
+    for table in table_positions:
+        suffix = gap[table.end() : table.end() + 60]
+        following = re.match(r"\s*(?:와|과|및|·|,|，)\s*(\S.{0,40})", suffix)
+        if following and not _CONJOINED_SCORING_SUBJECT_RE.search(following.group(1)):
+            return True
+        prefix = gap[max(0, table.start() - 60) : table.start()]
+        preceding = re.search(r"(.{0,40}\S)\s*(?:와|과|및|·|,|，)\s*$", prefix)
+        if (
+            preceding
+            and not re.search(r"평가\s*항목\s*및\s*$", prefix)
+            and not _CONJOINED_SCORING_SUBJECT_RE.search(preceding.group(1))
+        ):
+            return True
+    return False
+
+
+def _declares_local_scoring_table_absence(gap: str) -> bool:
+    """Classify a local scoring-table absence instead of transcribing one.
+
+    Each sentence regex above pins one observed statement and matches with
+    ``fullmatch``, so a paraphrase of the very same fact fell through to
+    ``EXTRACTION_DECLARED_INCOMPLETE`` - a terminal code no sibling attachment
+    can satisfy - and withheld the whole notice. Measured over 3,027 distinct
+    production statements, 7 were classified and 2,192 fell through, 61% of
+    them restating this one fact in different words.
+
+    Three parts make the claim resolvable rather than terminal: a named
+    quantitative scoring table, an absence asserted about that table, and a
+    local container saying where it is missing from. The guards the sentence
+    path already applies still run first, so an unreadable cell, a partial
+    table defect, or a second missing subject keeps blocking outright.
+    """
+
+    if not asserts_scoring_artifact_absence(gap):
+        return False
+    table_positions = [
+        match
+        for term in _QUANTITATIVE_GAP_TERMS
+        for match in re.finditer(re.escape(term), gap)
+    ]
+    if not table_positions:
+        return False
+    if _conjoined_with_a_non_scoring_subject(gap, table_positions):
+        return False
+    if _declares_partial_table_defect(gap, table_positions):
+        return False
+    if not _LOCAL_CONTAINER_LOCATIVE_RE.search(gap):
+        return False
+    if _UNBOUND_POINTER_RE.search(gap) and not _structural_sibling_terms(gap):
+        return False
+    first_table_start = min(table.start() for table in table_positions)
+    return any(
+        match.start() > first_table_start
+        for match in _ABSENCE_CLAIM_RE.finditer(gap)
+    )
+
+
 def is_explicit_qualitative_only_exclusion(value: str) -> bool:
     """Return true only for an exhaustive, explicitly non-quantitative statement."""
 
@@ -420,7 +574,26 @@ def quantitative_table_local_absence_targets(
         or _MISSING_DOCUMENT_LIST_THEN_TABLE_RE.fullmatch(gap)
         or _OWNED_TABLE_IN_LOCAL_DOCUMENT_ABSENCE_RE.fullmatch(gap)
     ):
-        return None
+        if not _declares_local_scoring_table_absence(gap):
+            return None
+        named = _structural_sibling_terms(gap)
+        if named:
+            return tuple(
+                (
+                    document_types,
+                    tuple(sorted(
+                        _compact_document_label(marker)
+                        for marker in markers
+                        if marker in named
+                    )),
+                )
+                for markers, document_types in _STRUCTURAL_SIBLING_MARKERS
+                if any(marker in named for marker in markers)
+            )
+        # The statement is a local table absence that points nowhere. An empty
+        # requirement binds the issue to any current attachment that
+        # independently proves a quantitative table.
+        return ()
 
     context_positions = [
         (term, match)
