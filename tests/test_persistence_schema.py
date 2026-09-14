@@ -34,6 +34,7 @@ from pai_loop.migrations import (
     NOTICE_ANALYSIS_POLICY_MIGRATION_ID,
     PERFORMANCE_NORMALIZATION_MIGRATION_ID,
     PRESPEC_MIGRATION_ID,
+    TEAMS_FOLLOWUPS_MIGRATION_ID,
     MigrationError,
     apply_additive_migrations,
     main as migration_main,
@@ -277,6 +278,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         AWARD_OPENING_RESULT_MIGRATION_ID,
         ACCOUNT_MIGRATION_ID,
         AWARD_AGENCY_METADATA_MIGRATION_ID,
+        TEAMS_FOLLOWUPS_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
         MIGRATION_ID,
@@ -289,6 +291,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         AWARD_OPENING_RESULT_MIGRATION_ID,
         ACCOUNT_MIGRATION_ID,
         AWARD_AGENCY_METADATA_MIGRATION_ID,
+        TEAMS_FOLLOWUPS_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
@@ -314,6 +317,11 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         "account_login_buckets",
         "account_audit",
         "account_bootstrap_previews",
+        "teams_recipients",
+        "teams_session_links",
+        "teams_link_codes",
+        "teams_follows",
+        "teams_follow_deliveries",
     } <= tables
     performance_columns = {
         column["name"]
@@ -484,6 +492,7 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         AWARD_OPENING_RESULT_MIGRATION_ID,
         ACCOUNT_MIGRATION_ID,
         AWARD_AGENCY_METADATA_MIGRATION_ID,
+        TEAMS_FOLLOWUPS_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected
     assert apply_additive_migrations(engine) == expected

@@ -7839,3 +7839,44 @@ textarea:focus,
 .account-password-reset label { flex: 1 1 170px; min-width: 0; display: grid; gap: 4px; }
 .account-password-reset input { width: 100%; min-width: 0; box-sizing: border-box; }
 .account-password-reset small { flex-basis: 100%; }
+
+/* Personal Teams follows share the notice's existing review surfaces. */
+.teams-follow-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 0 0 18px; }
+.teams-follow-toolbar > span { color: var(--muted); font-size: var(--fs-sm); }
+.teams-follow-button { min-height: 36px; margin: 6px 0; padding: 7px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--teal-deep); font: inherit; font-size: var(--fs-xs); font-weight: 600; cursor: pointer; }
+.teams-follow-button[aria-pressed="true"] { border-color: var(--teal); background: var(--teal-pale); }
+.teams-follow-button:disabled { opacity: .55; cursor: default; }
+.teams-follow-button:focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
+.teams-follows-dialog { width: min(760px, calc(100vw - 24px)); }
+.teams-follows-dialog > .source-link-dialog__panel { display: flex; flex-direction: column; max-height: calc(100dvh - 48px); }
+.teams-follows-dialog .source-link-dialog__header { flex-shrink: 0; }
+.teams-follows-body { display: grid; gap: 20px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+.teams-follows-body p { margin: 0; color: var(--ink-soft); line-height: 1.7; }
+.teams-connection-panel { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
+.teams-follow-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.teams-follow-actions > .button { white-space: normal; text-align: center; }
+.teams-link-code-panel { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.teams-link-code-panel input { flex: 1 1 250px; width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); font: inherit; }
+.teams-follows-body .teams-follows-error { color: var(--red); border-left: 3px solid var(--red); padding: 8px 12px; background: var(--red-pale); }
+.teams-follows-body .teams-follows-delivery-notice { color: var(--ink); padding: 12px; border-radius: var(--radius-sm); background: var(--amber-pale); }
+.teams-pending-follow { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px; background: var(--teal-pale); border-radius: var(--radius-sm); }
+.teams-pending-follow > span { flex: 1 1 220px; }
+.teams-follows-list { display: grid; gap: 16px; margin: 12px 0 0; padding: 0; list-style: none; }
+.teams-follow-item { display: grid; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.teams-follow-item__heading { display: flex; gap: 16px; align-items: start; justify-content: space-between; }
+.teams-follow-item__heading > strong { min-width: 0; line-height: 1.7; }
+.teams-follow-item__heading > button { flex-shrink: 0; margin: 0; }
+.teams-follow-item > .text-button { justify-self: start; min-height: 36px; }
+.teams-delivery-list { display: grid; gap: 8px; list-style: none; padding: 12px; margin: 0; background: var(--surface-soft); border-radius: var(--radius-sm); }
+.teams-delivery-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: var(--fs-sm); }
+.teams-delivery-list li > span:last-child { color: var(--muted); }
+.teams-follow-note { font-size: var(--fs-sm); }
+@media (max-width: 680px) {
+  .teams-follow-toolbar { align-items: stretch; }
+  .teams-follow-toolbar > button { width: 100%; }
+  .teams-follow-button { min-height: 44px; }
+  .teams-connection-panel, .teams-follow-item { padding: 14px; }
+  .teams-follow-item__heading { flex-wrap: wrap; gap: 8px; }
+  .teams-follows-dialog .source-link-dialog__header { gap: 12px; }
+}
+@media print { .teams-follow-toolbar, .teams-follow-button, .teams-follows-dialog { display: none !important; } }

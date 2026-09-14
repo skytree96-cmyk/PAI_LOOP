@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qsl
@@ -45,6 +47,8 @@ from .result_learning import router as result_learning_router
 from .recovery_diagnostics import PATH as recovery_diagnostics_path, router as recovery_diagnostics_router
 from .schemas import HealthResponse
 from .teams_readiness import router as teams_readiness_router
+from .teams_bot import router as teams_bot_router, TeamsBotSettings
+from .teams_followups import router as teams_followups_router, dispatch_due, followups_enabled
 
 
 def _scrub_private_performance_search_query(request: Request) -> None:
@@ -107,6 +111,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if followups_enabled() and not TeamsBotSettings.from_env().enabled:
+            raise ValueError("Teams follow-up delivery requires a valid bot, tenant and HTTPS public origin")
         Base.metadata.create_all(engine)
         apply_additive_migrations(engine)
         with session_factory() as session:
@@ -115,8 +121,26 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             if settings.seed_synthetic:
                 seed_synthetic_replay(session)
             session.commit()
-        yield
-        engine.dispose()
+        async def followup_loop():
+            while True:
+                try:
+                    await asyncio.to_thread(dispatch_due, session_factory)
+                except Exception:
+                    # Do not log destination identifiers, tokens or card contents.
+                    logging.error("Teams follow-up dispatcher tick failed; pending work remains stored")
+                await asyncio.sleep(30)
+
+        followups = None
+        if followups_enabled():
+            followups = asyncio.create_task(followup_loop())
+        try:
+            yield
+        finally:
+            if followups:
+                followups.cancel()
+                with suppress(asyncio.CancelledError):
+                    await followups
+            engine.dispose()
 
     application = FastAPI(
         title="PAI LOOP API",
@@ -137,7 +161,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -192,6 +216,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(company_awards_router)
     application.include_router(analysis_persistence_router)
     application.include_router(teams_readiness_router)
+    application.include_router(teams_bot_router)
+    application.include_router(teams_followups_router)
 
     @application.get("/healthz", response_model=HealthResponse, tags=["operations"])
     def health(request: Request) -> HealthResponse:

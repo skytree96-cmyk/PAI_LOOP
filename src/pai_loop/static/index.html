@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260913-award-agency-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260914-teams-followups-v1" />
     <link rel="stylesheet" href="./top-navigation.css?v=20260913-dashboard-charts-v2" />
   </head>
   <body hidden>
@@ -314,6 +314,11 @@
                   <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" /><rect x="14" y="4" width="6" height="6" /><rect x="4" y="14" width="6" height="6" /><rect x="14" y="14" width="6" height="6" /></svg>
                 </button>
               </div>
+            </div>
+
+            <div class="teams-follow-toolbar">
+              <button class="button button--secondary" type="button" id="teamsFollowsButton" aria-haspopup="dialog" aria-controls="teamsFollowsDialog">☆ 관심 공고 · Teams 개인 알림</button>
+              <span id="teamsFollowsSummary" aria-live="polite">개인 알림 연결 상태를 확인합니다.</span>
             </div>
 
             <div class="priority-search" id="prioritySearch" role="group" aria-label="부서별 공고 우선순위 설정">
@@ -879,6 +884,7 @@
           <button class="button button--ghost" id="nextNoticeButton" type="button" aria-label="다음 공고">다음</button>
         </nav>
         <div class="drawer-header__actions">
+          <button class="button button--secondary teams-follow-button" type="button" id="detailFollowButton" aria-pressed="false">☆ 관심 등록</button>
           <button class="button button--primary" type="button" id="detailResultButton" hidden>결과 입력</button>
           <button class="button button--primary manual-analysis-detail" type="button" id="manualAnalyzeButton" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /><path d="m5.6 5.6 2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1" /><circle cx="12" cy="12" r="3.5" /></svg>
@@ -1289,6 +1295,45 @@
       </div>
     </dialog>
 
+    <dialog class="source-link-dialog teams-follows-dialog" id="teamsFollowsDialog" aria-labelledby="teamsFollowsTitle" aria-describedby="teamsFollowsHelp">
+      <div class="source-link-dialog__panel">
+        <header class="source-link-dialog__header">
+          <div><p class="section-kicker">나에게 보내는 공고 알림</p><h2 id="teamsFollowsTitle">관심 공고 · Teams 개인 알림</h2></div>
+          <button class="icon-button" id="teamsFollowsClose" type="button" aria-label="관심 공고 닫기">×</button>
+        </header>
+        <div class="source-link-dialog__body teams-follows-body">
+          <p id="teamsFollowsHelp">등록 시, 마감 5일 전 오전 9시, 마감일 오전 9시에 자격사항·정량점수·리스크와 공고 상세 링크를 개인 채팅으로 받습니다. 모든 시간은 한국 시간(KST)입니다.</p>
+          <section class="teams-connection-panel" aria-label="Teams 개인 연결">
+            <strong id="teamsFollowsStatus" role="status">연결 상태 확인 중</strong>
+            <p>내 Teams 개인 채팅을 연결한 뒤 관심 공고를 등록하세요. 공용 부서 계정을 사용해도 이 로그인에서 연결한 사람에게 알림이 갑니다. 새로 로그인하면 본인 Teams를 다시 연결합니다.</p>
+            <div class="teams-follow-actions">
+              <button class="button button--primary" id="teamsLinkButton" type="button">개인 연결 코드 만들기</button>
+              <a class="button button--secondary" id="teamsBotChatLink" target="_blank" rel="noopener noreferrer" hidden>Teams 개인 채팅 열기</a>
+              <button class="button button--secondary" id="teamsFollowsRefresh" type="button">연결·알림 상태 새로고침</button>
+            </div>
+            <div class="teams-link-code-panel" id="teamsLinkCodePanel" hidden>
+              <label for="teamsLinkCommand">아래 명령을 복사해 PAI 봇 개인 채팅에 보내세요.</label>
+              <div class="teams-follow-actions"><input id="teamsLinkCommand" type="text" readonly autocomplete="off" spellcheck="false" /><button class="button button--secondary" id="teamsLinkCopy" type="button">명령 복사</button></div>
+              <p id="teamsLinkExpiry"></p>
+              <p>봇의 연결 완료 답장을 받은 뒤 위의 새로고침 버튼을 누르세요.</p>
+            </div>
+          </section>
+          <p class="teams-follows-error" id="teamsFollowsError" role="alert" hidden></p>
+          <p class="teams-follows-delivery-notice" id="teamsFollowsDeliveryNotice" role="status" hidden></p>
+          <div class="teams-pending-follow" id="teamsPendingFollow" hidden>
+            <span id="teamsPendingFollowLabel"></span>
+            <button class="button button--primary" id="teamsPendingFollowButton" type="button">이 공고 관심 등록</button>
+          </div>
+          <section aria-labelledby="teamsFollowsListHeading">
+            <h3 id="teamsFollowsListHeading">내 관심 공고</h3>
+            <p id="teamsFollowsEmpty">연결된 개인 관심 공고를 불러옵니다.</p>
+            <ul class="teams-follows-list" id="teamsFollowsList"></ul>
+          </section>
+          <p class="teams-follow-note">이미 지난 알림 시점은 건너뜁니다. 취소되거나 마감된 공고의 예정 알림은 중단됩니다. 분석이 미완료된 정보는 미확인 상태로 표시되며, 관심 등록만으로 문서 분석을 실행하지 않습니다.</p>
+        </div>
+      </div>
+    </dialog>
+
     <dialog class="source-link-dialog account-dialog" id="accountDialog" aria-labelledby="accountDialogTitle" aria-describedby="accountDialogHelp">
       <form class="source-link-dialog__panel" id="accountLoginForm">
         <header class="source-link-dialog__header">
@@ -1403,6 +1448,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260913-award-agency-v1" defer></script>
+    <script src="./app.js?v=20260914-teams-followups-v1" defer></script>
   </body>
 </html>
