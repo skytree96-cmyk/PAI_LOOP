@@ -129,3 +129,9 @@ pytest -o addopts="--strict-markers --disable-warnings" -rfE tests/test_quantita
 추가 확인: `python -m compileall -q src tests tools`, `git diff --cached --check` 통과. `.github/workflows/ci.yml`의 **Verify public-release boundary**, **Scan tracked files for secrets and source artifacts** 두 Python 검사를 로컬에서 그대로 실행해 통과했으며 scan 대상은 추적 파일 434개였다. 이는 원격 CI·PostgreSQL·coverage 85% 게이트의 실행 결과가 아니다.
 
 과제별 커밋: A `8750511`, B `f0d4096`, C `89b2a5c`, D는 새 실적 draft 모듈·SYN·본 최종 보고서를 함께 담는 후속 커밋이다. 시작 커밋의 조상에 main의 후속 award 변경을 합치거나 rebase하지 않았다. 지정 작업 브랜치만 push 대상으로 삼으며 PR 생성·main 병합·배포·워크플로 활성화는 수행하지 않는다.
+
+## 10. 이후 사용자 승인에 따른 실제 입력 대조·연결
+
+위 A–D 당시의 범위와 결과는 그대로 보존한다. 이후 사용자가 실제 입력 대조와 연결을 요청해 로컬 private 입력을 읽었고, [실제 입력 대조](QUANTITATIVE_ACTUAL_INPUT_CHECK_20260914.md) 및 [원문·회사 입력 연결](QUANTITATIVE_CONNECTION_PROGRESS_20260914.md)에 별도로 기록했다.
+
+공통 회사자료 resolver 연결과 generator 소진 수정, 비저장 native/raw 검증 preview 및 로컬 CLI를 구현했다. 새 3파일 회귀 51/51, 관련 회귀 1,836/1,836은 별도 실행 분모다. 49건 저장 결과는 변경 전과 동일하며 새 총점 복구 0건이다. native 입력으로 검증 가능한 30건 중 18건의 별도 preview에서도 신규 총점 복구는 없었다. SYN·preview를 실제 운영 복구로 대체하지 않는다. 운영 접근·유료 호출·배포는 수행하지 않았다.
