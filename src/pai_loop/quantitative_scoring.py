@@ -1093,12 +1093,16 @@ def _estimate_criterion(
         criterion.fact_binding_sha256 is not None
         and fact.fact_binding_sha256 != criterion.fact_binding_sha256
     ):
+        missing_binding = fact.fact_binding_sha256 is None
         return _criterion_unscored(
             criterion,
-            status="UNSCORABLE",
+            status="UNSCORABLE" if missing_binding else "REVIEW",
             rationale=(
-                "회사 사실이 이 평가항목의 인정기간·범위·단위 조건에 결합되지 않아 "
-                "generic 값을 점수에 적용하지 않았습니다."
+                "회사 사실의 평가항목 결합 정보가 없어 인정기간·범위·단위 조건을 "
+                "확인할 수 없으므로 generic 값을 점수에 적용하지 않았습니다."
+                if missing_binding
+                else "회사 사실의 결합 정보가 현재 평가항목의 인정기간·범위·단위 조건과 "
+                "다릅니다. 현재 조건으로 다시 확인하기 전에는 점수에 적용하지 않습니다."
             ),
             **fact_audit,
         )

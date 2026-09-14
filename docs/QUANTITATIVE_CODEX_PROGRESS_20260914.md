@@ -9,6 +9,7 @@
 | 시작 전 테스트 오류는 제품 코드의 회귀다 | 첫 실행은 임시 디렉터리 상위 경로가 없어서 `tmp_path` 설정 27건이 오류였다. 디렉터리만 준비한 뒤 같은 10파일의 391개가 통과했다. 제품 코드는 변경하지 않았다. |
 | 과거 부분 회귀 성공이 전체 테스트 완료를 의미한다 | 전체 4,294개는 별도 직렬 실행 결과로 판정한다. 아래 분모들을 합산하지 않는다. |
 | SHA와 literal만으로 첨부 원문 전체를 검증할 수 있다 | 첨부 바이트가 없으므로 실제 포함 관계·전체 조건·소유권은 증명하지 못한다. 과제 D의 `SOURCE_VERIFIED`는 제출 literal의 파싱 단계에 한정하며 기존 원문 증명·엔진 활성 자격으로 사용하지 않는다. |
+| B 변경으로 전체 요청의 모든 stale 사실이 REVIEW로 바뀐다 | 개별 `_estimate_criterion`에 전달된 불일치 사실만 해당한다. `estimate_quantitative_score`는 다른 binding의 사실을 현재 항목에 전달하지 않으므로, 그 경우는 여전히 연결 사실 없음이다. 선택 규칙과 기존 Busan wrong-binding 금지 테스트를 유지했다. |
 
 ## 2. 확인된 환경과 시작 전 재현
 
@@ -40,7 +41,21 @@ pytest -o addopts="--strict-markers --disable-warnings" -rfE tests --basetemp=.l
 
 ## 4. B — generic/stale 결합 라벨
 
-아직 구현하지 않았다. A 완료 후 상태·문구만 분리하고 점수 값 불변을 SYN으로 확인한다.
+`src/pai_loop/quantitative_scoring.py`의 `_estimate_criterion`에서 조건 결합 정보가 없는 generic 사실은 **UNSCORABLE**, 값은 있지만 현재 항목과 다른 사실은 **REVIEW**로 분리했다. 각각 결합 정보 부재와 현재 조건 재확인 필요를 설명한다. 점수 산식·사실 선택·증빙 guard·버전은 변경하지 않았다.
+
+SYN은 두 상태 모두 `estimated_points=None`, 기존 하한/상한·confidence·증빙 식별정보 보존을 확인한다. 명시된 원문 최소점이 있는 경우도 비교하며, binding이 맞을 때의 기존 5점과 다른 binding을 현재 항목에 연결하지 않는 요청 경로를 고정한다. `None`은 확인된 0점으로 바꾸지 않는다.
+
+```text
+pytest -o addopts="--strict-markers --disable-warnings" -rfE tests/test_quantitative_fact_binding_labels.py --basetemp=.local/pytest/b-syn --junitxml=.local/test-runs/b-syn.xml
+```
+
+결과: **6/6 통과**, 2 warnings, 0.13초.
+
+```text
+pytest -o addopts="--strict-markers --disable-warnings" -rfE tests/test_quantitative_discrete_brackets.py tests/test_quantitative_financial_binding.py tests/test_busan_education_quantitative_e2e.py tests/test_quantitative_auto_activation.py tests/test_performance_manual_fact_guard.py tests/test_quantitative_scoring.py tests/test_quantitative_mainpage_refresh.py --basetemp=.local/pytest/b-regression --junitxml=.local/test-runs/b-regression.xml
+```
+
+결과: **163/163 통과**, 2 warnings, 15.22초. 앞의 SYN 및 A/시작 전 분모에 합산하지 않는다.
 
 ## 5. C — 영역 종료 진단
 
