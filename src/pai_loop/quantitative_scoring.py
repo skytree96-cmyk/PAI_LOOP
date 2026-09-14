@@ -88,7 +88,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.2"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.6"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -2549,13 +2549,22 @@ def _candidate_fact_binding_sha256(
         # bound (and every new operator) still changes the identity.
         if case.get("comparison_upper_value") is None:
             case.pop("comparison_upper_value", None)
-    return _canonical_digest(
-        {
-            "binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
-            "document_sha256": document_sha256,
-            "candidate": binding_candidate,
-        }
-    )
+    binding_payload = {
+        "binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
+        "document_sha256": document_sha256,
+        "candidate": binding_candidate,
+    }
+    if candidate.metric in {"PERFORMANCE_COUNT", "PERFORMANCE_AMOUNT"}:
+        scope = parse_performance_recognition_scope(
+            _performance_scope_literal(candidate),
+            metric_key=("company.performance.count" if candidate.metric == "PERFORMANCE_COUNT"
+                        else "company.performance.amount"),
+        )
+        binding_payload["performance_recognition_contract"] = "performance-recognition-2"
+        binding_payload["performance_scope"] = (
+            scope.model_dump(mode="json", exclude={"source_literal"}) if scope else None
+        )
+    return _canonical_digest(binding_payload)
 
 
 def _candidate_brackets(
@@ -3653,7 +3662,20 @@ def _shared_fact_key_is_explicitly_scoped(
     return len(identities) == len(candidates)
 
 
+@dataclass(frozen=True)
+class _ActivationReasonPartition:
+    notice_reasons: tuple[str, ...]
+    row_reasons: tuple[tuple[tuple[str, str, str], tuple[str, ...]], ...]
+
+
 def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[str]:
+    """Preserve the existing sorted diagnostic contract, including row failures."""
+    partition = _profile_activation_reason_partition(profile)
+    return sorted(set(partition.notice_reasons).union(
+        *(set(codes) for _identity, codes in partition.row_reasons)))
+
+
+def _profile_activation_reason_partition(profile: QuantitativeCandidateProfile) -> _ActivationReasonPartition:
     """Return stable fail-closed codes for the machine activation contract."""
 
     reasons: set[str] = set()
@@ -3684,7 +3706,9 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
         for candidates in candidates_by_fact.values()
     ):
         reasons.add("FACT_KEY_AMBIGUOUS")
+    rows = []
     for candidate in table_candidates:
+        candidate_reasons: set[str] = set()
         scoring_anchors = [item.evidence for item in candidate.brackets]
         if candidate.threshold is not None:
             scoring_anchors.append(candidate.threshold.evidence)
@@ -3702,7 +3726,7 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 for item in scoring_anchors
             )
         ):
-            reasons.add("SOURCE_ANCHOR_INCOMPLETE")
+            candidate_reasons.add("SOURCE_ANCHOR_INCOMPLETE")
         spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
         if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS:
             metric_key = str((spec or {}).get("fact_key") or "")
@@ -3720,42 +3744,42 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 performance_literal,
                 metric_key=metric_key,
             ) is None:
-                reasons.add("FACT_DIMENSIONS_UNMODELED")
+                candidate_reasons.add("FACT_DIMENSIONS_UNMODELED")
         if spec is None:
-            reasons.add("FACT_KEY_UNREGISTERED")
+            candidate_reasons.add("FACT_KEY_UNREGISTERED")
         elif (
             tuple(candidate.required_evidence) != (spec["fact_key"],)
             or len(candidate.required_evidence) != 1
         ):
-            reasons.add("FACT_EVIDENCE_KEY_UNREGISTERED")
+            candidate_reasons.add("FACT_EVIDENCE_KEY_UNREGISTERED")
         if _metric_spec(candidate) is None:
-            reasons.add("UNSUPPORTED_UNIT")
+            candidate_reasons.add("UNSUPPORTED_UNIT")
         elif not _candidate_unit_is_source_bound(candidate):
-            reasons.add("UNIT_NOT_SOURCE_BOUND")
+            candidate_reasons.add("UNIT_NOT_SOURCE_BOUND")
         elif not _candidate_bound_unit_scales_are_consistent(candidate):
-            reasons.add("BOUND_UNIT_INCONSISTENT")
+            candidate_reasons.add("BOUND_UNIT_INCONSISTENT")
         if candidate.scoring_method not in {
             "BRACKET",
             "THRESHOLD",
             "FORMULA",
             "CASE_TABLE",
         }:
-            reasons.add("UNSUPPORTED_SCORING_DSL")
+            candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is None:
-            reasons.add("UNSUPPORTED_SCORING_DSL")
+            candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         elif candidate.scoring_method == "FORMULA":
             compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
             if compiled_formula is None and compiled_categories is None:
-                reasons.add("UNSUPPORTED_SCORING_DSL")
+                candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         elif (
             candidate.scoring_method == "CASE_TABLE"
             and _compiled_case_table_contract(candidate) is None
         ):
-            reasons.add("UNSUPPORTED_SCORING_DSL")
+            candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
             if not brackets:
-                reasons.add("UNSUPPORTED_SCORING_DSL")
+                candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
             else:
                 draft = QuantitativeCriterion(
                     criterion_id="activation-check",
@@ -3776,10 +3800,13 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 )
                 error = _rule_error(draft)
                 if error and ("겹" in error or "공백" in error or "최솟값" in error or "최댓값" in error):
-                    reasons.add("BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING")
+                    candidate_reasons.add("BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING")
                 elif error:
-                    reasons.add("UNSUPPORTED_SCORING_DSL")
-    return sorted(reasons)
+                    candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
+        if candidate_reasons:
+            rows.append(((candidate.source_attachment_id, candidate.table_id, candidate.criterion_id),
+                         tuple(sorted(candidate_reasons))))
+    return _ActivationReasonPartition(tuple(sorted(reasons)), tuple(rows))
 
 
 def _partial_profile_review_criteria(
@@ -3793,12 +3820,41 @@ def _partial_profile_review_criteria(
     remaining rows satisfy the ordinary AUTO_ACTIVE contract.
     """
 
-    if profile.status != "REVIEW" or len(profile.tables) != 1:
+    if profile.status != "REVIEW" or len(profile.tables) > _MAX_LOGICAL_PROGRAM_TABLES:
         return None
-    table = profile.tables[0]
+    review_tables = [table for table in profile.tables if table.status == "REVIEW"]
+    if len(review_tables) != 1:
+        return None
+    table = review_tables[0]
+    keys = [_logical_table_key(item) for item in profile.tables]
+    if len(keys) != len(set(keys)):
+        return None
     expected = set(profile.expected_attachment_ids)
     processed = set(profile.processed_attachment_ids)
     bound = {item.attachment_id for item in profile.document_bindings}
+    # A nonempty second table may be an alternative, summary or another stage.
+    # Do not compare it only after deleting review rows or reducing their total.
+    # Only source-validated, explicitly zero-point empty companions are inert.
+    for companion in profile.tables:
+        if companion is table:
+            continue
+        source_points = re.findall(
+            r"([+-]?\d[\d,.]*)\s*점",
+            companion.total_evidence.quote if companion.total_evidence else "",
+        )
+        if (
+            companion.status != "AVAILABLE"
+            or companion.source_attachment_id not in bound
+            or companion.total_points != 0
+            or companion.criterion_ids or companion.available_criterion_ids
+            or companion.review_criterion_ids
+            or companion.minimum_score is not None or companion.minimum_evidence is not None
+            or companion.total_evidence is None
+            or companion.total_evidence.attachment_id != companion.source_attachment_id
+            or not source_points
+            or any(not re.fullmatch(r"0+(?:\.0+)?", value) for value in source_points)
+        ):
+            return None
     if (
         not profile.manifest_sha256
         or not expected
@@ -3908,6 +3964,60 @@ def _partial_profile_review_criteria(
     ]
 
 
+@dataclass(frozen=True)
+class _RowPartialActivationPlan:
+    candidates: tuple[ImmutableQuantitativeRuleCandidate, ...]
+    tables: tuple[ImmutableQuantitativeTable, ...]
+    review_criteria: tuple[QuantitativeReviewCriterion, ...]
+    reasons: tuple[str, ...]
+
+
+def _available_row_partial_plan(
+    profile: QuantitativeCandidateProfile,
+) -> _RowPartialActivationPlan | None:
+    """Quarantine compiler failures only after the full source program is valid.
+
+    Resolve totals/alternatives with every original row still present. Removing
+    rows must never manufacture a new logical subtotal or hide fact ambiguity.
+    This projection is ephemeral; raw, records and fact bindings are unchanged.
+    """
+    if profile.status != "AVAILABLE":
+        return None
+    partition = _profile_activation_reason_partition(profile)
+    if partition.notice_reasons or not partition.row_reasons:
+        return None
+    program = _logical_quantitative_program(profile)
+    bad = dict(partition.row_reasons)
+    if len({identity[:2] for identity in bad}) != 1:
+        # Multiple affected tables need explicit stage/alternative ownership.
+        return None
+    good, review = [], []
+    for candidate in program.candidates:
+        identity = (candidate.source_attachment_id, candidate.table_id, candidate.criterion_id)
+        codes = bad.get(identity)
+        if codes is None:
+            good.append(candidate)
+            continue
+        if not math.isfinite(candidate.max_points) or candidate.max_points <= 0:
+            return None
+        review.append(QuantitativeReviewCriterion(
+            criterion_id="review-" + _canonical_digest({
+                "attachment_id": identity[0], "table_id": identity[1],
+                "criterion_id": identity[2]})[:28],
+            category=candidate.metric, label=candidate.label[:300],
+            max_points=candidate.max_points, issue_codes=list(codes)))
+    if not good or len(review) != len(bad):
+        return None
+    # The full logical resolver checked the source table totals. Check the
+    # projection partition too; review maxima remain in the score denominator.
+    original_total = sum((Decimal(str(c.max_points)) for c in program.candidates), Decimal(0))
+    retained_total = sum((Decimal(str(c.max_points)) for c in (*good, *review)), Decimal(0))
+    if retained_total != original_total:
+        return None
+    return _RowPartialActivationPlan(tuple(good), program.tables, tuple(review),
+        tuple(sorted({code for codes in bad.values() for code in codes})))
+
+
 def quantitative_request_from_candidate_profile(
     profile: QuantitativeCandidateProfile,
     *,
@@ -3919,7 +4029,11 @@ def quantitative_request_from_candidate_profile(
         "dynamic-quantitative-rules-"
         f"{_canonical_digest(profile.model_dump(mode='json'))[:24]}"
     )
-    partial_review_criteria = _partial_profile_review_criteria(profile)
+    row_partial = _available_row_partial_plan(profile)
+    partial_review_criteria = (
+        list(row_partial.review_criteria) if row_partial is not None
+        else _partial_profile_review_criteria(profile)
+    )
     if profile.status != "AVAILABLE" and partial_review_criteria is None:
         issue_codes = sorted({item.code for item in profile.issues})
         not_applicable = profile.status == "NOT_APPLICABLE"
@@ -3946,6 +4060,7 @@ def quantitative_request_from_candidate_profile(
         )
 
     activation_reasons = (
+        list(row_partial.reasons) if row_partial is not None else
         sorted({item.code for item in profile.issues})
         if partial_review_criteria is not None
         else _profile_activation_reasons(profile)
@@ -3971,11 +4086,13 @@ def quantitative_request_from_candidate_profile(
         else _logical_quantitative_program(profile)
     )
     logical_candidates = (
+        row_partial.candidates if row_partial is not None else
         tuple(profile.available_candidates)
         if logical_program is None
         else logical_program.candidates
     )
-    logical_tables = tuple(profile.tables) if logical_program is None else logical_program.tables
+    logical_tables = (row_partial.tables if row_partial is not None else
+        tuple(profile.tables) if logical_program is None else logical_program.tables)
 
     bindings = {
         item.attachment_id: item.document_sha256

@@ -252,20 +252,36 @@ def test_previous_tuple_cannot_mix_with_current_contract(field):
 
 
 def test_additive_empty_upper_bound_preserves_existing_company_fact_identity():
-    from pai_loop.quantitative_scoring import _candidate_fact_binding_sha256, _canonical_digest
+    from pai_loop.quantitative_performance import parse_performance_recognition_scope
+    from pai_loop.quantitative_scoring import (
+        _candidate_fact_binding_sha256, _canonical_digest, _performance_scope_literal,
+    )
     _, _, _, record = notice_fixture(contract=PREVIOUS)
     candidate = record.available_candidates[0]
     legacy_json = candidate.model_dump(mode="json")
     for case in legacy_json["cases"]:
         case.pop("comparison_upper_value", None)
-    old_digest = _canonical_digest({"binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
-        "document_sha256": record.document_sha256, "candidate": legacy_json})
-    assert _candidate_fact_binding_sha256(candidate, document_sha256=record.document_sha256) == old_digest
+    payload = {"binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
+        "document_sha256": record.document_sha256, "candidate": legacy_json}
+    legacy_digest = _canonical_digest(payload)
+    # Since engine 1.8.5 a performance binding also carries the current
+    # recognition semantics: a deliberate one-time re-binding so that a fact
+    # attested under an older reading cannot satisfy a re-interpreted rule.
+    # The additive empty upper bound itself must still be inert.
+    assert candidate.metric == "PERFORMANCE_COUNT"
+    scope = parse_performance_recognition_scope(
+        _performance_scope_literal(candidate), metric_key="company.performance.count")
+    payload["performance_recognition_contract"] = "performance-recognition-2"
+    payload["performance_scope"] = (
+        scope.model_dump(mode="json", exclude={"source_literal"}) if scope else None)
+    current = _candidate_fact_binding_sha256(candidate, document_sha256=record.document_sha256)
+    assert current == _canonical_digest(payload)
+    assert current != legacy_digest
     changed = candidate.model_copy(update={"cases": (
         candidate.cases[0].model_copy(update={"operator": "BETWEEN", "comparison_upper_value": 6}),
         *candidate.cases[1:],
     )})
-    assert _candidate_fact_binding_sha256(changed, document_sha256=record.document_sha256) != old_digest
+    assert _candidate_fact_binding_sha256(changed, document_sha256=record.document_sha256) != current
 
 
 def test_legacy_review_original_case_rows_cannot_hide_new_vocabulary():

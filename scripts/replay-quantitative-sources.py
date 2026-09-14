@@ -7,13 +7,18 @@ Native revalidation remains a separate attachment diagnostic, never a new stored
 record and never an input to a notice/company score.
 
 Usage: python scripts/replay-quantitative-sources.py --snapshot snapshot.json
-       --source-map source-map.json --output replay.json
+       --source-map source-map.json --output replay.json [--golden golden.json]
 
 The snapshot contains notices/versions dictionaries of actual model columns.
 The source map is keyed by version ID, or a sources list containing version_id,
 native_path, canonical_path, native_sha256 and canonical_sha256. An empty object
 means native bytes are unavailable. All paths are local and explicit. Reports
 can contain company rationale and should be kept in a private location.
+
+Golden v1 is documented with SYN data in test_quantitative_replay_cli.py.
+It compares declared expectations only, never supplies facts or scoring rules.
+Conditional matches are reported separately from observed frozen-input matches;
+neither certifies live company evidence. A mismatch exits 1 after saving the report.
 """
 from __future__ import annotations
 
@@ -24,18 +29,20 @@ from datetime import date, datetime, timezone
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import socket
 import sqlite3
 import subprocess
 import sys
 from unittest.mock import patch
+from typing import Literal
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 import sqlalchemy
 from sqlalchemy import Date, DateTime, inspect, select
 from sqlalchemy.engine import Engine
@@ -72,6 +79,158 @@ def local_path(value):
 
 def load_json(path):
     return json.loads(local_path(path).read_text(encoding="utf-8-sig"))
+
+
+class GoldenModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class GoldenCriterion(GoldenModel):
+    criterion_id: str = Field(min_length=1, max_length=300)
+    status: Literal["CONFIRMED", "ESTIMATED", "REVIEW", "UNSCORABLE", "OUT_OF_SCOPE"]
+    # This is the row's estimated_points, not its maximum or a missing-value zero.
+    points: float | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_points(self):
+        if self.criterion_id != self.criterion_id.strip():
+            raise ValueError("GOLDEN_ID_INVALID")
+        if (self.status in {"REVIEW", "UNSCORABLE", "OUT_OF_SCOPE"} and self.points is not None
+                or self.status == "CONFIRMED" and self.points is None):
+            raise ValueError("GOLDEN_STATUS_POINTS_INVALID")
+        return self
+
+
+class GoldenSubtotal(GoldenModel):
+    overall_status: Literal["CONFIRMED", "ESTIMATED", "REVIEW", "UNSCORABLE"]
+    total_max_points: float | None = Field(ge=0)
+    estimated_points: float | None = Field(ge=0)
+    lower_points: float | None = Field(ge=0)
+    upper_points: float | None = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_range(self):
+        if self.overall_status in {"REVIEW", "UNSCORABLE"} and self.estimated_points is not None:
+            raise ValueError("GOLDEN_STATUS_POINTS_INVALID")
+        if self.overall_status == "CONFIRMED" and self.estimated_points is None:
+            raise ValueError("GOLDEN_STATUS_POINTS_INVALID")
+        if self.lower_points is not None and self.upper_points is not None and self.lower_points > self.upper_points:
+            raise ValueError("GOLDEN_RANGE_INVALID")
+        if self.total_max_points is not None and any(
+            value is not None and value > self.total_max_points
+            for value in (self.estimated_points, self.lower_points, self.upper_points)
+        ):
+            raise ValueError("GOLDEN_RANGE_INVALID")
+        return self
+
+
+class GoldenCase(GoldenModel):
+    notice_key: str = Field(min_length=1, max_length=300)
+    expectation_basis: Literal["OBSERVED_FROZEN_INPUTS", "CONDITIONAL"]
+    criteria: list[GoldenCriterion] = Field(max_length=1000)
+    subtotal: GoldenSubtotal | None
+
+    @model_validator(mode="after")
+    def unique_expectations(self):
+        if self.notice_key != self.notice_key.strip() or not self.criteria and self.subtotal is None:
+            raise ValueError("GOLDEN_CASE_EMPTY_OR_INVALID")
+        if len({row.criterion_id for row in self.criteria}) != len(self.criteria):
+            raise ValueError("GOLDEN_DUPLICATE_CRITERION_ID")
+        return self
+
+
+class GoldenFile(GoldenModel):
+    version: Literal["quantitative-replay-golden-1"]
+    # Absolute points, with no relative tolerance; null is never numeric zero.
+    absolute_tolerance: float = Field(ge=0, le=0.01)
+    cases: list[GoldenCase] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def unique_notices(self):
+        if len({case.notice_key for case in self.cases}) != len(self.cases):
+            raise ValueError("GOLDEN_DUPLICATE_NOTICE_KEY")
+        return self
+
+
+def load_golden(path):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("GOLDEN_DUPLICATE_JSON_KEY")
+            result[key] = value
+        return result
+    def invalid_constant(_value):
+        raise ValueError("GOLDEN_NONFINITE_NUMBER")
+    content = local_path(path).read_bytes()
+    if len(content) > 2_000_000:
+        raise ValueError("GOLDEN_SIZE_LIMIT")
+    try:
+        raw = json.loads(content.decode("utf-8-sig"), object_pairs_hook=unique_object,
+                         parse_constant=invalid_constant)
+        return GoldenFile.model_validate(raw)
+    except (ValidationError, json.JSONDecodeError, UnicodeError):
+        # Do not echo arbitrary source/fact text accidentally placed in a golden.
+        raise ValueError("GOLDEN_SCHEMA_INVALID") from None
+
+
+def compare_golden(golden, results):
+    by_notice = {row["notice_key"]: row for row in results}
+    if len(by_notice) != len(results):
+        raise ValueError("DUPLICATE_REPLAY_NOTICE_KEY")
+    if any(case.notice_key not in by_notice for case in golden.cases):
+        raise ValueError("GOLDEN_NOTICE_NOT_IN_SNAPSHOT")
+    def number_matches(actual, expected):
+        if actual is None or expected is None:
+            return actual is expected
+        return (type(actual) in {int, float} and math.isfinite(actual)
+                and math.isclose(actual, expected, rel_tol=0.0, abs_tol=golden.absolute_tolerance))
+    cases = []
+    for expected in golden.cases:
+        actual = by_notice[expected.notice_key]["estimate"]
+        rows = actual["criteria"]
+        row_counts = Counter(row["criterion_id"] for row in rows)
+        expected_ids = {row.criterion_id for row in expected.criteria}
+        compared = []
+        for criterion in expected.criteria:
+            count = row_counts[criterion.criterion_id]
+            if count != 1:
+                compared.append({"criterion_id": criterion.criterion_id, "matched": False,
+                    "result": "UNMATCHED" if not count else "AMBIGUOUS", "mismatched_fields": []})
+                continue
+            row = next(row for row in rows if row["criterion_id"] == criterion.criterion_id)
+            mismatches = [name for name, matches in (
+                ("status", row["status"] == criterion.status),
+                ("points", number_matches(row["estimated_points"], criterion.points)),
+            ) if not matches]
+            compared.append({"criterion_id": criterion.criterion_id, "matched": not mismatches,
+                "result": "MATCH" if not mismatches else "MISMATCH", "mismatched_fields": mismatches})
+        subtotal = None
+        if expected.subtotal is not None:
+            mismatches = [key for key, value in expected.subtotal.model_dump().items()
+                if not (actual[key] == value if key == "overall_status" else number_matches(actual[key], value))]
+            subtotal = {"matched": not mismatches, "mismatched_fields": mismatches}
+        matched = all(row["matched"] for row in compared) and (subtotal is None or subtotal["matched"])
+        cases.append({"notice_key": expected.notice_key, "expectation_basis": expected.expectation_basis,
+            "declared_expectations_match": matched, "criteria": compared, "subtotal": subtotal,
+            "expected_criterion_count": len(compared), "actual_criterion_count": len(rows),
+            "unchecked_actual_criterion_count": sum(row["criterion_id"] not in expected_ids for row in rows),
+            "criterion_coverage_complete": set(row_counts) == expected_ids and all(v == 1 for v in row_counts.values())})
+    rates = {}
+    for basis in ("OBSERVED_FROZEN_INPUTS", "CONDITIONAL"):
+        selected = [case for case in cases if case["expectation_basis"] == basis]
+        matched = sum(case["declared_expectations_match"] for case in selected)
+        rates[basis] = {"expected_cases": len(selected), "matched_cases": matched,
+            "failed_cases": len(selected) - matched, "declared_case_match_rate": matched / len(selected) if selected else None}
+    return {"version": golden.version, "golden_sha256": digest(golden.model_dump(mode="json")),
+        "absolute_tolerance": golden.absolute_tolerance, "relative_tolerance": 0,
+        "points_field": "criterion.estimated_points", "cohort_notices": len(results),
+        "golden_notices": len(cases), "unchecked_cohort_notices": len(results) - len(cases),
+        "cohort_coverage_complete": len(results) == len(cases), "rates_by_expectation_basis": rates,
+        "all_declared_expectations_match": all(case["declared_expectations_match"] for case in cases),
+        "live_company_evidence_verified": False,
+        "limitation": "Only declared expectations are compared; conditional matches never count as observed matches or certify company evidence.",
+        "cases": cases}
 
 
 class ForbiddenEffect(BaseException):
@@ -157,6 +316,10 @@ def orm_row(model, row):
 
 
 def load_notices(snapshot):
+    for field in ("id", "notice_key"):
+        values = [row[field] for row in snapshot["notices"]]
+        if len(values) != len(set(values)):
+            raise ValueError("DUPLICATE_SNAPSHOT_NOTICE_IDENTITY")
     notices = {row["id"]: orm_row(Notice, row) for row in snapshot["notices"]}
     versions = snapshot.get("versions")
     if versions is None:
@@ -288,6 +451,51 @@ def score_summary(score):
         ("criterion_id", "status", "estimated_points", "lower_points", "upper_points", "rationale")}
         for row in score.criteria]
     return result
+
+
+def stage_funnel(profile, request, estimate):
+    """Dynamic compilation and actual scorer output have distinct authority.
+
+    The scorer can select a curated profile, so its activation/rows must not be
+    attributed to the dynamic request or to an attachment-only raw diagnostic.
+    """
+    return {"profile_status": profile.status if profile is not None else "NONE",
+        "activation_status": estimate.activation_status,
+        "compiled_activation_status": request.activation_status if request is not None else "NONE",
+        "criteria": len(request.criteria) if request is not None else 0,
+        "review_criteria": len(request.review_criteria) if request is not None else 0,
+        "criterion_status_counts": dict(Counter(row.status for row in estimate.criteria)),
+        "numeric_criterion_count": sum(row.estimated_points is not None for row in estimate.criteria),
+        "numeric_total": estimate.estimated_points is not None,
+        "overall_status": estimate.overall_status}
+
+
+def aggregate_stage_funnel(results):
+    rows = [result["stage_funnel"] for result in results]
+    predicates = (
+        ("snapshot_notices", lambda r: True),
+        ("dynamic_profile_present", lambda r: r["profile_status"] != "NONE"),
+        ("dynamic_profile_available", lambda r: r["profile_status"] == "AVAILABLE"),
+        ("dynamic_profile_review", lambda r: r["profile_status"] == "REVIEW"),
+        ("dynamic_request_has_criteria", lambda r: r["criteria"] > 0),
+        ("dynamic_request_has_review_criteria", lambda r: r["review_criteria"] > 0),
+        ("runtime_auto_active", lambda r: r["activation_status"] == "AUTO_ACTIVE"),
+        ("runtime_partial_active", lambda r: r["activation_status"] == "PARTIAL_ACTIVE"),
+        ("runtime_has_numeric_criterion", lambda r: r["numeric_criterion_count"] > 0),
+        ("runtime_has_numeric_total", lambda r: r["numeric_total"]),
+        ("runtime_confirmed_numeric_total", lambda r: r["numeric_total"] and r["overall_status"] == "CONFIRMED"),
+    )
+    return {"notice_denominator": len(rows),
+        "interpretation": "Stages and branches, not nested counts: profile/compiled fields use the dynamic profile; runtime fields use the actual scorer, including curated routing.",
+        "attachment_diagnostics_included": False,
+        "table": [{"stage": name, "notices": sum(predicate(row) for row in rows),
+                   "denominator": len(rows)} for name, predicate in predicates],
+        "profile_status_counts": dict(Counter(row["profile_status"] for row in rows)),
+        "activation_status_counts": dict(Counter(row["activation_status"] for row in rows)),
+        "compiled_activation_status_counts": dict(Counter(row["compiled_activation_status"] for row in rows)),
+        "compiled_criteria": sum(row["criteria"] for row in rows),
+        "compiled_review_criteria": sum(row["review_criteria"] for row in rows),
+        "criterion_status_counts": dict(sum((Counter(row["criterion_status_counts"]) for row in rows), Counter()))}
 
 
 def raw_candidate_comparison(results):
@@ -435,6 +643,7 @@ def replay_notice(notice, facts=(), records=(), sources=None):
             "compiled_request": None if request is None else {
                 "activation_status": request.activation_status, "activation_reasons": request.activation_reasons,
                 "criteria": len(request.criteria), "review_criteria": len(request.review_criteria)},
+            "stage_funnel": stage_funnel(profile, request, estimate),
             "estimate": score_summary(estimate), "source_attempts": source_rows,
             "original_source_payloads_unchanged": True}
 
@@ -444,6 +653,8 @@ def main(argv=None):
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--company-snapshot", type=Path)
     parser.add_argument("--source-map", type=Path, required=True)
+    parser.add_argument("--golden", type=Path,
+        help="Strict SYN-documented v1 expectations; comparison only, never company inputs")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     args.output = local_path(args.output)
@@ -455,6 +666,7 @@ def main(argv=None):
         "src/pai_loop/quantitative_rule_extraction.py", "src/pai_loop/quantitative_scoring.py",
         "src/pai_loop/quantitative_source_revalidation.py")}
     snapshot = load_json(args.snapshot)
+    golden = load_golden(args.golden) if args.golden else None
     company = load_json(args.company_snapshot) if args.company_snapshot else None
     source_map = load_json(args.source_map) if args.source_map else {}
     if isinstance(source_map, dict) and "sources" in source_map:
@@ -465,6 +677,9 @@ def main(argv=None):
         source_map = {row["version_id"]: row for row in source_map}
     with no_external_effects() as calls:
         notices = load_notices(snapshot)
+        if golden is not None and any(case.notice_key not in {notice.notice_key for notice in notices}
+                                      for case in golden.cases):
+            raise ValueError("GOLDEN_NOTICE_NOT_IN_SNAPSHOT")
         facts, records, company_audit = load_company(company)
         results = [replay_notice(notice, facts, records, source_map) for notice in notices]
         assert not calls, "EXTERNAL_EFFECT_ATTEMPTED"
@@ -488,7 +703,9 @@ def main(argv=None):
         "confirmed_total_count": sum(r["estimate"]["overall_status"] == "CONFIRMED" for r in results),
         "company_score_basis": "SUPPLIED_FROZEN_SUBSET_ONLY_NOT_LIVE_DB_EVIDENCE_AUDIT",
         "raw_candidate_comparison": raw_candidate_comparison(results),
+        "stage_funnel": aggregate_stage_funnel(results),
     }
+    golden_comparison = compare_golden(golden, results) if golden is not None else None
     output = {"purpose": "OFFLINE_DIAGNOSTIC_REPLAY_ONLY", "persistence_eligible": False,
         "measured_at": datetime.now(timezone.utc).isoformat(), "snapshot_sha256": digest(snapshot),
         "source_map_sha256": digest(source_map), "company_snapshot": company_audit,
@@ -499,7 +716,7 @@ def main(argv=None):
         "limitations": ["Pure actual domain stages plus one exact frozen SELECT; execution lease, idempotency transaction and persisted API snapshot are not exercised.",
                        "Native revalidation is attachment-only diagnostic; its output is never merged into the stored production path.",
                        "No missing company evidence or contract IDs are synthesized; missing fields in this frozen subset do not establish absence from the live database."],
-        "aggregate": aggregate, "cases": results}
+        "aggregate": aggregate, "golden_comparison": golden_comparison, "cases": results}
     args.output.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     comparison = aggregate["raw_candidate_comparison"]
     print(json.dumps({"output": str(args.output), "notices": len(results),
@@ -507,8 +724,10 @@ def main(argv=None):
         "raw_diagnostic_counts": aggregate["raw_source_diagnostic_counts"],
         "frozen_candidate_count": comparison["frozen_canonical_comparison_only"]["available_candidates"],
         "current_candidate_count": comparison["current_native_parser"]["available_candidates"],
+        "golden_rates_by_expectation_basis": golden_comparison["rates_by_expectation_basis"] if golden_comparison else None,
         "external_calls": dict(calls)}, ensure_ascii=False))
+    return 1 if golden_comparison is not None and not golden_comparison["all_declared_expectations_match"] else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Iterable, Literal
@@ -31,6 +32,9 @@ class PerformanceRecognitionScope(PerformanceQuantModel):
     metric_key: Literal["company.performance.amount", "company.performance.count"]
     lookback_years: int = Field(ge=1, le=10)
     similarity_keywords: tuple[str, ...] = Field(default=(), max_length=12)
+    # Each group is AND; groups are alternatives. This preserves a shared
+    # qualifier in e.g. "telephone OR video foreign-language courses".
+    similarity_keyword_groups: tuple[tuple[str, ...], ...] = Field(default=(), max_length=4)
     match_mode: Literal["ALL", "ANY"] = "ALL"
     counterparty_scope: PerformanceCounterpartyScope = "UNSPECIFIED"
     counterparty_keywords: tuple[str, ...] = Field(default=(), max_length=8)
@@ -60,7 +64,13 @@ class PerformanceRecognitionScope(PerformanceQuantModel):
             raise ValueError("public-sector scope requires source-bound counterparty keywords")
         if self.counterparty_scope == "UNSPECIFIED" and self.counterparty_keywords:
             raise ValueError("unspecified counterparty scope must not carry keywords")
-        if not self.similarity_keywords and not self.manual_verification_conditions:
+        if self.similarity_keyword_groups and (
+            self.similarity_keywords
+            or any(not group or len(group) > 6 or any(not word.strip() for word in group)
+                   for group in self.similarity_keyword_groups)
+        ):
+            raise ValueError("compound similarity groups must be bounded and unambiguous")
+        if not self.similarity_keywords and not self.similarity_keyword_groups and not self.manual_verification_conditions:
             raise ValueError("automatic register recognition requires a similarity scope")
         if self.manual_verification_conditions != _manual_recognition_conditions(self.source_literal):
             # Old persisted scopes may predate these fields. Loading them is
@@ -181,11 +191,37 @@ _PARTICIPANT_BOUND_RE = re.compile(
     r"|최소\s*\d[\d,]*\s*(?:인|명)(?![가-힣])"
 )
 _ANNUAL_CONTRACT_AMOUNT_RE = re.compile(
-    r"연간\s*(?:기준\s*)?(?:총\s*)?계약\s*금액"
+    r"연간\s*(?:기준\s*)?(?:총\s*)?(?:계약\s*)?금액"
 )
 _ANNUAL_CONTRACT_CONDITION_RE = re.compile(
     _ANNUAL_CONTRACT_AMOUNT_RE.pattern
     + rf"\s*\d[\d,]*(?:\.\d+)?\s*{_AMOUNT_UNIT_PATTERN}\s*(?:이상|초과|이하|미만)"
+)
+_FIXED_PERIOD_DATE_PATTERN = (
+    r"(?:20\d{2}\s*(?:년(?:\s*\d{1,2}\s*월(?:\s*\d{1,2}\s*일)?)?"
+    r"|[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{1,2})?\.?))"
+)
+_FIXED_RECOGNITION_PERIOD_RE = re.compile(
+    _FIXED_PERIOD_DATE_PATTERN
+    + r"\s*(?:부터|[~∼～])\s*(?:(?:입찰\s*)?공고일(?:\s*(?:전일|전|까지))?"
+    + "|" + _FIXED_PERIOD_DATE_PATTERN + ")"
+)
+_SUBCONTRACT_CONDITION_RE = re.compile(
+    r"(?:발주(?:처|기관|자)[^.\n;]{0,50}승인[^.\n;]{0,35}하도급[^.\n;]{0,70}"
+    r"|하도급[^.\n;]{0,70}(?:승인|인정|제외|포함)[^.\n;]{0,35})"
+)
+_ISSUER_CONDITION_RE = re.compile(
+    r"(?:관련\s*협회\s*(?:또는|및)\s*)?"
+    r"(?:공공\s*기관|국가\s*기관|정부\s*기관|지방\s*자치\s*단체|지자체)"
+    r"(?:의|에서|으로부터|이)?\s*(?:직접\s*)?(?:확인(?:을)?\s*(?:받|한)|발급|발행)"
+    r"[^.\n;]{0,100}?(?:실적\s*증명(?:서|원))"
+)
+_COMPOUND_SERVICE_RE = re.compile(
+    r"(?P<left>[가-힣A-Za-z]{2,20})\s+또는\s+(?P<right>[가-힣A-Za-z]{2,20})\s+"
+    r"(?P<qualifier>[가-힣A-Za-z]{2,20})\s*(?:과정|프로그램)\s*(?:수행\s*)?실적"
+)
+_DIRECT_SERVICE_COUNT_RE = re.compile(
+    r"(?P<scope>[가-힣A-Za-z]{2,20})\s*(?:실시|수행)\s*(?:건수|실적)"
 )
 _DEADLINE_ANCHOR_RE = re.compile(
     r"(?:제안서\s*)?(?:제출\s*)?(?:마감|마감일|기한)(?:을|를)?\s*기준"
@@ -218,6 +254,8 @@ _SCOPE_RE = re.compile(
     r"(?:관련|분야의?)\s*(?:유사\s*)?(?:사업|용역|교육|컨설팅)?"
 )
 _GENERIC_SCOPE_WORDS = {
+    "당해용역", "당해", "이행실적", "이행실적은", "이행실적으로", "자체",
+    "과정", "프로그램", "사업수행", "용역수행",
     "공고일",
     "공고일자",
     "입찰공고일",
@@ -238,6 +276,13 @@ _GENERIC_SCOPE_WORDS = {
     "실적",
     "정량평가",
 }
+
+
+def _normalized_source_text(text: str | None) -> str:
+    # Every recognition regex assumes ASCII digits, letters and punctuation.
+    # Full-width characters in a source literal must not hide a condition from
+    # the request/derivation path while the fact-binding path already sees it.
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip()
 
 
 def _normalize_keyword(value: str) -> str:
@@ -274,6 +319,12 @@ def _parenthetical_scope_keywords(literal: str) -> tuple[str, ...]:
 def _scope_keywords(literal: str) -> tuple[str, ...]:
     if parenthetical := _parenthetical_scope_keywords(literal):
         return parenthetical
+    direct = tuple(dict.fromkeys(
+        match.group("scope") for match in _DIRECT_SERVICE_COUNT_RE.finditer(literal)
+        if match.group("scope") not in _GENERIC_SCOPE_WORDS
+    ))
+    if len(direct) == 1:
+        return direct
     match = _SCOPE_RE.search(literal)
     if match is None:
         explicit = re.search(
@@ -320,9 +371,57 @@ def _counterparty_keywords(text: str) -> tuple[str, ...]:
         ("국가기관", r"국가\s*기관"),
         ("정부기관", r"정부\s*기관"),
     ):
-        if re.search(pattern, text) and label not in values:
+        # Only an explicit certificate-issuer phrase is excluded. A separate
+        # occurrence imposing a public-client restriction must still survive.
+        issuer_spans = [match.span() for match in _ISSUER_CONDITION_RE.finditer(text)]
+        client_mentions = [match for match in re.finditer(pattern, text)
+                           if not any(start <= match.start() < end for start, end in issuer_spans)]
+        if client_mentions and label not in values:
             values.append(label)
     return tuple(values)
+
+
+def _compound_service_groups(text: str) -> tuple[tuple[str, ...], ...]:
+    matches = list(_COMPOUND_SERVICE_RE.finditer(text))
+    for match in matches:
+        # Compile only a closed scope clause. An arbitrary learner qualifier
+        # before the alternatives (e.g. adult learners) cannot be discarded.
+        prefix = re.split(r"[.;\n]", text[:match.start()])[-1]
+        if not re.fullmatch(
+            r"\s*(?:\d+\)\s*)?(?:(?:주요\s*)?(?:사업|용역)\s*"
+            r"(?:내역|내용|실적)(?:은|는)?\s*)?"
+            r"(?:최근\s*\d{1,2}\s*(?:개)?년\s*(?:이내|동안)?\s*)?", prefix
+        ):
+            return ()
+        suffix = re.split(r"[.;\n]", text[match.end():], maxsplit=1)[0].strip()
+        if suffix and not (
+            suffix.startswith("중 ") and _ANNUAL_CONTRACT_AMOUNT_RE.search(suffix)
+        ):
+            # The one supported tail is retained as a manual-only condition;
+            # other trailing modifiers need an explicit grammar of their own.
+            return ()
+    groups = {((match.group("left"), match.group("qualifier")),
+               (match.group("right"), match.group("qualifier"))) for match in matches}
+    residual = _COMPOUND_SERVICE_RE.sub(" ", text)
+    if _scope_keywords(residual) or re.search(r"[가-힣A-Za-z]{2,30}\s*(?:대상|전용|한정)", residual):
+        # Do not discard another service/learner restriction when compiling
+        # the compact OR grammar. The combined scope needs explicit review.
+        return ()
+    return next(iter(groups)) if len(groups) == 1 else ()
+
+
+def _consortium_share_rule(text: str) -> Literal["APPLY_SHARE", "FULL_AMOUNT", "UNSPECIFIED"] | None:
+    # Weighting this bid's members' evaluation scores is a different program
+    # from recognizing the bidder's share of a past performance contract.
+    if re.search(r"공동수급[^.\n;]{0,180}(?:점수|평점|배점)[^.\n;]{0,75}(?:합산|가중|적용)", text):
+        return None
+    apply = bool(re.search(
+        r"(?:공동수급|공동도급|공동계약|컨소시엄)[^.\n;]{0,80}"
+        r"(?:지분(?:율)?|참여\s*비율)[^.\n;]{0,35}(?:적용|반영|따른|실적(?:만)?\s*인정|만\s*기재)", text))
+    full = bool(re.search(r"(?:공동수급|공동도급|컨소시엄)[^.\n;]{0,40}(?:전체|전액)\s*인정", text))
+    if apply and full:
+        return None
+    return "APPLY_SHARE" if apply else "FULL_AMOUNT" if full else "UNSPECIFIED"
 
 
 def _lookback_anchor_basis(text: str) -> PerformanceLookbackAnchor | None:
@@ -340,22 +439,31 @@ def _unsupported_recognition_reason(text: str) -> str | None:
     # These are source-bound eligibility dimensions, not project-description
     # keywords. The register has no attested per-contract participant count or
     # annual contract-amount basis; a total amount/overview cannot prove them.
+    text = _normalized_source_text(text)
     if _PARTICIPANT_BOUND_RE.search(text):
         return "원문 실적 인정조건의 참여 인원 기준을 실적별 검증자료에 연결할 수 없어 자동 집계를 중지했습니다."
     if _ANNUAL_CONTRACT_AMOUNT_RE.search(text):
         return "원문 실적 인정조건의 연간 계약금액 기준을 실적별 검증자료에 연결할 수 없어 자동 집계를 중지했습니다."
+    if _FIXED_RECOGNITION_PERIOD_RE.search(text):
+        return "원문의 고정 실적기간과 최근 연수 기준의 적용관계를 확인해야 하므로 자동 집계를 중지했습니다."
+    if _SUBCONTRACT_CONDITION_RE.search(text):
+        return "하도급 실적의 승인·인정 조건을 실적별 증빙에 연결할 수 없어 자동 집계를 중지했습니다."
+    if _ISSUER_CONDITION_RE.search(text):
+        return "실적증명 확인기관 조건을 발주처 제한과 구분했으나 발급기관 증빙을 확인할 수 없어 자동 집계를 중지했습니다."
     return None
 
 
 def _manual_recognition_conditions(text: str) -> tuple[str, ...]:
     """Preserve known, record-unprovable conditions without inventing facts."""
-    normalized = re.sub(r"\s+", " ", text).strip()
+    normalized = _normalized_source_text(text)
     spans = [(m.start(), m.group()) for m in _PARTICIPANT_BOUND_RE.finditer(normalized)]
     annual = list(_ANNUAL_CONTRACT_CONDITION_RE.finditer(normalized))
     if annual:
         spans.extend((m.start(), m.group()) for m in annual)
     else:
         spans.extend((m.start(), m.group()) for m in _ANNUAL_CONTRACT_AMOUNT_RE.finditer(normalized))
+    for pattern in (_FIXED_RECOGNITION_PERIOD_RE, _SUBCONTRACT_CONDITION_RE, _ISSUER_CONDITION_RE):
+        spans.extend((match.start(), match.group()) for match in pattern.finditer(normalized))
     return tuple(dict.fromkeys(value for _, value in sorted(spans)))
 
 
@@ -373,26 +481,35 @@ def parse_performance_recognition_scope(
 
     if metric_key not in {"company.performance.amount", "company.performance.count"}:
         return None
-    text = re.sub(r"\s+", " ", literal).strip()
+    text = _normalized_source_text(literal)
     if not text or len(text) > 2_000:
         return None
     manual_conditions = _manual_recognition_conditions(text)
     lookback = _LOOKBACK_RE.search(text)
-    keywords = _scope_keywords(text)
-    if lookback is None or (not keywords and not manual_conditions):
+    groups = _compound_service_groups(text)
+    if _COMPOUND_SERVICE_RE.search(text) and not groups:
+        return None
+    keywords = () if groups else _scope_keywords(text)
+    if lookback is None or (not keywords and not groups and not manual_conditions):
+        return None
+    if len({match.group("years") for match in _LOOKBACK_RE.finditer(text)}) > 1:
         return None
     parenthetical_keywords = _parenthetical_scope_keywords(text)
     counterparties = _counterparty_keywords(text)
     anchor_basis = _lookback_anchor_basis(text)
     if anchor_basis is None:
         return None
-    if re.search(
+    vat_excluded = re.search(
         r"(?:VAT|부가(?:가치)?세)\s*(?:제외|별도|미포함)",
         text,
         re.IGNORECASE,
-    ):
+    )
+    vat_included = re.search(r"(?:VAT|부가(?:가치)?세)\s*포함", text, re.IGNORECASE)
+    if vat_excluded and vat_included:
+        return None
+    if vat_excluded:
         vat_basis: PerformanceVatBasis = "EXCLUDED"
-    elif re.search(r"(?:VAT|부가(?:가치)?세)\s*포함", text, re.IGNORECASE):
+    elif vat_included:
         vat_basis = "INCLUDED"
     else:
         vat_basis = "UNSPECIFIED"
@@ -425,22 +542,16 @@ def parse_performance_recognition_scope(
         if parsed_minimum is None:
             return None
         minimum = parsed_minimum
-    if re.search(
-        r"(?:공동수급|공동도급|공동계약|컨소시엄).{0,50}"
-        r"(?:지분(?:율)?|참여\s*비율).{0,20}(?:적용|반영|따른)",
-        text,
-    ):
-        share_rule: Literal["APPLY_SHARE", "FULL_AMOUNT", "UNSPECIFIED"] = "APPLY_SHARE"
-    elif re.search(r"(?:공동수급|공동도급|컨소시엄).{0,40}(?:전체|전액)\s*인정", text):
-        share_rule = "FULL_AMOUNT"
-    else:
-        share_rule = "UNSPECIFIED"
+    share_rule = _consortium_share_rule(text)
+    if share_rule is None:
+        return None
 
     try:
         return PerformanceRecognitionScope(
             metric_key=metric_key,
             lookback_years=int(lookback.group("years")),
             similarity_keywords=keywords,
+            similarity_keyword_groups=groups,
             match_mode="ANY" if parenthetical_keywords else "ALL",
             counterparty_scope=("PUBLIC_SECTOR" if counterparties else "UNSPECIFIED"),
             counterparty_keywords=counterparties,
@@ -554,7 +665,7 @@ def _performance_register_digest(
 ) -> str:
     payload = {
         "binding_schema": "pai-loop-performance-quantitative-binding-1.1.0",
-        "algorithm_version": "performance-recognition-0.3.1",
+        "algorithm_version": "performance-recognition-0.4.1",
         "evaluation": {
             "as_of_basis": as_of_basis,
             "as_of_date": as_of_date.isoformat(),
@@ -727,7 +838,8 @@ def derive_performance_value(
     as_of: datetime,
     as_of_basis: PerformanceLookbackAnchor = "UNSPECIFIED",
 ) -> DerivedPerformanceValue:
-    unsupported_reason = _unsupported_recognition_reason(scope.source_literal)
+    source_literal = _normalized_source_text(scope.source_literal)
+    unsupported_reason = _unsupported_recognition_reason(source_literal)
     if unsupported_reason is not None:
         # Rule parsing is independent of company proof. Recheck stored scopes
         # too, including scopes created before manual conditions were modeled.
@@ -737,7 +849,13 @@ def derive_performance_value(
         return DerivedPerformanceValue(
             status="REVIEW", rationale="저장된 추가 실적인정 조건과 원문이 일치하지 않아 자동 집계를 중지했습니다.",
         )
-    source_anchor = _lookback_anchor_basis(scope.source_literal)
+    groups = _compound_service_groups(source_literal)
+    if groups != scope.similarity_keyword_groups:
+        return DerivedPerformanceValue(status="REVIEW", rationale="원문의 복합 유사범위와 저장된 인정조건이 일치하지 않아 자동 집계를 중지했습니다.")
+    source_share = _consortium_share_rule(source_literal)
+    if source_share is None or (source_share != "UNSPECIFIED" and source_share != scope.consortium_share_rule):
+        return DerivedPerformanceValue(status="REVIEW", rationale="원문의 공동수급 지분 조건과 저장된 인정조건이 일치하지 않아 자동 집계를 중지했습니다.")
+    source_anchor = _lookback_anchor_basis(source_literal)
     if source_anchor is None or (
         source_anchor != "UNSPECIFIED"
         and source_anchor != scope.lookback_anchor_basis
@@ -746,6 +864,10 @@ def derive_performance_value(
             status="REVIEW",
             rationale="원문 실적 인정기간 기준일과 저장된 인정조건이 일치하지 않아 자동 계산을 중지했습니다.",
         )
+    if _LOOKBACK_RE.search(source_literal):
+        reparsed = parse_performance_recognition_scope(source_literal, metric_key=scope.metric_key)
+        if reparsed is None or reparsed.model_dump(exclude={"source_literal"}) != scope.model_dump(exclude={"source_literal"}):
+            return DerivedPerformanceValue(status="REVIEW", rationale="원문 실적인정 조건의 현재 해석과 저장된 범위가 일치하지 않아 자동 집계를 중지했습니다.")
     if as_of_basis not in {
         "UNSPECIFIED",
         "BID_NOTICE_DATE",
@@ -774,7 +896,7 @@ def derive_performance_value(
     deadline = normalized_as_of.astimezone(_KST).date()
     start = _date_years_before(deadline, scope.lookback_years)
     completion_cutoff = deadline
-    if scope.completion_required and _BID_NOTICE_PRIOR_DAY_RE.search(scope.source_literal):
+    if scope.completion_required and _BID_NOTICE_PRIOR_DAY_RE.search(source_literal):
         if as_of_basis != "BID_NOTICE_DATE":
             return DerivedPerformanceValue(
                 status="REVIEW",
@@ -828,7 +950,11 @@ def derive_performance_value(
             _record_service_matches(record, keyword)
             for keyword in scope.similarity_keywords
         ]
-        if not (all(checks) if scope.match_mode == "ALL" else any(checks)):
+        service_matches = (any(all(_record_service_matches(record, word) for word in group)
+                               for group in scope.similarity_keyword_groups)
+                           if scope.similarity_keyword_groups else
+                           all(checks) if scope.match_mode == "ALL" else any(checks))
+        if not service_matches:
             continue
         if scope.counterparty_scope == "PUBLIC_SECTOR":
             public_status = _public_sector_agency_status(record)

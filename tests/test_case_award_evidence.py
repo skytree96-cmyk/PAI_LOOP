@@ -158,7 +158,7 @@ def test_normal_serialized_proof_survives_without_provider_or_extraction_version
     # 1.8.2 separates OUT_OF_SCOPE points from quantitative totals. Cached
     # scores must refresh, but extraction proofs still round-trip unchanged;
     # the engine bump alone must not require another provider extraction.
-    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.2"
+    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.6"
 
 
 @pytest.mark.parametrize("metric,unit,condition,label", [
