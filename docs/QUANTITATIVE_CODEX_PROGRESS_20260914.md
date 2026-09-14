@@ -59,7 +59,19 @@ pytest -o addopts="--strict-markers --disable-warnings" -rfE tests/test_quantita
 
 ## 5. C — 영역 종료 진단
 
-아직 구현하지 않았다. EOF/64줄 상한과 실제 경계의 선택 이유를 별도 진단으로 남기고 기존 반환값·fingerprint·추출 계약·저장 기록을 보존한다. 참조 모듈은 자동 파이프라인에 연결하지 않는다.
+`quantitative_rule_extraction.py`에 저장 모델과 분리된 `QuantitativeRegionEndDiagnostic`과 순수 관측 함수 `diagnose_quantitative_region_ends(payload, source=..., attachment_id=...)`를 추가했다. 반환은 immutable 진단 tuple이며 원문 내용 없이 단계·표/항목 index·영역·종료 위치·종료 원인을 담는다. 위치는 QRE 내부의 0-based 문단 index이며 native 바이트/문자 오프셋이나 PDF 페이지가 아니다.
+
+`end_status`는 실제 구조 경계가 관측되면 **STRUCTURAL_BOUNDARY**, EOF·64줄 상한·빈줄뿐이면 **UNPROVEN**, 유효 영역 자체가 없으면 **UNRESOLVED**다. 경계와 상한이 같은 위치이면 두 원인을 모두 남긴다. 64줄 상한은 임시 헤더 후보에 적용되며 최종 항목/표 영역에 새 상한을 적용하지 않는다. 표 전체와 표 핵심 영역의 종료 사유도 따로 보존한다.
+
+기존 HWP 재결합 경로가 실제 방문한 후보만 진단하므로 비-HWP 또는 표가 없는 입력은 빈 tuple일 수 있다. 빈 진단은 종료 증명 성공을 뜻하지 않는다. STRUCTURAL_BOUNDARY 역시 표 전체의 완결·소유권·참조조건·커버리지 또는 점수 활성 증명이 아니다.
+
+기본 호출은 collector를 켜지 않는다. 기존 region 선택·payload·2-tuple 반환·record schema·fingerprint·추출 계약을 유지하며 `quantitative_reference_context`는 자동 파이프라인에 연결하지 않았다. SYN에서는 C 직전 `f0d4096`의 동일 입력 record JSON SHA와 validation fingerprint도 고정하여 비교한다.
+
+```text
+pytest tests/test_quantitative_region_end_diagnostics.py tests/test_quantitative_rule_extraction.py tests/test_extraction_contract_compatibility.py -o addopts="--strict-markers --disable-warnings" -rfE --basetemp=.local/pytest/region-end-final
+```
+
+결과: 이 명령으로 수집한 **468/468 통과**, 3 warnings, 9.84초. 새 SYN 23개가 이 실행에 포함되어 있다. 기존 표제·범위 guard 및 계약 호환 테스트도 유지했다. 다른 테스트 실행의 통과 수와 합산하지 않는다.
 
 ## 6. D — 사람 확인 실적 literal의 순수 검토
 
