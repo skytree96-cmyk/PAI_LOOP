@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -8,14 +9,29 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from pai_loop import award_automation as module
 from pai_loop.award_automation_models import AwardRefreshAttempt, AwardRefreshState
-from pai_loop.models import Evaluation, IngestionJob, Notice, UserDecision, new_id
+from pai_loop.models import Evaluation, IngestionJob, Notice, NoticeVersion, UserDecision, new_id
 
 BASE = "/api/v1/operations/award-refresh"
 NOW = datetime(2026, 9, 13, 12, tzinfo=timezone.utc)
+
+
+def add_scope_version(session, notice, *, version_no=1,
+                      demand_agency_name="SYN 수요기관", demand_agency_code="SYN-DEMAND"):
+    session.add(NoticeVersion(notice=notice, version_no=version_no, file_sha256="a" * 64,
+        source_payload={
+            "kind": "PPS_NOTICE_METADATA",
+            "notice_identity": {"bid_notice_no": notice.bid_notice_no, "revision_no": notice.revision_no},
+            "notice_metadata": {
+                "demand_agency_name": demand_agency_name,
+                "demand_agency_code": demand_agency_code,
+                "announcing_agency_name": "SYN 공고기관",
+                "announcing_agency_code": "SYN-ANNOUNCE",
+            },
+        }))
 
 
 @pytest.fixture
@@ -28,12 +44,16 @@ def setup(client, monkeypatch):
     original = module._source_kind
     monkeypatch.setattr(module, "_source_kind", lambda notice: "PPS" if notice.notice_key.startswith("SYN-QUEUE-") else original(notice))
 
-    def add(key="A", *, category="용역", status="OPEN", age=0, title="가상 교육 컨설팅"):
+    def add(key="A", *, category="용역", status="OPEN", age=0, title="가상 교육 컨설팅",
+            demand_agency_name="SYN 수요기관", demand_agency_code="SYN-DEMAND"):
         with client.app.state.session_factory() as session:
             notice = Notice(notice_key=f"SYN-QUEUE-{key}", bid_notice_no=f"SYN-{key}", title=title,
                 category=category, status=status, agency="가상 기관", deadline=NOW + timedelta(days=120-age),
                 published_at=NOW - timedelta(days=age), created_at=NOW - timedelta(days=age))
             session.add(notice)
+            session.flush()
+            add_scope_version(session, notice, demand_agency_name=demand_agency_name,
+                              demand_agency_code=demand_agency_code)
             session.commit()
             return notice.id
 
@@ -66,6 +86,28 @@ def post(client, path, body=None):
     return result.json()
 
 
+def test_plan_never_materializes_unrelated_extraction_version_payloads(client, setup):
+    _clock, add = setup
+    notice_id = add()
+    with client.app.state.session_factory() as session:
+        session.add(NoticeVersion(
+            notice_id=notice_id, version_no=2, file_sha256="b" * 64,
+            source_payload={"kind": "OPENAI_REQUIREMENT_EXTRACTION", "result": "SYN-LARGE" * 20_000},
+        ))
+        session.commit()
+    loaded = []
+
+    def inspect_version(version, _context):
+        loaded.append(version.source_payload.get("kind"))
+
+    event.listen(NoticeVersion, "load", inspect_version)
+    try:
+        assert post(client, "plan")["pending"] == 1
+    finally:
+        event.remove(NoticeVersion, "load", inspect_version)
+    assert loaded and set(loaded) == {"PPS_NOTICE_METADATA"}
+
+
 def test_plan_all_lifecycles_sources_and_idempotency(client, setup):
     _clock, add = setup
     add("OPEN")
@@ -93,6 +135,7 @@ def test_run_only_awards_and_durable_counts(client, setup, monkeypatch):
     assert result["status"] == "COMPLETED" and result["complete"] == 1
     assert result["api_calls_24h"] == 40 and result["budget_reserved_24h"] == 0
     assert result["ai_calls"] == 0 and result["attempted"] == 1
+    assert captured[0][1]["years"] == 3
     assert captured[0][1]["include_opening_results"] is True
     assert captured[0][1]["max_opening_result_notices"] == 30
     assert captured[0][1]["opening_result_max_pages"] == 3
@@ -298,3 +341,120 @@ def test_no_key_or_searchable_keyword_never_calls_provider(client, setup, monkey
     client.app.state.settings = replace(client.app.state.settings, pps_api_key=None)
     assert client.post(f"{BASE}/run", json={}).status_code == 503
     assert not captured
+
+
+@pytest.mark.parametrize("records", [0, 2])
+def test_fresh_legacy_broad_search_requeues_under_demand_agency_scope(client, setup, monkeypatch, records):
+    _clock, add = setup
+    notice_id = add()
+    captured = fake_collector(client, monkeypatch, records=records)
+    post(client, "plan")
+    completed = post(client, "run")
+    with client.app.state.session_factory() as session:
+        notice = session.get(Notice, notice_id)
+        state = session.get(AwardRefreshState, notice_id)
+        state.basis_sha256 = hashlib.sha256(
+            f"{notice.notice_key}\n{notice.category}\n{notice.title}".encode()).hexdigest()
+        session.commit()
+    result = post(client, "plan")
+    assert result["requeued"] == result["pending"] == result["eligible"] == 1
+    assert result["complete"] == result["no_results"] == 0
+    with client.app.state.session_factory() as session:
+        state = session.get(AwardRefreshState, notice_id)
+        assert state.attempts == 1 and state.cycle_attempts == 0
+        assert state.last_job_id == completed["job_id"]
+        assert session.get(IngestionJob, completed["job_id"]) is not None
+    assert post(client, "run")["attempted"] == 1
+    assert len(captured) == 2
+
+
+@pytest.mark.parametrize("changed_field", ["demand_agency_name", "demand_agency_code"])
+def test_demand_agency_identity_change_requeues_fresh_completion(client, setup, monkeypatch, changed_field):
+    _clock, add = setup
+    notice_id = add()
+    fake_collector(client, monkeypatch)
+    post(client, "plan")
+    post(client, "run")
+    with client.app.state.session_factory() as session:
+        old_basis = session.get(AwardRefreshState, notice_id).basis_sha256
+        add_scope_version(session, session.get(Notice, notice_id), version_no=2,
+                          **{changed_field: "SYN-CHANGED"})
+        session.commit()
+    result = post(client, "plan")
+    assert result["requeued"] == result["pending"] == 1 and result["complete"] == 0
+    with client.app.state.session_factory() as session:
+        assert session.get(AwardRefreshState, notice_id).basis_sha256 != old_basis
+    assert post(client, "plan")["requeued"] == 0
+
+
+def test_same_agency_metadata_version_does_not_requeue_completed_scope(client, setup, monkeypatch):
+    _clock, add = setup
+    notice_id = add()
+    fake_collector(client, monkeypatch)
+    post(client, "plan")
+    post(client, "run")
+    with client.app.state.session_factory() as session:
+        add_scope_version(session, session.get(Notice, notice_id), version_no=2)
+        session.commit()
+    result = post(client, "plan")
+    assert result["requeued"] == result["eligible"] == 0 and result["complete"] == 1
+
+
+def test_changed_keyword_derivation_invalidates_completed_scope(client, setup, monkeypatch):
+    _clock, add = setup
+    add()
+    fake_collector(client, monkeypatch)
+    post(client, "plan")
+    post(client, "run")
+    monkeypatch.setattr(module, "_derive_award_keyword", lambda title: "SYN changed keyword")
+    assert post(client, "plan")["requeued"] == 1
+
+
+@pytest.mark.parametrize("remove_after_plan", [False, True])
+def test_missing_actual_demand_agency_never_reserves_or_calls_provider(client, setup, monkeypatch, remove_after_plan):
+    _clock, add = setup
+    notice_id = add() if remove_after_plan else add(demand_agency_name=None, demand_agency_code=None)
+    captured = fake_collector(client, monkeypatch)
+    plan = post(client, "plan")
+    if remove_after_plan:
+        assert plan["pending"] == 1
+        with client.app.state.session_factory() as session:
+            add_scope_version(session, session.get(Notice, notice_id), version_no=2,
+                              demand_agency_name=None, demand_agency_code=None)
+            session.commit()
+    else:
+        assert plan["unsupported"] == 1 and plan["eligible"] == 0
+    result = post(client, "run")
+    assert result["unsupported"] == 1 and result["attempted"] == result["api_calls"] == result["ai_calls"] == 0
+    assert result["api_calls_24h"] == result["budget_reserved_24h"] == 0
+    assert not captured
+    with client.app.state.session_factory() as session:
+        state = session.get(AwardRefreshState, notice_id)
+        assert state.status == "UNSUPPORTED" and state.reason == "AWARD_AGENCY_UNAVAILABLE"
+        assert session.scalar(select(func.count()).select_from(AwardRefreshAttempt)) == 0
+
+
+@pytest.mark.parametrize("status,age", [("CLOSED", 0), ("CANCELLED", 0), ("OPEN", 121)])
+def test_inactive_notice_is_skipped_before_missing_agency_check(client, setup, monkeypatch, status, age):
+    _clock, add = setup
+    notice_id = add(status=status, age=age, demand_agency_name=None, demand_agency_code=None)
+    captured = fake_collector(client, monkeypatch)
+    plan = post(client, "plan")
+    assert plan["skipped"] == 1 and plan["unsupported"] == plan["eligible"] == 0
+    assert post(client, "run")["attempted"] == 0
+    assert not captured
+    with client.app.state.session_factory() as session:
+        assert session.get(AwardRefreshState, notice_id).reason == "INACTIVE_NOTICE"
+
+
+def test_scope_changed_after_plan_is_recorded_when_claimed(client, setup, monkeypatch):
+    _clock, add = setup
+    notice_id = add()
+    fake_collector(client, monkeypatch)
+    post(client, "plan")
+    with client.app.state.session_factory() as session:
+        add_scope_version(session, session.get(Notice, notice_id), version_no=2,
+                          demand_agency_code="SYN-CHANGED")
+        session.commit()
+    assert post(client, "run")["complete"] == 1
+    assert post(client, "plan")["requeued"] == 0

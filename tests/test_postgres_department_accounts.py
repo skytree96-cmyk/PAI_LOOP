@@ -282,6 +282,7 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
         migrations.INDEPENDENT_DECISION_MIGRATION_ID: migrations.INDEPENDENT_DECISION_MIGRATION_CHECKSUM,
         migrations.AWARD_OPENING_RESULT_MIGRATION_ID: migrations.AWARD_OPENING_RESULT_MIGRATION_CHECKSUM,
         migrations.ACCOUNT_MIGRATION_ID: migrations.ACCOUNT_MIGRATION_CHECKSUM,
+        migrations.AWARD_AGENCY_METADATA_MIGRATION_ID: migrations.AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM,
         migrations.TEAMS_FOLLOWUPS_MIGRATION_ID: migrations.TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM,
     }
     with ThreadPoolExecutor(max_workers=2) as pool:

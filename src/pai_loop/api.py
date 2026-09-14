@@ -34,9 +34,13 @@ from .department_ranking import (
 from .integrations.awards import (
     OpeningResultsIncomplete,
     PpsAwardClient,
+    is_pps_rate_limit_error,
     opening_result_loses_recorded_numbers,
 )
 from .award_intelligence import build_annual_award_table, build_award_intelligence
+from .award_scope import (AWARD_SCOPE_VERSION, award_agency_is_verifiable,
+                         award_title_tokens, derive_award_keyword, filter_notice_awards,
+                         resolve_notice_award_scope)
 from .integrations.pps import (
     KST,
     PpsApiError,
@@ -824,7 +828,7 @@ def _detail(
             else _latest_document_analyses(notice.versions)
         ),
         attachment_analysis_statuses=public_attachment_analysis_statuses(notice.versions),
-        award_history=notice.award_history,
+        award_history=_scoped_award_history(notice, notice.award_history),
     )
 
 
@@ -837,6 +841,7 @@ def _load_notice(session: Session, notice_key: str) -> Notice:
             selectinload(Notice.evaluations),
             selectinload(Notice.decisions),
             selectinload(Notice.award_history),
+            selectinload(Notice.award_agency_metadata),
             selectinload(Notice.bid_outcomes),
             selectinload(Notice.analysis_runs).selectinload(AnalysisRun.recommendations),
         )
@@ -2861,38 +2866,15 @@ def award_job_diagnostics(job_id: str, session: DbSession) -> AwardJobDiagnostic
     return AwardJobDiagnosticsOut(job_id=job.id, diagnostics=diagnostics)
 
 
-_AWARD_TITLE_STOPWORDS = {
-    "공고",
-    "긴급",
-    "변경",
-    "재공고",
-    "입찰",
-    "사업",
-    "용역",
-    "위탁",
-    "위탁운영",
-    "운영",
-    "시행",
-    "계약",
-}
-
-
 def _award_title_tokens(title: str) -> list[str]:
-    tokens = re.findall(r"[0-9A-Za-z가-힣]+", title.casefold())
-    return [
-        token
-        for token in tokens
-        if token not in _AWARD_TITLE_STOPWORDS
-        and not re.fullmatch(r"(?:19|20)\d{2}년?", token)
-        and len(token) > 1
-    ]
+    return award_title_tokens(title)
 
 
 def _derive_award_keyword(title: str) -> str:
-    tokens = _award_title_tokens(title)
-    if not tokens:
-        raise HTTPException(status_code=422, detail="낙찰 이력 검색 키워드를 직접 입력해 주세요.")
-    return " ".join(tokens[:3])[:100]
+    try:
+        return derive_award_keyword(title)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="낙찰 이력 검색 키워드를 직접 입력해 주세요.") from None
 
 
 def _award_similarity(target_title: str, candidate_title: str) -> float:
@@ -2930,19 +2912,24 @@ def _minus_years(value: date, years: int) -> date:
         return value.replace(year=value.year - years, day=28)
 
 
+def _scoped_award_history(notice: Notice, rows: list[AwardHistoryItem]) -> list[AwardHistoryItem]:
+    """Project retained audit rows through the current agency AND keyword scope."""
+    return filter_notice_awards(notice, rows)
+
+
 @router.get(
     "/notices/{notice_key}/award-history",
     response_model=list[AwardHistoryItemOut],
 )
 def list_award_history(notice_key: str, session: DbSession) -> list[AwardHistoryItem]:
     notice = _load_notice(session, notice_key)
-    return list(
+    return _scoped_award_history(notice, list(
         session.scalars(
             select(AwardHistoryItem)
             .where(AwardHistoryItem.target_notice_id == notice.id)
             .order_by(AwardHistoryItem.awarded_at.desc(), AwardHistoryItem.created_at.desc())
         ).all()
-    )
+    ))
 
 
 @router.get("/notices/{notice_key}/award-intelligence", response_model=AwardIntelligenceOut)
@@ -2959,6 +2946,8 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
             .order_by(AwardHistoryItem.awarded_at.desc(), AwardHistoryItem.created_at.desc())
         ).all()
     )
+    candidates = _scoped_award_history(notice, candidates)
+    scope = resolve_notice_award_scope(notice)
     # Keep undated stored candidates visible but mark their missing date in the
     # response. Dated facts outside the explicit three-year window are excluded.
     history = [
@@ -2972,6 +2961,18 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
         target_estimated_price=notice.estimated_amount,
     )
     result["notice_key"] = notice.notice_key
+    try:
+        keyword = _derive_award_keyword(notice.title)
+    except HTTPException:
+        keyword = None
+    result["search_criteria"] = {
+        "version": AWARD_SCOPE_VERSION, "years": 3,
+        "status": "AVAILABLE" if scope.available and keyword else "UNAVAILABLE",
+        "demand_agency_name": scope.demand_agency_name,
+        "keyword": keyword,
+    }
+    if not scope.available:
+        result["warnings"].append("실제 발주처가 아직 확인되지 않아 낙찰 이력을 표시하지 않습니다.")
     result["period"] = {"from": cutoff.isoformat(), "to": as_of.date().isoformat(), "years": 3}
     # Resolve source URLs only from stored notices with the historical identity.
     # Ambiguous or unavailable URLs remain absent, never the target's URL.
@@ -2987,7 +2988,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
     result["annual_award_table"] = build_annual_award_table(
         candidates,
         target_title=notice.title,
-        target_agency=notice.agency,
+        target_agency=scope.demand_agency_name,
         as_of=datetime.now(timezone.utc),
         historical_notice_urls={key: next(iter(urls)) for key, urls in historical_urls.items() if len(urls) == 1},
     )
@@ -3035,11 +3036,14 @@ def refresh_award_history(
         raise HTTPException(status_code=503, detail="PPS_API_KEY가 서버에 설정되지 않았습니다.")
 
     keyword = payload.keyword or _derive_award_keyword(notice.title)
+    scope = resolve_notice_award_scope(notice)
+    if not scope.available and not payload.diagnostic_probe:
+        raise HTTPException(status_code=422, detail="AWARD_AGENCY_UNAVAILABLE: 실제 발주처 확인 후 낙찰 이력을 조회할 수 있습니다.")
     as_of = datetime.now(KST).date()
     start = date(as_of.year - payload.years + 1, 1, 1)
     window = {"from": start.isoformat(), "to": as_of.isoformat()}
     warnings = [
-        "검색 결과는 제목 유사 후보이며 동일 사업 확정 이력이 아닙니다. 담당자 검토가 필요합니다."
+        "검색 결과는 동일 발주처와 사업 키워드가 일치하는 후보이며 동일 사업 확정 이력은 아닙니다."
     ]
     if payload.keyword is None:
         warnings.append("공고명에서 검색 키워드를 자동 생성했습니다.")
@@ -3062,6 +3066,9 @@ def refresh_award_history(
             "include_opening_results": payload.include_opening_results,
             "max_opening_result_notices": payload.max_opening_result_notices,
             "opening_result_max_pages": payload.opening_result_max_pages,
+            "award_scope_version": AWARD_SCOPE_VERSION,
+            "demand_agency_name": scope.demand_agency_name,
+            "demand_agency_code": scope.demand_agency_code,
             **({"max_api_calls": payload.max_api_calls} if payload.max_api_calls is not None else {}),
             **({"automation_attempt_id": request.state.award_automation_attempt_id}
                if getattr(request.state, "award_automation_attempt_id", None) else {}),
@@ -3119,6 +3126,8 @@ def refresh_award_history(
                     max_pages_per_window=payload.max_pages_per_window,
                     continue_on_window_error=True,
                     deadline_monotonic=award_deadline,
+                    **({"demand_agency_name": scope.demand_agency_name,
+                        "demand_agency_code": scope.demand_agency_code} if scope.available else {}),
                 )
             )
             api_calls = client.request_count
@@ -3132,6 +3141,7 @@ def refresh_award_history(
             hit_time_limit = getattr(client, "hit_time_limit", False)
             hit_incomplete_response = getattr(client, "hit_incomplete_response", False)
             hit_api_call_limit = getattr(client, "hit_api_call_limit", False)
+            hit_rate_limit = getattr(client, "hit_rate_limit", False)
     except PpsApiError as exc:
         mark_failed(
             error_code="PPS_AWARD_API_ERROR",
@@ -3148,7 +3158,7 @@ def refresh_award_history(
     if hit_page_limit:
         warnings.append("일부 30일 구간이 페이지 제한에 도달했습니다. 구간 또는 키워드를 좁혀 재조회하세요.")
     if hit_incomplete_response:
-        warnings.append("낙찰 응답의 전체 건수와 페이지 행이 일치하지 않아 부분 수집으로 기록했습니다. 기존 저장 기록은 삭제하지 않습니다.")
+        warnings.append("낙찰 응답의 기관 정보 또는 전체 건수·페이지 행을 확인할 수 없어 부분 수집으로 기록했습니다. 기존 저장 기록은 삭제하지 않습니다.")
     if fallback_window_count:
         warnings.append(
             f"조회가 실패한 {fallback_window_count}개 구간은 7일 단위로 재조회했습니다."
@@ -3168,6 +3178,15 @@ def refresh_award_history(
     candidates: dict[str, dict[str, Any]] = {}
     provider_duplicates = 0
     for item in ([] if payload.diagnostic_probe else fetched_rows):
+        if not award_agency_is_verifiable(item, demand_agency_name=scope.demand_agency_name,
+                                         demand_agency_code=scope.demand_agency_code):
+            hit_incomplete_response = True
+            continue
+        # Apply scope before opening-result requests and persistence as well as
+        # at the provider boundary; a mocked or changed provider is not trusted.
+        if not scope.matches_award(item) or not all(term in str(item.get("title") or "").casefold()
+                                                   for term in keyword.casefold().split()):
+            continue
         if not item.get("identity") or not item.get("bid_notice_no") or not item.get("title") or not item.get("winner_name"):
             quarantined += 1
             continue
@@ -3183,7 +3202,7 @@ def refresh_award_history(
     opening_requested = 0
     opening_failed = 0
     opening_limited = False
-    if payload.include_opening_results and candidates and not payload.dry_run:
+    if payload.include_opening_results and candidates and not payload.dry_run and not hit_rate_limit:
         selected = list(candidates.items())[: payload.max_opening_result_notices]
         if len(candidates) > len(selected):
             opening_limited = True
@@ -3226,12 +3245,15 @@ def refresh_award_history(
                     except OpeningResultsIncomplete:
                         opening_failed += 1
                         opening_failures[identity] = "PARTIAL"
-                    except PpsApiError:
+                    except PpsApiError as exc:
                         # A per-notice failure leaves the company set untouched, so a
                         # previously stored opening result is never replaced
                         # with a false empty competitor set.
                         opening_failed += 1
                         opening_failures[identity] = "ERROR"
+                        if is_pps_rate_limit_error(exc):
+                            hit_rate_limit = True
+                            break
                 api_calls += opening_client.request_count
         except Exception:
             mark_failed(
@@ -3246,6 +3268,8 @@ def refresh_award_history(
 
     if hit_api_call_limit:
         warnings.append("AWARD_API_CALL_BUDGET_EXHAUSTED: 실제 API 호출 상한에서 중단했습니다. 미조회 구간·개찰 결과는 미확인으로 남기고 기존 저장본을 유지합니다.")
+    if hit_rate_limit:
+        warnings.append("AWARD_PROVIDER_RATE_LIMIT: 제공기관의 호출 제한 응답으로 중단했습니다. 미조회 범위는 부분 수집으로 남깁니다.")
 
     created = 0
     updated = 0
@@ -3262,6 +3286,7 @@ def refresh_award_history(
             "revision_no": item.get("revision_no") or "000",
             "title": item["title"],
             "agency": item.get("agency") or "",
+            "demand_agency_code": item.get("demand_agency_code"),
             "winner_name": item["winner_name"],
             "participant_count": item.get("participant_count"),
             "award_amount": item.get("award_amount"),
@@ -3329,7 +3354,7 @@ def refresh_award_history(
         )
     job.status = "PARTIAL" if (
         window_errors or hit_time_limit or hit_page_limit or hit_incomplete_response or quarantined
-        or opening_failed or opening_limited or hit_api_call_limit or payload.diagnostic_probe
+        or opening_failed or opening_limited or hit_api_call_limit or hit_rate_limit or payload.diagnostic_probe
     ) else "COMPLETED"
     job.api_calls = api_calls
     job.fetched = len(fetched_rows)
@@ -3734,7 +3759,7 @@ def _default_teams_card(
     eligibility = evaluation.eligibility if evaluation else "분석 대기"
     readiness = evaluation.readiness_status if evaluation else "미산정"
     competition = build_award_intelligence(
-        notice.award_history,
+        _scoped_award_history(notice, notice.award_history),
         as_of=_comparable_utc(notice.published_at) if notice.published_at else datetime.now(timezone.utc),
     )["competition_risk"]
     competition_value = (

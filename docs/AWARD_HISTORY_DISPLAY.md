@@ -1,5 +1,35 @@
 # Award history display
 
+The collection and display scope is the same demand agency AND the derived
+business keywords. The existing three-calendar-year collection window is
+unchanged. API queries include the confirmed demand-agency code when available,
+otherwise its name. Returned candidates are checked again before any company
+opening-detail request. Agency codes take precedence; an exact normalized name
+is used only when one side lacks the code. Names are not fuzzy-matched across
+parent agencies, subdivisions or announcing intermediaries.
+
+The target demand agency comes from the latest PPS metadata or an append-only
+agency observation tied to that exact notice, revision and metadata version.
+Notice.agency is an announcing-agency display value and is never substituted for
+missing demand agency. Missing agency pauses collection with
+AWARD_AGENCY_UNAVAILABLE. Supplemental agency observations do not create or
+rewrite document/analysis versions. New PPS ingestion retains the four allowed
+announcing/demand agency name/code fields without retaining raw contact data.
+
+Previously collected broad candidates remain in the audit store. Notice detail,
+history and intelligence endpoints expose only rows matching the current agency
+and keywords. Scope changes invalidate the automation basis and requeue open
+targets; old broad completion is not promoted to scoped completion. Closed and
+superseded notices remain excluded. Public search criteria report the institution
+name and keywords without exposing internal codes or source metadata.
+
+Each empty date window still costs a request. Agency filtering reduces excess
+pages and unrelated company lookups, but is not a shared-query cache. HTTP 429
+or provider codes 22/23 stop the current collection before fallback and further
+opening calls; successful earlier rows remain partial. This path uses no AI.
+
+Provider reference: [PPS award API](https://www.data.go.kr/data/15129397/openapi.do).
+
 The notice detail's recent-three-year panel defaults to expandable project
 groups. Each group uses the server's year and response-scoped result group key,
 with the latest result dates first. The key ties companies to one stored award

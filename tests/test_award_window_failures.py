@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from award_scope_helpers import attach_award_scope
 from sqlalchemy import select
 
 from pai_loop.integrations.awards import PpsAwardClient
@@ -187,6 +188,7 @@ def test_refresh_records_safe_counts_as_partial_and_preserves_existing_awards(cl
     target = "PPS-SYN-WINDOW-TARGET"
     assert client.post("/api/v1/notices", json={"notice_key": target, "bid_notice_no": target,
         "title": "SYN 합성 교육", "agency": "SYN 기관", "deadline": "2027-01-01T00:00:00Z"}).status_code == 201
+    attach_award_scope(client, target, demand_agency_name="SYN 기관")
     client.app.state.settings = replace(client.app.state.settings, pps_api_key="SYN-pps-key", api_key="SYN-server-key")
     class FakeClient:
         request_count = 2

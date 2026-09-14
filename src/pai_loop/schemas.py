@@ -448,6 +448,14 @@ class AwardCandidateWindowOut(ApiModel):
     undated_policy: Literal["KEPT_BUT_COVERAGE_GATED"]
 
 
+class AwardSearchCriteriaOut(ApiModel):
+    version: str
+    years: Literal[3]
+    status: Literal["AVAILABLE", "UNAVAILABLE"]
+    demand_agency_name: str | None = None
+    keyword: str | None = None
+
+
 class AwardIntelligenceOut(ApiModel):
     analytics_version: str
     boundary: Literal["STORED_HISTORY_ONLY"]
@@ -467,6 +475,7 @@ class AwardIntelligenceOut(ApiModel):
     target_amount_basis: dict[str, Any]
     pricing_method: dict[str, Any] | None
     warnings: list[str]
+    search_criteria: AwardSearchCriteriaOut | None = None
 
 
 class AttachmentAnalysisStatusOut(ApiModel):
