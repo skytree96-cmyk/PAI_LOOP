@@ -89,6 +89,54 @@ def test_an_unclassifiable_or_partial_gap_still_fails_closed(gap: str) -> None:
     assert quantitative_table_local_absence_targets(gap) is None
 
 
+# The container may be repeated in apposition, narrowed, extended to the rest of
+# the manifest, or left without a particle. Each names the same place, and each
+# shape appeared in production while the statement fell through as terminal.
+@pytest.mark.parametrize("gap", [
+    "규격[기술]입찰(제안서) 평가의 세부 배점표(항목별 점수 배분표)는 "
+    "본 공고문 내에 포함되어 있지 않아 확인 불가",
+    "기술능력평가분야의 세부 배점표가 본 공고문 및 첨부문서에 제시되어 있지 않음",
+    "기술능력평가 세부 배점표가 본 첨부문서에 포함되어 있지 않음",
+    "제안서 평가 배점표 원문은 본 공고문 발췌본에 제시되어 있지 않음",
+    # The artifact is named 기준표/채점표/점수표 about as often as 배점표.
+    "정량평가 20점 세부 배점 기준표가 본 공고문에 제시되어 있지 않음",
+    "제안서 평가 채점표가 본 문서에 포함되어 있지 않음",
+    "항목별 점수표가 본문에 제시되어 있지 않음",
+])
+def test_a_container_variant_or_table_synonym_is_classified(gap: str) -> None:
+    assert quantitative_table_local_absence_targets(gap) is not None
+
+
+def test_a_named_document_binds_even_when_the_container_is_also_locative() -> None:
+    """``제안요청서에 있으나 본 문서에는 없음`` puts both in locative position.
+
+    The attachment being read is named, so the other document is where the table
+    IS and binds as the required sibling. Binding is stricter than the unnamed
+    fallback, so reading it this way narrows what may resolve the issue.
+    """
+
+    targets = quantitative_table_local_absence_targets(
+        "제안서 평가 세부 배점표(정량평가 기준표)는 제안요청서에 명시되어 있으나 "
+        "본 문서(입찰공고서)에는 포함되어 있지 않음"
+    )
+
+    assert targets == ((("RFP",), ("제안요청서",)),)
+
+
+# A scoring table published in an external rule is outside this notice's
+# manifest, so no sibling attachment can supply it. These must stay terminal
+# even though the looser container forms above would otherwise admit them.
+@pytest.mark.parametrize("gap", [
+    "경영상태(신용평가등급) 배점표 [별표 10] 본문 미포함",
+    "조달청 일반용역 적격심사세부기준의 세부 배점표가 본 첨부문서에 포함되어 있지 않음",
+    "기술능력평가 세부 배점표(협상에 의한 계약체결기준 [별표])는 본 공고문에 첨부되지 않음",
+    "본 문서는 용역계약 일반조건(법령/예규) 텍스트로서 정량평가표가 포함되어 있지 않음",
+    "시행령이 정한 적격심사 배점표는 본 공고문에 수록되어 있지 않음",
+])
+def test_an_external_rule_table_is_never_resolvable_by_a_sibling(gap: str) -> None:
+    assert quantitative_table_local_absence_targets(gap) is None
+
+
 def _merge(local_gap: str, *, local_table: dict | None) -> object:
     manifest_sha = "7" * 64
     local_attachment_id = "ATT-LOCAL-1"
