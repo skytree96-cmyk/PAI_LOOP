@@ -7,6 +7,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -44,9 +45,9 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.15"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.16"
 from .extraction_contracts import (
-    CURRENT_EXTRACTION_CONTRACT, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
+    CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
     classify_record_contract,
 )
 
@@ -60,7 +61,11 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     # v3: the gap gate now classifies the declaration instead of transcribing
     # observed sentences, so a record that stored this issue must be revalidated
     # before its gap can be trusted either way.
-    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v3",
+    # v4: the local-absence classifier replaced the remaining sentence regexes,
+    # so a statement stored as a terminal gap may now be a sibling-resolvable
+    # local absence. Both codes revalidate from the stored extraction.
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v4",
+    "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT": "unnamed-local-table-absence-v1",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
     # A bracket award stated as a score anywhere in its own criterion is now
@@ -310,6 +315,70 @@ _MAX_CRITERION_HEADER_FALLBACK_LINES = 64
 _MAX_SOURCEWIDE_HEADER_MATCHES = 64
 _MAX_SOURCEWIDE_BOUNDARY_SPANS = 512
 _HWP_SECTION_LINE_RE = re.compile(r"^\[HWP SECTION \d+\]$")
+
+RegionEndOrigin = Literal[
+    "NEXT_STRUCTURAL_SPAN", "TABLE_FENCE", "NEXT_CRITERION", "OTHER_TABLE",
+    "HWP_SECTION", "BLANK", "EOF", "LINE_CAP", "UNRESOLVED_ANCHOR",
+]
+RegionDiagnosticPhase = Literal[
+    "SOURCEWIDE_HEADER_CANDIDATE", "FALLBACK_HEADER_CANDIDATE",
+    "MINIMUM_HEADER_CANDIDATE", "CRITERION", "TABLE", "TABLE_CORE",
+]
+
+
+@dataclass(frozen=True)
+class QuantitativeRegionEndDiagnostic:
+    """Why an existing search region ended, never source-ownership authority.
+
+    Positions are zero-based paragraph indexes with exclusive ends, not native
+    byte/character offsets. Even a structural stop does not prove table closure,
+    reference ownership, complete coverage, or score activation. This object is
+    deliberately outside all payload, profile, record and fingerprint schemas.
+    """
+
+    phase: RegionDiagnosticPhase
+    table_index: int | None
+    criterion_index: int | None
+    header_span: tuple[int, int] | None
+    region: tuple[int, int] | None
+    end_line_index: int | None
+    end_origins: tuple[RegionEndOrigin, ...]
+    source_line_count: int
+
+    @property
+    def end_status(self) -> Literal["STRUCTURAL_BOUNDARY", "UNPROVEN", "UNRESOLVED"]:
+        """Classify the observed stop only; this is not a table closure proof."""
+        if self.region is None:
+            return "UNRESOLVED"
+        structural = {
+            "NEXT_STRUCTURAL_SPAN", "TABLE_FENCE", "NEXT_CRITERION",
+            "OTHER_TABLE", "HWP_SECTION",
+        }
+        return "STRUCTURAL_BOUNDARY" if structural.intersection(self.end_origins) else "UNPROVEN"
+
+
+def _collect_region_end(
+    diagnostics: list[QuantitativeRegionEndDiagnostic] | None,
+    *, phase: RegionDiagnosticPhase, table_index: int | None,
+    criterion_index: int | None, header_span: tuple[int, int] | None,
+    region: tuple[int, int] | None, end: int | None, line_count: int,
+    choices: Iterable[tuple[int, RegionEndOrigin]] = (),
+) -> None:
+    if diagnostics is None:
+        return
+    origins: set[RegionEndOrigin] = {
+        origin for position, origin in choices if position == end
+    }
+    if end is None:
+        origins.add("UNRESOLVED_ANCHOR")
+    elif end == line_count:
+        origins.add("EOF")
+    diagnostics.append(QuantitativeRegionEndDiagnostic(
+        phase, table_index, criterion_index, header_span, region, end,
+        tuple(sorted(origins)), line_count,
+    ))
+
+
 _SOURCEWIDE_HEADING_PREFIX_PATTERN = (
     r"(?:(?:\d+|[가-힣])\s*[.)]\s*|[❍○●■□▪▶]\s*)?"
 )
@@ -2823,13 +2892,19 @@ def _bounded_header_candidate_region(
     boundary_spans: Iterable[tuple[int, int]],
     table_fences: Iterable[tuple[int, int]],
     next_blank_or_section: tuple[int, ...],
+    diagnostics: list[QuantitativeRegionEndDiagnostic] | None = None,
+    diagnostic_phase: RegionDiagnosticPhase = "FALLBACK_HEADER_CANDIDATE",
+    table_index: int | None = None,
+    criterion_index: int | None = None,
 ) -> tuple[int, int] | None:
     """Fence a provisional header at the next structural or blank boundary."""
 
     start = header_span[0]
+    structural_spans = tuple(boundary_spans)
+    dynamic_fences = tuple(table_fences)
     boundary_starts = [
         span[0]
-        for span in (*tuple(boundary_spans), *tuple(table_fences))
+        for span in (*structural_spans, *dynamic_fences)
         if span[0] > start
     ]
     if header_span[1] < len(next_blank_or_section):
@@ -2839,7 +2914,24 @@ def _bounded_header_candidate_region(
         default=min(len(lines), start + _MAX_CRITERION_HEADER_FALLBACK_LINES),
     )
     end = min(end, start + _MAX_CRITERION_HEADER_FALLBACK_LINES)
-    return (start, end) if end > header_span[1] else None
+    region = (start, end) if end > header_span[1] else None
+    if diagnostics is not None:
+        choices: list[tuple[int, RegionEndOrigin]] = [
+            (span[0], "NEXT_STRUCTURAL_SPAN") for span in structural_spans
+            if span[0] > start
+        ]
+        choices.extend((span[0], "TABLE_FENCE") for span in dynamic_fences if span[0] > start)
+        choices.append((start + _MAX_CRITERION_HEADER_FALLBACK_LINES, "LINE_CAP"))
+        if header_span[1] < len(next_blank_or_section):
+            stop = next_blank_or_section[header_span[1]]
+            if stop < len(lines):
+                choices.append((stop, "HWP_SECTION" if _HWP_SECTION_LINE_RE.fullmatch(lines[stop]) else "BLANK"))
+        _collect_region_end(
+            diagnostics, phase=diagnostic_phase, table_index=table_index,
+            criterion_index=criterion_index, header_span=header_span,
+            region=region, end=end, line_count=len(lines), choices=choices,
+        )
+    return region
 
 
 def _unique_case_support_span(
@@ -2958,6 +3050,7 @@ def _rebind_unique_sourcewide_case_table_headers(
     header_candidates: list[list[tuple[tuple[int, int], ...]]],
     sourcewide_boundary_spans: tuple[tuple[int, int], ...],
     next_blank_or_section: tuple[int, ...],
+    diagnostics: list[QuantitativeRegionEndDiagnostic] | None = None,
 ) -> tuple[ExtractionPayload, frozenset[tuple[int, int]]]:
     """Rebind one exact detailed header when a model anchored a subtotal.
 
@@ -3114,6 +3207,10 @@ def _rebind_unique_sourcewide_case_table_headers(
                     ),
                     table_fences=table_fences[table_index],
                     next_blank_or_section=next_blank_or_section,
+                    diagnostics=diagnostics,
+                    diagnostic_phase="SOURCEWIDE_HEADER_CANDIDATE",
+                    table_index=table_index,
+                    criterion_index=candidate_index,
                 )
                 if (
                     _hwp_section_for_span(
@@ -3807,6 +3904,9 @@ def _external_min_split_window_is_coherent(value: str) -> bool:
 def _minimum_scope_source_headers(
     lines: tuple[str, ...],
     criteria: list[QuantitativeRuleCandidate],
+    *,
+    diagnostics: list[QuantitativeRegionEndDiagnostic] | None = None,
+    table_index: int | None = None,
 ) -> tuple[tuple[int, int], ...] | None:
     """Prove original inner-cell anchors belong to unique metric/max headers.
 
@@ -3820,7 +3920,7 @@ def _minimum_scope_source_headers(
     all_headers = tuple(span for spans in header_groups for span in spans)
     next_boundary = _next_blank_or_section_boundaries(lines)
     owners: list[tuple[int, int]] = []
-    for candidate, headers in zip(criteria, header_groups, strict=True):
+    for candidate_index, (candidate, headers) in enumerate(zip(criteria, header_groups, strict=True)):
         anchor_span = _unique_anchor_line_span(lines, candidate.evidence.quote)
         if anchor_span is None:
             return None
@@ -3837,6 +3937,8 @@ def _minimum_scope_source_headers(
             region = _bounded_header_candidate_region(
                 lines, header_span=header, boundary_spans=(*boundaries, *all_headers),
                 table_fences=(), next_blank_or_section=next_boundary,
+                diagnostics=diagnostics, diagnostic_phase="MINIMUM_HEADER_CANDIDATE",
+                table_index=table_index, criterion_index=candidate_index,
             )
             if (
                 region is not None
@@ -4153,6 +4255,8 @@ def _drop_source_bound_external_overall_minimum(
     criterion_regions: list[tuple[int, int] | None],
     table_region: tuple[int, int] | None,
     hwp_section_starts: tuple[int, ...],
+    diagnostics: list[QuantitativeRegionEndDiagnostic] | None = None,
+    table_index: int | None = None,
 ) -> QuantitativeTableCandidate:
     """Detach a whole-proposal cutoff only after proving the HWP table boundary.
 
@@ -4206,7 +4310,9 @@ def _drop_source_bound_external_overall_minimum(
     ) != total:
         return table
 
-    proven_headers = _minimum_scope_source_headers(lines, criteria)
+    proven_headers = _minimum_scope_source_headers(
+        lines, criteria, diagnostics=diagnostics, table_index=table_index,
+    )
     if not proven_headers:
         return table
     total_span = _unique_anchor_line_span(lines, table.total_evidence.quote)
@@ -5016,6 +5122,7 @@ def _rebind_split_table_cell_literals(
     *,
     source: str,
     attachment_id: str,
+    diagnostics: list[QuantitativeRegionEndDiagnostic] | None = None,
 ) -> tuple[
     ExtractionPayload,
     tuple[SourcewideAmbiguityResolutionBlocker | None, ...],
@@ -5119,6 +5226,7 @@ def _rebind_split_table_cell_literals(
             header_candidates=sourcewide_header_candidates,
             sourcewide_boundary_spans=sourcewide_boundary_spans,
             next_blank_or_section=next_blank_or_section,
+            diagnostics=diagnostics,
         )
     )
     sourcewide_header_rebound_owners = set(sourcewide_header_rebound_owners)
@@ -5226,6 +5334,9 @@ def _rebind_split_table_cell_literals(
                     ),
                     table_fences=table_fences[table_index],
                     next_blank_or_section=next_blank_or_section,
+                    diagnostics=diagnostics,
+                    table_index=table_index,
+                    criterion_index=candidate_index,
                 )
                 if region is not None and _header_candidate_has_ordered_cases(
                     lines,
@@ -5249,6 +5360,12 @@ def _rebind_split_table_cell_literals(
         )
         if not ordered:
             criterion_regions.append([None for _candidate in table.criteria])
+            for candidate_index, anchor_span in enumerate(anchors):
+                _collect_region_end(
+                    diagnostics, phase="CRITERION", table_index=table_index,
+                    criterion_index=candidate_index, header_span=anchor_span,
+                    region=None, end=None, line_count=len(lines),
+                )
             continue
 
         resolved_anchors = [span for span in anchors if span is not None]
@@ -5278,6 +5395,24 @@ def _rebind_split_table_cell_literals(
             )
             end = min(boundary_starts, default=len(lines))
             regions_for_table.append((start, end) if end > start else None)
+            if diagnostics is not None:
+                choices: list[tuple[int, RegionEndOrigin]] = [
+                    (span[0], "TABLE_FENCE") for span in table_fences[table_index] if span[0] > start
+                ]
+                choices.extend((marker, "HWP_SECTION") for marker in hwp_section_starts if marker > start)
+                if candidate_index + 1 < len(resolved_anchors):
+                    choices.append((resolved_anchors[candidate_index + 1][0], "NEXT_CRITERION"))
+                choices.extend(
+                    (span[0], "OTHER_TABLE")
+                    for other_index, other_anchors in enumerate(criterion_anchor_spans)
+                    if other_index != table_index for span in other_anchors
+                    if span is not None and span[0] > start
+                )
+                _collect_region_end(
+                    diagnostics, phase="CRITERION", table_index=table_index,
+                    criterion_index=candidate_index, header_span=anchor_span,
+                    region=regions_for_table[-1], end=end, line_count=len(lines), choices=choices,
+                )
         criterion_regions.append(regions_for_table)
 
     table_regions: list[tuple[int, int] | None] = []
@@ -5286,6 +5421,12 @@ def _rebind_split_table_cell_literals(
         if not regions or any(region is None for region in regions):
             table_regions.append(None)
             table_core_regions.append(None)
+            for phase in ("TABLE", "TABLE_CORE"):
+                _collect_region_end(
+                    diagnostics, phase=phase, table_index=table_index,
+                    criterion_index=None, header_span=None, region=None,
+                    end=None, line_count=len(lines),
+                )
             continue
         resolved_regions = [region for region in regions if region is not None]
         start = resolved_regions[0][0]
@@ -5316,6 +5457,34 @@ def _rebind_split_table_cell_literals(
         table_core_regions.append(
             (start, core_end) if core_end > start else None
         )
+        if diagnostics is not None:
+            table_choices: list[tuple[int, RegionEndOrigin]] = [
+                (marker, "HWP_SECTION") for marker in hwp_section_starts if marker > start
+            ]
+            table_choices.extend(
+                (span[0], "OTHER_TABLE")
+                for other_index, other_anchors in enumerate(criterion_anchor_spans)
+                if other_index != table_index for span in other_anchors
+                if span is not None and span[0] > start
+            )
+            _collect_region_end(
+                diagnostics, phase="TABLE", table_index=table_index,
+                criterion_index=None, header_span=None, region=table_region,
+                end=end, line_count=len(lines), choices=table_choices,
+            )
+            # TABLE_CORE inherits TABLE's stop only when no later total/minimum
+            # fence supplied its end. Preserve ties without changing that rule.
+            core_choices: list[tuple[int, RegionEndOrigin]] = [
+                (span[0], "TABLE_FENCE") for span in table_fences[table_index]
+                if span[0] > last_criterion_start
+            ]
+            if core_end == end:
+                core_choices.extend(table_choices)
+            _collect_region_end(
+                diagnostics, phase="TABLE_CORE", table_index=table_index,
+                criterion_index=None, header_span=None, region=table_core_regions[-1],
+                end=core_end, line_count=len(lines), choices=core_choices,
+            )
 
     all_structure_spans = tuple(
         dict.fromkeys(
@@ -5825,12 +5994,32 @@ def _rebind_split_table_cell_literals(
                 criterion_regions=criterion_regions[table_index],
                 table_region=table_regions[table_index],
                 hwp_section_starts=hwp_section_starts,
+                diagnostics=diagnostics,
+                table_index=table_index,
             )
         )
     return (
         payload.model_copy(update={"quantitative_tables": repaired_tables}),
         tuple(ambiguity_resolution_blockers),
     )
+
+
+def diagnose_quantitative_region_ends(
+    payload: ExtractionPayload, *, source: str, attachment_id: str,
+) -> tuple[QuantitativeRegionEndDiagnostic, ...]:
+    """Observe existing QRE search bounds without issuing a validation record.
+
+    Only regions actually considered by the HWP rebind path are reported;
+    flat/non-HWP input or no tables can produce an empty tuple. Provisional
+    header attempts are not selected criteria. No diagnostic grants reference
+    ownership or persistence eligibility, and neither input nor saved schemas
+    are changed. The production profile caller does not enable this collector.
+    """
+    diagnostics: list[QuantitativeRegionEndDiagnostic] = []
+    _rebind_split_table_cell_literals(
+        payload, source=source, attachment_id=attachment_id, diagnostics=diagnostics,
+    )
+    return tuple(diagnostics)
 
 
 def _normalise_source_gap(value: str) -> str:
@@ -8144,9 +8333,10 @@ def quantitative_record_contract_is_usable(
     kind = classify_record_contract(source_payload, raw)
     if kind == "UNSUPPORTED":
         return False
-    if kind == "CURRENT":
+    if kind in CURRENT_SEMANTICS_KINDS:
         # Existing current records are validated against caller-owned bindings;
-        # optional redundant payload digest fields do not change that contract.
+        # the exact processing-only predecessor has the same CASE vocabulary.
+        # Optional redundant payload digest fields do not change that contract.
         return True
     if not (
         source_payload.get("attachment_id") == attachment_id
@@ -8519,9 +8709,25 @@ def merge_validated_quantitative_records(
         *,
         attachment_id: str,
     ) -> bool:
+        if issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT":
+            return False
         if (
-            issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
-            or not issue.required_sibling_document_types
+            not issue.required_sibling_document_types
+            and not issue.required_sibling_label_markers
+        ):
+            # An unnamed local absence: the attachment states the scoring table
+            # is not in it and names no document that must supply one. Requiring
+            # that the declaring record carries no table of its own decides from
+            # the record what the gap wording cannot: a partial defect in a table
+            # this attachment did produce keeps blocking, while a plain "not
+            # here" is satisfied by any current attachment that independently
+            # proves a table.
+            declaring_record = bound_records.get(attachment_id)
+            if declaring_record is None or declaring_record.tables:
+                return False
+            return bool(supplying_attachment_ids - {attachment_id})
+        if (
+            not issue.required_sibling_document_types
             or not issue.required_sibling_label_markers
         ):
             return False

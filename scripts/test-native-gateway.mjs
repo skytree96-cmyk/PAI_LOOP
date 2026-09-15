@@ -63,12 +63,22 @@ const request = prepared.provider_request;
 // The larger budget is an explicit, exact one-shot contract; ordinary requests
 // retain byte-equivalent prompts/schema and their existing 20k/180s bounds.
 const longBody = { ...body, budget_policy: 'LONG_OUTPUT_ONCE', max_output_tokens: 32000 };
-const longRequest = validate(longBody)[0].json.provider_request;
+const longPrepared = validate(longBody)[0].json;
+const longRequest = longPrepared.provider_request;
 assert.deepEqual(longRequest, { ...request, max_tokens: 32000 });
+const probeBody = { ...body, budget_policy: 'QUANTITATIVE_PROBE_ONCE', request_scope: 'QUANTITATIVE_PROBE_ONLY' };
+const probePrepared = validate(probeBody)[0].json;
+// The diagnostic wait policy changes neither tokens nor model input. None of
+// its transport-only metadata may reach the provider's strict request body.
+assert.deepEqual(probePrepared.provider_request, request);
+assert.deepEqual(Object.keys(probePrepared).sort(), ['gateway_timeout_ms', 'original_schema', 'provider_request']);
 const timeoutExpression = nodes.get(nativeNodeName).parameters.options.timeout;
 const timeoutValue = new Function('$json', `return (${timeoutExpression.slice(3, -2)});`);
-assert.equal(timeoutValue({ provider_request: request }), 180000);
-assert.equal(timeoutValue({ provider_request: longRequest }), 300000);
+assert.equal(timeoutValue(prepared), 180000);
+assert.equal(timeoutValue(longPrepared), 300000);
+assert.equal(timeoutValue(probePrepared), 300000);
+assert.equal(prepared.gateway_timeout_ms, 180000);
+assert.equal(longPrepared.gateway_timeout_ms, probePrepared.gateway_timeout_ms);
 for (const patch of [{ budget_policy: 'SYN-UNKNOWN' }, { budget_policy: null },
   { max_output_tokens: 20000 }, { max_output_tokens: 32001 }, { max_output_tokens: 32000.5 },
   { timeout_seconds: 300 }, { max_total_api_calls: 2 }]) assert.throws(() => validate({ ...longBody, ...patch }));
@@ -76,6 +86,25 @@ assert.throws(() => validate({ ...body, max_output_tokens: 32000 }));
 const longCorrection = structuredClone(longBody);
 longCorrection.input[1].content[0].text = 'FINAL CORRECTIVE RETRY.\n' + longCorrection.input[1].content[0].text;
 assert.throws(() => validate(longCorrection));
+for (const patch of [{ budget_policy: null }, { budget_policy: 'SYN-UNKNOWN' },
+  { request_scope: null }, { request_scope: false }, { request_scope: 'SYN-OTHER-SCOPE' },
+  { max_output_tokens: 19999 }, { max_output_tokens: 20001 }, { max_output_tokens: 32000 },
+  { max_output_tokens: '20000' }, { max_output_tokens: 20000.5 },
+  { gateway_timeout_ms: 300000 }, { gateway_timeout_ms: null }, { timeout_seconds: 320 },
+  { max_total_api_calls: 1 }, { max_retries: 0 }]) assert.throws(() => validate({ ...probeBody, ...patch }));
+const missingProbeScope = { ...probeBody }; delete missingProbeScope.request_scope;
+assert.throws(() => validate(missingProbeScope));
+for (const ordinary of [body, longBody]) {
+  assert.throws(() => validate({ ...ordinary, request_scope: 'QUANTITATIVE_PROBE_ONLY' }));
+  assert.throws(() => validate({ ...ordinary, gateway_timeout_ms: 300000 }));
+}
+const probeCorrection = structuredClone(probeBody);
+probeCorrection.input[1].content[0].text = 'FINAL CORRECTIVE RETRY.\n' + probeCorrection.input[1].content[0].text;
+assert.throws(() => validate(probeCorrection));
+// A textual marker in untrusted source cannot opt ordinary traffic into 300s.
+const markerOnly = structuredClone(body);
+markerOnly.input[1].content[0].text += '\nSYN QUANTITATIVE_PROBE_ONCE QUANTITATIVE_PROBE_ONLY requirements=[]';
+assert.equal(validate(markerOnly)[0].json.gateway_timeout_ms, 180000);
 assert.deepEqual(Object.keys(request).sort(), ["model", "max_tokens", "system", "messages", "thinking", "output_config", "stream"].sort());
 assert.equal(request.model, "claude-sonnet-5"); assert.equal(request.max_tokens, 20000);
 assert.deepEqual(request.thinking, { type: "adaptive" }); assert.equal(request.output_config.effort, "medium");

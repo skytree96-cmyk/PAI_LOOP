@@ -12,6 +12,7 @@ from pai_loop.models import AnalysisRun, Notice, NoticeVersion, ScoreSnapshot
 from pai_loop.quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
     QuantitativeEstimateResult,
+    public_quantitative_snapshot_projection,
 )
 
 
@@ -153,6 +154,131 @@ def _public_criteria_snapshot() -> dict[str, object]:
             },
         ],
     }
+
+
+def _mixed_public_snapshot(*, quantitative_points: int = 40) -> ScoreSnapshot:
+    """SYN quantitative 40 + separate 60; no qualitative award is assumed."""
+    items = []
+    if quantitative_points:
+        items.append({
+            "display_code": "FINANCIAL_RATIO", "max_points": quantitative_points,
+            "estimated_points": quantitative_points, "lower_points": quantitative_points,
+            "upper_points": quantitative_points, "status": "CONFIRMED",
+        })
+    items.append({
+        "display_code": "OTHER", "max_points": 60,
+        "estimated_points": None, "lower_points": 0, "upper_points": 60,
+        "status": "OUT_OF_SCOPE",
+    })
+    snapshot = _quantitative_snapshot(
+        value=quantitative_points or None,
+        lower=quantitative_points, upper=quantitative_points,
+        status="CONFIRMED" if quantitative_points else "UNSCORABLE",
+        band="GREEN" if quantitative_points else "GRAY",
+        confirmed=quantitative_points, coverage=100 if quantitative_points else 0,
+        public_criteria={"schema_version": "public-quantitative-criteria-1.0.0", "items": items},
+    )
+    snapshot.basis_json["total_max_points"] = quantitative_points
+    snapshot.basis_json["out_of_scope_points"] = 60
+    if not quantitative_points:
+        snapshot.confidence = 0
+    return snapshot
+
+
+@pytest.mark.parametrize("quantitative_points", [40, 0])
+@pytest.mark.parametrize("explicit_excluded_total", [True, False])
+def test_public_endpoint_restores_mixed_scope_rows_and_separate_weight(
+    monkeypatch, quantitative_points, explicit_excluded_total,
+) -> None:
+    app = _public_app(monkeypatch)
+
+    def unexpected_reestimate(*_args, **_kwargs):
+        raise AssertionError("valid mixed-scope persisted rows must restore without recalculation")
+
+    monkeypatch.setattr("pai_loop.quantitative_scoring.estimate_for_notice", unexpected_reestimate)
+    score = _mixed_public_snapshot(quantitative_points=quantitative_points)
+    if not explicit_excluded_total:
+        del score.basis_json["out_of_scope_points"]
+    with TestClient(app) as client:
+        login_department_reader(client)
+        with app.state.session_factory() as session:
+            notice = _notice(notice_key="SYN-PUBLIC-MIXED-SCOPE")
+            _version(notice, version_no=1, kind="PPS_NOTICE_METADATA", digest_character="8")
+            basis = _version(notice, version_no=2, kind="MATERIALIZED_ANALYSIS", digest_character="9")
+            session.add(notice)
+            session.flush()
+            session.add(_run(
+                notice, basis, label="latest",
+                generated_at=datetime(2026, 9, 1, tzinfo=timezone.utc), score=score,
+            ))
+            session.commit()
+        response = client.get("/api/v1/notices/SYN-PUBLIC-MIXED-SCOPE/quantitative-estimate")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["total_max_points"] == quantitative_points
+    assert payload["lower_points"] == payload["upper_points"] == quantitative_points
+    assert payload["confirmed_points"] == quantitative_points
+    assert payload["estimated_points"] == (quantitative_points or None)
+    assert payload["out_of_scope_points"] == 60
+    assert payload["overall_status"] == ("CONFIRMED" if quantitative_points else "UNSCORABLE")
+    assert payload["readiness_pct"] == (100 if quantitative_points else None)
+    assert payload["minimum_score"] is payload["meets_minimum"] is None
+    excluded = payload["criteria"][-1]
+    assert excluded["status"] == "OUT_OF_SCOPE"
+    assert excluded["max_points"] == excluded["upper_points"] == 60
+    assert excluded["lower_points"] == 0 and excluded["estimated_points"] is None
+    assert excluded["category"] == "PUBLIC_OUT_OF_SCOPE"
+    assert "정량 합계에서 제외" in excluded["rationale"]
+    assert excluded["source_anchor"] is excluded["fact_binding_sha256"] is None
+    for private in (PRIVATE_BASIS_MARKER, PRIVATE_RULESET, PRIVATE_INPUT_SHA256, PRIVATE_OUTPUT_SHA256):
+        assert private not in response.text
+
+
+@pytest.mark.parametrize("tamper", [
+    "wrong-excluded-total", "null-excluded-total", "bool-excluded-total",
+    "text-excluded-total", "noncanonical-excluded-total", "unproven-excluded-total",
+    "old-combined-total", "excluded-lower-award", "excluded-upper-award",
+    "excluded-exact-award", "zero-without-rows", "zero-confirmed",
+])
+def test_mixed_public_snapshot_rejects_fabricated_scores_and_mismatched_scope(tamper) -> None:
+    score = _mixed_public_snapshot(quantitative_points=0 if tamper.startswith("zero-") else 40)
+    basis = score.basis_json
+    excluded = basis["public_criteria"]["items"][-1]
+    if tamper == "wrong-excluded-total":
+        basis["out_of_scope_points"] = 59
+    elif tamper == "null-excluded-total":
+        basis["out_of_scope_points"] = None
+    elif tamper == "bool-excluded-total":
+        basis["out_of_scope_points"] = True
+    elif tamper == "text-excluded-total":
+        basis["out_of_scope_points"] = "60"
+    elif tamper == "noncanonical-excluded-total":
+        basis["out_of_scope_points"] = 60.001
+    elif tamper == "unproven-excluded-total":
+        del basis["public_criteria"]
+    elif tamper == "old-combined-total":
+        basis["total_max_points"] = 100
+        score.upper_value = 100
+        score.value = None
+        score.band = "RED"
+    elif tamper == "excluded-lower-award":
+        excluded["lower_points"] = 1
+    elif tamper == "excluded-upper-award":
+        excluded["upper_points"] = 59
+    elif tamper == "excluded-exact-award":
+        excluded["estimated_points"] = 0
+    elif tamper == "zero-without-rows":
+        del basis["public_criteria"]
+        basis["out_of_scope_points"] = 0
+    elif tamper == "zero-confirmed":
+        score.status = "CONFIRMED"
+        score.value = 0
+    run = AnalysisRun(
+        input_sha256=PRIVATE_INPUT_SHA256,
+        basis_versions={"quantitative_engine": QUANTITATIVE_ENGINE_VERSION},
+    )
+    assert public_quantitative_snapshot_projection(run, score) is None
 
 
 def _malformed_public_criteria_snapshots() -> list[object]:

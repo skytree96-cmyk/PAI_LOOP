@@ -88,7 +88,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.1"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.6"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -240,6 +240,10 @@ class PublicQuantitativeCriterionSnapshot(QuantModel):
             raise ValueError("public exact estimated criterion must retain its estimate")
         if self.status in {"REVIEW", "UNSCORABLE"} and self.estimated_points is not None:
             raise ValueError("public unresolved criterion cannot have an exact estimate")
+        if self.status == "OUT_OF_SCOPE" and (
+            self.lower_points != 0 or self.upper_points != self.max_points
+        ):
+            raise ValueError("public excluded criterion cannot imply an awarded score")
         return self
 
 
@@ -462,7 +466,7 @@ class QuantitativeEstimateResult(QuantModel):
     lower_points: float | None
     upper_points: float | None
     unscorable_points: float | None
-    # 정성·총괄·가격처럼 산정 대상에서 뺀 배점. 범위 상한에는 들어가 있다.
+    # 정성·총괄·가격처럼 정량 합계·상한에서 제외해 별도로 보존한 배점.
     out_of_scope_points: float = 0
     evidence_coverage_pct: float
     readiness_pct: float | None
@@ -1089,12 +1093,16 @@ def _estimate_criterion(
         criterion.fact_binding_sha256 is not None
         and fact.fact_binding_sha256 != criterion.fact_binding_sha256
     ):
+        missing_binding = fact.fact_binding_sha256 is None
         return _criterion_unscored(
             criterion,
-            status="UNSCORABLE",
+            status="UNSCORABLE" if missing_binding else "REVIEW",
             rationale=(
-                "회사 사실이 이 평가항목의 인정기간·범위·단위 조건에 결합되지 않아 "
-                "generic 값을 점수에 적용하지 않았습니다."
+                "회사 사실의 평가항목 결합 정보가 없어 인정기간·범위·단위 조건을 "
+                "확인할 수 없으므로 generic 값을 점수에 적용하지 않았습니다."
+                if missing_binding
+                else "회사 사실의 결합 정보가 현재 평가항목의 인정기간·범위·단위 조건과 "
+                "다릅니다. 현재 조건으로 다시 확인하기 전에는 점수에 적용하지 않습니다."
             ),
             **fact_audit,
         )
@@ -1395,28 +1403,33 @@ def estimate_quantitative_score(
             )
         )
 
-    total_max = _round_points(sum(item.max_points for item in estimates))
+    # Quantitative totals describe only the rows within this calculation's
+    # scope. Keep excluded rows for audit, but never assume their full marks
+    # in the quantitative upper bound. Unverified quantitative REVIEW rows
+    # remain in scope and retain their unresolved 0..maximum range.
+    scored = [item for item in estimates if item.status != "OUT_OF_SCOPE"]
+    set_aside_rows = [item for item in estimates if item.status == "OUT_OF_SCOPE"]
+    total_max = _round_points(sum(item.max_points for item in scored))
     confirmed = _round_points(
-        sum(item.lower_points for item in estimates if item.status == "CONFIRMED")
+        sum(item.lower_points for item in scored if item.status == "CONFIRMED")
     )
-    lower = _round_points(sum(item.lower_points for item in estimates))
-    upper = _round_points(sum(item.upper_points for item in estimates))
+    lower = _round_points(sum(item.lower_points for item in scored))
+    upper = _round_points(sum(item.upper_points for item in scored))
     unscorable = _round_points(
         sum(
             item.max_points - item.lower_points
-            for item in estimates
+            for item in scored
             if item.status in {"UNSCORABLE", "REVIEW"}
         )
     )
     confirmed_weight = sum(
-        item.max_points for item in estimates if item.status == "CONFIRMED"
+        item.max_points for item in scored if item.status == "CONFIRMED"
     )
     # Rows set aside are not failures of the company data, so they stay out of
     # the denominators. Counting 정성 배점 there would read a perfect
     # quantitative fit as a near-total miss.
-    scored = [item for item in estimates if item.status != "OUT_OF_SCOPE"]
-    scored_max = _round_points(sum(item.max_points for item in scored))
-    out_of_scope = _round_points(total_max - scored_max)
+    scored_max = total_max
+    out_of_scope = _round_points(sum(item.max_points for item in set_aside_rows))
     coverage = _round_points((confirmed_weight / scored_max) * 100) if scored_max else 0
     readiness = _round_points((lower / scored_max) * 100) if scored_max else None
     if readiness is None:
@@ -1430,8 +1443,7 @@ def estimate_quantitative_score(
 
     statuses = {item.status for item in scored}
     if not scored:
-        # 산정할 수 있는 행이 하나도 없다. 만점 가정만 남은 상태를 확정으로
-        # 보고할 수는 없다.
+        # 산정 대상이 없는 상태를 0점 확보로 확정하지 않는다.
         statuses = {"UNSCORABLE"}
     if "REVIEW" in statuses:
         overall: EstimateStatus = "REVIEW"
@@ -1443,7 +1455,9 @@ def estimate_quantitative_score(
         overall = "CONFIRMED"
 
     meets_minimum: bool | None = None
-    if request.minimum_score is not None:
+    # A mixed request does not bind its minimum to the remaining quantitative
+    # subtotal. Do not compare an overall technical/combined cutoff against it.
+    if request.minimum_score is not None and not set_aside_rows:
         if lower >= request.minimum_score:
             meets_minimum = True
         elif upper < request.minimum_score:
@@ -1453,18 +1467,25 @@ def estimate_quantitative_score(
     confidence = _round_points(weighted_confidence / scored_max) if scored_max else 0
     estimated_points = lower if lower == upper and overall in {"CONFIRMED", "ESTIMATED"} else None
 
-    if out_of_scope:
+    if set_aside_rows:
         assumptions = list(assumptions) + [
-            "정성·총괄·가격 등 자동 산정 대상이 아닌 %g점은 만점을 받는다고 가정해 "
-            "범위 상한에만 반영했고, 준비도·커버리지 계산에서는 제외했습니다."
+            "정성·총괄·가격 등 자동 산정 대상이 아닌 %g점은 별도로 보존하고, "
+            "정량 합계·상하한·준비도·커버리지 계산에서는 제외했습니다."
             % out_of_scope
         ]
+        if request.minimum_score is not None:
+            assumptions.append(
+                "최소점수의 적용 범위가 정량 소계인지 전체 평가인지 확인되지 않아 "
+                "최소점수 충족 여부를 판단하지 않았습니다."
+            )
 
     if partial_activation_is_safe:
         opinion = (
             "원문 검증이 끝난 항목만 부분 산정했습니다. 검토 항목에는 임의 점수를 "
             "넣지 않았으며 해당 배점은 0점부터 만점까지의 미확정 범위로 남겼습니다."
         )
+    elif not scored:
+        opinion = "정량 산정 대상이 없어 점수를 확정하지 않았습니다. 별도로 보존한 평가 항목을 확인하세요."
     elif band == "GREEN":
         opinion = "현재 하한과 검증 커버리지가 기본 GREEN 기준을 충족합니다. 공고별 최소점수와 최종 제출 증빙을 다시 확인하세요."
     elif band == "YELLOW":
@@ -2532,13 +2553,22 @@ def _candidate_fact_binding_sha256(
         # bound (and every new operator) still changes the identity.
         if case.get("comparison_upper_value") is None:
             case.pop("comparison_upper_value", None)
-    return _canonical_digest(
-        {
-            "binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
-            "document_sha256": document_sha256,
-            "candidate": binding_candidate,
-        }
-    )
+    binding_payload = {
+        "binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
+        "document_sha256": document_sha256,
+        "candidate": binding_candidate,
+    }
+    if candidate.metric in {"PERFORMANCE_COUNT", "PERFORMANCE_AMOUNT"}:
+        scope = parse_performance_recognition_scope(
+            _performance_scope_literal(candidate),
+            metric_key=("company.performance.count" if candidate.metric == "PERFORMANCE_COUNT"
+                        else "company.performance.amount"),
+        )
+        binding_payload["performance_recognition_contract"] = "performance-recognition-2"
+        binding_payload["performance_scope"] = (
+            scope.model_dump(mode="json", exclude={"source_literal"}) if scope else None
+        )
+    return _canonical_digest(binding_payload)
 
 
 def _candidate_brackets(
@@ -2649,7 +2679,7 @@ def _compiled_formula_contract(
 def _criterion_set_aside(
     criterion: QuantitativeCriterion, reason: str
 ) -> CriterionEstimate:
-    """Keep the row's points in the range but out of the scored denominator."""
+    """Preserve the uncomputed row's own range, outside quantitative totals."""
 
     return CriterionEstimate(
         criterion_id=criterion.criterion_id,
@@ -2673,8 +2703,8 @@ def _criterion_set_aside(
         status="OUT_OF_SCOPE",
         rationale=reason,
         assumptions=[
-            "이 배점은 만점을 받는다고 가정해 범위 상한에만 넣었고, "
-            "자동 산정 대상에서는 제외했습니다."
+            "이 항목의 배점과 미확정 범위는 별도로 보존하며, "
+            "정량 합계와 상하한에는 반영하지 않습니다."
         ],
     )
 
@@ -3636,7 +3666,20 @@ def _shared_fact_key_is_explicitly_scoped(
     return len(identities) == len(candidates)
 
 
+@dataclass(frozen=True)
+class _ActivationReasonPartition:
+    notice_reasons: tuple[str, ...]
+    row_reasons: tuple[tuple[tuple[str, str, str], tuple[str, ...]], ...]
+
+
 def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[str]:
+    """Preserve the existing sorted diagnostic contract, including row failures."""
+    partition = _profile_activation_reason_partition(profile)
+    return sorted(set(partition.notice_reasons).union(
+        *(set(codes) for _identity, codes in partition.row_reasons)))
+
+
+def _profile_activation_reason_partition(profile: QuantitativeCandidateProfile) -> _ActivationReasonPartition:
     """Return stable fail-closed codes for the machine activation contract."""
 
     reasons: set[str] = set()
@@ -3667,7 +3710,9 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
         for candidates in candidates_by_fact.values()
     ):
         reasons.add("FACT_KEY_AMBIGUOUS")
+    rows = []
     for candidate in table_candidates:
+        candidate_reasons: set[str] = set()
         scoring_anchors = [item.evidence for item in candidate.brackets]
         if candidate.threshold is not None:
             scoring_anchors.append(candidate.threshold.evidence)
@@ -3685,7 +3730,7 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 for item in scoring_anchors
             )
         ):
-            reasons.add("SOURCE_ANCHOR_INCOMPLETE")
+            candidate_reasons.add("SOURCE_ANCHOR_INCOMPLETE")
         spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
         if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS:
             metric_key = str((spec or {}).get("fact_key") or "")
@@ -3703,42 +3748,42 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 performance_literal,
                 metric_key=metric_key,
             ) is None:
-                reasons.add("FACT_DIMENSIONS_UNMODELED")
+                candidate_reasons.add("FACT_DIMENSIONS_UNMODELED")
         if spec is None:
-            reasons.add("FACT_KEY_UNREGISTERED")
+            candidate_reasons.add("FACT_KEY_UNREGISTERED")
         elif (
             tuple(candidate.required_evidence) != (spec["fact_key"],)
             or len(candidate.required_evidence) != 1
         ):
-            reasons.add("FACT_EVIDENCE_KEY_UNREGISTERED")
+            candidate_reasons.add("FACT_EVIDENCE_KEY_UNREGISTERED")
         if _metric_spec(candidate) is None:
-            reasons.add("UNSUPPORTED_UNIT")
+            candidate_reasons.add("UNSUPPORTED_UNIT")
         elif not _candidate_unit_is_source_bound(candidate):
-            reasons.add("UNIT_NOT_SOURCE_BOUND")
+            candidate_reasons.add("UNIT_NOT_SOURCE_BOUND")
         elif not _candidate_bound_unit_scales_are_consistent(candidate):
-            reasons.add("BOUND_UNIT_INCONSISTENT")
+            candidate_reasons.add("BOUND_UNIT_INCONSISTENT")
         if candidate.scoring_method not in {
             "BRACKET",
             "THRESHOLD",
             "FORMULA",
             "CASE_TABLE",
         }:
-            reasons.add("UNSUPPORTED_SCORING_DSL")
+            candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is None:
-            reasons.add("UNSUPPORTED_SCORING_DSL")
+            candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         elif candidate.scoring_method == "FORMULA":
             compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
             if compiled_formula is None and compiled_categories is None:
-                reasons.add("UNSUPPORTED_SCORING_DSL")
+                candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         elif (
             candidate.scoring_method == "CASE_TABLE"
             and _compiled_case_table_contract(candidate) is None
         ):
-            reasons.add("UNSUPPORTED_SCORING_DSL")
+            candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
         if candidate.scoring_method == "BRACKET":
             brackets = _candidate_brackets(candidate)
             if not brackets:
-                reasons.add("UNSUPPORTED_SCORING_DSL")
+                candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
             else:
                 draft = QuantitativeCriterion(
                     criterion_id="activation-check",
@@ -3759,10 +3804,13 @@ def _profile_activation_reasons(profile: QuantitativeCandidateProfile) -> list[s
                 )
                 error = _rule_error(draft)
                 if error and ("겹" in error or "공백" in error or "최솟값" in error or "최댓값" in error):
-                    reasons.add("BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING")
+                    candidate_reasons.add("BRACKETS_NOT_EXHAUSTIVE_OR_OVERLAPPING")
                 elif error:
-                    reasons.add("UNSUPPORTED_SCORING_DSL")
-    return sorted(reasons)
+                    candidate_reasons.add("UNSUPPORTED_SCORING_DSL")
+        if candidate_reasons:
+            rows.append(((candidate.source_attachment_id, candidate.table_id, candidate.criterion_id),
+                         tuple(sorted(candidate_reasons))))
+    return _ActivationReasonPartition(tuple(sorted(reasons)), tuple(rows))
 
 
 def _partial_profile_review_criteria(
@@ -3776,12 +3824,41 @@ def _partial_profile_review_criteria(
     remaining rows satisfy the ordinary AUTO_ACTIVE contract.
     """
 
-    if profile.status != "REVIEW" or len(profile.tables) != 1:
+    if profile.status != "REVIEW" or len(profile.tables) > _MAX_LOGICAL_PROGRAM_TABLES:
         return None
-    table = profile.tables[0]
+    review_tables = [table for table in profile.tables if table.status == "REVIEW"]
+    if len(review_tables) != 1:
+        return None
+    table = review_tables[0]
+    keys = [_logical_table_key(item) for item in profile.tables]
+    if len(keys) != len(set(keys)):
+        return None
     expected = set(profile.expected_attachment_ids)
     processed = set(profile.processed_attachment_ids)
     bound = {item.attachment_id for item in profile.document_bindings}
+    # A nonempty second table may be an alternative, summary or another stage.
+    # Do not compare it only after deleting review rows or reducing their total.
+    # Only source-validated, explicitly zero-point empty companions are inert.
+    for companion in profile.tables:
+        if companion is table:
+            continue
+        source_points = re.findall(
+            r"([+-]?\d[\d,.]*)\s*점",
+            companion.total_evidence.quote if companion.total_evidence else "",
+        )
+        if (
+            companion.status != "AVAILABLE"
+            or companion.source_attachment_id not in bound
+            or companion.total_points != 0
+            or companion.criterion_ids or companion.available_criterion_ids
+            or companion.review_criterion_ids
+            or companion.minimum_score is not None or companion.minimum_evidence is not None
+            or companion.total_evidence is None
+            or companion.total_evidence.attachment_id != companion.source_attachment_id
+            or not source_points
+            or any(not re.fullmatch(r"0+(?:\.0+)?", value) for value in source_points)
+        ):
+            return None
     if (
         not profile.manifest_sha256
         or not expected
@@ -3891,6 +3968,60 @@ def _partial_profile_review_criteria(
     ]
 
 
+@dataclass(frozen=True)
+class _RowPartialActivationPlan:
+    candidates: tuple[ImmutableQuantitativeRuleCandidate, ...]
+    tables: tuple[ImmutableQuantitativeTable, ...]
+    review_criteria: tuple[QuantitativeReviewCriterion, ...]
+    reasons: tuple[str, ...]
+
+
+def _available_row_partial_plan(
+    profile: QuantitativeCandidateProfile,
+) -> _RowPartialActivationPlan | None:
+    """Quarantine compiler failures only after the full source program is valid.
+
+    Resolve totals/alternatives with every original row still present. Removing
+    rows must never manufacture a new logical subtotal or hide fact ambiguity.
+    This projection is ephemeral; raw, records and fact bindings are unchanged.
+    """
+    if profile.status != "AVAILABLE":
+        return None
+    partition = _profile_activation_reason_partition(profile)
+    if partition.notice_reasons or not partition.row_reasons:
+        return None
+    program = _logical_quantitative_program(profile)
+    bad = dict(partition.row_reasons)
+    if len({identity[:2] for identity in bad}) != 1:
+        # Multiple affected tables need explicit stage/alternative ownership.
+        return None
+    good, review = [], []
+    for candidate in program.candidates:
+        identity = (candidate.source_attachment_id, candidate.table_id, candidate.criterion_id)
+        codes = bad.get(identity)
+        if codes is None:
+            good.append(candidate)
+            continue
+        if not math.isfinite(candidate.max_points) or candidate.max_points <= 0:
+            return None
+        review.append(QuantitativeReviewCriterion(
+            criterion_id="review-" + _canonical_digest({
+                "attachment_id": identity[0], "table_id": identity[1],
+                "criterion_id": identity[2]})[:28],
+            category=candidate.metric, label=candidate.label[:300],
+            max_points=candidate.max_points, issue_codes=list(codes)))
+    if not good or len(review) != len(bad):
+        return None
+    # The full logical resolver checked the source table totals. Check the
+    # projection partition too; review maxima remain in the score denominator.
+    original_total = sum((Decimal(str(c.max_points)) for c in program.candidates), Decimal(0))
+    retained_total = sum((Decimal(str(c.max_points)) for c in (*good, *review)), Decimal(0))
+    if retained_total != original_total:
+        return None
+    return _RowPartialActivationPlan(tuple(good), program.tables, tuple(review),
+        tuple(sorted({code for codes in bad.values() for code in codes})))
+
+
 def quantitative_request_from_candidate_profile(
     profile: QuantitativeCandidateProfile,
     *,
@@ -3902,7 +4033,11 @@ def quantitative_request_from_candidate_profile(
         "dynamic-quantitative-rules-"
         f"{_canonical_digest(profile.model_dump(mode='json'))[:24]}"
     )
-    partial_review_criteria = _partial_profile_review_criteria(profile)
+    row_partial = _available_row_partial_plan(profile)
+    partial_review_criteria = (
+        list(row_partial.review_criteria) if row_partial is not None
+        else _partial_profile_review_criteria(profile)
+    )
     if profile.status != "AVAILABLE" and partial_review_criteria is None:
         issue_codes = sorted({item.code for item in profile.issues})
         not_applicable = profile.status == "NOT_APPLICABLE"
@@ -3929,6 +4064,7 @@ def quantitative_request_from_candidate_profile(
         )
 
     activation_reasons = (
+        list(row_partial.reasons) if row_partial is not None else
         sorted({item.code for item in profile.issues})
         if partial_review_criteria is not None
         else _profile_activation_reasons(profile)
@@ -3954,11 +4090,13 @@ def quantitative_request_from_candidate_profile(
         else _logical_quantitative_program(profile)
     )
     logical_candidates = (
+        row_partial.candidates if row_partial is not None else
         tuple(profile.available_candidates)
         if logical_program is None
         else logical_program.candidates
     )
-    logical_tables = tuple(profile.tables) if logical_program is None else logical_program.tables
+    logical_tables = (row_partial.tables if row_partial is not None else
+        tuple(profile.tables) if logical_program is None else logical_program.tables)
 
     bindings = {
         item.attachment_id: item.document_sha256
@@ -4423,6 +4561,71 @@ def _public_evidence_observations(profile: dict[str, Any] | None) -> list[Eviden
     return observations
 
 
+def bind_quantitative_company_inputs(
+    request: QuantitativeEstimateRequest,
+    company_facts: Iterable[CompanyFact] = (),
+    performance_records: Iterable[CompanyPerformanceRecord] = (),
+    *,
+    as_of: datetime,
+    bid_notice_at: datetime | None = None,
+) -> QuantitativeEstimateRequest:
+    """Resolve company evidence for an already selected, validated rule request.
+
+    This is not source authorization: source validation, coverage and authority
+    selection remain the caller's responsibility. Inactive requests are returned
+    unchanged without reading company inputs. Active requests replace any supplied
+    scoring facts with resolver outputs; neither source nor company inputs mutate.
+    """
+
+    if request.activation_status not in {"AUTO_ACTIVE", "PARTIAL_ACTIVE"}:
+        return request
+
+    # Every company resolver must see the same facts, including when the caller
+    # supplies a one-shot iterator rather than a list.
+    stored_facts = tuple(company_facts)
+    stored_records = tuple(performance_records)
+    verified_facts = resolve_verified_quantitative_facts(
+        request.criteria, stored_facts, as_of=as_of,
+    )
+    register_facts = resolve_performance_register_facts(
+        request.criteria, stored_records, as_of=as_of,
+        bid_notice_at=bid_notice_at,
+    )
+    register_facts.extend(resolve_financial_register_facts(
+        request.criteria, stored_facts, as_of=as_of,
+    ))
+    register_facts.extend(resolve_personnel_register_facts(
+        request.criteria, stored_facts, as_of=as_of,
+    ))
+    register_identities = {
+        (item.metric_key, item.fact_binding_sha256) for item in register_facts
+    }
+    register_metrics = {item.metric_key for item in register_facts}
+    # An exact immutable CompanyFact remains authoritative. A generic fact that
+    # failed the dynamic binding contract must not suppress the notice-scoped
+    # value derived from a validated register.
+    merged_facts = [
+        item
+        for item in verified_facts
+        if item.status == "CONFIRMED"
+        or (
+            (item.metric_key, item.fact_binding_sha256) not in register_identities
+            and (item.fact_binding_sha256 is not None or item.metric_key not in register_metrics)
+        )
+    ]
+    confirmed_identities = {
+        (item.metric_key, item.fact_binding_sha256)
+        for item in verified_facts
+        if item.status == "CONFIRMED"
+    }
+    merged_facts.extend(
+        item
+        for item in register_facts
+        if (item.metric_key, item.fact_binding_sha256) not in confirmed_identities
+    )
+    return request.model_copy(update={"facts": merged_facts})
+
+
 def estimate_for_notice(
     notice: Notice,
     company_facts: Iterable[CompanyFact] = (),
@@ -4431,64 +4634,11 @@ def estimate_for_notice(
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
         request = quantitative_request_from_candidate_profile(dynamic_profile)
-        if request.activation_status in {"AUTO_ACTIVE", "PARTIAL_ACTIVE"}:
-            verified_facts = resolve_verified_quantitative_facts(
-                request.criteria,
-                company_facts,
-                as_of=notice.deadline,
-            )
-            register_facts = resolve_performance_register_facts(
-                request.criteria,
-                performance_records,
-                as_of=notice.deadline,
-                bid_notice_at=getattr(notice, "published_at", None),
-            )
-            register_facts.extend(
-                resolve_financial_register_facts(
-                    request.criteria,
-                    company_facts,
-                    as_of=notice.deadline,
-                )
-            )
-            register_facts.extend(
-                resolve_personnel_register_facts(
-                    request.criteria,
-                    company_facts,
-                    as_of=notice.deadline,
-                )
-            )
-            register_identities = {
-                (item.metric_key, item.fact_binding_sha256) for item in register_facts
-            }
-            register_metrics = {item.metric_key for item in register_facts}
-            # An exact immutable CompanyFact remains authoritative.  A generic
-            # CompanyFact that failed the dynamic binding contract must not,
-            # however, suppress the notice-scoped value derived from the
-            # validated performance register.
-            merged_facts = [
-                item
-                for item in verified_facts
-                if item.status == "CONFIRMED"
-                or (
-                    (item.metric_key, item.fact_binding_sha256) not in register_identities
-                    and (item.fact_binding_sha256 is not None or item.metric_key not in register_metrics)
-                )
-            ]
-            confirmed_identities = {
-                (item.metric_key, item.fact_binding_sha256)
-                for item in verified_facts
-                if item.status == "CONFIRMED"
-            }
-            merged_facts.extend(
-                item
-                for item in register_facts
-                if (item.metric_key, item.fact_binding_sha256) not in confirmed_identities
-            )
-            request = request.model_copy(
-                update={
-                    "facts": merged_facts
-                }
-            )
+        request = bind_quantitative_company_inputs(
+            request, company_facts, performance_records,
+            as_of=notice.deadline,
+            bid_notice_at=getattr(notice, "published_at", None),
+        )
         return estimate_quantitative_score(request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
@@ -4584,7 +4734,17 @@ def _public_criteria_match_aggregate(
     upper_points: float | None,
     evidence_coverage_pct: float,
     overall_status: EstimateStatus,
+    out_of_scope_points: float | None = None,
 ) -> bool:
+    scored = [item for item in items if item.status != "OUT_OF_SCOPE"]
+    excluded_total = _sum_public_points(
+        item.max_points for item in items if item.status == "OUT_OF_SCOPE"
+    )
+    if excluded_total is None or (
+        out_of_scope_points is not None
+        and not _public_number_matches(out_of_scope_points, excluded_total)
+    ):
+        return False
     if not items:
         return (
             total_max_points is None
@@ -4603,18 +4763,17 @@ def _public_criteria_match_aggregate(
     ):
         return False
 
-    expected_total = _sum_public_points(item.max_points for item in items)
+    expected_total = _sum_public_points(item.max_points for item in scored)
     expected_confirmed = _sum_public_points(
-        item.lower_points for item in items if item.status == "CONFIRMED"
+        item.lower_points for item in scored if item.status == "CONFIRMED"
     )
-    expected_lower = _sum_public_points(item.lower_points for item in items)
-    expected_upper = _sum_public_points(item.upper_points for item in items)
+    expected_lower = _sum_public_points(item.lower_points for item in scored)
+    expected_upper = _sum_public_points(item.upper_points for item in scored)
     confirmed_weight = _sum_public_points(
-        item.max_points for item in items if item.status == "CONFIRMED"
+        item.max_points for item in scored if item.status == "CONFIRMED"
     )
     if (
         expected_total is None
-        or expected_total <= 0
         or expected_confirmed is None
         or expected_lower is None
         or expected_upper is None
@@ -4622,13 +4781,15 @@ def _public_criteria_match_aggregate(
     ):
         return False
     expected_coverage = _canonical_public_points(
-        (confirmed_weight / expected_total) * 100
+        (confirmed_weight / expected_total) * 100 if expected_total else 0
     )
     if expected_coverage is None:
         return False
-    statuses = {item.status for item in items}
-    if "REVIEW" in statuses:
-        expected_status: EstimateStatus = "REVIEW"
+    statuses = {item.status for item in scored}
+    if not scored:
+        expected_status: EstimateStatus = "UNSCORABLE"
+    elif "REVIEW" in statuses:
+        expected_status = "REVIEW"
     elif "UNSCORABLE" in statuses:
         expected_status = "UNSCORABLE"
     elif "ESTIMATED" in statuses:
@@ -4685,6 +4846,7 @@ def build_public_quantitative_criteria_snapshot(
         upper_points=result.upper_points,
         evidence_coverage_pct=result.evidence_coverage_pct,
         overall_status=result.overall_status,
+        out_of_scope_points=result.out_of_scope_points,
     ):
         return None
     return snapshot.model_dump(mode="json")
@@ -4700,6 +4862,7 @@ def _restore_public_quantitative_criteria_snapshot(
     upper_points: float | None,
     evidence_coverage_pct: float,
     overall_status: EstimateStatus,
+    out_of_scope_points: float | None = None,
 ) -> list[CriterionEstimate] | None:
     try:
         snapshot = PublicQuantitativeCriteriaSnapshot.model_validate(value)
@@ -4714,6 +4877,7 @@ def _restore_public_quantitative_criteria_snapshot(
         upper_points=upper_points,
         evidence_coverage_pct=evidence_coverage_pct,
         overall_status=overall_status,
+        out_of_scope_points=out_of_scope_points,
     ):
         return None
 
@@ -4722,16 +4886,19 @@ def _restore_public_quantitative_criteria_snapshot(
         "ESTIMATED": "저장된 최신 분석의 잠정 점수 또는 범위입니다.",
         "UNSCORABLE": "현재 공개 요약만으로 산정할 수 없는 항목입니다.",
         "REVIEW": "저장된 최신 분석에서 자동 산정을 보류한 항목입니다.",
+        "OUT_OF_SCOPE": "정량 합계에서 제외하고 별도로 보존한 평가 항목입니다. 이 항목의 점수는 산정하지 않았습니다.",
     }
     criteria: list[CriterionEstimate] = []
     for index, item in enumerate(snapshot.items, start=1):
         label = _PUBLIC_CRITERION_LABEL_BY_DISPLAY_CODE[item.display_code]
-        if item.display_code == "OTHER":
+        if item.status == "OUT_OF_SCOPE":
+            label = f"별도 평가 항목 {index}"
+        elif item.display_code == "OTHER":
             label = f"{label} {index}"
         criteria.append(
             CriterionEstimate(
                 criterion_id=f"PUBLIC-CRITERION-{index:03d}",
-                category="PUBLIC_QUANTITATIVE",
+                category=("PUBLIC_OUT_OF_SCOPE" if item.status == "OUT_OF_SCOPE" else "PUBLIC_QUANTITATIVE"),
                 label=label,
                 max_points=item.max_points,
                 formula="공개 화면에서는 세부 원문 산식을 제외합니다.",
@@ -4772,6 +4939,7 @@ def _public_quantitative_projection(
             upper_points=result.upper_points,
             evidence_coverage_pct=result.evidence_coverage_pct,
             overall_status=result.overall_status,
+            out_of_scope_points=result.out_of_scope_points,
         )
         if snapshot is not None
         else None
@@ -4908,10 +5076,13 @@ def public_quantitative_snapshot_projection(
             basis.get("evidence_coverage_pct"), minimum=0, maximum=100
         )
         confidence = public_number(score.confidence, minimum=0, maximum=1)
+        out_of_scope = public_number(basis.get("out_of_scope_points"), minimum=0)
     except ValueError:
         return None
 
     if coverage is None or confidence is None:
+        return None
+    if "out_of_scope_points" in basis and out_of_scope is None:
         return None
     if any(
         number is not None and _canonical_public_points(number) != number
@@ -4923,10 +5094,9 @@ def public_quantitative_snapshot_projection(
             confirmed,
             coverage,
             confidence,
+            out_of_scope,
         )
     ):
-        return None
-    if total_max is not None and total_max <= 0:
         return None
     if (lower is None) != (upper is None):
         return None
@@ -5054,17 +5224,34 @@ def public_quantitative_snapshot_projection(
             upper_points=upper,
             evidence_coverage_pct=coverage,
             overall_status=score.status,
+            out_of_scope_points=out_of_scope,
         )
         if restored_criteria is None:
             return None
         public_criteria = restored_criteria
+        # The bounded public rows preserve excluded weights even for a stored
+        # snapshot without the additive aggregate field. Never infer these
+        # weights from private text or count them as a quantitative score.
+        out_of_scope = _sum_public_points(
+            item.max_points for item in public_criteria if item.status == "OUT_OF_SCOPE"
+        )
+    elif out_of_scope not in {None, 0}:
+        return None
+    if total_max == 0 and (
+        not public_criteria
+        or not out_of_scope
+        or confidence != 0
+    ):
+        return None
 
     activation_reasons = (
         []
         if activation_status == "AUTO_ACTIVE"
         else ["PUBLIC_ANALYSIS_REVIEW_REQUIRED"]
     )
-    if estimated is not None:
+    if total_max == 0:
+        opinion = "저장된 최신 분석에 정량 산정 대상이 없어 점수를 확정하지 않았습니다. 별도 평가 항목을 확인하세요."
+    elif estimated is not None:
         opinion = "저장된 최신 분석에서 확정 가능한 정량 합계를 계산했습니다."
     elif lower is not None:
         opinion = (
@@ -5090,6 +5277,7 @@ def public_quantitative_snapshot_projection(
             lower_points=lower,
             upper_points=upper,
             unscorable_points=None,
+            out_of_scope_points=out_of_scope or 0,
             evidence_coverage_pct=coverage,
             readiness_pct=readiness,
             readiness_band=score.band,

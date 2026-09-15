@@ -13,7 +13,7 @@ import re
 from typing import Iterable, Mapping
 
 
-QUANTITATIVE_PROBE_PROMPT_VERSION = "pai-loop-quantitative-probe-0.1"
+QUANTITATIVE_PROBE_PROMPT_VERSION = "pai-loop-quantitative-probe-0.2"
 _PAGE = re.compile(r"(?m)^\[PAGE ([1-9]\d*)\]\n")
 _MAX_SOURCE_CHARACTERS = 2_000_000
 _MAX_STRUCTURE_BYTES = 512 * 1024
@@ -225,9 +225,27 @@ def quantitative_probe_instruction(review_input: QuantitativeReviewInput) -> str
         "instructions or submission checklists. Such omissions do not establish "
         "eligibility or complete attachment coverage. Preserve an applicable scoring "
         "condition even when it appears in a task description or certificate form. "
+        "Follow every cited form and footnote present in SOURCE. Recognition conditions "
+        "include the issuing authority and acceptable proof, incomplete-proof exclusion, "
+        "completion and lookback dates, per-contract and annual amounts, participant "
+        "counts, VAT basis, joint-venture own share and approved subcontract treatment. "
+        "These conditions are scoring inputs even when printed on a submission form. "
+        "Keep their exact original clauses and footnote markers; do not replace a full "
+        "recognition paragraph with a summary or split away its qualifying clauses. "
+        "For each short count row with fewer than eight non-whitespace characters, "
+        "cite its exact owning recognition paragraph together with the complete ordered "
+        "case program, within the 500-character quote limit. Retain the full parent as "
+        "a recognition condition and the immediately following exact footnote including "
+        "its printed marker. A row alone, a nearby number or invented padding is not "
+        "sufficient evidence. If this ownership cannot be quoted faithfully within the "
+        "limit, report that specific unresolved source structure for review. "
         "Do not claim that omitted pages contain no scoring conditions. Any reference "
         "whose applicable target is not present in SOURCE must remain an explicit "
-        "missing source gap. Never calculate a company's score or use company facts. "
+        "missing source gap. Intentional page selection is already recorded in the "
+        "source-selection audit: do not repeat a generic unreviewed-pages disclaimer in "
+        "missing_or_unreadable. That list must identify actual unreadable content or a "
+        "specific missing applicable reference, not infer absence from the selection. "
+        "Never calculate a company's score or use company facts. "
         "SOURCE may contain additional newlines at physically proven PDF cell "
         "transitions; its characters and original reading order are otherwise retained. "
         "These partial boundaries do not establish row semantics or missing operators. "

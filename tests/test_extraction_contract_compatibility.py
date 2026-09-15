@@ -13,6 +13,7 @@ from sqlalchemy import select, func
 from pai_loop.extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT as CURRENT, LEGACY_CASE_CONTRACT as LEGACY,
     PREVIOUS_CASE_CONTRACT as PREVIOUS,
+    PREVIOUS_PROCESSING_CONTRACT as PREVIOUS_PROCESSING,
     classify_attempt_header, classify_record_contract,
 )
 from pai_loop.integrations.openai_extraction import (
@@ -251,20 +252,36 @@ def test_previous_tuple_cannot_mix_with_current_contract(field):
 
 
 def test_additive_empty_upper_bound_preserves_existing_company_fact_identity():
-    from pai_loop.quantitative_scoring import _candidate_fact_binding_sha256, _canonical_digest
+    from pai_loop.quantitative_performance import parse_performance_recognition_scope
+    from pai_loop.quantitative_scoring import (
+        _candidate_fact_binding_sha256, _canonical_digest, _performance_scope_literal,
+    )
     _, _, _, record = notice_fixture(contract=PREVIOUS)
     candidate = record.available_candidates[0]
     legacy_json = candidate.model_dump(mode="json")
     for case in legacy_json["cases"]:
         case.pop("comparison_upper_value", None)
-    old_digest = _canonical_digest({"binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
-        "document_sha256": record.document_sha256, "candidate": legacy_json})
-    assert _candidate_fact_binding_sha256(candidate, document_sha256=record.document_sha256) == old_digest
+    payload = {"binding_schema": "pai-loop-quantitative-fact-binding-1.0.0",
+        "document_sha256": record.document_sha256, "candidate": legacy_json}
+    legacy_digest = _canonical_digest(payload)
+    # Since engine 1.8.5 a performance binding also carries the current
+    # recognition semantics: a deliberate one-time re-binding so that a fact
+    # attested under an older reading cannot satisfy a re-interpreted rule.
+    # The additive empty upper bound itself must still be inert.
+    assert candidate.metric == "PERFORMANCE_COUNT"
+    scope = parse_performance_recognition_scope(
+        _performance_scope_literal(candidate), metric_key="company.performance.count")
+    payload["performance_recognition_contract"] = "performance-recognition-2"
+    payload["performance_scope"] = (
+        scope.model_dump(mode="json", exclude={"source_literal"}) if scope else None)
+    current = _candidate_fact_binding_sha256(candidate, document_sha256=record.document_sha256)
+    assert current == _canonical_digest(payload)
+    assert current != legacy_digest
     changed = candidate.model_copy(update={"cases": (
         candidate.cases[0].model_copy(update={"operator": "BETWEEN", "comparison_upper_value": 6}),
         *candidate.cases[1:],
     )})
-    assert _candidate_fact_binding_sha256(changed, document_sha256=record.document_sha256) != old_digest
+    assert _candidate_fact_binding_sha256(changed, document_sha256=record.document_sha256) != current
 
 
 def test_legacy_review_original_case_rows_cannot_hide_new_vocabulary():
@@ -369,14 +386,15 @@ def test_legacy_review_retry_snapshot_preserves_one_new_generation_boundary():
                                      retry_reviewed_version_ids=retry_ids) is None
 
 
-def test_pipeline_refresh_preserves_legacy_sources_and_is_idempotent(monkeypatch):
+@pytest.mark.parametrize("contract", [LEGACY, PREVIOUS, PREVIOUS_PROCESSING])
+def test_pipeline_refresh_preserves_legacy_sources_and_is_idempotent(monkeypatch, contract):
     import pai_loop.analysis_pipeline as pipeline
     import pai_loop.quantitative_scoring as scoring
     engine = build_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     session = build_session_factory(engine)()
     try:
-        notice, _, attempt, record = notice_fixture()
+        notice, _, attempt, record = notice_fixture(contract=contract)
         original = deepcopy(attempt.source_payload)
         notice_id = notice.id
         session.add(notice)
@@ -408,14 +426,22 @@ def test_pipeline_refresh_preserves_legacy_sources_and_is_idempotent(monkeypatch
         score = session.scalar(select(ScoreSnapshot).where(
             ScoreSnapshot.analysis_run_id == run.id, ScoreSnapshot.score_key == "quantitative.total"))
         assert run.basis_versions["quantitative_engine"] == QUANTITATIVE_ENGINE_VERSION
-        assert [list(item) for item in run.basis_versions["source_extraction_contracts"]] == [[LEGACY.prompt, LEGACY.schema]]
+        assert [list(item) for item in run.basis_versions["source_extraction_contracts"]] == [[contract.prompt, contract.schema]]
         assert public_quantitative_snapshot_projection(run, score) is not None
         assert session.scalar(select(func.count()).select_from(AnalysisRun)) == 2
         session.rollback()
-        assert _accepted_outcome_for_duplicate_content(session, notice_id=notice_id,
+        duplicate = _accepted_outcome_for_duplicate_content(session, notice_id=notice_id,
             attachment_id=record.attachment_id, document_sha256=record.document_sha256,
             source_text_sha256=record.document_sha256,
-            analysis_input_sha256=record.document_sha256) is None
+            analysis_input_sha256=record.document_sha256)
+        if contract == PREVIOUS_PROCESSING:
+            # The existing processing-upgrade path may reuse exactly identical
+            # bytes/source/input under the same prompt/schema, before validating
+            # it again against the caller's current source. No model is called.
+            assert duplicate is not None and duplicate.api_calls == 0
+            assert duplicate.data.model_dump(mode="json") == original["result"]
+        else:
+            assert duplicate is None
     finally:
         session.close()
         engine.dispose()

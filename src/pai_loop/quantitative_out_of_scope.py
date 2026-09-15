@@ -7,12 +7,12 @@ validate, so each one returned REVIEW, and a single REVIEW makes the whole
 notice REVIEW. Since almost every notice carries such a row, that one rule
 withheld nearly every estimate.
 
-A row set aside here keeps its points in the range -- 0 at the bottom, full
-marks at the top -- so a notice reads "정량 40점 확보, 정성 60점은 만점 가정"
-rather than pretending the panel will award nothing. It is excluded from the
-readiness and coverage denominators, because those measure how well the
-company data covers what the company data can answer; counting rows nobody
-could ever compute would make a perfect quantitative fit look like a failure.
+A row set aside here retains its original maximum, reason and uncomputed
+row-level range for audit. Its points are kept in ``out_of_scope_points`` and
+excluded from all quantitative totals, bounds, readiness and coverage. Thus
+"정량 40점 확보, 별도 정성 배점 60점" never implies that a panel will award
+either zero or full marks. A minimum in a mixed request remains undecided
+because the request does not bind it to the quantitative subtotal.
 
 The classifier only ever fires on a row whose metric is outside the canonical
 registry. A row the engine can actually score is never set aside.

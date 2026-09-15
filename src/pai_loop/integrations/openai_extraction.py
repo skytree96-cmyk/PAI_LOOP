@@ -21,6 +21,11 @@ from ..extraction_time_budget import (
 )
 from ..gateway_diagnostics import GatewayFailure, safe_gateway_failure
 from ..long_output_policy import LONG_OUTPUT_ONCE, LONG_OUTPUT_TOKENS, LONG_OUTPUT_TIMEOUT_SECONDS
+from ..quantitative_probe_policy import (
+    QUANTITATIVE_PROBE_ONCE, QUANTITATIVE_PROBE_REQUEST_SCOPE,
+    QUANTITATIVE_PROBE_OUTPUT_TOKENS, QUANTITATIVE_PROBE_CLIENT_TIMEOUT_SECONDS,
+    QUANTITATIVE_PROBE_MAX_CALLS,
+)
 from ..quantitative_review_input import (
     QUANTITATIVE_PROBE_PROMPT_VERSION,
     QuantitativeReviewInput,
@@ -737,7 +742,7 @@ class OpenAIExtractionClient:
         # gateway. Adaptive thinking shares this budget with the final JSON.
         max_output_tokens: int = 20_000,
         max_total_api_calls: int = 2,
-        budget_policy: Literal["LONG_OUTPUT_ONCE"] | None = None,
+        budget_policy: Literal["LONG_OUTPUT_ONCE", "QUANTITATIVE_PROBE_ONCE"] | None = None,
         before_request: Callable[[], None] | None = None,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -783,7 +788,14 @@ class OpenAIExtractionClient:
         # caller may still perform the one evidence-correction attempt.
         self.max_retries = 0 if selected_provider == "n8n_claude" else max_retries
         self.max_input_chars = max_input_chars
-        if budget_policy is not None:
+        if budget_policy == QUANTITATIVE_PROBE_ONCE:
+            if (selected_provider != "n8n_claude"
+                or type(max_output_tokens) is not int or max_output_tokens != QUANTITATIVE_PROBE_OUTPUT_TOKENS
+                or type(timeout_seconds) not in {int, float} or timeout_seconds != QUANTITATIVE_PROBE_CLIENT_TIMEOUT_SECONDS
+                or type(max_total_api_calls) is not int or max_total_api_calls != QUANTITATIVE_PROBE_MAX_CALLS
+                or not callable(before_request)):
+                raise ValueError("invalid QUANTITATIVE_PROBE_ONCE execution contract")
+        elif budget_policy is not None:
             if (budget_policy != LONG_OUTPUT_ONCE or selected_provider != "n8n_claude"
                 or type(max_output_tokens) is not int or max_output_tokens != LONG_OUTPUT_TOKENS
                 or timeout_seconds != LONG_OUTPUT_TIMEOUT_SECONDS or max_total_api_calls != 1
@@ -1249,6 +1261,8 @@ class OpenAIExtractionClient:
         document_text: str,
         allowed_attachment_ids: set[str],
     ) -> ExtractionOutcome:
+        if self.budget_policy == QUANTITATIVE_PROBE_ONCE:
+            raise ValueError("QUANTITATIVE_PROBE_ONCE_REQUIRES_PROBE_ENTRY")
         return self._extract(
             document_text=document_text,
             allowed_attachment_ids=allowed_attachment_ids,
@@ -1270,6 +1284,7 @@ class OpenAIExtractionClient:
             self.provider != "n8n_claude"
             or self.max_total_api_calls != 1
             or self.max_retries != 0
+            or self.budget_policy == LONG_OUTPUT_ONCE
         ):
             raise ValueError("QUANTITATIVE_PROBE_REQUIRES_SINGLE_GATEWAY_CALL")
         instruction = quantitative_probe_instruction(review_input)
@@ -1300,6 +1315,8 @@ class OpenAIExtractionClient:
         quantitative_only: bool = False,
         untrusted_source_context: str | None = None,
     ) -> ExtractionOutcome:
+        if self.budget_policy == QUANTITATIVE_PROBE_ONCE and not quantitative_only:
+            raise ValueError("QUANTITATIVE_PROBE_ONCE_REQUIRES_PROBE_ENTRY")
         if not document_text.strip():
             return self._review("EMPTY_INPUT", "추출할 문서 텍스트가 없습니다.", api_calls=0)
         if len(document_text) + len(untrusted_source_context or "") > self.max_input_chars:
@@ -1457,6 +1474,8 @@ class OpenAIExtractionClient:
             "store": False,
             "max_output_tokens": self.max_output_tokens,
             **({"budget_policy": self.budget_policy} if self.budget_policy is not None else {}),
+            **({"request_scope": QUANTITATIVE_PROBE_REQUEST_SCOPE}
+               if self.budget_policy == QUANTITATIVE_PROBE_ONCE else {}),
             "input": [
                 {
                     "role": "system",

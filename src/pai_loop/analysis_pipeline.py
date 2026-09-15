@@ -63,7 +63,7 @@ from .models import (
     ScoreSnapshot,
 )
 from .notice_freshness import authoritative_pps_notice_is_cancelled
-from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION, LEGACY_CASE_KINDS
+from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION, BOUND_PREDECESSOR_KINDS, LEGACY_CASE_KINDS
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
@@ -394,11 +394,16 @@ def _select_source_versions(
             ]
 
     latest_pps_numbers: dict[str, int] = {}
+    latest_new_processing_numbers: dict[str, int] = {}
     for version in versions:
         payload = version.source_payload
         if isinstance(payload, dict) and payload.get("kind") == SOURCE_KIND and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
             aid = _attachment_identity(payload, version)
             latest_pps_numbers[aid] = max(latest_pps_numbers.get(aid, -1), version.version_no)
+            if classify_attempt_header(payload) in {"CURRENT", "UNSUPPORTED"}:
+                latest_new_processing_numbers[aid] = max(
+                    latest_new_processing_numbers.get(aid, -1), version.version_no,
+                )
     latest_by_attachment: dict[str, NoticeVersion] = {}
     for version in versions:
         payload = version.source_payload
@@ -418,6 +423,14 @@ def _select_source_versions(
             and version.version_no < latest_pps_numbers.get(_attachment_identity(payload, version), -1)
         ):
             # Even an unsupported newer header prevents legacy-success fallback.
+            continue
+        if (
+            payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and classify_attempt_header(payload) == "EXACT_PREVIOUS_PROCESSING"
+            and version.version_no < latest_new_processing_numbers.get(_attachment_identity(payload, version), -1)
+        ):
+            # Preserve the old modern generation only until a new parser
+            # generation supersedes it, including an invalid new attempt.
             continue
         compatible_pps = (
             prompt_version == PROMPT_VERSION
@@ -444,7 +457,7 @@ def _select_source_versions(
         if payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
             contract_kind = classify_attempt_header(payload)
             if contract_kind == "UNSUPPORTED" or (
-                contract_kind in LEGACY_CASE_KINDS
+                contract_kind in BOUND_PREDECESSOR_KINDS
                 and payload.get("status") == "ACCEPTED"
                 and not _has_valid_quantitative_record(
                     version, attachment_id=attachment_id,
@@ -486,7 +499,7 @@ def _parse_source(
     compatible_pps = bool(
         allow_compatible_pps and prompt_version == PROMPT_VERSION
         and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
-        and classify_attempt_header(payload) in LEGACY_CASE_KINDS
+        and classify_attempt_header(payload) in BOUND_PREDECESSOR_KINDS
         and _has_valid_quantitative_record(
             version, attachment_id=attachment_id,
             current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
@@ -2485,6 +2498,7 @@ def run_analysis_pipeline(
                             "activation_status": quantitative.activation_status,
                             "activation_reasons": quantitative.activation_reasons,
                             "total_max_points": quantitative.total_max_points,
+                            "out_of_scope_points": quantitative.out_of_scope_points,
                             "confirmed_points": quantitative.confirmed_points,
                             "evidence_coverage_pct": quantitative.evidence_coverage_pct,
                             "profile_output_sha256": _digest(
