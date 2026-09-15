@@ -101,6 +101,38 @@ for (const field of Object.keys(fixture)) {
   assert.throws(() => validateAwardAggregate(value, "run"), /aggregate contract failed/);
 }
 
+// A deployed node whose response format drifted to autodetect delivers the
+// aggregate as a Buffer or a raw string. The 2026-09-13 19:30 run failed that
+// way on a backend response that was itself correct, so the transport must be
+// decoded before the contract judges it - and must still fail closed on
+// anything that is not one complete JSON object.
+{
+  const planFixture = {
+    schema_version: "award-refresh-automation-1.0", status: "PLANNED",
+    total: 931, complete: 2, no_results: 7, partial: 0, pending: 922, running: 0,
+    failed: 0, unsupported: 0, skipped: 0, unplanned: 0, eligible: 922,
+    api_calls_24h: 435, budget_reserved_24h: 0, ai_calls: 0, enrolled: 0, requeued: 0,
+  };
+  const text = JSON.stringify(planFixture);
+  const expected = validateAwardAggregate(planFixture, "plan");
+  for (const transport of [
+    text,
+    Buffer.from(text, "utf8"),
+    { type: "Buffer", data: [...Buffer.from(text, "utf8")] },
+    { body: text },
+    { body: Buffer.from(text, "utf8") },
+  ]) {
+    assert.deepEqual(validateAwardAggregate(transport, "plan"), expected);
+  }
+  for (const broken of [
+    "", "not json", "{", Buffer.from('{"schema_version":', "utf8"),
+    Buffer.from(JSON.stringify([planFixture]), "utf8"),
+    { type: "Buffer", data: [123, 34] },
+  ]) {
+    assert.throws(() => validateAwardAggregate(broken, "plan"), /aggregate contract failed/);
+  }
+}
+
 // Safety validation must reject a network branch, extra code, retries, increased
 // limits, wrong endpoints, credential material and publication metadata drift.
 for (const mutate of [
