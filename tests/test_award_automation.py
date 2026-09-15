@@ -45,11 +45,14 @@ def setup(client, monkeypatch):
     monkeypatch.setattr(module, "_source_kind", lambda notice: "PPS" if notice.notice_key.startswith("SYN-QUEUE-") else original(notice))
 
     def add(key="A", *, category="용역", status="OPEN", age=0, title="가상 교육 컨설팅",
-            demand_agency_name="SYN 수요기관", demand_agency_code="SYN-DEMAND"):
+            demand_agency_name="SYN 수요기관", demand_agency_code="SYN-DEMAND",
+            deadline_days=None, published_days=None):
+        published = age if published_days is None else published_days
         with client.app.state.session_factory() as session:
             notice = Notice(notice_key=f"SYN-QUEUE-{key}", bid_notice_no=f"SYN-{key}", title=title,
-                category=category, status=status, agency="가상 기관", deadline=NOW + timedelta(days=120-age),
-                published_at=NOW - timedelta(days=age), created_at=NOW - timedelta(days=age))
+                category=category, status=status, agency="가상 기관",
+                deadline=NOW + timedelta(days=120-age if deadline_days is None else deadline_days),
+                published_at=NOW - timedelta(days=published), created_at=NOW - timedelta(days=age))
             session.add(notice)
             session.flush()
             add_scope_version(session, notice, demand_agency_name=demand_agency_name,
@@ -78,6 +81,11 @@ def fake_collector(client, monkeypatch, *, status="COMPLETED", records=2, calls=
 
     monkeypatch.setattr(module, "refresh_award_history", collect)
     return captured
+
+
+def _raise_provider_error(*args):
+    """Only a raised collector error yields FAILED with a retry backoff."""
+    raise RuntimeError("SYN provider prose must never be emitted")
 
 
 def post(client, path, body=None):
@@ -148,15 +156,31 @@ def test_run_only_awards_and_durable_counts(client, setup, monkeypatch):
     assert post(client, "run")["status"] == "IDLE"
 
 
-def test_zero_results_stay_fresh_then_stale_plan_requeues(client, setup, monkeypatch):
+def test_completed_coverage_is_terminal_and_never_recollected_on_a_timer(client, setup, monkeypatch):
     clock, add = setup
-    add()
+    notice_id = add()
     captured = fake_collector(client, monkeypatch, records=0)
     post(client, "plan")
     assert post(client, "run")["no_results"] == 1
-    assert post(client, "plan")["requeued"] == 0
-    assert post(client, "run")["attempted"] == 0
-    clock[0] += timedelta(days=31)
+    for days in (0, 31, 100):
+        clock[0] = NOW + timedelta(days=days)
+        # The retired request field stays accepted for the deployed W14 body.
+        assert post(client, "plan", {"refresh_after_days": 30})["requeued"] == 0
+        assert post(client, "run")["attempted"] == 0
+    assert len(captured) == 1
+    with client.app.state.session_factory() as session:
+        assert session.get(AwardRefreshState, notice_id).status == "NO_RESULTS"
+
+
+def test_changed_search_basis_still_recollects_completed_coverage(client, setup, monkeypatch):
+    _clock, add = setup
+    notice_id = add()
+    captured = fake_collector(client, monkeypatch)
+    post(client, "plan")
+    assert post(client, "run")["status"] == "COMPLETED"
+    with client.app.state.session_factory() as session:
+        session.get(Notice, notice_id).title = "가상 홍보 컨설팅"
+        session.commit()
     assert post(client, "plan")["requeued"] == 1
     assert post(client, "run")["attempted"] == 1
     assert len(captured) == 2
@@ -302,21 +326,73 @@ def test_protected_routes_and_request_limits(client, setup):
     assert client.post(f"{BASE}/plan", json={}).status_code == 401
 
 
-def test_never_attempted_priority_before_stale_refresh(client, setup, monkeypatch):
+def test_fresh_intake_outranks_the_backlog_whatever_its_publish_date(client, setup, monkeypatch):
+    """W10 intake, not the provider publish date, decides who gets budget first."""
     _clock, add = setup
-    old_id = add("OLD", age=20)
-    current_id = add("CURRENT")
+    add("BACKLOG", age=10, published_days=0, deadline_days=300)
+    add("TODAY", age=0, published_days=10, deadline_days=30)
     captured = fake_collector(client, monkeypatch)
     post(client, "plan")
-    assert post(client, "run")["notice_key"] == "SYN-QUEUE-CURRENT"
-    with client.app.state.session_factory() as session:
-        session.get(AwardRefreshState, current_id).refreshed_at = NOW - timedelta(days=31)
-        session.commit()
-    assert post(client, "plan")["requeued"] == 1
-    assert post(client, "run")["notice_key"] == "SYN-QUEUE-OLD"
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-TODAY"
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-BACKLOG"
     assert len(captured) == 2
-    with client.app.state.session_factory() as session:
-        assert session.get(AwardRefreshState, old_id).status == "COMPLETED"
+
+
+def test_backlog_spends_leftover_budget_on_the_furthest_deadline_first(client, setup, monkeypatch):
+    """A notice closing this week is too late to bid on; it waits for the rest."""
+    _clock, add = setup
+    add("SOON", age=10, published_days=0, deadline_days=5)
+    add("LATER", age=10, published_days=20, deadline_days=200)
+    captured = fake_collector(client, monkeypatch)
+    post(client, "plan")
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-LATER"
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-SOON"
+    assert len(captured) == 2
+
+
+def test_backlog_deadline_order_survives_separate_enrolment_cycles(client, setup, monkeypatch):
+    """W14 plans every ten minutes and W10 ingests daily, so the backlog carries
+    many different enrolment stamps. The deadline, not the stamp, must decide."""
+    clock, add = setup
+    add("SOON", age=10, deadline_days=5)
+    post(client, "plan")
+    clock[0] = NOW + timedelta(days=1)
+    add("LATER", age=10, deadline_days=200)
+    post(client, "plan")
+    captured = fake_collector(client, monkeypatch)
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-LATER"
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-SOON"
+    assert len(captured) == 2
+
+
+def test_one_failed_attempt_does_not_bury_a_far_deadline_notice(client, setup, monkeypatch):
+    """attempts and the backoff stamp both encode history, not urgency."""
+    clock, add = setup
+    add("FAR", age=10, deadline_days=200)
+    monkeypatch.setattr(module, "refresh_award_history", _raise_provider_error)
+    post(client, "plan")
+    assert post(client, "run")["status"] == "FAILED"
+    add("NEAR", age=10, deadline_days=5)
+    post(client, "plan")
+    clock[0] = NOW + timedelta(hours=7)
+    captured = fake_collector(client, monkeypatch)
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-FAR"
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-NEAR"
+    assert len(captured) == 2
+
+
+def test_never_attempted_wins_when_deadlines_tie(client, setup, monkeypatch):
+    clock, add = setup
+    add("ATTEMPTED", age=20, deadline_days=100)
+    monkeypatch.setattr(module, "refresh_award_history", _raise_provider_error)
+    post(client, "plan")
+    assert post(client, "run")["status"] == "FAILED"
+    add("UNTRIED", age=20, deadline_days=100)
+    post(client, "plan")
+    clock[0] = NOW + timedelta(hours=7)
+    captured = fake_collector(client, monkeypatch)
+    assert post(client, "run")["notice_key"] == "SYN-QUEUE-UNTRIED"
+    assert len(captured) == 1
 
 
 def test_durable_actual_usage_survives_operational_job_retention(client, setup, monkeypatch):
