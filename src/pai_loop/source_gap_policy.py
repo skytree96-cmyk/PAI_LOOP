@@ -85,6 +85,14 @@ _QUANTITATIVE_GAP_TERMS = (
     "평가 배점표",
     "평가표",
     "배점표",
+    # The same artifact is named 기준표/채점표/점수표 about as often. The sentence
+    # path still requires one of its own fullmatches, so these only widen what
+    # the classifying path can see.
+    "기준표",
+    "채점표",
+    "점수표",
+    "배점 기준표",
+    "배점기준표",
 )
 _UNREADABLE_GAP_TERMS = ("판독", "식별 불가", "불명확", "훼손", "흐림")
 _PARTIAL_TABLE_GAP_TERMS = (
@@ -361,12 +369,36 @@ _LOCAL_CONTAINER_RE = re.compile(_LOCAL_CONTAINER_PATTERN)
 # 않아`` puts a named document in that position and the attachment itself in the
 # subject: the relation is reversed and no sibling may be bound from it.
 _LOCAL_ONLY_CONTAINER_PATTERN = (
-    r"(?:본|이|해당|현)\s*(?:공고서|공고문|공고|문서|첨부|자료|SOURCE|source)|"
+    r"(?:본|이|해당|현)\s*(?:공고서|공고문|공고|문서|첨부\s*문서|첨부|자료|소스|SOURCE|source)|"
     r"본문|공고문|발췌본|제공된\s*문서|SOURCE|source"
 )
+# Between the container and its particle a statement may repeat the container in
+# apposition (``본 문서(입찰공고서)에는``), narrow it (``본 공고문 본문에``), or extend
+# it to the rest of the manifest (``본 공고문 및 첨부문서에``). ``내에`` is the same
+# locative. Each names the same place the table is missing from.
+_CONTAINER_APPOSITION_PATTERN = (
+    r"(?:\s*\([^()]{1,40}\))?"
+    r"(?:\s*(?:본문|발췌본|원문|내용))?"
+    r"(?:\s*(?:및|과|와|,)\s*(?:첨부\s*문서|첨부|붙임|제공\s*문서|관련\s*문서))?"
+    r"(?:\s*내)?"
+)
 _LOCAL_CONTAINER_LOCATIVE_RE = re.compile(
-    rf"(?:{_LOCAL_ONLY_CONTAINER_PATTERN})\s*(?:본문\s*)?(?:발췌본\s*)?"
-    r"(?:에는|에도|에서는|에서|에)"
+    rf"(?:{_LOCAL_ONLY_CONTAINER_PATTERN}){_CONTAINER_APPOSITION_PATTERN}"
+    r"\s*(?:에는|에도|에서는|에서|에)"
+)
+# ``본문 미포함``/``본 첨부 미제공`` state the same locality with the particle dropped.
+# Only an absence term may follow, so a bare container mention still fails.
+_LOCAL_CONTAINER_ELLIPTIC_RE = re.compile(
+    rf"(?:{_LOCAL_ONLY_CONTAINER_PATTERN}){_CONTAINER_APPOSITION_PATTERN}"
+    r"\s*(?:미포함|미제공|미수록|미기재|미첨부)"
+)
+# A scoring table published in an external rule - 조달청 적격심사 세부기준 [별표N],
+# 계약예규, 시행령 - is not in this notice's manifest at all, so no sibling
+# attachment can supply it. These stay terminal until that source is modelled.
+_EXTERNAL_RULE_REFERENCE_RE = re.compile(
+    r"\[\s*별표|별표\s*\d|고시\s*제|예규|시행령|시행규칙|"
+    r"적격심사\s*(?:세부)?\s*기준|계약체결\s*기준|일반용역|"
+    r"용역\s*계약\s*일반조건|국가를\s*당사자로"
 )
 # A named document in that same locative position is where the table is missing
 # from, never the sibling that must supply it.
@@ -393,14 +425,19 @@ def _structural_sibling_terms(gap: str) -> set[str]:
     is where the table is missing from, never the sibling that must supply it.
     """
 
+    # ``제안요청서에 명시되어 있으나 본 문서에는 없음`` puts both in locative
+    # position. When the statement already names the attachment being read, the
+    # named document is where the table IS, so it binds as the sibling; its own
+    # particle no longer decides. Binding is stricter than the unnamed fallback,
+    # so this narrows what may resolve the issue rather than widening it.
+    local_container_present = bool(_LOCAL_CONTAINER_LOCATIVE_RE.search(gap))
     return {
         marker
         for markers, _types in _STRUCTURAL_SIBLING_MARKERS
         for marker in markers
         for match in re.finditer(re.escape(marker), gap)
-        if not _NAMED_CONTAINER_LOCATIVE_RE.match(
-            gap, match.end(),
-        )
+        if local_container_present
+        or not _NAMED_CONTAINER_LOCATIVE_RE.match(gap, match.end())
     }
 # A table this attachment did produce, described as missing one of its parts,
 # leaves the notice's rule set incomplete even when a sibling proves a table of
@@ -482,6 +519,11 @@ def _declares_local_scoring_table_absence(gap: str) -> bool:
 
     if not asserts_scoring_artifact_absence(gap):
         return False
+    # A table published in an external rule is outside this notice's manifest,
+    # so no sibling attachment can supply it. Checked before the looser
+    # container forms below, which would otherwise let these through.
+    if _EXTERNAL_RULE_REFERENCE_RE.search(gap):
+        return False
     table_positions = [
         match
         for term in _QUANTITATIVE_GAP_TERMS
@@ -493,7 +535,10 @@ def _declares_local_scoring_table_absence(gap: str) -> bool:
         return False
     if _declares_partial_table_defect(gap, table_positions):
         return False
-    if not _LOCAL_CONTAINER_LOCATIVE_RE.search(gap):
+    if not (
+        _LOCAL_CONTAINER_LOCATIVE_RE.search(gap)
+        or _LOCAL_CONTAINER_ELLIPTIC_RE.search(gap)
+    ):
         return False
     if _UNBOUND_POINTER_RE.search(gap) and not _structural_sibling_terms(gap):
         return False

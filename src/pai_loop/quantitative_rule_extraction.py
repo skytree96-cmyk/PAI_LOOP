@@ -45,7 +45,7 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.16"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.17"
 from .extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
     classify_record_contract,
@@ -64,8 +64,11 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     # v4: the local-absence classifier replaced the remaining sentence regexes,
     # so a statement stored as a terminal gap may now be a sibling-resolvable
     # local absence. Both codes revalidate from the stored extraction.
-    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v4",
-    "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT": "unnamed-local-table-absence-v1",
+    # v5: the classifier now reads container appositions and 기준표/채점표/점수표,
+    # and refuses an external rule's table outright, so both the terminal and the
+    # sibling-bound answers can change again.
+    "EXTRACTION_DECLARED_INCOMPLETE": "typed-notice-reference-gaps-v5",
+    "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT": "unnamed-local-table-absence-v2",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
     # A bracket award stated as a score anywhere in its own criterion is now
