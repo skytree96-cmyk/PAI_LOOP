@@ -815,6 +815,46 @@ def test_public_criteria_contract_stale_open_snapshot_enters_refresh_queues(
         ) == [notice_key]
 
 
+def test_never_attempted_backfill_leads_with_the_furthest_deadline(
+    client: TestClient,
+) -> None:
+    """A notice a bidder can still act on is analysed before one closing sooner.
+
+    A bounded run started for review then samples the useful end of the queue
+    instead of whatever arrived last, and observation time stays the tiebreak so
+    same-deadline notices keep the newest-first order.
+    """
+
+    for notice_key, published_at, deadline in [
+        # Newest arrival, but closes first.
+        ("DEADLINE-SOON-NEWEST", "2026-08-20T09:00:00+09:00", "2026-08-28T18:00:00+09:00"),
+        ("DEADLINE-FAR-OLDEST", "2026-08-10T09:00:00+09:00", "2026-09-30T18:00:00+09:00"),
+        ("DEADLINE-MID", "2026-08-15T09:00:00+09:00", "2026-09-10T18:00:00+09:00"),
+        # Same deadline as the leader: the newer observation wins the tie.
+        ("DEADLINE-FAR-NEWER", "2026-08-18T09:00:00+09:00", "2026-09-30T18:00:00+09:00"),
+    ]:
+        _create_notice(
+            client,
+            notice_key=notice_key,
+            published_at=published_at,
+            deadline=deadline,
+        )
+
+    with client.app.state.session_factory() as session:
+        selected = _select_backfill_notice_keys(
+            session,
+            AnalysisBackfillPlanRequest(include_retryable=False),
+            now=datetime(2026, 8, 27, 7, 30, tzinfo=timezone.utc),
+        )
+
+    assert selected == [
+        "DEADLINE-FAR-NEWER",
+        "DEADLINE-FAR-OLDEST",
+        "DEADLINE-MID",
+        "DEADLINE-SOON-NEWEST",
+    ]
+
+
 def test_quantitative_engine_stale_open_snapshot_enters_daily_and_backfill(
     client: TestClient,
 ) -> None:

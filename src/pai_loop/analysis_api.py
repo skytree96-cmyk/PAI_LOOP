@@ -1828,7 +1828,7 @@ def _select_backfill_notice_keys(
         session,
         refresh_runs,
     )
-    never_attempted: list[tuple[datetime, str]] = []
+    never_attempted: list[tuple[datetime, datetime, str]] = []
     version_refresh: list[tuple[datetime, str]] = []
     retryable: list[tuple[datetime, str]] = []
     retry_cutoff = now - timedelta(hours=payload.retry_cooldown_hours)
@@ -1847,7 +1847,9 @@ def _select_backfill_notice_keys(
             default=observed_at,
         )
         if reason.reason_code == "NOT_SELECTED":
-            never_attempted.append((observed_at, notice.notice_key))
+            never_attempted.append(
+                (_utc(notice.deadline), observed_at, notice.notice_key)
+            )
         elif notice.notice_key in refresh_runs:
             refresh_attempt = refresh_attempts.get(notice.notice_key)
             if refresh_attempt is None:
@@ -1868,10 +1870,22 @@ def _select_backfill_notice_keys(
     # New notices first, then cooled retry work oldest-attempt-first. This
     # guarantees that a persistent provider/document failure cannot starve a
     # notice that has never received an analysis attempt.
-    never_attempted.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    #
+    # Within the never-attempted group the furthest deadline leads. A notice a
+    # bidder can still act on is worth analysing before one closing tomorrow,
+    # and a bounded run started for review then samples the useful end of the
+    # queue instead of whatever happened to arrive last. Observation time stays
+    # the tiebreak, so same-deadline notices keep the newest-first order. This
+    # mirrors the award backfill, which already orders fresh intake by furthest
+    # deadline; eligibility still excludes closed and past-deadline notices.
+    never_attempted.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
     version_refresh.sort(key=lambda row: (row[0], row[1]))
     retryable.sort(key=lambda row: (row[0], row[1]))
-    return [key for _, key in [*never_attempted, *version_refresh, *retryable]]
+    return [
+        *(key for _deadline, _observed_at, key in never_attempted),
+        *(key for _, key in version_refresh),
+        *(key for _, key in retryable),
+    ]
 
 
 def _backfill_status(
