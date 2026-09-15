@@ -24,7 +24,26 @@ export function awardOfflineFixture() {
 }
 
 export function validateAwardAggregate(input, phase) {
-  const body = input?.body ?? input;
+  // The HTTP node is configured to parse JSON, but a deployed node whose
+  // response format drifted to autodetect hands the aggregate over as a Buffer
+  // or a raw string. Every field check below then reads Buffer byte indices,
+  // the allowlist comparison fails, and a correct backend response is reported
+  // as a contract violation - which is what stopped the 2026-09-13 19:30 run.
+  // Decode the transport first so the contract judges the aggregate, not its
+  // envelope. This stays inside the function because the node source is this
+  // function's own text; a module-level helper would be undefined there.
+  const decode = (value) => {
+    if (typeof value === 'string') {
+      try { return JSON.parse(value); } catch { return null; }
+    }
+    if (!value || typeof value !== 'object') return value;
+    if (typeof value.byteLength !== 'number' && value.type !== 'Buffer') return value;
+    try {
+      const bytes = Array.isArray(value.data) ? Uint8Array.from(value.data) : new Uint8Array(value);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    } catch { return null; }
+  };
+  const body = decode(input?.body ?? input);
   const fail = () => { throw new Error('Award automation aggregate contract failed'); };
   if (!body || typeof body !== 'object' || Array.isArray(body)) fail();
   const countFields = ['total', 'complete', 'no_results', 'partial', 'pending', 'running',
