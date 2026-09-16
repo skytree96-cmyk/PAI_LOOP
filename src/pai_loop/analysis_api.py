@@ -460,8 +460,13 @@ _PLANNER_ADVISORY_LOCK_KEY = 0x5041494C
 _PLANNER_PROCESS_LOCK = threading.RLock()
 _ANALYSIS_EXECUTION_ADVISORY_LOCK_KEY = ANALYSIS_EXECUTION_GATE_KEY
 _ANALYSIS_EXECUTION_PROCESS_LOCK = threading.Lock()
+# The grace follows the deployment, not the vendor. Cloud Run injects K_SERVICE
+# into every revision, so moving off Render must not silently disable the
+# protection that keeps the one-minute W11 poll off a restarting instance.
 _ANALYSIS_RUNTIME_SAFETY_ENABLED = bool(
-    os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID")
+    os.getenv("RENDER")
+    or os.getenv("RENDER_SERVICE_ID")
+    or os.getenv("K_SERVICE")
 )
 ANALYSIS_STARTUP_GRACE_SECONDS = (
     10 * 60 if _ANALYSIS_RUNTIME_SAFETY_ENABLED else 0
