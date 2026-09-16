@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from pai_loop.eligibility_policy import (
     _assert_public_safe,
+    classify_nonprofit_alternative,
     classify_requirements,
     load_public_company_profile,
 )
@@ -2022,3 +2023,163 @@ def test_certificate_copy_does_not_erase_independent_registration_obligation():
         profile=load_public_company_profile(), deadline="2026-09-10", evaluation_date="2026-09-06",
     )["items"][0]
     assert item["company_fact_key"] == "bidder_registration"
+
+
+# ---------------------------------------------------------------------------
+# 비영리법인 대안 조항의 구조 분류
+#
+# 아래 문구는 전부 운영 DB의 실제 공고에서 가져왔다. 이전 구현은 문장 전체를
+# `fullmatch` 로 대조해, 표현이 조금만 달라지면 확정 미충족으로 떨어뜨렸다.
+# 실제 193개 고유 문구 중 94건이 그렇게 잘못 미충족 처리되고 있었다.
+# ---------------------------------------------------------------------------
+
+_NONPROFIT_UNCONDITIONAL_CLAUSES = [
+    "중소기업기본법상 중소기업자 또는 소상공인보호법상 소상공인으로서 중소기업·소상공인확인서를 소지해야 하며, 비영리법인은 확인서 없이도 참가 가능",
+    "중소기업기본법상 중소기업자 또는 소상공인 보호법상 소상공인으로서 중소기업·소상공인 확인서를 소지한 자 (비영리법인은 확인서 면제)",
+    "소기업 또는 소상공인 확인서를 소지해야 함(비영리법인은 예외 가능)",
+    "소기업·소상공인 확인서 소지자이거나, 비영리법인(대학 산학협력단 포함)인 경우 확인서 요건 없이 참가 가능",
+    "중소기업기본법상 소기업 또는 소상공인기본법상 소상공인이어야 하며, 비영리법인의 경우 입찰참가 가능",
+    "소기업 또는 소상공인이거나 비영리법인에 해당해야 함",
+]
+
+_NONPROFIT_QUALIFIED_CLAUSES = [
+    "중소기업기본법상 소기업 또는 소상공인 확인서를 소지한 자, 또는 중소기업제품 구매촉진법 제2조의3제2호에 해당하는 비영리법인이어야 함",
+    "소기업·소상공인 확인서를 소지한 업체만 참가 가능(단 일부 비영리법인 예외)",
+    "소기업·소상공인 확인서 소지자 또는 중소기업자로 간주되는 비영리법인이어야 함",
+    "소기업·소상공인확인서 소지 업체 또는 특정 요건에 해당하는 비영리법인이어야 함",
+    "소기업·소상공인 확인서(입찰 마감일 전일까지 발급, 유효기간 내) 소지자, 단 비영리법인 특례 대상은 확인서 없이도 참가 가능",
+    "사회복지사업법에 따른 사회복지법인(비영리법인), 비영리단체 또는 개인이어야 함",
+]
+
+_NONPROFIT_EVIDENCE_CLAUSES = [
+    "소기업·소상공인 확인서 소지 업체 또는 비영리법인(법인설립허가서 등 증빙 제출) 중 하나에 해당",
+    "중소기업기본법상 중소기업 또는 소상공인보호법상 소상공인으로서 중소기업·소상공인확인서를 소지해야 하며, 비영리법인은 비영리 입증자료 제출 시 참가 허용",
+    "소기업/소상공인확인서(유효기간 내) 소지 또는 비영리법인 증명서류 제출 필요",
+]
+
+_NONPROFIT_PURPOSE_CLAUSES = [
+    "소기업 또는 소상공인 확인서 소지업체 또는 학술연구 등을 위한 비영리법인으로 입찰참가자격 제한",
+    "중소기업기본법상 소기업, 소상공인, 벤처기업, 창업기업 확인서 소지자 또는 정책연구 용역으로서 비영리법인",
+]
+
+_NONPROFIT_BLOCKED_CLAUSES = [
+    "중소기업기본법상 소기업 또는 소상공인으로서 유효한 소기업·소상공인확인서를 소지해야 하며, 전자입찰서 제출 마감일 전일까지 발급되고 유효기간 내에 있어야 함(비영리법인 제외)",
+    "중소기업확인서는 비영리법인도 보유해야 함.",
+]
+
+# "일부 …은 참가 불가" forbids part of the group. It proves neither a route nor
+# its absence, so it must not read as a blanket exclusion.
+_NONPROFIT_PARTIAL_EXCLUSION_CLAUSES = [
+    "중소기업기본법상 소기업자 또는 소상공인기본법상 소상공인으로 소기업·소상공인 확인서 소지(단, 특별법인은 참가 가능하며 일부 비영리법인 및 부실기업은 참가 불가)",
+]
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_UNCONDITIONAL_CLAUSES)
+def test_unnarrowed_nonprofit_waiver_is_read_as_an_open_alternative(clause):
+    assert classify_nonprofit_alternative(clause) == "UNCONDITIONAL"
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_QUALIFIED_CLAUSES)
+def test_a_narrowed_nonprofit_alternative_is_never_read_as_open(clause):
+    """법령·요건·간주·수량 수식어가 붙으면 전부가 아니라 일부다."""
+
+    assert classify_nonprofit_alternative(clause).startswith("QUALIFIED")
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_EVIDENCE_CLAUSES)
+def test_evidence_bound_participation_stays_conditional(clause):
+    assert classify_nonprofit_alternative(clause) == "EVIDENCE"
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_PURPOSE_CLAUSES)
+def test_purpose_bound_nonprofit_stays_conditional(clause):
+    assert classify_nonprofit_alternative(clause) == "PURPOSE"
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_BLOCKED_CLAUSES)
+def test_exclusion_and_extended_duty_outrank_every_allowance(clause):
+    """허용과 금지가 한 문장에 있으면 금지가 지배한다."""
+
+    assert classify_nonprofit_alternative(clause) in {"EXCLUDED", "DUTY_EXTENDED"}
+
+
+def test_a_clause_without_the_word_has_no_structure():
+    assert classify_nonprofit_alternative("소기업·소상공인 확인서를 소지해야 함") is None
+
+
+def test_unreadable_nonprofit_mention_is_reviewed_not_failed():
+    """구조를 못 읽어도 미충족으로 단정하지 않는다."""
+
+    clause = "입찰참가자는 중소기업이어야 함. 비영리법인과 계약하려는 경우 등에는 예외가 적용될 수 있음."
+    assert classify_nonprofit_alternative(clause) == "UNRECOGNISED"
+
+
+def _outcome(clause: str) -> str:
+    items = classify_requirements(
+        [requirement("SYN-NP", "CERTIFICATION", clause)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    return items[0]["outcome"]
+
+
+@pytest.mark.parametrize(
+    "clause",
+    _NONPROFIT_UNCONDITIONAL_CLAUSES
+    + _NONPROFIT_QUALIFIED_CLAUSES
+    + _NONPROFIT_EVIDENCE_CLAUSES
+    + _NONPROFIT_PURPOSE_CLAUSES,
+)
+def test_an_offered_nonprofit_route_is_never_a_confirmed_absence(clause):
+    """공고가 경로를 제시했으면 확인서 미보유만으로 미충족을 단정하지 않는다.
+
+    이것이 이 변경의 핵심 불변식이다. 통과냐 검토냐는 조항의 한정 여부에
+    따라 갈리지만, 어느 쪽도 확정 미충족은 아니다.
+    """
+
+    assert _outcome(clause) != "FAIL_CONFIRMED"
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_UNCONDITIONAL_CLAUSES)
+def test_an_unnarrowed_waiver_reaches_pass_or_review_never_fail(clause):
+    assert _outcome(clause) in {"PASS_EXCEPTION", "PASS", "REVIEW"}
+
+
+def test_structural_pass_binds_the_verified_nonprofit_fact():
+    """구조 분류기가 직접 판정하는 조항은 비영리법인 사실로 충족된다."""
+
+    clause = "소기업 또는 소상공인이거나 비영리법인에 해당해야 함"
+    items = classify_requirements(
+        [requirement("SYN-NP-OPEN", "CERTIFICATION", clause)],
+        profile=load_public_company_profile(),
+        deadline="2026-09-10",
+        evaluation_date="2026-09-07",
+    )["items"]
+    assert items[0]["outcome"] == "PASS_EXCEPTION"
+    assert items[0]["company_fact_key"] == "nonprofit_entity"
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_BLOCKED_CLAUSES)
+def test_exclusion_and_extended_duty_stay_confirmed_absent(clause):
+    """배제·의무 확장 조항은 예외 경로가 없으므로 미충족이 유지된다."""
+
+    assert _outcome(clause) == "FAIL_CONFIRMED"
+
+
+@pytest.mark.parametrize("clause", _NONPROFIT_PARTIAL_EXCLUSION_CLAUSES)
+def test_a_partial_exclusion_is_reviewed_not_confirmed_absent(clause):
+    assert classify_nonprofit_alternative(clause) == "QUALIFIED_VAGUE"
+    assert _outcome(clause) == "REVIEW"
+
+
+@pytest.mark.parametrize("clause", [
+    "소기업·소상공인 확인서 소지 업체 또는 비영리법인(법인설립허가서 등 증빙 제출) 중 하나에 해당하지 않음",
+    "소기업·소상공인 확인서 소지 업체 또는 비영리법인(법인설립허가서 등 증빙 제출) 중 하나에 해당하며 중소기업확인서는 모두 보유해야 함.",
+    "소기업·소상공인 확인서 소지 업체 및 비영리법인(법인설립허가서 등 증빙 제출) 중 하나에 해당",
+    "소기업·소상공인 확인서 소지 업체 또는 비영리법인(법인설립허가서 등 증빙 제출 후 별도 승인) 중 하나에 해당",
+])
+def test_negation_or_an_added_duty_voids_the_nonprofit_route(clause):
+    """부정·추가의무·별도승인이 붙으면 구조적 대안 경로 자체가 성립하지 않는다."""
+
+    assert classify_nonprofit_alternative(clause) is None
