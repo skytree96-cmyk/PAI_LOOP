@@ -465,3 +465,40 @@ def test_api_busy_returns_retryable_503_without_starting_claim_or_provider_work(
         analysis_api._serialize_analysis_execution(work)(payload, request)
     assert captured.value.status_code == 503
     assert captured.value.headers == {"Retry-After": "15"}
+
+
+@pytest.mark.parametrize(
+    "environment, enabled",
+    [
+        ({}, False),
+        ({"RENDER": "true"}, True),
+        ({"RENDER_SERVICE_ID": "srv-abc"}, True),
+        ({"K_SERVICE": "pai"}, True),
+        ({"K_SERVICE": ""}, False),
+    ],
+)
+def test_startup_grace_follows_the_deployment_not_the_vendor(monkeypatch, environment, enabled):
+    """A hosting move must not silently drop the restart protection.
+
+    Cloud Run injects K_SERVICE into every revision. Without it the grace
+    resolved to zero seconds off Render and the one-minute W11 poll reached a
+    restarting instance immediately.
+    """
+
+    import importlib
+
+    from pai_loop import analysis_api
+
+    for name in ("RENDER", "RENDER_SERVICE_ID", "K_SERVICE"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    reloaded = importlib.reload(analysis_api)
+    try:
+        assert reloaded._ANALYSIS_RUNTIME_SAFETY_ENABLED is enabled
+        assert reloaded.ANALYSIS_STARTUP_GRACE_SECONDS == (10 * 60 if enabled else 0)
+    finally:
+        for name in ("RENDER", "RENDER_SERVICE_ID", "K_SERVICE"):
+            monkeypatch.delenv(name, raising=False)
+        importlib.reload(analysis_api)
