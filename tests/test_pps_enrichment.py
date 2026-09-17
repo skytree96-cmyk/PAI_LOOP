@@ -2900,7 +2900,8 @@ _EORDER_URL = (
 def _eorder_row(**overrides: object) -> dict[str, object]:
     row = {
         "bidNtceNo": "20260900001",
-        "bidNtceOrd": "00",
+        # 제공자의 실제 차수는 세 자리다("000", "001", …).
+        "bidNtceOrd": "000",
         "atchSno": "2",
         "eorderDocDivNm": "제안요청서",
         "eorderAtchFileNm": "제안요청서.hwpx",
@@ -2913,7 +2914,7 @@ def _eorder_row(**overrides: object) -> dict[str, object]:
 def test_rfp_attachment_joins_without_displacing_declared_slots() -> None:
     raw = {
         "bidNtceNo": "20260900001",
-        "bidNtceOrd": "00",
+        "bidNtceOrd": "000",
         **{
             f"ntceSpecDocUrl{slot}": (
                 "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
@@ -2943,7 +2944,7 @@ def test_rfp_attachment_joins_without_displacing_declared_slots() -> None:
 def test_rfp_attachment_prefers_proposal_request_over_other_documents() -> None:
     raw = {
         "bidNtceNo": "20260900002",
-        "bidNtceOrd": "00",
+        "bidNtceOrd": "000",
         "_eorder_attachments": [
             _eorder_row(
                 eorderDocDivNm="기타문서",
@@ -2968,7 +2969,7 @@ def test_rfp_attachment_prefers_proposal_request_over_other_documents() -> None:
 def test_rfp_attachment_with_unsafe_url_stays_visible_as_a_digest() -> None:
     raw = {
         "bidNtceNo": "20260900003",
-        "bidNtceOrd": "00",
+        "bidNtceOrd": "000",
         "_eorder_attachments": [
             _eorder_row(
                 eorderAtchFileUrl=(
@@ -3010,7 +3011,7 @@ def test_notice_and_rfp_paths_do_not_share_query_allowlists() -> None:
 def test_proposal_request_is_read_before_the_notice_document() -> None:
     raw = {
         "bidNtceNo": "20260900004",
-        "bidNtceOrd": "00",
+        "bidNtceOrd": "000",
         "ntceSpecDocUrl1": (
             "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
             "?bidPbancNo=20260900004&fileSeq=1"

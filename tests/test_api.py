@@ -91,7 +91,8 @@ class _EorderAttachmentPpsClient(_FakePpsClient):
     def iter_eorder_attachments(self, **_kwargs: object):
         yield {
             "bidNtceNo": "20260816001",
-            "bidNtceOrd": "00",
+            # 제공자의 실제 차수는 세 자리다.
+            "bidNtceOrd": "000",
             "atchSno": "2",
             "eorderDocDivNm": "제안요청서",
             "eorderAtchFileNm": "제안요청서.hwpx",
@@ -102,7 +103,7 @@ class _EorderAttachmentPpsClient(_FakePpsClient):
         }
         yield {
             "bidNtceNo": "20260816999",
-            "bidNtceOrd": "00",
+            "bidNtceOrd": "000",
             "atchSno": "1",
             "eorderDocDivNm": "제안요청서",
             "eorderAtchFileNm": "다른공고.hwpx",
@@ -148,6 +149,24 @@ def test_ingestion_joins_eorder_proposal_request_to_the_matching_notice(
     assert manifest[0]["slot"] == 11
     # 다른 공고번호의 행은 조인되지 않는다.
     assert all("다른공고" not in item["file_name"] for item in manifest)
+
+
+def test_eorder_join_matches_revisions_across_zero_padding_widths() -> None:
+    """공고 목록은 차수를 두 자리로, 전자주문은 세 자리로 준다.
+
+    문자열로 그대로 맞추면 제공자가 자릿수를 바꾸는 순간 조인이 조용히 전부
+    실패한다. 실패가 눈에 보이지 않는 종류라 회귀로 고정한다.
+    """
+
+    from pai_loop.api import _revision_key
+
+    assert _revision_key("00") == _revision_key("000") == _revision_key(0)
+    assert _revision_key("01") == _revision_key("001") == _revision_key("1")
+    assert _revision_key("002") != _revision_key("001")
+    # 숫자가 아니면 손대지 않는다.
+    assert _revision_key("") == ""
+    assert _revision_key(None) == ""
+    assert _revision_key("A1") == "A1"
 
 
 def test_eorder_join_is_off_until_explicitly_enabled(

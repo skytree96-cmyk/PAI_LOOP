@@ -327,7 +327,7 @@ def test_eorder_attachment_rows_keep_only_the_published_allowlist() -> None:
                 "items": [
                     {
                         "bidNtceNo": "R26DH01234567",
-                        "bidNtceOrd": "00",
+                        "bidNtceOrd": "000",
                         "atchSno": "2",
                         "eorderDocDivNm": "제안요청서",
                         "eorderAtchFileNm": "제안요청서.hwpx",
