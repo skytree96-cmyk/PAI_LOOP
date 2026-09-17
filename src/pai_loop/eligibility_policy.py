@@ -14,7 +14,13 @@ from typing import Any, Literal
 PolicyClass = Literal["ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION"]
 
 PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.07-v12"
+# A stored decision is only revisited when this version moves: the planner
+# re-queues a notice whose analysis ran under an older one. Any change that
+# makes this module decide differently has to move it, or the new rule reaches
+# new notices only and every existing decision keeps the answer it already had.
+# v13 carries the structural reading of a nonprofit alternative, which turns 94
+# of 95 confirmed absences into a pass or a review.
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.17-v13"
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
