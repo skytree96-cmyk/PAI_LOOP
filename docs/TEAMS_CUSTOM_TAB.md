@@ -2,7 +2,7 @@
 
 `teams-app/PAI-LOOP-Teams-App.zip`은 기존 Render 웹앱을 Teams 채널·그룹 채팅의
 configurable tab으로 추가하는 사내 배포 패키지입니다. 앱은
-`https://pai-loop-demo.onrender.com/`을 그대로 사용하며 별도 서버나 데이터 복제본을
+`https://pai-yd7xtctmra-an.a.run.app/`을 그대로 사용하며 별도 서버나 데이터 복제본을
 만들지 않습니다.
 
 ## 패키지 재생성

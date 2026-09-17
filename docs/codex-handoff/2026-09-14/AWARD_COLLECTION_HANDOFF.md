@@ -5,7 +5,7 @@
 ## 바로 시작하기
 
 - 저장소: https://github.com/skytree96-cmyk/PAI_LOOP
-- 운영 사이트: https://pai-loop-demo.onrender.com/
+- 운영 사이트: https://pai-yd7xtctmra-an.a.run.app/
 - 동반 프롬프트: [RESUME_PROMPT.md](RESUME_PROMPT.md)
 - 핵심 배포 PR: [#160](https://github.com/skytree96-cmyk/PAI_LOOP/pull/160)
 - PR #160은 2026-09-13 23:06:35 KST 병합됨. 병합 커밋은 `1c39f47b3a6e947989ce6fe3da119e5b47fc4619`.

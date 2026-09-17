@@ -6,9 +6,9 @@
   "packageName": "kr.or.kma.pailoop.teams",
   "developer": {
     "name": "KMA PAI LOOP",
-    "websiteUrl": "https://pai-loop-demo.onrender.com/",
-    "privacyUrl": "https://pai-loop-demo.onrender.com/",
-    "termsOfUseUrl": "https://pai-loop-demo.onrender.com/"
+    "websiteUrl": "https://pai-yd7xtctmra-an.a.run.app/",
+    "privacyUrl": "https://pai-yd7xtctmra-an.a.run.app/",
+    "termsOfUseUrl": "https://pai-yd7xtctmra-an.a.run.app/"
   },
   "name": {
     "short": "PAI LOOP",
@@ -26,7 +26,7 @@
   "configurableTabs": [
     {
       "id": "pai-loop-channel-tab",
-      "configurationUrl": "https://pai-loop-demo.onrender.com/teams-config.html",
+      "configurationUrl": "https://pai-yd7xtctmra-an.a.run.app/teams-config.html",
       "canUpdateConfiguration": false,
       "scopes": [
         "team",
@@ -44,7 +44,7 @@
   ],
   "permissions": [],
   "validDomains": [
-    "pai-loop-demo.onrender.com",
+    "pai-yd7xtctmra-an.a.run.app",
     "res.cdn.office.net"
   ]
 }

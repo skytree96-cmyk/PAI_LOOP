@@ -60,7 +60,7 @@ Workflow 12는 위 이름을 literal name locator로 조회한다. key 누락·�
 `SKIPPED_CONFIG_INVALID`로 종료한다. 오류 원문이나 설정값은 결과에 복사하지 않는다.
 
 backend/API와 공개 웹 origin은 고정된
-`https://pai-loop-demo.onrender.com`만 사용한다. enable, approval, 유효한 Team ID,
+`https://pai-yd7xtctmra-an.a.run.app`만 사용한다. enable, approval, 유효한 Team ID,
 유효한 Channel ID가 모두 있어야 Teams 노드에 도달하며 emergency disable이 우선한다.
 수동 live test에는 `live_test_enabled=true`가 추가로 필요하다. Teams sink는 Data Table을
 다시 읽지 않고 앞 단계가 형식 검증한 `runtime.target`만 사용한다.

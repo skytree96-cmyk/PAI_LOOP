@@ -215,7 +215,7 @@ function validateRepositorySafetyContracts(definitions) {
     "daily workflow must default scheduled execution to live when emergency disable is absent",
   );
   assert(
-    serialised.includes("https://pai-loop-demo.onrender.com"),
+    serialised.includes("https://pai-yd7xtctmra-an.a.run.app"),
     "daily workflow must contain the public Render origin fallback",
   );
   assert(serialised.includes("retentionDays: 7"), "daily workflow must declare seven-day retention");
