@@ -95,7 +95,11 @@ def test_provider_id_cannot_select_evaluation_fact_key():
     changed = policy(CONDITION.replace("2건", "9건"))
     assert original["evaluation_fact_key"] != changed["evaluation_fact_key"]
     assert original["evaluation_fact_key"] == policy("  " + CONDITION.replace(" ", "  "))["evaluation_fact_key"]
-    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.07-v12"
+    # Pinned on purpose: moving the policy version is the signal to re-check
+    # that the key above still derives from the condition alone. v13 carries
+    # the structural reading of a nonprofit alternative, which changes which
+    # requirements pass but not how this key is built.
+    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.17-v13"
 
 
 def test_public_generic_or_exact_boolean_never_claims_scope_is_bound():
