@@ -397,3 +397,33 @@ def test_personal_package_requires_actual_inputs_and_contains_personal_scopes(tm
     assert "packageName" not in manifest
     assert all("supportedPlatform" not in tab for tab in manifest.get("configurableTabs", []))
     assert "SYN-client-secret" not in str(manifest)
+
+
+# Microsoft began scoping the Connector service URL by tenant during 2025:
+# https://smba.trafficmanager.net/<region>/<tenant>/ now appears alongside the
+# older https://smba.trafficmanager.net/<region>/. The single-segment rule
+# rejected the new shape with 403 and every inbound Teams activity failed.
+_TENANT = "5de0d1a0-f5ff-453e-8ddf-521b803aa5ce"
+
+
+@pytest.mark.parametrize("url", [
+    "https://smba.trafficmanager.net/amer/" + _TENANT + "/",
+    "https://smba.trafficmanager.net/amer/" + _TENANT,
+    "https://smba.trafficmanager.net/apac/" + _TENANT.upper() + "/",
+    "https://smba.trafficmanager.net/amer-client-ss.msg/" + _TENANT + "/",
+])
+def test_tenant_scoped_connector_url_is_trusted(url):
+    assert bot.trusted_service_url(url) == url.rstrip("/") + "/"
+
+
+@pytest.mark.parametrize("url", [
+    # A second segment is admitted only as a tenant UUID, never as free text.
+    "https://smba.trafficmanager.net/amer/not-a-tenant/",
+    "https://smba.trafficmanager.net/amer/" + _TENANT + "/extra/",
+    "https://smba.trafficmanager.net/amer/" + _TENANT + "x/",
+    "https://smba.trafficmanager.net/amer/../" + _TENANT + "/",
+    "https://smba.trafficmanager.net/amer/" + _TENANT + "/../private",
+])
+def test_widening_the_path_admits_nothing_but_a_tenant(url):
+    with pytest.raises(HTTPException):
+        bot.trusted_service_url(url)

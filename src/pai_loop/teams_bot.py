@@ -147,13 +147,24 @@ def disconnect(request: Request, response: Response) -> dict:
     return {"connected": False}
 
 
+# The Connector names its region first and may append the tenant that owns the
+# conversation: /amer/ and /amer/<tenant>/ are both current. The tenant segment
+# is matched as a UUID rather than as free text, so widening the path by one
+# segment cannot admit a traversal or an arbitrary route.
+_CONNECTOR_PATH_RE = re.compile(
+    r"/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*"
+    r"(?:/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?"
+    r"/?"
+)
+
+
 def trusted_service_url(value: str) -> str:
     """Public-cloud Connector destinations only; no redirects, credentials or query."""
     try:
         parsed = urlsplit(value)
         if (len(value) > 300 or parsed.scheme != "https" or parsed.hostname != "smba.trafficmanager.net"
                 or parsed.port not in {None, 443} or parsed.username or parsed.password
-                or parsed.query or parsed.fragment or not re.fullmatch(r"/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*/?", parsed.path)):
+                or parsed.query or parsed.fragment or not _CONNECTOR_PATH_RE.fullmatch(parsed.path)):
             raise ValueError()
     except (ValueError, TypeError):
         raise HTTPException(403, "Teams 서비스 주소를 확인할 수 없습니다.") from None
