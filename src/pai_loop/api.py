@@ -75,7 +75,13 @@ from .notice_freshness import (
     latest_current_analysis_run,
     latest_current_evaluation,
 )
+
+# 한 수집 요청이 조인해 들고 있을 전자주문 첨부의 상한.  구간 전체를 메모리에
+# 쌓지 않기 위한 경계이며, 초과분은 잘렸음을 표시하고 버린다.
+MAX_EORDER_NOTICES_PER_INGESTION = 5000
+MAX_EORDER_ROWS_PER_NOTICE = 4
 from .pps_enrichment import (
+    EORDER_ATTACHMENT_FIELD,
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
     build_attachment_manifest,
@@ -2373,8 +2379,14 @@ def _persist_pps_ingestion_result(
     keywords_used: list[str],
     provider_query_count: int,
     department_coverage_count: int,
+    eorder_incomplete: bool = False,
 ) -> PpsIngestionResponse:
     warnings: list[str] = []
+    if eorder_incomplete:
+        warnings.append(
+            "전자주문 제안요청서 첨부를 이번 구간에서 모두 조인하지 못했습니다. "
+            "공고 첨부만으로 저장했으며 다음 실행에서 보완됩니다."
+        )
     if hit_page_limit:
         warnings.append("max_pages 제한에서 수집을 중단했습니다. 다음 실행에서 기간을 더 좁히세요.")
     if hit_time_limit:
@@ -2795,6 +2807,52 @@ def ingest_pps_notices(
                     fetched_rows.append(safe_item)
                 hit_page_limit = hit_page_limit or client.hit_page_limit
                 hit_time_limit = hit_time_limit or getattr(client, "hit_time_limit", False)
+            # 배점표는 대부분 제안요청서에 있고 그 문서는 공고 첨부 슬롯으로
+            # 오지 않는다.  같은 구간을 전자주문 첨부 오퍼레이션으로 한 번 더
+            # 훑어 공고번호로 조인한다.  키워드별로 반복하지 않는 이유는 이
+            # 오퍼레이션이 공고명 필터를 받지 않기 때문이다.  실패해도 수집
+            # 자체는 계속되어야 하므로 공고 첨부만으로 진행한다.
+            eorder_index: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            eorder_truncated = False
+            iter_eorder_attachments = getattr(client, "iter_eorder_attachments", None)
+            if (
+                iter_eorder_attachments is not None
+                and fetched_rows
+                and time.monotonic() < ingestion_deadline
+            ):
+                try:
+                    for row in iter_eorder_attachments(
+                        start=payload.from_date,
+                        end=payload.to_date,
+                        deadline_monotonic=ingestion_deadline,
+                    ):
+                        if len(eorder_index) >= MAX_EORDER_NOTICES_PER_INGESTION:
+                            eorder_truncated = True
+                            break
+                        notice_no = str(row.get("bidNtceNo") or "").strip()
+                        revision = str(row.get("bidNtceOrd") or "").strip().zfill(2)
+                        bucket = eorder_index.setdefault((notice_no, revision), [])
+                        if len(bucket) < MAX_EORDER_ROWS_PER_NOTICE:
+                            bucket.append(row)
+                except PpsApiError:
+                    # 전자주문 조회 실패는 공고 수집의 실패가 아니다.
+                    eorder_index = {}
+                    eorder_truncated = True
+                hit_time_limit = hit_time_limit or getattr(client, "hit_time_limit", False)
+            if eorder_index:
+                for safe_item in fetched_rows:
+                    raw_item = safe_item.get("raw")
+                    if not isinstance(raw_item, dict):
+                        continue
+                    matched = eorder_index.get(
+                        (
+                            str(safe_item.get("bid_notice_no") or "").strip(),
+                            str(safe_item.get("revision_no") or "").strip().zfill(2),
+                        )
+                    )
+                    if not matched:
+                        continue
+                    safe_item["raw"] = {**raw_item, EORDER_ATTACHMENT_FIELD: matched}
             api_calls = client.request_count
     except PpsApiError as exc:
         _mark_pps_job_failed(
@@ -2821,6 +2879,7 @@ def ingest_pps_notices(
             fetched_rows=fetched_rows,
             api_calls=api_calls,
             hit_page_limit=hit_page_limit,
+            eorder_incomplete=eorder_truncated,
             hit_time_limit=hit_time_limit,
             profile_truncated=profile_truncated,
             keywords_used=keywords_used,

@@ -19,6 +19,9 @@ from pai_loop.pps_enrichment import (
     PPS_PROCESSING_VERSION,
     PpsEnrichmentError,
     _digest,
+    _safe_g2b_attachment_url,
+    _scoring_table_reading_order,
+    _validated_manifest_attachments,
     build_attachment_manifest,
     build_notice_metadata,
     current_retryable_review_version_ids,
@@ -2881,3 +2884,144 @@ def test_read_projection_scope_clears_on_exception_and_isolates_threads(monkeypa
     assert enrichment._attachment_validation_read_cache.get() is None
     versions[-1].file_sha256 = "f" * 64
     assert public_analysis_reason(versions).state == "PENDING"
+
+
+# --- 전자주문(제안요청서) 첨부 ------------------------------------------------
+#
+# 아래 URL·필드 모양은 getBidPblancListInfoEorderAtchFileInfo 실제 응답에서
+# 그대로 옮긴 것이다. 공고 첨부와 경로도 쿼리 키도 겹치지 않는다.
+
+_EORDER_URL = (
+    "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadRfpFile.do"
+    "?rfpNo=R26DH01234567&rfpOrd=000&rfpUntyAtchFileNo=2"
+)
+
+
+def _eorder_row(**overrides: object) -> dict[str, object]:
+    row = {
+        "bidNtceNo": "20260900001",
+        "bidNtceOrd": "00",
+        "atchSno": "2",
+        "eorderDocDivNm": "제안요청서",
+        "eorderAtchFileNm": "제안요청서.hwpx",
+        "eorderAtchFileUrl": _EORDER_URL,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_rfp_attachment_joins_without_displacing_declared_slots() -> None:
+    raw = {
+        "bidNtceNo": "20260900001",
+        "bidNtceOrd": "00",
+        **{
+            f"ntceSpecDocUrl{slot}": (
+                "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+                f"?bidPbancNo=20260900001&bidPbancOrd=00&fileSeq={slot}"
+            )
+            for slot in range(1, 11)
+        },
+        **{f"ntceSpecFileNm{slot}": f"입찰공고문{slot}.pdf" for slot in range(1, 11)},
+        "_eorder_attachments": [_eorder_row()],
+    }
+
+    manifest = build_attachment_manifest(raw)
+
+    # 공고가 선언한 열 개 슬롯이 하나도 밀려나지 않는다.
+    assert [item["slot"] for item in manifest] == list(range(1, 12))
+    rfp = manifest[-1]
+    assert rfp["file_name"] == "제안요청서.hwpx"
+    assert rfp["media_type"] == "application/hwp+zip"
+    assert rfp["url"] == _EORDER_URL
+    assert rfp["attachment_id"].startswith("PPS-ATT-")
+
+    validated, invalid_count = _validated_manifest_attachments(manifest)
+    assert invalid_count == 0
+    assert len(validated) == 11
+
+
+def test_rfp_attachment_prefers_proposal_request_over_other_documents() -> None:
+    raw = {
+        "bidNtceNo": "20260900002",
+        "bidNtceOrd": "00",
+        "_eorder_attachments": [
+            _eorder_row(
+                eorderDocDivNm="기타문서",
+                eorderAtchFileNm="기타.hwp",
+                atchSno="1",
+            ),
+            _eorder_row(atchSno="2"),
+            _eorder_row(
+                eorderDocDivNm="기타문서",
+                eorderAtchFileNm="기타2.hwp",
+                atchSno="3",
+            ),
+        ],
+    }
+
+    manifest = build_attachment_manifest(raw)
+
+    # 정원은 둘이고, 제안요청서가 기타문서보다 먼저 들어간다.
+    assert [item["file_name"] for item in manifest] == ["제안요청서.hwpx", "기타.hwp"]
+
+
+def test_rfp_attachment_with_unsafe_url_stays_visible_as_a_digest() -> None:
+    raw = {
+        "bidNtceNo": "20260900003",
+        "bidNtceOrd": "00",
+        "_eorder_attachments": [
+            _eorder_row(
+                eorderAtchFileUrl=(
+                    "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadRfpFile.do"
+                    "?rfpNo=R26DH01234567"
+                )
+            )
+        ],
+    }
+
+    manifest = build_attachment_manifest(raw)
+
+    assert len(manifest) == 1
+    assert manifest[0]["status"] == "INVALID"
+    assert manifest[0]["error_code"] == "UNSAFE_ATTACHMENT_URL"
+
+
+def test_notice_and_rfp_paths_do_not_share_query_allowlists() -> None:
+    # 공고 첨부 경로에 제안요청서 키를 쓰면 거부된다.
+    with pytest.raises(PpsEnrichmentError):
+        _safe_g2b_attachment_url(
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+            "?rfpNo=R26DH01234567&rfpUntyAtchFileNo=2"
+        )
+    # 그 반대도 마찬가지다.
+    with pytest.raises(PpsEnrichmentError):
+        _safe_g2b_attachment_url(
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadRfpFile.do"
+            "?bidPbancNo=20260900001&fileSeq=1"
+        )
+    # 허용되지 않은 제3의 경로도 그대로 막힌다.
+    with pytest.raises(PpsEnrichmentError):
+        _safe_g2b_attachment_url(
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadOtherFile.do"
+            "?rfpNo=R26DH01234567&rfpUntyAtchFileNo=2"
+        )
+
+
+def test_proposal_request_is_read_before_the_notice_document() -> None:
+    raw = {
+        "bidNtceNo": "20260900004",
+        "bidNtceOrd": "00",
+        "ntceSpecDocUrl1": (
+            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do"
+            "?bidPbancNo=20260900004&fileSeq=1"
+        ),
+        "ntceSpecFileNm1": "입찰공고문.pdf",
+        "_eorder_attachments": [_eorder_row()],
+    }
+
+    manifest = build_attachment_manifest(raw)
+    validated, _invalid = _validated_manifest_attachments(manifest)
+    ordered = sorted(validated, key=_scoring_table_reading_order)
+
+    # 제안요청서가 슬롯 번호는 뒤지만 읽는 순서는 앞선다.
+    assert ordered[0]["file_name"] == "제안요청서.hwpx"
