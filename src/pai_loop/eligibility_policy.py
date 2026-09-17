@@ -397,6 +397,243 @@ def _has_explicit_nonprofit_small_business_exception(text: str, *, category: str
     )
 
 
+# A nonprofit alternative is decided by the structure that binds it, never by
+# the presence of the word. The sentence-shaped `fullmatch` gates above stay
+# authoritative for the shapes they already prove; this classifier only decides
+# the clauses that reach them unmatched, which previously fell through to a
+# confirmed-absence FAIL even when the notice offered the company a route.
+_NONPROFIT_SUBJECT = r"비영리\s*법인"
+_NONPROFIT_NEAR = r"[^.。]{0,45}?"
+
+# The notice names the nonprofit to exclude it. This must outrank every
+# allowance below: "일부 비영리법인 및 부실기업은 참가 불가" both allows and
+# forbids in one sentence, and the forbidding half governs.
+_NONPROFIT_EXCLUDED_RE = re.compile(
+    rf"{_NONPROFIT_SUBJECT}\s*(?:은|는|도|의\s*경우)?\s*(?:제외|배제)"
+    rf"|(?:일부\s*)?{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}"
+    rf"(?:참가|참여|입찰)\s*(?:불가|불허|할\s*수\s*없)"
+)
+
+# The notice names the nonprofit to bind it to the duty, not to release it:
+# "중소기업확인서는 비영리법인도 보유해야 함" extends the requirement rather
+# than excepting it. Reading this as an allowance would invert the clause, so
+# it ranks with exclusion and keeps the confirmed-absence FAIL.
+_NONPROFIT_DUTY_RE = re.compile(
+    rf"{_NONPROFIT_SUBJECT}\s*(?:도|은|는|에게도|의\s*경우에도)\s*"
+    rf"(?![^.。]{{0,25}}(?:없이|없어도|면제|무관|제외))"
+    rf"[^.。]{{0,25}}?(?:보유|소지|제출|갖추)(?:해야|하여야|되어야|할)"
+)
+
+# A different legal form qualifies the subject. 사회복지법인(비영리법인) demands
+# the welfare form itself, so no generic nonprofit fact and no company-wide
+# determination can settle it. This outranks the statutory reading below,
+# which narrows the contract rather than the bidder.
+_NONPROFIT_LEGAL_FORM_RE = re.compile(
+    rf"[가-힣]{{2,8}}법인\s*\(\s*{_NONPROFIT_SUBJECT}\s*\)"
+)
+
+# The narrowing cites the priority-procurement exception. That provision turns
+# on the contract the buyer is letting, and the buyer must state the ground in
+# the notice to rely on it. Whether this company stands inside it is a single
+# legal determination, so it is carried as a company fact rather than guessed
+# from the sentence.
+_NONPROFIT_STATUTORY_RE = re.compile(
+    rf"(?:제\s*2\s*조의\s*3|우선\s*조달\s*계약\s*예외|우선조달계약\s*예외|우선\s*조달\s*예외"
+    rf"|관계\s*법령상|법령상\s*참여\s*가능한|시행령상|시행령에\s*따(?:른|라)|시행령\s*제"
+    rf"|간주되는)\s*{_NONPROFIT_NEAR}{_NONPROFIT_SUBJECT}"
+    rf"|{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}(?:제\s*2\s*조의\s*3|우선\s*조달\s*예외"
+    rf"|우선조달계약\s*예외|관련\s*시행령)"
+)
+
+# The narrowing names no statute and no form: 일부, 특정 요건, 특례 대상.
+# Nothing in the clause says which nonprofits, so nothing can resolve it.
+_NONPROFIT_VAGUE_RE = re.compile(
+    rf"(?:일부|일정|특정|특례|소정의|명시된\s*요건의)\s*[^.。]{{0,20}}?{_NONPROFIT_SUBJECT}"
+    rf"|(?:특정|일정|관련)\s*요건[^.。]{{0,14}}?{_NONPROFIT_SUBJECT}"
+    rf"|(?:예외\s*(?:규정|조항)|관련)\s*{_NONPROFIT_NEAR}{_NONPROFIT_SUBJECT}"
+    rf"|{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}예외\s*규정\s*있음"
+    rf"|{_NONPROFIT_SUBJECT}\s*(?:특례\s*대상|예외\s*규정에\s*해당|특례)"
+    rf"|{_NONPROFIT_SUBJECT}\s*\(\s*(?:예외|우선)"
+    rf"|해당\s*{_NONPROFIT_SUBJECT}"
+)
+
+# The nonprofit's own founding purpose is narrowed, so eligibility depends on
+# the entity, not on this notice's subject matter.
+_NONPROFIT_PURPOSE_RE = re.compile(
+    rf"(?:학술|연구|조사|검사|평가|개발)[^.。]{{0,14}}(?:등을\s*)?위한\s*{_NONPROFIT_SUBJECT}"
+    rf"|{_NONPROFIT_SUBJECT}[^.。]{{0,20}}학술\s*연구"
+    rf"|(?:정책연구|학술연구)\s*용역[^.。]{{0,10}}{_NONPROFIT_SUBJECT}"
+)
+
+# Participation is open but conditioned on filing proof of nonprofit status.
+_NONPROFIT_EVIDENCE_RE = re.compile(
+    # "비영리법인 확인서" is a document to file; "비영리법인은 확인서 없이도" is
+    # the opposite claim about the same noun, so the waiver must not match here.
+    rf"{_NONPROFIT_SUBJECT}\s*(?:은|는|도)?\s*(?:확인서|확인서류|증명서류|증빙)"
+    rf"(?!\s*(?:없이|없어도|면제|요건\s*없이|소지\s*여부와\s*무관))"
+    rf"|(?:증빙|증명서류|입증자료|증빙자료|설립\s*허가(?:증|서))"
+    rf"{_NONPROFIT_NEAR}{_NONPROFIT_SUBJECT}"
+    rf"|{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}(?:별도\s*증빙|설립\s*허가(?:증|서)"
+    rf"|증명서류|입증자료|증빙자료|증명하는|법인설립\s*허가)"
+    rf"|비영리\s*(?:입증|증빙)자료"
+)
+
+# The certificate duty is waived, or the nonprofit stands as an unnarrowed
+# alternative subject of the same OR.
+_NONPROFIT_UNCONDITIONAL_RE = re.compile(
+    rf"{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}"
+    rf"(?:확인서\s*(?:없이도|없이|면제)|확인서가\s*없어도|제출\s*면제"
+    rf"|(?:자격|요건)과\s*무관|확인서\s*요건\s*없이|소지\s*여부와\s*무관|소지와\s*무관"
+    rf"|자격\s*제한\s*없이)"
+    rf"|{_NONPROFIT_SUBJECT}\s*(?:은|는|도|의\s*경우)?\s*(?:예외|면제)"
+    rf"|{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}예외\s*(?:적용|가능|있음|대상|허용|인정)"
+    rf"|예외\s*{_NONPROFIT_SUBJECT}\s*허용"
+    rf"|{_NONPROFIT_SUBJECT}\s*(?:은|는|도|의\s*경우)?\s*(?:예외적으로\s*)?"
+    rf"(?:입찰\s*)?(?:참가|참여)\s*(?:가능|허용)"
+    rf"|(?:이거나|또는|,)\s*{_NONPROFIT_SUBJECT}(?:에\s*해당|이어야|이면|,|/|\s*중\s*하나)"
+)
+
+# "일부 비영리법인 및 부실기업은 참가 불가" forbids some of the group, so it
+# proves neither a route nor its absence. It must not read as a blanket
+# exclusion, which is why it is tested ahead of one.
+_NONPROFIT_PARTIAL_EXCLUSION_RE = re.compile(
+    rf"(?:일부|일정|특정)\s*{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}"
+    rf"(?:참가|참여|입찰)\s*(?:불가|불허|할\s*수\s*없)"
+)
+
+NONPROFIT_ALTERNATIVE_STRUCTURES = (
+    ("QUALIFIED_VAGUE", _NONPROFIT_PARTIAL_EXCLUSION_RE),
+    ("EXCLUDED", _NONPROFIT_EXCLUDED_RE),
+    ("DUTY_EXTENDED", _NONPROFIT_DUTY_RE),
+    ("QUALIFIED_FORM", _NONPROFIT_LEGAL_FORM_RE),
+    ("QUALIFIED_STATUTE", _NONPROFIT_STATUTORY_RE),
+    ("QUALIFIED_VAGUE", _NONPROFIT_VAGUE_RE),
+    ("PURPOSE", _NONPROFIT_PURPOSE_RE),
+    ("EVIDENCE", _NONPROFIT_EVIDENCE_RE),
+    ("UNCONDITIONAL", _NONPROFIT_UNCONDITIONAL_RE),
+)
+
+# The one legal determination this company can record once and reuse: whether
+# it stands inside the priority-procurement exception a notice may cite.
+NONPROFIT_STATUTORY_EXCEPTION_FACT = "nonprofit_priority_procurement_exception"
+
+
+# Markers that void the whole alternative: the clause negates it, conjoins it
+# with a second mandatory duty, or gates it behind a further approval. A
+# structural reading must not survive any of these, because each one changes
+# what the sentence requires rather than which nonprofits it admits.
+_NONPROFIT_ROUTE_VOID_RE = re.compile(
+    r"해당하지\s*않|하지\s*않아야|하지\s*않는|아니어야\s*함"
+    r"|모두\s*(?:보유|소지)|도\s*(?:보유|소지)(?:해야|하여야)"
+    r"|별도\s*(?:승인|심사|허가)"
+    r"|및\s*비영리\s*법인"
+)
+
+
+def classify_nonprofit_alternative(text: str) -> str | None:
+    """Name the structure that binds a nonprofit mention, or None if absent.
+
+    Order is the contract. An exclusion outranks every allowance, and every
+    narrowing outranks the unconditional reading, so a clause that both allows
+    and narrows can never be read as an open door. A voided clause returns
+    None, leaving the certificate decision exactly as the earlier gates made it.
+    """
+
+    if not re.search(_NONPROFIT_SUBJECT, text):
+        return None
+    # A clause that closes the door is named before the void check, so the
+    # reason survives in the explanation instead of collapsing to silence.
+    if _NONPROFIT_PARTIAL_EXCLUSION_RE.search(text):
+        return "QUALIFIED_VAGUE"
+    if _NONPROFIT_EXCLUDED_RE.search(text):
+        return "EXCLUDED"
+    if _NONPROFIT_DUTY_RE.search(text):
+        return "DUTY_EXTENDED"
+    if _NONPROFIT_ROUTE_VOID_RE.search(text):
+        return None
+    for name, pattern in NONPROFIT_ALTERNATIVE_STRUCTURES:
+        if pattern.search(text):
+            return name
+    return "UNRECOGNISED"
+
+
+def _nonprofit_route_for_absent_certificate(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    structure: str | None,
+    deadline: "date | None",
+    today: "date | None",
+) -> dict[str, Any] | None:
+    """Replace a confirmed-absence FAIL when the notice still offers a route.
+
+    Only a confirmed-absence outcome is replaced. Every earlier gate keeps its
+    own decision, so no clause that already passed or reviewed can be pulled
+    backwards by this fallback.
+    """
+
+    if structure in {None, "EXCLUDED", "DUTY_EXTENDED"}:
+        return None
+    if structure in {"UNCONDITIONAL", "EVIDENCE"}:
+        message = (
+            "공고가 비영리법인에 한정 없이 확인서 의무를 면제하므로 회사의 "
+            "비영리법인 사실이 이 조건을 대체합니다."
+            if structure == "UNCONDITIONAL"
+            else
+            # Participation is open; the only extra step is filing proof of the
+            # nonprofit status this company already holds verified.
+            "공고가 비영리법인에게 증빙 제출을 조건으로 참가를 허용하고 회사의 "
+            "비영리법인 사실이 확인되므로 이 조건을 대체합니다. 입찰 시 법인설립허가증 "
+            "등 비영리법인 증빙을 반드시 제출해야 합니다."
+        )
+        return _eligibility_item(
+            requirement,
+            profile=profile,
+            fact_key="nonprofit_entity",
+            deadline=deadline,
+            today=today,
+            pass_outcome="PASS_EXCEPTION",
+            message=message,
+        )
+    if structure == "QUALIFIED_STATUTE":
+        # Registered determination passes; its absence reviews rather than fails.
+        return _eligibility_item(
+            requirement,
+            profile=profile,
+            fact_key=NONPROFIT_STATUTORY_EXCEPTION_FACT,
+            deadline=deadline,
+            today=today,
+            pass_outcome="PASS_EXCEPTION",
+            message=(
+                "공고가 인용한 우선조달계약 예외에 회사가 해당한다는 확정 사실이 "
+                "연결되어 확인서 조건을 대체합니다."
+            ),
+        )
+    return _unmapped_eligibility_item(
+        requirement,
+        fact_key=f"nonprofit_alternative_{structure.lower()}",
+        deadline=deadline,
+        message={
+            "QUALIFIED_FORM": (
+                "공고는 특정 법인격(예: 사회복지법인)에 해당하는 비영리법인만 허용합니다. "
+                "일반 비영리법인 사실로는 충족을 확정할 수 없어 검토가 필요합니다."
+            ),
+            "QUALIFIED_VAGUE": (
+                "공고는 일부 비영리법인만 대안으로 허용하면서 그 범위를 특정하지 "
+                "않았습니다. 확인서 미보유만으로 미충족을 단정하지 않고 원문 검토로 남깁니다."
+            ),
+            "PURPOSE": (
+                "공고는 설립목적이 한정된 비영리법인만 대안으로 허용합니다. 회사의 "
+                "목적이 그 범위인지 근거가 연결되지 않아 검토가 필요합니다."
+            ),
+            "UNRECOGNISED": (
+                "이 조건에 비영리법인 대안 문구가 있으나 허용 범위를 구조적으로 확정할 "
+                "수 없습니다. 확인서 미보유만으로 미충족을 단정하지 않고 검토로 남깁니다."
+            ),
+        }[structure],
+    )
+
+
 def _named_permit_fact_keys(text: str, *, category: str) -> list[str]:
     """Return every explicit permit family backed by the curated collection."""
 
@@ -1796,16 +2033,23 @@ def classify_requirements(
                 )
             else:
                 certificate_fact_key = _small_business_fact_key(text)
+                nonprofit_structure = classify_nonprofit_alternative(text)
                 # Do not assert that the notice contains no nonprofit exception
                 # when the clause mentions one. The outcome stays the same
                 # confirmed-absence FAIL; only the stated reason changes, so the
                 # explanation never claims a fact about the source text that the
                 # text contradicts.
-                if "비영리법인" in text:
+                if nonprofit_structure == "EXCLUDED":
                     certificate_failure_message = (
                         "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
-                        "않습니다. 이 조건에 비영리법인 대안 문구가 있으나 결정 가능한 형태로 "
-                        "인식되지 않아 예외 경로를 적용할 수 없으므로 공고 원문 검토가 필요합니다."
+                        "않으며, 공고가 비영리법인을 명시적으로 제외하거나 참가 불가로 규정하여 "
+                        "예외 경로가 없습니다."
+                    )
+                elif nonprofit_structure == "DUTY_EXTENDED":
+                    certificate_failure_message = (
+                        "회사 확인값상 공고가 요구한 중소·소기업 또는 소상공인 확인서를 보유하지 "
+                        "않으며, 공고가 비영리법인에게도 같은 확인서 보유 의무를 부과하므로 "
+                        "예외 경로가 없습니다."
                     )
                 elif nonprofit_text_present_in_notice:
                     certificate_failure_message = (
@@ -1827,6 +2071,20 @@ def classify_requirements(
                     fail_on_confirmed_absence=True,
                     failure_message=certificate_failure_message,
                 )
+                if item.get("outcome") == "FAIL_CONFIRMED":
+                    # The certificate is confirmed absent, but the same clause
+                    # may still name a nonprofit route. Decide that route by the
+                    # structure that binds it; only a confirmed absence is
+                    # replaced, so no earlier PASS or REVIEW is disturbed.
+                    rescued = _nonprofit_route_for_absent_certificate(
+                        requirement,
+                        profile=profile,
+                        structure=nonprofit_structure,
+                        deadline=as_of,
+                        today=today,
+                    )
+                    if rescued is not None:
+                        item = rescued
         elif _contains(text, "하도급", "단독입찰"):
             item = _checklist_item(
                 requirement,
