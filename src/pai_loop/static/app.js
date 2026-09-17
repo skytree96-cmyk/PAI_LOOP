@@ -8937,6 +8937,27 @@
     renderDetailFollowAction(state.selectedNotice);
   }
 
+  // Teams hands the tab a token that names the signed-in person. The server
+  // matches it to the conversation the bot already opened, so no code changes
+  // hands. Any failure is silent on purpose: the pairing code still works, and
+  // a person outside Teams must not see an error for a host that is not there.
+  async function linkTeamsBySso() {
+    const authentication = window.microsoftTeams?.authentication;
+    if (!document.body.classList.contains("teams-context") || !authentication?.getAuthToken) return false;
+    const headers = accountMutationHeaders();
+    if (!headers) return false;
+    try {
+      const token = await authentication.getAuthToken();
+      if (typeof token !== "string" || !token) return false;
+      const result = await apiRequest("/teams/link-sso", {
+        method: "POST", headers, body: JSON.stringify({ token }),
+      });
+      return result?.connected === true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   async function loadTeamsFollowups() {
     if (!state.accountSession.authenticated || state.teamsFollowups.loading) return;
     const followups = state.teamsFollowups;
@@ -8958,6 +8979,14 @@
       followups.enabled = connection.enabled;
       followups.connected = connection.connected;
       followups.botChatUrl = safePaiBotTeamsUrl(connection.bot_chat_url);
+      // Inside Teams the host already knows who is looking. Ask it once, and
+      // the pairing code is never needed. Outside Teams, or when the app is
+      // not installed for this person, the code path below stays as it was.
+      if (followups.enabled && !followups.connected && (await linkTeamsBySso())) {
+        if (!isCurrent()) return;
+        followups.connected = true;
+        clearTeamsLinkCode();
+      }
       if (followups.connected) {
         clearTeamsLinkCode();
         const payload = await apiRequest("/teams/follows");

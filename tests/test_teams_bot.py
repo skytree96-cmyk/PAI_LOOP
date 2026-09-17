@@ -427,3 +427,119 @@ def test_tenant_scoped_connector_url_is_trusted(url):
 def test_widening_the_path_admits_nothing_but_a_tenant(url):
     with pytest.raises(HTTPException):
         bot.trusted_service_url(url)
+
+
+# ---------------------------------------------------------------------------
+# 탭 SSO 연결
+#
+# Teams 안에서 탭이 열리면 호스트가 사람을 식별하는 토큰을 준다. 브라우저는
+# 아무것도 증명하지 않으며, 서명된 토큰의 oid 만이 사람을 지목한다. 봇이 앱
+# 설치 시점에 저장해둔 대화를 그 oid 로 찾아 세션에 묶는다.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sso_signer(monkeypatch):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key()))
+    public.update(kid="SYN-entra-key", alg="RS256")
+    monkeypatch.setattr(bot, "_entra_key_cache", (time.monotonic(), SYN_SETTINGS.sso_keys_url, [public]))
+
+    def signed(**overrides):
+        claims = {"aud": SYN_APP, "iss": SYN_SETTINGS.sso_issuer, "tid": SYN_TENANT,
+                  "oid": SYN_PERSON, "sub": "SYN-subject",
+                  "exp": int(time.time()) + 300, "nbf": int(time.time()) - 5}
+        claims.update(overrides)
+        claims = {name: value for name, value in claims.items() if value is not None}
+        return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "SYN-entra-key"})
+    return signed
+
+
+def install_bot_for(browser, signer, person=SYN_PERSON):
+    """앱 설치가 만드는 비활성 대화 참조를 재현한다."""
+
+    install = activity(person)
+    install["type"] = "conversationUpdate"
+    install["text"] = ""
+    assert browser.post("/api/v1/teams/messages", headers={"Authorization": signer()},
+                        json=install).status_code == 200
+
+
+def test_tab_sso_links_the_installed_person_without_a_code(browser, signer, sso_signer):
+    install_bot_for(browser, signer)
+    assert browser.get("/api/v1/teams/connection").json()["connected"] is False
+
+    result = browser.post("/api/v1/teams/link-sso", headers=HEADERS, json={"token": sso_signer()})
+
+    assert result.status_code == 200
+    assert result.json()["connected"] is True
+    assert browser.get("/api/v1/teams/connection").json()["connected"] is True
+    assert browser.get("/syn-recipient").status_code == 200
+
+
+def test_sso_without_an_installed_bot_reports_rather_than_fails(browser, sso_signer):
+    """설치 전에는 배달할 대화가 없다. 오류가 아니라 코드 경로로 돌아간다."""
+
+    result = browser.post("/api/v1/teams/link-sso", headers=HEADERS, json={"token": sso_signer()})
+
+    assert result.status_code == 200
+    assert result.json() == {"connected": False, "reason": "BOT_NOT_INSTALLED",
+                             "bot_chat_url": SYN_SETTINGS.bot_chat_url}
+    assert browser.get("/api/v1/teams/connection").json()["connected"] is False
+
+
+# exp/nbf 는 지금으로부터의 초 단위 오프셋으로 적는다. 절대 시각을 여기에 적으면
+# 수집 시점에 한 번 계산되고, 스위트가 그 간격보다 오래 돌면 미래로 둔 nbf 가
+# 실행 시점에는 과거가 되어 거절돼야 할 토큰이 정당하게 유효해진다.
+_RELATIVE_TO_NOW = ("exp", "nbf")
+
+
+@pytest.mark.parametrize("overrides, status", [
+    ({"iss": "https://login.microsoftonline.com/other/v2.0"}, 401),   # 다른 발행자
+    ({"aud": "44444444-4444-4444-8444-444444444444"}, 401),          # 다른 대상
+    ({"exp": -300}, 401),                                            # 만료(허용 오차 60초 밖)
+    ({"nbf": 600}, 401),                                             # 아직 유효 전
+    ({"sub": None}, 401),                                            # 필수 클레임 누락
+    ({"tid": "44444444-4444-4444-8444-444444444444"}, 403),          # 다른 조직
+    ({"oid": None}, 403),                                            # 사람이 아닌 토큰
+    ({"oid": "not-a-uuid"}, 403),
+])
+def test_a_token_that_is_not_this_tenants_person_never_links(browser, signer, sso_signer, overrides, status):
+    install_bot_for(browser, signer)
+    overrides = {name: (int(time.time()) + value if name in _RELATIVE_TO_NOW else value)
+                 for name, value in overrides.items()}
+
+    result = browser.post("/api/v1/teams/link-sso", headers=HEADERS, json={"token": sso_signer(**overrides)})
+
+    assert result.status_code == status
+    assert browser.get("/api/v1/teams/connection").json()["connected"] is False
+
+
+def test_an_unsigned_or_malformed_token_never_links(browser, signer):
+    install_bot_for(browser, signer)
+    for payload in ({"token": "not.a.jwt"}, {"token": ""}, {}, {"token": 5}):
+        result = browser.post("/api/v1/teams/link-sso", headers=HEADERS, json=payload)
+        assert result.status_code in {400, 401}
+    assert browser.get("/api/v1/teams/connection").json()["connected"] is False
+
+
+def test_sso_link_requires_the_browser_session_and_csrf(browser, signer, sso_signer):
+    install_bot_for(browser, signer)
+    token = {"token": sso_signer()}
+
+    assert browser.post("/api/v1/teams/link-sso", json=token).status_code == 403
+    assert browser.post("/api/v1/teams/link-sso", headers={"Origin": "https://evil.invalid",
+                        "X-CSRF-Token": "SYN-csrf", "Sec-Fetch-Site": "cross-site"},
+                        json=token).status_code == 403
+    assert browser.get("/api/v1/teams/connection").json()["connected"] is False
+
+
+def test_the_connector_and_entra_key_sets_never_validate_each_other(browser, signer, sso_signer):
+    """봇 토큰과 탭 토큰은 발행자가 다르다. 한쪽 키로 다른 쪽이 통과하면 안 된다."""
+
+    install_bot_for(browser, signer)
+    connector_token = signer().removeprefix("Bearer ")
+
+    assert browser.post("/api/v1/teams/link-sso", headers=HEADERS,
+                        json={"token": connector_token}).status_code == 401
+    assert browser.post("/api/v1/teams/messages", headers={"Authorization": "Bearer " + sso_signer()},
+                        json=activity()).status_code == 401

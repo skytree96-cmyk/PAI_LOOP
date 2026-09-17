@@ -35,6 +35,9 @@ LINK_TTL_SECONDS = 600
 MAX_ACTIVITY_BYTES = 65536
 _key_lock = threading.Lock()
 _key_cache: tuple[float, list[dict]] = (0, [])
+_entra_key_lock = threading.Lock()
+_entra_key_cache: tuple[float, str, list[dict]] = (0, "", [])
+MAX_SSO_TOKEN_BYTES = 8192
 
 
 def _uuid(value: str) -> str:
@@ -72,6 +75,28 @@ class TeamsBotSettings:
         if not self.enabled:
             return None
         return "https://teams.microsoft.com/l/chat/0/0?users=" + quote("28:" + self.app_id, safe="")
+
+    @property
+    def sso_audiences(self) -> frozenset[str]:
+        """Both spellings Entra may put in `aud` for this API.
+
+        An app that also ships a bot must register its identifier URI with the
+        `botid-` prefix, so that exact string is the one Teams asks for. A v2
+        token can carry the bare client id instead, and both name the same API.
+        """
+
+        if not self.enabled:
+            return frozenset()
+        host = urlsplit(self.public_base_url).hostname or ""
+        return frozenset({self.app_id, f"api://{host}/botid-{self.app_id}"})
+
+    @property
+    def sso_issuer(self) -> str:
+        return f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
+
+    @property
+    def sso_keys_url(self) -> str:
+        return f"https://login.microsoftonline.com/{self.tenant_id}/discovery/v2.0/keys"
 
 
 def _settings() -> TeamsBotSettings:
@@ -131,6 +156,85 @@ def link_code(request: Request, response: Response) -> dict:
             "bot_chat_url": settings.bot_chat_url}
 
 
+@router.post("/link-sso")
+async def link_sso(request: Request, response: Response) -> dict:
+    """Bind this session to the signed-in person, without a pairing code.
+
+    The browser proves nothing here. A tab running inside Teams asks the host
+    for a token that Entra issued for this API, and only the `oid` inside that
+    signed token names the person. The bot already stored the conversation it
+    opened when the app was installed, so the token is matched against that
+    stored row; nothing about the recipient comes from the request body.
+
+    A person without an installed app has no stored conversation. That is not
+    an error: there is simply nowhere to deliver yet, and the pairing-code path
+    remains the way in.
+    """
+
+    identity = authenticated_account(request, mutation=True)
+    settings = _settings()
+    response.headers["Cache-Control"] = "no-store"
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_SSO_TOKEN_BYTES:
+            raise HTTPException(413, "Teams 로그인 토큰이 너무 큽니다.")
+    try:
+        payload = json.loads(body)
+        token = payload["token"]
+        if not isinstance(token, str) or not token:
+            raise ValueError()
+    except (ValueError, UnicodeDecodeError, KeyError, TypeError):
+        raise HTTPException(400, "Teams 로그인 토큰 형식을 확인해 주세요.") from None
+    claims = await run_in_threadpool(validate_tab_sso_token, token, settings)
+    aad_id = claims["oid"]
+    with request.app.state.session_factory() as session:
+        serial_transaction(session, scope="teams-identities")
+        recipient = session.scalar(select(TeamsRecipient).where(
+            TeamsRecipient.tenant_id == _uuid(settings.tenant_id),
+            TeamsRecipient.aad_object_id == aad_id))
+        if recipient is None:
+            # The bot has never been installed for this person, so no
+            # conversation exists to deliver into.
+            return {"connected": False, "reason": "BOT_NOT_INSTALLED",
+                    "bot_chat_url": settings.bot_chat_url}
+        recipient.active = True
+        recipient.account_id = identity.id
+        recipient.updated_at = now_utc()
+        session.execute(delete(TeamsSessionLink).where(
+            TeamsSessionLink.session_id == identity.session_id))
+        session.add(TeamsSessionLink(session_id=identity.session_id, account_id=identity.id,
+                                     recipient_id=recipient.id, created_at=now_utc()))
+        session.execute(delete(TeamsLinkCode).where(
+            TeamsLinkCode.session_id == identity.session_id))
+        session.commit()
+    return {"connected": True, "reason": "SSO_LINKED", "bot_chat_url": settings.bot_chat_url}
+
+
+def validate_tab_sso_token(token: str, settings: TeamsBotSettings) -> dict:
+    """Accept only a token Entra signed for this API, in this tenant, for a person."""
+
+    try:
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
+            raise jwt.InvalidTokenError()
+        key = jwt.PyJWK.from_dict(_entra_signing_key(header["kid"], settings.sso_keys_url))
+        claims = jwt.decode(token, key.key, algorithms=["RS256"],
+                            audience=list(settings.sso_audiences), issuer=settings.sso_issuer,
+                            leeway=60, options={"require": ["exp", "nbf", "iss", "aud", "sub"]})
+    except (jwt.PyJWTError, ValueError, TypeError):
+        raise HTTPException(401, "Teams 로그인 토큰을 확인할 수 없습니다.") from None
+    try:
+        # A guest or an app-only token carries no personal object id in this
+        # tenant, and a delegated token must name the tenant it came from.
+        if _uuid(claims["tid"]) != _uuid(settings.tenant_id):
+            raise ValueError()
+        claims["oid"] = _uuid(claims["oid"])
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise HTTPException(403, "허용된 조직의 Teams 계정만 연결할 수 있습니다.") from None
+    return claims
+
+
 @router.post("/disconnect")
 def disconnect(request: Request, response: Response) -> dict:
     identity = authenticated_account(request, mutation=True)
@@ -169,6 +273,37 @@ def trusted_service_url(value: str) -> str:
     except (ValueError, TypeError):
         raise HTTPException(403, "Teams 서비스 주소를 확인할 수 없습니다.") from None
     return value.rstrip("/") + "/"
+
+
+def _entra_signing_key(kid: str, keys_url: str) -> dict:
+    """Fetch the tenant's own signing keys, cached and bounded like the Connector's.
+
+    A tab SSO token is signed by Entra for this tenant, not by the Connector,
+    so it has its own key set and its own cache. Sharing one cache would let
+    either issuer's keys validate the other's token.
+    """
+
+    global _entra_key_cache
+    with _entra_key_lock:
+        fetched, cached_url, keys = _entra_key_cache
+        age = time.monotonic() - fetched
+        match = next((key for key in keys if key.get("kid") == kid), None)
+        if cached_url != keys_url or not keys or age > 3600 or (match is None and age > 30):
+            try:
+                with httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client:
+                    result = client.get(keys_url)
+                    result.raise_for_status()
+                    payload = result.json()
+                keys = payload["keys"]
+                if not isinstance(keys, list) or not keys or not all(isinstance(key, dict) for key in keys):
+                    raise ValueError()
+                _entra_key_cache = (time.monotonic(), keys_url, keys)
+            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                raise HTTPException(503, "Teams 인증을 잠시 후 다시 시도해 주세요.") from None
+            match = next((key for key in keys if key.get("kid") == kid), None)
+        if not match or match.get("kty") != "RSA" or match.get("alg", "RS256") != "RS256":
+            raise HTTPException(401, "Teams 로그인 토큰을 확인할 수 없습니다.")
+        return match
 
 
 def _signing_key(kid: str) -> dict:
