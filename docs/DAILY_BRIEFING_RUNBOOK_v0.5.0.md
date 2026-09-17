@@ -19,7 +19,7 @@ v0.5.0은 이전 10번에서 빠졌던 두 실행 경계를 통합한다.
 - cron: `0 9 * * *`, timezone `Asia/Seoul`;
 - 모든 live gate: 환경변수 미설정 시 `false`;
 - 수동 dry-run: backend/PPS/낙찰/OpenAI/Teams 호출 모두 0;
-- API/Web 기본 origin: `https://pai-loop-demo.onrender.com`;
+- API/Web 기본 origin: `https://pai-yd7xtctmra-an.a.run.app`;
 - backend 인증: n8n Generic Header Auth credential 필요;
 - Git export의 secret 값·credential ID: 0.
 
@@ -75,8 +75,8 @@ Header value: Render의 PAI_LOOP_API_KEY와 동일한 값
 ### 2. 환경변수 Gate
 
 ```text
-PAI_LOOP_API_BASE_URL=https://pai-loop-demo.onrender.com       # 선택, 동일 fallback 있음
-PAI_LOOP_WEB_BASE_URL=https://pai-loop-demo.onrender.com       # 선택, 동일 fallback 있음
+PAI_LOOP_API_BASE_URL=https://pai-yd7xtctmra-an.a.run.app       # 선택, 동일 fallback 있음
+PAI_LOOP_WEB_BASE_URL=https://pai-yd7xtctmra-an.a.run.app       # 선택, 동일 fallback 있음
 PAI_LOOP_DAILY_LIVE_ENABLED=false
 PAI_LOOP_RETENTION_LIVE_ENABLED=false
 PAI_LOOP_AWARD_REFRESH_ENABLED=false

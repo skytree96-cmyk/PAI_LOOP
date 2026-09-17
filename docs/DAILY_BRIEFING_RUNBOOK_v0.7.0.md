@@ -160,7 +160,7 @@ PAI_LOOP_EMERGENCY_DISABLE=true
 
 `PAI_LOOP_API_BASE_URL`과 `PAI_LOOP_WEB_BASE_URL`은 유효한 HTTP(S) URL일 때만
 사용한다. 없거나 n8n이 `$env` 접근을 금지하면
-`https://pai-loop-demo.onrender.com`을 사용한다.
+`https://pai-yd7xtctmra-an.a.run.app`을 사용한다.
 
 ## Credential 9/9 확인
 

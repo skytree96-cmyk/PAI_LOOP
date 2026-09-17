@@ -63,7 +63,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function awardRuntime(environment) {\n  const read = (name) => { try { return String(environment[name] ?? '').trim(); } catch { return ''; } };\n  const origin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';\n  if (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?\\/?$/.test(origin)) throw new Error('Award backend origin must be an HTTP(S) origin without credentials, path, or query');\n  const enabled = read('PAI_LOOP_EMERGENCY_DISABLE').toLowerCase() !== 'true';\n  return [{ json: { runtime: { apiBaseUrl: origin.replace(/\\/$/, ''), enabled } } }];\n}\nreturn awardRuntime($env);"
+        "jsCode": "function awardRuntime(environment) {\n  const read = (name) => { try { return String(environment[name] ?? '').trim(); } catch { return ''; } };\n  const origin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-yd7xtctmra-an.a.run.app';\n  if (!/^https?:\\/\\/[A-Za-z0-9.-]+(?::\\d+)?\\/?$/.test(origin)) throw new Error('Award backend origin must be an HTTP(S) origin without credentials, path, or query');\n  const enabled = read('PAI_LOOP_EMERGENCY_DISABLE').toLowerCase() !== 'true';\n  return [{ json: { runtime: { apiBaseUrl: origin.replace(/\\/$/, ''), enabled } } }];\n}\nreturn awardRuntime($env);"
       },
       "id": "award-automation-4",
       "name": "Build Scheduled Award Runtime",

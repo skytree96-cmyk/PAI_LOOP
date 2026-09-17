@@ -44,7 +44,7 @@ while (pending.length) {
 assert.equal(visited.size, 3);
 
 const runtime = code("Build Scheduled Award Runtime", {}, {}).runtime;
-assert.equal(runtime.apiBaseUrl, "https://pai-loop-demo.onrender.com"); assert.equal(runtime.enabled, true);
+assert.equal(runtime.apiBaseUrl, "https://pai-yd7xtctmra-an.a.run.app"); assert.equal(runtime.enabled, true);
 assert.equal(code("Build Scheduled Award Runtime", {}, { PAI_LOOP_EMERGENCY_DISABLE: "true" }).runtime.enabled, false);
 assert.equal(code("Build Scheduled Award Runtime", {}, { PAI_LOOP_API_BASE_URL: "https://syn.example/" }).runtime.apiBaseUrl, "https://syn.example");
 const syntheticUserinfoOrigin = new URL("https://syn.example");

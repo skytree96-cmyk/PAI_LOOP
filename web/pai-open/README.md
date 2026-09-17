@@ -18,7 +18,7 @@ node build.mjs
 
 Preview: `http://127.0.0.1:8788/`. Build after both product-tour assets have been generated. Only the allowlisted files in `dist/` are deployment assets; README files and local capture inputs are not included. Upload the contents of `dist/` to the existing Cloudflare Pages project `pai-loop` through the logged-in internal browser.
 
-The current application links use `https://pai-loop-demo.onrender.com`. When the application URL changes, update those links in `index.html` together and rebuild. `data-app-path` records the intended destination route. Renaming the public site does not rename the Render application.
+The current application links use `https://pai-yd7xtctmra-an.a.run.app`. When the application URL changes, update those links in `index.html` together and rebuild. `data-app-path` records the intended destination route. Renaming the public site does not rename the Render application.
 
 ## Design and interaction
 

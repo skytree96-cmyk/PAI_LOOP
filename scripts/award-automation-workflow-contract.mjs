@@ -7,7 +7,7 @@ export const awardHttpNodeNames = new Set(["Enroll New and Stale Award Notices",
 
 export function awardRuntime(environment) {
   const read = (name) => { try { return String(environment[name] ?? '').trim(); } catch { return ''; } };
-  const origin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-loop-demo.onrender.com';
+  const origin = read('PAI_LOOP_API_BASE_URL') || 'https://pai-yd7xtctmra-an.a.run.app';
   if (!/^https?:\/\/[A-Za-z0-9.-]+(?::\d+)?\/?$/.test(origin)) throw new Error('Award backend origin must be an HTTP(S) origin without credentials, path, or query');
   const enabled = read('PAI_LOOP_EMERGENCY_DISABLE').toLowerCase() !== 'true';
   return [{ json: { runtime: { apiBaseUrl: origin.replace(/\/$/, ''), enabled } } }];
