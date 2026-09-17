@@ -31,10 +31,10 @@ def test_teams_manifest_declares_configurable_channel_tab_and_render_domain() ->
     assert manifest["$schema"].endswith("/v1.28/MicrosoftTeams.schema.json")
     assert manifest["manifestVersion"] == "1.28"
     assert manifest["icons"] == {"outline": "outline.png", "color": "color.png"}
-    assert "pai-loop-demo.onrender.com" in manifest["validDomains"]
+    assert "pai-yd7xtctmra-an.a.run.app" in manifest["validDomains"]
     assert len(manifest["configurableTabs"]) == 1
     tab = manifest["configurableTabs"][0]
-    assert tab["configurationUrl"] == "https://pai-loop-demo.onrender.com/teams-config.html"
+    assert tab["configurationUrl"] == "https://pai-yd7xtctmra-an.a.run.app/teams-config.html"
     assert set(tab["scopes"]) == {"team", "groupChat"}
     assert set(tab["context"]) == {"channelTab", "privateChatTab"}
     assert tab["canUpdateConfiguration"] is False
@@ -122,4 +122,4 @@ def test_manual_analysis_actions_are_functional() -> None:
     assert "/analysis/requests/${encodeURIComponent(requestId)}`" in source
     assert "for (let poll = 0; poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1)" in source
     assert "data-manual-analysis" in source
-    assert "공고 분석 요청 실패" in source
+    assert "공고 분석 요청 실패" in source

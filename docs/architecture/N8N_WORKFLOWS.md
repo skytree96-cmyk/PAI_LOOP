@@ -67,7 +67,7 @@ ACCEPTED extraction의 materialize·평가·snapshot 집계가 끝난 뒤 낙찰
 | `PAI_LOOP_EMERGENCY_DISABLE` | 10, 11 | 정확히 `true`이면 scheduled 수집·분석과 continuation을 fail-closed한다. |
 
 10/11번의 API/Web URL은 `$env` 값을 우선하고 없으면 공개 origin
-`https://pai-loop-demo.onrender.com`을 사용한다. 검증된 scheduled 경로는
+`https://pai-yd7xtctmra-an.a.run.app`을 사용한다. 검증된 scheduled 경로는
 `PAI_LOOP_EMERGENCY_DISABLE=true`가 아니면 live이며, 수동 fixture 경로는 계속
 외부 호출 0회다. 모든 backend HTTP Request 노드는 `genericCredentialType/httpHeaderAuth`를
 선언하고, 운영자가 n8n의 Generic Header Auth credential `PAI_LOOP Render Backend`를
@@ -273,7 +273,7 @@ W12는 `settings.timezone=Asia/Seoul`, 09:00 첫 시도·10:45 마지막 시도�
 15분 schedule, `teams-delivery-1.3` 계약으로 `publish:true`,
 `promotionState=verified-live-e2e`다. scheduled 경로는
 `GET /api/v1/operations/teams-daily-readiness`가 `READY`인 경우에만 저장된 7일 브리핑을
-고정 공개 origin `https://pai-loop-demo.onrender.com`에서 한 번 읽어 공고 최대
+고정 공개 origin `https://pai-yd7xtctmra-an.a.run.app`에서 한 번 읽어 공고 최대
 6건의 sanitized HTML을 native Microsoft Teams v2
 `channelMessage/create` 노드 하나로 `PAI 봇` 채널에 전송한다. Adaptive Card는 같은
 공개 allowlist의 offline preview 계약으로 유지한다.

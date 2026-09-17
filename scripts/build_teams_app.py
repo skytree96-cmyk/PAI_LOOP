@@ -69,7 +69,7 @@ def _validate() -> None:
     missing = sorted(required - manifest.keys())
     if missing:
         raise ValueError(f"Teams manifest is missing: {', '.join(missing)}")
-    if "pai-loop-demo.onrender.com" not in manifest["validDomains"]:
+    if "pai-yd7xtctmra-an.a.run.app" not in manifest["validDomains"]:
         raise ValueError("Render hostname must be declared in validDomains")
     tab = manifest["configurableTabs"][0]
     if set(tab["scopes"]) != {"team", "groupChat"}:

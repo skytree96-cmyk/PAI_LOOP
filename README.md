@@ -325,7 +325,7 @@ OpenAI·조달청·PAI LOOP 서버 키는 배포 스크립트가 workflow JSON�
 노드는 n8n Generic Header Auth credential을 요구하며,
 소스에는 credential ID도 없습니다. n8n UI에서 같은 노드 이름에 연결한 credential은
 후속 GitHub 배포 시 보존됩니다. API/Web origin은 `$env`를 우선하고 없으면 공개
-Render origin `https://pai-loop-demo.onrender.com`을 사용합니다. 예약 workflow를
+Render origin `https://pai-yd7xtctmra-an.a.run.app`을 사용합니다. 예약 workflow를
 활성화하면 명시적 기본 설정으로 live 실행하고,
 `PAI_LOOP_EMERGENCY_DISABLE=true`일 때만 모든 예약 gate를 fail-closed합니다.
 자세한 운영 절차는

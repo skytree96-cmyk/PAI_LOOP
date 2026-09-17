@@ -94,7 +94,7 @@ snapshot 업무 레코드 생성이 아니며 7일 단기 운영로그 retention
 | `PAI_LOOP_TEAMS_MOCK_LOG_ENABLED` | backend mock 기록 허용 |
 
 `PAI_LOOP_API_BASE_URL`과 `PAI_LOOP_WEB_BASE_URL`은 `$env`를 우선하고 없으면
-`https://pai-loop-demo.onrender.com`을 사용한다. URL에 사용자명·비밀번호를
+`https://pai-yd7xtctmra-an.a.run.app`을 사용한다. URL에 사용자명·비밀번호를
 넣지 않는다.
 
 ## n8n Credential 연결
