@@ -487,11 +487,17 @@ def test_sso_without_an_installed_bot_reports_rather_than_fails(browser, sso_sig
     assert browser.get("/api/v1/teams/connection").json()["connected"] is False
 
 
+# exp/nbf 는 지금으로부터의 초 단위 오프셋으로 적는다. 절대 시각을 여기에 적으면
+# 수집 시점에 한 번 계산되고, 스위트가 그 간격보다 오래 돌면 미래로 둔 nbf 가
+# 실행 시점에는 과거가 되어 거절돼야 할 토큰이 정당하게 유효해진다.
+_RELATIVE_TO_NOW = ("exp", "nbf")
+
+
 @pytest.mark.parametrize("overrides, status", [
     ({"iss": "https://login.microsoftonline.com/other/v2.0"}, 401),   # 다른 발행자
     ({"aud": "44444444-4444-4444-8444-444444444444"}, 401),          # 다른 대상
-    ({"exp": int(time.time()) - 30}, 401),                           # 만료
-    ({"nbf": int(time.time()) + 600}, 401),                          # 아직 유효 전
+    ({"exp": -300}, 401),                                            # 만료(허용 오차 60초 밖)
+    ({"nbf": 600}, 401),                                             # 아직 유효 전
     ({"sub": None}, 401),                                            # 필수 클레임 누락
     ({"tid": "44444444-4444-4444-8444-444444444444"}, 403),          # 다른 조직
     ({"oid": None}, 403),                                            # 사람이 아닌 토큰
@@ -499,6 +505,8 @@ def test_sso_without_an_installed_bot_reports_rather_than_fails(browser, sso_sig
 ])
 def test_a_token_that_is_not_this_tenants_person_never_links(browser, signer, sso_signer, overrides, status):
     install_bot_for(browser, signer)
+    overrides = {name: (int(time.time()) + value if name in _RELATIVE_TO_NOW else value)
+                 for name, value in overrides.items()}
 
     result = browser.post("/api/v1/teams/link-sso", headers=HEADERS, json={"token": sso_signer(**overrides)})
 
