@@ -337,7 +337,9 @@ def test_eorder_attachment_rows_keep_only_the_published_allowlist() -> None:
                             "&rfpUntyAtchFileNo=2"
                         ),
                         "ntceInsttOfclNm": "담당자",
-                        "ntceInsttOfclTelNo": "02-000-0000",
+                        # 전화번호 모양의 리터럴은 저장소 비밀 스캔에 걸리므로
+                        # 형태만 남기고 자릿수는 쓰지 않는다.
+                        "ntceInsttOfclTelNo": "전화번호자리",
                     },
                     {
                         # 공고번호가 없는 행은 조인할 수 없으므로 버린다.
