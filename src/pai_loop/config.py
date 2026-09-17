@@ -61,6 +61,11 @@ class Settings:
     private_evidence_token: str | None = None
     public_read_only: bool = False
     department_accounts_enabled: bool = False
+    # 제안요청서(전자주문) 첨부 수집.  켜면 그 공고의 manifest 가 바뀌고, 추출
+    # 재사용이 manifest 전체 해시에 묶여 있으므로 기존 첨부까지 다시 유료로
+    # 읽힌다(docs/EORDER_RFP_ATTACHMENTS_20260917.md 3.3).  규모를 알고 켜야
+    # 하는 항목이라 기본값은 꺼짐이다.
+    eorder_rfp_attachments_enabled: bool = False
     public_manual_analysis_enabled: bool = False
     # Deprecated deployment compatibility only; never authenticates a request.
     public_manual_analysis_token: str | None = None
@@ -140,6 +145,9 @@ class Settings:
             ),
             public_read_only=_as_bool(os.getenv("PAI_LOOP_PUBLIC_READ_ONLY")),
             department_accounts_enabled=_as_bool(os.getenv("PAI_LOOP_DEPARTMENT_ACCOUNTS_ENABLED")),
+            eorder_rfp_attachments_enabled=_as_bool(
+                os.getenv("PAI_LOOP_EORDER_RFP_ATTACHMENTS_ENABLED")
+            ),
             public_manual_analysis_enabled=_as_bool(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED")
             ),

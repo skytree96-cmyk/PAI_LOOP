@@ -117,6 +117,7 @@ def test_ingestion_joins_eorder_proposal_request_to_the_matching_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setenv("PAI_LOOP_EORDER_RFP_ATTACHMENTS_ENABLED", "true")
     monkeypatch.setattr("pai_loop.api.PpsClient", _EorderAttachmentPpsClient)
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with internal_server_client(app) as live_client:
@@ -147,6 +148,40 @@ def test_ingestion_joins_eorder_proposal_request_to_the_matching_notice(
     assert manifest[0]["slot"] == 11
     # 다른 공고번호의 행은 조인되지 않는다.
     assert all("다른공고" not in item["file_name"] for item in manifest)
+
+
+def test_eorder_join_is_off_until_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """켜면 그 공고의 기존 첨부까지 다시 유료로 읽힌다. 기본값은 꺼짐이어야 한다."""
+
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.delenv("PAI_LOOP_EORDER_RFP_ATTACHMENTS_ENABLED", raising=False)
+    monkeypatch.setattr("pai_loop.api.PpsClient", _EorderAttachmentPpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with internal_server_client(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-16",
+                "keyword": "연수",
+                "page_size": 100,
+                "max_pages": 2,
+                "dry_run": False,
+            },
+        )
+        assert response.status_code == 200
+        with live_client.app.state.session_factory() as session:
+            version = next(
+                item
+                for item in session.scalars(select(NoticeVersion)).all()
+                if isinstance(item.source_payload, dict)
+                and item.source_payload.get("kind") == PPS_METADATA_KIND
+            )
+            manifest = version.source_payload["attachment_manifest"]
+
+    assert manifest == []
 
 
 class _PageLimitedPpsClient(_FakePpsClient):

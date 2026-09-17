@@ -2814,7 +2814,11 @@ def ingest_pps_notices(
             # 자체는 계속되어야 하므로 공고 첨부만으로 진행한다.
             eorder_index: dict[tuple[str, str], list[dict[str, Any]]] = {}
             eorder_truncated = False
-            iter_eorder_attachments = getattr(client, "iter_eorder_attachments", None)
+            iter_eorder_attachments = (
+                getattr(client, "iter_eorder_attachments", None)
+                if settings.eorder_rfp_attachments_enabled
+                else None
+            )
             if (
                 iter_eorder_attachments is not None
                 and fetched_rows
