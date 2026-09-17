@@ -152,6 +152,25 @@ manifest 가 바뀔 때의 기존 동작이다(공고 차수 변경 때도 같�
 - URL 가드는 양방향으로 막히는지 확인했다. 공고 경로에 `rfpNo` 를 써도, 제안요청서
   경로에 `bidPbancNo` 를 써도, 제3의 경로를 써도 `UNSAFE_ATTACHMENT_URL` 이다.
 
+### 4.1 실제 데이터로 통과시킨 전 구간
+
+합성 입력이 아니라 조달청 응답을 그대로 넣어 운영 헬퍼로만 통과시켰다. DB 와
+모델 호출은 제외했고 그 외에는 파이프라인이 쓰는 함수 그대로다.
+
+```
+PpsClient.iter_eorder_attachments   실제 호출 (400행, 필드 6개로 축소 확인)
+  -> build_attachment_manifest      슬롯 11 배정 확인
+  -> download_public_attachment     URL 가드·리다이렉트 포함
+  -> extract_pps_document_content
+```
+
+| 공고 | 결과 |
+|---|---|
+| 10 | **10 전부 추출 성공, 본문에 `배점` 존재** |
+
+다운로드 거부(`UNSAFE_ATTACHMENT_URL`)도, 추출 실패도 없었다. 3장의 샘플 검사가
+추출기만 본 것이었다면 이것은 URL 가드와 다운로더까지 포함한 확인이다.
+
 ## 5. 다음
 
 조사 문서 6.2 그대로다. W10 에 붙인 뒤 겹치는 공고를 재분석해 `rule_source_status`
