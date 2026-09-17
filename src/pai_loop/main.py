@@ -5,6 +5,7 @@ import logging
 import asyncio
 from contextlib import suppress
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -79,31 +80,9 @@ def _scrub_private_performance_search_query(request: Request) -> None:
 def create_app(*, database_url: str | None = None, seed_synthetic: bool | None = None) -> FastAPI:
     settings = Settings.from_env(database_url=database_url)
     if seed_synthetic is not None:
-        settings = Settings(
-            environment=settings.environment,
-            database_url=settings.database_url,
-            seed_synthetic=seed_synthetic,
-            cors_origins=settings.cors_origins,
-            log_level=settings.log_level,
-            pai_bot_teams_url=settings.pai_bot_teams_url,
-            api_key=settings.api_key,
-            private_evidence_token=settings.private_evidence_token,
-            public_read_only=settings.public_read_only,
-            department_accounts_enabled=settings.department_accounts_enabled,
-            public_manual_analysis_enabled=settings.public_manual_analysis_enabled,
-            public_manual_analysis_token=settings.public_manual_analysis_token,
-            public_manual_analysis_hourly_limit=settings.public_manual_analysis_hourly_limit,
-            public_manual_analysis_cooldown_hours=settings.public_manual_analysis_cooldown_hours,
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
-            llm_provider=settings.llm_provider,
-            llm_gateway_base_url=settings.llm_gateway_base_url,
-            claude_model=settings.claude_model,
-            pps_api_key=settings.pps_api_key,
-            pps_base_url=settings.pps_base_url,
-            pps_notice_operation=settings.pps_notice_operation,
-            pps_award_operation=settings.pps_award_operation,
-        )
+        # 필드를 하나씩 옮겨 적으면 새 설정이 조용히 기본값으로 떨어진다.
+        # 바꾸려는 것은 seed_synthetic 하나뿐이므로 나머지는 그대로 복제한다.
+        settings = replace(settings, seed_synthetic=seed_synthetic)
     settings.validate_security()
     settings.ensure_local_directories()
     engine = build_engine(settings.database_url)

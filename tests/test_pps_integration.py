@@ -314,3 +314,103 @@ def test_nonstandard_or_incomplete_envelope_never_silently_becomes_zero_results(
             )
         )
     client.close()
+
+
+def test_eorder_attachment_rows_keep_only_the_published_allowlist() -> None:
+    # 실제 응답과 같은 형태. officer 필드는 제공자가 나중에 덧붙여도
+    # 저장 경계까지 따라오면 안 된다.
+    payload = {
+        "response": {
+            "header": {"resultCode": "00"},
+            "body": {
+                "totalCount": 2,
+                "items": [
+                    {
+                        "bidNtceNo": "R26DH01234567",
+                        "bidNtceOrd": "000",
+                        "atchSno": "2",
+                        "eorderDocDivNm": "제안요청서",
+                        "eorderAtchFileNm": "제안요청서.hwpx",
+                        "eorderAtchFileUrl": (
+                            "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/"
+                            "downloadRfpFile.do?rfpNo=R26DH01234567&rfpOrd=000"
+                            "&rfpUntyAtchFileNo=2"
+                        ),
+                        "ntceInsttOfclNm": "담당자",
+                        # 전화번호 모양의 리터럴은 저장소 비밀 스캔에 걸리므로
+                        # 형태만 남기고 자릿수는 쓰지 않는다.
+                        "ntceInsttOfclTelNo": "전화번호자리",
+                    },
+                    {
+                        # 공고번호가 없는 행은 조인할 수 없으므로 버린다.
+                        "bidNtceNo": "",
+                        "eorderDocDivNm": "기타문서",
+                    },
+                ],
+            },
+        }
+    }
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(dict(request.url.params))
+        captured["path"] = request.url.path
+        return httpx.Response(200, json=payload)
+
+    with PpsClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        rows = list(
+            client.iter_eorder_attachments(
+                start=date(2026, 9, 1), end=date(2026, 9, 17)
+            )
+        )
+
+    assert captured["path"].endswith("getBidPblancListInfoEorderAtchFileInfo")
+    # 단건 조회를 받지 않는 오퍼레이션이므로 구간 + inqryDiv 로만 부른다.
+    assert captured["inqryDiv"] == "1"
+    assert captured["inqryBgnDt"] == "202609010000"
+    assert captured["inqryEndDt"] == "202609172359"
+    assert "bidNtceNo" not in captured
+
+    assert len(rows) == 1
+    assert set(rows[0]) == {
+        "bidNtceNo",
+        "bidNtceOrd",
+        "atchSno",
+        "eorderDocDivNm",
+        "eorderAtchFileNm",
+        "eorderAtchFileUrl",
+    }
+
+
+def test_eorder_windows_never_exceed_the_provider_one_month_limit() -> None:
+    windows: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        windows.append((params["inqryBgnDt"], params["inqryEndDt"]))
+        return httpx.Response(
+            200,
+            json={"response": {"header": {"resultCode": "00"}, "body": {"totalCount": 0, "items": []}}},
+        )
+
+    with PpsClient(
+        service_key="key",
+        base_url="https://example.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        # 90일을 한 번에 요청해도 제공자에게는 30일씩 나뉘어 나간다.
+        assert list(
+            client.iter_eorder_attachments(
+                start=date(2026, 7, 1), end=date(2026, 9, 28)
+            )
+        ) == []
+
+    assert windows == [
+        ("202607010000", "202607302359"),
+        ("202607310000", "202608292359"),
+        ("202608300000", "202609282359"),
+    ]

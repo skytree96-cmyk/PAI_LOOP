@@ -71,7 +71,35 @@ G2B_ATTACHMENT_QUERY_KEYS = {
     "fileType",
     "prcmBsneSeCd",
 }
+# 전자주문(제안요청서) 첨부는 같은 호스트의 다른 경로로 내려오고 쿼리 키도
+# 공고 첨부와 겹치지 않는다.  두 경로를 한 집합으로 합치면 한쪽의 필수 키가
+# 다른 쪽에서 선택 키가 되므로, 경로마다 허용 키와 필수 키를 따로 고정한다.
+G2B_RFP_ATTACHMENT_PATH = "/pn/pnp/pnpe/UntyAtchFile/downloadRfpFile.do"
+G2B_RFP_ATTACHMENT_QUERY_KEYS = {
+    "rfpNo",
+    "rfpOrd",
+    "rfpUntyAtchFileNo",
+}
+_G2B_ATTACHMENT_PATH_RULES = {
+    G2B_ATTACHMENT_PATH: (
+        G2B_ATTACHMENT_QUERY_KEYS,
+        frozenset({"bidPbancNo", "fileSeq"}),
+    ),
+    G2B_RFP_ATTACHMENT_PATH: (
+        G2B_RFP_ATTACHMENT_QUERY_KEYS,
+        frozenset({"rfpNo", "rfpUntyAtchFileNo"}),
+    ),
+}
 MAX_ATTACHMENTS_IN_MANIFEST = 10
+# 제안요청서는 공고가 선언한 열 개 슬롯 바깥에서 오므로, 그 슬롯을 밀어내지
+# 않도록 별도 정원을 준다.  다운로드·추출·모델 호출 상한은 아래 기존 상수에
+# 그대로 묶여 있으므로 한 요청의 비용 한도는 이 변경으로 늘어나지 않는다.
+MAX_RFP_ATTACHMENTS_IN_MANIFEST = 2
+MAX_MANIFEST_ATTACHMENTS = (
+    MAX_ATTACHMENTS_IN_MANIFEST + MAX_RFP_ATTACHMENTS_IN_MANIFEST
+)
+# 수집 단계가 공고번호로 조인한 전자주문 첨부 행을 원본 항목에 실어 보낸다.
+EORDER_ATTACHMENT_FIELD = "_eorder_attachments"
 DEFAULT_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 MAX_NOTICE_DOWNLOAD_BYTES = MAX_ATTACHMENTS_IN_MANIFEST * DEFAULT_MAX_DOWNLOAD_BYTES
 MAX_EXTRACTED_DOCUMENT_CHARS = 2_000_000
@@ -357,17 +385,18 @@ def _safe_g2b_attachment_url(value: Any) -> str:
         or parsed.username
         or parsed.password
         or parsed.port not in {None, 443}
-        or parsed.path != G2B_ATTACHMENT_PATH
+        or parsed.path not in _G2B_ATTACHMENT_PATH_RULES
         or parsed.fragment
     ):
         raise PpsEnrichmentError("UNSAFE_ATTACHMENT_URL")
+    allowed_keys, required_keys = _G2B_ATTACHMENT_PATH_RULES[parsed.path]
     pairs = parse_qsl(parsed.query, keep_blank_values=True)
     keys = [key for key, _value in pairs]
     if (
         not pairs
         or len(keys) != len(set(keys))
-        or set(keys) - G2B_ATTACHMENT_QUERY_KEYS
-        or not {"bidPbancNo", "fileSeq"}.issubset(keys)
+        or set(keys) - allowed_keys
+        or not required_keys.issubset(keys)
         or any(
             not _SAFE_QUERY_VALUE.fullmatch(value)
             and not (key == "fileType" and value == "")
@@ -446,7 +475,95 @@ def build_attachment_manifest(raw_item: dict[str, Any]) -> list[dict[str, Any]]:
                 "slot": slot,
             }
         )
+    manifest.extend(
+        _rfp_manifest_entries(
+            raw_item.get(EORDER_ATTACHMENT_FIELD),
+            notice_no=notice_no,
+            revision=revision,
+            seen_ids=seen_ids,
+        )
+    )
     return manifest
+
+
+def _rfp_manifest_entries(
+    rows: Any,
+    *,
+    notice_no: str,
+    revision: str,
+    seen_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Return 전자주문 제안요청서 attachments for the notice-slot manifest.
+
+    The provider publishes these rows through a separate operation, so they
+    carry no ``ntceSpecDocUrl`` slot number.  They are appended after the
+    declared slots and never displace one.  Ordering inside the allowance
+    prefers ``제안요청서`` over ``기타문서``; which attachment is actually read
+    first is still decided by ``_scoring_table_reading_order``.
+    """
+
+    if not isinstance(rows, list):
+        return []
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        document_kind = _clean_text(row.get("eorderDocDivNm"), maximum=60) or ""
+        ranked.append((0 if "제안요청" in document_kind else 1, position, row))
+    ranked.sort(key=lambda entry: (entry[0], entry[1]))
+
+    entries: list[dict[str, Any]] = []
+    for _rank, _position, row in ranked:
+        if len(entries) >= MAX_RFP_ATTACHMENTS_IN_MANIFEST:
+            break
+        # 슬롯 번호는 실제로 담긴 항목 수에서 유도한다.  건너뛴 행이 번호를
+        # 소비하면 manifest 에 구멍이 생긴다.
+        slot = MAX_ATTACHMENTS_IN_MANIFEST + len(entries) + 1
+        raw_url = row.get("eorderAtchFileUrl")
+        raw_name = row.get("eorderAtchFileNm")
+        if not raw_url and not raw_name:
+            continue
+        try:
+            if not raw_url or not raw_name:
+                raise PpsEnrichmentError("ATTACHMENT_METADATA_INCOMPLETE")
+            url = _safe_g2b_attachment_url(raw_url)
+            filename, media_type = _safe_filename(raw_name)
+        except PpsEnrichmentError as exc:
+            # Same rule as a declared slot: an unsafe row stays visible as a
+            # digest so coverage never silently loses a provider document.
+            entries.append(
+                {
+                    "invalid_attachment_slot": slot,
+                    "status": "INVALID",
+                    "error_code": str(exc),
+                    "metadata_sha256": _digest(
+                        {"url": str(raw_url or ""), "name": str(raw_name or "")}
+                    ),
+                }
+            )
+            continue
+        attachment_id = "PPS-ATT-" + _digest(
+            {
+                "notice_no": notice_no,
+                "revision": revision,
+                "source": "EORDER",
+                "attachment_no": _clean_text(row.get("atchSno"), maximum=20) or "",
+                "file_name": filename,
+            }
+        )[:24]
+        if attachment_id in seen_ids:
+            continue
+        seen_ids.add(attachment_id)
+        entries.append(
+            {
+                "attachment_id": attachment_id,
+                "file_name": filename,
+                "media_type": media_type,
+                "url": url,
+                "slot": slot,
+            }
+        )
+    return entries
 
 
 def build_notice_metadata(raw_item: dict[str, Any]) -> dict[str, Any]:
@@ -1225,7 +1342,7 @@ def _manifest_item(value: dict[str, Any]) -> dict[str, Any]:
         raise PpsEnrichmentError("INVALID_ATTACHMENT_MANIFEST")
     url = _safe_g2b_attachment_url(value.get("url"))
     slot = value.get("slot")
-    if not isinstance(slot, int) or not 1 <= slot <= MAX_ATTACHMENTS_IN_MANIFEST:
+    if not isinstance(slot, int) or not 1 <= slot <= MAX_MANIFEST_ATTACHMENTS:
         raise PpsEnrichmentError("INVALID_ATTACHMENT_MANIFEST")
     return {
         "attachment_id": attachment_id,
@@ -1267,12 +1384,13 @@ def _validated_manifest_attachments(
     """Validate every provider-bound manifest slot without silently truncating it."""
 
     validated: list[dict[str, Any]] = []
-    invalid_count = max(0, len(manifest) - MAX_ATTACHMENTS_IN_MANIFEST)
+    invalid_count = max(0, len(manifest) - MAX_MANIFEST_ATTACHMENTS)
     seen_ids: set[str] = set()
-    # PPS exposes exactly ten numbered attachment slots.  The manifest builder
-    # already enforces that provider boundary; slicing here protects legacy or
-    # manually inserted rows without inventing a smaller business cap.
-    for item in manifest[:MAX_ATTACHMENTS_IN_MANIFEST]:
+    # PPS exposes exactly ten numbered attachment slots plus the separately
+    # published 전자주문 제안요청서 rows.  The manifest builder already enforces
+    # that provider boundary; slicing here protects legacy or manually inserted
+    # rows without inventing a smaller business cap.
+    for item in manifest[:MAX_MANIFEST_ATTACHMENTS]:
         try:
             attachment = _manifest_item(item)
         except PpsEnrichmentError:

@@ -14,6 +14,23 @@ import httpx
 from .common import safe_pps_error_metadata
 
 DEFAULT_BASE_URL = "https://apis.data.go.kr/1230000"
+# 배점표는 공고문이 아니라 제안요청서에 실린다.  그 문서는 공고 목록 응답의
+# ``ntceSpecDocUrl*`` 슬롯으로 오지 않고 아래 전자주문 첨부 오퍼레이션으로만
+# 노출된다.  단건(``bidNtceNo``) 조회는 resultCode 08 로 거절되므로 날짜 구간으로
+# 받아 공고번호로 조인한다.  구간 상한은 1개월이다("입력범위값 초과").
+EORDER_ATTACHMENT_OPERATION = (
+    "ad/BidPublicInfoService/getBidPblancListInfoEorderAtchFileInfo"
+)
+EORDER_INQUIRY_DIVISION = "1"
+EORDER_MAX_WINDOW_DAYS = 30
+EORDER_FIELDS = (
+    "bidNtceNo",
+    "bidNtceOrd",
+    "atchSno",
+    "eorderDocDivNm",
+    "eorderAtchFileNm",
+    "eorderAtchFileUrl",
+)
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 SECRET_QUERY_KEYS = {"servicekey", "apikey", "api_key", "key"}
 # Korea has no daylight-saving transition in the procurement periods handled
@@ -352,6 +369,66 @@ class PpsClient:
         extra_params: dict[str, Any] | None = None,
         deadline_monotonic: float | None = None,
     ) -> Iterator[dict[str, Any]]:
+        for item in self.iter_raw_rows(
+            operation_path=operation_path,
+            start=start,
+            end=end,
+            rows=rows,
+            max_window_days=max_window_days,
+            inquiry_division=inquiry_division,
+            max_pages=max_pages,
+            extra_params=extra_params,
+            deadline_monotonic=deadline_monotonic,
+        ):
+            yield normalise_notice(item)
+
+    def iter_eorder_attachments(
+        self,
+        *,
+        start: date,
+        end: date,
+        rows: int = 999,
+        max_pages: int | None = None,
+        deadline_monotonic: float | None = None,
+        operation_path: str = EORDER_ATTACHMENT_OPERATION,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield 전자주문 attachment rows, reduced to the published allowlist.
+
+        The provider returns one row per attachment, not per notice, so the
+        caller joins on ``bidNtceNo``/``bidNtceOrd``.  Only the six documented
+        fields survive; officer names and any other field a future provider
+        revision adds never reach the persistence boundary through here.
+        """
+
+        for item in self.iter_raw_rows(
+            operation_path=operation_path,
+            start=start,
+            end=end,
+            rows=rows,
+            max_window_days=EORDER_MAX_WINDOW_DAYS,
+            inquiry_division=EORDER_INQUIRY_DIVISION,
+            max_pages=max_pages,
+            deadline_monotonic=deadline_monotonic,
+        ):
+            reduced = {
+                field: item[field] for field in EORDER_FIELDS if field in item
+            }
+            if reduced.get("bidNtceNo"):
+                yield reduced
+
+    def iter_raw_rows(
+        self,
+        *,
+        operation_path: str,
+        start: date,
+        end: date,
+        rows: int = 100,
+        max_window_days: int = 30,
+        inquiry_division: str = "1",
+        max_pages: int | None = None,
+        extra_params: dict[str, Any] | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
         if not 1 <= rows <= 999:
             raise ValueError("rows must be between 1 and 999")
         if max_pages is not None and max_pages < 1:
@@ -380,7 +457,7 @@ class PpsClient:
                 )
                 raw_items, total = parse_paged_response(payload)
                 for item in raw_items:
-                    yield normalise_notice(item)
+                    yield item
                 if page * rows >= total or not raw_items:
                     break
                 if max_pages is not None and page >= max_pages:

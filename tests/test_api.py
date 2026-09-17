@@ -81,6 +81,128 @@ class _BrokenPpsClient(_FakePpsClient):
         yield  # pragma: no cover
 
 
+class _EorderAttachmentPpsClient(_FakePpsClient):
+    """공고 첨부 슬롯은 비어 있고 제안요청서만 전자주문으로 오는 실제 형태."""
+
+    def iter_notices(self, **_kwargs: object):
+        for item in super().iter_notices():
+            yield {**item, "raw": {"contact": "discarded"}}
+
+    def iter_eorder_attachments(self, **_kwargs: object):
+        yield {
+            "bidNtceNo": "20260816001",
+            # 제공자의 실제 차수는 세 자리다.
+            "bidNtceOrd": "000",
+            "atchSno": "2",
+            "eorderDocDivNm": "제안요청서",
+            "eorderAtchFileNm": "제안요청서.hwpx",
+            "eorderAtchFileUrl": (
+                "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadRfpFile.do"
+                "?rfpNo=R26DH01234567&rfpOrd=000&rfpUntyAtchFileNo=2"
+            ),
+        }
+        yield {
+            "bidNtceNo": "20260816999",
+            "bidNtceOrd": "000",
+            "atchSno": "1",
+            "eorderDocDivNm": "제안요청서",
+            "eorderAtchFileNm": "다른공고.hwpx",
+            "eorderAtchFileUrl": (
+                "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadRfpFile.do"
+                "?rfpNo=R26DH07654321&rfpOrd=000&rfpUntyAtchFileNo=1"
+            ),
+        }
+
+
+def test_ingestion_joins_eorder_proposal_request_to_the_matching_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setenv("PAI_LOOP_EORDER_RFP_ATTACHMENTS_ENABLED", "true")
+    monkeypatch.setattr("pai_loop.api.PpsClient", _EorderAttachmentPpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with internal_server_client(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-16",
+                "keyword": "연수",
+                "page_size": 100,
+                "max_pages": 2,
+                "dry_run": False,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["created"] == 1
+        with live_client.app.state.session_factory() as session:
+            version = next(
+                item
+                for item in session.scalars(select(NoticeVersion)).all()
+                if isinstance(item.source_payload, dict)
+                and item.source_payload.get("kind") == PPS_METADATA_KIND
+            )
+            manifest = version.source_payload["attachment_manifest"]
+
+    # 공고 첨부 슬롯이 하나도 없어도 제안요청서는 manifest 에 들어온다.
+    assert [item["file_name"] for item in manifest] == ["제안요청서.hwpx"]
+    assert manifest[0]["slot"] == 11
+    # 다른 공고번호의 행은 조인되지 않는다.
+    assert all("다른공고" not in item["file_name"] for item in manifest)
+
+
+def test_eorder_join_matches_revisions_across_zero_padding_widths() -> None:
+    """공고 목록은 차수를 두 자리로, 전자주문은 세 자리로 준다.
+
+    문자열로 그대로 맞추면 제공자가 자릿수를 바꾸는 순간 조인이 조용히 전부
+    실패한다. 실패가 눈에 보이지 않는 종류라 회귀로 고정한다.
+    """
+
+    from pai_loop.api import _revision_key
+
+    assert _revision_key("00") == _revision_key("000") == _revision_key(0)
+    assert _revision_key("01") == _revision_key("001") == _revision_key("1")
+    assert _revision_key("002") != _revision_key("001")
+    # 숫자가 아니면 손대지 않는다.
+    assert _revision_key("") == ""
+    assert _revision_key(None) == ""
+    assert _revision_key("A1") == "A1"
+
+
+def test_eorder_join_is_off_until_explicitly_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """켜면 그 공고의 기존 첨부까지 다시 유료로 읽힌다. 기본값은 꺼짐이어야 한다."""
+
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.delenv("PAI_LOOP_EORDER_RFP_ATTACHMENTS_ENABLED", raising=False)
+    monkeypatch.setattr("pai_loop.api.PpsClient", _EorderAttachmentPpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with internal_server_client(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={
+                "from_date": "2026-08-16",
+                "to_date": "2026-08-16",
+                "keyword": "연수",
+                "page_size": 100,
+                "max_pages": 2,
+                "dry_run": False,
+            },
+        )
+        assert response.status_code == 200
+        with live_client.app.state.session_factory() as session:
+            version = next(
+                item
+                for item in session.scalars(select(NoticeVersion)).all()
+                if isinstance(item.source_payload, dict)
+                and item.source_payload.get("kind") == PPS_METADATA_KIND
+            )
+            manifest = version.source_payload["attachment_manifest"]
+
+    assert manifest == []
+
+
 class _PageLimitedPpsClient(_FakePpsClient):
     def iter_notices(self, **kwargs: object):
         self.hit_page_limit = True
