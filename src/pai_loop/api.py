@@ -75,26 +75,6 @@ from .notice_freshness import (
     latest_current_analysis_run,
     latest_current_evaluation,
 )
-
-# 한 수집 요청이 조인해 들고 있을 전자주문 첨부의 상한.  구간 전체를 메모리에
-# 쌓지 않기 위한 경계이며, 초과분은 잘렸음을 표시하고 버린다.
-MAX_EORDER_NOTICES_PER_INGESTION = 5000
-MAX_EORDER_ROWS_PER_NOTICE = 4
-
-
-def _revision_key(value: object) -> str:
-    """차수를 자릿수와 무관하게 비교한다.
-
-    공고 목록은 차수를 두 자리로 채우고(`normalise_notice`) 전자주문 응답은 세
-    자리로 준다("000").  둘을 문자열로 그대로 맞추면 제공자가 자릿수를 바꾸는
-    순간 조인이 조용히 전부 실패한다.  앞의 0 만 떼고 비교한다.
-    """
-
-    # ``value or ""`` 를 쓰면 정수 0 이 falsy 라서 빈 문자열이 된다.
-    text = "" if value is None else str(value).strip()
-    if not text.isdigit():
-        return text
-    return text.lstrip("0") or "0"
 from .pps_enrichment import (
     EORDER_ATTACHMENT_FIELD,
     PPS_ATTACHMENT_SOURCE,
@@ -141,6 +121,27 @@ from .schemas import (
     TeamsMockNotificationCreate,
     TeamsMockNotificationOut,
 )
+
+# 한 수집 요청이 조인해 들고 있을 전자주문 첨부의 상한.  구간 전체를 메모리에
+# 쌓지 않기 위한 경계이며, 초과분은 잘렸음을 표시하고 버린다.
+MAX_EORDER_NOTICES_PER_INGESTION = 5000
+MAX_EORDER_ROWS_PER_NOTICE = 4
+
+
+def _revision_key(value: object) -> str:
+    """차수를 자릿수와 무관하게 비교한다.
+
+    공고 목록은 차수를 두 자리로 채우고(`normalise_notice`) 전자주문 응답은 세
+    자리로 준다("000").  둘을 문자열로 그대로 맞추면 제공자가 자릿수를 바꾸는
+    순간 조인이 조용히 전부 실패한다.  앞의 0 만 떼고 비교한다.
+    """
+
+    # ``value or ""`` 를 쓰면 정수 0 이 falsy 라서 빈 문자열이 된다.
+    text = "" if value is None else str(value).strip()
+    if not text.isdigit():
+        return text
+    return text.lstrip("0") or "0"
+
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
 
