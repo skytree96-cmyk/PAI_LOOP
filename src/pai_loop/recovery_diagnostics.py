@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import load_only, raiseload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from .manifest_bounds import MAX_MANIFEST_ATTACHMENTS
 from .extraction_contracts import classify_attempt_header
 from .gateway_diagnostics import GatewayFailure, safe_gateway_failure
 from .manual_analysis import _quantitative_diagnostics
@@ -53,7 +54,7 @@ class RecoveryDiagnosticRequest(DiagnosticModel):
 
 
 class AttachmentDiagnostic(DiagnosticModel):
-    ordinal: int = Field(ge=1, le=10)
+    ordinal: int = Field(ge=1, le=MAX_MANIFEST_ATTACHMENTS)
     extension: str | None
     state: Literal["ANALYZED", "REVIEW", "PENDING"]
     public_reason_code: str

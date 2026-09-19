@@ -90,13 +90,15 @@ _G2B_ATTACHMENT_PATH_RULES = {
         frozenset({"rfpNo", "rfpUntyAtchFileNo"}),
     ),
 }
-MAX_ATTACHMENTS_IN_MANIFEST = 10
-# 제안요청서는 공고가 선언한 열 개 슬롯 바깥에서 오므로, 그 슬롯을 밀어내지
-# 않도록 별도 정원을 준다.  다운로드·추출·모델 호출 상한은 아래 기존 상수에
-# 그대로 묶여 있으므로 한 요청의 비용 한도는 이 변경으로 늘어나지 않는다.
-MAX_RFP_ATTACHMENTS_IN_MANIFEST = 2
-MAX_MANIFEST_ATTACHMENTS = (
-    MAX_ATTACHMENTS_IN_MANIFEST + MAX_RFP_ATTACHMENTS_IN_MANIFEST
+# 정원은 `manifest_bounds` 가 소유한다.  응답 스키마도 같은 값을 보아야 하는데
+# 이 모듈은 무거워서 스키마 쪽에서 import 할 수 없기 때문이다.  기존 import 를
+# 깨지 않도록 여기서 그대로 다시 내보낸다.
+# 다운로드·추출·모델 호출 상한은 아래에서 MAX_ATTACHMENTS_IN_MANIFEST 에 묶여
+# 있으므로 제안요청서 정원이 늘어도 한 요청의 비용 한도는 변하지 않는다.
+from .manifest_bounds import (  # noqa: F401  (재내보내기)
+    MAX_ATTACHMENTS_IN_MANIFEST,
+    MAX_MANIFEST_ATTACHMENTS,
+    MAX_RFP_ATTACHMENTS_IN_MANIFEST,
 )
 # 수집 단계가 공고번호로 조인한 전자주문 첨부 행을 원본 항목에 실어 보낸다.
 EORDER_ATTACHMENT_FIELD = "_eorder_attachments"
