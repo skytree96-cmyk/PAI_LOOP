@@ -14,6 +14,7 @@ from pydantic import (
 
 from .enums import AtomicOperator, DecisionChoice, Eligibility, EvidenceStatus, ReadinessStatus, RiskBand
 from .integrations.common import PpsErrorType
+from .manifest_bounds import MAX_ATTACHMENT_STATUS_ROWS, MAX_MANIFEST_ATTACHMENTS
 
 
 class ApiModel(BaseModel):
@@ -250,9 +251,9 @@ class NoticeSummary(ApiModel):
         "NOT_SELECTED",
     ]
     analysis_reason: str
-    analysis_attachment_count: int = Field(default=0, ge=0, le=10)
-    analysis_attachments_audited: int = Field(default=0, ge=0, le=10)
-    analysis_attachments_accepted: int = Field(default=0, ge=0, le=10)
+    analysis_attachment_count: int = Field(default=0, ge=0, le=MAX_MANIFEST_ATTACHMENTS)
+    analysis_attachments_audited: int = Field(default=0, ge=0, le=MAX_MANIFEST_ATTACHMENTS)
+    analysis_attachments_accepted: int = Field(default=0, ge=0, le=MAX_MANIFEST_ATTACHMENTS)
     analysis_attachment_coverage_complete: bool = False
     analysis_attempted: bool = False
     has_bid_outcome: bool = Field(
@@ -495,12 +496,9 @@ class NoticeDetail(NoticeSummary):
     requirements: list[dict[str, Any]]
     decisions: list[DecisionOut]
     document_analyses: list[dict[str, Any]] = Field(default_factory=list)
-    # manifest 정원(공고 슬롯 10 + 제안요청서 2) 전부에 더해, 검증에 실패한
-    # 항목이 있을 때 붙는 "첨부 목록 확인 필요" 행 한 개까지 담아야 한다.
-    # pps_enrichment.MAX_MANIFEST_ATTACHMENTS 와 어긋나면 공고 상세 응답이
-    # 검증에서 막히므로 test_notice_detail_status_cap_covers_the_manifest 가
-    # 둘을 묶어 둔다.
-    attachment_analysis_statuses: list[AttachmentAnalysisStatusOut] = Field(default_factory=list, max_length=13)
+    attachment_analysis_statuses: list[AttachmentAnalysisStatusOut] = Field(
+        default_factory=list, max_length=MAX_ATTACHMENT_STATUS_ROWS
+    )
     award_history: list[AwardHistoryItemOut] = Field(default_factory=list)
 
 

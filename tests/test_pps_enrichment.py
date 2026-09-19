@@ -3028,6 +3028,68 @@ def test_proposal_request_is_read_before_the_notice_document() -> None:
     assert ordered[0]["file_name"] == "제안요청서.hwpx"
 
 
+def test_no_response_bound_is_left_behind_when_the_manifest_grows() -> None:
+    """manifest 정원에 묶인 응답 상한이 하나라도 뒤처지면 500 이 난다.
+
+    #176 에서 제안요청서 정원을 더했을 때 상태 목록 상한만 올리고 요약의 첨부
+    개수 상한 세 개와 복구 진단의 ordinal 을 놓쳤다. 첨부가 11개가 된 실제 공고에서
+    `NoticeSummary` 검증이 깨져 공고 상세가 500 이 됐다. 같은 종류가 다시 생기지
+    않도록 전부 한 곳에 묶어 확인한다.
+    """
+
+    from pai_loop.manifest_bounds import (
+        MAX_ATTACHMENT_STATUS_ROWS,
+        MAX_MANIFEST_ATTACHMENTS,
+    )
+    from pai_loop.recovery_diagnostics import AttachmentDiagnostic
+    from pai_loop.schemas import NoticeSummary
+
+    def upper_bound(model, field_name):
+        meta = model.model_fields[field_name].metadata
+        return next(
+            getattr(item, "le", None) or getattr(item, "max_length", None)
+            for item in meta
+            if getattr(item, "le", None) is not None
+            or getattr(item, "max_length", None) is not None
+        )
+
+    for field in (
+        "analysis_attachment_count",
+        "analysis_attachments_audited",
+        "analysis_attachments_accepted",
+    ):
+        assert upper_bound(NoticeSummary, field) >= MAX_MANIFEST_ATTACHMENTS, field
+    assert upper_bound(AttachmentDiagnostic, "ordinal") >= MAX_MANIFEST_ATTACHMENTS
+    assert MAX_ATTACHMENT_STATUS_ROWS == MAX_MANIFEST_ATTACHMENTS + 1
+
+
+def test_a_full_manifest_notice_summary_validates() -> None:
+    """정원을 가득 채운 공고가 실제로 요약 응답을 통과하는지 본다."""
+
+    from pai_loop.manifest_bounds import MAX_MANIFEST_ATTACHMENTS
+    from pai_loop.schemas import NoticeSummary
+
+    summary = NoticeSummary(
+        notice_key="PPS-SYN-000-full",
+        bid_notice_no="SYN",
+        revision_no="000",
+        title="합성 공고",
+        agency="합성 기관",
+        deadline=datetime(2026, 12, 31, 17, 0, tzinfo=timezone.utc),
+        status="OPEN",
+        estimated_amount=None,
+        source_kind="PPS",
+        ingestion_state="VERSIONED",
+        analysis_state="ANALYZED",
+        analysis_reason_code="ANALYZED",
+        analysis_reason="합성",
+        analysis_attachment_count=MAX_MANIFEST_ATTACHMENTS,
+        analysis_attachments_audited=MAX_MANIFEST_ATTACHMENTS,
+        analysis_attachments_accepted=MAX_MANIFEST_ATTACHMENTS,
+    )
+    assert summary.analysis_attachment_count == MAX_MANIFEST_ATTACHMENTS
+
+
 def test_notice_detail_status_cap_covers_the_manifest() -> None:
     """공고 상세의 첨부 상태 목록 상한이 manifest 정원을 덮어야 한다.
 
@@ -3038,7 +3100,7 @@ def test_notice_detail_status_cap_covers_the_manifest() -> None:
     """
 
     from pai_loop.schemas import NoticeDetail
-    from pai_loop.pps_enrichment import MAX_MANIFEST_ATTACHMENTS
+    from pai_loop.manifest_bounds import MAX_MANIFEST_ATTACHMENTS
 
     field = NoticeDetail.model_fields["attachment_analysis_statuses"]
     cap = next(
@@ -3055,7 +3117,7 @@ def test_full_manifest_with_an_invalid_row_produces_a_serialisable_status_list()
     """정원을 가득 채운 manifest 가 실제로 응답 모델을 통과하는지 본다."""
 
     from pai_loop.schemas import AttachmentAnalysisStatusOut
-    from pai_loop.pps_enrichment import MAX_MANIFEST_ATTACHMENTS
+    from pai_loop.manifest_bounds import MAX_MANIFEST_ATTACHMENTS
 
     rows = [
         {
