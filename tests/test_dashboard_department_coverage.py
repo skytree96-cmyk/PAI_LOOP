@@ -95,3 +95,34 @@ def test_department_coverage_is_readable_in_public_read_only_mode(client):
     # The public projection carries no company fact or evidence identifier.
     assert "company" not in response.text
     assert "evidence" not in response.text
+
+
+def test_selection_inside_scope_never_exceeds_the_matched_funnel(client):
+    """The merged bar stacks collect → evaluate → recommend → select.
+
+    A department may also select a notice its keywords never matched. That
+    surplus must stay out of the scoped count so no stage overflows the stage
+    that contains it, while the all-time count keeps reporting it.
+    """
+
+    with client.app.state.session_factory() as session:
+        matched = _notice(session, "funnel-matched", "초중고 AI 디지털교육 사업", evaluated=True)
+        unmatched = _notice(session, "funnel-unmatched", "도로 포장 보수 공사")
+        session.flush()
+        for notice in (matched, unmatched):
+            session.add(UserDecision(
+                notice_id=notice.id, choice="GO", rationale="SYN 근거",
+                department_id="future-ai-education", department_name="AI미래교육본부",
+                department_revision=1,
+            ))
+        session.commit()
+
+    row = next(
+        item
+        for item in client.get("/api/v1/dashboard/departments").json()["departments"]
+        if item["department_id"] == "future-ai-education"
+    )
+    assert row["matched_count"] == 1
+    assert row["selected_matched_count"] == 1
+    assert row["selected_count"] == 2  # The unmatched selection is still reported.
+    assert row["selected_matched_count"] <= row["matched_count"]

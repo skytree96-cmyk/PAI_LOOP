@@ -4501,6 +4501,16 @@
     }
   }
 
+  // One row per department, one bar per row: the funnel a notice travels.
+  // Four steps of a single hue, darkest last, so the stages read in order and
+  // stay distinguishable by lightness alone.
+  const COVERAGE_STAGES = [
+    { key: "selected", label: "선택" },
+    { key: "recommended", label: "추천 · 미선택" },
+    { key: "evaluated", label: "평가 · 미추천" },
+    { key: "collected", label: "수집만" },
+  ];
+
   async function loadDepartmentCoverage({ force = false } = {}) {
     // Coverage is a second, heavier read: it ranks every actionable notice
     // against every department. Load it once per session unless asked again.
@@ -4528,17 +4538,74 @@
     renderDepartmentCoverage();
   }
 
-  function coverageBar(ratio, { thin = false } = {}) {
-    const track = document.createElement("span");
-    track.className = thin ? "coverage-bar coverage-bar--thin" : "coverage-bar";
-    const fill = document.createElement("span");
-    fill.className = "coverage-bar__fill";
-    fill.style.width = `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
-    track.append(fill);
-    return track;
+  function coverageStageCounts(row) {
+    // Each stage contains the next one, so a segment is the difference. Clamp
+    // every step: a department may select a notice its keywords never matched,
+    // and that surplus is reported in text instead of overflowing the bar.
+    const matched = Math.max(0, numberOrNull(row.matched_count) ?? 0);
+    const evaluated = Math.min(matched, Math.max(0, numberOrNull(row.evaluated_count) ?? 0));
+    const recommended = Math.min(matched, Math.max(0, numberOrNull(row.recommended_count) ?? 0));
+    const selectedInScope = numberOrNull(row.selected_matched_count);
+    const selected = Math.min(
+      recommended || matched,
+      Math.max(0, selectedInScope ?? numberOrNull(row.selected_count) ?? 0),
+    );
+    return {
+      matched,
+      selected,
+      recommended: Math.max(0, recommended - selected),
+      evaluated: Math.max(0, evaluated - Math.max(recommended, selected)),
+      collected: Math.max(0, matched - Math.max(evaluated, recommended, selected)),
+      totals: {
+        evaluated,
+        recommended,
+        selected,
+        selectedAll: numberOrNull(row.selected_count) ?? 0,
+      },
+    };
   }
 
-  function renderCoverageKeywordRow(row, maxMatched) {
+  function coverageFunnelBar(row, maxMatched) {
+    const counts = coverageStageCounts(row);
+    const bar = document.createElement("span");
+    bar.className = "coverage-funnel";
+    const scale = counts.matched / maxMatched;
+    for (const stage of COVERAGE_STAGES) {
+      const value = counts[stage.key];
+      if (!value) continue;
+      const segment = document.createElement("span");
+      segment.className = `coverage-funnel__step coverage-funnel__step--${stage.key}`;
+      segment.style.width = `${(value / counts.matched) * 100 * scale}%`;
+      segment.title = `${stage.label} ${formatNumber(value)}건`;
+      bar.append(segment);
+    }
+    if (!counts.matched) {
+      const empty = document.createElement("span");
+      empty.className = "coverage-funnel__step coverage-funnel__step--none";
+      bar.append(empty);
+    }
+    return bar;
+  }
+
+  function coverageRowSummary(row) {
+    const counts = coverageStageCounts(row);
+    const rate = row.selection_rate === null || row.selection_rate === undefined
+      ? null : Math.round(row.selection_rate * 100);
+    const parts = [
+      `수집 ${formatNumber(counts.matched)}`,
+      `평가 ${formatNumber(counts.totals.evaluated)}`,
+      `추천 ${formatNumber(counts.totals.recommended)}`,
+      `선택 ${formatNumber(counts.totals.selectedAll)}`,
+    ];
+    if (rate !== null) parts.push(`선택률 ${rate}%`);
+    if (counts.totals.selectedAll > counts.selected) {
+      // Say it rather than draw it: the surplus is outside this scope.
+      parts.push(`이 중 ${formatNumber(counts.totals.selectedAll - counts.selected)}건은 매칭 밖`);
+    }
+    return parts.join(" · ");
+  }
+
+  function renderCoverageRow(row, maxMatched) {
     const item = document.createElement("li");
     item.className = "coverage-row";
     const open = state.departmentCoverage.openDepartmentId === row.department_id;
@@ -4554,13 +4621,12 @@
     keywords.className = "coverage-row__keywords";
     const matchedKeywords = (row.keywords || []).filter((entry) => entry.count > 0);
     keywords.textContent = matchedKeywords.length
-      ? matchedKeywords.slice(0, 4).map((entry) => entry.keyword).join(" · ")
+      ? matchedKeywords.slice(0, 3).map((entry) => entry.keyword).join(" · ")
       : "일치한 등록 키워드 없음";
-    const count = document.createElement("b");
-    count.textContent = `${formatNumber(row.matched_count)}건`;
-    const evaluated = document.createElement("small");
-    evaluated.textContent = `평가 ${formatNumber(row.evaluated_count)}건`;
-    button.append(name, keywords, coverageBar((row.matched_count || 0) / maxMatched), count, evaluated);
+    const summary = document.createElement("small");
+    summary.className = "coverage-row__summary";
+    summary.textContent = coverageRowSummary(row);
+    button.append(name, keywords, coverageFunnelBar(row, maxMatched), summary);
     item.append(button);
     if (!open) return item;
     const detail = document.createElement("ul");
@@ -4571,39 +4637,18 @@
       line.className = entry.count > 0 ? "coverage-detail__row" : "coverage-detail__row is-empty";
       const label = document.createElement("span");
       label.textContent = entry.keyword;
+      const track = document.createElement("span");
+      track.className = "coverage-bar coverage-bar--thin";
+      const fill = document.createElement("span");
+      fill.className = "coverage-bar__fill";
+      fill.style.width = `${Math.round((entry.count / maxKeyword) * 100)}%`;
+      track.append(fill);
       const value = document.createElement("b");
       value.textContent = formatNumber(entry.count);
-      line.append(label, coverageBar(entry.count / maxKeyword, { thin: true }), value);
+      line.append(label, track, value);
       return line;
     }));
     item.append(detail);
-    return item;
-  }
-
-  function renderCoverageSelectionRow(row, maxRecommended) {
-    const item = document.createElement("li");
-    item.className = "coverage-row coverage-row--selection";
-    const name = document.createElement("span");
-    name.className = "coverage-row__name";
-    name.textContent = row.department_name;
-    const bar = document.createElement("span");
-    bar.className = "coverage-split";
-    const recommended = numberOrNull(row.recommended_count) ?? 0;
-    // A department can select a notice its keywords never recommended, so the
-    // chosen part is clamped instead of overflowing the recommended bar.
-    const chosen = Math.min(numberOrNull(row.selected_count) ?? 0, recommended);
-    const selected = document.createElement("span");
-    selected.className = "coverage-split__selected";
-    selected.style.width = `${Math.round((chosen / maxRecommended) * 100)}%`;
-    const rest = document.createElement("span");
-    rest.className = "coverage-split__rest";
-    rest.style.width = `${Math.round(((recommended - chosen) / maxRecommended) * 100)}%`;
-    bar.append(selected, rest);
-    const value = document.createElement("b");
-    const rate = row.selection_rate === null || row.selection_rate === undefined
-      ? "—" : `${Math.round(row.selection_rate * 100)}%`;
-    value.textContent = `${formatNumber(row.selected_count)}건 · 선택률 ${rate}`;
-    item.append(name, bar, value);
     return item;
   }
 
@@ -4611,8 +4656,7 @@
     const section = document.getElementById("departmentCoverage");
     if (!section) return;
     const status = document.getElementById("departmentCoverageStatus");
-    const keywordList = document.getElementById("departmentCoverageKeywords");
-    const selectionList = document.getElementById("departmentCoverageSelection");
+    const list = document.getElementById("departmentCoverageKeywords");
     const retry = document.getElementById("departmentCoverageRetry");
     const { status: readState, data } = state.departmentCoverage;
     if (retry) {
@@ -4621,27 +4665,21 @@
     }
     if (status) {
       status.textContent = readState === "loading"
-        ? "부서·키워드 수집 현황을 집계하고 있습니다."
+        ? "부서별 수집·선택 현황을 집계하고 있습니다."
         : readState === "error"
         ? "집계를 조회하지 못했습니다. 다시 조회로 확인해 주세요."
         : data
         ? `활성 공고 ${formatNumber(data.notice_count)}건 기준 · 평가 완료 ${formatNumber(data.evaluated_notice_count)}건 · 키워드 프로필 ${data.profile_version}`
         : "집계 조회 대기";
     }
-    if (!keywordList || !selectionList) return;
+    if (!list) return;
     const rows = readState === "ready" && data && Array.isArray(data.departments) ? data.departments : [];
     if (!rows.length) {
-      keywordList.replaceChildren();
-      selectionList.replaceChildren();
+      list.replaceChildren();
       return;
     }
     const maxMatched = Math.max(1, ...rows.map((row) => numberOrNull(row.matched_count) ?? 0));
-    keywordList.replaceChildren(...rows.map((row) => renderCoverageKeywordRow(row, maxMatched)));
-    const selectionRows = rows.slice().sort(
-      (a, b) => (numberOrNull(b.selected_count) ?? 0) - (numberOrNull(a.selected_count) ?? 0),
-    );
-    const maxRecommended = Math.max(1, ...selectionRows.map((row) => numberOrNull(row.recommended_count) ?? 0));
-    selectionList.replaceChildren(...selectionRows.map((row) => renderCoverageSelectionRow(row, maxRecommended)));
+    list.replaceChildren(...rows.map((row) => renderCoverageRow(row, maxMatched)));
   }
 
   function dashboardShare(count, total) {

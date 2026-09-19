@@ -158,13 +158,13 @@
           <section class="hero hero--work" id="opportunityHero" aria-labelledby="heroTitle">
             <div>
               <span class="eyebrow"><span aria-hidden="true">●</span> 공고 대시보드</span>
-              <h2 id="heroTitle">전체 공고의 흐름을 한눈에.</h2>
-              <p>전체 수집 공고를 기준으로 업무 현황과 부서별 관심 공고를 확인하세요.</p>
+              <h2 id="heroTitle">오늘 처리할 일부터.</h2>
+              <p>종료·취소를 제외한 활성 공고 기준입니다. 판단 대기부터 결과 입력까지 순서대로 확인하세요.</p>
             </div>
-            <button class="dashboard-total" type="button" data-dashboard-total-link aria-label="전체 수집 공고 보기">
-              <span>전체 수집 공고</span>
+            <button class="dashboard-total" type="button" data-dashboard-total-link aria-label="활성 공고 보기">
+              <span>활성 공고</span>
               <span class="dashboard-total__value"><strong id="dashboardTotalNotices">—</strong><span>건</span></span>
-              <small id="dashboardTotalMeta">아래 지표의 공통 기준</small>
+              <small id="dashboardTotalMeta">종료·취소 제외 · 업무 카드의 공통 분모</small>
             </button>
           </section>
 
@@ -224,17 +224,18 @@
 
             <section class="department-coverage" id="departmentCoverage" aria-labelledby="departmentCoverageTitle">
               <div class="department-coverage__head">
-                <h3 id="departmentCoverageTitle">부서·키워드별 수집 현황</h3>
+                <h3 id="departmentCoverageTitle">부서별 수집 · 선택 현황</h3>
                 <p id="departmentCoverageStatus">집계 조회 대기</p>
                 <button class="button button--secondary" type="button" id="departmentCoverageRetry" hidden>다시 조회</button>
               </div>
-              <ol class="coverage-list" id="departmentCoverageKeywords" aria-label="부서별 매칭 공고 수"></ol>
-              <h4 class="department-coverage__subtitle">부서별 선택 현황</h4>
-              <p class="department-coverage__legend">
-                <span class="legend-dot legend-dot--selected" aria-hidden="true"></span>선택
-                <span class="legend-dot legend-dot--rest" aria-hidden="true"></span>추천 · 미선택
+              <p class="coverage-legend">
+                <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--selected" aria-hidden="true"></span>선택</span>
+                <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--recommended" aria-hidden="true"></span>추천 · 미선택</span>
+                <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--evaluated" aria-hidden="true"></span>평가 · 미추천</span>
+                <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--collected" aria-hidden="true"></span>수집만</span>
+                <span class="coverage-legend__note">막대 전체 길이는 그 부서 키워드가 가져온 공고 수입니다. 행을 선택하면 키워드별 건수가 펼쳐집니다.</span>
               </p>
-              <ol class="coverage-list coverage-list--selection" id="departmentCoverageSelection" aria-label="부서별 선택 공고 수"></ol>
+              <ol class="coverage-list" id="departmentCoverageKeywords" aria-label="부서별 수집·평가·추천·선택 현황"></ol>
             </section>
 
             <section class="department-dashboard" aria-labelledby="departmentDashboardTitle">
