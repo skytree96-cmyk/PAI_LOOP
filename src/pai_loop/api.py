@@ -1459,6 +1459,117 @@ def dashboard(
     }
 
 
+@router.get("/dashboard/departments")
+def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any]:
+    """Report which keyword brought in which notice, and who took it.
+
+    Coverage is counted over notices a department can still act on, so ended
+    and cancelled notices never inflate a keyword. Registered keywords with no
+    match stay in the response at zero: an unused keyword is the finding.
+    Selection keeps the dashboard's existing scope so a department's recorded
+    choice survives the notice closing.
+    """
+
+    now = datetime.now(timezone.utc)
+    notices = list(
+        session.scalars(
+            select(Notice)
+            .where(Notice.status == "OPEN", Notice.deadline >= now)
+            .options(
+                load_only(
+                    Notice.id, Notice.notice_key, Notice.bid_notice_no, Notice.revision_no,
+                    Notice.title, Notice.agency, Notice.category, Notice.status,
+                    Notice.deadline, raiseload=True,
+                )
+            )
+        ).all()
+    )
+    authorities = _pps_authorities_by_notice_id(session, notices)
+    actionable: list[tuple[str, str, str, str]] = []
+    for notice in notices:
+        provider_disposition, _event_kind, _changed_at = _safe_provider_authority_projection(
+            source_kind=_source_kind(notice),
+            authority=authorities.get(notice.id),
+        )
+        if provider_disposition == "CANCELLED":
+            continue
+        actionable.append(
+            (notice.id, notice.title, notice.agency or "", notice.category or "")
+        )
+    actionable_ids = [item[0] for item in actionable]
+    evaluated_ids = set()
+    for offset in range(0, len(actionable_ids), _NOTICE_SUMMARY_BATCH_SIZE):
+        evaluated_ids.update(
+            session.scalars(
+                select(Evaluation.notice_id).where(
+                    Evaluation.notice_id.in_(
+                        actionable_ids[offset : offset + _NOTICE_SUMMARY_BATCH_SIZE]
+                    )
+                ).distinct()
+            ).all()
+        )
+
+    catalog = load_department_keyword_profiles()
+    departments: list[dict[str, Any]] = []
+    for profile in catalog["departments"]:
+        registered = [*profile["strong_keywords"], *profile["supporting_keywords"]]
+        keyword_counts = {keyword: 0 for keyword in registered}
+        matched_count = 0
+        evaluated_count = 0
+        recommended_count = 0
+        for notice_id, title, agency, category in actionable:
+            ranking = rank_notice_for_department(
+                title=title, agency=agency, category=category, department_id=profile["id"],
+            )
+            matched = [
+                *ranking["matched_department_keywords"],
+                *ranking["matched_regions"],
+            ]
+            if not matched:
+                continue
+            matched_count += 1
+            evaluated_count += int(notice_id in evaluated_ids)
+            recommended_count += int(
+                ranking["recommendation_tier"] in {"TOP", "ROUTING"}
+            )
+            for keyword in matched:
+                if keyword in keyword_counts:
+                    keyword_counts[keyword] += 1
+        _decided, go_ids = _department_decision_index(session, department=profile)
+        departments.append(
+            {
+                "department_id": profile["id"],
+                "department_name": profile["name"],
+                "group": profile.get("group") or "전사",
+                "matched_count": matched_count,
+                "evaluated_count": evaluated_count,
+                "recommended_count": recommended_count,
+                "selected_count": len(go_ids),
+                "selection_rate": (
+                    len(go_ids) / recommended_count if recommended_count else None
+                ),
+                "keywords": sorted(
+                    (
+                        {"keyword": keyword, "count": count}
+                        for keyword, count in keyword_counts.items()
+                    ),
+                    key=lambda item: (-item["count"], item["keyword"]),
+                ),
+            }
+        )
+    departments.sort(key=lambda item: (-item["matched_count"], item["department_name"]))
+    return {
+        "generated_at": now.isoformat().replace("+00:00", "Z"),
+        "profile_version": catalog["version"],
+        "scope": "OPEN_NOT_CANCELLED",
+        "notice_count": len(actionable),
+        "evaluated_notice_count": len(evaluated_ids),
+        "selection_scope": "ALL_STORED_NOTICES",
+        "selection_definition": "LATEST_DEPARTMENT_GO_OR_CONDITIONAL_GO",
+        "departments": departments,
+    }
+
+
 @router.get("/runtime-profile")
 def runtime_profile(request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
