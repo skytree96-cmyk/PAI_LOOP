@@ -521,10 +521,17 @@ def _rfp_manifest_entries(
         slot = MAX_ATTACHMENTS_IN_MANIFEST + len(entries) + 1
         raw_url = row.get("eorderAtchFileUrl")
         raw_name = row.get("eorderAtchFileNm")
-        if not raw_url and not raw_name:
+        # 제공자는 URL 만 있고 파일명이 빈 전자주문 행을 함께 내려준다(관측
+        # 226 행 중 31 행).  공고가 선언한 슬롯과 달리 이런 행은 이름도 형식도
+        # 없어 내려받을 수도 읽을 수도 없다.  그런데 INVALID 로 남기면
+        # `document_complete` 가 `invalid_count == 0` 을 요구하므로 그 공고는
+        # 영구히 완료되지 못한다 — 제안요청서를 얻으려다 완료를 막는 셈이다.
+        # 관측된 모든 경우에서 이런 행은 이름 있는 행과 같이 오므로, 건너뛰어도
+        # 그 공고의 제안요청서를 잃지 않는다.
+        if not str(raw_name or "").strip():
             continue
         try:
-            if not raw_url or not raw_name:
+            if not raw_url:
                 raise PpsEnrichmentError("ATTACHMENT_METADATA_INCOMPLETE")
             url = _safe_g2b_attachment_url(raw_url)
             filename, media_type = _safe_filename(raw_name)

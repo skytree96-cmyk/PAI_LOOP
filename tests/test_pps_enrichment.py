@@ -3078,3 +3078,50 @@ def test_full_manifest_with_an_invalid_row_produces_a_serialisable_status_list()
 
     adapter = TypeAdapter(list[AttachmentAnalysisStatusOut])
     assert len(adapter.validate_python(rows)) == MAX_MANIFEST_ATTACHMENTS + 1
+
+
+def test_unnamed_eorder_row_is_skipped_instead_of_blocking_completion() -> None:
+    """이름 없는 전자주문 행은 커버리지에 남기지 않는다.
+
+    제공자는 URL 만 있고 파일명이 빈 행을 함께 내려준다. 공고가 선언한 슬롯과
+    달리 이런 행은 내려받을 수도 읽을 수도 없는데, INVALID 로 남기면
+    `document_complete` 가 `invalid_count == 0` 을 요구하므로 그 공고가 영구히
+    완료되지 못한다. 같은 공고의 이름 있는 제안요청서는 그대로 들어와야 한다.
+    """
+
+    raw = {
+        "bidNtceNo": "20260900010",
+        "bidNtceOrd": "000",
+        "_eorder_attachments": [
+            _eorder_row(eorderAtchFileNm="", atchSno="1"),
+            _eorder_row(atchSno="2"),
+        ],
+    }
+
+    manifest = build_attachment_manifest(raw)
+
+    assert [item.get("file_name") for item in manifest] == ["제안요청서.hwpx"]
+    assert not any(item.get("status") == "INVALID" for item in manifest)
+    validated, invalid_count = _validated_manifest_attachments(manifest)
+    assert invalid_count == 0
+    assert len(validated) == 1
+
+
+def test_eorder_row_with_a_name_but_no_url_still_stays_visible() -> None:
+    """이름이 있는데 URL 이 없는 행은 여전히 digest 로 남긴다.
+
+    이쪽은 제공자가 문서의 존재를 이름으로 선언한 경우이므로, 커버리지에서
+    조용히 사라지면 안 된다.
+    """
+
+    raw = {
+        "bidNtceNo": "20260900011",
+        "bidNtceOrd": "000",
+        "_eorder_attachments": [_eorder_row(eorderAtchFileUrl="")],
+    }
+
+    manifest = build_attachment_manifest(raw)
+
+    assert len(manifest) == 1
+    assert manifest[0]["status"] == "INVALID"
+    assert manifest[0]["error_code"] == "ATTACHMENT_METADATA_INCOMPLETE"
