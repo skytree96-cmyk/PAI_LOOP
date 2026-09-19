@@ -1015,6 +1015,45 @@ def _bid_outcome_notice_ids(
     )
 
 
+def _department_decision_index(
+    session: Session,
+    *,
+    department: dict[str, Any] | None,
+) -> tuple[set[str], set[str]]:
+    """Return notice ids this department has already judged, and its GO set.
+
+    Only the latest decision of the same department counts, using the exact
+    ordering the department statistics already apply. A decision by another
+    department never hides a notice from this department's work queue.
+    """
+
+    catalog = load_department_keyword_profiles()
+    department_ids = (
+        [department["id"]] if department else [item["id"] for item in catalog["departments"]]
+    )
+    ranked = select(
+        UserDecision.notice_id,
+        UserDecision.choice,
+        func.row_number().over(
+            partition_by=(UserDecision.notice_id, UserDecision.department_id),
+            order_by=(
+                func.coalesce(UserDecision.department_revision, -1).desc(),
+                UserDecision.created_at.desc(),
+                UserDecision.id.desc(),
+            ),
+        ).label("decision_rank"),
+    ).where(UserDecision.department_id.in_(department_ids)).subquery()
+    decided: set[str] = set()
+    go: set[str] = set()
+    for notice_id, choice in session.execute(
+        select(ranked.c.notice_id, ranked.c.choice).where(ranked.c.decision_rank == 1)
+    ).all():
+        decided.add(notice_id)
+        if choice in ("GO", "CONDITIONAL_GO"):
+            go.add(notice_id)
+    return decided, go
+
+
 def _notice_summaries_for_ids(
     session: Session,
     notice_ids: list[str],
@@ -1178,8 +1217,22 @@ def dashboard(
     analysis_review_backlog_count = 0
     today = now.astimezone(KST).date()
     soon_date = today + timedelta(days=5)
-    work_queue_counts = {key: 0 for key in ("fail", "review", "urgent", "result_missing", "cancelled")}
+    work_queue_counts = {
+        key: 0
+        for key in (
+            "fail", "review", "urgent", "result_missing", "cancelled",
+            # Work-pipeline queues. These follow this department's own recorded
+            # decision, not the system recommendation, so a card never claims
+            # work the department has already judged.
+            "pending_decision", "in_progress", "urgent_in_progress", "result_missing_decided",
+        )
+    }
+    decided_notice_ids, go_notice_ids = _department_decision_index(
+        session, department=selected_department
+    )
+    cancelled_go_notices: list[dict[str, Any]] = []
     active_count = 0
+    actionable_count = 0
     active_department_notice_ids: list[str] = []
     deadline_soon = 0
     recent_notices: list[dict[str, Any]] = []
@@ -1243,6 +1296,38 @@ def dashboard(
                     )
                 elif valid_qualification == Eligibility.FAIL.value:
                     work_queue_counts["fail"] += 1
+                department_decided = notice.id in decided_notice_ids
+                department_go = notice.id in go_notice_ids
+                deadline_within_window = (
+                    today
+                    <= _comparable_utc(notice.deadline).astimezone(KST).date()
+                    <= soon_date
+                )
+                if is_cancelled and department_go:
+                    if len(cancelled_go_notices) < 3:
+                        cancelled_go_notices.append(
+                            {
+                                "notice_key": notice.notice_key,
+                                "title": notice.title,
+                                "changed_at": (
+                                    _changed_at.isoformat() if _changed_at is not None else None
+                                ),
+                            }
+                        )
+                elif effective_status == "OPEN":
+                    if qualified and not department_decided:
+                        work_queue_counts["pending_decision"] += 1
+                    if department_go and notice.id not in outcome_notice_ids:
+                        work_queue_counts["in_progress"] += 1
+                        if deadline_within_window:
+                            work_queue_counts["urgent_in_progress"] += 1
+                elif (
+                    not is_cancelled
+                    and effective_status in lifecycle_counts
+                    and department_go
+                    and notice.id not in outcome_notice_ids
+                ):
+                    work_queue_counts["result_missing_decided"] += 1
                 run = latest_current_analysis_run(notice) if effective_status == "OPEN" and not is_cancelled else None
                 if effective_status == "OPEN" and not is_cancelled:
                     open_runs.append(run)
@@ -1285,6 +1370,8 @@ def dashboard(
                     )
                 if effective_status == "OPEN":
                     active_count += 1
+                    if not is_cancelled:
+                        actionable_count += 1
                     if not is_cancelled and _needs_analysis_or_review(notice, latest):
                         analysis_review_backlog_count += 1
                         work_queue_counts["review"] += int(qualified)
@@ -1342,6 +1429,11 @@ def dashboard(
             active_notice_ids=active_department_notice_ids,
         ),
         "work_queue_counts": work_queue_counts,
+        # The work cards divide by notices that can still be acted on. Ended and
+        # cancelled notices stay in `totals.notices` for the lifecycle screens.
+        "work_queue_denominator": actionable_count,
+        "work_queue_denominator_definition": "OPEN_NOT_CANCELLED",
+        "cancelled_go_notices": cancelled_go_notices,
         "totals": {
             "notices": len(notice_ids),
             "active": active_count,
@@ -1364,6 +1456,117 @@ def dashboard(
         "deadline_soon": deadline_soon,
         "recent_notices": recent_notices,
         "synthetic_data_warning": "SYN- 접두 데이터는 데모용이며 실제 성과 지표가 아닙니다.",
+    }
+
+
+@router.get("/dashboard/departments")
+def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any]:
+    """Report which keyword brought in which notice, and who took it.
+
+    Coverage is counted over notices a department can still act on, so ended
+    and cancelled notices never inflate a keyword. Registered keywords with no
+    match stay in the response at zero: an unused keyword is the finding.
+    Selection keeps the dashboard's existing scope so a department's recorded
+    choice survives the notice closing.
+    """
+
+    now = datetime.now(timezone.utc)
+    notices = list(
+        session.scalars(
+            select(Notice)
+            .where(Notice.status == "OPEN", Notice.deadline >= now)
+            .options(
+                load_only(
+                    Notice.id, Notice.notice_key, Notice.bid_notice_no, Notice.revision_no,
+                    Notice.title, Notice.agency, Notice.category, Notice.status,
+                    Notice.deadline, raiseload=True,
+                )
+            )
+        ).all()
+    )
+    authorities = _pps_authorities_by_notice_id(session, notices)
+    actionable: list[tuple[str, str, str, str]] = []
+    for notice in notices:
+        provider_disposition, _event_kind, _changed_at = _safe_provider_authority_projection(
+            source_kind=_source_kind(notice),
+            authority=authorities.get(notice.id),
+        )
+        if provider_disposition == "CANCELLED":
+            continue
+        actionable.append(
+            (notice.id, notice.title, notice.agency or "", notice.category or "")
+        )
+    actionable_ids = [item[0] for item in actionable]
+    evaluated_ids = set()
+    for offset in range(0, len(actionable_ids), _NOTICE_SUMMARY_BATCH_SIZE):
+        evaluated_ids.update(
+            session.scalars(
+                select(Evaluation.notice_id).where(
+                    Evaluation.notice_id.in_(
+                        actionable_ids[offset : offset + _NOTICE_SUMMARY_BATCH_SIZE]
+                    )
+                ).distinct()
+            ).all()
+        )
+
+    catalog = load_department_keyword_profiles()
+    departments: list[dict[str, Any]] = []
+    for profile in catalog["departments"]:
+        registered = [*profile["strong_keywords"], *profile["supporting_keywords"]]
+        keyword_counts = {keyword: 0 for keyword in registered}
+        matched_count = 0
+        evaluated_count = 0
+        recommended_count = 0
+        for notice_id, title, agency, category in actionable:
+            ranking = rank_notice_for_department(
+                title=title, agency=agency, category=category, department_id=profile["id"],
+            )
+            matched = [
+                *ranking["matched_department_keywords"],
+                *ranking["matched_regions"],
+            ]
+            if not matched:
+                continue
+            matched_count += 1
+            evaluated_count += int(notice_id in evaluated_ids)
+            recommended_count += int(
+                ranking["recommendation_tier"] in {"TOP", "ROUTING"}
+            )
+            for keyword in matched:
+                if keyword in keyword_counts:
+                    keyword_counts[keyword] += 1
+        _decided, go_ids = _department_decision_index(session, department=profile)
+        departments.append(
+            {
+                "department_id": profile["id"],
+                "department_name": profile["name"],
+                "group": profile.get("group") or "전사",
+                "matched_count": matched_count,
+                "evaluated_count": evaluated_count,
+                "recommended_count": recommended_count,
+                "selected_count": len(go_ids),
+                "selection_rate": (
+                    len(go_ids) / recommended_count if recommended_count else None
+                ),
+                "keywords": sorted(
+                    (
+                        {"keyword": keyword, "count": count}
+                        for keyword, count in keyword_counts.items()
+                    ),
+                    key=lambda item: (-item["count"], item["keyword"]),
+                ),
+            }
+        )
+    departments.sort(key=lambda item: (-item["matched_count"], item["department_name"]))
+    return {
+        "generated_at": now.isoformat().replace("+00:00", "Z"),
+        "profile_version": catalog["version"],
+        "scope": "OPEN_NOT_CANCELLED",
+        "notice_count": len(actionable),
+        "evaluated_notice_count": len(evaluated_ids),
+        "selection_scope": "ALL_STORED_NOTICES",
+        "selection_definition": "LATEST_DEPARTMENT_GO_OR_CONDITIONAL_GO",
+        "departments": departments,
     }
 
 

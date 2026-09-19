@@ -58,6 +58,7 @@
     accessMode: "UNKNOWN",
     writeControlsEnabled: true,
     operatorDecisionEnabled: false,
+    departmentCoverage: { status: "idle", data: null, openDepartmentId: null },
     manualAnalysisEnabled: false,
     manualAnalysisUnavailableReason: "분석 기능 상태를 확인하고 있습니다.",
     manualAnalysisAuthRequired: false,
@@ -272,8 +273,8 @@
     const ids = [
       "teamsFollowsButton", "teamsFollowsSummary", "teamsFollowsDialog", "teamsFollowsClose", "teamsFollowsRefresh", "teamsFollowsStatus", "teamsFollowsError", "teamsFollowsDeliveryNotice", "teamsFollowsList", "teamsFollowsEmpty", "teamsLinkButton", "teamsBotChatLink", "teamsLinkCodePanel", "teamsLinkCommand", "teamsLinkExpiry", "teamsLinkCopy", "teamsPendingFollow", "teamsPendingFollowLabel", "teamsPendingFollowButton", "detailFollowButton",
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
-      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount",
-      "navDecisionCount", "kpiNew", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiEnded", "kpiNewTrend", "kpiReviewTrend", "kpiGoTrend",
+      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navArchiveCount",
+      "navDecisionCount", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiReviewTrend", "kpiGoTrend",
       "dashboardSummary", "dashboardSummaryTitle", "dashboardSummaryDetail", "dashboardSummaryTotals", "dashboardRetryButton",
       "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
       "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "operatorDecisionFilter", "operatorDecisionFilterHelp", "sortSelect",
@@ -835,6 +836,8 @@
     const [, profilesResult] = await Promise.allSettled([
       loadDashboardTotals({ sequence, requestedStatusScope }),
       apiRequest("/departments/keyword-profiles"),
+      // Coverage is additional reporting: a failure here never blocks the board.
+      loadDepartmentCoverage(),
     ]);
     if (epoch !== state.accountEpoch) return;
     if (sequence !== state.requestSequence) return;
@@ -869,7 +872,7 @@
       const departmentAvailable = departmentStats?.department_id === departmentId
         && numberOrNull(departmentStats.total_notice_count) !== null
         && numberOrNull(departmentStats.recommended_count) !== null;
-      state.dashboardStatus = ["totalNotices", "totalEvaluations", "reviewCount", "urgentCount", "goCount", "failCount", "cancelledCount", "resultMissingCount"]
+      state.dashboardStatus = ["totalNotices", "totalEvaluations", "reviewCount", "urgentCount", "goCount", "failCount", "cancelledCount", "resultMissingCount", "actionableCount", "pendingDecisionCount", "inProgressCount", "urgentInProgressCount", "resultMissingDecidedCount"]
         .some((key) => state.dashboard[key] === null) || !departmentAvailable ? "partial" : "ready";
       state.sourceReason = state.dashboardStatus === "ready" ? "" : "일부 전체 집계를 확인하지 못했습니다. 집계 다시 조회로 확인해 주세요.";
     } catch (_) {
@@ -1477,7 +1480,7 @@
 
   function noticeStatusScopeForView(view) {
     if (globalNoticeSearchActive()) return "ALL";
-    if (["ended", "cancelled", "result-missing"].includes(view)) return "ENDED";
+    if (["ended", "cancelled", "result-missing", "result-missing-decided"].includes(view)) return "ENDED";
     return ["collected", "closed", "fail"].includes(view) ? "ALL" : "OPEN";
   }
 
@@ -4284,6 +4287,15 @@
       cancelledCount: localQueues ? derived.cancelledCount : numberOrNull(workQueues.cancelled),
       endedCount: numberOrNull(firstValue(kpis.ended_count, kpis.endedCount, kpis.visible_ended_count, kpis.visibleEndedCount)) ?? (localQueues ? derived.endedCount : null),
       resultMissingCount: localQueues ? derived.resultMissingCount : numberOrNull(workQueues.result_missing),
+      // Work-pipeline counts follow this department's own recorded decision.
+      // Demo mode derives them from the loaded rows with the same predicates.
+      pendingDecisionCount: localQueues ? derived.pendingDecisionCount : numberOrNull(workQueues.pending_decision),
+      inProgressCount: localQueues ? derived.inProgressCount : numberOrNull(workQueues.in_progress),
+      urgentInProgressCount: localQueues ? derived.urgentInProgressCount : numberOrNull(workQueues.urgent_in_progress),
+      resultMissingDecidedCount: localQueues ? derived.resultMissingDecidedCount : numberOrNull(workQueues.result_missing_decided),
+      actionableCount: numberOrNull(firstValue(source.work_queue_denominator, kpis.work_queue_denominator))
+        ?? (localQueues ? derived.actionableCount : null),
+      cancelledGoNotices: Array.isArray(source.cancelled_go_notices) ? source.cancelled_go_notices : [],
       undecidedCount: derived.undecidedCount,
       totalNotices: numberOrNull(totals.notices) ?? (state.source === "demo" ? derived.totalNotices : null),
       totalEvaluations: numberOrNull(totals.evaluations) ?? (state.source === "demo" ? derived.totalEvaluations : null),
@@ -4306,7 +4318,7 @@
     for (const key of ["totalNotices", "totalEvaluations", "totalDecisions", "endedCount"]) {
       result[key] = numberOrNull(previous[key]);
     }
-    for (const key of ["reviewCount", "urgentCount", "goCount", "failCount", "cancelledCount", "resultMissingCount"]) {
+    for (const key of ["reviewCount", "urgentCount", "goCount", "failCount", "cancelledCount", "resultMissingCount", "pendingDecisionCount", "inProgressCount", "urgentInProgressCount", "resultMissingDecidedCount", "actionableCount"]) {
       result[key] = previous.queueScope === "GLOBAL" ? numberOrNull(previous[key]) : null;
     }
     result.queueScope = "GLOBAL";
@@ -4327,6 +4339,11 @@
       reviewCount: notices.filter((notice) => matchesDashboardQueue(notice, "review")).length,
       qualityReviewCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && isDocumentQualityReview(notice)).length,
       goCount: notices.filter(isCurrentGoCandidate).length,
+      pendingDecisionCount: notices.filter((notice) => matchesDashboardQueue(notice, "pending-decision")).length,
+      inProgressCount: notices.filter((notice) => matchesDashboardQueue(notice, "in-progress")).length,
+      urgentInProgressCount: notices.filter((notice) => matchesDashboardQueue(notice, "urgent-in-progress")).length,
+      resultMissingDecidedCount: notices.filter((notice) => matchesDashboardQueue(notice, "result-missing-decided")).length,
+      actionableCount: notices.filter((notice) => noticeLifecycleStatus(notice) === "OPEN" && !isCancelledNotice(notice)).length,
       urgentCount: notices.filter((notice) => matchesDashboardQueue(notice, "urgent")).length,
       cancelledCount: notices.filter((notice) => matchesDashboardQueue(notice, "cancelled")).length,
       endedCount: notices.filter(isVisibleEndedNotice).length,
@@ -4360,6 +4377,7 @@
 
   function matchesDashboardQueue(notice, queue) {
     if (queue === "go") return isCurrentGoCandidate(notice);
+    if (PIPELINE_QUEUES.includes(queue)) return matchesPipelineQueue(notice, queue);
     const eligibility = dashboardEligibilityStatus(notice);
     if (queue === "fail") return !isCancelledNotice(notice) && eligibility === "FAIL";
     if (!["PASS", "REVIEW"].includes(eligibility)) return false;
@@ -4373,6 +4391,27 @@
       return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
     }
     return false;
+  }
+
+  const PIPELINE_QUEUES = ["pending-decision", "in-progress", "urgent-in-progress", "result-missing-decided"];
+
+  function departmentGoDecision(notice) {
+    return ["GO", "CONDITIONAL_GO"].includes(notice.decision || "");
+  }
+
+  function matchesPipelineQueue(notice, queue) {
+    if (isCancelledNotice(notice)) return false;
+    if (queue === "result-missing-decided") {
+      return departmentGoDecision(notice) && isVisibleEndedNotice(notice) && !notice.hasBidOutcome;
+    }
+    if (noticeLifecycleStatus(notice) !== "OPEN") return false;
+    if (queue === "pending-decision") {
+      return ["PASS", "REVIEW"].includes(dashboardEligibilityStatus(notice)) && !notice.decision;
+    }
+    if (!departmentGoDecision(notice) || notice.hasBidOutcome) return false;
+    if (queue === "in-progress") return true;
+    const days = daysUntil(notice.deadline);
+    return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
   }
 
   function isCurrentGoCandidate(notice) {
@@ -4392,24 +4431,217 @@
 
   function renderKpis() {
     const data = state.dashboard;
-    // Preserve the existing DOM ID while replacing the total-stored card.
-    els.kpiNew.textContent = displayNumber(data.failCount);
-    els.kpiReview.textContent = displayNumber(data.reviewCount);
-    els.kpiGo.textContent = displayNumber(data.goCount);
-    els.kpiUrgent.textContent = displayNumber(data.urgentCount);
-    els.kpiResultMissing.textContent = displayNumber(data.resultMissingCount);
-    els.kpiEnded.textContent = displayNumber(data.cancelledCount);
-    els.kpiNewTrend.textContent = state.source === "demo" ? "데모" : "자격 FAIL";
-    els.kpiReviewTrend.textContent = "처리 필요";
-    els.kpiGoTrend.textContent = "AI 판단";
+    // The four cards are one pipeline: judge, run, close, record. Existing DOM
+    // ids are reused so the cards keep their tests and click targets.
+    els.kpiReview.textContent = displayNumber(data.pendingDecisionCount);
+    els.kpiGo.textContent = displayNumber(data.inProgressCount);
+    els.kpiUrgent.textContent = displayNumber(data.urgentInProgressCount);
+    els.kpiResultMissing.textContent = displayNumber(data.resultMissingDecidedCount);
+    els.kpiReviewTrend.textContent = state.source === "demo" ? "데모" : "판단 필요";
+    els.kpiGoTrend.textContent = "제안 작성";
     const total = document.getElementById("dashboardTotalNotices");
-    if (total) total.textContent = displayNumber(data.totalNotices);
-    for (const [id, key] of [["kpiReview", "reviewCount"], ["kpiUrgent", "urgentCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiNew", "failCount"], ["kpiGo", "goCount"], ["kpiEnded", "cancelledCount"]]) {
-      renderDashboardShare(id, data[key], data.totalNotices);
-    }
+    if (total) total.textContent = displayNumber(data.actionableCount);
+    renderCancelledGoBanner(data.cancelledGoNotices);
     renderDashboardSummary();
     renderDepartmentDashboard(data.departmentStatistics);
     renderAnalysisProgress(data.analysisStatistics);
+    renderDepartmentCoverage();
+  }
+
+  const CANCELLED_BANNER_STORAGE_KEY = "pai-loop.cancelled-go-dismissed";
+
+  function readDismissedCancelledGo() {
+    try {
+      const raw = window.localStorage.getItem(CANCELLED_BANNER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      // A blocked or cleared store only means the banner shows again.
+      return [];
+    }
+  }
+
+  function dismissCancelledGo(noticeKeys) {
+    try {
+      const merged = [...new Set([...readDismissedCancelledGo(), ...noticeKeys])].slice(-50);
+      window.localStorage.setItem(CANCELLED_BANNER_STORAGE_KEY, JSON.stringify(merged));
+    } catch (error) {
+      // Dismissal is a convenience; never block the view on storage.
+    }
+  }
+
+  function renderCancelledGoBanner(items) {
+    const banner = document.getElementById("cancelledGoBanner");
+    if (!banner) return;
+    const dismissed = new Set(readDismissedCancelledGo());
+    const rows = (Array.isArray(items) ? items : []).filter(
+      (item) => item && item.notice_key && !dismissed.has(item.notice_key),
+    );
+    banner.hidden = rows.length === 0;
+    if (!rows.length) return;
+    const title = document.getElementById("cancelledGoBannerTitle");
+    const detail = document.getElementById("cancelledGoBannerDetail");
+    if (title) title.textContent = `진행 중이던 공고 ${formatNumber(rows.length)}건 발주처 취소`;
+    if (detail) {
+      detail.textContent = rows
+        .map((item) => {
+          const changed = item.changed_at ? ` · ${formatKstDateTime(item.changed_at)} 취소 확인` : "";
+          return `${item.title || item.notice_key}${changed}`;
+        })
+        .join(" / ");
+    }
+    const link = document.getElementById("cancelledGoBannerLink");
+    if (link) link.onclick = () => setView("ended");
+    const dismiss = document.getElementById("cancelledGoBannerDismiss");
+    if (dismiss) {
+      dismiss.onclick = () => {
+        dismissCancelledGo(rows.map((item) => item.notice_key));
+        banner.hidden = true;
+      };
+    }
+  }
+
+  async function loadDepartmentCoverage({ force = false } = {}) {
+    // Coverage is a second, heavier read: it ranks every actionable notice
+    // against every department. Load it once per session unless asked again.
+    if (state.source !== "api") return;
+    if (!force && ["loading", "ready"].includes(state.departmentCoverage.status)) return;
+    const epoch = state.accountEpoch;
+    state.departmentCoverage = { ...state.departmentCoverage, status: "loading" };
+    renderDepartmentCoverage();
+    try {
+      const payload = await apiRequest("/dashboard/departments", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
+      if (epoch !== state.accountEpoch) return;
+      state.departmentCoverage = {
+        status: "ready", data: payload, openDepartmentId: state.departmentCoverage.openDepartmentId,
+      };
+    } catch (error) {
+      if (epoch !== state.accountEpoch) return;
+      state.departmentCoverage = { ...state.departmentCoverage, status: "error" };
+    }
+    renderDepartmentCoverage();
+  }
+
+  function toggleCoverageDepartment(departmentId) {
+    const open = state.departmentCoverage.openDepartmentId === departmentId ? null : departmentId;
+    state.departmentCoverage = { ...state.departmentCoverage, openDepartmentId: open };
+    renderDepartmentCoverage();
+  }
+
+  function coverageBar(ratio, { thin = false } = {}) {
+    const track = document.createElement("span");
+    track.className = thin ? "coverage-bar coverage-bar--thin" : "coverage-bar";
+    const fill = document.createElement("span");
+    fill.className = "coverage-bar__fill";
+    fill.style.width = `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
+    track.append(fill);
+    return track;
+  }
+
+  function renderCoverageKeywordRow(row, maxMatched) {
+    const item = document.createElement("li");
+    item.className = "coverage-row";
+    const open = state.departmentCoverage.openDepartmentId === row.department_id;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "coverage-row__toggle";
+    button.setAttribute("aria-expanded", String(open));
+    button.onclick = () => toggleCoverageDepartment(row.department_id);
+    const name = document.createElement("span");
+    name.className = "coverage-row__name";
+    name.textContent = row.department_name;
+    const keywords = document.createElement("span");
+    keywords.className = "coverage-row__keywords";
+    const matchedKeywords = (row.keywords || []).filter((entry) => entry.count > 0);
+    keywords.textContent = matchedKeywords.length
+      ? matchedKeywords.slice(0, 4).map((entry) => entry.keyword).join(" · ")
+      : "일치한 등록 키워드 없음";
+    const count = document.createElement("b");
+    count.textContent = `${formatNumber(row.matched_count)}건`;
+    const evaluated = document.createElement("small");
+    evaluated.textContent = `평가 ${formatNumber(row.evaluated_count)}건`;
+    button.append(name, keywords, coverageBar((row.matched_count || 0) / maxMatched), count, evaluated);
+    item.append(button);
+    if (!open) return item;
+    const detail = document.createElement("ul");
+    detail.className = "coverage-detail";
+    const maxKeyword = Math.max(1, ...(row.keywords || []).map((entry) => entry.count));
+    detail.replaceChildren(...(row.keywords || []).map((entry) => {
+      const line = document.createElement("li");
+      line.className = entry.count > 0 ? "coverage-detail__row" : "coverage-detail__row is-empty";
+      const label = document.createElement("span");
+      label.textContent = entry.keyword;
+      const value = document.createElement("b");
+      value.textContent = formatNumber(entry.count);
+      line.append(label, coverageBar(entry.count / maxKeyword, { thin: true }), value);
+      return line;
+    }));
+    item.append(detail);
+    return item;
+  }
+
+  function renderCoverageSelectionRow(row, maxRecommended) {
+    const item = document.createElement("li");
+    item.className = "coverage-row coverage-row--selection";
+    const name = document.createElement("span");
+    name.className = "coverage-row__name";
+    name.textContent = row.department_name;
+    const bar = document.createElement("span");
+    bar.className = "coverage-split";
+    const recommended = numberOrNull(row.recommended_count) ?? 0;
+    // A department can select a notice its keywords never recommended, so the
+    // chosen part is clamped instead of overflowing the recommended bar.
+    const chosen = Math.min(numberOrNull(row.selected_count) ?? 0, recommended);
+    const selected = document.createElement("span");
+    selected.className = "coverage-split__selected";
+    selected.style.width = `${Math.round((chosen / maxRecommended) * 100)}%`;
+    const rest = document.createElement("span");
+    rest.className = "coverage-split__rest";
+    rest.style.width = `${Math.round(((recommended - chosen) / maxRecommended) * 100)}%`;
+    bar.append(selected, rest);
+    const value = document.createElement("b");
+    const rate = row.selection_rate === null || row.selection_rate === undefined
+      ? "—" : `${Math.round(row.selection_rate * 100)}%`;
+    value.textContent = `${formatNumber(row.selected_count)}건 · 선택률 ${rate}`;
+    item.append(name, bar, value);
+    return item;
+  }
+
+  function renderDepartmentCoverage() {
+    const section = document.getElementById("departmentCoverage");
+    if (!section) return;
+    const status = document.getElementById("departmentCoverageStatus");
+    const keywordList = document.getElementById("departmentCoverageKeywords");
+    const selectionList = document.getElementById("departmentCoverageSelection");
+    const retry = document.getElementById("departmentCoverageRetry");
+    const { status: readState, data } = state.departmentCoverage;
+    if (retry) {
+      retry.hidden = readState !== "error";
+      retry.onclick = () => loadDepartmentCoverage({ force: true });
+    }
+    if (status) {
+      status.textContent = readState === "loading"
+        ? "부서·키워드 수집 현황을 집계하고 있습니다."
+        : readState === "error"
+        ? "집계를 조회하지 못했습니다. 다시 조회로 확인해 주세요."
+        : data
+        ? `활성 공고 ${formatNumber(data.notice_count)}건 기준 · 평가 완료 ${formatNumber(data.evaluated_notice_count)}건 · 키워드 프로필 ${data.profile_version}`
+        : "집계 조회 대기";
+    }
+    if (!keywordList || !selectionList) return;
+    const rows = readState === "ready" && data && Array.isArray(data.departments) ? data.departments : [];
+    if (!rows.length) {
+      keywordList.replaceChildren();
+      selectionList.replaceChildren();
+      return;
+    }
+    const maxMatched = Math.max(1, ...rows.map((row) => numberOrNull(row.matched_count) ?? 0));
+    keywordList.replaceChildren(...rows.map((row) => renderCoverageKeywordRow(row, maxMatched)));
+    const selectionRows = rows.slice().sort(
+      (a, b) => (numberOrNull(b.selected_count) ?? 0) - (numberOrNull(a.selected_count) ?? 0),
+    );
+    const maxRecommended = Math.max(1, ...selectionRows.map((row) => numberOrNull(row.recommended_count) ?? 0));
+    selectionList.replaceChildren(...selectionRows.map((row) => renderCoverageSelectionRow(row, maxRecommended)));
   }
 
   function dashboardShare(count, total) {
@@ -4515,7 +4747,7 @@
     const hasPrevious = data.generatedAt && ["loading", "error"].includes(state.dashboardStatus);
     const totalMeta = document.getElementById("dashboardTotalMeta");
     if (totalMeta) totalMeta.textContent = hasPrevious ? `마지막 확인 ${formatKstDateTime(data.generatedAt)}`
-      : data.totalNotices == null ? "전체 집계 확인 대기" : state.source === "demo" ? "데모 공고 기준" : "모든 현황 비율의 공통 기준";
+      : data.actionableCount == null ? "활성 공고 집계 확인 대기" : state.source === "demo" ? "데모 공고 기준" : "업무 카드의 공통 분모";
     els.dashboardSummary.hidden = state.source !== "api" && !applicationFailed;
     els.dashboardSummary.classList.toggle("is-warning", failed);
     els.dashboardRetryButton.hidden = !failed;
@@ -4523,15 +4755,15 @@
     els.dashboardRetryButton.textContent = applicationFailed ? "서버 연결 다시 시도" : "집계 다시 조회";
     els.dashboardSummaryTitle.textContent = applicationFailed ? "실데이터를 불러오지 못했습니다."
       : loading ? "전체 공고 수를 집계하고 있습니다."
-      : failed ? "일부 공고 수를 확인하지 못했습니다." : "전체 수집 공고 기준";
+      : failed ? "일부 공고 수를 확인하지 못했습니다." : "활성 공고 기준";
     els.dashboardSummaryTotals.textContent = `전체 저장 공고 ${displayNumber(data.totalNotices)}건 · 저장된 판정 이력 ${displayNumber(data.totalEvaluations)}건${hasPrevious ? ` · 마지막 확인 ${formatKstDateTime(data.generatedAt)}` : ""}`;
-    const scope = "모든 비율은 전체 수집 공고 대비입니다. 조건별 공고는 중복될 수 있습니다. 검토 대기·마감 임박·결과 입력은 PASS·REVIEW 기준입니다.";
+    const scope = "업무 카드는 종료·취소를 제외한 활성 공고 기준이며, 판단 대기 이후 카드는 이 부서가 기록한 최신 판단을 따릅니다.";
     els.dashboardSummaryDetail.textContent = applicationFailed
       ? `${state.sourceReason || "운영 서버 연결을 확인하지 못했습니다."} 서버 연결 다시 시도로 확인해 주세요.`
       : loading || failed
       ? `공고 목록 ${formatNumber(state.notices.length)}건은 조회됐습니다. ‘—’는 0건이 아니라 아직 확인하지 못한 집계입니다.${hasPrevious ? " 카드 수와 비율은 마지막 확인값입니다." : ""} ${scope}`
       : `${scope} 판정 이력에는 같은 공고의 재분석 기록이 포함됩니다.`;
-    for (const [id, key] of [["kpiReview", "reviewCount"], ["kpiUrgent", "urgentCount"], ["kpiGo", "goCount"], ["kpiNew", "failCount"], ["kpiResultMissing", "resultMissingCount"], ["kpiEnded", "cancelledCount"]]) {
+    for (const [id, key] of [["kpiReview", "pendingDecisionCount"], ["kpiUrgent", "urgentInProgressCount"], ["kpiGo", "inProgressCount"], ["kpiResultMissing", "resultMissingDecidedCount"]]) {
       els[id].setAttribute("aria-label", data[key] == null ? "집계 확인 필요" : `${formatNumber(data[key])}건${hasPrevious ? " · 마지막 확인값" : ""}`);
     }
   }
@@ -4575,6 +4807,14 @@
     els.navDecisionCount.textContent = decisionCount === null ? "—" : `${formatNumber(decisionCount)}건`;
     els.navDecisionCount.setAttribute("aria-label", decisionCount === null
       ? "담당자 판단 목록 조회 필요" : `현재 조회 공고 중 미결정 ${formatNumber(decisionCount)}건`);
+    // Pipeline menus follow the server's department-scoped counts so a menu
+    // never promises work the stored decisions do not support.
+    if (els.navInProgressCount) {
+      els.navInProgressCount.textContent = displayNumber(state.dashboard.inProgressCount) + "건";
+    }
+    if (els.navArchiveCount) {
+      els.navArchiveCount.textContent = displayNumber(state.dashboard.endedCount) + "건";
+    }
   }
 
   function renderDataSource() {
@@ -4655,10 +4895,10 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
-      if (["fail", "review", "urgent", "cancelled", "result-missing", "go"].includes(state.currentView)
+      if (["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)
         && !matchesDashboardQueue(notice, state.currentView)) return false;
       if (!globalSearch) {
-        if (["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
+        if (["all", "new", "review", "undecided", "go", "urgent", "pending-decision", "in-progress", "urgent-in-progress"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
         if (state.currentView === "undecided" && decisionFilterAvailable && operatorDecision === "all" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
@@ -5381,11 +5621,15 @@
       collected: ["수집 공고", "수집된 전체 공고"],
       new: ["공고 탐색", "진행중인 공고 조회"],
       review: ["검토 대기", "PASS·REVIEW 중 첨부·자격 확인이 필요한 공고"],
-      go: ["GO 후보", "GO 추천 공고"],
+      go: ["GO 후보", "시스템이 GO로 추천한 공고"],
+      "pending-decision": ["판단 대기", "부서 키워드 매칭·자격 확인을 마치고 담당자 판단을 기다리는 공고"],
+      "in-progress": ["진행 건", "GO로 결정하고 결과를 기록하지 않은 공고"],
+      "urgent-in-progress": [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `진행 건 중 ${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
+      "result-missing-decided": ["결과 입력", "GO로 결정하고 개찰이 지난 뒤 결과를 기록하지 않은 공고"],
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       fail: ["FAIL 공고", "저장된 현재 자격 판정이 FAIL인 공고"],
       cancelled: ["취소공고", "당시 자격 판정 PASS·REVIEW인 취소 공고"],
-      ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"],
+      ended: ["보관함", "마감·종료·취소된 공고와 당시 분석 이력"],
       "result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"],
       undecided: ["담당자 판단", "공고별 판단 확인"],
       prespec: ["공고 탐색", "사전규격 탐색"],

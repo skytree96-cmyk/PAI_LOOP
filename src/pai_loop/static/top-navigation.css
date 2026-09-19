@@ -252,3 +252,91 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
   .app-header, .utility-dock { display: none !important; }
   .workspace { padding-bottom: 0; }
 }
+
+/* Work pipeline: judge -> run -> close -> record. Four cards, no donuts.
+   The share ring is gone because a percentage of every stored notice never
+   told the operator what to do today. */
+.kpi-grid--pipeline { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.kpi-grid--pipeline > .kpi-card { grid-column: span 1; min-height: 168px; }
+.kpi-grid--pipeline .kpi-card--pipeline { position: relative; }
+.kpi-grid--pipeline .kpi-card--pipeline + .kpi-card--pipeline::before {
+  content: ""; position: absolute; left: -12px; top: 50%; width: 7px; height: 7px;
+  border-top: 2px solid var(--line-strong); border-right: 2px solid var(--line-strong);
+  transform: translateY(-50%) rotate(45deg);
+}
+.kpi-visual--plain { display: flex; align-items: flex-end; min-height: 56px; }
+.kpi-visual--plain .kpi-stat { gap: 4px; }
+.kpi-grid--pipeline .kpi-value { font-size: var(--fs-3xl); line-height: 1.1; }
+
+.cancelled-go-banner {
+  display: flex; align-items: center; gap: 14px; margin: 0 0 16px;
+  padding: 14px 18px; border: 1px solid var(--red); border-radius: var(--radius-md);
+  background: var(--red-pale); color: var(--ink);
+}
+.cancelled-go-banner__icon { display: inline-flex; flex: 0 0 auto; color: var(--red); }
+.cancelled-go-banner__icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.cancelled-go-banner__body { flex: 1 1 auto; min-width: 0; }
+.cancelled-go-banner__body strong { display: block; color: var(--red); font-size: var(--fs-sm); }
+.cancelled-go-banner__body p { margin: 3px 0 0; font-size: var(--fs-xs); color: var(--ink-soft); overflow-wrap: anywhere; }
+.cancelled-go-banner .button { flex: 0 0 auto; min-height: 44px; }
+
+@media (max-width: 1100px) {
+  .kpi-grid--pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-grid--pipeline .kpi-card--pipeline + .kpi-card--pipeline::before { display: none; }
+  .cancelled-go-banner { flex-wrap: wrap; }
+  .cancelled-go-banner__body { flex-basis: 100%; }
+}
+
+/* Which keyword brought in which notice, and who took it. A sorted list beats
+   a scatter plot here: 24 departments overlapped into one corner before. */
+.department-coverage {
+  grid-column: 1 / -1; padding: 26px 28px; border: 1px solid var(--line);
+  border-radius: 18px; background: #fff; box-shadow: var(--shadow-sm);
+}
+.department-coverage__head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.department-coverage__head h3 { margin: 0; color: var(--ink); font-size: var(--fs-lg); }
+.department-coverage__head p { flex: 1 1 auto; margin: 0; color: var(--muted); font-size: var(--fs-xs); }
+.department-coverage__subtitle { margin: 26px 0 6px; color: var(--ink); font-size: var(--fs-md); }
+.department-coverage__legend { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; color: var(--muted); font-size: var(--fs-xs); }
+.legend-dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.legend-dot--selected { background: var(--blue); }
+.legend-dot--rest { background: var(--line-strong); margin-left: 10px; }
+
+.coverage-list { margin: 14px 0 0; padding: 0; list-style: none; }
+.coverage-row { border-top: 1px solid var(--line); }
+.coverage-row:first-child { border-top: 0; }
+.coverage-row__toggle {
+  display: grid; grid-template-columns: 180px minmax(0, 1fr) 200px 64px 84px;
+  gap: 12px; align-items: center; width: 100%; min-height: 44px; padding: 9px 6px;
+  border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; cursor: pointer;
+}
+.coverage-row__toggle:hover { background: var(--surface-soft); }
+.coverage-row__name { color: var(--ink); font-size: var(--fs-sm); font-weight: 600; }
+.coverage-row__keywords { color: var(--muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coverage-row__toggle b { color: var(--ink); font-size: var(--fs-sm); }
+.coverage-row__toggle small { color: var(--muted); font-size: var(--fs-xs); }
+.coverage-bar { display: block; height: 10px; border-radius: 5px; background: var(--surface-soft); overflow: hidden; }
+.coverage-bar--thin { height: 8px; }
+.coverage-bar__fill { display: block; height: 100%; border-radius: 5px; background: var(--blue); }
+.coverage-detail { margin: 0 0 14px; padding: 2px 6px 0 26px; list-style: none; }
+.coverage-detail__row { display: grid; grid-template-columns: 180px minmax(0, 1fr) 48px; gap: 12px; align-items: center; padding: 5px 0; font-size: var(--fs-xs); color: var(--ink); }
+.coverage-detail__row b { text-align: right; }
+.coverage-detail__row.is-empty { color: var(--muted); }
+.coverage-detail__row.is-empty .coverage-bar__fill { background: var(--line-strong); }
+.coverage-row--selection { display: grid; grid-template-columns: 180px minmax(0, 1fr) 200px; gap: 12px; align-items: center; padding: 8px 6px; }
+.coverage-split { display: flex; align-items: center; gap: 2px; height: 16px; }
+.coverage-split__selected { height: 16px; border-radius: 4px 0 0 4px; background: var(--blue); }
+.coverage-split__rest { height: 16px; border-radius: 0 4px 4px 0; background: var(--line-strong); }
+.coverage-row--selection b { color: var(--ink-soft); font-size: var(--fs-xs); text-align: right; font-weight: 500; }
+
+@media (max-width: 1100px) {
+  .coverage-row__toggle { grid-template-columns: minmax(0, 1fr) 72px; grid-template-areas: "name count" "keywords keywords" "bar bar" "evaluated evaluated"; }
+  .coverage-row__name { grid-area: name; }
+  .coverage-row__keywords { grid-area: keywords; white-space: normal; }
+  .coverage-row__toggle .coverage-bar { grid-area: bar; }
+  .coverage-row__toggle b { grid-area: count; text-align: right; }
+  .coverage-row__toggle small { grid-area: evaluated; }
+  .coverage-detail__row { grid-template-columns: minmax(0, 1fr) 48px; }
+  .coverage-detail__row .coverage-bar { grid-column: 1 / -1; }
+  .coverage-row--selection { grid-template-columns: minmax(0, 1fr); }
+}

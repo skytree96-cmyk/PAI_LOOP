@@ -10,7 +10,7 @@ import subprocess
 import pytest
 
 from pai_loop import api as api_module
-from pai_loop.models import BidOutcome, Evaluation, Notice, NoticeVersion, PpsNoticeAuthority
+from pai_loop.models import BidOutcome, Evaluation, Notice, NoticeVersion, PpsNoticeAuthority, UserDecision
 from pai_loop.integrations.openai_extraction import ExtractionPayload, PROMPT_VERSION, SCHEMA_VERSION
 from pai_loop.pps_enrichment import PPS_ATTACHMENT_SOURCE, PPS_METADATA_SCHEMA, PPS_PROCESSING_VERSION, _digest
 from pai_loop.quantitative_rule_extraction import validate_quantitative_attachment_extraction
@@ -108,7 +108,14 @@ def test_dashboard_work_queues_use_explicit_qualification_and_keep_global_totals
     dashboard = response.json()
     assert dashboard["work_queue_counts"] == {
         "fail": 2, "review": 2, "urgent": 4, "result_missing": 3, "cancelled": 2,
+        # No department decision exists here, so every qualified open notice is
+        # still waiting for a person and no pipeline queue has claimed one.
+        "pending_decision": 5, "in_progress": 0,
+        "urgent_in_progress": 0, "result_missing_decided": 0,
     }
+    assert dashboard["work_queue_denominator"] == 7
+    assert dashboard["work_queue_denominator_definition"] == "OPEN_NOT_CANCELLED"
+    assert dashboard["cancelled_go_notices"] == []
     assert dashboard["deadline_soon"] == dashboard["work_queue_counts"]["urgent"]
     assert dashboard["totals"]["notices"] == 17
     assert dashboard["totals"]["evaluations"] == 14
@@ -250,3 +257,63 @@ assert.equal(u.noticeStatusScopeForView("cancelled"),"ENDED");
         text=True, capture_output=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def _decide(session, notice, choice, *, department_id="future-ai-education", revision=1):
+    session.add(UserDecision(
+        notice_id=notice.id, choice=choice, rationale="SYN 판단 근거",
+        department_id=department_id, department_name="SYN 부서",
+        department_revision=revision, created_at=NOW - timedelta(hours=2),
+    ))
+
+
+def test_pipeline_queues_follow_this_department_decision(client, monkeypatch):
+    """The four work cards must track the department's own recorded decision.
+
+    A notice another department judged still waits for this one, a GO notice
+    leaves the waiting queue for the in-progress queue, and a cancelled GO is
+    surfaced for the banner instead of staying in any active queue.
+    """
+
+    monkeypatch.setattr(api_module, "datetime", FixedDateTime)
+    with client.app.state.session_factory() as session:
+        waiting = _notice(session, "pipe-waiting", "REVIEW")
+        other_department = _notice(session, "pipe-other-dept", "REVIEW")
+        running = _notice(session, "pipe-running", "PASS", deadline=NOW + timedelta(days=20))
+        closing = _notice(session, "pipe-closing", "PASS", deadline=NOW + timedelta(days=2))
+        recorded = _notice(session, "pipe-recorded", "PASS", deadline=NOW + timedelta(days=20), outcome=True)
+        awaiting_result = _notice(session, "pipe-awaiting-result", "PASS", status="CLOSED")
+        cancelled = _notice(session, "pipe-cancelled", "PASS", cancelled=True)
+        session.flush()
+        _decide(session, other_department, "GO", department_id="future-ai-capability")
+        for notice in (running, closing, recorded, awaiting_result, cancelled):
+            _decide(session, notice, "GO")
+        session.commit()
+        waiting_key = waiting.notice_key
+        cancelled_key = cancelled.notice_key
+
+    dashboard = client.get(
+        "/api/v1/dashboard", params={"department_id": "future-ai-education"}
+    ).json()
+    queues = dashboard["work_queue_counts"]
+    assert queues["pending_decision"] == 2, (waiting_key, "another department never decides for us")
+    assert queues["in_progress"] == 2  # running + closing; the recorded one is done.
+    assert queues["urgent_in_progress"] == 1  # only the notice closing within five days.
+    assert queues["result_missing_decided"] == 1
+    assert [item["notice_key"] for item in dashboard["cancelled_go_notices"]] == [cancelled_key]
+    assert dashboard["cancelled_go_notices"][0]["changed_at"] is not None
+
+
+def test_cancelled_go_banner_stays_empty_for_other_departments(client, monkeypatch):
+    monkeypatch.setattr(api_module, "datetime", FixedDateTime)
+    with client.app.state.session_factory() as session:
+        cancelled = _notice(session, "pipe-foreign-cancelled", "PASS", cancelled=True)
+        session.flush()
+        _decide(session, cancelled, "GO", department_id="future-ai-capability")
+        session.commit()
+
+    dashboard = client.get(
+        "/api/v1/dashboard", params={"department_id": "future-ai-education"}
+    ).json()
+    assert dashboard["cancelled_go_notices"] == []
+    assert dashboard["work_queue_counts"]["in_progress"] == 0

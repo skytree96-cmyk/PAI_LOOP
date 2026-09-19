@@ -9,6 +9,9 @@ from fastapi import HTTPException, Request, status
 _PUBLIC_SAFE_GET_PATHS = {
     "/api/v1/runtime-profile",
     "/api/v1/dashboard",
+    # Department coverage repeats the already-public keyword profile and the
+    # notice counts behind it. It carries no company fact and no evidence.
+    "/api/v1/dashboard/departments",
     "/api/v1/departments/keyword-profiles",
     "/api/v1/company-profile",
     "/api/v1/performance",

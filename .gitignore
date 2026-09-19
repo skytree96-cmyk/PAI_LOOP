@@ -33,3 +33,4 @@ htmlcov/
 /docs/PRIVATE_DATA_IMPORT.md
 /docs/REAL_DATA_RUNBOOK_v0.2.0.md
 /docs/RELEASE_CHECKLIST_v0.2.0.md
+.pytest-tmp-*/
