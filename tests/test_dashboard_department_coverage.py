@@ -80,3 +80,18 @@ def test_department_coverage_reports_selection_per_department(client):
     }
     assert by_id["future-ai-education"]["selected_count"] == 1
     assert by_id["future-ai-capability"]["selected_count"] == 0
+
+
+def test_department_coverage_is_readable_in_public_read_only_mode(client):
+    """Coverage repeats public keyword profiles, so it stays browser-readable."""
+
+    from dataclasses import replace
+
+    client.app.state.settings = replace(client.app.state.settings, public_read_only=True)
+    response = client.get("/api/v1/dashboard/departments")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["scope"] == "OPEN_NOT_CANCELLED"
+    # The public projection carries no company fact or evidence identifier.
+    assert "company" not in response.text
+    assert "evidence" not in response.text
