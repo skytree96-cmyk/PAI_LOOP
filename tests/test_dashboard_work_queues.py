@@ -25,11 +25,11 @@ class FixedDateTime(datetime):
         return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
 
 
-def _notice(session, label, eligibility, *, status="OPEN", deadline=None, cancelled=False, outcome=False, complete=True):
+def _notice(session, label, eligibility, *, status="OPEN", deadline=None, cancelled=False, outcome=False, complete=True, title=None):
     deadline = deadline or NOW + timedelta(days=1)
     notice = Notice(
         notice_key=f"PPS-SYN_QUEUE_{label}", bid_notice_no=f"SYN-QUEUE-{label}",
-        revision_no="00", title=f"SYN {label}", agency="SYN agency",
+        revision_no="00", title=title or f"SYN {label}", agency="SYN agency",
         status=status, deadline=deadline,
     )
     attachment = {
@@ -277,8 +277,13 @@ def test_pipeline_queues_follow_this_department_decision(client, monkeypatch):
 
     monkeypatch.setattr(api_module, "datetime", FixedDateTime)
     with client.app.state.session_factory() as session:
-        waiting = _notice(session, "pipe-waiting", "REVIEW")
-        other_department = _notice(session, "pipe-other-dept", "REVIEW")
+        # Titles carry this department's own registered keyword: the waiting
+        # queue is what our keywords brought in, not every qualified notice.
+        waiting = _notice(session, "pipe-waiting", "REVIEW", title="SYN 디지털교육 위탁 운영")
+        other_department = _notice(
+            session, "pipe-other-dept", "REVIEW", title="SYN 디지털교육 교사 연수"
+        )
+        _notice(session, "pipe-foreign-topic", "REVIEW", title="SYN 도로 포장 정비")
         running = _notice(session, "pipe-running", "PASS", deadline=NOW + timedelta(days=20))
         closing = _notice(session, "pipe-closing", "PASS", deadline=NOW + timedelta(days=2))
         recorded = _notice(session, "pipe-recorded", "PASS", deadline=NOW + timedelta(days=20), outcome=True)
@@ -297,6 +302,7 @@ def test_pipeline_queues_follow_this_department_decision(client, monkeypatch):
     ).json()
     queues = dashboard["work_queue_counts"]
     assert queues["pending_decision"] == 2, (waiting_key, "another department never decides for us")
+    assert dashboard["pending_decision_definition"] == "DEPARTMENT_KEYWORD_AND_QUALIFIED_AND_UNDECIDED"
     assert queues["in_progress"] == 2  # running + closing; the recorded one is done.
     assert queues["urgent_in_progress"] == 1  # only the notice closing within five days.
     assert queues["result_missing_decided"] == 1

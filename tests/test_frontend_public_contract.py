@@ -263,7 +263,8 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     keyboard_body = _function_body(source, "handleGlobalKeydown", "updateNoticeRoute")
 
     assert "DECIDE WITH EVIDENCE" not in html
-    assert "전체 공고의 흐름을 한눈에" in html
+    assert "오늘 처리할 일부터" in html
+    assert "전체 공고의 흐름을 한눈에" not in html
     assert "판단 대기" in html
     assert 'aria-label="결과를 입력해야 할 공고 보기"' in html
     assert "저장된 전체 공고" in html

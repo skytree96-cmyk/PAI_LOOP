@@ -287,8 +287,9 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
   .cancelled-go-banner__body { flex-basis: 100%; }
 }
 
-/* Which keyword brought in which notice, and who took it. A sorted list beats
-   a scatter plot here: 24 departments overlapped into one corner before. */
+/* One row per department, one bar per row: collect -> evaluate -> recommend
+   -> select. Four steps of a single hue, darkest at the end of the funnel, so
+   the order survives colour-blind vision and greyscale print. */
 .department-coverage {
   grid-column: 1 / -1; padding: 26px 28px; border: 1px solid var(--line);
   border-radius: 18px; background: #fff; box-shadow: var(--shadow-sm);
@@ -296,25 +297,39 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
 .department-coverage__head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .department-coverage__head h3 { margin: 0; color: var(--ink); font-size: var(--fs-lg); }
 .department-coverage__head p { flex: 1 1 auto; margin: 0; color: var(--muted); font-size: var(--fs-xs); }
-.department-coverage__subtitle { margin: 26px 0 6px; color: var(--ink); font-size: var(--fs-md); }
-.department-coverage__legend { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; color: var(--muted); font-size: var(--fs-xs); }
-.legend-dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-.legend-dot--selected { background: var(--blue); }
-.legend-dot--rest { background: var(--line-strong); margin-left: 10px; }
 
-.coverage-list { margin: 14px 0 0; padding: 0; list-style: none; }
+.coverage-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px; margin: 12px 0 4px; color: var(--ink-soft); font-size: var(--fs-xs); }
+.coverage-legend__item { display: inline-flex; align-items: center; gap: 6px; }
+.coverage-legend__dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.coverage-legend__dot--selected { background: var(--nav-deep); }
+.coverage-legend__dot--recommended { background: var(--blue); }
+.coverage-legend__dot--evaluated { background: #7ba7cd; }
+.coverage-legend__dot--collected { background: var(--blue-pale); }
+.coverage-legend__note { flex: 1 1 100%; color: var(--muted); }
+
+.coverage-list { margin: 10px 0 0; padding: 0; list-style: none; }
 .coverage-row { border-top: 1px solid var(--line); }
 .coverage-row:first-child { border-top: 0; }
 .coverage-row__toggle {
-  display: grid; grid-template-columns: 180px minmax(0, 1fr) 200px 64px 84px;
-  gap: 12px; align-items: center; width: 100%; min-height: 44px; padding: 9px 6px;
+  display: grid; grid-template-columns: 180px minmax(0, 200px) minmax(0, 1fr) 320px;
+  gap: 14px; align-items: center; width: 100%; min-height: 44px; padding: 10px 6px;
   border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; cursor: pointer;
 }
 .coverage-row__toggle:hover { background: var(--surface-soft); }
 .coverage-row__name { color: var(--ink); font-size: var(--fs-sm); font-weight: 600; }
 .coverage-row__keywords { color: var(--muted); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.coverage-row__toggle b { color: var(--ink); font-size: var(--fs-sm); }
-.coverage-row__toggle small { color: var(--muted); font-size: var(--fs-xs); }
+.coverage-row__summary { color: var(--ink-soft); font-size: var(--fs-xs); text-align: right; }
+
+.coverage-funnel { display: flex; align-items: center; gap: 2px; height: 14px; }
+.coverage-funnel__step { height: 14px; border-radius: 2px; }
+.coverage-funnel__step:first-child { border-radius: 4px 2px 2px 4px; }
+.coverage-funnel__step:last-child { border-radius: 2px 4px 4px 2px; }
+.coverage-funnel__step--selected { background: var(--nav-deep); }
+.coverage-funnel__step--recommended { background: var(--blue); }
+.coverage-funnel__step--evaluated { background: #7ba7cd; }
+.coverage-funnel__step--collected { background: var(--blue-pale); }
+.coverage-funnel__step--none { width: 100%; height: 3px; border-radius: 2px; background: var(--line); }
+
 .coverage-bar { display: block; height: 10px; border-radius: 5px; background: var(--surface-soft); overflow: hidden; }
 .coverage-bar--thin { height: 8px; }
 .coverage-bar__fill { display: block; height: 100%; border-radius: 5px; background: var(--blue); }
@@ -323,20 +338,16 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
 .coverage-detail__row b { text-align: right; }
 .coverage-detail__row.is-empty { color: var(--muted); }
 .coverage-detail__row.is-empty .coverage-bar__fill { background: var(--line-strong); }
-.coverage-row--selection { display: grid; grid-template-columns: 180px minmax(0, 1fr) 200px; gap: 12px; align-items: center; padding: 8px 6px; }
-.coverage-split { display: flex; align-items: center; gap: 2px; height: 16px; }
-.coverage-split__selected { height: 16px; border-radius: 4px 0 0 4px; background: var(--blue); }
-.coverage-split__rest { height: 16px; border-radius: 0 4px 4px 0; background: var(--line-strong); }
-.coverage-row--selection b { color: var(--ink-soft); font-size: var(--fs-xs); text-align: right; font-weight: 500; }
 
 @media (max-width: 1100px) {
-  .coverage-row__toggle { grid-template-columns: minmax(0, 1fr) 72px; grid-template-areas: "name count" "keywords keywords" "bar bar" "evaluated evaluated"; }
+  .coverage-row__toggle {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "name" "keywords" "bar" "summary";
+  }
   .coverage-row__name { grid-area: name; }
   .coverage-row__keywords { grid-area: keywords; white-space: normal; }
-  .coverage-row__toggle .coverage-bar { grid-area: bar; }
-  .coverage-row__toggle b { grid-area: count; text-align: right; }
-  .coverage-row__toggle small { grid-area: evaluated; }
+  .coverage-row__toggle .coverage-funnel { grid-area: bar; }
+  .coverage-row__summary { grid-area: summary; text-align: left; }
   .coverage-detail__row { grid-template-columns: minmax(0, 1fr) 48px; }
   .coverage-detail__row .coverage-bar { grid-column: 1 / -1; }
-  .coverage-row--selection { grid-template-columns: minmax(0, 1fr); }
 }

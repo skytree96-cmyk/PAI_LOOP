@@ -1054,6 +1054,37 @@ def _department_decision_index(
     return decided, go
 
 
+def _department_keyword_matched_ids(
+    session: Session,
+    *,
+    department: dict[str, Any] | None,
+    now: datetime,
+) -> set[str] | None:
+    """Return open notices this department's own keywords brought in.
+
+    ``None`` means no keyword narrowing applies: the organisation-wide profile
+    speaks for every department, so its queue must not hide a department's
+    work behind another department's keyword list.
+    """
+
+    if department is None:
+        return None
+    rows = session.execute(
+        select(Notice.id, Notice.title, Notice.agency, Notice.category).where(
+            Notice.status == "OPEN", Notice.deadline >= now
+        )
+    ).all()
+    matched: set[str] = set()
+    for notice_id, title, agency, category in rows:
+        ranking = rank_notice_for_department(
+            title=title, agency=agency or "", category=category or "",
+            department_id=department["id"],
+        )
+        if ranking["matched_department_keywords"] or ranking["matched_regions"]:
+            matched.add(notice_id)
+    return matched
+
+
 def _notice_summaries_for_ids(
     session: Session,
     notice_ids: list[str],
@@ -1230,6 +1261,9 @@ def dashboard(
     decided_notice_ids, go_notice_ids = _department_decision_index(
         session, department=selected_department
     )
+    keyword_matched_ids = _department_keyword_matched_ids(
+        session, department=selected_department, now=now
+    )
     cancelled_go_notices: list[dict[str, Any]] = []
     active_count = 0
     actionable_count = 0
@@ -1315,7 +1349,10 @@ def dashboard(
                             }
                         )
                 elif effective_status == "OPEN":
-                    if qualified and not department_decided:
+                    department_relevant = (
+                        keyword_matched_ids is None or notice.id in keyword_matched_ids
+                    )
+                    if qualified and department_relevant and not department_decided:
                         work_queue_counts["pending_decision"] += 1
                     if department_go and notice.id not in outcome_notice_ids:
                         work_queue_counts["in_progress"] += 1
@@ -1433,6 +1470,11 @@ def dashboard(
         # cancelled notices stay in `totals.notices` for the lifecycle screens.
         "work_queue_denominator": actionable_count,
         "work_queue_denominator_definition": "OPEN_NOT_CANCELLED",
+        "pending_decision_definition": (
+            "DEPARTMENT_KEYWORD_AND_QUALIFIED_AND_UNDECIDED"
+            if keyword_matched_ids is not None
+            else "QUALIFIED_AND_UNDECIDED"
+        ),
         "cancelled_go_notices": cancelled_go_notices,
         "totals": {
             "notices": len(notice_ids),
@@ -1517,6 +1559,8 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
         matched_count = 0
         evaluated_count = 0
         recommended_count = 0
+        selected_matched_count = 0
+        _decided, go_ids = _department_decision_index(session, department=profile)
         for notice_id, title, agency, category in actionable:
             ranking = rank_notice_for_department(
                 title=title, agency=agency, category=category, department_id=profile["id"],
@@ -1532,10 +1576,10 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
             recommended_count += int(
                 ranking["recommendation_tier"] in {"TOP", "ROUTING"}
             )
+            selected_matched_count += int(notice_id in go_ids)
             for keyword in matched:
                 if keyword in keyword_counts:
                     keyword_counts[keyword] += 1
-        _decided, go_ids = _department_decision_index(session, department=profile)
         departments.append(
             {
                 "department_id": profile["id"],
@@ -1544,6 +1588,10 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
                 "matched_count": matched_count,
                 "evaluated_count": evaluated_count,
                 "recommended_count": recommended_count,
+                # Selection inside this scope keeps the funnel nested, so a bar
+                # can stack collect -> evaluate -> recommend -> select without a
+                # segment overflowing the one that contains it.
+                "selected_matched_count": selected_matched_count,
                 "selected_count": len(go_ids),
                 "selection_rate": (
                     len(go_ids) / recommended_count if recommended_count else None
