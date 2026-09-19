@@ -3026,3 +3026,55 @@ def test_proposal_request_is_read_before_the_notice_document() -> None:
 
     # 제안요청서가 슬롯 번호는 뒤지만 읽는 순서는 앞선다.
     assert ordered[0]["file_name"] == "제안요청서.hwpx"
+
+
+def test_notice_detail_status_cap_covers_the_manifest() -> None:
+    """공고 상세의 첨부 상태 목록 상한이 manifest 정원을 덮어야 한다.
+
+    `public_attachment_analysis_statuses` 는 유효 첨부마다 한 행을 내고, 무효
+    항목이 있으면 "첨부 목록 확인 필요" 행을 하나 더 붙인다. manifest 정원을
+    늘리면서 이 상한을 같이 올리지 않으면 첨부가 많은 공고의 상세 응답이
+    검증에서 막혀 500 이 된다. 눈에 잘 띄지 않는 실패라 여기서 묶어 둔다.
+    """
+
+    from pai_loop.schemas import NoticeDetail
+    from pai_loop.pps_enrichment import MAX_MANIFEST_ATTACHMENTS
+
+    field = NoticeDetail.model_fields["attachment_analysis_statuses"]
+    cap = next(
+        item.max_length
+        for item in field.metadata
+        if getattr(item, "max_length", None) is not None
+    )
+    assert cap >= MAX_MANIFEST_ATTACHMENTS + 1, (
+        f"상세 응답 상한 {cap} 이 manifest 정원 {MAX_MANIFEST_ATTACHMENTS} + 무효행 1 보다 작다"
+    )
+
+
+def test_full_manifest_with_an_invalid_row_produces_a_serialisable_status_list() -> None:
+    """정원을 가득 채운 manifest 가 실제로 응답 모델을 통과하는지 본다."""
+
+    from pai_loop.schemas import AttachmentAnalysisStatusOut
+    from pai_loop.pps_enrichment import MAX_MANIFEST_ATTACHMENTS
+
+    rows = [
+        {
+            "document_name": f"첨부문서 {index + 1}",
+            "state": "PENDING",
+            "reason_code": "ATTACHMENT_COVERAGE_INCOMPLETE",
+            "reason": "확인이 필요합니다.",
+        }
+        for index in range(MAX_MANIFEST_ATTACHMENTS)
+    ] + [
+        {
+            "document_name": "첨부 목록 확인 필요",
+            "state": "REVIEW",
+            "reason_code": "ATTACHMENT_COVERAGE_INCOMPLETE",
+            "reason": "현재 첨부 목록에 검증되지 않은 항목이 있어 원문 확인이 필요합니다.",
+        }
+    ]
+
+    from pydantic import TypeAdapter
+
+    adapter = TypeAdapter(list[AttachmentAnalysisStatusOut])
+    assert len(adapter.validate_python(rows)) == MAX_MANIFEST_ATTACHMENTS + 1

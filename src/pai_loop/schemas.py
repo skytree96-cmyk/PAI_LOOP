@@ -495,7 +495,12 @@ class NoticeDetail(NoticeSummary):
     requirements: list[dict[str, Any]]
     decisions: list[DecisionOut]
     document_analyses: list[dict[str, Any]] = Field(default_factory=list)
-    attachment_analysis_statuses: list[AttachmentAnalysisStatusOut] = Field(default_factory=list, max_length=11)
+    # manifest 정원(공고 슬롯 10 + 제안요청서 2) 전부에 더해, 검증에 실패한
+    # 항목이 있을 때 붙는 "첨부 목록 확인 필요" 행 한 개까지 담아야 한다.
+    # pps_enrichment.MAX_MANIFEST_ATTACHMENTS 와 어긋나면 공고 상세 응답이
+    # 검증에서 막히므로 test_notice_detail_status_cap_covers_the_manifest 가
+    # 둘을 묶어 둔다.
+    attachment_analysis_statuses: list[AttachmentAnalysisStatusOut] = Field(default_factory=list, max_length=13)
     award_history: list[AwardHistoryItemOut] = Field(default_factory=list)
 
 
