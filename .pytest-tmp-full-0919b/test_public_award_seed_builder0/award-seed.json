@@ -1,0 +1,45 @@
+{
+  "schema_version": "public-award-history-seed-1.0.0",
+  "dataset_version": "qa-v1",
+  "classification": "PUBLIC_PROCUREMENT_DERIVED",
+  "target_notice_key": "MANUAL-INCHON-2025-17",
+  "allowlist": [
+    "agency",
+    "award_amount",
+    "award_rate",
+    "awarded_at",
+    "bid_notice_no",
+    "opened_at",
+    "participant_count",
+    "record_key",
+    "revision_no",
+    "similarity_score",
+    "source",
+    "title",
+    "winner_name"
+  ],
+  "provenance": {
+    "method": "STRICT_ALLOWLIST_FROM_STORED_PPS_PUBLIC_FACTS",
+    "source_kind": "PPS_NARA_AWARD_STORED",
+    "record_count": 1,
+    "excluded_privacy_rows": 2,
+    "records_sha256": "61967afefa51a6e09305318f6f0f5016f995aff612493a3333d0826974812c19"
+  },
+  "records": [
+    {
+      "agency": "가상 공공기관",
+      "award_amount": 88000000.0,
+      "award_rate": 88.0,
+      "awarded_at": null,
+      "bid_notice_no": "SAFE-001",
+      "opened_at": "2026-08-20T09:00:00+00:00",
+      "participant_count": 3,
+      "record_key": "76d4b94ce5d0a28f4bbdac4e4bda79b6924d5db42f1eb905a41371d6b4d708a8",
+      "revision_no": "00",
+      "similarity_score": 75.0,
+      "source": "PPS_PUBLIC_DERIVED",
+      "title": "공공기관 교육 운영 용역",
+      "winner_name": "가상 수행사"
+    }
+  ]
+}

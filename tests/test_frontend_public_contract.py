@@ -75,7 +75,7 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert "noticeStatusScopeForView(state.currentView)" in load_body
     assert "requestedStatusScope !== noticeStatusScopeForView(state.currentView)" in load_body
     assert "noticeStatusScopeForView(state.currentView)" in request_body
-    assert '["all", "new", "review", "undecided", "go", "urgent"].includes(state.currentView)' in filter_body
+    assert '["all", "new", "review", "undecided", "go", "urgent", "pending-decision", "in-progress", "urgent-in-progress"].includes(state.currentView)' in filter_body
     assert "noticeStatusScopeForView(nextView)" in view_body
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
@@ -181,9 +181,12 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     filter_body = _function_body(source, "applyFilters", "compareNotices")
     view_body = _function_body(source, "setView", "setLayout")
 
-    for view in ("fail", "review", "urgent", "result-missing", "cancelled", "go"):
+    # The dashboard cards are the work pipeline; the legacy queue views stay
+    # reachable from the menus and from the notice filters.
+    for view in ("pending-decision", "in-progress", "urgent-in-progress", "result-missing-decided"):
         assert f'data-kpi-view="{view}"' in html
-    assert html.count('class="kpi-card__action"') == 6
+    assert html.count('class="kpi-card__action"') == 4
+    assert "kpi-donut" not in html
     assert html.count('aria-pressed="false"') >= 3
     assert "els.kpiViewButtons" in bind_body
     assert "setView(button.dataset.kpiView)" in bind_body
@@ -211,8 +214,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
         in derived_body
     )
     assert "workQueues.result_missing" in dashboard_body
-    assert "els.kpiNew.textContent = displayNumber(data.failCount)" in source
-    assert '["fail", "review", "urgent", "cancelled", "result-missing", "go"].includes(state.currentView)' in filter_body
+    assert "els.kpiReview.textContent = displayNumber(data.pendingDecisionCount)" in source
+    assert "els.kpiGo.textContent = displayNumber(data.inProgressCount)" in source
+    assert '["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)' in filter_body
     assert 'if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome' in derived_body
     assert "source.has_bid_outcome" in source
     assert "effectiveRecommendation(notice) !== recommendation" in filter_body
@@ -220,8 +224,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert '"result-missing": "/result-missing"' in source
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
-    assert 'go: ["GO 후보", "GO 추천 공고"]' in view_body
-    assert 'ended: ["종료·취소 공고", "마감·종료·취소된 전체 공고와 당시 분석 이력"]' in view_body
+    assert 'go: ["GO 후보", "시스템이 GO로 추천한 공고"]' in view_body
+    assert '"in-progress": ["진행 건", "GO로 결정하고 결과를 기록하지 않은 공고"]' in view_body
+    assert 'ended: ["보관함", "마감·종료·취소된 공고와 당시 분석 이력"]' in view_body
     assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
     assert "state.source === \"api\" || state.loading" in view_body
@@ -259,10 +264,10 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
 
     assert "DECIDE WITH EVIDENCE" not in html
     assert "전체 공고의 흐름을 한눈에" in html
-    assert "검토 대기" in html
-    assert "결과 입력 필요 공고" in html
+    assert "판단 대기" in html
+    assert 'aria-label="결과를 입력해야 할 공고 보기"' in html
     assert "저장된 전체 공고" in html
-    assert "취소공고" in html
+    assert "보관함" in html
 
     for status, label in (
         ("PASS", "충족"),
@@ -532,7 +537,7 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     badge_body = _function_body(source, "noticeLifecycleBadge", "recommendationPill")
     detail_body = _function_body(source, "renderDetail", "detailFact")
 
-    assert '["ended", "cancelled", "result-missing"].includes(view)' in scope_body
+    assert '["ended", "cancelled", "result-missing", "result-missing-decided"].includes(view)' in scope_body
     assert 'return "ENDED"' in scope_body
     assert "provider_disposition" in normalize_body
     assert "provider_event_kind" in normalize_body
@@ -554,8 +559,11 @@ def test_ended_notice_scope_is_db_only_visible_and_status_aware() -> None:
     assert "notice-lifecycle-badge" in badge_body
     assert "noticeLifecycleLabel(notice)" in detail_body
     assert "isCancelledNotice(notice)" in detail_body
-    assert 'id="kpiEnded"' in html
-    assert "운영 대상에서 제외된 공고" in html
+    # Cancellation left the dashboard cards and is surfaced where the work is:
+    # a banner for a cancelled GO, and the archive menu for the history.
+    assert 'id="cancelledGoBanner"' in html
+    assert 'data-view="ended"' in html
+    assert "진행 중이던 공고가 취소되었습니다" in html
     assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in styles
 
 
@@ -1229,8 +1237,7 @@ def test_urgent_five_day_window_and_operator_filter_preserve_other_axes() -> Non
     html = INDEX_HTML.read_text(encoding="utf-8")
     urgent_constant = re.search(r"  const URGENT_DEADLINE_DAYS = \d+;", source)
     assert urgent_constant
-    assert 'aria-label="5일 이내 입찰마감 공고 보기"' in html
-    assert 'class="kpi-scope-note">진행 중 PASS·REVIEW' in html
+    assert 'aria-label="진행 건 중 마감이 임박한 공고 보기"' in html
     assert 'id="replayButton" hidden' in html
     assert 'els.replayButton.hidden = true;' in source
     adapter = urgent_constant.group(0)

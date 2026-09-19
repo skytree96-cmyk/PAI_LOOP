@@ -101,7 +101,15 @@ def test_department_counts_use_complete_store_and_latest_decision_per_department
     assert finance_stats["selection_rate"] == 1
     # Department selection does not narrow the global queues or denominator.
     assert finance["totals"] == dashboard["totals"]
-    assert finance["work_queue_counts"] == dashboard["work_queue_counts"]
+    assert finance["work_queue_denominator"] == dashboard["work_queue_denominator"]
+    global_queues = ("fail", "review", "urgent", "result_missing", "cancelled")
+    assert {key: finance["work_queue_counts"][key] for key in global_queues} == {
+        key: dashboard["work_queue_counts"][key] for key in global_queues
+    }
+    # The work pipeline is deliberately department-scoped: a decision recorded
+    # by this department is work only this department can still act on.
+    assert finance["work_queue_counts"]["result_missing_decided"] == 0
+    assert dashboard["work_queue_counts"]["result_missing_decided"] == 1
     alias = client.get("/api/v1/dashboard", params={"department_id": "경영기획팀"}).json()
     assert alias["department_statistics"] == stats
 

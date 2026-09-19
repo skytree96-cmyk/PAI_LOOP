@@ -48,7 +48,9 @@ const notice=(id,days)=>({noticeKey:id,title:id,noticeStatus:"OPEN",sourceKind:"
  analysisState:"EVALUATED",recommendation:"UNKNOWN",requirements:[],hasBidOutcome:false});
 u.state.notices=[notice("SYN-NEAR",1),notice("SYN-LATER",8)];
 const payload={totals:{notices:800,evaluations:1500,decisions:90},go_count:3,
- work_queue_counts:{fail:4,review:2,urgent:1,result_missing:1,cancelled:0},
+ work_queue_counts:{fail:4,review:2,urgent:1,result_missing:1,cancelled:0,
+ pending_decision:2,in_progress:3,urgent_in_progress:1,result_missing_decided:1},
+ work_queue_denominator:450,cancelled_go_notices:[],
  department_statistics:{department_id:"organization",department_name:"전사 공통",total_notice_count:800,
  recommended_count:200,selected_count:80,selected_recommended_count:40,selection_available:true},
  generated_at:"2026-09-08T00:00:00Z"};
@@ -82,26 +84,26 @@ def test_pending_failed_counts_are_unknown_and_retry_only_reads_dashboard():
 u.state.dashboard=u.dashboardWithoutGlobalTotals(u.state.notices);
 const original=JSON.stringify(u.state.notices);
 const pending=u.hydrateApplicationMetadata({sequence:1,requestedStatusScope:"OPEN"});
-assert.deepEqual(requests.map(r=>r.path),["/dashboard?department_id=organization","/departments/keyword-profiles"]);
-for(const id of ["kpiReview","kpiUrgent","kpiGo","kpiNew","kpiResultMissing","kpiEnded"]) assert.equal(u.els[id].textContent,"—");
+assert.deepEqual(requests.map(r=>r.path),["/dashboard?department_id=organization","/departments/keyword-profiles","/dashboard/departments"]);
+for(const id of ["kpiReview","kpiUrgent","kpiGo","kpiResultMissing"]) assert.equal(u.els[id].textContent,"—");
 assert.match(u.els.dashboardSummaryTitle.textContent,/집계하고/);
 assert.match(u.els.dashboardSummaryDetail.textContent,/0건이 아니라/);
 assert.equal(u.els.dashboardRetryButton.hidden,true);
-requests[0].reject(Error("SYN timeout"));requests[1].resolve({});await pending;
+requests[0].reject(Error("SYN timeout"));requests[1].resolve({});requests[2].reject(Error("SYN coverage"));await pending;
 assert.equal(u.state.dashboardStatus,"error");
 assert.match(u.els.dashboardSummaryTitle.textContent,/확인하지 못/);
 assert.equal(u.els.dashboardRetryButton.hidden,false);
 assert.equal(u.state.dashboard.totalNotices,null);
 const retry=u.retryDashboardTotals();await u.retryDashboardTotals();
-assert.equal(requests.length,3);assert.equal(requests[2].path,"/dashboard?department_id=organization");
-requests[2].resolve(payload);await retry;
+assert.equal(requests.length,4);assert.equal(requests[3].path,"/dashboard?department_id=organization");
+requests[3].resolve(payload);await retry;
 assert.equal(u.state.dashboardStatus,"ready");
-assert.equal(u.els.kpiNew.textContent,"4");assert.equal(u.els.kpiResultMissing.textContent,"1");
-assert.equal(u.els.kpiEnded.textContent,"0");
+assert.equal(u.els.kpiReview.textContent,"2");assert.equal(u.els.kpiResultMissing.textContent,"1");
+assert.equal(u.els.kpiGo.textContent,"3");
 assert.equal(u.els.dashboardRetryButton.hidden,true);
 assert.match(u.els.dashboardSummaryTotals.textContent,/전체 저장 공고 800건/);
 assert.match(u.els.dashboardSummaryTotals.textContent,/판정 이력 1,500건/);
-assert.match(u.els.dashboardSummaryDetail.textContent,/PASS·REVIEW/);
+assert.match(u.els.dashboardSummaryDetail.textContent,/활성 공고 기준/);
 assert.equal(JSON.stringify(u.state.notices),original);
 assert.equal(statuses.at(-1),"online");
 ''')
@@ -116,7 +118,7 @@ for(const key of ["totalEvaluations","totalDecisions","reviewCount","urgentCount
 const pending=u.loadDashboardTotals();requests[0].resolve({});await pending;
 assert.equal(u.state.dashboardStatus,"partial");
 assert.equal(u.state.dashboard.totalNotices,null);
-assert.equal(u.els.kpiEnded.textContent,"—");
+assert.equal(u.els.kpiGo.textContent,"—");
 assert.equal(u.els.dashboardRetryButton.hidden,false);
 u.els.searchInput.value="SYN";
 const scoped=u.normalizeDashboard(payload,u.state.notices);
@@ -141,8 +143,8 @@ requests.find(r=>r.path.startsWith("/dashboard?")).reject(Error("SYN offline"));
 requests.find(r=>r.path==="/departments/keyword-profiles").resolve({});await tick();
 assert.equal(u.state.dashboardStatus,"error");
 assert.equal(u.state.dashboard.totalNotices,800);assert.equal(u.state.dashboard.totalEvaluations,1500);
-assert.equal(u.els.kpiNew.textContent,"4");
-assert.equal(u.els.kpiNew.attributes["aria-label"],"4건 · 마지막 확인값");
+assert.equal(u.els.kpiReview.textContent,"2");
+assert.equal(u.els.kpiReview.attributes["aria-label"],"2건 · 마지막 확인값");
 ''')
 
 
@@ -202,11 +204,12 @@ const get=enableDashboardElements();
 u.state.dashboard=u.normalizeDashboard(payload,u.state.notices);u.state.dashboardStatus="ready";
 u.els.searchInput.value="SYN subset";
 u.renderKpis();
-assert.equal(get("dashboardTotalNotices").textContent,"800");
-assert.equal(get("kpiReviewShare").textContent,"0.3%");
-assert.equal(get("kpiNewShare").textContent,"0.5%");
-assert.equal(get("kpiNewProgress").attributes["stroke-dasharray"],"0.5 99.5");
-assert.equal(get("kpiNewProgress").attributes.visibility,"visible");
+assert.equal(get("dashboardTotalNotices").textContent,"450");
+assert.equal(u.els.kpiReview.textContent,"2");
+assert.equal(u.els.kpiGo.textContent,"3");
+assert.equal(u.els.kpiUrgent.textContent,"1");
+assert.equal(u.els.kpiResultMissing.textContent,"1");
+assert.equal(get("kpiReviewShare").textContent,"");
 assert.equal(get("departmentRecommendedCount").textContent,"200");
 assert.equal(get("departmentRecommendedShare").textContent,"25%");
 assert.equal(get("departmentSelectedShare").textContent,"10%");
@@ -217,10 +220,10 @@ assert.equal(get("departmentRecommendedStem").attributes.y2,"170");
 assert.equal(get("departmentSelectedStem").attributes.y2,"200");
 assert.match(get("departmentComparisonChart").attributes["aria-label"],/전사 공통.*추천 공고 200건.*25%.*선택한 공고 80건.*10%/);
 assert.match(get("departmentSelectionDetail").textContent,/추천 200건 중 40건 선택/);
-assert.match(u.els.dashboardSummaryDetail.textContent,/조건별 공고는 중복/);
+assert.match(u.els.dashboardSummaryDetail.textContent,/활성 공고 기준/);
 const original=JSON.stringify(payload);
 u.state.dashboardStatus="loading";u.renderKpis();
-assert.equal(get("kpiNewShare").textContent,"0.5%");
+assert.equal(u.els.kpiReview.textContent,"2");
 assert.match(get("dashboardTotalMeta").textContent,/마지막 확인/);
 assert.match(get("departmentDashboardMeta").textContent,/마지막 확인/);
 assert.equal(JSON.stringify(payload),original);
@@ -237,9 +240,8 @@ assert.equal(u.formatDashboardShare(1,8000),"<0.1%");
 u.state.dashboard=u.dashboardWithoutGlobalTotals(u.state.notices);u.state.dashboardStatus="loading";
 u.renderKpis();
 assert.equal(get("dashboardTotalNotices").textContent,"—");
-assert.equal(get("kpiReviewShare").textContent,"—");
-assert.equal(get("kpiReviewProgress").attributes["stroke-dasharray"],"0 100");
-assert.equal(get("kpiReviewProgress").attributes.visibility,"hidden");
+assert.equal(u.els.kpiReview.textContent,"—");
+assert.equal(u.els.kpiReview.attributes["aria-label"],"집계 확인 필요");
 u.state.dashboard=u.normalizeDashboard({...payload,department_statistics:{...payload.department_statistics,selection_available:false}},u.state.notices);
 u.state.dashboardStatus="ready";u.renderKpis();
 assert.equal(get("departmentRecommendedShare").textContent,"25%");
@@ -273,7 +275,8 @@ assert.equal(get("dashboardDepartmentSelect").value,"SYN-B");
 u.els.departmentSelect.value="SYN-C";u.renderKpis();
 assert.equal(get("departmentRecommendedCount").textContent,"—");
 assert.equal(get("departmentSelectedShare").textContent,"—");
-assert.equal(get("kpiNewShare").textContent,"0.5%");
+// Work cards stay on the last confirmed aggregate while the department reloads.
+assert.equal(u.els.kpiReview.textContent,"2");
 ''')
 
 

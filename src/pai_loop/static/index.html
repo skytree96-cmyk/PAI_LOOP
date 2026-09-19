@@ -76,6 +76,13 @@
                 <span>검토 대기 공고</span>
                 <span class="nav-count nav-count--warning" id="navReviewCount" aria-label="분석 및 자격 검토 대기 수">—</span>
               </button>
+              <button class="nav-item nav-item--sub" type="button" data-view="in-progress">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M4 20h16" /><path d="M14 4l6 6-9 9H5v-6z" /></svg>
+                </span>
+                <span>진행 건</span>
+                <span class="nav-count" id="navInProgressCount" aria-label="GO로 결정하고 결과를 기록하지 않은 공고 수">—</span>
+              </button>
               <button class="nav-item nav-item--sub" type="button" data-view="undecided">
                 <span class="nav-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><path d="M9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
@@ -103,6 +110,13 @@
                   <svg viewBox="0 0 24 24"><path d="M8 4h8v4a4 4 0 0 1-8 0V4Z" /><path d="M8 6H5v1a4 4 0 0 0 4 4M16 6h3v1a4 4 0 0 1-4 4M12 12v5M8 20h8M9 17h6" /></svg>
                 </span>
                 <span>낙찰 결과</span>
+              </button>
+              <button class="nav-item nav-item--sub" type="button" data-view="ended">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M3 7h18v13H3z" /><path d="M3 7l2-3h14l2 3" /><path d="M10 12h4" /></svg>
+                </span>
+                <span>보관함</span>
+                <span class="nav-count" id="navArchiveCount" aria-label="종료·취소된 공고 수">—</span>
               </button>
             </div>
           </div>
@@ -154,7 +168,19 @@
             </button>
           </section>
 
-          <section class="kpi-grid" id="opportunityKpis" aria-label="전체 수집 공고 대비 업무 현황">
+          <section class="cancelled-go-banner" id="cancelledGoBanner" role="status" aria-live="polite" hidden>
+            <span class="cancelled-go-banner__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M15 9l-6 6M9 9l6 6" /></svg>
+            </span>
+            <div class="cancelled-go-banner__body">
+              <strong id="cancelledGoBannerTitle">진행 중이던 공고가 취소되었습니다</strong>
+              <p id="cancelledGoBannerDetail"></p>
+            </div>
+            <button class="button button--secondary" type="button" id="cancelledGoBannerLink">보관함에서 보기</button>
+            <button class="button button--ghost" type="button" id="cancelledGoBannerDismiss">확인</button>
+          </section>
+
+          <section class="kpi-grid kpi-grid--pipeline" id="opportunityKpis" aria-label="활성 공고 기준 업무 현황">
             <div class="dashboard-summary" id="dashboardSummary" hidden>
               <div role="status" aria-live="polite">
                 <strong id="dashboardSummaryTitle">전체 공고 수를 집계하고 있습니다.</strong>
@@ -163,96 +189,54 @@
               </div>
               <button class="button button--secondary" id="dashboardRetryButton" type="button" hidden>집계 다시 조회</button>
             </div>
-            <article class="kpi-card kpi-card--action kpi-card--accent">
-              <button class="kpi-card__action" type="button" data-kpi-view="review" aria-label="분석 및 자격 검토 대기 공고 보기" aria-pressed="false"><span class="sr-only">분석 및 자격 검토 대기 공고 보기</span></button>
-              <div class="kpi-card__head"><span>검토 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.8 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.8a2 2 0 0 0-3.4 0Z" /></svg></span></div>
-              <div class="kpi-visual">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiReview">—</strong><span>전체 수집 공고 대비</span></div>
-                <div class="kpi-donut-chart">
-                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
-                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
-                    <circle class="kpi-donut__value" id="kpiReviewProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
-                  </svg>
-                  <div class="kpi-share"><strong id="kpiReviewShare">—</strong></div>
-                </div>
+            <article class="kpi-card kpi-card--action kpi-card--pipeline kpi-card--accent">
+              <button class="kpi-card__action" type="button" data-kpi-view="pending-decision" aria-label="담당자 판단이 필요한 공고 보기" aria-pressed="false"><span class="sr-only">담당자 판단이 필요한 공고 보기</span></button>
+              <div class="kpi-card__head"><span>① 판단 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 4h6v3H9z" /><path d="M15 5h3v15H6V5h3" /><path d="M9 13l2 2 4-4" /></svg></span></div>
+              <div class="kpi-visual kpi-visual--plain">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiReview">—</strong><span>활성 공고 대비</span></div>
               </div>
-              <p><span class="trend trend--amber" id="kpiReviewTrend">처리 필요</span> PASS·REVIEW 중 첨부·자격 확인 대기</p>
+              <p><span class="trend trend--amber" id="kpiReviewTrend">판단 필요</span> 부서 키워드 매칭 + 자격 PASS·REVIEW 중 담당자 판단 미입력</p>
             </article>
-            <article class="kpi-card kpi-card--action">
-              <button class="kpi-card__action" type="button" data-kpi-view="urgent" aria-label="5일 이내 입찰마감 공고 보기" aria-pressed="false"><span class="sr-only">5일 이내 입찰마감 공고 보기</span></button>
-              <div class="kpi-card__head"><span>마감 임박 (5일)</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
-              <div class="kpi-visual">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiUrgent">—</strong><span>전체 수집 공고 대비</span></div>
-                <div class="kpi-donut-chart">
-                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
-                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
-                    <circle class="kpi-donut__value" id="kpiUrgentProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
-                  </svg>
-                  <div class="kpi-share"><strong id="kpiUrgentShare">—</strong></div>
-                </div>
+            <article class="kpi-card kpi-card--action kpi-card--pipeline">
+              <button class="kpi-card__action" type="button" data-kpi-view="in-progress" aria-label="진행 중인 공고 보기" aria-pressed="false"><span class="sr-only">진행 중인 공고 보기</span></button>
+              <div class="kpi-card__head"><span>② 진행 건</span><span class="kpi-icon kpi-icon--up" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h16" /><path d="M14 4l6 6-9 9H5v-6z" /></svg></span></div>
+              <div class="kpi-visual kpi-visual--plain">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiGo">—</strong><span>활성 공고 대비</span></div>
               </div>
-              <p class="kpi-scope-note">진행 중 PASS·REVIEW · <span class="trend trend--red">5일</span> 이내 입찰마감 · 한국 날짜 기준</p>
+              <p><span class="trend trend--up" id="kpiGoTrend">제안 작성</span> GO·조건부 GO로 결정하고 결과를 기록하지 않은 공고</p>
             </article>
-            <article class="kpi-card kpi-card--action">
-              <button class="kpi-card__action" type="button" data-kpi-view="result-missing" aria-label="결과 입력 필요 공고 보기" aria-pressed="false"><span class="sr-only">결과 입력 필요 공고 보기</span></button>
-              <div class="kpi-card__head"><span>결과 입력 필요 공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M9 12h6M12 9v6" /></svg></span></div>
-              <div class="kpi-visual">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiResultMissing">—</strong><span>전체 수집 공고 대비</span></div>
-                <div class="kpi-donut-chart">
-                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
-                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
-                    <circle class="kpi-donut__value" id="kpiResultMissingProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
-                  </svg>
-                  <div class="kpi-share"><strong id="kpiResultMissingShare">—</strong></div>
-                </div>
+            <article class="kpi-card kpi-card--action kpi-card--pipeline">
+              <button class="kpi-card__action" type="button" data-kpi-view="urgent-in-progress" aria-label="진행 건 중 마감이 임박한 공고 보기" aria-pressed="false"><span class="sr-only">진행 건 중 마감이 임박한 공고 보기</span></button>
+              <div class="kpi-card__head"><span>③ 마감 임박 (5일)</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
+              <div class="kpi-visual kpi-visual--plain">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiUrgent">—</strong><span>활성 공고 대비</span></div>
               </div>
-              <p><span class="trend trend--slate">기록 필요</span> PASS·REVIEW 중 마감·종료 후 결과 없음</p>
+              <p>진행 건 중 5일 이내 입찰마감 · 한국 날짜 기준</p>
             </article>
-            <article class="kpi-card kpi-card--action" aria-label="자격 FAIL 공고 수">
-              <button class="kpi-card__action" type="button" data-kpi-view="fail" aria-label="자격 FAIL 공고 보기" aria-pressed="false"><span class="sr-only">자격 FAIL 공고 보기</span></button>
-              <div class="kpi-card__head"><span>FAIL 공고</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h8" /></svg></span></div>
-              <div class="kpi-visual">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiNew">—</strong><span>전체 수집 공고 대비</span></div>
-                <div class="kpi-donut-chart">
-                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
-                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
-                    <circle class="kpi-donut__value" id="kpiNewProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
-                  </svg>
-                  <div class="kpi-share"><strong id="kpiNewShare">—</strong></div>
-                </div>
+            <article class="kpi-card kpi-card--action kpi-card--pipeline">
+              <button class="kpi-card__action" type="button" data-kpi-view="result-missing-decided" aria-label="결과를 입력해야 할 공고 보기" aria-pressed="false"><span class="sr-only">결과를 입력해야 할 공고 보기</span></button>
+              <div class="kpi-card__head"><span>④ 결과 입력</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 14v5h16v-5" /><path d="M12 4v10" /><path d="M8 10l4 4 4-4" /></svg></span></div>
+              <div class="kpi-visual kpi-visual--plain">
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiResultMissing">—</strong><span>활성 공고 대비</span></div>
               </div>
-              <p><span class="trend trend--red" id="kpiNewTrend">자격 FAIL</span> 저장된 현재 자격 판정 기준</p>
+              <p>GO로 결정하고 개찰이 지난 뒤 결과 미기록</p>
             </article>
-            <article class="kpi-card kpi-card--action" aria-label="AI 판단 GO 후보 수">
-              <button class="kpi-card__action" type="button" data-kpi-view="go" aria-label="GO 후보 공고 보기" aria-pressed="false"><span class="sr-only">GO 후보 공고 보기</span></button>
-              <div class="kpi-card__head"><span>GO 후보</span><span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></span></div>
-              <div class="kpi-visual">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiGo">—</strong><span>전체 수집 공고 대비</span></div>
-                <div class="kpi-donut-chart">
-                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
-                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
-                    <circle class="kpi-donut__value" id="kpiGoProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
-                  </svg>
-                  <div class="kpi-share"><strong id="kpiGoShare">—</strong></div>
-                </div>
+
+            <section class="department-coverage" id="departmentCoverage" aria-labelledby="departmentCoverageTitle">
+              <div class="department-coverage__head">
+                <h3 id="departmentCoverageTitle">부서·키워드별 수집 현황</h3>
+                <p id="departmentCoverageStatus">집계 조회 대기</p>
+                <button class="button button--secondary" type="button" id="departmentCoverageRetry" hidden>다시 조회</button>
               </div>
-              <p><span class="trend trend--up" id="kpiGoTrend">AI 판단</span> 진행 공고 중 GO</p>
-            </article>
-            <article class="kpi-card kpi-card--action" aria-label="당시 PASS·REVIEW 취소공고 수">
-              <button class="kpi-card__action" type="button" data-kpi-view="cancelled" aria-label="당시 PASS·REVIEW 취소공고 보기" aria-pressed="false"><span class="sr-only">당시 PASS·REVIEW 취소공고 보기</span></button>
-              <div class="kpi-card__head"><span>취소공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></svg></span></div>
-              <div class="kpi-visual">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiEnded">—</strong><span>전체 수집 공고 대비</span></div>
-                <div class="kpi-donut-chart">
-                  <svg class="kpi-donut" viewBox="0 0 100 100" aria-hidden="true">
-                    <circle class="kpi-donut__track" cx="50" cy="50" r="42" />
-                    <circle class="kpi-donut__value" id="kpiEndedProgress" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 50 50)" />
-                  </svg>
-                  <div class="kpi-share"><strong id="kpiEndedShare">—</strong></div>
-                </div>
-              </div>
-              <p><span class="trend trend--slate">당시 PASS·REVIEW</span> 운영 대상에서 제외된 공고</p>
-            </article>
+              <ol class="coverage-list" id="departmentCoverageKeywords" aria-label="부서별 매칭 공고 수"></ol>
+              <h4 class="department-coverage__subtitle">부서별 선택 현황</h4>
+              <p class="department-coverage__legend">
+                <span class="legend-dot legend-dot--selected" aria-hidden="true"></span>선택
+                <span class="legend-dot legend-dot--rest" aria-hidden="true"></span>추천 · 미선택
+              </p>
+              <ol class="coverage-list coverage-list--selection" id="departmentCoverageSelection" aria-label="부서별 선택 공고 수"></ol>
+            </section>
+
             <section class="department-dashboard" aria-labelledby="departmentDashboardTitle">
               <div class="department-dashboard__header">
                 <div><p class="section-kicker">부서별 공고 현황</p><h3 id="departmentDashboardTitle">우리 부서의 관심 공고</h3><p id="departmentDashboardMeta" aria-live="polite">부서별 현황을 확인하고 있습니다.</p></div>

@@ -36,6 +36,7 @@ pai-loop = "pai_loop.main:run"
 pai-loop-seed-public-notice = "pai_loop.public_notice_cli:main"
 pai-loop-migrate = "pai_loop.migrations:main"
 pai-loop-teams-followups = "pai_loop.teams_followups:main"
+pai-loop-demo-decisions = "pai_loop.demo_decisions_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pai_loop"]
