@@ -54,10 +54,55 @@ def test_exact_hwpx_package_with_hwp_name_retains_same_source_and_text() -> None
     assert observed == [("SYN.hwp", content)]
 
 
+def test_exact_hwpx_package_with_zip_name_retains_same_source_and_text() -> None:
+    """조달청은 HWPX 패키지를 .zip 이름으로도 내려준다.
+
+    일반 아카이브로 열면 BinData 이미지와 content.hpf 가 각각 미지원 멤버로
+    거절되어 본문이 한 글자도 나오지 않고, 그 안의 배점표를 통째로 잃는다.
+    이름이 아니라 정확한 mimetype 멤버가 패키지를 증명한다.
+    """
+
+    content = package()
+    canonical = pps.extract_pps_document_content("SYN.hwpx", content)
+    mislabeled = pps.extract_pps_document_content("SYN.zip", content)
+    assert mislabeled == canonical
+    assert mislabeled.complete and mislabeled.text == TEXT
+    observed = []
+
+    def leaf(name: str, value: bytes) -> str:
+        observed.append((name, value))
+        return TEXT
+
+    extract_document_content("SYN.zip", content, leaf_extractors={".hwpx": leaf})
+    assert observed == [("SYN.zip", content)]
+
+
 @pytest.mark.parametrize("mimetype", [None, b"application/zip", b"Application/hwp+zip", b"application/hwp+zip\n"])
 def test_generic_zip_or_inexact_media_type_is_not_promoted_to_hwpx(mimetype) -> None:
     with pytest.raises(pps.PpsEnrichmentError, match="HWP_CONTAINER_INVALID"):
         pps.extract_pps_document_content("SYN.hwp", package(mimetype=mimetype))
+
+
+@pytest.mark.parametrize("mimetype", [None, b"application/zip", b"Application/hwp+zip", b"application/hwp+zip\n"])
+def test_zip_without_the_exact_media_type_stays_a_generic_archive(mimetype) -> None:
+    """.zip 이름은 정확한 mimetype 멤버가 있을 때만 HWPX 로 승격된다.
+
+    그 멤버가 없거나 표기가 다르면 진짜 일반 아카이브일 수 있으므로 종전의
+    아카이브 경로를 그대로 탄다. 승격이 이름이 아니라 내용으로만 일어나는지를
+    고정한다.
+    """
+
+    observed: list[str] = []
+
+    def leaf(name: str, _content: bytes) -> str:
+        observed.append(name)
+        return TEXT
+
+    extract_document_content(
+        "SYN.zip", package(mimetype=mimetype), leaf_extractors={".hwpx": leaf}
+    )
+    # HWPX 리프가 패키지 전체를 받는 일은 없다.
+    assert "SYN.zip" not in observed
 
 
 @pytest.mark.parametrize("extras,limits,code", [
