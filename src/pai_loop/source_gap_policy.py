@@ -725,7 +725,16 @@ def source_label_document_types(value: str | None) -> tuple[str, ...]:
         return ()
     compact = _compact_document_label(value)
     matches: set[str] = set()
-    if any(marker in compact for marker in ("입찰공고", "공고문")):
+    # 조달청 첨부는 공고 본문을 "공고문" 말고도 "공고서"·"재공고"로 이름 붙인다.
+    # 그 이름이 어떤 역할로도 분류되지 않으면, 그 문서가 선언한 결손을 형제 문서가
+    # 채울 수 있는지 판정하는 단계에서 역할 수가 1이 아니라는 이유로 즉시 막힌다.
+    # 실측(공고 19건·결손 선언 첨부 25개)에서 12개가 역할 0으로 떨어졌고 그 대부분이
+    # 이 표기였다. "공고"만 넣으면 "(공고)제안요청서" 같은 이름이 NOTICE·RFP 둘로
+    # 잡혀 오히려 막히므로, 단독으로 공고 본문을 가리키는 표기만 더한다.
+    if any(
+        marker in compact
+        for marker in ("입찰공고", "공고문", "공고서", "재공고")
+    ):
         matches.add("NOTICE")
     if "제안요청서" in compact:
         matches.add("RFP")
