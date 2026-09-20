@@ -9,6 +9,7 @@ from sqlalchemy import select, func
 
 from pai_loop.extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT as CURRENT,
+    PREVIOUS_EXTRACTION_CONTRACT as EXTRACTION,
     PREVIOUS_PROCESSING_CONTRACT as PROCESSING,
     PREVIOUS_CASE_CONTRACT as PREVIOUS,
     LEGACY_CASE_CONTRACT as LEGACY,
@@ -21,7 +22,7 @@ from pai_loop.quantitative_scoring import _current_dynamic_quantitative_profile,
 from pai_loop.pps_enrichment import (
     _current_manifest_attempts, public_analysis_reason, safe_public_bound_extraction,
     safe_public_live_extraction, _persist_extraction_version, _stored_attachment_result,
-    _accepted_outcome_for_duplicate_content,
+    _accepted_outcome_for_duplicate_content, enrich_notice_from_pps,
 )
 from pai_loop.analysis_pipeline import _parse_source, _select_source_versions
 from pai_loop.recovery_diagnostics import _attachment_projection
@@ -31,12 +32,12 @@ from test_extraction_contract_compatibility import notice_fixture, usable, merge
 from test_quantitative_count_ranges import fixture as range_fixture
 
 
-CONTRACTS = (CURRENT, PROCESSING, PREVIOUS, LEGACY)
-KINDS = ('CURRENT', 'EXACT_PREVIOUS_PROCESSING', 'LEGACY_CASE_V2', 'LEGACY_CASE_V1')
+CONTRACTS = (CURRENT, EXTRACTION, PROCESSING, PREVIOUS, LEGACY)
+KINDS = ('CURRENT', 'EXACT_PREVIOUS_EXTRACTION', 'EXACT_PREVIOUS_PROCESSING', 'LEGACY_CASE_V2', 'LEGACY_CASE_V1')
 
 
-@pytest.mark.parametrize('parts', product(range(4), repeat=4))
-def test_only_four_exact_released_contract_tuples_are_readable(parts):
+@pytest.mark.parametrize('parts', product(range(len(CONTRACTS)), repeat=4))
+def test_only_exact_released_contract_tuples_are_readable(parts):
     values = tuple(getattr(CONTRACTS[index], field) for index, field in zip(parts, ('prompt', 'schema', 'validator', 'processing')))
     payload = dict(prompt_version=values[0], schema_version=values[1], processing_version=values[3])
     record = dict(prompt_version=values[0], extraction_schema_version=values[1], validator_version=values[2])
@@ -44,8 +45,8 @@ def test_only_four_exact_released_contract_tuples_are_readable(parts):
     assert classify_record_contract(payload, record) == expected
 
 
-def modern_range_notice():
-    notice, metadata, attempt, _ = notice_fixture(contract=PROCESSING)
+def modern_range_notice(contract=PROCESSING):
+    notice, metadata, attempt, _ = notice_fixture(contract=contract)
     aid = attempt.source_payload['attachment_id']
     raw, source = range_fixture(inline=True)
     def bind(value):
@@ -59,6 +60,11 @@ def modern_range_notice():
     record = validate_quantitative_attachment_extraction(ExtractionPayload.model_validate(raw),
         source_text=source, attachment_id=aid, document_sha256=source_sha,
         manifest_sha256=attempt.source_payload['current_manifest_sha256'])
+    # Synthetic historical proof: reads must retain this exact old fingerprint.
+    record = record.model_copy(update=dict(prompt_version=contract.prompt,
+        extraction_schema_version=contract.schema, validator_version=contract.validator))
+    record = record.model_copy(update=dict(
+        validation_fingerprint_sha256=validated_quantitative_record_fingerprint(record)))
     attempt.file_sha256 = source_sha
     attempt.source_payload.update(document_sha256=source_sha, result=raw,
         quantitative_validation_record=record.model_dump(mode='json'))
@@ -66,14 +72,20 @@ def modern_range_notice():
     return notice, metadata, attempt, record
 
 
-def test_previous_processing_retains_modern_ranges_submission_and_original_fingerprint():
-    notice, metadata, attempt, record = modern_range_notice()
+@pytest.mark.parametrize('contract,kind', [
+    (EXTRACTION, 'EXACT_PREVIOUS_EXTRACTION'),
+    (PROCESSING, 'EXACT_PREVIOUS_PROCESSING'),
+])
+def test_modern_predecessors_retain_ranges_submission_and_original_fingerprint(contract, kind):
+    notice, metadata, attempt, record = modern_range_notice(contract)
     original = deepcopy(attempt.source_payload)
     assert CURRENT.processing == 'pps-document-processing-0.5.2'
     assert PROCESSING.processing == 'pps-document-processing-0.5.1'
-    assert CURRENT[:3] == PROCESSING[:3]
-    assert EXTRACTION_READ_POLICY_VERSION == 'exact-case-contract-read-v3'
-    assert classify_attempt_header(original) == 'EXACT_PREVIOUS_PROCESSING'
+    assert EXTRACTION[:3] == PROCESSING[:3]
+    assert CURRENT.prompt == 'pai-loop-extraction-0.5.8'
+    assert CURRENT.validator == 'pai-loop-quantitative-attachment-validator-0.6.21'
+    assert EXTRACTION_READ_POLICY_VERSION == 'exact-case-contract-read-v4'
+    assert classify_attempt_header(original) == kind
     assert record.status == 'AVAILABLE'
     assert usable(attempt, record)
     assert validated_quantitative_record_fingerprint(record) == record.validation_fingerprint_sha256
@@ -88,14 +100,15 @@ def test_previous_processing_retains_modern_ranges_submission_and_original_finge
     assert safe_public_bound_extraction(attempt.source_payload, notice.versions) is not None
     diagnostic = _attachment_projection(1, metadata.source_payload['attachment_manifest'][0], attempt,
         {'state': 'ANALYZED', 'reason_code': 'ANALYZED'})
-    assert diagnostic.attempt_contract == 'EXACT_PREVIOUS_PROCESSING'
+    assert diagnostic.attempt_contract == kind
     assert _stored_attachment_result(attempt, attachments_discovered=1).openai_calls == 0
     assert attempt.source_payload == original
 
 
 @pytest.mark.parametrize('options', [{'gap': True}, {'neutral': True}])
-def test_previous_processing_does_not_promote_review_or_no_table(options):
-    notice, _, attempt, record = notice_fixture(contract=PROCESSING, **options)
+@pytest.mark.parametrize('contract', [EXTRACTION, PROCESSING])
+def test_modern_predecessors_do_not_promote_review_or_no_table(options, contract):
+    notice, _, attempt, record = notice_fixture(contract=contract, **options)
     original = deepcopy(attempt.source_payload)
     assert usable(attempt, record)
     assert _current_manifest_attempts(notice.versions)[2][record.attachment_id] is attempt
@@ -103,9 +116,40 @@ def test_previous_processing_does_not_promote_review_or_no_table(options):
     assert attempt.source_payload == original
 
 
+@pytest.mark.parametrize('contract', [EXTRACTION, PROCESSING, PREVIOUS, LEGACY])
+@pytest.mark.parametrize('options', [{}, {'gap': True}, {'neutral': True}])
+def test_ordinary_enrichment_reuses_predecessor_without_download_model_or_new_row(monkeypatch, contract, options):
+    import pai_loop.pps_enrichment as enrichment
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('a readable predecessor must not download or invoke a model')
+
+    monkeypatch.setattr(enrichment, 'download_public_attachment', forbidden)
+    notice, _, attempt, _ = notice_fixture(contract=contract, **options)
+    original = deepcopy(attempt.source_payload)
+    notice_id, attempt_id = notice.id, attempt.id
+    engine = build_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    session = build_session_factory(engine)()
+    try:
+        session.add(notice)
+        session.commit()
+        result = enrich_notice_from_pps(session, notice_id=notice_id,
+            openai_api_key=None, openai_model='SYN-no-model',
+            openai_client_factory=forbidden)
+        assert result.openai_calls == 0
+        assert result.version_id == attempt_id
+        assert session.scalar(select(func.count()).select_from(NoticeVersion)) == 2
+        assert session.get(NoticeVersion, attempt_id).source_payload == original
+    finally:
+        session.close()
+        engine.dispose()
+
+
 @pytest.mark.parametrize('mutation', ['fingerprint', 'file_digest', 'manifest', 'unknown_schema', 'unsupported_055'])
-def test_previous_processing_never_accepts_tampered_or_mixed_proof(mutation):
-    notice, metadata, attempt, record = modern_range_notice()
+@pytest.mark.parametrize('contract', [EXTRACTION, PROCESSING])
+def test_modern_predecessors_never_accept_tampered_or_mixed_proof(mutation, contract):
+    notice, metadata, attempt, record = modern_range_notice(contract)
     if mutation == 'fingerprint':
         attempt.source_payload['quantitative_validation_record']['validation_fingerprint_sha256'] = '0' * 64
     elif mutation == 'file_digest':
@@ -132,9 +176,12 @@ def newer_attempt(notice, old, contract, status):
 
 
 @pytest.mark.parametrize('status', ['REVIEW', 'INVALID_ACCEPTED', 'UNKNOWN_HEADER'])
-def test_new_processing_generation_does_not_resurrect_previous_source(status):
-    notice, _, old, _ = modern_range_notice()
-    newer = newer_attempt(notice, old, CURRENT, status)
+@pytest.mark.parametrize('old_contract,new_contract', [
+    (PROCESSING, CURRENT), (PROCESSING, EXTRACTION), (EXTRACTION, CURRENT),
+])
+def test_new_generation_does_not_resurrect_previous_source(status, old_contract, new_contract):
+    notice, _, old, _ = modern_range_notice(old_contract)
+    newer = newer_attempt(notice, old, new_contract, status)
     attempts = _current_manifest_attempts(notice.versions)[2]
     assert old not in attempts.values()
     assert _current_dynamic_quantitative_profile(notice).status != 'AVAILABLE'
@@ -151,9 +198,10 @@ def test_new_processing_generation_does_not_resurrect_previous_source(status):
         engine.dispose()
 
 
-def test_previous_processing_keeps_same_generation_valid_fallback():
-    notice, _, old, _ = modern_range_notice()
-    newer_attempt(notice, old, PROCESSING, 'INVALID_ACCEPTED')
+@pytest.mark.parametrize('contract', [EXTRACTION, PROCESSING])
+def test_modern_predecessor_keeps_same_generation_valid_fallback(contract):
+    notice, _, old, _ = modern_range_notice(contract)
+    newer_attempt(notice, old, contract, 'INVALID_ACCEPTED')
     assert list(_current_manifest_attempts(notice.versions)[2].values()) == [old]
     engine = build_engine('sqlite:///:memory:')
     Base.metadata.create_all(engine)
@@ -205,8 +253,9 @@ def test_new_writes_use_only_new_processing_without_mutating_previous_review():
 
 
 @pytest.mark.parametrize('changed_hash', [None, 'document_sha256', 'source_text_sha256', 'analysis_input_sha256'])
-def test_processing_upgrade_reuse_requires_identical_bytes_source_and_model_input(changed_hash):
-    notice, _, attempt, record = modern_range_notice()
+@pytest.mark.parametrize('contract', [CURRENT, EXTRACTION, PROCESSING])
+def test_duplicate_reuse_requires_current_prompt_and_identical_bytes_source_and_input(changed_hash, contract):
+    notice, _, attempt, record = modern_range_notice(contract)
     original = deepcopy(attempt.source_payload)
     engine = build_engine('sqlite:///:memory:')
     Base.metadata.create_all(engine)
@@ -220,7 +269,7 @@ def test_processing_upgrade_reuse_requires_identical_bytes_source_and_model_inpu
         if changed_hash:
             params[changed_hash] = '0' * 64
         reused = _accepted_outcome_for_duplicate_content(session, **params)
-        if changed_hash:
+        if changed_hash or contract != CURRENT:
             assert reused is None
         else:
             assert reused is not None and reused.api_calls == 0

@@ -395,12 +395,17 @@ def _select_source_versions(
 
     latest_pps_numbers: dict[str, int] = {}
     latest_new_processing_numbers: dict[str, int] = {}
+    latest_new_extraction_numbers: dict[str, int] = {}
     for version in versions:
         payload = version.source_payload
         if isinstance(payload, dict) and payload.get("kind") == SOURCE_KIND and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
             aid = _attachment_identity(payload, version)
             latest_pps_numbers[aid] = max(latest_pps_numbers.get(aid, -1), version.version_no)
             if classify_attempt_header(payload) in {"CURRENT", "UNSUPPORTED"}:
+                latest_new_extraction_numbers[aid] = max(
+                    latest_new_extraction_numbers.get(aid, -1), version.version_no,
+                )
+            if classify_attempt_header(payload) in {"CURRENT", "EXACT_PREVIOUS_EXTRACTION", "UNSUPPORTED"}:
                 latest_new_processing_numbers[aid] = max(
                     latest_new_processing_numbers.get(aid, -1), version.version_no,
                 )
@@ -423,6 +428,14 @@ def _select_source_versions(
             and version.version_no < latest_pps_numbers.get(_attachment_identity(payload, version), -1)
         ):
             # Even an unsupported newer header prevents legacy-success fallback.
+            continue
+        if (
+            payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and classify_attempt_header(payload) == "EXACT_PREVIOUS_EXTRACTION"
+            and version.version_no < latest_new_extraction_numbers.get(_attachment_identity(payload, version), -1)
+        ):
+            # A new prompt/validator attempt supersedes the older proof even
+            # when the new attempt did not produce usable evidence.
             continue
         if (
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE

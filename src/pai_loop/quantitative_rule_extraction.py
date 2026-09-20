@@ -6341,9 +6341,9 @@ def _assert_available_candidate_invariants(
                 raise ValueError("AVAILABLE bracket points exceed criterion maximum")
             if _invalid_bracket_bounds(bracket):
                 raise ValueError("AVAILABLE bracket bounds are invalid")
-            if not inline_binary and Counter(_comparator_terms(bracket.literal)) != Counter(
-                _expected_bracket_terms(bracket)
-            ):
+            if (not inline_binary
+                    and not _closed_count_bracket_proof(candidate, bracket)
+                    and Counter(_comparator_terms(bracket.literal)) != Counter(_expected_bracket_terms(bracket))):
                 raise ValueError("AVAILABLE bracket comparator binding is invalid")
         if _brackets_overlap(candidate.brackets):
             raise ValueError("AVAILABLE bracket ranges overlap")
@@ -6884,6 +6884,56 @@ def _bracket_points_match_literal(
     )
 
 
+_CLOSED_COUNT_BRACKET_UNITS = {
+    "PERFORMANCE_COUNT": frozenset({"건", "회", "개", "개교"}),
+    "PERSONNEL_COUNT": frozenset({"명", "인"}),
+    "CERTIFICATION_COUNT": frozenset({"건", "개"}),
+    "FACILITY_EQUIPMENT_COUNT": frozenset({"대", "개"}),
+    "AWARD_COUNT": frozenset({"건", "회", "개"}),
+}
+
+
+def _closed_count_bracket_proof(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
+) -> bool:
+    """Bind an explicitly printed closed count interval and its own award.
+
+    This recognizes a complete row such as ``3~5명\n2점`` without inventing
+    comparators, borrowing another row's bound, or changing extracted values.
+    Numeric/ratio ranges and unknown unit words remain outside this grammar.
+    The same proof is required when reading a persisted AVAILABLE candidate.
+    """
+    units = _CLOSED_COUNT_BRACKET_UNITS.get(candidate.metric)
+    if not units or unicodedata.normalize("NFKC", candidate.unit or "").strip() not in units:
+        return False
+    lower = _decimal(bracket.min_value) if bracket.min_value is not None else None
+    upper = _decimal(bracket.max_value) if bracket.max_value is not None else None
+    if (lower is None or upper is None or not 0 <= lower < upper
+            or lower != lower.to_integral_value() or upper != upper.to_integral_value()
+            or not bracket.min_inclusive or not bracket.max_inclusive):
+        return False
+    literal = unicodedata.normalize("NFKC", bracket.literal).strip()
+    lines = literal.splitlines()
+    if not literal or len(literal) > 1_000 or any(not line.strip() for line in lines):
+        return False
+    if len(lines) >= 2 and _score_cell_matches(lines[-1], value=bracket.points, percent=False):
+        condition = "\n".join(lines[:-1]).strip()
+    else:
+        row = re.fullmatch(rf"(?P<condition>.+?)\s+(?P<award>{_NUM_PATTERN})\s*점", literal)
+        if row is None or Decimal(row.group("award").replace(",", "")) != _decimal(bracket.points):
+            return False
+        condition = row.group("condition")
+    unit_pattern = "(?:" + "|".join(re.escape(unit) for unit in sorted(units, key=len, reverse=True)) + ")"
+    match = re.fullmatch(
+        rf"(?P<lower>\d{{1,9}})\s*{unit_pattern}?\s*[~∼～]\s*"
+        rf"(?P<upper>\d{{1,9}})\s*{unit_pattern}",
+        condition,
+    )
+    return bool(match and Decimal(match.group("lower")) == lower
+                and Decimal(match.group("upper")) == upper)
+
+
 def _validate_brackets(
     candidate: QuantitativeRuleCandidate,
     *,
@@ -6962,7 +7012,8 @@ def _validate_brackets(
                     **context,
                 )
             )
-        comparator_issue = None if inline_binary else _comparator_binding_issue(
+        comparator_proved = inline_binary or _closed_count_bracket_proof(candidate, bracket)
+        comparator_issue = None if comparator_proved else _comparator_binding_issue(
             literal=bracket.literal,
             expected=_expected_bracket_terms(bracket),
             mismatch_code="BRACKET_COMPARATOR_MISMATCH",
@@ -8338,7 +8389,7 @@ def quantitative_record_contract_is_usable(
         return False
     if kind in CURRENT_SEMANTICS_KINDS:
         # Existing current records are validated against caller-owned bindings;
-        # the exact processing-only predecessor has the same CASE vocabulary.
+        # exact modern predecessors retain their original proof and CASE vocabulary.
         # Optional redundant payload digest fields do not change that contract.
         return True
     if not (
