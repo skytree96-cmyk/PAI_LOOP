@@ -767,6 +767,7 @@ def _current_manifest_attempts(
     attempts: dict[str, NoticeVersion] = {}
     current_generation_seen: set[str] = set()
     new_processing_generation_seen: set[str] = set()
+    new_extraction_generation_seen: set[str] = set()
     for version in sorted(versions, key=lambda item: item.version_no, reverse=True):
         payload = version.source_payload
         if (
@@ -789,8 +790,15 @@ def _current_manifest_attempts(
         if contract_kind == "UNSUPPORTED":
             current_generation_seen.add(attachment_id)
             new_processing_generation_seen.add(attachment_id)
+            new_extraction_generation_seen.add(attachment_id)
             continue
         if contract_kind == "CURRENT":
+            current_generation_seen.add(attachment_id)
+            new_processing_generation_seen.add(attachment_id)
+            new_extraction_generation_seen.add(attachment_id)
+        elif contract_kind == "EXACT_PREVIOUS_EXTRACTION":
+            if attachment_id in new_extraction_generation_seen:
+                continue
             current_generation_seen.add(attachment_id)
             new_processing_generation_seen.add(attachment_id)
         elif contract_kind == "EXACT_PREVIOUS_PROCESSING":

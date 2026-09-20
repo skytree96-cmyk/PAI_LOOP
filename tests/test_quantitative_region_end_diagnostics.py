@@ -208,10 +208,18 @@ def test_observation_keeps_payload_record_fingerprint_schema_and_blockers_identi
     raw = payload.model_dump(mode="json")
     baseline = record(raw, source)
     assert baseline.status == "AVAILABLE", [issue.code for issue in baseline.issues]
-    # Captured from the unchanged QRE at f0d4096 using this exact SYN fixture.
-    # Observation must not alter existing successful serialized record bytes.
-    assert baseline.validation_fingerprint_sha256 == "3258ad87794ffce8dcb6216559a73b4c50738a6ab625c236d816df6329fb860e"
-    assert hashlib.sha256(baseline.model_dump_json().encode()).hexdigest() == "456a9366c8e247570c86ec6e27c73b7a0c2f57c0b62ef3f2e2957dd2da84c082"
+    # Captured at f0d4096 using this exact SYN fixture and contract. Pin its
+    # metadata explicitly: a newer contract legitimately changes the current
+    # record's fingerprint. All other synthetic fixture bytes must stay equal
+    # to the historical golden, and current observation is compared below.
+    historical = baseline.model_copy(update={
+        "prompt_version": "pai-loop-extraction-0.5.7",
+        "extraction_schema_version": "pai-loop-requirements-0.4.2",
+        "validator_version": "pai-loop-quantitative-attachment-validator-0.6.20",
+        "validation_fingerprint_sha256": "3258ad87794ffce8dcb6216559a73b4c50738a6ab625c236d816df6329fb860e",
+    })
+    assert qre.validated_quantitative_record_fingerprint(historical) == historical.validation_fingerprint_sha256
+    assert hashlib.sha256(historical.model_dump_json().encode()).hexdigest() == "456a9366c8e247570c86ec6e27c73b7a0c2f57c0b62ef3f2e2957dd2da84c082"
     original = qre._rebind_split_table_cell_literals
     expected = original(payload, source=source, attachment_id=ATT)
     captured = []
