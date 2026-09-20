@@ -591,6 +591,30 @@ def is_explicit_quantitative_table_local_absence(value: str) -> bool:
     return bool(gap and _QUANTITATIVE_TABLE_LOCAL_ABSENCE_RE.fullmatch(gap))
 
 
+_ENUMERATED_SIBLING_ALTERNATIVES_RE = re.compile(
+    r"[가-힣A-Za-z0-9)\]]\s*,\s*[^,]{1,40}?\s*등[\s,]"
+)
+
+
+def sibling_targets_are_alternatives(value: str) -> bool:
+    """나열된 형제 문서가 선택지인지, 전부 갖춰야 하는 목록인지 가른다.
+
+    "제안요청서와 과업지시서가 별도 제공되지 않아"는 두 문서를 모두 요구하는
+    연언이므로 각 요구가 따로 충족되어야 한다.  반면 "제안요청서, 과업내용서,
+    내역서 등 별첨 세부 평가기준 문서가 …"는 어느 문서를 보면 기준을 확인할 수
+    있는지를 적은 예시 나열이다.  후자를 전부 요구하면 제안요청서가 완전한 표를
+    제공했는데도 첨부되지 않은 나머지 때문에 공고가 영구히 막힌다.
+
+    쉼표로 이어진 목록 뒤에 ``등``이 오는 형태만 선택지로 본다.  ``와``/``과``로
+    묶인 연언과 단일 문서 지목은 그대로 전부 요구한다.
+    """
+
+    gap = normalise_source_gap(value)
+    if not gap:
+        return False
+    return bool(_ENUMERATED_SIBLING_ALTERNATIVES_RE.search(gap))
+
+
 def quantitative_table_local_absence_targets(
     value: str,
 ) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] | None:

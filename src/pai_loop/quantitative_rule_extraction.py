@@ -38,6 +38,7 @@ from .quantitative_formula import (
 )
 from .source_gap_policy import (
     is_explicit_qualitative_only_exclusion as _shared_qualitative_only_exclusion,
+    sibling_targets_are_alternatives,
     is_quantitative_irrelevant_gap,
     normalise_source_gap as _shared_normalise_source_gap,
     quantitative_table_local_absence_targets as _shared_quantitative_table_local_absence_targets,
@@ -8758,7 +8759,7 @@ def merge_validated_quantitative_records(
             for table in record.tables
         )
     }
-    def local_absence_is_resolved(
+    def local_absence_target_is_resolved(
         issue: QuantitativeValidationIssue,
         *,
         attachment_id: str,
@@ -8834,6 +8835,47 @@ def merge_validated_quantitative_records(
             if effective_type in required_sibling_types:
                 return True
         return False
+
+    def local_absence_is_resolved(
+        issue: QuantitativeValidationIssue,
+        *,
+        attachment_id: str,
+    ) -> bool:
+        """예시로 나열된 형제 문서는 그중 하나만 확보돼도 해소된다.
+
+        추출기는 형제 문서를 지목하는 한 문장을 문서 종류마다 하나씩 쪼개 요구로
+        만든다.  그런데 그 나열에는 두 종류가 있다.  "제안요청서와 과업지시서가
+        별도 제공되지 않아"는 두 문서를 모두 요구하는 연언이므로 각각 충족되어야
+        한다.  "제안요청서, 과업내용서, 내역서 등 …"은 어느 문서를 보면 기준을
+        확인할 수 있는지를 적은 예시 나열이다.
+
+        후자까지 전부 요구하면 제안요청서가 완전한 표를 제공했는데도 첨부되지 않은
+        내역서·과업내용서 때문에 공고가 영구히 막힌다.  그래서 예시 나열인 문장에
+        한해, 같은 (첨부, 결손 문장)에서 갈라진 요구를 하나로 본다.  연언과 단일
+        지목은 종전대로 각각 충족되어야 한다.
+        """
+
+        if local_absence_target_is_resolved(issue, attachment_id=attachment_id):
+            return True
+        statement = issue.source_gap_statement
+        if statement is None or not sibling_targets_are_alternatives(statement):
+            return False
+        record = bound_records.get(attachment_id)
+        if (
+            issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+            or statement is None
+            or record is None
+        ):
+            return False
+        return any(
+            sibling is not issue
+            and sibling.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+            and sibling.source_gap_statement == statement
+            and local_absence_target_is_resolved(
+                sibling, attachment_id=attachment_id
+            )
+            for sibling in record.issues
+        )
 
     # Grow table capability only from independent AVAILABLE/REVIEW seeds.
     # A record whose sole hard issues are local absences may join after those
