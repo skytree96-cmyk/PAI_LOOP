@@ -7747,3 +7747,56 @@ def test_notice_table_reference_requires_a_verified_rfp_sibling(gap) -> None:
     assert quantitative_table_local_absence_targets(gap) == ((("RFP",), ("제안요청서",)),)
     assert quantitative_table_local_absence_targets(gap + ". 신용등급 기준도 불명확") is None
     assert quantitative_table_local_absence_targets(gap.replace("제안요청서 참조", "다른 문서 참조")) is None
+
+
+@pytest.mark.parametrize(
+    "source_label",
+    [
+        "공고서_합성기관(국가,용역,협상).pdf",
+        "(공고서)합성 시스템 유지관리 용역_260909.hwpx",
+        "공고서(지방, 협상, 단기, 서면).hwp",
+        "재공고_합성_공동_수평.hwpx",
+    ],
+)
+def test_notice_body_named_공고서_or_재공고_resolves_to_one_role(source_label) -> None:
+    """조달청은 공고 본문을 '공고문' 말고 '공고서'·'재공고'로도 이름 붙인다.
+
+    어떤 역할로도 분류되지 않으면, 그 문서가 선언한 결손을 형제 문서가 채울 수
+    있는지 판정하는 단계에서 역할 수가 1이 아니라는 이유로 즉시 막힌다. 결손을
+    선언하는 쪽이 대개 공고 본문이므로, 이 표기가 빠지면 형제 해소가 통째로
+    동작하지 않는다.
+    """
+
+    assert source_label_document_types(source_label) == ("NOTICE",)
+
+
+@pytest.mark.parametrize(
+    "source_label",
+    [
+        "(공고)제안요청서_합성 용역.hwpx",
+        "공고 제안요청서.hwp",
+    ],
+)
+def test_notice_qualifier_on_a_proposal_request_stays_a_proposal_request(
+    source_label,
+) -> None:
+    """'공고'라는 낱말만으로 공고 본문이 되지는 않는다.
+
+    마커를 '공고'까지 넓히면 이런 이름이 NOTICE·RFP 두 역할로 잡혀 역할 수가 1이
+    아니게 되고, 고치려던 바로 그 지점에서 다시 막힌다. 단독으로 공고 본문을
+    가리키는 표기만 NOTICE 로 읽는다.
+    """
+
+    assert source_label_document_types(source_label) == ("RFP",)
+
+
+@pytest.mark.parametrize(
+    "source_label",
+    ["5. 사전공고 질의답변서.hwp", "4. 용역입찰유의서.hwp"],
+)
+def test_notice_adjacent_documents_are_not_promoted_to_notice_body(
+    source_label,
+) -> None:
+    """공고에 딸려 오는 질의답변서·유의서는 공고 본문이 아니다."""
+
+    assert source_label_document_types(source_label) == ()
