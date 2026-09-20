@@ -259,7 +259,7 @@ def _extract(
     if extension == ".hwpx" and content.startswith(_OLE_CFB_SIGNATURE):
         return _result_from_parsed(_extract_hwp5(content, budget), file_name)
     if (
-        extension == ".hwp"
+        extension in {".hwp", ".zip"}
         and ".hwpx" in leaf_extractors
         and content.startswith(b"PK\x03\x04")
         and _has_exact_hwpx_mimetype(content, budget)
@@ -267,6 +267,13 @@ def _extract(
         # A ZIP signature alone cannot distinguish HWPX from arbitrary archives.
         # Retain the original filename/bytes and use the audited HWPX leaf only
         # after the bounded package proves its exact media type.
+        #
+        # ``.zip`` belongs here for the same reason ``.hwp`` does: 조달청 serves
+        # HWPX packages under a ``.zip`` name (관측: 제안요청서 등.zip). Opened as
+        # a generic archive, its BinData images and content.hpf are each rejected
+        # as unsupported members and the document yields no text at all, so the
+        # scoring table inside it is lost. The exact mimetype member is what
+        # proves the package; the extension never decides on its own.
         extension = ".hwpx"
     if extension == ".hwp":
         return _result_from_parsed(_extract_hwp5(content, budget), file_name)
