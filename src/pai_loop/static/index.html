@@ -81,7 +81,14 @@
                   <svg viewBox="0 0 24 24"><path d="M4 20h16" /><path d="M14 4l6 6-9 9H5v-6z" /></svg>
                 </span>
                 <span>진행 건</span>
-                <span class="nav-count" id="navInProgressCount" aria-label="GO로 결정하고 결과를 기록하지 않은 공고 수">—</span>
+                <span class="nav-count" id="navInProgressCount" aria-label="GO로 결정한 입찰마감 전 공고 수">—</span>
+              </button>
+              <button class="nav-item nav-item--sub" type="button" data-view="result-missing-decided">
+                <span class="nav-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M4 14v5h16v-5" /><path d="M12 4v10" /><path d="M8 10l4 4 4-4" /></svg>
+                </span>
+                <span>결과 입력</span>
+                <span class="nav-count nav-count--warning" id="navResultEntryCount" aria-label="GO로 결정하고 개찰이 지난 뒤 결과를 기록하지 않은 공고 수">—</span>
               </button>
               <button class="nav-item nav-item--sub" type="button" data-view="undecided">
                 <span class="nav-icon" aria-hidden="true">

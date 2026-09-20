@@ -14,6 +14,9 @@ FRONTEND_PATHS = frozenset({
     "/", "/index.html", "/notices", "/reviews", "/urgent", "/fail",
     "/cancelled", "/result-missing", "/decisions", "/results", "/awards",
     "/prespec", "/performance",
+    # Work-pipeline queues. A reload or a shared link on one of these must
+    # reach the frontend instead of being refused before the login page.
+    "/pending-decision", "/in-progress", "/urgent-in-progress", "/result-entry",
 })
 _ASSETS = frozenset({
     "/favicon.svg", "/styles.css", "/app.js", "/teams-icon.png",

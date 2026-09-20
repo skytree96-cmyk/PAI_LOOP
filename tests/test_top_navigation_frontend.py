@@ -149,6 +149,24 @@ assert.equal(u.els.opportunityKpis.hidden,false);
 ''')
 
 
+def test_work_pipeline_queues_keep_their_own_view_instead_of_falling_back_home() -> None:
+    """A queue with no route entry used to be rewritten to the dashboard.
+
+    The card or menu item still looked selected while the list stayed
+    unfiltered, so GO work that had left 진행 건 could not be reached at all.
+    """
+
+    _run(r'''
+for(const view of ["pending-decision","in-progress","urgent-in-progress","result-missing-decided"]){
+ u.setView(view,{focusMain:false});
+ assert.equal(u.state.currentView,view,view+" must not fall back to the dashboard");
+ assert.equal(routes.at(-1),view,view+" must own a route");
+ assert.equal(u.els.noticeSection.hidden,false,view+" opens the notice list");
+ assert.equal(u.els.opportunityKpis.hidden,true,view+" replaces the dashboard cards");
+}
+''')
+
+
 def test_view_navigation_preserves_department_while_clearing_notice_filters() -> None:
     _run(r'''
 u.els.departmentSelect.value="management-planning";
