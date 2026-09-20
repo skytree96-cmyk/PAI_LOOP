@@ -4,6 +4,7 @@ import { validateNativeGatewayRequest } from "./native-gateway-request.mjs";
 import { normalizeNativeGatewayResponse } from "./native-gateway-response.mjs";
 import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
 import { nativeTimeoutExpression } from "./native-gateway-contract.mjs";
+import { gatewayFailureDetails, sanitizeGatewayInputFailure, sanitizeGatewayModelFailure } from "./gateway-failure-details.mjs";
 
 const path = "workflows/pai-loop-13-claude-extraction-gateway.json";
 const workflow = JSON.parse(fs.readFileSync(path, "utf8"));
@@ -17,6 +18,8 @@ if (!workflow.nodes.some(node => node.name === nativeName)) workflow.nodes.splic
 });
 for (const node of workflow.nodes) {
   if (node.name === "Validate Gateway Request") node.parameters.jsCode = `${source(nativeGatewaySchema)}\n${source(validateNativeGatewayRequest)}\nreturn validateNativeGatewayRequest($json, $input.all().length, nativeGatewaySchema);`;
+  if (node.name === "Sanitize Gateway Input Failure") node.parameters.jsCode = `${source(gatewayFailureDetails)}\n${source(sanitizeGatewayInputFailure)}\nreturn sanitizeGatewayInputFailure($json);`;
+  if (node.name === "Sanitize Gateway Model Failure") node.parameters.jsCode = `${source(sanitizeGatewayModelFailure)}\nreturn sanitizeGatewayModelFailure($json);`;
   if (node.name === nativeName) {
     node.position = [20, 0];
     node.onError = "continueErrorOutput";

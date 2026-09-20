@@ -3,6 +3,7 @@ import { nativeGatewaySchema } from "./native-gateway-schema.mjs";
 import { validateNativeGatewayRequest } from "./native-gateway-request.mjs";
 import { normalizeNativeGatewayResponse } from "./native-gateway-response.mjs";
 import { gatewayResponseExpression } from "./gateway-response-contract.mjs";
+import { gatewayFailureDetails, sanitizeGatewayInputFailure, sanitizeGatewayModelFailure } from "./gateway-failure-details.mjs";
 
 export const nativeNodeName = "Claude Sonnet 5 Native JSON";
 export const nativeTimeoutExpression = "={{ $json.gateway_timeout_ms }}";
@@ -48,6 +49,10 @@ export function assertNativeGatewayWorkflow(workflow) {
     `${source(nativeGatewaySchema)}\n${source(validateNativeGatewayRequest)}\nreturn validateNativeGatewayRequest($json, $input.all().length, nativeGatewaySchema);`);
   assert.equal(nodes.get("Normalize Gateway Response").parameters.jsCode,
     `${source(nativeGatewaySchema)}\n${source(normalizeNativeGatewayResponse)}\nreturn normalizeNativeGatewayResponse($json, $execution, $('Validate Gateway Request').first().json.original_schema, nativeGatewaySchema);`);
+  assert.equal(nodes.get("Sanitize Gateway Input Failure").parameters.jsCode,
+    `${source(gatewayFailureDetails)}\n${source(sanitizeGatewayInputFailure)}\nreturn sanitizeGatewayInputFailure($json);`);
+  assert.equal(nodes.get("Sanitize Gateway Model Failure").parameters.jsCode,
+    `${source(sanitizeGatewayModelFailure)}\nreturn sanitizeGatewayModelFailure($json);`);
   const webhook = nodes.get("Claude Extraction Webhook");
   assert.equal(webhook.type, "n8n-nodes-base.webhook");
   assert.equal(webhook.parameters.httpMethod, "POST");

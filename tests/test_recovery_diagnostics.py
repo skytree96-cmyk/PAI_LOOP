@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from pai_loop import manual_analysis, recovery_diagnostics as diagnostics
 from pai_loop.models import Notice, NoticeVersion, PpsNoticeAuthority
 from pai_loop.extraction_contracts import LEGACY_CASE_CONTRACT
+from pai_loop.manifest_bounds import MAX_MANIFEST_ATTACHMENTS
+from pai_loop.pps_enrichment import _digest
 from test_pps_enrichment import _analysis_versions
 
 KEY = "PPS-SYN-DIAGNOSTIC-001"
@@ -112,6 +114,37 @@ def test_twenty_five_unique_keys_preserve_request_order_without_sources(diagnost
     assert response.status_code == 200
     assert [row["notice_key"] for row in response.json()["notices"]] == list(reversed(keys))
     assert len(response.content) < 60_000
+
+
+@pytest.mark.parametrize("count", [11, MAX_MANIFEST_ATTACHMENTS, MAX_MANIFEST_ATTACHMENTS + 1])
+def test_full_manifest_diagnostic_keeps_all_supported_slots_and_reports_overflow(diagnostic_client, count):
+    def expand_manifest(versions):
+        metadata, attempt = versions
+        template = metadata.source_payload["attachment_manifest"][0]
+        manifest = [dict(template, attachment_id=f"PPS-ATT-{slot:024x}",
+                         file_name=f"SYN-attachment-{slot}.pdf", slot=slot)
+                    for slot in range(1, count + 1)]
+        metadata.source_payload["attachment_manifest"] = manifest
+        last_supported = manifest[min(count, MAX_MANIFEST_ATTACHMENTS) - 1]
+        attempt.source_payload.update(attachment_id=last_supported["attachment_id"],
+            manifest_sha256=_digest(last_supported), current_manifest_sha256=_digest(manifest))
+
+    seed(diagnostic_client, extension=".pdf", error="PDF_TEXT_EXTRACTION_FAILED", mutate=expand_manifest)
+    response = read(diagnostic_client)
+    assert response.status_code == 200
+    row, = response.json()["notices"]
+    assert row["diagnostic_status"] == "OK"
+    supported = min(count, MAX_MANIFEST_ATTACHMENTS)
+    assert row["attachment_count"] == count
+    assert row["invalid_manifest_slot_count"] == max(0, count - MAX_MANIFEST_ATTACHMENTS)
+    assert [item["ordinal"] for item in row["attachments"]] == list(range(1, supported + 1))
+    assert all(item["state"] == "PENDING" for item in row["attachments"][:-1])
+    assert row["attachments"][-1]["safe_error_code"] == "PDF_TEXT_EXTRACTION_FAILED"
+    assert row["attachments"][-1]["manifest_bound_attempt"] is True
+    assert row["audited_attachment_count"] == 1
+    assert row["accepted_attachment_count"] == 0
+    assert row["attachment_coverage_complete"] is False
+    assert CANARY not in response.text
 
 
 @pytest.mark.parametrize("extension,error,public", [

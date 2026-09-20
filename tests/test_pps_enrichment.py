@@ -3041,7 +3041,7 @@ def test_no_response_bound_is_left_behind_when_the_manifest_grows() -> None:
         MAX_ATTACHMENT_STATUS_ROWS,
         MAX_MANIFEST_ATTACHMENTS,
     )
-    from pai_loop.recovery_diagnostics import AttachmentDiagnostic
+    from pai_loop.recovery_diagnostics import AttachmentDiagnostic, NoticeDiagnostic
     from pai_loop.schemas import NoticeSummary
 
     def upper_bound(model, field_name):
@@ -3060,6 +3060,7 @@ def test_no_response_bound_is_left_behind_when_the_manifest_grows() -> None:
     ):
         assert upper_bound(NoticeSummary, field) >= MAX_MANIFEST_ATTACHMENTS, field
     assert upper_bound(AttachmentDiagnostic, "ordinal") >= MAX_MANIFEST_ATTACHMENTS
+    assert upper_bound(NoticeDiagnostic, "attachments") == MAX_MANIFEST_ATTACHMENTS
     assert MAX_ATTACHMENT_STATUS_ROWS == MAX_MANIFEST_ATTACHMENTS + 1
 
 

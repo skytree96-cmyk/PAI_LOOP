@@ -1,10 +1,16 @@
 from copy import deepcopy
+import json
+from pathlib import Path
+import shutil
+import subprocess
 from typing import get_args
 
 import httpx
 import pytest
 
-from pai_loop.gateway_diagnostics import GatewayOutputDetail, safe_gateway_failure
+from pai_loop.gateway_diagnostics import (
+    GatewayInputDetail, GatewayModelDetail, GatewayOutputDetail, safe_gateway_failure,
+)
 from pai_loop.integrations.openai_extraction import OpenAIExtractionClient
 from pai_loop.models import Notice, NoticeVersion
 from pai_loop.pps_enrichment import enrich_notice_from_pps
@@ -18,6 +24,11 @@ FAILURE = {"version": "gateway-failure-v1", "stage": "MODEL_EXECUTION",
 OUTPUT_FAILURE = {"version": "gateway-failure-v1", "stage": "OUTPUT_NORMALIZATION",
                   "code": "OUTPUT_REJECTED", "upstream_http_status": None,
                   "detail_code": "OUTPUT_JSON_INVALID"}
+INPUT_FAILURE = {"version": "gateway-failure-v1", "stage": "INPUT_VALIDATION",
+                 "code": "REQUEST_REJECTED", "upstream_http_status": None,
+                 "detail_code": "INPUT_SOURCE_TOO_LARGE"}
+TRANSPORT_FAILURE = {**FAILURE, "upstream_http_status": None,
+                     "detail_code": "MODEL_TRANSPORT_TIMEOUT"}
 
 
 def outcome(body, *, provider="n8n_claude", status=500):
@@ -70,7 +81,7 @@ def test_only_exact_gateway_http500_envelope_has_diagnostic_authority(body, prov
     assert CANARY not in result.model_dump_json()
 
 
-@pytest.mark.parametrize("failure", [FAILURE, OUTPUT_FAILURE])
+@pytest.mark.parametrize("failure", [FAILURE, OUTPUT_FAILURE, INPUT_FAILURE, TRANSPORT_FAILURE])
 def test_failure_survives_current_attachment_persistence_and_safe_read_without_recalling_model(failure):
     engine, factory, notice_id, download = _single_hwpx_reuse_case(notice_key="PPS-SYN-GATEWAY-STORED")
     calls = []
@@ -105,7 +116,7 @@ def test_read_sanitizer_rejects_stored_extra_private_fields():
 
 
 @pytest.mark.parametrize("stale", [False, True])
-@pytest.mark.parametrize("failure", [FAILURE, OUTPUT_FAILURE])
+@pytest.mark.parametrize("failure", [FAILURE, OUTPUT_FAILURE, INPUT_FAILURE, TRANSPORT_FAILURE])
 def test_server_read_keeps_gateway_failure_inside_selected_current_attempt(diagnostic_client, stale, failure):
     def mutate(versions):
         versions[-1].source_payload.update(gateway_failure=failure,
@@ -152,6 +163,56 @@ def test_output_detail_rejects_unknown_text_types_stages_and_private_extras(chan
 def test_absent_or_null_detail_keeps_legacy_serialized_shape():
     assert safe_gateway_failure(FAILURE).model_dump() == FAILURE
     assert safe_gateway_failure({**FAILURE, "detail_code": None}).model_dump() == FAILURE
+
+
+@pytest.mark.parametrize("detail", get_args(GatewayInputDetail))
+def test_input_detail_is_preserved_without_extra_calls(detail):
+    failure = {**INPUT_FAILURE, "detail_code": detail}
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure.model_dump() == failure
+    assert not result.corrective_retry_used and result.response_id is None
+
+
+@pytest.mark.parametrize("detail", get_args(GatewayModelDetail))
+def test_model_detail_is_preserved_without_guessing_http_status(detail):
+    failure = {**TRANSPORT_FAILURE, "detail_code": detail,
+               "upstream_http_status": 429 if detail == "MODEL_HTTP_ERROR" else None}
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure.model_dump() == failure
+    assert not result.corrective_retry_used and result.response_id is None
+
+
+@pytest.mark.parametrize("failure", [
+    {**INPUT_FAILURE, "detail_code": "MODEL_TRANSPORT_TIMEOUT"},
+    {**TRANSPORT_FAILURE, "detail_code": "INPUT_SOURCE_TOO_LARGE"},
+    {**INPUT_FAILURE, "upstream_http_status": 429},
+    {**TRANSPORT_FAILURE, "upstream_http_status": 429},
+    {**TRANSPORT_FAILURE, "detail_code": "MODEL_HTTP_ERROR"},
+    {**INPUT_FAILURE, "detail_code": CANARY},
+    {**TRANSPORT_FAILURE, "message": CANARY},
+    {**INPUT_FAILURE, "stop_reason": "max_tokens", "usage": {
+        "input_tokens": 1, "output_tokens": 2, "total_tokens": 3}},
+])
+def test_input_model_detail_rejects_wrong_stage_status_and_private_values(failure):
+    assert safe_gateway_failure(failure) is None
+    result = outcome({"gateway_error": failure})
+    assert result.gateway_failure is None
+    assert CANARY not in result.model_dump_json()
+
+
+def test_javascript_and_python_failure_allowlists_agree():
+    node = shutil.which("node")
+    assert node, "Node is required for the gateway diagnostic contract"
+    result = subprocess.run([node, "--input-type=module", "-e",
+        "import { gatewayFailureDetails } from './scripts/gateway-failure-details.mjs'; "
+        "process.stdout.write(JSON.stringify(gatewayFailureDetails()));"],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
+        encoding="utf-8", check=True, timeout=30)
+    assert json.loads(result.stdout) == {
+        "INPUT_VALIDATION": list(get_args(GatewayInputDetail)),
+        "MODEL_EXECUTION": list(get_args(GatewayModelDetail)),
+        "OUTPUT_NORMALIZATION": list(get_args(GatewayOutputDetail)),
+    }
 
 
 def test_native_stopped_request_preserves_bounded_usage_without_retry():

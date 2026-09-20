@@ -1,6 +1,8 @@
 // Embedded directly in Respond-to-Webhook expressions. A separate Code node
 // cannot be the final guard: a runner failure may forward that node's input.
 // Keep an explicit catch binding: n8n's AST scope transform rejects `catch {}`.
+import { gatewayFailureDetails } from "./gateway-failure-details.mjs";
+
 export function guardGatewayResponse(value, successAllowed) {
   const failure = () => ({ status: 500, body: { gateway_error: {
     version: "gateway-failure-v1", stage: "OUTPUT_NORMALIZATION",
@@ -29,15 +31,13 @@ export function guardGatewayResponse(value, successAllowed) {
       if (status !== null && (item.stage !== "MODEL_EXECUTION"
         || !Number.isSafeInteger(status) || status < 400 || status > 599)) return failure();
       const detail = item.detail_code;
-      const details = ["OUTPUT_EMPTY", "OUTPUT_TYPE_INVALID", "OUTPUT_TOO_LARGE",
-        "OUTPUT_FENCE_INVALID", "OUTPUT_JSON_INVALID", "OUTPUT_NOT_OBJECT",
-        "EXECUTION_CONTEXT_INVALID", "NORMALIZER_EXCEPTION", "TERMINAL_GUARD_REJECTED",
-        "NATIVE_RESPONSE_INVALID", "NATIVE_CONTENT_INVALID", "NATIVE_SCHEMA_DECODE_INVALID",
-        "NATIVE_STOP_MAX_TOKENS", "NATIVE_STOP_REFUSAL", "NATIVE_STOP_UNSUPPORTED"];
+      const details = gatewayFailureDetails()[item.stage];
       if (detail !== undefined && detail !== null
-        && (item.stage !== "OUTPUT_NORMALIZATION" || !details.includes(detail))) return failure();
+        && !details.includes(detail)) return failure();
+      if (item.stage === "MODEL_EXECUTION" && detail != null
+        && ((detail === "MODEL_HTTP_ERROR") !== (status !== null))) return failure();
       if (successAllowed && !(item.stage === "OUTPUT_NORMALIZATION" && details.includes(detail))
-        && !(item.stage === "MODEL_EXECUTION" && detail == null && item.stop_reason == null && item.usage == null)) return failure();
+        && !(item.stage === "MODEL_EXECUTION" && item.stop_reason == null && item.usage == null)) return failure();
       // A native HTTP response may also reach main[0] with a safe model failure.
       const stop = item.stop_reason;
       const usage = item.usage;
@@ -84,6 +84,7 @@ export function gatewayResponseExpression(successAllowed, field) {
     throw new Error("invalid gateway expression contract");
   }
   // Git checkouts may use CRLF; workflow JSON stores the reviewed LF expression.
-  const source = guardGatewayResponse.toString().replace(/\r\n/g, "\n");
-  return `={{ (${source})($json, ${successAllowed}).${field} }}`;
+  const source = [gatewayFailureDetails, guardGatewayResponse]
+    .map(fn => fn.toString().replace(/\r\n/g, "\n")).join("\n");
+  return `={{ (() => { ${source}\nreturn guardGatewayResponse($json, ${successAllowed}).${field}; })() }}`;
 }

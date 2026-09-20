@@ -107,7 +107,7 @@ class NoticeDiagnostic(DiagnosticModel):
     accepted_attachment_count: int | None = None
     recorded_attempt_attachment_count: int | None = None
     attachment_coverage_complete: bool | None = None
-    attachments: list[AttachmentDiagnostic] = Field(default_factory=list, max_length=10)
+    attachments: list[AttachmentDiagnostic] = Field(default_factory=list, max_length=MAX_MANIFEST_ATTACHMENTS)
     quantitative: QuantitativeDiagnostic | None = None
 
 
