@@ -1844,6 +1844,8 @@ def _metric_spec(
     spec = _CANONICAL_METRIC_REGISTRY.get(candidate.metric)
     if spec is None:
         return None
+    if _implicit_credit_unit_is_source_bound(candidate):
+        return spec
     unit_scales = spec["unit_scales"]
     return spec if _normalize_unit(candidate.unit) in unit_scales else None
 
@@ -1952,6 +1954,8 @@ def _case_percent_award_input_literal(
 def _candidate_unit_is_source_bound(
     candidate: ImmutableQuantitativeRuleCandidate,
 ) -> bool:
+    if _implicit_credit_unit_is_source_bound(candidate):
+        return True
     if _amount_case_units_are_value_equivalent(candidate):
         return True
     literals = [candidate.criterion_literal, candidate.evidence.quote]
@@ -2707,6 +2711,45 @@ def _criterion_set_aside(
             "정량 합계와 상하한에는 반영하지 않습니다."
         ],
     )
+
+
+def _implicit_credit_unit_is_source_bound(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> bool:
+    """A complete, source-bound credit category table establishes rating units.
+
+    Only an absent unit can use this proof. Explicit incompatible units, numeric
+    metrics, unbound rows and incomplete/overlapping rating domains still fail.
+    The extracted candidate and its evidence are never rewritten.
+    """
+    if (
+        candidate.metric != "CREDIT_RATING"
+        or candidate.unit is not None
+        or candidate.scoring_method != "CASE_TABLE"
+        or tuple(candidate.required_evidence) != ("company.credit_rating",)
+        or not candidate.cases
+        or candidate.brackets
+        or candidate.threshold is not None
+        or candidate.formula_literal is not None
+    ):
+        return False
+    if any(
+        case.evidence.attachment_id != candidate.source_attachment_id
+        or not evidence_quote_matches_source(case.literal, case.evidence.quote)
+        or not _case_award_matches_literal(candidate, case, case.literal)
+        or case.comparison_value is not None
+        or case.comparison_upper_value is not None
+        for case in candidate.cases
+    ):
+        return False
+    rows = tuple(CaseTableRowLiteral(
+        operator=case.operator, comparison_value=None, comparison_upper_value=None,
+        category_values=case.category_values, source_literal=case.literal,
+        award_kind=case.award_kind, award_value=case.award_value,
+    ) for case in sorted(candidate.cases, key=lambda item: item.row_order))
+    return compile_case_table(
+        rows, value_kind="CREDIT_RATING", maximum_points=candidate.max_points,
+    ) is not None
 
 
 def _compiled_case_table_contract(

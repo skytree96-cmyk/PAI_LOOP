@@ -38,6 +38,12 @@ _QUALITATIVE_TABLE_LOCAL_ABSENCE_RE = re.compile(
     r"(?:포함되어\s*있지\s*않(?:음|습니다)|"
     r"포함되지\s*않(?:음|았습니다))\s*\.?"
 )
+_QUALITATIVE_REFERENCED_FORM_ABSENCE_RE = re.compile(
+    r"(?:붙임|별첨)\s*\d+\s*"
+    r"(?:정성(?:적)?\s*평가\s*)?세부\s*평가\s*항목\s*및\s*배점\s*기준\s*서식이\s*"
+    r"(?:본\s*)?본문에\s*(?:직접\s*)?첨부되지\s*않아\s*"
+    r"정성(?:적)?\s*평가\s*세부\s*기준의\s*원문\s*확인\s*불가\s*[.]?"
+)
 _NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE = re.compile(
     r"입찰\s*공고문?\s*\(\s*"
     r"(?:제출|접수)\s*기한\s*등\s*(?:구체\s*)?일정\s*"
@@ -574,6 +580,15 @@ def is_explicit_qualitative_table_local_absence(value: str) -> bool:
     return bool(gap and _QUALITATIVE_TABLE_LOCAL_ABSENCE_RE.fullmatch(gap))
 
 
+def is_explicit_qualitative_referenced_form_absence(value: str) -> bool:
+    """An aggregate-only scope proof; do not reinterpret stored fingerprints.
+
+    The complete statement limits the missing form's effect to qualitative
+    criteria. A quantitative subject or a second clause cannot match.
+    """
+    return bool(_QUALITATIVE_REFERENCED_FORM_ABSENCE_RE.fullmatch(normalise_source_gap(value)))
+
+
 def is_explicit_non_quantitative_notice_schedule_gap(value: str) -> bool:
     """Recognise one bounded notice-schedule omission as irrelevant to scoring."""
 
@@ -946,6 +961,7 @@ __all__ = [
     "is_explicit_quantitative_table_local_absence",
     "is_explicit_qualitative_only_exclusion",
     "is_explicit_qualitative_table_local_absence",
+    "is_explicit_qualitative_referenced_form_absence",
     "asserts_scoring_artifact_absence",
     "is_quantitative_irrelevant_gap",
     "normalise_source_gap",
