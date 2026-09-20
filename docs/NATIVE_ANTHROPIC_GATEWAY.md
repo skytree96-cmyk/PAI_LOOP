@@ -12,6 +12,10 @@ current 20k max-token failure to use 32,000 tokens / HTTP 300 seconds once.
 The server consumes that permission durably before dispatch; numeric budget
 overrides and corrective requests with the policy are rejected.
 
+[Input/model failure diagnostics](GATEWAY_INPUT_MODEL_DIAGNOSTICS.md) retain fixed
+rejection and observed transport codes without exception text. This optional
+failure detail extension does not change the request, model, or retry budget.
+
 `manifest.json` retains the already approved W13 `publish:true` allowlist.
 `promotionState:awaiting-native-live-e2e` and `nativeCanaryState` explicitly record that
 full gateway live E2E and promotion remain pending. Merging this code is

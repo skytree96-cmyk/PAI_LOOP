@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { gatewayFailureDetails } from "./gateway-failure-details.mjs";
 
 // Native Function/vm execution skips n8n's AST transform. Use the exact
 // Tournament version required by n8n 2.33.7's n8n-workflow 2.33.2 package.
@@ -61,6 +62,17 @@ for (const [name, successAllowed] of [["Respond Gateway Success", true], ["Respo
     assert.deepEqual(result, { status: 500, body: input });
     assert.notEqual(result.body.gateway_error, input.gateway_error);
     checked += 1;
+  }
+  for (const stage of ["INPUT_VALIDATION", "MODEL_EXECUTION"]) {
+    for (const detail_code of gatewayFailureDetails()[stage]) {
+      const input = { gateway_error: { version: "gateway-failure-v1", stage,
+        code: stage === "INPUT_VALIDATION" ? "REQUEST_REJECTED" : "MODEL_EXECUTION_FAILED",
+        upstream_http_status: detail_code === "MODEL_HTTP_ERROR" ? 429 : null, detail_code } };
+      const result = evaluate(input);
+      assert.deepEqual(result, { status: 500, body: successAllowed && stage === "INPUT_VALIDATION" ? fallback : input });
+      assert(!JSON.stringify(result).includes(canary));
+      checked += 1;
+    }
   }
   for (const input of [
     { gateway_error: { ...fallback.gateway_error, detail_code: canary } },

@@ -124,19 +124,19 @@ assert.equal(validate(corrective).length, 1);
 for (const [index, cap] of [[0, 12000], [1, 140000]]) {
   const oversized = structuredClone(body);
   oversized.input[index].content[0].text += "x".repeat(cap);
-  assert.throws(() => validate(oversized), /oversized/);
+  assert.throws(() => validate(oversized), { message: index === 0 ? "INPUT_SYSTEM_TOO_LARGE" : "INPUT_SOURCE_TOO_LARGE" });
 }
 const systemBoundary = structuredClone(body);
 systemBoundary.input[0].content[0].text += "x".repeat(12000 - request.system.length);
 assert.equal(validate(systemBoundary)[0].json.provider_request.system.length, 12000);
 systemBoundary.input[0].content[0].text += "x";
-assert.throws(() => validate(systemBoundary), /combined system prompt/);
+assert.throws(() => validate(systemBoundary), { message: "INPUT_PROVIDER_SYSTEM_TOO_LARGE" });
 const combinedOverflow = structuredClone(body);
 combinedOverflow.input[1].content[0].text += "x".repeat(139000);
 for (const target of [combinedOverflow.text.format.schema.properties.summary,
   combinedOverflow.text.format.schema.properties.ambiguity,
   combinedOverflow.text.format.schema.$defs.EvidenceAnchor.properties.confidence]) target.description = "S".repeat(12000);
-assert.throws(() => validate(combinedOverflow), /combined Claude request/);
+assert.throws(() => validate(combinedOverflow), { message: "INPUT_REQUEST_TOO_LARGE" });
 const canary = "SYN-PRIVATE-PROVIDER-THINKING-OR-ID";
 const extracted = { summary: "SYN ``` literal", evidence: [{ attachment_id: "SYN-A1", page: null, section: null, quote: "SYN source only.", confidence: 1 }], ambiguity: null };
 const response = text => ({ statusCode: 200, body: { type: "message", id: canary, role: "assistant", model: "claude-sonnet-5",
