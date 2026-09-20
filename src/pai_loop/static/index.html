@@ -17,7 +17,7 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260914-quantitative-gapclass-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260920-filter-links-v1" />
     <link rel="stylesheet" href="./top-navigation.css?v=20260913-dashboard-charts-v2" />
   </head>
   <body hidden>
@@ -396,6 +396,12 @@
               <button class="button button--ghost filter-reset stored-search-only" type="reset" id="resetFiltersButton">필터 지우기</button>
             </form>
             <p class="operator-decision-filter-help stored-search-only" id="operatorDecisionFilterHelp">담당자 판단 조회 상태를 확인하고 있습니다.</p>
+            <div class="notice-filter-tools" id="noticeFilterTools" hidden>
+              <div class="notice-filter-chips" id="noticeFilterChips" role="group" aria-label="적용된 조건 · 버튼을 누르면 조건 해제"></div>
+              <button class="button button--ghost" type="button" id="copyNoticeFiltersButton" aria-describedby="noticeFilterShareHelp">조건 링크 복사</button>
+              <p id="noticeFilterShareHelp">링크를 저장하거나 공유하면 같은 조건으로 다시 조회합니다. 담당자 판단은 접속한 부서 기준이며, 조회 시점에 따라 결과가 달라질 수 있습니다.</p>
+              <input id="noticeFilterLink" type="text" readonly hidden aria-label="공유할 검색 조건 링크" />
+            </div>
             <p class="notice-search-scope" id="noticeSearchScope" aria-live="polite">현재 화면 범위에서 공고를 표시합니다.</p>
 
             <aside class="pps-search-suggestion" id="ppsSearchSuggestion" hidden>
@@ -1433,6 +1439,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260914-quantitative-gapclass-v1" defer></script>
+    <script src="./app.js?v=20260920-filter-links-v1" defer></script>
   </body>
 </html>

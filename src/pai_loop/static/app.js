@@ -47,6 +47,7 @@
     runtimeProfileAvailable: false,
     authDiscoveryReady: false,
     noticeSearchTimer: null,
+    pendingNoticeDecisionFilter: null,
     noticeStatusScope: "ALL",
     teamsLogs: [],
     teamsLogMeta: {},
@@ -203,6 +204,16 @@
     "/performance": "performance",
   });
 
+  const NOTICE_FILTER_FIELDS = Object.freeze({
+    q: ["searchInput", "", "검색", 200],
+    eligibility: ["eligibilityFilter", "all", "자격"],
+    recommendation: ["recommendationFilter", "all", "추천"],
+    decision: ["operatorDecisionFilter", "all", "담당자 판단"],
+    sort: ["sortSelect", "judgement", "정렬"],
+    department: ["departmentSelect", "organization", "부서 기준"],
+    keywords: ["priorityKeywordInput", "", "관심 키워드", 500],
+  });
+
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
@@ -222,8 +233,10 @@
     configurePaiBotTeamsAccess();
     detectTeamsContext();
     bindEvents();
+    initializeDashboardDepartmentSelection();
+    await prepareNoticeFilterDepartments();
     const initialView = routeViewFromLocation();
-    setView(initialView, { syncRoute: true, replaceRoute: true });
+    setView(initialView, { syncRoute: true, replaceRoute: true, restoreFilters: true });
     setNoticeSearchMode(initialView === "prespec" ? "prespec" : "stored", {
       announce: false,
       syncView: false,
@@ -318,6 +331,9 @@
     ];
 
     ids.forEach((id) => {
+      els[id] = document.getElementById(id);
+    });
+    ["noticeFilterTools", "noticeFilterChips", "copyNoticeFiltersButton", "noticeFilterLink", "noticeFilterShareHelp"].forEach((id) => {
       els[id] = document.getElementById(id);
     });
     els.navItems = [...document.querySelectorAll(".nav-item[data-view]")];
@@ -521,11 +537,13 @@
     });
 
     els.filterForm.addEventListener("input", () => {
-      if (state.noticeSearchMode === "stored") applyFilters();
+      if (state.noticeSearchMode === "stored") { applyFilters(); syncNoticeFilterLocation(); }
     });
     els.filterForm.addEventListener("change", () => {
-      if (state.noticeSearchMode === "stored") applyFilters();
+      if (state.noticeSearchMode === "stored") { applyFilters(); syncNoticeFilterLocation(); }
     });
+    els.copyNoticeFiltersButton?.addEventListener("click", copyNoticeFilterLink);
+    els.noticeFilterChips?.addEventListener("click", removeNoticeFilter);
     els.filterForm.addEventListener("submit", submitNoticeSearch);
     els.filterForm.addEventListener("reset", () => window.setTimeout(resetPrioritySearch, 0));
     els.searchInput.addEventListener("input", scheduleNoticeSearch);
@@ -749,6 +767,10 @@
   }
 
   async function loadApplicationData({ forceApi = false } = {}) {
+    if (state.noticeSearchMode === "stored" && els.operatorDecisionFilter.value !== "all"
+      && state.accountSession?.authenticated && state.accountSession.account?.role !== "ADMIN") {
+      state.pendingNoticeDecisionFilter = els.operatorDecisionFilter.value;
+    }
     if (applicationLocked || !state.accountSession.authenticated) return;
     initializeDashboardDepartmentSelection();
     const sequence = ++state.requestSequence;
@@ -1273,6 +1295,7 @@
 
   function clearAccountPrivateState() {
     state.accountEpoch += 1;
+    state.pendingNoticeDecisionFilter = null;
     clearTeamsFollowups();
     state.dashboard = {};
     state.dashboardStatus = "idle";
@@ -1520,6 +1543,7 @@
     els.filterForm.classList.toggle("is-pps-mode", ppsMode);
     els.filterForm.setAttribute("aria-label", ppsMode ? "나라장터 용역 공고 검색" : "저장 공고 검색");
     els.prioritySearch.hidden = ppsMode || prespecMode;
+    if (els.noticeFilterTools) els.noticeFilterTools.hidden = ppsMode || prespecMode;
     els.noticeSearchScope.hidden = prespecMode;
     els.noticeViewToggle.hidden = prespecMode;
     els.storedSearchControls.forEach((control) => {
@@ -2035,6 +2059,8 @@
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
     syncDashboardDepartmentSelect();
     els.sortSelect.value = "department";
+    renderNoticeFilterTools();
+    syncNoticeFilterLocation();
     void loadApplicationData({ forceApi: true });
   }
 
@@ -2075,10 +2101,13 @@
   }
 
   function resetPrioritySearch() {
+    state.pendingNoticeDecisionFilter = null;
     els.departmentSelect.value = "organization";
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
     syncDashboardDepartmentSelect();
     els.priorityKeywordInput.value = "";
+    renderNoticeFilterTools();
+    syncNoticeFilterLocation();
     void loadApplicationData({ forceApi: true });
   }
 
@@ -4901,7 +4930,7 @@
   }
 
   function applyFilters() {
-    if (state.loading) return;
+    if (state.loading) { renderNoticeFilterTools(); return; }
     renderNoticeSearchScope();
     const query = els.searchInput.value.trim().replace(/\s+/g, " ").toLocaleLowerCase("ko-KR");
     const globalSearch = Boolean(query);
@@ -4914,6 +4943,10 @@
         || (state.accountSession?.enabled && state.accountSession.authenticated)));
     const decisionFilterAvailable = operatorDecisionListAvailable();
     const adminDecisionReader = state.accountSession?.enabled && state.accountSession.account?.role === "ADMIN";
+    if (state.pendingNoticeDecisionFilter && (decisionFilterAvailable || adminDecisionReader)) {
+      els.operatorDecisionFilter.value = adminDecisionReader ? "all" : state.pendingNoticeDecisionFilter;
+      state.pendingNoticeDecisionFilter = null;
+    }
     const decisionFilterMessage = adminDecisionReader
       ? "관리자는 부서 판단을 조회할 수 있습니다. 상세에서 부서별 기록을 확인하세요."
       : !decisionAccessAllowed
@@ -4928,11 +4961,13 @@
     els.operatorDecisionFilter.options[0].textContent = decisionFilterAvailable
       ? "담당자 판단 전체" : adminDecisionReader ? "부서별 판단은 상세에서 조회" : decisionAccessAllowed ? "담당자 판단 조회 필요" : "판단 조회 권한 필요";
     els.operatorDecisionFilterHelp.textContent = decisionFilterMessage;
+    if (state.pendingNoticeDecisionFilter) els.operatorDecisionFilterHelp.textContent = "공유된 담당자 판단 조건을 적용하려면 내 부서의 판단 조회가 완료되어야 합니다. 조회를 마칠 때까지 목록을 표시하지 않습니다.";
     if (!decisionFilterAvailable) els.operatorDecisionFilter.value = "all";
     const operatorDecision = els.operatorDecisionFilter.value;
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
+      if (state.pendingNoticeDecisionFilter) return false;
       if (["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)
         && !matchesDashboardQueue(notice, state.currentView)) return false;
       if (!globalSearch) {
@@ -4959,6 +4994,7 @@
 
     notices = notices.slice().sort((a, b) => compareNotices(a, b, sort));
     state.filteredNotices = notices;
+    renderNoticeFilterTools();
     renderNoticeList();
   }
 
@@ -5592,6 +5628,138 @@
     els.demoBanner.hidden = true;
   }
 
+  function noticeFilterViewSupported(view = state.currentView) {
+    return ["new", "review", "undecided", "collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing"].includes(view);
+  }
+
+  function noticeFilterValue(key) {
+    const [id, fallback, , maxLength] = NOTICE_FILTER_FIELDS[key];
+    const value = key === "decision" && state.pendingNoticeDecisionFilter
+      ? state.pendingNoticeDecisionFilter : els[id]?.value;
+    return maxLength ? String(value || "").trim().replace(/\s+/g, " ").slice(0, maxLength) : value || fallback;
+  }
+
+  function writeNoticeFilterParams(params) {
+    ["filters", "view", "layout", ...Object.keys(NOTICE_FILTER_FIELDS)].forEach((key) => params.delete(key));
+    if (!noticeFilterViewSupported() || state.noticeSearchMode !== "stored") return;
+    params.set("filters", "1");
+    params.set("view", state.currentView);
+    // Always include the department: a recipient may have a different default.
+    Object.entries(NOTICE_FILTER_FIELDS).forEach(([key, [, fallback]]) => {
+      const value = noticeFilterValue(key);
+      if (value !== fallback || key === "department") params.set(key, value);
+    });
+    params.set("layout", state.layout);
+  }
+
+  function noticeFilterHref() {
+    const url = new URL(routeForView(state.currentView), window.location.origin);
+    writeNoticeFilterParams(url.searchParams);
+    return url.href;
+  }
+
+  function syncNoticeFilterLocation() {
+    if (!noticeFilterViewSupported() || state.noticeSearchMode !== "stored") return;
+    const url = new URL(window.location.href);
+    writeNoticeFilterParams(url.searchParams);
+    if (url.href !== window.location.href) history.replaceState(history.state, "", url);
+  }
+
+  async function prepareNoticeFilterDepartments() {
+    const params = new URLSearchParams(window.location.search);
+    const department = params.get("department");
+    if (params.get("filters") !== "1" || !department || department === "organization") return;
+    if (Array.from(els.departmentSelect.options).some((option) => option.value === department)) return;
+    try {
+      const catalog = unwrapObject(await apiRequest("/departments/keyword-profiles"));
+      state.departmentCatalog = catalog;
+      state.keywordProfilesAvailable = true;
+      populateDepartmentProfiles(catalog);
+    } catch (_error) {
+      showToast("부서 기준을 복원하지 못했습니다", "부서 목록을 불러오지 못해 전사 공통 기준으로 표시합니다. 연결 후 공유 링크를 다시 열어 주세요.", "error");
+    }
+  }
+
+  function restoreNoticeFiltersFromRoute() {
+    const params = new URLSearchParams(window.location.search);
+    if (!noticeFilterViewSupported()) return;
+    if (params.get("filters") !== "1") {
+      els.sortSelect.value = "judgement";
+      els.departmentSelect.value = state.accountSession?.account?.department_id || "organization";
+      syncDashboardDepartmentSelect();
+      return;
+    }
+    Object.entries(NOTICE_FILTER_FIELDS).forEach(([key, [id, fallback, , maxLength]]) => {
+      const requested = params.get(key) || fallback;
+      const field = els[id];
+      field.value = maxLength ? requested.trim().replace(/\s+/g, " ").slice(0, maxLength)
+        : Array.from(field.options).some((option) => option.value === requested) ? requested : fallback;
+    });
+    const decision = els.operatorDecisionFilter.value;
+    state.pendingNoticeDecisionFilter = decision !== "all" ? decision : null;
+    state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
+    syncDashboardDepartmentSelect();
+    if (["cards", "table"].includes(params.get("layout"))) state.layout = params.get("layout");
+  }
+
+  function renderNoticeFilterTools() {
+    if (!els.noticeFilterChips || !els.noticeFilterTools) return;
+    els.noticeFilterTools.hidden = !noticeFilterViewSupported() || state.noticeSearchMode !== "stored";
+    if (els.noticeFilterTools.hidden) return;
+    els.noticeFilterChips.replaceChildren();
+    Object.entries(NOTICE_FILTER_FIELDS).forEach(([key, [id, fallback, label]]) => {
+      const value = noticeFilterValue(key);
+      if (value === fallback) return;
+      const option = Array.from(els[id].options || []).find((item) => item.value === value);
+      const text = `${label}: ${option?.textContent || value}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "notice-filter-chip";
+      button.dataset.removeNoticeFilter = key;
+      button.textContent = `${text} ×`;
+      button.setAttribute("aria-label", `${text} 조건 지우기`);
+      els.noticeFilterChips.append(button);
+    });
+    if (els.noticeFilterLink) els.noticeFilterLink.value = noticeFilterHref();
+  }
+
+  function removeNoticeFilter(event) {
+    const button = event.target.closest("[data-remove-notice-filter]");
+    const key = button?.dataset.removeNoticeFilter;
+    if (!Object.hasOwn(NOTICE_FILTER_FIELDS, key)) return;
+    const [id, fallback] = NOTICE_FILTER_FIELDS[key];
+    els[id].value = fallback;
+    if (key === "decision") state.pendingNoticeDecisionFilter = null;
+    if (key === "department") {
+      state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
+      syncDashboardDepartmentSelect();
+    }
+    syncNoticeFilterLocation();
+    renderNoticeFilterTools();
+    els[id].focus();
+    if (["q", "department", "keywords"].includes(key) && state.source !== "demo") {
+      window.clearTimeout(state.noticeSearchTimer);
+      state.noticeSearchTimer = null;
+      void loadApplicationData({ forceApi: true });
+    } else applyFilters();
+  }
+
+  async function copyNoticeFilterLink() {
+    renderNoticeFilterTools();
+    syncNoticeFilterLocation();
+    const link = noticeFilterHref();
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast("검색 조건 링크를 복사했습니다", "링크를 저장하거나 공유하면 같은 조건으로 조회합니다. 담당자 판단은 링크를 연 계정의 부서 기준입니다.", "success");
+    } catch (_error) {
+      els.noticeFilterLink.hidden = false;
+      els.noticeFilterLink.value = link;
+      els.noticeFilterLink.focus();
+      els.noticeFilterLink.select();
+      showToast("링크를 직접 복사해 주세요", "선택된 링크를 복사해 저장하거나 공유할 수 있습니다.", "info");
+    }
+  }
+
   function normalizeFrontendView(view) {
     if (Object.prototype.hasOwnProperty.call(VIEW_ROUTE_MAP, view)) return view;
     return "all";
@@ -5609,6 +5777,10 @@
 
   function routeViewFromLocation(path = window.location.pathname) {
     const normalized = normalizeRoutePath(path).toLowerCase();
+    const params = new URLSearchParams(window.location.search);
+    const sharedView = params.get("view");
+    if (params.get("filters") === "1" && noticeFilterViewSupported(sharedView)
+      && routeForView(sharedView) === normalized) return sharedView;
     if (ROUTE_VIEW_MAP[normalized]) return ROUTE_VIEW_MAP[normalized];
     const firstSegment = normalized.split("/").filter(Boolean)[0];
     return firstSegment ? ROUTE_VIEW_MAP[`/${firstSegment.toLowerCase()}`] || "all" : "all";
@@ -5621,9 +5793,10 @@
   function syncRouteForView(view, { replace = false } = {}) {
     const nextPath = normalizeRoutePath(routeForView(view));
     const currentPath = normalizeRoutePath(window.location.pathname);
-    if (currentPath === nextPath) return;
     const url = new URL(window.location.href);
     url.pathname = nextPath;
+    writeNoticeFilterParams(url.searchParams);
+    if (currentPath === nextPath && url.href === window.location.href) return;
     if (replace) history.replaceState({}, "", url);
     else history.pushState({}, "", url);
   }
@@ -5638,12 +5811,14 @@
     replaceRoute = false,
     noticeSearchMode = null,
     focusMain = true,
+    restoreFilters = false,
   } = {}) {
     const nextView = normalizeFrontendView(view);
+    const previousRequest = buildNoticeRequestPath();
     const clearedServerFilters = resetNoticeFiltersForView();
     const previousView = state.currentView;
     if (previousView !== nextView) {
-      if (state.selectedNotice) clearNoticeRoute();
+      if (state.selectedNotice && !restoreFilters) clearNoticeRoute();
       closeDetail({ updateRoute: false });
     }
     if (["stored", "pps", "prespec"].includes(noticeSearchMode)) {
@@ -5654,6 +5829,7 @@
       state.noticeSearchMode = "stored";
     }
     state.currentView = nextView;
+    if (restoreFilters) restoreNoticeFiltersFromRoute();
     const titles = {
       all: ["오늘 해야 할 일", "오늘의 확인 항목"],
       collected: ["수집 공고", "수집된 전체 공고"],
@@ -5744,7 +5920,8 @@
     closeMobileMenu();
     if (!customView && !prespecView) {
       const desiredStatusScope = noticeStatusScopeForView(nextView);
-      const requestNeedsReload = state.noticeStatusScope !== desiredStatusScope || clearedServerFilters;
+      const requestNeedsReload = state.noticeStatusScope !== desiredStatusScope || (!restoreFilters && clearedServerFilters)
+        || previousRequest !== buildNoticeRequestPath();
       if ((state.source === "api" || state.loading) && requestNeedsReload) {
         void loadApplicationData({ forceApi: true });
       } else if (state.source === "error") {
@@ -5758,6 +5935,7 @@
   }
 
   function resetNoticeFiltersForView() {
+    state.pendingNoticeDecisionFilter = null;
     const clearedServerFilters = Boolean(
       els.searchInput.value.trim()
       || els.priorityKeywordInput.value.trim()
@@ -5780,6 +5958,8 @@
       button.setAttribute("aria-pressed", String(active));
     });
     if (!state.loading) renderNoticeList();
+    renderNoticeFilterTools();
+    syncNoticeFilterLocation();
   }
 
   function resetFilters() {
@@ -8476,9 +8656,8 @@
 
   function handleRouteChange() {
     const routeView = routeViewFromLocation();
-    if (routeView !== state.currentView) {
-      setView(routeView, { syncRoute: false });
-    }
+    setView(routeView, { syncRoute: false, restoreFilters: true });
+    setLayout(state.layout);
     const key = new URLSearchParams(window.location.search).get("notice");
     if (key && isNoticeListView()) {
       void openDetail(key, null, { updateRoute: false });
