@@ -17,7 +17,7 @@ from pai_loop.extraction_contracts import (
     classify_attempt_header, classify_record_contract,
 )
 from pai_loop.integrations.openai_extraction import ExtractionPayload, ExtractionOutcome, PROMPT_VERSION
-from pai_loop.quantitative_rule_extraction import validate_quantitative_attachment_extraction, validated_quantitative_record_fingerprint
+from pai_loop.quantitative_rule_extraction import ValidatedQuantitativeAttachmentRecord, validate_quantitative_attachment_extraction, validated_quantitative_record_fingerprint
 from pai_loop.quantitative_scoring import _current_dynamic_quantitative_profile, quantitative_request_from_candidate_profile
 from pai_loop.pps_enrichment import (
     _current_manifest_attempts, public_analysis_reason, safe_public_bound_extraction,
@@ -276,6 +276,112 @@ def test_duplicate_reuse_requires_current_prompt_and_identical_bytes_source_and_
             assert reused.data.model_dump(mode='json') == original['result']
         assert attempt.source_payload == original
         assert session.scalar(select(func.count()).select_from(NoticeVersion)) == 2
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def demoted_same_generation_attempt(notice, old, contract):
+    """A second pass of the SAME generation that kept nothing activatable.
+
+    The document extraction still succeeded and its record still binds, so
+    none of the invalid-attempt fallbacks apply; only the activatable rules
+    are gone.
+    """
+
+    payload = deepcopy(old.source_payload)
+    aid = payload['attachment_id']
+    # Build the losing re-read through the real validator rather than by hand:
+    # one award number no longer matches its own literal, which is the exact
+    # shape production produced (CASE_NUMBER_MISMATCH on a rating row).
+    raw, source = range_fixture(inline=True)
+
+    def bind(value):
+        if isinstance(value, dict):
+            return {k: aid if k == 'attachment_id' else bind(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [bind(item) for item in value]
+        return value
+
+    raw = bind(raw)
+    raw['quantitative_tables'][0]['criteria'][0]['cases'][0]['award_value'] = 99
+    source_sha = hashlib.sha256(source.encode()).hexdigest()
+    record = validate_quantitative_attachment_extraction(
+        ExtractionPayload.model_validate(raw), source_text=source, attachment_id=aid,
+        document_sha256=source_sha,
+        manifest_sha256=payload['current_manifest_sha256'],
+    )
+    record = record.model_copy(update=dict(
+        prompt_version=contract.prompt, extraction_schema_version=contract.schema,
+        validator_version=contract.validator,
+    ))
+    record = record.model_copy(update=dict(
+        validation_fingerprint_sha256=validated_quantitative_record_fingerprint(record)))
+    assert not record.available_candidates
+    record = record.model_dump(mode='json')
+    payload.update(
+        prompt_version=contract.prompt, schema_version=contract.schema,
+        processing_version=contract.processing, status='ACCEPTED',
+        quantitative_validation_record=record, document_sha256=old.file_sha256, result=None,
+    )
+    return NoticeVersion(
+        id='SYN-DEMOTED-SAME-GENERATION', notice=notice, version_no=3,
+        file_sha256=old.file_sha256, document_complete=True, extraction_status='ACCEPTED',
+        extraction_confidence=0, source_payload=payload,
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+@pytest.mark.parametrize('contract', [EXTRACTION, PROCESSING])
+def test_same_generation_rerun_does_not_drop_a_proven_rule(contract):
+    """Re-reading one document is not deterministic; a lost rule is not news.
+
+    The earlier pass proved an activatable rule from the same bytes and the
+    same generation. Letting the later pass replace it would discard evidence
+    we already paid for, with no new information to justify it.
+    """
+
+    notice, _, old, _ = modern_range_notice(contract)
+    demoted = demoted_same_generation_attempt(notice, old, contract)
+
+    # Known gap: _current_manifest_attempts still answers with the newest
+    # attempt, so the stored profile keeps reading the demoted one. Only the
+    # analysis source selection is guarded here.
+    assert list(_current_manifest_attempts(notice.versions)[2].values()) == [demoted]
+    engine = build_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    session = build_session_factory(engine)()
+    try:
+        session.add(notice)
+        session.commit()
+        selected = _select_source_versions(
+            session, notice_id=notice.id, prompt_version=PROMPT_VERSION,
+            source_version_ids=None,
+        )
+        assert old.id in [row.id for row in selected]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize('contract', [EXTRACTION, PROCESSING])
+def test_demotion_guard_can_be_disabled_by_a_deployment_flag(contract, monkeypatch):
+    monkeypatch.setenv('PAI_LOOP_EXTRACTION_DEMOTION_GUARD', 'off')
+    notice, _, old, _ = modern_range_notice(contract)
+    demoted = demoted_same_generation_attempt(notice, old, contract)
+
+    engine = build_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    session = build_session_factory(engine)()
+    try:
+        session.add(notice)
+        session.commit()
+        selected = _select_source_versions(
+            session, notice_id=notice.id, prompt_version=PROMPT_VERSION,
+            source_version_ids=None,
+        )
+        assert demoted.id in [row.id for row in selected]
+        assert old.id not in [row.id for row in selected]
     finally:
         session.close()
         engine.dispose()
