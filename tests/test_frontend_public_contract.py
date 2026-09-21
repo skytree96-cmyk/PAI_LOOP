@@ -185,6 +185,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     # reachable from the menus and from the notice filters.
     for view in ("pending-decision", "in-progress", "urgent-in-progress", "result-missing-decided"):
         assert f'data-kpi-view="{view}"' in html
+        # Every pipeline queue needs a route. Without one normalizeFrontendView
+        # rewrites the view to "all" and the card silently opens the dashboard.
+        assert f'"{view}": "/' in source
     assert html.count('class="kpi-card__action"') == 4
     assert "kpi-donut" not in html
     assert html.count('aria-pressed="false"') >= 3
@@ -225,7 +228,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "시스템이 GO로 추천한 공고"]' in view_body
-    assert '"in-progress": ["진행 건", "GO로 결정하고 결과를 기록하지 않은 공고"]' in view_body
+    assert '"in-progress": ["진행 건", "GO로 결정한 입찰마감 전 공고. 마감되면 결과 입력으로 넘어갑니다."]' in view_body
     assert 'ended: ["보관함", "마감·종료·취소된 공고와 당시 분석 이력"]' in view_body
     assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
@@ -458,6 +461,14 @@ def test_top_navigation_groups_start_closed_and_keep_active_view_visible() -> No
         assert f'aria-controls="{controls_id}"' in html
         assert f'id="{controls_id}" hidden' in html
     assert html.count('class="nav-group-toggle"') == 3
+    # A GO notice leaves 진행 건 when its deadline passes. The menu it left has
+    # to show where it went, or the work disappears from the operator's view.
+    assert 'data-view="result-missing-decided"' in html
+    assert html.index('data-view="result-missing-decided"') < html.index('id="navGroupLearningItems"')
+    assert 'id="navResultEntryCount"' in html
+    assert '"navResultEntryCount"' in source
+    assert 'els.navResultEntryCount.textContent = displayNumber(state.dashboard.resultMissingDecidedCount)' in source
+    assert '"/result-entry": "result-missing-decided"' in source
     assert html.count('aria-expanded="false"') >= 4
     assert 'document.querySelectorAll(".nav-group-toggle[aria-controls]")' in source
     assert 'button.addEventListener("click", () => toggleNavigationGroup(button))' in source

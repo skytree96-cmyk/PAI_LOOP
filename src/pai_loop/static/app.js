@@ -186,6 +186,13 @@
     cancelled: "/cancelled",
     ended: "/",
     "result-missing": "/result-missing",
+    // The work-pipeline queues need their own routes. Without an entry here
+    // normalizeFrontendView falls back to "all", so a menu or card that opens
+    // one of them lands on the dashboard with the queue silently dropped.
+    "pending-decision": "/pending-decision",
+    "in-progress": "/in-progress",
+    "urgent-in-progress": "/urgent-in-progress",
+    "result-missing-decided": "/result-entry",
   });
 
   const ROUTE_VIEW_MAP = Object.freeze({
@@ -201,6 +208,10 @@
     "/awards": "awards",
     "/prespec": "prespec",
     "/performance": "performance",
+    "/pending-decision": "pending-decision",
+    "/in-progress": "in-progress",
+    "/urgent-in-progress": "urgent-in-progress",
+    "/result-entry": "result-missing-decided",
   });
 
   document.addEventListener("DOMContentLoaded", init);
@@ -273,7 +284,7 @@
     const ids = [
       "teamsFollowsButton", "teamsFollowsSummary", "teamsFollowsDialog", "teamsFollowsClose", "teamsFollowsRefresh", "teamsFollowsStatus", "teamsFollowsError", "teamsFollowsDeliveryNotice", "teamsFollowsList", "teamsFollowsEmpty", "teamsLinkButton", "teamsBotChatLink", "teamsLinkCodePanel", "teamsLinkCommand", "teamsLinkExpiry", "teamsLinkCopy", "teamsPendingFollow", "teamsPendingFollowLabel", "teamsPendingFollowButton", "detailFollowButton",
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
-      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navArchiveCount",
+      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navResultEntryCount", "navArchiveCount",
       "navDecisionCount", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiReviewTrend", "kpiGoTrend",
       "dashboardSummary", "dashboardSummaryTitle", "dashboardSummaryDetail", "dashboardSummaryTotals", "dashboardRetryButton",
       "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
@@ -4850,6 +4861,11 @@
     if (els.navInProgressCount) {
       els.navInProgressCount.textContent = displayNumber(state.dashboard.inProgressCount) + "건";
     }
+    // A GO notice leaves 진행 건 the moment its deadline passes. Show where it
+    // went in the same menu, so the work is never silently dropped from view.
+    if (els.navResultEntryCount) {
+      els.navResultEntryCount.textContent = displayNumber(state.dashboard.resultMissingDecidedCount) + "건";
+    }
     if (els.navArchiveCount) {
       els.navArchiveCount.textContent = displayNumber(state.dashboard.endedCount) + "건";
     }
@@ -5629,7 +5645,7 @@
   }
 
   function isNoticeListView(view = state.currentView) {
-    const listViews = ["all", "new", "review", "go", "urgent", "fail", "cancelled", "ended", "result-missing", "undecided", "closed", "collected", "awards"];
+    const listViews = ["all", "new", "review", "go", "urgent", "fail", "cancelled", "ended", "result-missing", "undecided", "closed", "collected", "awards", ...PIPELINE_QUEUES];
     return listViews.includes(view);
   }
 
@@ -5661,7 +5677,7 @@
       review: ["검토 대기", "PASS·REVIEW 중 첨부·자격 확인이 필요한 공고"],
       go: ["GO 후보", "시스템이 GO로 추천한 공고"],
       "pending-decision": ["판단 대기", "부서 키워드 매칭·자격 확인을 마치고 담당자 판단을 기다리는 공고"],
-      "in-progress": ["진행 건", "GO로 결정하고 결과를 기록하지 않은 공고"],
+      "in-progress": ["진행 건", "GO로 결정한 입찰마감 전 공고. 마감되면 결과 입력으로 넘어갑니다."],
       "urgent-in-progress": [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `진행 건 중 ${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       "result-missing-decided": ["결과 입력", "GO로 결정하고 개찰이 지난 뒤 결과를 기록하지 않은 공고"],
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],

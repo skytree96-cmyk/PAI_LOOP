@@ -34,7 +34,8 @@ def test_runtime_destination_and_icon_work_on_every_frontend_entry(monkeypatch):
         assert 'src="./login.js' in anonymous.text or 'src="/login.js' in anonymous.text
         login_department_reader(client)
         for path in ("/", "/index.html", "/notices", "/reviews", "/urgent", "/fail", "/cancelled",
-                     "/result-missing", "/decisions", "/results", "/awards", "/prespec", "/performance"):
+                     "/result-missing", "/decisions", "/results", "/awards", "/prespec", "/performance",
+                     "/pending-decision", "/in-progress", "/urgent-in-progress", "/result-entry"):
             response = client.get(path)
             assert response.status_code == 200
             assert runtime_config(response.text) == {"paiBotTeamsUrl": DESTINATION}
