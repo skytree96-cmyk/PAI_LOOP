@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from functools import lru_cache
@@ -23,6 +24,32 @@ _INSTITUTIONAL_EDUCATION_TERMS = (
     "교육청",
     "교육부",
 )
+REGION_GROUP = "지역그룹"
+# Registered keywords of a regional office whose substance is a place name.
+# They locate a notice; they never say the work is ours. The single source of
+# truth for geography stays the profile's ``regions``; this table only covers
+# place names that were also registered as strong/supporting keywords.
+_REGION_ONLY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "region-central": ("서울", "경기", "인천", "대전", "세종", "충북", "충남", "강원"),
+    "region-busan-gyeongnam": ("부산광역시", "경상남도", "울산광역시", "부울경"),
+    "region-daegu-gyeongbuk": ("대구광역시", "경상북도", "대경권"),
+    "region-honam-jeju": (
+        "광주광역시", "전라남도", "전북특별자치도", "제주특별자치도",
+    ),
+}
+# Place names a regional profile registered as a keyword but left out of its
+# ``regions`` array. Without them the gate would drop the notice entirely
+# instead of routing it. Moving these into the JSON is a separate, paid step:
+# changing the profile bumps its version and invalidates analysis idempotency.
+_REGION_ALIASES: dict[str, tuple[str, ...]] = {
+    "region-busan-gyeongnam": ("경상남도",),
+    "region-daegu-gyeongbuk": ("대경권",),
+}
+# Business evidence the gate accepts on top of the baseline vocabulary. These
+# are procurement words that name the work itself. A generic contract word such
+# as 용역 is deliberately absent: it appears in almost every notice title and
+# would satisfy the gate everywhere, which is the same as having no gate.
+_REGION_GATE_BUSINESS_TERMS = ("포럼", "학술대회", "행사 운영")
 
 
 def _fold_text(value: str) -> str:
@@ -63,6 +90,51 @@ def _without_institutional_education_terms(value: object) -> str:
     for term in _INSTITUTIONAL_EDUCATION_TERMS:
         text = text.replace(_normalize(term), " ")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _region_gate_enabled() -> bool:
+    """Deployment switch. Turning the gate off needs a restart, not a build.
+
+    Read on each call: caching it would make the switch depend on which code
+    path warmed the cache first.
+    """
+
+    return os.getenv("PAI_LOOP_REGION_GATE", "on").strip().casefold() != "off"
+
+
+def _validate_region_declarations(
+    profile: dict[str, Any], profile_id: str, known_terms: set[str],
+) -> None:
+    """Fail loudly when the declared place names drift from the profile.
+
+    A declaration that no longer matches a registered keyword would silently
+    stop filtering, and one that no region covers would silently delete a
+    regional queue. Both are worse than refusing to start.
+    """
+
+    declared = _REGION_ONLY_KEYWORDS.get(profile_id, ())
+    aliases = _REGION_ALIASES.get(profile_id, ())
+    if (declared or aliases) and profile.get("group") != REGION_GROUP:
+        raise ValueError(f"region declarations on a non-regional profile: {profile_id}")
+    if not declared:
+        return
+    unknown = {_normalize(item) for item in declared} - known_terms
+    if unknown:
+        raise ValueError(
+            f"region-only declarations are not registered keywords: {sorted(unknown)}"
+        )
+    tokens = {_normalize(item) for item in [*profile["regions"], *aliases]}
+    orphan = [
+        item
+        for item in declared
+        if not any(
+            token in _normalize(item) or _normalize(item) == token for token in tokens
+        )
+    ]
+    if orphan:
+        raise ValueError(
+            f"region-only declarations are not covered by regions: {sorted(orphan)}"
+        )
 
 
 @lru_cache(maxsize=1)
@@ -113,6 +185,7 @@ def load_department_keyword_profiles() -> dict[str, Any]:
                 "title_required_keywords must also be strong/supporting keywords: "
                 f"{sorted(unknown_title_required)}"
             )
+        _validate_region_declarations(profile, profile_id, known_terms)
     weights = payload["baseline"].get("weights", {})
     expected_weights = {
         "user_keyword",
@@ -224,6 +297,37 @@ def _priority(score: float) -> tuple[str, str]:
     return "LOW", "낮음"
 
 
+def _baseline_strong_matches(
+    text: str, raw_join: str, baseline: dict[str, Any],
+) -> list[str]:
+    """Baseline strong matches with the institutional 교육 exception applied."""
+
+    matched = _matched_keywords(text, baseline["strong_keywords"])
+    if "교육" in matched and not _contains(
+        _without_institutional_education_terms(raw_join), "교육"
+    ):
+        matched.remove("교육")
+    return matched
+
+
+@lru_cache(maxsize=64)
+def _region_place_names(
+    department_id: str, regions: tuple[str, ...],
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """Return (region tokens to match, normalized place names to discount).
+
+    Keyed on the profile's own regions, not just its id: the catalog is read
+    from disk on every load and a reference sync can change it underneath us.
+    """
+
+    tokens = (*regions, *_REGION_ALIASES.get(department_id, ()))
+    discounted = {_normalize(item) for item in tokens}
+    discounted |= {
+        _normalize(item) for item in _REGION_ONLY_KEYWORDS.get(department_id, ())
+    }
+    return tokens, frozenset(discounted)
+
+
 def _prepare_notice_context(
     *,
     title: str,
@@ -238,16 +342,9 @@ def _prepare_notice_context(
     # ``교육용역`` must not become the strong keyword ``공공기관 교육``).
     searchable_text = _normalize(_FIELD_SEPARATOR.join((title, agency, category)))
     business_text = _normalize(_FIELD_SEPARATOR.join((title, category)))
-    matched_baseline_strong = _matched_keywords(
-        searchable_text,
-        baseline["strong_keywords"],
+    matched_baseline_strong = _baseline_strong_matches(
+        searchable_text, _FIELD_SEPARATOR.join((title, agency, category)), baseline,
     )
-    if "교육" in matched_baseline_strong:
-        baseline_business_text = _without_institutional_education_terms(
-            _FIELD_SEPARATOR.join((title, agency, category))
-        )
-        if not _contains(baseline_business_text, "교육"):
-            matched_baseline_strong.remove("교육")
     return {
         "searchable_text": searchable_text,
         "business_text": business_text,
@@ -257,6 +354,18 @@ def _prepare_notice_context(
             searchable_text,
             baseline["supporting_keywords"],
         ),
+        # Evidence for the regional gate only. The buyer's own name is not a
+        # statement about the work, so this one reads the title and category
+        # and leaves the agency out.
+        "matched_business_evidence": [
+            *_baseline_strong_matches(
+                business_text, _FIELD_SEPARATOR.join((title, category)), baseline,
+            ),
+            *_matched_keywords(
+                business_text,
+                [*baseline["supporting_keywords"], *_REGION_GATE_BUSINESS_TERMS],
+            ),
+        ],
     }
 
 
@@ -320,23 +429,48 @@ def rank_notice_for_department(
         matched_department_supporting = [
             item for item in matched_department_supporting if has_required_business_context(item)
         ]
-    matched_regions = _matched_keywords(searchable_text, department["regions"] if department else [])
-    if department and department.get("group") == "지역그룹" and matched_regions:
-        region_terms = [_normalize(item) for item in matched_regions]
-
-        def is_duplicate_region_signal(keyword: str) -> bool:
-            normalized = _normalize(keyword)
-            return any(normalized in region or region in normalized for region in region_terms)
-
-        # A place name is a single location boost. Regional profiles often list
-        # both an official name (supporting) and its short form (region); counting
-        # both would let geography outrank the actual business owner.
+    is_regional = bool(department and department.get("group") == REGION_GROUP)
+    region_tokens, discounted_places = (
+        _region_place_names(str(department["id"]), tuple(department["regions"]))
+        if is_regional
+        else ((), frozenset())
+    )
+    matched_regions = _matched_keywords(
+        searchable_text,
+        list(region_tokens) if is_regional else (department["regions"] if department else []),
+    )
+    blocked_region_signals: list[str] = []
+    if is_regional:
+        # A place name is a single location boost. Regional profiles list both
+        # an official name (supporting) and its short form (region); counting
+        # both would let geography outrank the actual business owner. Only the
+        # declared place names are discounted, so a compound such as 부산 교육
+        # keeps its department weight — it names work, not just a location.
         matched_department_strong = [
-            item for item in matched_department_strong if not is_duplicate_region_signal(item)
+            item for item in matched_department_strong
+            if _normalize(item) not in discounted_places
         ]
         matched_department_supporting = [
-            item for item in matched_department_supporting if not is_duplicate_region_signal(item)
+            item for item in matched_department_supporting
+            if _normalize(item) not in discounted_places
         ]
+        if _region_gate_enabled() and matched_regions:
+            # Geography alone is not a reason to route work to a regional
+            # office. The notice must also say the work is the kind we do,
+            # in its own title or category. Judged after the discount above so
+            # a place name can never justify itself.
+            business_evidence = [
+                item
+                for item in (
+                    *notice_context.get("matched_business_evidence", []),
+                    *matched_department_strong,
+                    *matched_department_supporting,
+                )
+                if _normalize(item) not in discounted_places
+            ]
+            if not business_evidence:
+                blocked_region_signals = matched_regions
+                matched_regions = []
     exclusions = [*baseline["excluded_keywords"], *(department["excluded_keywords"] if department else [])]
     matched_exclusions = _matched_keywords(searchable_text, exclusions)
 
@@ -404,6 +538,11 @@ def rank_notice_for_department(
         reasons.append(f"부서 사업영역 일치: {', '.join(department_matches)}")
     if matched_regions:
         reasons.append(f"담당 지역 일치: {', '.join(matched_regions)}")
+    if blocked_region_signals:
+        reasons.append(
+            f"담당 지역({', '.join(blocked_region_signals)})만 일치하고 "
+            "제목·분류에 업무 근거가 없어 라우팅하지 않습니다."
+        )
     if matched_exclusions:
         reasons.append(f"비주력 공고 신호: {', '.join(matched_exclusions)}")
     if not reasons:
@@ -430,6 +569,7 @@ def rank_notice_for_department(
         "matched_baseline_keywords": baseline_matches,
         "matched_department_keywords": department_matches,
         "matched_regions": matched_regions,
+        "blocked_region_signals": blocked_region_signals,
         "matched_exclusions": matched_exclusions,
         "score_breakdown": breakdown,
         "reasons": reasons,

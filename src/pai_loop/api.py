@@ -1080,9 +1080,15 @@ def _department_keyword_matched_ids(
             title=title, agency=agency or "", category=category or "",
             department_id=department["id"],
         )
-        if ranking["matched_department_keywords"] or ranking["matched_regions"]:
+        if _ranking_department_matches(ranking):
             matched.add(notice_id)
     return matched
+
+
+def _ranking_department_matches(ranking: dict[str, Any]) -> list[str]:
+    """What put a notice in a department's queue: its own terms or its region."""
+
+    return [*ranking["matched_department_keywords"], *ranking["matched_regions"]]
 
 
 def _notice_summaries_for_ids(
@@ -1554,21 +1560,30 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
     catalog = load_department_keyword_profiles()
     departments: list[dict[str, Any]] = []
     for profile in catalog["departments"]:
-        registered = [*profile["strong_keywords"], *profile["supporting_keywords"]]
+        # Regions count toward matched_count, so a table without them cannot
+        # explain a regional office's queue: it would show every row at zero
+        # while the department matched dozens of notices.
+        registered = [
+            *profile["strong_keywords"], *profile["supporting_keywords"],
+            *[
+                region for region in profile["regions"]
+                if region not in profile["strong_keywords"]
+                and region not in profile["supporting_keywords"]
+            ],
+        ]
         keyword_counts = {keyword: 0 for keyword in registered}
         matched_count = 0
         evaluated_count = 0
         recommended_count = 0
         selected_matched_count = 0
+        region_gate_blocked_count = 0
         _decided, go_ids = _department_decision_index(session, department=profile)
         for notice_id, title, agency, category in actionable:
             ranking = rank_notice_for_department(
                 title=title, agency=agency, category=category, department_id=profile["id"],
             )
-            matched = [
-                *ranking["matched_department_keywords"],
-                *ranking["matched_regions"],
-            ]
+            region_gate_blocked_count += int(bool(ranking["blocked_region_signals"]))
+            matched = _ranking_department_matches(ranking)
             if not matched:
                 continue
             matched_count += 1
@@ -1588,6 +1603,10 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
                 "matched_count": matched_count,
                 "evaluated_count": evaluated_count,
                 "recommended_count": recommended_count,
+                # Notices whose only signal was a place name. Without this the
+                # gate's effect is invisible: the queue shrinks and nothing
+                # says where the difference went.
+                "region_gate_blocked_count": region_gate_blocked_count,
                 # Selection inside this scope keeps the funnel nested, so a bar
                 # can stack collect -> evaluate -> recommend -> select without a
                 # segment overflowing the one that contains it.
