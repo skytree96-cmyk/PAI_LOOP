@@ -40,6 +40,7 @@ from .source_gap_policy import (
     is_explicit_qualitative_only_exclusion as _shared_qualitative_only_exclusion,
     sibling_targets_are_alternatives,
     is_quantitative_irrelevant_gap,
+    is_explicit_qualitative_referenced_form_absence,
     normalise_source_gap as _shared_normalise_source_gap,
     quantitative_table_local_absence_targets as _shared_quantitative_table_local_absence_targets,
     source_label_document_types as _shared_source_label_document_types,
@@ -8583,6 +8584,7 @@ def merge_validated_quantitative_records(
     not_applicable: list[ImmutableEvidenceAnchor] = []
     processed: set[str] = set()
     bound_records: dict[str, ValidatedQuantitativeAttachmentRecord] = {}
+    qualitative_only_gap_attachments: set[str] = set()
 
     for attachment_id in sorted(set(grouped) - set(expected)):
         issues.append(
@@ -8743,6 +8745,19 @@ def merge_validated_quantitative_records(
             issues.extend(binding_errors)
             continue
 
+        # The persisted fingerprint and original source-gap binding above must
+        # pass unchanged. Only then narrow a generic gap's effect in this view:
+        # every declaration must be irrelevant or the complete qualitative form
+        # statement. Do not rewrite the record, its source, or validation proof.
+        if (
+            source_gaps
+            and any(is_explicit_qualitative_referenced_form_absence(gap) for gap in source_gaps)
+            and all(is_quantitative_irrelevant_gap(gap)
+                    or is_explicit_qualitative_referenced_form_absence(gap)
+                    for gap in source_gaps)
+        ):
+            qualitative_only_gap_attachments.add(attachment_id)
+
         processed.add(attachment_id)
         bound_records[attachment_id] = record
         tables.extend(record.tables)
@@ -8750,10 +8765,18 @@ def merge_validated_quantitative_records(
         review.extend(record.review_candidates)
         not_applicable.extend(record.not_applicable_evidence)
 
+    def qualitative_gap_is_resolved(issue: QuantitativeValidationIssue, attachment_id: str) -> bool:
+        return (attachment_id in qualitative_only_gap_attachments
+                and issue.code == "EXTRACTION_DECLARED_INCOMPLETE")
+
     supplying_attachment_ids = {
         attachment_id
         for attachment_id, record in bound_records.items()
-        if record.status in {"AVAILABLE", "REVIEW"}
+        if (record.status in {"AVAILABLE", "REVIEW"}
+            or (attachment_id in qualitative_only_gap_attachments
+                and not any(item.disposition == "INCOMPLETE"
+                            and not qualitative_gap_is_resolved(item, attachment_id)
+                            for item in record.issues)))
         and any(
             _available_table_confidence_is_sufficient(record, table)
             for table in record.tables
@@ -8898,6 +8921,7 @@ def merge_validated_quantitative_records(
             has_other_hard_issue = any(
                 item.disposition == "INCOMPLETE"
                 and item.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+                and not qualitative_gap_is_resolved(item, attachment_id)
                 for item in record.issues
             )
             if (
@@ -8916,12 +8940,14 @@ def merge_validated_quantitative_records(
     for attachment_id, record in sorted(bound_records.items()):
         resolved_local_absence = any(
             local_absence_is_resolved(item, attachment_id=attachment_id)
+            or qualitative_gap_is_resolved(item, attachment_id)
             for item in record.issues
         )
         unresolved_record_issues = tuple(
             item
             for item in record.issues
             if not local_absence_is_resolved(item, attachment_id=attachment_id)
+            and not qualitative_gap_is_resolved(item, attachment_id)
         )
         issues.extend(unresolved_record_issues)
         if (
