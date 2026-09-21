@@ -1257,6 +1257,31 @@ svg {
   box-shadow: 0 0 0 3px rgb(92 73 183 / 0.1);
 }
 
+.notice-filter-tools,
+.notice-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.notice-filter-tools { margin: 10px 0; }
+.notice-filter-chips { flex: 1 1 240px; min-width: 0; }
+.notice-filter-tools p { flex-basis: 100%; margin: 0; color: var(--ink-soft); font-size: 12px; }
+.notice-filter-tools input { width: 100%; min-width: 0; }
+.notice-filter-chip {
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  color: var(--ink-soft);
+  background: var(--surface-soft);
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.notice-filter-chip:hover { background: #fff; }
+
 .notice-search-scope {
   margin: -7px 2px 14px;
   color: var(--muted);

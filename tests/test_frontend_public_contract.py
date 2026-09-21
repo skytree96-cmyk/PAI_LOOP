@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260914-quantitative-gapclass-v1"' in html
+    assert 'href="./styles.css?v=20260920-filter-links-v1"' in html
     assert 'href="./top-navigation.css?v=20260913-dashboard-charts-v2"' in html
-    assert 'src="./app.js?v=20260914-quantitative-gapclass-v1"' in html
+    assert 'src="./app.js?v=20260920-filter-links-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -1269,6 +1269,7 @@ const isVisibleEndedNotice = notice => ["CLOSED", "EXPIRED", "CANCELLED"].includ
 const renderNoticeSearchScope = () => {};
 const globalNoticeSearchActive = () => Boolean(els.searchInput.value.trim());
 const renderNoticeList = () => {};
+const renderNoticeFilterTools = () => {};
 const window = {clearTimeout() {}};
 const formatNumber = value => String(value);
 const unwrapObject = value => value || {};
