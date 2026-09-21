@@ -166,6 +166,139 @@ def test_region_is_single_boost_and_does_not_outrank_business_expertise() -> Non
     assert rankings[0]["department_score"] > central["department_score"]
 
 
+def test_bare_region_name_alone_does_not_match_or_route() -> None:
+    ranking = rank_notice_for_department(
+        title="SYN 부산 안내", agency="SYN agency",
+        department_id="region-busan-gyeongnam",
+    )
+
+    assert ranking["matched_regions"] == []
+    assert ranking["blocked_region_signals"] == ["부산"]
+    assert ranking["recommendation_tier"] == "NONE"
+    assert ranking["score"] == 0
+    routes = route_notice_across_regions(title="SYN 부산 안내", agency="SYN agency", limit=10)
+    assert all(item["department_id"] != "region-busan-gyeongnam" for item in routes)
+
+
+def test_region_business_context_comes_from_the_title_not_the_buyer_name() -> None:
+    ranking = rank_notice_for_department(
+        title="청사 경비용역 및 조경 관리", agency="대전 한국교육개발원",
+        department_id="region-central",
+    )
+
+    assert ranking["blocked_region_signals"] == ["대전"]
+    assert ranking["recommendation_tier"] == "NONE"
+
+
+def test_compound_region_keyword_still_counts_as_business_evidence() -> None:
+    ranking = rank_notice_for_department(
+        title="부산 교육 프로그램 위탁운영", agency="SYN agency",
+        department_id="region-busan-gyeongnam",
+    )
+
+    assert ranking["recommendation_tier"] == "ROUTING"
+    assert ranking["matched_department_keywords"] == ["부산 교육"]
+    assert ranking["matched_regions"] == ["부산"]
+    assert ranking["blocked_region_signals"] == []
+
+
+def test_declared_place_names_never_score_as_business_evidence() -> None:
+    for title, department_id in (
+        ("대구 대경권 산업단지 진입로 공사", "region-daegu-gyeongbuk"),
+        ("경남 경상남도 청사 주차장 공사", "region-busan-gyeongnam"),
+    ):
+        ranking = rank_notice_for_department(
+            title=title, agency="SYN agency", department_id=department_id,
+        )
+        assert ranking["matched_department_keywords"] == [], title
+        assert ranking["recommendation_tier"] == "NONE", title
+
+
+def test_official_place_name_routes_when_the_title_names_the_work() -> None:
+    ranking = rank_notice_for_department(
+        title="경상남도 공무원 직무 교육 위탁운영", agency="SYN agency",
+        department_id="region-busan-gyeongnam",
+    )
+
+    assert ranking["matched_regions"] == ["경상남도"]
+    assert ranking["recommendation_tier"] == "ROUTING"
+
+
+def test_multiple_bare_region_names_do_not_accumulate_a_score() -> None:
+    ranking = rank_notice_for_department(
+        title="서울 경기 인천 대전 세종 충북 충남 순회 정비", agency="SYN agency",
+        department_id="region-central",
+    )
+
+    assert ranking["score"] == 0
+    assert ranking["recommendation_tier"] == "NONE"
+    assert len(ranking["blocked_region_signals"]) >= 5
+
+
+def test_forum_counts_as_business_evidence_for_a_regional_office() -> None:
+    ranking = rank_notice_for_department(
+        title="제11회 국제주택도시금융포럼 행사대행용역", agency="부산광역시",
+        department_id="region-busan-gyeongnam",
+    )
+
+    assert ranking["recommendation_tier"] == "ROUTING"
+    assert ranking["blocked_region_signals"] == []
+
+
+def test_generic_contract_word_alone_does_not_satisfy_the_region_gate() -> None:
+    # 용역 appears in almost every procurement title. Accepting it as evidence
+    # would leave the gate matching everything it matched before.
+    ranking = rank_notice_for_department(
+        title="부산 청사 방수공사 용역", agency="SYN agency",
+        department_id="region-busan-gyeongnam",
+    )
+
+    assert ranking["recommendation_tier"] == "NONE"
+    assert ranking["blocked_region_signals"] == ["부산"]
+
+
+def test_region_declarations_must_stay_in_sync_with_the_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    load_department_keyword_profiles.cache_clear()
+    monkeypatch.setitem(
+        ranking_module._REGION_ONLY_KEYWORDS, "region-central", ("존재하지 않는 지명",),
+    )
+    with pytest.raises(ValueError, match="not registered keywords"):
+        load_department_keyword_profiles()
+
+    monkeypatch.setitem(
+        ranking_module._REGION_ALIASES, "management-planning", ("서울",),
+    )
+    with pytest.raises(ValueError, match="non-regional profile"):
+        load_department_keyword_profiles()
+
+    # A declared place name that no region covers would silently delete a
+    # regional queue, so the loader must refuse it too.
+    monkeypatch.setitem(
+        ranking_module._REGION_ONLY_KEYWORDS, "region-central", ("서울", "중부권 컨설팅"),
+    )
+    monkeypatch.delitem(ranking_module._REGION_ALIASES, "management-planning")
+    with pytest.raises(ValueError, match="not covered by regions"):
+        load_department_keyword_profiles()
+    monkeypatch.undo()
+    load_department_keyword_profiles.cache_clear()
+
+
+def test_region_gate_can_be_disabled_by_a_deployment_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAI_LOOP_REGION_GATE", "off")
+    ranking = rank_notice_for_department(
+        title="SYN 부산 안내", agency="SYN agency",
+        department_id="region-busan-gyeongnam",
+    )
+
+    assert ranking["matched_regions"] == ["부산"]
+    assert ranking["blocked_region_signals"] == []
+    assert ranking["recommendation_tier"] == "ROUTING"
+
+
 def test_combined_department_views_preserve_results_with_one_scoring_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

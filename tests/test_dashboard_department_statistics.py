@@ -26,7 +26,12 @@ def _seed_portfolio(client):
         titles = {
             0: "SYN 경영전략", 1: "SYN 경영전략", 2: "SYN 재무교육",
             3: "SYN 정책연구", 4: "SYN 경영전략 시설공사", 5: "SYN 경영전략",
-            6: "SYN 경영전략", 7: "SYN 재무교육", 8: "SYN 부산 안내",
+            # Index 8 carries the regional routing case. Its title has to name
+            # the work as well as the place: a bare place name no longer routes
+            # (see test_department_ranking's region gate tests), and this test
+            # is about routing staying separate from the business rank, not
+            # about the gate.
+            6: "SYN 경영전략", 7: "SYN 재무교육", 8: "SYN 부산 직원 교육 위탁운영",
             9: "SYN 경영전략", 30: "SYN 경영전략",
         }
         for index in range(31):

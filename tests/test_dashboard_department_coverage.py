@@ -126,3 +126,40 @@ def test_selection_inside_scope_never_exceeds_the_matched_funnel(client):
     assert row["selected_matched_count"] == 1
     assert row["selected_count"] == 2  # The unmatched selection is still reported.
     assert row["selected_matched_count"] <= row["matched_count"]
+
+
+def test_bare_region_name_does_not_fill_a_regional_department_queue(client):
+    """Geography alone must not put a notice in a regional office's queue.
+
+    The place name still counts once for the notice that also names our work,
+    so the keyword table reports coverage rather than raw text hits.
+    """
+
+    with client.app.state.session_factory() as session:
+        _notice(session, "region-only", "서울 청사 도로 포장 보수 공사")
+        _notice(session, "region-work", "서울 공무원 직무 교육 위탁운영", evaluated=True)
+        session.commit()
+
+    row = next(
+        item
+        for item in client.get("/api/v1/dashboard/departments").json()["departments"]
+        if item["department_id"] == "region-central"
+    )
+    assert row["matched_count"] == 1
+    assert row["recommended_count"] == 1
+    assert row["region_gate_blocked_count"] == 1
+    counts = {item["keyword"]: item["count"] for item in row["keywords"]}
+    assert counts["서울"] == 1
+    assert row["selected_matched_count"] <= row["matched_count"]
+
+
+def test_region_tokens_appear_in_the_keyword_table(client):
+    """A region that can fill the queue must be visible as a table row."""
+
+    row = next(
+        item
+        for item in client.get("/api/v1/dashboard/departments").json()["departments"]
+        if item["department_id"] == "region-central"
+    )
+    keywords = {item["keyword"] for item in row["keywords"]}
+    assert "충청" in keywords  # Declared in regions only, never as a keyword.

@@ -210,6 +210,9 @@ class DepartmentRankingOut(ApiModel):
     matched_baseline_keywords: list[str] = Field(default_factory=list)
     matched_department_keywords: list[str] = Field(default_factory=list)
     matched_regions: list[str] = Field(default_factory=list)
+    # Place names that matched while the notice named no work of ours. Kept so
+    # a screen can say why a regional office did not receive the notice.
+    blocked_region_signals: list[str] = Field(default_factory=list)
     matched_exclusions: list[str] = Field(default_factory=list)
     score_breakdown: list[DepartmentRankingBreakdownOut] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
