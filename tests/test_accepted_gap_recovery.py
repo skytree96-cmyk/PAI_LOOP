@@ -11,7 +11,10 @@ import pai_loop.quantitative_rule_extraction as quant
 from pai_loop.extraction_contracts import CURRENT_EXTRACTION_CONTRACT, LEGACY_CASE_CONTRACT
 from pai_loop.integrations.openai_extraction import ExtractionOutcome, ExtractionPayload
 from pai_loop.models import Notice, NoticeVersion
-from pai_loop.source_gap_policy import quantitative_table_local_absence_targets
+from pai_loop.source_gap_policy import (
+    quantitative_table_local_absence_targets,
+    sibling_targets_are_alternatives,
+)
 from test_pps_enrichment import _single_hwpx_reuse_case
 from test_quantitative_rule_extraction import ATTACHMENT_ID, VALID_SOURCE, payload_with_table
 
@@ -260,3 +263,84 @@ def test_source_bound_not_applicable_record_is_not_retried():
     v=version_for(data,source=statement)
     assert v.source_payload["quantitative_validation_record"]["status"] == "NOT_APPLICABLE"
     assert retryable(v) is False
+
+
+# 한 결손 문장이 후보 문서를 여럿 나열하는 경우. 합성 접두어를 붙여 실제 공고
+# 문구와 구분하되, 분류기가 두 개의 타깃(RFP/제안요청서, SCOPE/과업내용서)을
+# 내도록 유지한다.
+MULTI_TARGET_GAP = (
+    "합성 입력: 제안요청서, 과업내용서 등 별첨 세부 평가기준 문서가 본 SOURCE에 "
+    "포함되어 있지 않아 정량적 평가표(정량평가항목) 내용을 확인할 수 없음"
+)
+
+
+def test_multi_target_gap_splits_into_several_requirements() -> None:
+    """전제 확인: 한 문장이 후보 문서 수만큼 요구로 갈라진다."""
+
+    assert quantitative_table_local_absence_targets(MULTI_TARGET_GAP) == (
+        (("RFP",), ("제안요청서",)),
+        (("SCOPE",), ("과업내용서",)),
+    )
+
+
+@pytest.mark.parametrize("supplier", ["absent", "rfp_only"])
+def test_enumerated_gap_is_satisfied_by_any_one_named_document(supplier):
+    """나열된 후보 중 하나만 확보돼도 그 결손 문장은 해소된다.
+
+    추출기는 "제안요청서, 과업내용서 등 …" 한 문장을 후보마다 하나씩 쪼개 요구로
+    만든다. 그 나열은 어느 문서를 보면 기준을 확인할 수 있는지를 적은 선택지이지
+    전부 갖춰야 하는 목록이 아니다. 쪼갠 요구를 각각 강제하면 제안요청서가 완전한
+    표를 제공했는데도 첨부되지 않은 과업내용서 때문에 공고 전체가 막힌다.
+    """
+
+    notice = quant.validate_quantitative_attachment_extraction(
+        payload([MULTI_TARGET_GAP]), source_text=SOURCE, attachment_id="NOTICE-SYN",
+        document_sha256="a"*64, manifest_sha256="b"*64,
+    )
+    # 한 문장에서 갈라진 두 요구가 모두 기록된다.
+    assert [i.code for i in notice.issues] == [
+        "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT",
+        "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT",
+    ]
+    assert {i.required_sibling_document_types for i in notice.issues} == {
+        ("RFP",), ("SCOPE",),
+    }
+
+    records = [notice]
+    gaps = {"NOTICE-SYN": [MULTI_TARGET_GAP]}
+    if supplier == "rfp_only":
+        # 과업내용서는 끝까지 첨부되지 않는다. 제안요청서만 표를 제공한다.
+        rfp = quant.validate_quantitative_attachment_extraction(
+            payload_with_table(), source_text=VALID_SOURCE, attachment_id=ATTACHMENT_ID,
+            document_sha256="d"*64, manifest_sha256="b"*64,
+        )
+        records.append(rfp)
+        gaps[ATTACHMENT_ID] = []
+
+    result = merge(records, gaps)
+    assert (result.status == "AVAILABLE") is (supplier == "rfp_only"), [
+        (i.code, i.required_sibling_document_types) for i in result.issues
+    ]
+
+
+# "와/과"로 묶인 연언은 예시 나열이 아니다. 두 문서를 모두 요구해야 한다.
+CONJUNCTIVE_GAP = "제안요청서와 과업지시서가 별도 제공되지 않아 평가배점표를 확인할 수 없음"
+
+
+@pytest.mark.parametrize(
+    "gap, alternatives",
+    [
+        (MULTI_TARGET_GAP, True),
+        (CONJUNCTIVE_GAP, False),
+        (LOCAL_GAP, False),
+    ],
+)
+def test_only_an_enumeration_with_deung_reads_as_alternatives(gap, alternatives):
+    """선택지와 연언을 가르는 것은 원문 어법이다.
+
+    쉼표 나열 뒤의 '등'만 예시로 읽는다. '와'/'과'로 묶인 연언과 단일 문서 지목은
+    종전대로 각 요구가 따로 충족되어야 하며, 이 구분이 무너지면 두 문서를 모두
+    요구하는 공고가 하나만으로 통과해 버린다.
+    """
+
+    assert sibling_targets_are_alternatives(gap) is alternatives

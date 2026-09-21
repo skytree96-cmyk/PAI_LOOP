@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Annotated, Literal
+from uuid import UUID
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -20,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .auth import require_private_evidence_access
+from .eligibility_policy import load_public_company_profile
 from .private_performance_normalization import router as performance_normalization_router
 from .models import CompanyFact, Evidence, Notice
 from .quantitative_formula import parse_credit_rating
@@ -386,3 +389,198 @@ def register_private_credit_rating_for_notice(
 
 
 router.include_router(performance_normalization_router)
+
+
+# The certificate is a company-wide source document. A scoreable CompanyFact
+# remains a separate, explicitly reviewed projection onto a notice condition.
+_CERTIFICATE_TYPE = "COMPANY_CREDIT_CERTIFICATE"
+_CERTIFICATE_SCHEMA = "pai-loop-private-credit-certificate-1.0.0"
+
+
+class PrivateCreditCertificateRegistration(PrivateCreditRatingRegistration):
+    company_name: str = Field(min_length=1, max_length=255)
+    issuer_name: str = Field(min_length=1, max_length=255)
+    rating_kind: Literal["ENTERPRISE_CREDIT"]
+    purpose: Literal["PUBLIC_PROCUREMENT"]
+
+    @field_validator("company_name", "issuer_name")
+    @classmethod
+    def nonempty_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("회사와 발급기관 이름이 필요합니다.")
+        return value
+
+
+class PrivateCreditCertificateResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    certificate_id: UUID
+    registration_status: Literal["CREATED", "UNCHANGED", "REGISTERED"]
+    company_name: str
+    issuer_name: str
+    rating: str
+    rating_kind: Literal["ENTERPRISE_CREDIT"] = "ENTERPRISE_CREDIT"
+    purpose: Literal["PUBLIC_PROCUREMENT"] = "PUBLIC_PROCUREMENT"
+    issued_on: date
+    effective_on: date
+    valid_until: date
+    notice_binding_required: Literal[True] = True
+
+
+class PrivateCreditCertificateBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    certificate_id: UUID
+    expected_fact_binding_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    verification_attestation: Literal["HUMAN_REVIEWED_NOTICE_CONDITIONS"]
+
+
+class PrivateCreditBindingContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    notice_key: str
+    deadline: datetime
+    fact_binding_sha256: str
+    notice_condition_review_required: Literal[True] = True
+
+
+def _company_identity(name: str) -> str:
+    # Only spelling variants of the same legal prefix; never fuzzy name matching.
+    name = re.sub(r"\s+", "", name)
+    return re.sub(r"^(?:\(사단\)|\(사\))", "사단법인", name)
+
+
+def _check_certificate_company(payload: PrivateCreditCertificateRegistration) -> None:
+    name = load_public_company_profile().get("organization", {}).get("display_name")
+    if not isinstance(name, str) or not name.strip() or _company_identity(name) != _company_identity(payload.company_name):
+        raise HTTPException(422, "증빙의 기업명이 현재 회사 프로필과 일치하지 않습니다.")
+
+
+def _certificate_key(document_sha256: str) -> str:
+    return "PRIVATE-CREDIT-CERT-" + document_sha256
+
+
+def _certificate_metadata(payload: PrivateCreditCertificateRegistration) -> dict:
+    value = payload.model_dump(mode="json")
+    digest = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                      separators=(",", ":")).encode()).hexdigest()
+    return {"certificate_schema": _CERTIFICATE_SCHEMA, "classification": "PRIVATE_EVIDENCE",
+            "verification_assurance": "DOCUMENT_REVIEWED_NOT_ISSUER_AUTHENTICATED",
+            "registration": value, "registration_sha256": digest}
+
+
+def _certificate_matches(evidence: Evidence, payload: PrivateCreditCertificateRegistration) -> bool:
+    return bool(
+        evidence.evidence_key == _certificate_key(payload.document_sha256)
+        and evidence.name == "비공개 기업신용평가 증빙 원장"
+        and evidence.evidence_type == _CERTIFICATE_TYPE
+        and evidence.status == "VERIFIED"
+        and evidence.sha256 == payload.document_sha256
+        and evidence.source_location == payload.evidence_reference
+        and _instant_equal(evidence.issued_at, _start_of_korean_date(payload.issued_on))
+        and _instant_equal(evidence.valid_from, _start_of_korean_date(payload.effective_on))
+        and _instant_equal(evidence.valid_until, _end_of_korean_date(payload.valid_until))
+        and evidence.metadata_json == _certificate_metadata(payload)
+    )
+
+
+def _load_certificate(session: Session, certificate_id: UUID) -> tuple[Evidence, PrivateCreditCertificateRegistration]:
+    evidence = session.get(Evidence, str(certificate_id))
+    if evidence is None or evidence.evidence_type != _CERTIFICATE_TYPE:
+        raise HTTPException(404, "등록된 신용평가 증빙을 찾을 수 없습니다.")
+    try:
+        metadata = evidence.metadata_json
+        if not isinstance(metadata, dict):
+            raise ValueError("missing registration")
+        payload = PrivateCreditCertificateRegistration.model_validate(metadata.get("registration"))
+    except (ValidationError, ValueError):
+        raise HTTPException(409, "등록된 신용평가 증빙의 무결성을 확인할 수 없습니다.") from None
+    if not _certificate_matches(evidence, payload):
+        raise HTTPException(409, "등록된 신용평가 증빙이 변경되었거나 사용 중지 상태입니다.")
+    _check_certificate_company(payload)
+    return evidence, payload
+
+
+def _certificate_result(evidence: Evidence, payload: PrivateCreditCertificateRegistration,
+                        registration_status: Literal["CREATED", "UNCHANGED", "REGISTERED"]) -> PrivateCreditCertificateResult:
+    return PrivateCreditCertificateResult(
+        certificate_id=evidence.id, registration_status=registration_status,
+        **payload.model_dump(include={"company_name", "issuer_name", "rating", "rating_kind",
+                                     "purpose", "issued_on", "effective_on", "valid_until"}),
+    )
+
+
+@router.post("/credit-ratings", response_model=PrivateCreditCertificateResult)
+def register_private_credit_certificate(payload: PrivateCreditCertificateRegistration,
+                                        response: Response, session: DbSession) -> PrivateCreditCertificateResult:
+    """Register once even without notices or executable rules; never grant a score."""
+    response.headers["Cache-Control"] = "no-store"
+    _check_certificate_company(payload)
+    existing = session.scalar(select(Evidence).where(
+        Evidence.evidence_key == _certificate_key(payload.document_sha256)).with_for_update())
+    if existing is not None:
+        if not _certificate_matches(existing, payload):
+            raise HTTPException(409, "같은 증빙 문서에 다른 등록 내용이 존재합니다.")
+        return _certificate_result(existing, payload, "UNCHANGED")
+    evidence = Evidence(
+        evidence_key=_certificate_key(payload.document_sha256), name="비공개 기업신용평가 증빙 원장",
+        evidence_type=_CERTIFICATE_TYPE, status="VERIFIED", sha256=payload.document_sha256,
+        issued_at=_start_of_korean_date(payload.issued_on), valid_from=_start_of_korean_date(payload.effective_on),
+        valid_until=_end_of_korean_date(payload.valid_until), source_location=payload.evidence_reference,
+        metadata_json=_certificate_metadata(payload),
+    )
+    session.add(evidence)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.scalar(select(Evidence).where(
+            Evidence.evidence_key == _certificate_key(payload.document_sha256)))
+        if existing is None or not _certificate_matches(existing, payload):
+            raise HTTPException(409, "동시 등록 내용이 달라 증빙 확인이 필요합니다.") from None
+        return _certificate_result(existing, payload, "UNCHANGED")
+    return _certificate_result(evidence, payload, "CREATED")
+
+
+@router.get("/credit-ratings/{certificate_id}", response_model=PrivateCreditCertificateResult)
+def get_private_credit_certificate(certificate_id: UUID, response: Response,
+                                   session: DbSession) -> PrivateCreditCertificateResult:
+    response.headers["Cache-Control"] = "no-store"
+    evidence, payload = _load_certificate(session, certificate_id)
+    return _certificate_result(evidence, payload, "REGISTERED")
+
+
+def _notice_for_credit_binding(session: Session, notice_key: str) -> Notice:
+    notice = session.scalar(select(Notice).where(Notice.notice_key == notice_key)
+                            .options(selectinload(Notice.versions)))
+    if notice is None:
+        raise HTTPException(404, "공고를 찾을 수 없습니다.")
+    return notice
+
+
+@router.get("/notices/{notice_key}/credit-rating/binding", response_model=PrivateCreditBindingContext)
+def get_private_credit_binding_context(notice_key: str, response: Response,
+                                       session: DbSession) -> PrivateCreditBindingContext:
+    response.headers["Cache-Control"] = "no-store"
+    notice = _notice_for_credit_binding(session, notice_key)
+    return PrivateCreditBindingContext(notice_key=notice.notice_key, deadline=notice.deadline,
+                                       fact_binding_sha256=_credit_rating_binding_for_notice(notice))
+
+
+@router.post("/notices/{notice_key}/credit-rating/bind", response_model=PrivateCreditRatingRegistrationResult)
+def bind_private_credit_certificate(notice_key: str, payload: PrivateCreditCertificateBinding,
+                                     response: Response, session: DbSession) -> PrivateCreditRatingRegistrationResult:
+    response.headers["Cache-Control"] = "no-store"
+    _, certificate = _load_certificate(session, payload.certificate_id)
+    notice = _notice_for_credit_binding(session, notice_key)
+    deadline = _korean_deadline_date(notice.deadline)
+    if not (certificate.issued_on <= deadline and certificate.effective_on <= deadline <= certificate.valid_until):
+        raise HTTPException(422, "신용평가 증빙이 공고 마감일 기준 유효하지 않습니다.")
+    binding = _credit_rating_binding_for_notice(notice)
+    if binding != payload.expected_fact_binding_sha256:
+        raise HTTPException(409, "공고의 신용평가 조건이 변경되어 다시 확인해야 합니다.")
+    # Preserve the exact legacy scoreable projection contract and idempotency.
+    # Reuse the registered metadata, never a caller-supplied replacement grade.
+    registration = PrivateCreditRatingRegistration.model_validate(
+        certificate.model_dump(include=set(PrivateCreditRatingRegistration.model_fields)))
+    result = register_private_credit_rating(session, payload=registration, fact_binding_sha256=binding)
+    return PrivateCreditRatingRegistrationResult(notice_key=notice.notice_key,
+                                                rating=certificate.rating, binding_status=result)

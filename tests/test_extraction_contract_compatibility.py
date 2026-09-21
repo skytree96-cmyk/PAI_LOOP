@@ -13,6 +13,7 @@ from sqlalchemy import select, func
 from pai_loop.extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT as CURRENT, LEGACY_CASE_CONTRACT as LEGACY,
     PREVIOUS_CASE_CONTRACT as PREVIOUS,
+    PREVIOUS_EXTRACTION_CONTRACT as PREVIOUS_EXTRACTION,
     PREVIOUS_PROCESSING_CONTRACT as PREVIOUS_PROCESSING,
     classify_attempt_header, classify_record_contract,
 )
@@ -386,7 +387,7 @@ def test_legacy_review_retry_snapshot_preserves_one_new_generation_boundary():
                                      retry_reviewed_version_ids=retry_ids) is None
 
 
-@pytest.mark.parametrize("contract", [LEGACY, PREVIOUS, PREVIOUS_PROCESSING])
+@pytest.mark.parametrize("contract", [LEGACY, PREVIOUS, PREVIOUS_PROCESSING, PREVIOUS_EXTRACTION])
 def test_pipeline_refresh_preserves_legacy_sources_and_is_idempotent(monkeypatch, contract):
     import pai_loop.analysis_pipeline as pipeline
     import pai_loop.quantitative_scoring as scoring
@@ -434,14 +435,9 @@ def test_pipeline_refresh_preserves_legacy_sources_and_is_idempotent(monkeypatch
             attachment_id=record.attachment_id, document_sha256=record.document_sha256,
             source_text_sha256=record.document_sha256,
             analysis_input_sha256=record.document_sha256)
-        if contract == PREVIOUS_PROCESSING:
-            # The existing processing-upgrade path may reuse exactly identical
-            # bytes/source/input under the same prompt/schema, before validating
-            # it again against the caller's current source. No model is called.
-            assert duplicate is not None and duplicate.api_calls == 0
-            assert duplicate.data.model_dump(mode="json") == original["result"]
-        else:
-            assert duplicate is None
+        # A predecessor stays readable under its original proof; it cannot
+        # be cloned and restamped as if the new prompt produced its output.
+        assert duplicate is None
     finally:
         session.close()
         engine.dispose()

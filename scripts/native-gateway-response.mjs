@@ -8,8 +8,10 @@ export function normalizeNativeGatewayResponse(response, execution, originalSche
     detail_code: detail, ...(stop === null ? {} : { stop_reason: stop, usage }) } } }];
   if (!object(response) || response.statusCode !== 200) {
     const status = response?.statusCode;
+    const validStatus = Number.isSafeInteger(status) && status >= 400 && status <= 599;
     return [{ json: { gateway_error: { version: "gateway-failure-v1", stage: "MODEL_EXECUTION",
-      code: "MODEL_EXECUTION_FAILED", upstream_http_status: Number.isSafeInteger(status) && status >= 400 && status <= 599 ? status : null } } }];
+      code: "MODEL_EXECUTION_FAILED", upstream_http_status: validStatus ? status : null,
+      detail_code: validStatus ? "MODEL_HTTP_ERROR" : "MODEL_RESPONSE_INVALID" } } }];
   }
   const message = response.body;
   if (!object(message) || message.type !== "message" || message.role !== "assistant"

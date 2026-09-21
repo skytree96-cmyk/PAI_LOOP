@@ -767,6 +767,7 @@ def _current_manifest_attempts(
     attempts: dict[str, NoticeVersion] = {}
     current_generation_seen: set[str] = set()
     new_processing_generation_seen: set[str] = set()
+    new_extraction_generation_seen: set[str] = set()
     for version in sorted(versions, key=lambda item: item.version_no, reverse=True):
         payload = version.source_payload
         if (
@@ -789,8 +790,15 @@ def _current_manifest_attempts(
         if contract_kind == "UNSUPPORTED":
             current_generation_seen.add(attachment_id)
             new_processing_generation_seen.add(attachment_id)
+            new_extraction_generation_seen.add(attachment_id)
             continue
         if contract_kind == "CURRENT":
+            current_generation_seen.add(attachment_id)
+            new_processing_generation_seen.add(attachment_id)
+            new_extraction_generation_seen.add(attachment_id)
+        elif contract_kind == "EXACT_PREVIOUS_EXTRACTION":
+            if attachment_id in new_extraction_generation_seen:
+                continue
             current_generation_seen.add(attachment_id)
             new_processing_generation_seen.add(attachment_id)
         elif contract_kind == "EXACT_PREVIOUS_PROCESSING":
@@ -2420,6 +2428,38 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _same_input_output_limit_attempt(
+    versions: list[NoticeVersion], *, attachment_id: str, manifest_sha256: str,
+    current_manifest_sha256: str, document_sha256: str,
+    processing_audit: dict[str, Any], model: str,
+) -> NoticeVersion | None:
+    """Reuse a proven 20k stop only after freshly verifying the complete input.
+
+    A URL/manifest alone cannot establish unchanged bytes. Keep the ordinary
+    download path so replaced files and new extraction contracts can recover.
+    Only the latest bound attempt can block another identical paid request.
+    """
+    bound = [version for version in versions if isinstance(version.source_payload, dict)
+             and version.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+             and version.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+             and version.source_payload.get("attachment_id") == attachment_id
+             and version.source_payload.get("manifest_sha256") == manifest_sha256
+             and version.source_payload.get("current_manifest_sha256") == current_manifest_sha256]
+    latest = max(bound, key=lambda version: version.version_no, default=None)
+    # eligible_long_output_failure uses the strict safe_gateway_failure parser,
+    # current contract, exact 20k usage and complete saved source/input proofs.
+    if latest is None or not eligible_long_output_failure(latest):
+        return None
+    payload = latest.source_payload
+    if (latest.file_sha256 != document_sha256 or payload.get("model") != model
+            or processing_audit.get("source_read_complete") is not True
+            or processing_audit.get("analysis_input_complete") is not True
+            or any(payload["document_processing"].get(key) != processing_audit.get(key)
+                   for key in ("source_text_sha256", "analysis_input_sha256"))):
+        return None
+    return latest
+
+
 def _matching_extraction_version(
     versions: list[NoticeVersion],
     *,
@@ -3575,6 +3615,20 @@ def _enrich_selected_pps_attachment(
         current_manifest_sha256=current_manifest_sha256,
         retry_reviewed_version_ids=retry_reviewed_version_ids,
     )
+    if long_output_scope is None and llm_provider == "n8n_claude":
+        output_limit_attempt = _same_input_output_limit_attempt(
+            versions, attachment_id=attachment["attachment_id"],
+            manifest_sha256=manifest_sha256, current_manifest_sha256=current_manifest_sha256,
+            document_sha256=document_sha256, processing_audit=processing_audit, model=openai_model,
+        )
+        if output_limit_attempt is not None:
+            # Preserve the original failure and counters. This also applies to
+            # an explicit ordinary retry; the distinct LONG_OUTPUT_ONCE policy
+            # is the only existing production path with a changed output budget.
+            return _stored_attachment_result(
+                output_limit_attempt, attachments_discovered=attachments_discovered,
+                reuse_only=True,
+            )
     prior = _matching_extraction_version(
         versions,
         attachment_id=attachment["attachment_id"],

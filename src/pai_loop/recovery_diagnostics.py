@@ -65,7 +65,7 @@ class AttachmentDiagnostic(DiagnosticModel):
     processing_warning_codes: list[str] = Field(max_length=20)
     processing_codes_redacted: bool
     manifest_bound_attempt: bool
-    attempt_contract: Literal["CURRENT", "EXACT_PREVIOUS_PROCESSING", "LEGACY_CASE_V1", "LEGACY_CASE_V2", "NONE"]
+    attempt_contract: Literal["CURRENT", "EXACT_PREVIOUS_EXTRACTION", "EXACT_PREVIOUS_PROCESSING", "LEGACY_CASE_V1", "LEGACY_CASE_V2", "NONE"]
     stored_document_digest_matches: bool | None
     stored_download_complete: bool | None
     stored_source_read_complete: bool | None
@@ -107,7 +107,7 @@ class NoticeDiagnostic(DiagnosticModel):
     accepted_attachment_count: int | None = None
     recorded_attempt_attachment_count: int | None = None
     attachment_coverage_complete: bool | None = None
-    attachments: list[AttachmentDiagnostic] = Field(default_factory=list, max_length=10)
+    attachments: list[AttachmentDiagnostic] = Field(default_factory=list, max_length=MAX_MANIFEST_ATTACHMENTS)
     quantitative: QuantitativeDiagnostic | None = None
 
 

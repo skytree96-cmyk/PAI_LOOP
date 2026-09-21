@@ -38,6 +38,12 @@ _QUALITATIVE_TABLE_LOCAL_ABSENCE_RE = re.compile(
     r"(?:포함되어\s*있지\s*않(?:음|습니다)|"
     r"포함되지\s*않(?:음|았습니다))\s*\.?"
 )
+_QUALITATIVE_REFERENCED_FORM_ABSENCE_RE = re.compile(
+    r"(?:붙임|별첨)\s*\d+\s*"
+    r"(?:정성(?:적)?\s*평가\s*)?세부\s*평가\s*항목\s*및\s*배점\s*기준\s*서식이\s*"
+    r"(?:본\s*)?본문에\s*(?:직접\s*)?첨부되지\s*않아\s*"
+    r"정성(?:적)?\s*평가\s*세부\s*기준의\s*원문\s*확인\s*불가\s*[.]?"
+)
 _NON_QUANTITATIVE_NOTICE_SCHEDULE_GAP_RE = re.compile(
     r"입찰\s*공고문?\s*\(\s*"
     r"(?:제출|접수)\s*기한\s*등\s*(?:구체\s*)?일정\s*"
@@ -574,6 +580,15 @@ def is_explicit_qualitative_table_local_absence(value: str) -> bool:
     return bool(gap and _QUALITATIVE_TABLE_LOCAL_ABSENCE_RE.fullmatch(gap))
 
 
+def is_explicit_qualitative_referenced_form_absence(value: str) -> bool:
+    """An aggregate-only scope proof; do not reinterpret stored fingerprints.
+
+    The complete statement limits the missing form's effect to qualitative
+    criteria. A quantitative subject or a second clause cannot match.
+    """
+    return bool(_QUALITATIVE_REFERENCED_FORM_ABSENCE_RE.fullmatch(normalise_source_gap(value)))
+
+
 def is_explicit_non_quantitative_notice_schedule_gap(value: str) -> bool:
     """Recognise one bounded notice-schedule omission as irrelevant to scoring."""
 
@@ -589,6 +604,30 @@ def is_explicit_quantitative_table_local_absence(value: str) -> bool:
 
     gap = normalise_source_gap(value)
     return bool(gap and _QUANTITATIVE_TABLE_LOCAL_ABSENCE_RE.fullmatch(gap))
+
+
+_ENUMERATED_SIBLING_ALTERNATIVES_RE = re.compile(
+    r"[가-힣A-Za-z0-9)\]]\s*,\s*[^,]{1,40}?\s*등[\s,]"
+)
+
+
+def sibling_targets_are_alternatives(value: str) -> bool:
+    """나열된 형제 문서가 선택지인지, 전부 갖춰야 하는 목록인지 가른다.
+
+    "제안요청서와 과업지시서가 별도 제공되지 않아"는 두 문서를 모두 요구하는
+    연언이므로 각 요구가 따로 충족되어야 한다.  반면 "제안요청서, 과업내용서,
+    내역서 등 별첨 세부 평가기준 문서가 …"는 어느 문서를 보면 기준을 확인할 수
+    있는지를 적은 예시 나열이다.  후자를 전부 요구하면 제안요청서가 완전한 표를
+    제공했는데도 첨부되지 않은 나머지 때문에 공고가 영구히 막힌다.
+
+    쉼표로 이어진 목록 뒤에 ``등``이 오는 형태만 선택지로 본다.  ``와``/``과``로
+    묶인 연언과 단일 문서 지목은 그대로 전부 요구한다.
+    """
+
+    gap = normalise_source_gap(value)
+    if not gap:
+        return False
+    return bool(_ENUMERATED_SIBLING_ALTERNATIVES_RE.search(gap))
 
 
 def quantitative_table_local_absence_targets(
@@ -701,7 +740,16 @@ def source_label_document_types(value: str | None) -> tuple[str, ...]:
         return ()
     compact = _compact_document_label(value)
     matches: set[str] = set()
-    if any(marker in compact for marker in ("입찰공고", "공고문")):
+    # 조달청 첨부는 공고 본문을 "공고문" 말고도 "공고서"·"재공고"로 이름 붙인다.
+    # 그 이름이 어떤 역할로도 분류되지 않으면, 그 문서가 선언한 결손을 형제 문서가
+    # 채울 수 있는지 판정하는 단계에서 역할 수가 1이 아니라는 이유로 즉시 막힌다.
+    # 실측(공고 19건·결손 선언 첨부 25개)에서 12개가 역할 0으로 떨어졌고 그 대부분이
+    # 이 표기였다. "공고"만 넣으면 "(공고)제안요청서" 같은 이름이 NOTICE·RFP 둘로
+    # 잡혀 오히려 막히므로, 단독으로 공고 본문을 가리키는 표기만 더한다.
+    if any(
+        marker in compact
+        for marker in ("입찰공고", "공고문", "공고서", "재공고")
+    ):
         matches.add("NOTICE")
     if "제안요청서" in compact:
         matches.add("RFP")
@@ -913,6 +961,7 @@ __all__ = [
     "is_explicit_quantitative_table_local_absence",
     "is_explicit_qualitative_only_exclusion",
     "is_explicit_qualitative_table_local_absence",
+    "is_explicit_qualitative_referenced_form_absence",
     "asserts_scoring_artifact_absence",
     "is_quantitative_irrelevant_gap",
     "normalise_source_gap",

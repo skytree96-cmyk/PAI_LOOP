@@ -38,7 +38,9 @@ from .quantitative_formula import (
 )
 from .source_gap_policy import (
     is_explicit_qualitative_only_exclusion as _shared_qualitative_only_exclusion,
+    sibling_targets_are_alternatives,
     is_quantitative_irrelevant_gap,
+    is_explicit_qualitative_referenced_form_absence,
     normalise_source_gap as _shared_normalise_source_gap,
     quantitative_table_local_absence_targets as _shared_quantitative_table_local_absence_targets,
     source_label_document_types as _shared_source_label_document_types,
@@ -6341,9 +6343,9 @@ def _assert_available_candidate_invariants(
                 raise ValueError("AVAILABLE bracket points exceed criterion maximum")
             if _invalid_bracket_bounds(bracket):
                 raise ValueError("AVAILABLE bracket bounds are invalid")
-            if not inline_binary and Counter(_comparator_terms(bracket.literal)) != Counter(
-                _expected_bracket_terms(bracket)
-            ):
+            if (not inline_binary
+                    and not _closed_count_bracket_proof(candidate, bracket)
+                    and Counter(_comparator_terms(bracket.literal)) != Counter(_expected_bracket_terms(bracket))):
                 raise ValueError("AVAILABLE bracket comparator binding is invalid")
         if _brackets_overlap(candidate.brackets):
             raise ValueError("AVAILABLE bracket ranges overlap")
@@ -6884,6 +6886,56 @@ def _bracket_points_match_literal(
     )
 
 
+_CLOSED_COUNT_BRACKET_UNITS = {
+    "PERFORMANCE_COUNT": frozenset({"건", "회", "개", "개교"}),
+    "PERSONNEL_COUNT": frozenset({"명", "인"}),
+    "CERTIFICATION_COUNT": frozenset({"건", "개"}),
+    "FACILITY_EQUIPMENT_COUNT": frozenset({"대", "개"}),
+    "AWARD_COUNT": frozenset({"건", "회", "개"}),
+}
+
+
+def _closed_count_bracket_proof(
+    candidate: QuantitativeRuleCandidate | ImmutableQuantitativeRuleCandidate,
+    bracket: QuantitativeBracketLiteral | ImmutableQuantitativeBracket,
+) -> bool:
+    """Bind an explicitly printed closed count interval and its own award.
+
+    This recognizes a complete row such as ``3~5명\n2점`` without inventing
+    comparators, borrowing another row's bound, or changing extracted values.
+    Numeric/ratio ranges and unknown unit words remain outside this grammar.
+    The same proof is required when reading a persisted AVAILABLE candidate.
+    """
+    units = _CLOSED_COUNT_BRACKET_UNITS.get(candidate.metric)
+    if not units or unicodedata.normalize("NFKC", candidate.unit or "").strip() not in units:
+        return False
+    lower = _decimal(bracket.min_value) if bracket.min_value is not None else None
+    upper = _decimal(bracket.max_value) if bracket.max_value is not None else None
+    if (lower is None or upper is None or not 0 <= lower < upper
+            or lower != lower.to_integral_value() or upper != upper.to_integral_value()
+            or not bracket.min_inclusive or not bracket.max_inclusive):
+        return False
+    literal = unicodedata.normalize("NFKC", bracket.literal).strip()
+    lines = literal.splitlines()
+    if not literal or len(literal) > 1_000 or any(not line.strip() for line in lines):
+        return False
+    if len(lines) >= 2 and _score_cell_matches(lines[-1], value=bracket.points, percent=False):
+        condition = "\n".join(lines[:-1]).strip()
+    else:
+        row = re.fullmatch(rf"(?P<condition>.+?)\s+(?P<award>{_NUM_PATTERN})\s*점", literal)
+        if row is None or Decimal(row.group("award").replace(",", "")) != _decimal(bracket.points):
+            return False
+        condition = row.group("condition")
+    unit_pattern = "(?:" + "|".join(re.escape(unit) for unit in sorted(units, key=len, reverse=True)) + ")"
+    match = re.fullmatch(
+        rf"(?P<lower>\d{{1,9}})\s*{unit_pattern}?\s*[~∼～]\s*"
+        rf"(?P<upper>\d{{1,9}})\s*{unit_pattern}",
+        condition,
+    )
+    return bool(match and Decimal(match.group("lower")) == lower
+                and Decimal(match.group("upper")) == upper)
+
+
 def _validate_brackets(
     candidate: QuantitativeRuleCandidate,
     *,
@@ -6962,7 +7014,8 @@ def _validate_brackets(
                     **context,
                 )
             )
-        comparator_issue = None if inline_binary else _comparator_binding_issue(
+        comparator_proved = inline_binary or _closed_count_bracket_proof(candidate, bracket)
+        comparator_issue = None if comparator_proved else _comparator_binding_issue(
             literal=bracket.literal,
             expected=_expected_bracket_terms(bracket),
             mismatch_code="BRACKET_COMPARATOR_MISMATCH",
@@ -8338,7 +8391,7 @@ def quantitative_record_contract_is_usable(
         return False
     if kind in CURRENT_SEMANTICS_KINDS:
         # Existing current records are validated against caller-owned bindings;
-        # the exact processing-only predecessor has the same CASE vocabulary.
+        # exact modern predecessors retain their original proof and CASE vocabulary.
         # Optional redundant payload digest fields do not change that contract.
         return True
     if not (
@@ -8531,6 +8584,7 @@ def merge_validated_quantitative_records(
     not_applicable: list[ImmutableEvidenceAnchor] = []
     processed: set[str] = set()
     bound_records: dict[str, ValidatedQuantitativeAttachmentRecord] = {}
+    qualitative_only_gap_attachments: set[str] = set()
 
     for attachment_id in sorted(set(grouped) - set(expected)):
         issues.append(
@@ -8691,6 +8745,19 @@ def merge_validated_quantitative_records(
             issues.extend(binding_errors)
             continue
 
+        # The persisted fingerprint and original source-gap binding above must
+        # pass unchanged. Only then narrow a generic gap's effect in this view:
+        # every declaration must be irrelevant or the complete qualitative form
+        # statement. Do not rewrite the record, its source, or validation proof.
+        if (
+            source_gaps
+            and any(is_explicit_qualitative_referenced_form_absence(gap) for gap in source_gaps)
+            and all(is_quantitative_irrelevant_gap(gap)
+                    or is_explicit_qualitative_referenced_form_absence(gap)
+                    for gap in source_gaps)
+        ):
+            qualitative_only_gap_attachments.add(attachment_id)
+
         processed.add(attachment_id)
         bound_records[attachment_id] = record
         tables.extend(record.tables)
@@ -8698,16 +8765,24 @@ def merge_validated_quantitative_records(
         review.extend(record.review_candidates)
         not_applicable.extend(record.not_applicable_evidence)
 
+    def qualitative_gap_is_resolved(issue: QuantitativeValidationIssue, attachment_id: str) -> bool:
+        return (attachment_id in qualitative_only_gap_attachments
+                and issue.code == "EXTRACTION_DECLARED_INCOMPLETE")
+
     supplying_attachment_ids = {
         attachment_id
         for attachment_id, record in bound_records.items()
-        if record.status in {"AVAILABLE", "REVIEW"}
+        if (record.status in {"AVAILABLE", "REVIEW"}
+            or (attachment_id in qualitative_only_gap_attachments
+                and not any(item.disposition == "INCOMPLETE"
+                            and not qualitative_gap_is_resolved(item, attachment_id)
+                            for item in record.issues)))
         and any(
             _available_table_confidence_is_sufficient(record, table)
             for table in record.tables
         )
     }
-    def local_absence_is_resolved(
+    def local_absence_target_is_resolved(
         issue: QuantitativeValidationIssue,
         *,
         attachment_id: str,
@@ -8784,6 +8859,47 @@ def merge_validated_quantitative_records(
                 return True
         return False
 
+    def local_absence_is_resolved(
+        issue: QuantitativeValidationIssue,
+        *,
+        attachment_id: str,
+    ) -> bool:
+        """예시로 나열된 형제 문서는 그중 하나만 확보돼도 해소된다.
+
+        추출기는 형제 문서를 지목하는 한 문장을 문서 종류마다 하나씩 쪼개 요구로
+        만든다.  그런데 그 나열에는 두 종류가 있다.  "제안요청서와 과업지시서가
+        별도 제공되지 않아"는 두 문서를 모두 요구하는 연언이므로 각각 충족되어야
+        한다.  "제안요청서, 과업내용서, 내역서 등 …"은 어느 문서를 보면 기준을
+        확인할 수 있는지를 적은 예시 나열이다.
+
+        후자까지 전부 요구하면 제안요청서가 완전한 표를 제공했는데도 첨부되지 않은
+        내역서·과업내용서 때문에 공고가 영구히 막힌다.  그래서 예시 나열인 문장에
+        한해, 같은 (첨부, 결손 문장)에서 갈라진 요구를 하나로 본다.  연언과 단일
+        지목은 종전대로 각각 충족되어야 한다.
+        """
+
+        if local_absence_target_is_resolved(issue, attachment_id=attachment_id):
+            return True
+        statement = issue.source_gap_statement
+        if statement is None or not sibling_targets_are_alternatives(statement):
+            return False
+        record = bound_records.get(attachment_id)
+        if (
+            issue.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+            or statement is None
+            or record is None
+        ):
+            return False
+        return any(
+            sibling is not issue
+            and sibling.code == "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+            and sibling.source_gap_statement == statement
+            and local_absence_target_is_resolved(
+                sibling, attachment_id=attachment_id
+            )
+            for sibling in record.issues
+        )
+
     # Grow table capability only from independent AVAILABLE/REVIEW seeds.
     # A record whose sole hard issues are local absences may join after those
     # absences are satisfied by the current seed set. Batch updates make this a
@@ -8805,6 +8921,7 @@ def merge_validated_quantitative_records(
             has_other_hard_issue = any(
                 item.disposition == "INCOMPLETE"
                 and item.code != "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT"
+                and not qualitative_gap_is_resolved(item, attachment_id)
                 for item in record.issues
             )
             if (
@@ -8823,12 +8940,14 @@ def merge_validated_quantitative_records(
     for attachment_id, record in sorted(bound_records.items()):
         resolved_local_absence = any(
             local_absence_is_resolved(item, attachment_id=attachment_id)
+            or qualitative_gap_is_resolved(item, attachment_id)
             for item in record.issues
         )
         unresolved_record_issues = tuple(
             item
             for item in record.issues
             if not local_absence_is_resolved(item, attachment_id=attachment_id)
+            and not qualitative_gap_is_resolved(item, attachment_id)
         )
         issues.extend(unresolved_record_issues)
         if (
