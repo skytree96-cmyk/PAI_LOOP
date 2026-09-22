@@ -47,7 +47,7 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.18"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.19"
 from .extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
     classify_record_contract,
@@ -1472,11 +1472,19 @@ def _bind_enterprise_credit_column(candidate, *, source: str, all_candidates):
     region = source[span[0]:span[1]]
     if re.search(r"\n\s*\n|\[HWP SECTION", region) or _other_case_claims_region(candidate, all_candidates, region):
         return candidate
-    for case in candidate.cases:
+    for case, projection in zip(candidate.cases, projected, strict=True):
+        quote = _compact_source_characters(case.evidence.quote)
+        # A row may be quoted as the whole three-column row or as the single
+        # enterprise column. The narrower quote is accepted only when it equals
+        # the projection proved here from the source columns, so a quote can
+        # never widen or replace what the source itself established.
+        consistent = (
+            quote == _compact_source_characters(case.literal)
+            and _literal_is_anchored(case.literal, case.evidence, source)
+        ) or quote == _compact_source_characters(projection)
         if (
             case.evidence.attachment_id != candidate.evidence.attachment_id
-            or _compact_source_characters(case.literal) != _compact_source_characters(case.evidence.quote)
-            or not _literal_is_anchored(case.literal, case.evidence, source)
+            or not consistent
             or _anchor_occurrence_count(case.literal, source) != 1
         ):
             return candidate
@@ -7890,13 +7898,22 @@ def build_quantitative_candidate_profile(
 
     seen_table_ids: set[tuple[str, str]] = set()
     for attachment_id in sorted(processed & expected):
+        attachment_source = source_text_by_attachment_id.get(attachment_id, "")
+        # The three-column credit projection proves its table against one
+        # contiguous source region rebuilt from the original row quotes. Run it
+        # before split-cell rebinding narrows a single row, which would leave
+        # that region unreconstructable. Rebinding still runs afterwards, and
+        # reapplying the binding on an already projected payload is a no-op.
         payload, ambiguity_resolution_blockers = _rebind_split_table_cell_literals(
-            extractions_by_attachment_id[attachment_id],
-            source=source_text_by_attachment_id.get(attachment_id, ""),
+            _bind_case_source_context(
+                extractions_by_attachment_id[attachment_id],
+                source=attachment_source, project_enterprise=True,
+            ),
+            source=attachment_source,
             attachment_id=attachment_id,
         )
         payload = _bind_case_source_context(
-            payload, source=source_text_by_attachment_id.get(attachment_id, ""), project_enterprise=True,
+            payload, source=attachment_source, project_enterprise=True,
         )
         source_gaps = [
             gap
