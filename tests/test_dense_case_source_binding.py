@@ -196,12 +196,15 @@ def credit_fixture(*, dual_award=False):
 
 
 @pytest.mark.parametrize("dual_award", [False, True])
-def test_three_instrument_columns_project_only_complete_enterprise_values(dual_award):
+@pytest.mark.parametrize("unit", ["등급", None])
+def test_three_instrument_columns_project_only_complete_enterprise_values(dual_award, unit):
     raw, source = credit_fixture(dual_award=dual_award)
+    raw["quantitative_tables"][0]["criteria"][0]["unit"] = unit
     original = deepcopy(raw)
     stored = record(raw, source)
     assert stored.status == "AVAILABLE", stored.issues
     assert raw == original
+    assert stored.available_candidates[0].unit == unit
     for before, after in zip(raw["quantitative_tables"][0]["criteria"][0]["cases"], stored.available_candidates[0].cases, strict=True):
         assert after.evidence.quote == before["literal"]
         assert after.category_values == tuple(before["category_values"])
@@ -210,9 +213,20 @@ def test_three_instrument_columns_project_only_complete_enterprise_values(dual_a
     req = request(stored)
     assert req.activation_status == "AUTO_ACTIVE", req.activation_reasons
     criterion = req.criteria[0]
+    assert criterion.unit == "RATING"
+    assert estimate_quantitative_score(req).estimated_points is None
     req.facts = [QuantitativeFact(metric_key=criterion.metric_key, status="CONFIRMED", value="A0",
                                  evidence_key=criterion.metric_key, fact_binding_sha256=criterion.fact_binding_sha256)]
     assert estimate_quantitative_score(req).estimated_points == 9
+
+
+@pytest.mark.parametrize("unit", ["", "점", "%", "원", "SYN-UNKNOWN"])
+def test_three_column_credit_does_not_repair_explicit_incompatible_unit(unit):
+    raw, source = credit_fixture()
+    raw["quantitative_tables"][0]["criteria"][0]["unit"] = unit
+    stored = record(raw, source)
+    assert not stored.available_candidates
+    assert request(stored).activation_status == "REVIEW_REQUIRED"
 
 
 def test_gateway_keeps_credit_literals_for_corrective_comparison_until_domain_validation():
@@ -259,9 +273,11 @@ def test_compressed_credit_quotes_keep_the_same_source_proof_in_the_score_consum
     "missing-row", "partial-enterprise", "paper-alias", "missing-paper", "invalid-paper",
     "wrong-award", "wrong-percent", "missing-footer", "foreign-row", "unregistered-key",
 ])
-def test_three_column_repair_requires_source_columns_census_and_exact_awards(mutation):
+@pytest.mark.parametrize("unit", ["등급", None])
+def test_three_column_repair_requires_source_columns_census_and_exact_awards(mutation, unit):
     raw, source = credit_fixture(dual_award=mutation == "wrong-percent")
     candidate = raw["quantitative_tables"][0]["criteria"][0]
+    candidate["unit"] = unit
     cases = candidate["cases"]
     first = cases[0]
     if mutation == "no-header": source = source.replace("기업어음", "SYN다른열", 1)

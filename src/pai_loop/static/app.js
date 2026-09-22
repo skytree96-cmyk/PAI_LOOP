@@ -7392,6 +7392,7 @@
     const activationLabels = {
       AUTO_ACTIVE: "규칙 자동 활성",
       PARTIAL_ACTIVE: "검증 항목만 부분 산정",
+      PARTIAL_SOURCE: "일부 첨부 미해소 · 부분 소계",
       REVIEW_REQUIRED: "자동 산정 보류",
       NOT_APPLICABLE: "산정 비적용",
     };
@@ -7523,21 +7524,29 @@
     const points = (value) => (typeof value === "number" || (typeof value === "string" && value.trim()))
       && numberOrNull(value) !== null && numberOrNull(value) >= 0 ? numberOrNull(value) : null;
     const lower = points(data.lower_points), upper = points(data.upper_points), total = points(data.total_max_points);
-    const activated = ruleSource === "AVAILABLE" && (
+    const activated = (ruleSource === "AVAILABLE" && (
       (activation === "AUTO_ACTIVE" && validation === "SOURCE_VALIDATED" && !reasons.length)
       || (activation === "PARTIAL_ACTIVE" && validation === "REVIEW_REQUIRED" && reasons.length > 0)
-    );
+    ))
+      // 매니페스트가 미해소여도 원문 검증이 끝난 첨부의 항목은 부분 소계로 보여준다.
+      || (ruleSource === "INCOMPLETE" && activation === "PARTIAL_SOURCE"
+        && validation === "INCOMPLETE" && reasons.length > 0);
     if (!activated || reasons.includes("QUANTITATIVE_TABLE_NOT_ESTABLISHED")
       || lower === null || upper === null || upper < lower || total === null || total <= 0 || total < upper) {
       return pending("미산정", reason);
     }
     const confirmed = overall === "CONFIRMED" && lower === upper && validation === "SOURCE_VALIDATED"
       && activation === "AUTO_ACTIVE" && !reasons.length;
+    const partialSource = activation === "PARTIAL_SOURCE";
     return {
       value: `${formatNumber(lower, 1)} / ${formatNumber(total, 1)}점`,
       status: confirmed ? "confirmed" : "estimated",
-      label: confirmed ? "확정" : "잠정 · 보수 기준",
-      reason: confirmed ? "현재 근거로 확정된 정량점수입니다. 참가자격·담당자 판단과는 별도입니다." : `미확정 사유: ${reason}`,
+      label: confirmed ? "확정" : partialSource ? "부분 소계 · 일부 첨부 미해소" : "잠정 · 보수 기준",
+      reason: confirmed
+        ? "현재 근거로 확정된 정량점수입니다. 참가자격·담당자 판단과는 별도입니다."
+        : partialSource
+          ? `원문 검증이 끝난 첨부만의 소계이며 공고 총점이 아닙니다. 미확정 사유: ${reason}`
+          : `미확정 사유: ${reason}`,
     };
   }
 

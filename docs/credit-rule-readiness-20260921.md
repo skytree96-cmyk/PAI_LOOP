@@ -39,3 +39,27 @@ persisted records, sibling resolution, wrong units, incomplete/overlapping rows,
 foreign anchors, changed source gaps, fingerprint/manifest/document mismatches,
 and independent quantitative defects. No private certificate or live source
 document is included in this repository.
+
+## Three-column tables with an omitted unit
+
+The source column binder now accepts a null unit when the existing proof
+establishes the ordered company-bond, commercial-paper and enterprise-credit
+headers, the unique complete row program and its terminal footnote. Previously,
+that binder rejected null before the compiler could establish its implicit
+rating unit. A correct four-row synthetic table consequently produced four
+`CASE_NUMBER_MISMATCH` issues and `CASE_TABLE_NOT_DETERMINISTIC`.
+
+The binder retains the null unit, original full-row quotes, categories and
+awards; only the source-proven enterprise column becomes the executable row
+literal. The compiler still independently establishes RATING. Explicit empty or
+incompatible units, missing columns/rows, wrong awards, ambiguous ownership and
+incomplete rating domains remain blocked. This does not invalidate historical
+record fingerprints or enqueue accepted attachments for paid extraction.
+
+Candidate profiles use version 0.7.18 to identify the revised source binding.
+Existing frozen records keep their prior validation result until explicitly
+revalidated with their exact source. The offline revalidation adapter and CLI
+now support the exact current contract and both 0.5.7 extraction/processing
+predecessors, in addition to the original 0.5.6 contract. See
+[the recovery runbook](quantitative-credit-recovery-20260921.md) for the boundary
+between this local diagnostic and an authorized production backfill.

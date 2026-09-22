@@ -28,8 +28,8 @@ sys.modules[SPEC.name] = replay
 SPEC.loader.exec_module(replay)
 
 
-def native_notice(tmp_path):
-    inputs = native_fixture()
+def native_notice(tmp_path, **fixture_options):
+    inputs = native_fixture(**fixture_options)
     notice, metadata, attempt, _ = notice_fixture(legacy=False)
     attempt.notice_id = metadata.notice_id = notice.id
     metadata.source_payload["attachment_manifest"] = inputs["full_manifest"]
@@ -49,12 +49,14 @@ def serialize_row(row):
         for column in inspect(type(row)).columns if (value := getattr(row, column.key)) is not None}
 
 
-def test_actual_source_merge_company_bridge_and_score_with_syn_inputs():
+@pytest.mark.parametrize("unit", ["등급", None])
+def test_actual_source_merge_company_bridge_and_score_with_syn_inputs(unit):
     from test_dense_case_source_binding import credit_fixture, ATT
     from test_quantitative_auto_activation import _company_fact
     notice, metadata, attempt, _ = notice_fixture(legacy=False)
     attempt.notice_id = metadata.notice_id = notice.id
     raw, text = credit_fixture()
+    raw["quantitative_tables"][0]["criteria"][0]["unit"] = unit
     aid = attempt.source_payload["attachment_id"]
     payload = ExtractionPayload.model_validate(json.loads(json.dumps(raw).replace(ATT, aid)))
     native_sha = hashlib.sha256(text.encode()).hexdigest()
@@ -109,6 +111,32 @@ def test_previous_native_revalidation_remains_separate_from_stored_score(tmp_pat
     assert funnel["attachment_diagnostics_included"] is False
     assert funnel["compiled_criteria"] == 0
     assert next(row for row in funnel["table"] if row["stage"] == "runtime_has_numeric_total")["notices"] == 0
+    assert attempt.source_payload == before
+    assert not calls
+
+
+@pytest.mark.parametrize("contract_kind", ["CURRENT", "EXACT_PREVIOUS_EXTRACTION", "EXACT_PREVIOUS_PROCESSING"])
+def test_modern_credit_replay_reports_recovery_without_replacing_saved_score(tmp_path, monkeypatch, contract_kind):
+    from pai_loop.extraction_contracts import (
+        CURRENT_EXTRACTION_CONTRACT, PREVIOUS_EXTRACTION_CONTRACT, PREVIOUS_PROCESSING_CONTRACT,
+    )
+    contract = {"CURRENT": CURRENT_EXTRACTION_CONTRACT,
+                "EXACT_PREVIOUS_EXTRACTION": PREVIOUS_EXTRACTION_CONTRACT,
+                "EXACT_PREVIOUS_PROCESSING": PREVIOUS_PROCESSING_CONTRACT}[contract_kind]
+    with monkeypatch.context() as old:
+        old.setattr("pai_loop.quantitative_rule_extraction._bind_enterprise_credit_column",
+                    lambda candidate, **kwargs: candidate)
+        notice, _, attempt, mapping = native_notice(tmp_path, contract=contract, credit=True)
+    before = deepcopy(attempt.source_payload)
+    with replay.no_external_effects() as calls:
+        result = replay.replay_notice(notice, sources={attempt.id: mapping})
+    native = result["source_attempts"][0]["native_diagnostic"]
+    assert native["status"] == "VERIFIED"
+    assert native["contract"] == contract_kind
+    assert native["profile"]["available_candidates"] == 1
+    assert native["persistence_eligible"] is native["attachment_coverage_complete"] is False
+    assert result["estimate"]["estimated_points"] is None
+    assert result["stage_funnel"]["numeric_total"] is False
     assert attempt.source_payload == before
     assert not calls
 

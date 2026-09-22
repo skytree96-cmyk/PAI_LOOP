@@ -48,10 +48,12 @@ def mixed_profile():
         manifest_sha256=MANIFEST)
 
 
-def test_raw_to_notice_score_preserves_credit_while_performance_is_review():
+@pytest.mark.parametrize("credit_unit", ["등급", None])
+def test_raw_to_notice_score_preserves_credit_while_performance_is_review(credit_unit):
     from test_extraction_contract_compatibility import notice_fixture
     from test_quantitative_auto_activation import _company_fact
     raw, source = mixed_inputs()
+    raw["quantitative_tables"][0]["criteria"][0]["unit"] = credit_unit
     original = deepcopy(raw)
     notice, metadata, attempt, _ = notice_fixture(legacy=False)
     aid = attempt.source_payload["attachment_id"]

@@ -1084,6 +1084,35 @@ def _validate_quantitative_record_binding(
     )
 
 
+def quantitative_record_proves_available(
+    version: NoticeVersion,
+    *,
+    attachment_id: str,
+    current_manifest_sha256: str,
+) -> bool:
+    """True when this attempt still offers an activatable quantitative rule.
+
+    Tells a re-extraction that found nothing from one that found something.
+    Re-reading the same document is not deterministic: a newer attempt can
+    demote a criterion the previous attempt proved from the same bytes.
+    """
+
+    if not _has_valid_quantitative_record(
+        version, attachment_id=attachment_id,
+        current_manifest_sha256=current_manifest_sha256,
+    ):
+        return False
+    payload = version.source_payload if isinstance(version.source_payload, dict) else {}
+    raw = payload.get("quantitative_validation_record")
+    if not isinstance(raw, dict):
+        return False
+    try:
+        record = ValidatedQuantitativeAttachmentRecord.model_validate(raw)
+    except Exception:
+        return False
+    return bool(record.available_candidates)
+
+
 def _accepted_quantitative_review_is_retryable(
     version: NoticeVersion,
     *,

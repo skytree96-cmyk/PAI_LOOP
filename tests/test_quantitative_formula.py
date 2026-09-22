@@ -1111,7 +1111,7 @@ def test_notice_scoped_performance_fact_replaces_only_unusable_generic_fact(
     monkeypatch.setattr(
         quantitative_scoring,
         "quantitative_request_from_candidate_profile",
-        lambda profile: request,
+        lambda profile, **kwargs: request,
     )
     monkeypatch.setattr(
         quantitative_scoring,

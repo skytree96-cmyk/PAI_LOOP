@@ -55,14 +55,14 @@ from pai_loop.integrations.openai_extraction import (
 )
 from pai_loop.models import Notice, NoticeVersion, CompanyFact, Evidence, CompanyPerformanceRecord
 from pai_loop.quantitative_rule_extraction import (
-    build_quantitative_candidate_profile, validate_quantitative_attachment_extraction,
+    build_quantitative_candidate_profile,
 )
 from pai_loop.quantitative_scoring import (
     _current_dynamic_quantitative_profile, quantitative_request_from_candidate_profile,
     estimate_for_notice, QUANTITATIVE_ENGINE_VERSION,
 )
 from pai_loop.quantitative_source_revalidation import (
-    revalidate_quantitative_source, revalidation_json_sha256,
+    SOURCE_REVALIDATION_CONTRACTS, revalidate_quantitative_source, revalidation_json_sha256,
 )
 
 
@@ -544,7 +544,7 @@ def diagnostic_native(version, full_manifest, entry):
     if not all(checks.values()):
         return {"status": "FROZEN_SOURCE_BINDING_MISMATCH", "checks": checks, "persistence_eligible": False}
     kind = classify_record_contract(attempt, attempt.get("quantitative_validation_record") or {})
-    if kind == "LEGACY_CASE_V2":
+    if kind in SOURCE_REVALIDATION_CONTRACTS:
         result = revalidate_quantitative_source(source_version_id=version.id,
             source_attempt=attempt, expected_attempt_sha256=digest(attempt),
             native_bytes=native, expected_native_sha256=expected_native,
@@ -558,18 +558,8 @@ def diagnostic_native(version, full_manifest, entry):
     parsed = pps.extract_pps_document_content(descriptors[0]["file_name"], native)
     if not parsed.complete or parsed.text != canonical:
         return {"status": "NATIVE_CANONICAL_NOT_REPRODUCED", "persistence_eligible": False}
-    if kind != "CURRENT":
-        return {"status": "NATIVE_REPRODUCED_REVALIDATION_CONTRACT_UNSUPPORTED",
-                "contract": kind, "persistence_eligible": False}
-    record = validate_quantitative_attachment_extraction(
-        ExtractionPayload.model_validate(attempt["result"]), source_text=canonical,
-        attachment_id=attempt["attachment_id"], document_sha256=expected_native,
-        manifest_sha256=digest(full_manifest), prompt_version=attempt["prompt_version"],
-        extraction_schema_version=attempt["schema_version"])
-    return {"status": "CURRENT_RAW_REVALIDATED_DIAGNOSTIC_ONLY", "contract": kind,
-            "persistence_eligible": False, "record_status": record.status,
-            "available_candidates": len(record.available_candidates),
-            "issue_counts": dict(Counter(issue.code for issue in record.issues))}
+    return {"status": "NATIVE_REPRODUCED_REVALIDATION_CONTRACT_UNSUPPORTED",
+            "contract": kind, "persistence_eligible": False}
 
 
 def replay_notice(notice, facts=(), records=(), sources=None):

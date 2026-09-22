@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -95,7 +96,17 @@ from .pps_enrichment import (
     _validated_manifest_attachments,
     _current_manifest_attempts,
     _has_valid_quantitative_record,
+    quantitative_record_proves_available,
 )
+
+
+def _extraction_demotion_guard_enabled() -> bool:
+    """Deployment switch for keeping a proof a re-extraction lost.
+
+    Read on each call so the switch needs a restart, not a build.
+    """
+
+    return os.getenv("PAI_LOOP_EXTRACTION_DEMOTION_GUARD", "on").strip().casefold() != "off"
 
 
 PIPELINE_VERSION = "analysis-pipeline-0.6.6"
@@ -409,6 +420,46 @@ def _select_source_versions(
                 latest_new_processing_numbers[aid] = max(
                     latest_new_processing_numbers.get(aid, -1), version.version_no,
                 )
+    # Re-reading the same document is not deterministic: a second pass of the
+    # SAME generation can come back with rows the validator refuses while the
+    # earlier pass on the same bytes still proves an activatable rule. Keeping
+    # the earlier proof matches the same-generation fallback already granted to
+    # an invalid newer attempt. A NEW generation still supersedes the old one
+    # unconditionally -- that boundary is deliberate and stays untouched.
+    preserved_proof: dict[str, int] = {}
+    if _extraction_demotion_guard_enabled():
+        proven: dict[str, tuple[int, str]] = {}
+        newest_same_kind: dict[str, tuple[int, str]] = {}
+        for version in versions:
+            payload = version.source_payload
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != SOURCE_KIND
+                or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
+            ):
+                continue
+            kind = classify_attempt_header(payload)
+            if kind == "UNSUPPORTED":
+                continue
+            aid = _attachment_identity(payload, version)
+            newest = newest_same_kind.get(aid)
+            if newest is None or newest[0] < version.version_no:
+                newest_same_kind[aid] = (version.version_no, kind)
+            if quantitative_record_proves_available(
+                version, attachment_id=aid,
+                current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
+            ):
+                previous_proof = proven.get(aid)
+                if previous_proof is None or previous_proof[0] < version.version_no:
+                    proven[aid] = (version.version_no, kind)
+        for aid, (version_no, kind) in proven.items():
+            newest = newest_same_kind.get(aid)
+            if newest is None or newest[0] <= version_no:
+                continue
+            if newest[1] != kind:
+                continue  # A new generation supersedes; see the contract tests.
+            preserved_proof[aid] = version_no
+
     latest_by_attachment: dict[str, NoticeVersion] = {}
     for version in versions:
         payload = version.source_payload
@@ -426,6 +477,7 @@ def _select_source_versions(
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
             and classify_attempt_header(payload) in LEGACY_CASE_KINDS
             and version.version_no < latest_pps_numbers.get(_attachment_identity(payload, version), -1)
+            and preserved_proof.get(_attachment_identity(payload, version)) != version.version_no
         ):
             # Even an unsupported newer header prevents legacy-success fallback.
             continue
@@ -433,14 +485,17 @@ def _select_source_versions(
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
             and classify_attempt_header(payload) == "EXACT_PREVIOUS_EXTRACTION"
             and version.version_no < latest_new_extraction_numbers.get(_attachment_identity(payload, version), -1)
+            and preserved_proof.get(_attachment_identity(payload, version)) != version.version_no
         ):
             # A new prompt/validator attempt supersedes the older proof even
-            # when the new attempt did not produce usable evidence.
+            # when the new attempt did not produce usable evidence -- unless
+            # that older proof is the only one that still activates a rule.
             continue
         if (
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
             and classify_attempt_header(payload) == "EXACT_PREVIOUS_PROCESSING"
             and version.version_no < latest_new_processing_numbers.get(_attachment_identity(payload, version), -1)
+            and preserved_proof.get(_attachment_identity(payload, version)) != version.version_no
         ):
             # Preserve the old modern generation only until a new parser
             # generation supersedes it, including an invalid new attempt.
@@ -483,7 +538,13 @@ def _select_source_versions(
                     )
                 continue
         previous = latest_by_attachment.get(attachment_id)
-        if previous is None or previous.version_no < version.version_no:
+        preserved = preserved_proof.get(attachment_id)
+        if preserved is not None:
+            # Only the attempt that still proves a rule represents this
+            # attachment; a newer attempt that lost it does not replace it.
+            if version.version_no == preserved:
+                latest_by_attachment[attachment_id] = version
+        elif previous is None or previous.version_no < version.version_no:
             latest_by_attachment[attachment_id] = version
     return sorted(
         latest_by_attachment.values(),

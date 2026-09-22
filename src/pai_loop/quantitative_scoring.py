@@ -106,7 +106,8 @@ SourceValidationStatus = Literal[
     "NOT_APPLICABLE",
 ]
 ActivationStatus = Literal[
-    "AUTO_ACTIVE", "PARTIAL_ACTIVE", "REVIEW_REQUIRED", "NOT_APPLICABLE"
+    "AUTO_ACTIVE", "PARTIAL_ACTIVE", "PARTIAL_SOURCE", "REVIEW_REQUIRED",
+    "NOT_APPLICABLE",
 ]
 PublicCriterionDisplayCode = Literal[
     "PERFORMANCE_AMOUNT",
@@ -409,6 +410,18 @@ class QuantitativeEstimateRequest(QuantModel):
         ):
             raise ValueError(
                 "PARTIAL_ACTIVE requires verified criteria plus explicitly reviewed rows"
+            )
+        if self.activation_status == "PARTIAL_SOURCE" and (
+            self.rule_source_status != "INCOMPLETE"
+            or self.source_validation_status != "INCOMPLETE"
+            or not self.activation_reasons
+            or not self.criteria
+            or self.review_criteria
+            or self.minimum_score is not None
+        ):
+            raise ValueError(
+                "PARTIAL_SOURCE requires source-validated rows inside an incomplete"
+                " manifest, with the unresolved remainder stated as reasons"
             )
         if self.activation_status != "PARTIAL_ACTIVE" and self.review_criteria:
             raise ValueError("review_criteria are allowed only for PARTIAL_ACTIVE")
@@ -1278,9 +1291,25 @@ def estimate_quantitative_score(
         and bool(request.criteria)
         and bool(request.review_criteria)
     )
+    # Rows proven against their own attachment stay scoreable even when the
+    # manifest as a whole is unresolved. The subtotal is reported as partial:
+    # the unread remainder is never assumed to be zero, full or absent.
+    partial_source_is_safe = (
+        request.activation_status == "PARTIAL_SOURCE"
+        and request.rule_source_status == "INCOMPLETE"
+        and request.source_validation_status == "INCOMPLETE"
+        and bool(request.criteria)
+        and bool(request.activation_reasons)
+        and not request.review_criteria
+        and request.minimum_score is None
+    )
     if (
         not request.criteria
-        or not (full_activation_is_safe or partial_activation_is_safe)
+        or not (
+            full_activation_is_safe
+            or partial_activation_is_safe
+            or partial_source_is_safe
+        )
         or (full_activation_is_safe and not source_is_validated)
     ):
         if request.rule_source_status == "AVAILABLE" and not activation_reasons:
@@ -1445,8 +1474,12 @@ def estimate_quantitative_score(
     if not scored:
         # 산정 대상이 없는 상태를 0점 확보로 확정하지 않는다.
         statuses = {"UNSCORABLE"}
-    if "REVIEW" in statuses:
+    if partial_source_is_safe:
+        # An unresolved manifest can still hold rules nobody has read. A
+        # subtotal from the resolved part is never a confirmed notice total.
         overall: EstimateStatus = "REVIEW"
+    elif "REVIEW" in statuses:
+        overall = "REVIEW"
     elif "UNSCORABLE" in statuses:
         overall = "UNSCORABLE"
     elif "ESTIMATED" in statuses:
@@ -4069,8 +4102,15 @@ def quantitative_request_from_candidate_profile(
     profile: QuantitativeCandidateProfile,
     *,
     facts: list[QuantitativeFact] | None = None,
+    allow_partial_source: bool = False,
 ) -> QuantitativeEstimateRequest:
-    """Convert verified source rules, never model output, into engine inputs."""
+    """Convert verified source rules, never model output, into engine inputs.
+
+    ``allow_partial_source`` lets notice scoring report a subtotal from the
+    attachments whose rules are already source-validated while the manifest as
+    a whole is unresolved. It stays off for the reviewed-input preview and for
+    company-evidence binding, which remain fail-closed on an incomplete source.
+    """
 
     ruleset_version = (
         "dynamic-quantitative-rules-"
@@ -4081,7 +4121,22 @@ def quantitative_request_from_candidate_profile(
         list(row_partial.review_criteria) if row_partial is not None
         else _partial_profile_review_criteria(profile)
     )
-    if profile.status != "AVAILABLE" and partial_review_criteria is None:
+    # An incomplete manifest can still hold attachment-local rules that passed
+    # their own source validation. Report those as a partial subtotal instead
+    # of discarding them; the unresolved remainder stays visible as reasons.
+    partial_source = (
+        allow_partial_source
+        and profile.status == "INCOMPLETE"
+        and bool(profile.available_candidates)
+        and row_partial is None
+        and partial_review_criteria is None
+        and bool(profile.issues)
+    )
+    if (
+        profile.status != "AVAILABLE"
+        and partial_review_criteria is None
+        and not partial_source
+    ):
         issue_codes = sorted({item.code for item in profile.issues})
         not_applicable = profile.status == "NOT_APPLICABLE"
         return QuantitativeEstimateRequest(
@@ -4109,10 +4164,10 @@ def quantitative_request_from_candidate_profile(
     activation_reasons = (
         list(row_partial.reasons) if row_partial is not None else
         sorted({item.code for item in profile.issues})
-        if partial_review_criteria is not None
+        if partial_review_criteria is not None or partial_source
         else _profile_activation_reasons(profile)
     )
-    if activation_reasons and partial_review_criteria is None:
+    if activation_reasons and partial_review_criteria is None and not partial_source:
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
             rule_source_status="AVAILABLE",
@@ -4129,7 +4184,7 @@ def quantitative_request_from_candidate_profile(
 
     logical_program = (
         None
-        if partial_review_criteria is not None
+        if partial_review_criteria is not None or partial_source
         else _logical_quantitative_program(profile)
     )
     logical_candidates = (
@@ -4289,8 +4344,10 @@ def quantitative_request_from_candidate_profile(
     if conversion_errors or len(criteria) != len(logical_candidates):
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
-            rule_source_status="AVAILABLE",
-            source_validation_status="SOURCE_VALIDATED",
+            rule_source_status="INCOMPLETE" if partial_source else "AVAILABLE",
+            source_validation_status=(
+                "INCOMPLETE" if partial_source else "SOURCE_VALIDATED"
+            ),
             activation_status="REVIEW_REQUIRED",
             activation_reasons=["DETERMINISTIC_CONVERSION_FAILED"],
             criteria=[],
@@ -4308,8 +4365,10 @@ def quantitative_request_from_candidate_profile(
     if len(minimums) > 1:
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
-            rule_source_status="AVAILABLE",
-            source_validation_status="SOURCE_VALIDATED",
+            rule_source_status="INCOMPLETE" if partial_source else "AVAILABLE",
+            source_validation_status=(
+                "INCOMPLETE" if partial_source else "SOURCE_VALIDATED"
+            ),
             activation_status="REVIEW_REQUIRED",
             activation_reasons=["ALTERNATIVE_MINIMUM_SCORE_AMBIGUOUS"],
             criteria=[],
@@ -4318,25 +4377,36 @@ def quantitative_request_from_candidate_profile(
         )
     return QuantitativeEstimateRequest(
         ruleset_version=ruleset_version,
-        rule_source_status="AVAILABLE",
+        rule_source_status="INCOMPLETE" if partial_source else "AVAILABLE",
         source_validation_status=(
-            "REVIEW_REQUIRED"
+            "INCOMPLETE"
+            if partial_source
+            else "REVIEW_REQUIRED"
             if partial_review_criteria is not None
             else "SOURCE_VALIDATED"
         ),
         activation_status=(
-            "PARTIAL_ACTIVE"
+            "PARTIAL_SOURCE"
+            if partial_source
+            else "PARTIAL_ACTIVE"
             if partial_review_criteria is not None
             else "AUTO_ACTIVE"
         ),
-        activation_reasons=(activation_reasons if partial_review_criteria else []),
-        minimum_score=next(iter(minimums), None),
+        activation_reasons=(
+            activation_reasons if (partial_review_criteria or partial_source) else []
+        ),
+        # A minimum printed on one table cannot judge a subtotal drawn from an
+        # unresolved manifest.
+        minimum_score=None if partial_source else next(iter(minimums), None),
         criteria=criteria,
         review_criteria=list(partial_review_criteria or []),
         facts=list(facts or []),
         assumptions=[
             (
-                "현재 PPS manifest의 모든 첨부를 확인했고, 원문 검증이 끝난 항목만 부분 산정합니다."
+                "현재 PPS manifest의 일부 첨부가 미해소 상태입니다. 원문 검증이 끝난 "
+                "첨부의 항목만 부분 소계로 보여주며, 이 합계는 공고 총점이 아닙니다."
+                if partial_source
+                else "현재 PPS manifest의 모든 첨부를 확인했고, 원문 검증이 끝난 항목만 부분 산정합니다."
                 if partial_review_criteria is not None
                 else "현재 PPS manifest의 모든 첨부에서 원문 규칙을 검증했습니다."
             ),
@@ -4620,7 +4690,12 @@ def bind_quantitative_company_inputs(
     scoring facts with resolver outputs; neither source nor company inputs mutate.
     """
 
-    if request.activation_status not in {"AUTO_ACTIVE", "PARTIAL_ACTIVE"}:
+    # PARTIAL_SOURCE rows carry the same per-criterion source binding as an
+    # active request, so verified company evidence resolves against them too.
+    # Only the notice-level total stays unresolved, never an individual row.
+    if request.activation_status not in {
+        "AUTO_ACTIVE", "PARTIAL_ACTIVE", "PARTIAL_SOURCE",
+    }:
         return request
 
     # Every company resolver must see the same facts, including when the caller
@@ -4676,7 +4751,9 @@ def estimate_for_notice(
 ) -> QuantitativeEstimateResult:
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
-        request = quantitative_request_from_candidate_profile(dynamic_profile)
+        request = quantitative_request_from_candidate_profile(
+            dynamic_profile, allow_partial_source=True,
+        )
         request = bind_quantitative_company_inputs(
             request, company_facts, performance_records,
             as_of=notice.deadline,
