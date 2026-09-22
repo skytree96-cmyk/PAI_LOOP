@@ -47,7 +47,7 @@ from .source_gap_policy import (
 )
 
 
-QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.17"
+QUANTITATIVE_CANDIDATE_PROFILE_VERSION = "pai-loop-quantitative-candidate-profile-0.7.18"
 from .extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS, LEGACY_CASE_CONTRACT, PREVIOUS_CASE_CONTRACT,
     classify_record_contract,
@@ -1440,7 +1440,11 @@ def _bind_enterprise_credit_column(candidate, *, source: str, all_candidates):
     """
     if (
         candidate.metric != "CREDIT_RATING" or candidate.scoring_method != "CASE_TABLE"
-        or candidate.unit not in {"등급", "신용등급", "rating"}
+        # The explicit enterprise header and complete categorical row proof
+        # establish rating units even when extraction left this field null.
+        # Keep null in the candidate; the compiler independently proves its
+        # implicit unit. An explicit incompatible or empty unit stays blocked.
+        or candidate.unit not in {None, "등급", "신용등급", "rating"}
         or tuple(candidate.required_evidence) != ("company.credit_rating",)
         or sum(other.metric == "CREDIT_RATING" for other in all_candidates) != 1
         or not 2 <= len(candidate.cases) <= 20

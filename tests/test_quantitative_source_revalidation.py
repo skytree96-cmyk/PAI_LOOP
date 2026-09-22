@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import io
+import json
 import zipfile
 from xml.sax.saxutils import escape
 
@@ -10,9 +11,10 @@ from pydantic import ValidationError
 
 from pai_loop.extraction_contracts import (
     CURRENT_EXTRACTION_CONTRACT as CURRENT, PREVIOUS_CASE_CONTRACT as PREVIOUS,
+    PREVIOUS_EXTRACTION_CONTRACT, PREVIOUS_PROCESSING_CONTRACT,
     classify_attempt_header,
 )
-from pai_loop.integrations.openai_extraction import ExtractionOutcome
+from pai_loop.integrations.openai_extraction import ExtractionOutcome, ExtractionPayload
 from pai_loop.pps_enrichment import build_attachment_manifest, extract_pps_document_content
 from pai_loop.quantitative_rule_extraction import (
     ValidatedQuantitativeAttachmentRecord, validate_quantitative_attachment_extraction,
@@ -41,7 +43,8 @@ def native_docx(source, *, embedded=False):
     return output.getvalue()
 
 
-def fixture(*, gap=False, embedded=False, extension="docx", sibling=False):
+def fixture(*, gap=False, embedded=False, extension="docx", sibling=False,
+            contract=PREVIOUS, credit=False):
     metadata = dict(bidNtceNo="SYN-REVALIDATION", bidNtceOrd="000",
         ntceSpecFileNm1=f"SYN 제안요청서.{extension}",
         ntceSpecDocUrl1="https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=SYN-REVALIDATION&fileSeq=1")
@@ -52,6 +55,11 @@ def fixture(*, gap=False, embedded=False, extension="docx", sibling=False):
     attachment = manifest[0]
     aid = attachment["attachment_id"]
     payload, text = source_payload(aid, tail="LT", gap=gap)
+    if credit:
+        from test_dense_case_source_binding import credit_fixture, ATT
+        credit_raw, text = credit_fixture()
+        credit_raw["quantitative_tables"][0]["criteria"][0]["unit"] = None
+        payload = ExtractionPayload.model_validate(json.loads(json.dumps(credit_raw).replace(ATT, aid)))
     raw = payload.model_dump(mode="json")
     for table in raw["quantitative_tables"]:
         for candidate in table["criteria"]:
@@ -62,12 +70,12 @@ def fixture(*, gap=False, embedded=False, extension="docx", sibling=False):
     native_sha, manifest_sha = sha(native), revalidation_json_sha256(manifest)
     record = validate_quantitative_attachment_extraction(payload, source_text=canonical,
         attachment_id=aid, document_sha256=native_sha, manifest_sha256=manifest_sha)
-    record = record.model_copy(update=dict(prompt_version=PREVIOUS.prompt,
-        extraction_schema_version=PREVIOUS.schema, validator_version=PREVIOUS.validator))
+    record = record.model_copy(update=dict(prompt_version=contract.prompt,
+        extraction_schema_version=contract.schema, validator_version=contract.validator))
     record = record.model_copy(update=dict(validation_fingerprint_sha256=validated_quantitative_record_fingerprint(record)))
     attempt = dict(kind="OPENAI_REQUIREMENT_EXTRACTION", source_kind="PPS_PUBLIC_ATTACHMENT",
         attachment_id=aid, source_label=attachment["file_name"], status="ACCEPTED",
-        prompt_version=PREVIOUS.prompt, schema_version=PREVIOUS.schema, processing_version=PREVIOUS.processing,
+        prompt_version=contract.prompt, schema_version=contract.schema, processing_version=contract.processing,
         document_sha256=native_sha, manifest_sha256=revalidation_json_sha256(attachment),
         document_processing=dict(source_text_sha256=sha(canonical)),
         current_manifest_sha256=manifest_sha, result=raw, quantitative_validation_record=record.model_dump(mode="json"))
@@ -216,3 +224,78 @@ def test_revalidation_wrapper_fingerprint_cannot_be_changed_on_round_trip():
     dumped["origin"]["source_version_id"] = "SYN-OTHER-SOURCE"
     with pytest.raises(ValueError, match="RESULT_FINGERPRINT_MISMATCH"):
         QuantitativeSourceRevalidation.model_validate(dumped)
+
+
+@pytest.mark.parametrize("contract", [CURRENT, PREVIOUS_EXTRACTION_CONTRACT, PREVIOUS_PROCESSING_CONTRACT])
+def test_modern_credit_failure_revalidates_frozen_raw_without_overwriting_history(monkeypatch, contract):
+    # Reproduce the old column binder's rejection of a missing unit, preserving
+    # the exact failure record to compare with the new native-source proof.
+    with monkeypatch.context() as old:
+        old.setattr("pai_loop.quantitative_rule_extraction._bind_enterprise_credit_column",
+                    lambda candidate, **kwargs: candidate)
+        inputs = fixture(contract=contract, credit=True)
+    before = deepcopy(inputs)
+    stored = inputs["source_attempt"]["quantitative_validation_record"]
+    assert stored["status"] == "INCOMPLETE"
+    assert [issue["code"] for issue in stored["issues"]].count("CASE_NUMBER_MISMATCH") == 4
+    assert "CASE_TABLE_NOT_DETERMINISTIC" in {issue["code"] for issue in stored["issues"]}
+    result = revalidate_quantitative_source(**inputs)
+    assert result.native_canonical_status == "VERIFIED"
+    assert result.profile.status == "AVAILABLE"
+    assert len(result.profile.available_candidates) == 1
+    assert result.profile.available_candidates[0].unit is None
+    assert result.origin.extraction_contract == tuple(contract)
+    assert result.origin.original_record_sha256 == revalidation_json_sha256(stored)
+    assert result.origin.original_validation_fingerprint_sha256 == stored["validation_fingerprint_sha256"]
+    assert result.persistence_eligible is result.attachment_coverage_complete is False
+    assert quantitative_request_from_candidate_profile(result.profile).activation_status == "REVIEW_REQUIRED"
+    assert QuantitativeSourceRevalidation.model_validate_json(result.model_dump_json()) == result
+    assert inputs == before
+
+
+@pytest.mark.parametrize("contract", [CURRENT, PREVIOUS_EXTRACTION_CONTRACT, PREVIOUS_PROCESSING_CONTRACT])
+@pytest.mark.parametrize("defect", ["source_digit", "cross_attachment", "mixed_contract", "incomplete_parser"])
+def test_modern_revalidation_still_requires_original_source_and_exact_contract(contract, defect):
+    inputs = fixture(contract=contract, credit=True, embedded=defect == "incomplete_parser")
+    attempt = inputs["source_attempt"]
+    if defect == "source_digit":
+        attempt["result"]["quantitative_tables"][0]["criteria"][0]["cases"][0]["award_value"] = 8
+    elif defect == "cross_attachment":
+        attempt["result"]["quantitative_tables"][0]["criteria"][0]["cases"][0]["evidence"]["attachment_id"] = "SYN-FOREIGN"
+    elif defect == "mixed_contract":
+        attempt["schema_version"] = PREVIOUS.schema
+    inputs["expected_attempt_sha256"] = revalidation_json_sha256(attempt)
+    if defect in {"cross_attachment", "mixed_contract"}:
+        with pytest.raises(ValueError, match="RAW_ATTACHMENT_ANCHOR_MISMATCH|CONTRACT_UNSUPPORTED"):
+            revalidate_quantitative_source(**inputs)
+    else:
+        result = revalidate_quantitative_source(**inputs)
+        assert result.persistence_eligible is False
+        if defect == "incomplete_parser":
+            assert result.profile is None
+            assert "NATIVE_PARSER_INCOMPLETE" in result.diagnostic_codes
+        else:
+            assert result.profile.status != "AVAILABLE"
+
+
+@pytest.mark.parametrize("contract", [CURRENT, PREVIOUS_EXTRACTION_CONTRACT, PREVIOUS_PROCESSING_CONTRACT])
+def test_modern_revalidation_accepts_original_bounded_count_vocabulary(contract):
+    from test_quantitative_count_ranges import fixture as range_fixture
+
+    inputs = fixture(contract=contract)
+    attempt = inputs["source_attempt"]
+    raw, source = range_fixture(inline=True)
+    from test_dense_case_source_binding import ATT
+    raw = json.loads(json.dumps(raw).replace(ATT, attempt["attachment_id"]))
+    native = native_docx(source)
+    canonical = extract_pps_document_content(attempt["source_label"], native).text
+    inputs.update(native_bytes=native, expected_native_sha256=sha(native),
+                  canonical_text=canonical, expected_canonical_sha256=sha(canonical))
+    attempt.update(result=raw, document_sha256=sha(native))
+    attempt["document_processing"]["source_text_sha256"] = sha(canonical)
+    attempt["quantitative_validation_record"]["document_sha256"] = sha(native)
+    # The old derived record is history, not reused as the new validation.
+    inputs["expected_attempt_sha256"] = revalidation_json_sha256(attempt)
+    result = revalidate_quantitative_source(**inputs)
+    assert result.profile.status == "AVAILABLE", result.profile.issues
+    assert "BETWEEN" in {case.operator for case in result.profile.available_candidates[0].cases}

@@ -1,4 +1,4 @@
-"""Revalidate one frozen predecessor extraction against its actual native bytes.
+"""Revalidate one frozen supported extraction against its actual native bytes.
 
 This local diagnostic does not create a new extraction, persist records, or
 establish full-manifest coverage. Hash checks bind caller-supplied frozen inputs;
@@ -16,7 +16,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .extraction_contracts import PREVIOUS_CASE_CONTRACT, classify_record_contract
+from .extraction_contracts import (
+    CURRENT_EXTRACTION_CONTRACT, PREVIOUS_EXTRACTION_CONTRACT,
+    PREVIOUS_PROCESSING_CONTRACT, PREVIOUS_CASE_CONTRACT, classify_record_contract,
+)
 from .integrations.openai_extraction import ExtractionPayload
 from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
@@ -25,7 +28,13 @@ from .quantitative_rule_extraction import (
     build_quantitative_candidate_profile,
 )
 
-SOURCE_REVALIDATION_VERSION = "quantitative-source-revalidation-1"
+SOURCE_REVALIDATION_VERSION = "quantitative-source-revalidation-2"
+SOURCE_REVALIDATION_CONTRACTS = {
+    "CURRENT": CURRENT_EXTRACTION_CONTRACT,
+    "EXACT_PREVIOUS_EXTRACTION": PREVIOUS_EXTRACTION_CONTRACT,
+    "EXACT_PREVIOUS_PROCESSING": PREVIOUS_PROCESSING_CONTRACT,
+    "LEGACY_CASE_V2": PREVIOUS_CASE_CONTRACT,
+}
 _SHA = r"^[a-f0-9]{64}$"
 _OLD_CASE_OPERATORS = frozenset({"GTE", "EQ", "IN", "LTE", "LT"})
 
@@ -54,8 +63,8 @@ class RevalidationOrigin(_Frozen):
     source_authority: Literal["CALLER_SUPPLIED_FROZEN_INPUT"] = "CALLER_SUPPLIED_FROZEN_INPUT"
 
     @model_validator(mode="after")
-    def exact_predecessor(self) -> "RevalidationOrigin":
-        if self.extraction_contract != tuple(PREVIOUS_CASE_CONTRACT):
+    def exact_supported_contract(self) -> "RevalidationOrigin":
+        if self.extraction_contract not in SOURCE_REVALIDATION_CONTRACTS.values():
             raise ValueError("SOURCE_REVALIDATION_CONTRACT_UNSUPPORTED")
         return self
 
@@ -123,7 +132,7 @@ def revalidate_quantitative_source(
     canonical_text: str, expected_canonical_sha256: str,
     full_manifest: list[dict[str, object]], expected_manifest_sha256: str,
 ) -> QuantitativeSourceRevalidation:
-    """Reproduce native parsing, then validate unchanged PREVIOUS raw vocabulary.
+    """Reproduce native parsing, then validate unchanged, contract-bound raw.
 
     Integrity/contract errors raise stable ValueError codes. Unsupported or
     partial native parsing, or an unreproduced canonical, returns diagnostics
@@ -159,8 +168,9 @@ def revalidate_quantitative_source(
     _require(not invalid and validated == manifest
              and len({item["slot"] for item in validated}) == len(validated), "FULL_MANIFEST_INVALID")
     original_record = attempt.get("quantitative_validation_record")
-    _require(isinstance(original_record, dict)
-             and classify_record_contract(attempt, original_record) == "LEGACY_CASE_V2",
+    contract_kind = (classify_record_contract(attempt, original_record)
+                     if isinstance(original_record, dict) else "UNSUPPORTED")
+    _require(contract_kind in SOURCE_REVALIDATION_CONTRACTS,
              "SOURCE_REVALIDATION_CONTRACT_UNSUPPORTED")
     _require(attempt.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
              and attempt.get("source_kind") == "PPS_PUBLIC_ATTACHMENT"
@@ -183,11 +193,12 @@ def revalidate_quantitative_source(
              "SOURCE_ATTACHMENT_BINDING_MISMATCH")
     raw = attempt["result"]
     payload = ExtractionPayload.model_validate(raw)
-    _require(all(_old_case_vocabulary(candidate.get("cases", []))
-                 for table in raw.get("quantitative_tables", []) for candidate in table["criteria"])
-             and all(_old_case_vocabulary(candidate.get("cases", []))
-                     for candidate in original_record.get("available_candidates", [])),
-             "PREVIOUS_CASE_VOCABULARY_VIOLATION")
+    if contract_kind == "LEGACY_CASE_V2":
+        _require(all(_old_case_vocabulary(candidate.get("cases", []))
+                     for table in raw.get("quantitative_tables", []) for candidate in table["criteria"])
+                 and all(_old_case_vocabulary(candidate.get("cases", []))
+                         for candidate in original_record.get("available_candidates", [])),
+                 "PREVIOUS_CASE_VOCABULARY_VIOLATION")
     # Check every source anchor, including raw REVIEW rows omitted by the old
     # derived record. Required-field and numeric checks remain in Pydantic.
     def anchors_belong(value: object) -> bool:
@@ -197,7 +208,8 @@ def revalidate_quantitative_source(
         return not isinstance(value, list) or all(anchors_belong(item) for item in value)
     _require(anchors_belong(raw), "RAW_ATTACHMENT_ANCHOR_MISMATCH")
     origin = RevalidationOrigin(source_version_id=source_version_id,
-        extraction_contract=tuple(PREVIOUS_CASE_CONTRACT), source_attempt_sha256=expected_attempt_sha256,
+        extraction_contract=tuple(SOURCE_REVALIDATION_CONTRACTS[contract_kind]),
+        source_attempt_sha256=expected_attempt_sha256,
         raw_result_sha256=revalidation_json_sha256(raw), original_record_sha256=revalidation_json_sha256(original_record),
         original_validation_fingerprint_sha256=original_record.get("validation_fingerprint_sha256"),
         attachment_id=aid, native_sha256=expected_native_sha256, manifest_sha256=expected_manifest_sha256,
