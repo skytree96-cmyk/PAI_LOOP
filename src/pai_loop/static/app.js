@@ -9691,7 +9691,10 @@
     els.teamsFollowsRefresh.disabled = followups.loading || followups.pending.size > 0;
     els.teamsLinkButton.hidden = followups.connected;
     els.teamsLinkButton.disabled = !followups.enabled || followups.linking || followups.loading;
-    els.teamsLinkButton.textContent = followups.linking ? "연결 코드 만드는 중…" : followups.linkCode ? "새 연결 코드 만들기" : "개인 연결 코드 만들기";
+    // The button now opens Teams with the command composed, so it is named for
+    // what it does rather than for the code it happens to mint on the way.
+    els.teamsLinkButton.textContent = followups.linking ? "Teams 여는 중…"
+      : followups.linkCode ? "Teams 다시 열기" : "Teams 연결하기";
     // With a live code the link carries the command, so the person only sends it.
     const botChatUrl = followups.botChatCommandUrl || followups.botChatUrl;
     els.teamsBotChatLink.hidden = !botChatUrl;
