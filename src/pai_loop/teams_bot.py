@@ -76,6 +76,19 @@ class TeamsBotSettings:
             return None
         return "https://teams.microsoft.com/l/chat/0/0?users=" + quote("28:" + self.app_id, safe="")
 
+    def bot_chat_url_with_message(self, message: str) -> str | None:
+        """Open the personal bot chat with the pairing command already composed.
+
+        Teams fills its compose box from `message`, so the person only presses
+        send. The code still travels through their own bot conversation, so what
+        proves the pairing is unchanged; only the copying is removed. A host that
+        ignores the parameter simply opens an empty chat, and the copy button on
+        the page remains the way through.
+        """
+
+        base = self.bot_chat_url
+        return base + "&message=" + quote(message, safe="") if base else None
+
     @property
     def sso_audiences(self) -> frozenset[str]:
         """Both spellings Entra may put in `aud` for this API.
@@ -150,10 +163,12 @@ def link_code(request: Request, response: Response) -> dict:
                                  account_id=identity.id, created_at=now,
                                  expires_at=now + timedelta(seconds=LINK_TTL_SECONDS)))
         session.commit()
+    command = "연결 " + code
     response.headers["Cache-Control"] = "no-store"
-    return {"code": code, "command": "연결 " + code, "expires_in_seconds": LINK_TTL_SECONDS,
+    return {"code": code, "command": command, "expires_in_seconds": LINK_TTL_SECONDS,
             "expires_at": (now + timedelta(seconds=LINK_TTL_SECONDS)).isoformat(),
-            "bot_chat_url": settings.bot_chat_url}
+            "bot_chat_url": settings.bot_chat_url,
+            "bot_chat_command_url": settings.bot_chat_url_with_message(command)}
 
 
 @router.post("/link-sso")

@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
@@ -103,6 +104,7 @@ def test_settings_and_service_url_fail_closed(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     assert not bot.TeamsBotSettings.from_env().enabled
     assert bot.TeamsBotSettings().bot_chat_url is None
+    assert bot.TeamsBotSettings().bot_chat_url_with_message("연결 SYN") is None
     assert "SYN-client-secret" not in repr(SYN_SETTINGS)
     assert SYN_SETTINGS.enabled
     assert bot.trusted_service_url(SYN_SERVICE.rstrip("/")) == SYN_SERVICE
@@ -114,6 +116,17 @@ def test_settings_and_service_url_fail_closed(monkeypatch):
                 "https://smba.trafficmanager.net/../", "https://smba.trafficmanager.net/./"):
         with pytest.raises(HTTPException):
             bot.trusted_service_url(url)
+
+
+def test_link_code_offers_a_prefilled_bot_chat_without_leaking_the_code_elsewhere(browser):
+    issued = browser.post("/api/v1/teams/link-code", headers=HEADERS).json()
+    prefilled = issued["bot_chat_command_url"]
+    parsed = urlsplit(prefilled)
+    assert parsed.scheme == "https" and parsed.hostname == "teams.microsoft.com"
+    # The command travels only in the deep link the person opens themselves.
+    assert quote(issued["command"], safe="") in parsed.query
+    assert issued["command"] == "연결 " + issued["code"]
+    assert issued["code"] not in issued["bot_chat_url"]
 
 
 def test_pairing_is_single_use_hashed_and_session_scoped(browser, signer):

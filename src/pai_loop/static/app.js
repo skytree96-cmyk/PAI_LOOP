@@ -9,6 +9,7 @@
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
   const NOTICE_PAGE_SIZE = 200;
   const URGENT_DEADLINE_DAYS = 5;
+  const TEAMS_LINK_POLL_MS = 3000;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
   const MANUAL_ANALYSIS_MAX_POLLS = 1800;
   // Compatibility note for older embedded contracts: MANUAL_ANALYSIS_MAX_POLLS = 900.
@@ -69,6 +70,7 @@
     accountEpoch: 0,
     teamsFollowups: { enabled: false, connected: false, deliveryEnabled: null, loaded: false, loading: false,
       items: [], pending: new Set(), linking: false, error: "", message: "", botChatUrl: "",
+      botChatCommandUrl: "", poll: null, autoFollowKey: "",
       linkCode: "", linkExpiresAt: "", pendingNoticeKey: "", trigger: null, sequence: 0 },
     ppsDiscovery: {
       query: "",
@@ -9343,9 +9345,61 @@
     });
   }
 
+  // The bot answers a pairing command with an empty 200 and never writes back,
+  // so the page has to notice the link itself rather than ask the person to.
+  // Poll only while an unused code is on screen; a closed dialog, a signed-out
+  // account, a completed link or an expired code all end the wait.
+  function stopTeamsLinkPolling() {
+    if (state.teamsFollowups.poll) {
+      if (typeof clearInterval === "function") clearInterval(state.teamsFollowups.poll);
+      state.teamsFollowups.poll = null;
+    }
+  }
+
+  function startTeamsLinkPolling() {
+    stopTeamsLinkPolling();
+    const followups = state.teamsFollowups;
+    const epoch = state.accountEpoch;
+    // A host without timers (server-side checks) keeps the manual refresh path.
+    if (typeof setInterval !== "function") return;
+    followups.poll = setInterval(() => {
+      const expired = followups.linkExpiresAt && Date.parse(followups.linkExpiresAt) <= Date.now();
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups
+        || !els.teamsFollowsDialog?.open || followups.connected || !followups.linkCode || expired) {
+        stopTeamsLinkPolling();
+        return;
+      }
+      if (followups.loading || followups.linking || followups.pending.size > 0) return;
+      void pollTeamsConnection(epoch, followups);
+    }, TEAMS_LINK_POLL_MS);
+  }
+
+  async function pollTeamsConnection(epoch, followups) {
+    try {
+      const connection = await apiRequest("/teams/connection");
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      if (connection?.connected !== true) return;
+      // Pressing the star already said which notice they wanted, so finish that
+      // registration here instead of sending them back for a second click.
+      const pendingKey = followups.autoFollowKey || followups.pendingNoticeKey;
+      followups.autoFollowKey = "";
+      followups.connected = true;
+      clearTeamsLinkCode();
+      await loadTeamsFollowups();
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      if (pendingKey && followups.connected && !teamsFollowItem(pendingKey)) {
+        await toggleTeamsFollow(pendingKey);
+      }
+    } catch (_error) {
+      // A transient failure must not end the wait; the next tick tries again.
+    }
+  }
+
   function clearTeamsLinkCode() {
+    stopTeamsLinkPolling();
     state.teamsFollowups.linkCode = "";
     state.teamsFollowups.linkExpiresAt = "";
+    state.teamsFollowups.botChatCommandUrl = "";
     if (els.teamsLinkCommand) els.teamsLinkCommand.value = "";
     if (els.teamsLinkExpiry) els.teamsLinkExpiry.textContent = "";
     if (els.teamsLinkCodePanel) els.teamsLinkCodePanel.hidden = true;
@@ -9355,6 +9409,7 @@
     clearTeamsLinkCode();
     state.teamsFollowups = { enabled: false, connected: false, deliveryEnabled: null, loaded: false, loading: false,
       items: [], pending: new Set(), linking: false, error: "", message: "", botChatUrl: "",
+      botChatCommandUrl: "", poll: null, autoFollowKey: "",
       linkCode: "", linkExpiresAt: "", pendingNoticeKey: "", trigger: null,
       sequence: state.teamsFollowups.sequence + 1 };
     if (els.teamsFollowsDialog?.open) els.teamsFollowsDialog.close();
@@ -9370,6 +9425,13 @@
     renderTeamsFollowups();
     if (!els.teamsFollowsDialog.open) els.teamsFollowsDialog.showModal();
     await loadTeamsFollowups();
+    // Arriving here from a notice means the pairing is the only thing in the
+    // way, so start it rather than leaving a panel of buttons to work out.
+    if (noticeKey && followups.enabled && followups.loaded && !followups.connected
+      && !followups.linkCode && state.teamsFollowups === followups) {
+      followups.autoFollowKey = noticeKey;
+      await createTeamsLinkCode();
+    }
   }
 
   function teamsFollowItem(noticeKey) {
@@ -9512,6 +9574,15 @@
       if (els.teamsFollowsDialog?.open) {
         followups.linkCode = stringValue(payload.code);
         followups.linkExpiresAt = stringValue(payload.expires_at);
+        followups.botChatCommandUrl = safePaiBotTeamsUrl(payload.bot_chat_command_url);
+        // Teams opens with the command already composed, so the person only
+        // presses send. A blocked popup is not a failure: the same link stays
+        // on the panel, and the copy button still works.
+        if (followups.botChatCommandUrl && typeof window.open === "function"
+          && !window.open(followups.botChatCommandUrl, "_blank", "noopener")) {
+          followups.message = "Teams 창이 차단되었습니다. 아래 버튼으로 열어 주세요.";
+        }
+        startTeamsLinkPolling();
       }
       followups.botChatUrl = safePaiBotTeamsUrl(payload.bot_chat_url);
     } catch (error) {
@@ -9621,8 +9692,12 @@
     els.teamsLinkButton.hidden = followups.connected;
     els.teamsLinkButton.disabled = !followups.enabled || followups.linking || followups.loading;
     els.teamsLinkButton.textContent = followups.linking ? "연결 코드 만드는 중…" : followups.linkCode ? "새 연결 코드 만들기" : "개인 연결 코드 만들기";
-    els.teamsBotChatLink.hidden = !followups.botChatUrl;
-    if (followups.botChatUrl) els.teamsBotChatLink.href = followups.botChatUrl;
+    // With a live code the link carries the command, so the person only sends it.
+    const botChatUrl = followups.botChatCommandUrl || followups.botChatUrl;
+    els.teamsBotChatLink.hidden = !botChatUrl;
+    els.teamsBotChatLink.textContent = followups.botChatCommandUrl
+      ? "Teams에서 연결 명령 보내기" : "Teams 개인 채팅 열기";
+    if (botChatUrl) els.teamsBotChatLink.href = botChatUrl;
     else els.teamsBotChatLink.removeAttribute("href");
     els.teamsLinkCodePanel.hidden = !followups.linkCode;
     els.teamsLinkCommand.value = followups.linkCode ? `연결 ${followups.linkCode}` : "";
