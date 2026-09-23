@@ -1,0 +1,4012 @@
+{
+  "version": "public-agency-registry-1",
+  "description": "나라장터 공고·낙찰 이력에서 관측된 발주기관. 이 목록에 있다는 것은 그 기관이 공공 조달의 발주 주체였다는 증거이며, 추정이 아니다. operator_reviewed 는 관측 근거가 없어 운영자가 개별 확인한 기관이다.",
+  "observed_agencies": [
+    {
+      "name": "(사)국제경영원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)대한테니스협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)에이펙국제교육협력원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)중소기업기술혁신협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)한국엔젤투자협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)한국원자력산업협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)한국이스포츠협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(사)한국제약바이오협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(의)한라의료재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)강릉과학산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)경남로봇랜드재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)공간정보품질관리원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)광주미래차모빌리티진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)대한불교조계종 유지재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)범부처재생의료기술개발사업단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)서울경제진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)서울특별시평생교육진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)서울특별시평생교육진흥원(서울시민대학 다시가는캠퍼스)",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)예술경영지원센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)우체국시설관리단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)전남바이오진흥원  바이오의약본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)전북문화관광재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)제주창조경제혁신센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(재)제주테크노파크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)강원랜드",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)건화이엔지 제2공장",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)공영홈쇼핑",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)광신판지",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)명진기업",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)배터리솔루션즈",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)신라공업 남산공장",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)아즈텍더블유비이",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)월드에너지",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)위드텍",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)이지켐",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)케이피티유",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)코스콤",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)한국거래소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)한국에이엠에프",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)한국지중정보",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "(주)합동감속기한국정공",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "가덕도신공항건설공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "가야대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "가천대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "감사원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강릉영동대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 강원도립대학교 산학협력단",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 삼척시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 양양군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 원주시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 춘천시 평생교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 태백시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도 홍천군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청 강원특별자치도동해교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청 강원특별자치도속초양양교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청 강원특별자치도영월교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청 강원특별자치도철원교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청 강원특별자치도태백교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "강원특별자치도교육청 한국의료마이스터고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "건국대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "건국대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "건양대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "경기도 과천시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 김포시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 남양주시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 수원시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 여주시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 연천군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 용인시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 이천시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 평택시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도 포천시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도고양교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도광명교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도광주하남교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도교육청남부연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도교육청미래과학교육원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도교육청학생교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도구리남양주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도군포의왕교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도김포교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도동두천양주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도부천교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도성남교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도수원교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도시흥교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도안산교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도안성교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도양평교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도용인교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도의정부교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도파주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도평택교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 경기도화성오산교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 삼일공업고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도교육청 송림고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경기도노인맞춤돌봄지원센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경남대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경남정보대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경복대학산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경북과학대학",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경북대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경북대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경북대학교 창업지원단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경북대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상국립대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상국립대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도 김해시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도 밀양시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도 의령군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도 진주시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도 창녕군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도 창원시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도거창교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도교육연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도교육청특수교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도김해교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도남해교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도양산교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도진주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도창원교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상남도교육청 경상남도하동교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "경상북도 경산시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도 경주시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도 울진군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도 의성군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도 포항시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도경주교육청 황남초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경북기계금속고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도교육청발명인공지능교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도교육청연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도구미교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도문경교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도안동교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도영주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도영천교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도울릉교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도청도교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경상북도교육청 경상북도포항교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경성대학교 직속기관 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경운대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경인교육대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경인교육대학교 부설초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경찰청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "경희사이버대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "계명대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "계명문화대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "고려대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "고려대학교 세종캠퍼스",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "공공급식통합플랫폼",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "공군본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "공무원연금공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "공주교육대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "과학기술정보통신부 국립중앙과학관",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "과학기술정보통신부 우정사업본부 우정인재개발원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "광운대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "광주과학기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "광주광역시교육청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "교육부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "교육부 국립국제교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "교육부 국립특수교육원 총무과",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "교육부 중앙교육연수원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "구미시 문화로 자율상권조합",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가과학기술연구회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가과학기술인력개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가교육위원회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가교육위원회 사무처 참여지원과",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "국가데이터처",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가보안기술연구소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가보훈부",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "국가보훈처",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "국가아동권리보장원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가유산청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "국가유산청 한국전통문화대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가인권위원회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가지식재산위원회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국가평생교육진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국기원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립공원공단 설악산국립공원사무소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립공주대학교 예술대학",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립군산대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립대구과학관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립순천대학교",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "국립암센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립인천해양박물관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립중앙의료원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립창원대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국립해양과학관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국민건강보험공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국민건강보험공단 일산병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국민권익위원회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국민대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국민대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국방과학연구소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국방부",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "국방부 국군재정관리단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국방전직교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국세청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국악방송",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국제백신연구소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국토교통부 부산지방국토관리청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국토교통부 익산지방국토관리청 전주국토관리사무소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국토안전관리원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "국토연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "군산간호대학교산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "근로복지공단 인천병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "근로복지공단본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "기독간호대학산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "기본사회위원회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "기상청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "기상청 국립기상과학원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "기술보증기금",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "기후에너지환경부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "기후에너지환경부 국립환경과학원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "남서울대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "농림수산식품교육문화정보원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "농림식품기술기획평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "농림축산식품부 농식품공무원교육원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "농협대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대검찰청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구가톨릭대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구경북과학기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구과학대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시 동구",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시 수성구",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시교육청 경북공업고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시교육청 대구광역시교육연수원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "대구광역시교육청 대구교육낙동강수련원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구광역시교육청 대구미래교육연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구교육대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구한의대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대구한의대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대법원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "대전과학기술대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대전관광공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대전광역시 서구",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대전광역시 인재개발원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "대전광역시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대전광역시교육청 대전진로융합교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대전대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대전도시공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한건설기계안전관리원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한병원협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한불교조계종 동화사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한적십자사 서울적십자병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한적십자사 혈액관리본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한체육회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "대한체육회 진천선수촌",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "덕성여자대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "독립기념관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동국대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동남권원자력의학원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동남보건대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동서대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동서대학교산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동아대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동아방송예술대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동아방송예술대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동아연필(주)",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "동의대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "마산대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "명주남문동 자율상권조합",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "명지전문대학",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "목원대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "문화재청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "문화체육관광부 국립국악고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "문화체육관광부 국립중앙극장",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "문화체육관광부 국립중앙도서관",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "문화체육관광부 전통예술고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "백석대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "백석대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "백석문화대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "백신안전기술지원센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "법무부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "보건복지부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "보건복지부 국립재활원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "봄날북한산요양원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부경대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산과학기술대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산광역시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산광역시 상수도사업본부",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "부산광역시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산광역시교육청 부산광역시교육청교육연구정보원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산광역시교육청 부산광역시남부교육지원청 동성초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산광역시교육청 부산광역시립중앙도서관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산광역시교육청 부산자동차마이스터고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부산여자대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "부천도시공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "북서울 장애인보호작업시설",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "북한이탈주민지원재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "분당서울대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "비나텍주식회사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 국제이스포츠연맹",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 대한간호조무사협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 대한노인회 중앙회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 대한민국농구협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 대한산악연맹",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 대한의학회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 보험개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 세계가나안운동",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 전국도시형소공인연합회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 지역소프트웨어산업발전협의회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 한국복숭아생산자협의회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 한국원전수출산업협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사단법인 한국자살예방협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사회복지법인 하트-하트재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "사회복지법인어린이재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "산림청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "산림청 북부지방산림청 서울국유림관리소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "산림청 서부지방산림청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "산업통상자원부",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "삼건세기(주)",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "삼색이수상권상인협동조합",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "새마을금고중앙회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "새만금개발청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서민금융진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울교통공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울대학교 경영대학",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울대학교산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울물재생시설공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울올림픽기념국민체육진흥공단 경륜경정총괄본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울주택도시개발공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 도시기반시설본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 물재생센터 난지물재생센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 물재생센터 중랑물재생센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 서울시립대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 서울시립대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 소방학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시 송파구",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시강서교육청 양정중학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 경복비즈니스고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 경복여자고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 광양고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 광영여자고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 대동세무고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 동국대학교사범대학부속가람고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 동국대학교사범대학부속고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서서울생활과학고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울국제고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시강남서초교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시강동송파교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시교육연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시교육청융합과학교육원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시남부교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시동부교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시서부교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시서부교육지원청 충암초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시성동광진교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시성북강북교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 서울특별시중부교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 성보고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 영락고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 오류고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시교육청 용산고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시동부교육청 서울원묵초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시동작교육청 서울난우초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시북부교육청 동북초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시서부교육청 명지초등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시중부교육청 예원학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서울특별시체육회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서일대학",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서일대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "서정대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "선린대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "선문대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "선문대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "선진뷰티사이언스(주) 장항공장",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "성균관대학교 (인)산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "세명전기공업(주)",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "세인트존스베리아카데미 제주",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "세종특별자치시",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "세종특별자치시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "세종특별자치시교육청 세종특별자치시교육청교육문화원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "세종특별자치시교육청평생교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "소방청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "소방청 중앙소방학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "소상공인시장진흥공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "송곡대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "수원여자대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "수협중앙회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "숙명여자대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "신안산대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "신용보증기금",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "신한대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "아이씨티폴리텍(ICTPolytech)대학",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "아주대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "안동시 상권활성화 추진단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "어린이집안전공제회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "여성가족부",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "연성대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "연세대학교 미래캠퍼스",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "연암공과대학교산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "연암대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "연암대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "영남대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "영남이공대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "영산대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "외교부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울산과학기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울산광역시 소방본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울산광역시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울산광역시교육청 울산공업고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울산광역시교육청 울산광역시강남교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "울산대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울산항만공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "울진군의료원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "유엔남구대학로 자율상권조합",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인덕대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인사혁신처 국가공무원인재개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천공항시설관리 주식회사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "인천광역시 서해구",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시 인재개발원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "인천광역시 종합건설본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시교육청 인천광역시강화교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시교육청 인천광역시교육청AI융합교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시교육청 인천광역시교육청난정평화교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시교육청 인천광역시교육청학교지원단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시동부교육청 연수중학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천광역시인재개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천국제공항공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인천테크노파크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "인하대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "일동제약(주) 안성공장",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재능대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 경북자동차임베디드연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 경북테크노파크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 경상북도경제진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 과천시청소년재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 글로벌바이오인력양성허브 지원재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 녹색에너지연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 대전창조경제혁신센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 부산정보산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 서울연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 세종창조경제혁신센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 소상공인방송정보원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 연수문화재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 울산연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 울산정보산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 전북테크노파크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 전북특별자치도 사회서비스원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 제주4·3평화재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 진주 K-기업가정신재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 차세대융합기술연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 충북과학기술혁신원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 키엘연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 포항소재산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 한국국학진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인 한국나노기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인강원관광재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인강원정보문화산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인강원테크노파크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인김포시청소년재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인부산테크노파크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인양구문화재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인영암군미래교육재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인울산문화관광재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인인천문화재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인축산환경관리원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인평창유산재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인한국교육정보화재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인한국교육환경보호원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인한국보건의료정보원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "재단법인한국유교문화진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전국택시노동조합연맹경기수원시지부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남과학대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시 고흥군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시 순천시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시 여수시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시 장흥군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시 진도군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 광주청사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 동일미래과학고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시광양교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시교육청광주교육연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시교육청광주창의융합교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시구례교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시나주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시담양교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시무안교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남광주통합특별시해남교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남광주통합특별시교육청 전남청사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전남대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전라남도광양교육청 동광양중학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전라남도교육청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "전북대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도 고창군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 군산기계공업고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 전북특별자치도교육청교육연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 전북특별자치도교육청미래교육연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 전북특별자치도남원교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 전북특별자치도완주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 전북특별자치도익산교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 전북특별자치도임실교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 진안제일고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전북특별자치도교육청 한국기술부사관고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "전주비전대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "정보통신정책연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주관광공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주특별자치도",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주특별자치도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주특별자치도교육청 한림항공우주고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "제주특별자치도교육청 함덕고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 강원지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 경남지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 광주지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 대구지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 대전지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 부산지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 서울지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 인천지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 전북지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 제주지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조달청 충북지방조달청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조선간호대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조선대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조선대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "조선이공대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 건화산업",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 긴트",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 누리플렉스",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 뉴로다임",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 디비엔텍",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 라임씨에스아이",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 마음에이아이",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 바이다",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 삼덕피앤씨",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 신미정공",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 신호인더스트리",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 오스코",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 원태",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 유니크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 유디임팩트",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 청우테크",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 컴투스엔",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 크레스콤",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 타이드",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사 하트만",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주식회사한국중소벤처기업유통원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "주택도시보증공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중소기업기술정보진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중소기업은행",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중소기업중앙회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중소벤처기업부 전북기계공업고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중소벤처기업진흥공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중앙대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중앙선거관리위원회 사무처 선거연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "중원대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "지방공기업평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "지식재산처",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "진주교육대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "질병관리청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "질병관리청 국립보건연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "창업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "창원문성대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "청파노인복지관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "축산물품질평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "축협중앙회 홍성축산업협동조합",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충남대학교 경영대학원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충남대학교병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충남창조경제혁신센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충북개발공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충북대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충북보건과학대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도 논산시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도 소방본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도 아산시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도 아산시 평생학습문화센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도 인재개발원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "충청남도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 당진정보고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 천안여자상업고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도공주교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도교육연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도금산교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도부여교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도아산교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도아산교육지원청 한올중학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도천안교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도청양교육지원청",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도홍성교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 충청남도홍성교육지원청 내포중학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청남도교육청 합덕제철고등학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도 영동군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도 제천시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도 증평군",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도 충주시",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도교육청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도교육청 충청북도교육도서관",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도교육청 충청북도영동교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "충청북도교육청 충청북도청주교육지원청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "코레일유통(주)",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "통계청 통계교육원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "통일부 국립평화통일민주교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "티아이씨주식회사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "포항공과대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "포항공과대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한광전기공업(주)",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국가스안전공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국개발연구원국제정책대학원대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국건설기술연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국고용노동교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국고용정보원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국공학대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국공학대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국공항공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국과학기술연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국과학기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국과학기술정보연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국과학창의재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국관광공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교원대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교원대학교 종합교육연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교육개발원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국교육과정평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교육시설안전원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교육학술정보원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교직원공제회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교통안전공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국교통안전공단 자동차안전연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국국제보건의료재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국국제협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국국토정보공사 국토정보교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국기계연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국기술교육대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국기술교육대학교 직업능력심사평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국노인인력개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국노총 경남본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국노총대구지역본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국농수산식품유통공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국농어촌공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국농어촌공사 인재개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국농어촌공사 전남지역본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국농어촌공사 충남지역본부 논산지사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국농업기술진흥원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국도로교통공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국로봇산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국로봇융합연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국무역보험공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국문화관광연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국문화예술교육진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국발명진흥회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국벤처투자",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국보건복지인재원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국보건산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국보훈복지의료공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국보훈복지의료공단 중앙보훈병원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국부동산원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국사회보장정보원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국산림복지진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산림재난안전기술공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업기술기획평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업기술시험원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업기술진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업단지공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업인력공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업인력공단 강원지사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국산업인력공단 글로벌숙련기술진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국상하수도협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국생명공학연구원",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국생산기술연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국생산성본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국소비자원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국수산자원공단 서해본부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국수출입은행",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국승강기대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국승강기안전공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국식품산업클러스터진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국식품연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국양성평등교육진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국어촌어항공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국에너지공과대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국에너지공단",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국에너지기술평가원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국여성경제인협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국예탁결제원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국원자력환경공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국은행",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국자동차환경협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국자산관리공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국자산관리공사 국유재산관리기금",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국장애인개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국장애인고용공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국장학재단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국저작권위원회",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국전기연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국정보통신기술협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지능정보사회진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지식재산보호원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지식재산연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지역난방공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지역난방공사 강남지사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지역난방공사 김해사업소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지역난방공사 동탄지사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지역정보개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국지질자원연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국직업능력연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국천문연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국철도기술연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국체육대학교",
+      "basis": "PPS_AWARD_AGENCY"
+    },
+    {
+      "name": "한국출판문화산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국콘텐츠진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국투자공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국폴리텍5대학 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국표준과학연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국프리팩 주식회사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국한의학연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국항공우주연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국해양과학기술원 부설 선박해양플랜트연구소",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국해양대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국해양대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국해양수산연수원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국해외인프라도시개발지원공사",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국화재보험협회부설방재시험연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국화학연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국화학융합시험연구원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국환경공단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국환경보전원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한국환경산업기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한남대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한남대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한동대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한림대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한서대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한서대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한아세안센터",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한양대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한양대학교 에리카산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "한양여자대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "항공안전기술원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "해병 제9691부대",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "해양경찰청",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "해양경찰청 해양경찰교육원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "해양수산부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "해외건설협회",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "행정안전부",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "행정안전부 국가기록원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "행정안전부 지방자치인재개발원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "협성대학교",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "호서대학교 산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "홍익대학교세종캠퍼스산학협력단",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "화성산업진흥원",
+      "basis": "PPS_NOTICE_AGENCY"
+    },
+    {
+      "name": "환경부",
+      "basis": "PPS_AWARD_AGENCY"
+    }
+  ],
+  "operator_reviewed": [
+    {
+      "name": "(사)한국국제기아대책기구",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "(사)한국대학스포츠협의회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "(사)한국프로스포츠협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "(사)한국플랜트산업협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "(재)DB김준기문화재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "(재)고속도로장학재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "(재)노사발전재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "(재)정선아리랑문화재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "4차산업혁명위원회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "POSCO홀딩스",
+      "public": false,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 민간기업"
+    },
+    {
+      "name": "가축위생방역지원본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "가톨릭대학교 성심교정",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "강남대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "강릉원주대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "건설근로자공제회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "경기평택항만공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "경남과학기술대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "경동대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "경북대학교 대구경북지역혁신플랫폼총괄운영센터 RIS 대학교육혁신본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "경일대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "경찰청 중앙경찰학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "계원예술대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "고용노동부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "고위공직자범죄수사처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "과학기술정보통신부 우정사 업본부 우정사업조달센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "광주대학교 대학혁신지원사업단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "광주여자대학교 대학일자리센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "국방기술진흥연구소",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "국방부 전쟁기념사업회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "국세청 국세공무원교육원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "국제대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "국제식물검역인증원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "국토교통부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "국회 국회사무처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "군산대학교 황룡인재교육원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "김포대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "노사발전재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "대구도시개발공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "대구도시공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "대원대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "대한무역투자진홍공사 （KOTRA）",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "대한무역투자진흥공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "대한민국 국방부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "동강대학교 행정처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "동서울대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "동양미래대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "마산대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "목원대학교 대학일자리플러스본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "목표대학교 일자리센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "병무청",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "부산가톨릭대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "부산도시공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "부천대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "부천대학교 기획처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "사단법인 경북프라이드기업 씨이오협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "사단법인 대구관광뷰로",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "사단법인 한국핀테크지원센 터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "새마을운동중앙회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "새만금개발공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "생명보험협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "서울과학기술대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "서울지방고용노동청",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "서일대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "성균관대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "세종학당재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "수도권매립지관리공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "순천대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "순천대학교 대학일자리센터(인재개발본부)",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "순천대학교 인재개발본부(대학일자리센터)",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "숭의여자대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "식품의약품안전처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "신한대학교 총장",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "아시아 태평양경제협력체 기후센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "여신금융협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "용인송담대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "우석대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "울산과학대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "울산과학대학교 동부캠퍼스 교수학습지원센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "울산과학대학교 산학합력단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "원광대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "인사혁신처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "인천교통공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "재단법인 개성공업지구지원 재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인 곡성군미래교육재 단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인 안양시 인재육성 재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인 울산일자리재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인 한국장애인문화예 술원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인경기도일자리재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인광주광역시관광재 단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인대구창조경제혁신 센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재단법인스포츠윤리센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재외동포재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "재외동포청",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "전남개발공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "전남대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "전북대학교 RIS대학교육혁신본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "제주대학교 전략기획과 계약관",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "제주한라대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "중앙대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "중앙대학교 다빈치학습혁신원 교수학습개발센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "중앙사회서비스원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "청암대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "청주대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "청주대학교 간호학과",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "청주대학교 사무처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남대학교 기초교양교육원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남대학교 대학교육혁신본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남대학교 반도체특성화대학사업단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남대학교 사회맞춤형 산학협력선도대학(LINC+)육성사업단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남대학교(대전·세종·충남 지역혁신 플랫폼 대학교육혁신본부)",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충남도립대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "충북대학교 충북바이오헬스산업혁신센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "충북대학교 충북바이오헬스산업혁신센터장",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "충북바이오헬스산업혁신센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    },
+    {
+      "name": "케이티",
+      "public": false,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 민간기업"
+    },
+    {
+      "name": "특수법인 한국전파진흥협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "특허청",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 중앙행정기관"
+    },
+    {
+      "name": "특허청 국제지식재산연수원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "한국KPS",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국교육방송공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "한국교통대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국교통대학교 LINC3.0 사업단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국교통대학교 미래융합대학",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국남부발전",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국농어촌공사 농어촌연구 원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "한국농어촌공사 충남지역본 부 부여지사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "한국대학스포츠협의회 사무처",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국도핑방지위원회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국마사회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국문화예술위원회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국산업기술대학교 교육혁신팀",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국산업은행",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국수목원정원관리원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "한국에너지정보문화재단",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 재단"
+    },
+    {
+      "name": "한국여행업협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "한국영상대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국전기안전공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "한국전력거래소",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "한국중견기업연합회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "한국청소년정책연구원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "한국폴리텍대학 인재원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한국플랜트산업협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "한국해양진흥공사",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 공사"
+    },
+    {
+      "name": "한림성심대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한밭대학교 대학일자리본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "한세대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "합천군",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 기타"
+    },
+    {
+      "name": "행정안전부 국가정보자원관 리원",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · ○○원"
+    },
+    {
+      "name": "호남대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "호남대학교 대학혁신본부",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "호원대학교",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 대학"
+    },
+    {
+      "name": "환경보전협회",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 협회·연합회"
+    },
+    {
+      "name": "（재）여성기업종합지원센터",
+      "public": true,
+      "basis": "OPERATOR_REVIEWED",
+      "reason": "운영자 확인 2026-09-23 · 센터"
+    }
+  ]
+}
