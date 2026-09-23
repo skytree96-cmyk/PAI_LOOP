@@ -1303,14 +1303,20 @@
           <p id="teamsFollowsHelp">등록 시, 마감 5일 전 오전 9시, 마감일 오전 9시에 자격사항·정량점수·리스크와 공고 상세 링크를 개인 채팅으로 받습니다. 모든 시간은 한국 시간(KST)입니다.</p>
           <section class="teams-connection-panel" aria-label="Teams 개인 연결">
             <strong id="teamsFollowsStatus" role="status">연결 상태 확인 중</strong>
-            <p>내 Teams 개인 채팅을 연결한 뒤 관심 공고를 등록하세요. 공용 부서 계정을 사용해도 이 로그인에서 연결한 사람에게 알림이 갑니다. 새로 로그인하면 본인 Teams를 다시 연결합니다.</p>
+            <p>한 번만 연결하면 됩니다. 세 단계로 끝납니다.</p>
+            <ol class="teams-connection-steps">
+              <li>아래 <strong>Teams 연결하기</strong>를 누르면 내 Teams 개인 채팅이 열립니다.</li>
+              <li>이미 입력되어 있는 <strong>연결 …</strong> 메시지를 그대로 보냅니다.</li>
+              <li>봇은 답장하지 않습니다. 보내고 나면 이 화면이 알아서 넘어갑니다.</li>
+            </ol>
+            <p class="teams-connection-note">공용 부서 계정을 써도 알림은 이 로그인에서 연결한 본인에게만 갑니다. 새로 로그인하면 다시 연결해야 합니다.</p>
             <div class="teams-follow-actions">
               <button class="button button--primary" id="teamsLinkButton" type="button">개인 연결 코드 만들기</button>
               <a class="button button--secondary" id="teamsBotChatLink" target="_blank" rel="noopener noreferrer" hidden>Teams 개인 채팅 열기</a>
               <button class="button button--secondary" id="teamsFollowsRefresh" type="button">연결·알림 상태 새로고침</button>
             </div>
             <div class="teams-link-code-panel" id="teamsLinkCodePanel" hidden>
-              <label for="teamsLinkCommand">Teams에 명령이 입력된 채로 열립니다. 보내기만 누르세요. 열리지 않으면 아래 명령을 복사해 PAI 봇 개인 채팅에 보내세요.</label>
+              <label for="teamsLinkCommand">Teams가 열리지 않았다면, 이 명령을 복사해 PAI 봇 개인 채팅에 보내세요.</label>
               <div class="teams-follow-actions"><input id="teamsLinkCommand" type="text" readonly autocomplete="off" spellcheck="false" /><button class="button button--secondary" id="teamsLinkCopy" type="button">명령 복사</button></div>
               <p id="teamsLinkExpiry"></p>
               <p>봇은 답장하지 않습니다. 명령을 보내면 이 화면이 연결을 감지해 자동으로 넘어갑니다.</p>

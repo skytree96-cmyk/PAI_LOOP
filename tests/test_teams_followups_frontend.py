@@ -161,7 +161,10 @@ def test_personal_followups_are_reachable_and_clear_with_account_state() -> None
         assert f'id="{element}"' in html
     assert "마감 5일 전 오전 9시" in html
     assert "마감일 오전 9시" in html
-    assert "새로 로그인하면 본인 Teams를 다시 연결합니다" in html
+    assert "새로 로그인하면 다시 연결해야 합니다" in html
+    # The panel states the three steps, including that the bot stays silent.
+    assert "봇은 답장하지 않습니다" in html
+    assert html.count("<li>") >= 3
     feature = source.split("function bindTeamsFollowupEvents()", 1)[1].split(
         "function createDemoData()", 1
     )[0]
