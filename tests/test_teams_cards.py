@@ -11,7 +11,20 @@ from pai_loop.integrations.openai_extraction import PROMPT_VERSION, SCHEMA_VERSI
 from pai_loop.models import Notice, NoticeVersion
 from pai_loop.pps_enrichment import PPS_METADATA_KIND, PPS_METADATA_SCHEMA, PPS_PROCESSING_VERSION, _digest
 
-NOW = datetime(2026, 9, 13, 0, tzinfo=timezone.utc)
+# `_summary` decides a notice is still current by comparing its deadline with
+# the real clock rather than the `now` handed to the card builder, so a fixed
+# calendar date quietly turns these cases red once it passes. Anchor the
+# fixture to today and derive every expected date from it.
+KST = timezone(timedelta(hours=9), name="Asia/Seoul")
+NOW = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _kst_minute(moment: datetime) -> str:
+    return moment.astimezone(KST).strftime("%Y-%m-%d %H:%M")
+
+
+def _kst_day(moment: datetime) -> str:
+    return moment.astimezone(KST).strftime("%Y-%m-%d")
 
 
 def _notice(session):
@@ -30,13 +43,13 @@ def test_card_uses_latest_notice_and_never_invents_missing_scores(client):
         assert "관심 공고 등록" in text
         assert "미산정" in text and "미판정" in text
         assert "확정 0" not in text and "0 / 100" not in text
-        assert "2026-09-23 09:00" in text
+        assert _kst_minute(NOW + timedelta(days=10)) in text
         assert card["actions"][0]["url"] == "https://example.test/?notice=SYN-TEAMS-CARD"
         notice.title = "SYN 변경 공고"
         notice.deadline += timedelta(days=2)
         session.commit()
         latest = json.dumps(teams_cards.build_notice_card(session, notice, "D_MINUS_5", now=NOW, base_url="https://example.test"), ensure_ascii=False)
-        assert "SYN 변경 공고" in latest and "2026-09-25" in latest
+        assert "SYN 변경 공고" in latest and _kst_day(NOW + timedelta(days=12)) in latest
         assert "SYN 카드 공고" not in latest
 
 
