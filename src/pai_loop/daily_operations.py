@@ -15,7 +15,11 @@ from .auth import require_api_key
 from .analysis_selection import manual_only_notice_keys
 from .award_intelligence import build_award_intelligence
 from .award_scope import filter_notice_awards
-from .department_ranking import rank_notice_department_views
+from .department_ranking import (
+    get_department_profile,
+    rank_notice_department_views,
+    rank_notice_for_department,
+)
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
@@ -195,6 +199,7 @@ def _briefing_notice(
     latest_analysis_run: AnalysisRun | None,
     company_facts: tuple[CompanyFact, ...] = (),
     performance_records: tuple[CompanyPerformanceRecord, ...] = (),
+    department_id: str | None = None,
 ) -> dict[str, Any]:
     latest = latest_evaluation
     source_kind = "PPS" if notice.notice_key.upper().startswith("PPS-") else "MANUAL"
@@ -234,7 +239,32 @@ def _briefing_notice(
         "risk_band": latest.risk_band if latest else "UNKNOWN",
     }
     eligibility_weight = {"PASS": 30, "REVIEW": 20, "PENDING": 10, "FAIL": 0}[fit["eligibility"]]
-    department_score = float(departments[0]["score"]) if departments else 0.0
+    # Unscoped, priority answers "who is this best for". Scoped to one
+    # department it answers "what should this department look at", which is the
+    # question a personal briefing asks. An id with no profile (an org-level
+    # account) falls back to the best-fit view rather than scoring zero.
+    scoped_score = None
+    if department_id:
+        try:
+            # None for an org-level id; KeyError for one no catalog knows. Both
+            # mean "no department view to scope to", never a zero score.
+            scoped_profile = get_department_profile(department_id)
+        except KeyError:
+            scoped_profile = None
+        if scoped_profile is not None:
+            scoped_score = float(
+                rank_notice_for_department(
+                    title=notice.title,
+                    agency=notice.agency or "",
+                    category=notice.category or "",
+                    _department_profile=scoped_profile,
+                )["score"]
+            )
+    department_score = (
+        scoped_score
+        if scoped_score is not None
+        else float(departments[0]["score"]) if departments else 0.0
+    )
     readiness_score = float(fit["readiness_score"] or 0.0)
     priority_score = round(min(100.0, eligibility_weight + 0.4 * department_score + 0.3 * readiness_score), 1)
     scoped_awards = filter_notice_awards(notice, notice.award_history)
@@ -284,6 +314,7 @@ def daily_briefing(
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     as_of: datetime | None = None,
     response: Response = None,
+    department_id: Annotated[str | None, Query(max_length=64)] = None,
 ) -> dict[str, Any]:
     """Build the stored-data daily feed without calling PPS, OpenAI, or Teams."""
 
@@ -455,6 +486,7 @@ def daily_briefing(
                     ),
                     company_facts=company_facts,
                     performance_records=performance_records,
+                    department_id=department_id,
                 )
             )
         session.expunge_all()

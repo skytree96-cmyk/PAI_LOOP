@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -123,6 +124,23 @@ def _code_hash(code: str) -> str:
     return hashlib.sha256(("teams-session-link-v1:" + code).encode()).hexdigest()
 
 
+def _queue_subscription_ping(session: Session, recipient: TeamsRecipient) -> None:
+    """Queue the briefing that confirms a pairing, if briefings are on.
+
+    The pairing itself must succeed whether or not a briefing can be queued, so
+    a failure here is swallowed: the person is linked either way, and the next
+    scheduled briefing is unaffected. Imported here to keep the bot module free
+    of a hard dependency on the briefing feature.
+    """
+
+    try:
+        from .briefing_delivery import enqueue_subscription_ping
+
+        enqueue_subscription_ping(session, recipient)
+    except Exception:  # pragma: no cover - never fail a pairing over a ping
+        logging.warning("Briefing ping could not be queued for a new pairing")
+
+
 def _linked_recipient(session: Session, session_id: str, account_id: str) -> TeamsRecipient | None:
     link = session.get(TeamsSessionLink, session_id)
     if not link or link.account_id != account_id:
@@ -146,7 +164,43 @@ def connection(request: Request, response: Response) -> dict:
     settings = TeamsBotSettings.from_env()
     with request.app.state.session_factory() as session:
         recipient = _linked_recipient(session, identity.session_id, identity.id)
-        return {"enabled": settings.enabled, "connected": bool(recipient), "bot_chat_url": settings.bot_chat_url}
+        return {"enabled": settings.enabled, "connected": bool(recipient),
+                "bot_chat_url": settings.bot_chat_url,
+                # NULL means no stored choice, which reads as subscribed.
+                "briefing_enabled": bool(recipient.briefing_enabled is not False) if recipient else False}
+
+
+@router.post("/briefing")
+async def set_briefing(request: Request, response: Response) -> dict:
+    """Turn the daily briefing on or off for the person behind this session.
+
+    Interest reminders are scheduled separately and are not affected. Turning it
+    off survives disconnecting and pairing again: the choice was deliberate.
+    """
+
+    identity = authenticated_account(request, mutation=True)
+    response.headers["Cache-Control"] = "no-store"
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 1024:
+            raise HTTPException(413, "요청이 너무 큽니다.")
+    try:
+        payload = json.loads(body)
+        wanted = payload["enabled"]
+        if not isinstance(wanted, bool):
+            raise ValueError()
+    except (ValueError, UnicodeDecodeError, KeyError, TypeError):
+        raise HTTPException(400, "브리핑 설정 값을 확인해 주세요.") from None
+    with request.app.state.session_factory() as session:
+        serial_transaction(session, scope="teams-identities")
+        recipient = _linked_recipient(session, identity.session_id, identity.id)
+        if recipient is None:
+            raise HTTPException(409, "Teams 개인 알림을 먼저 연결해 주세요.")
+        recipient.briefing_enabled = wanted
+        recipient.updated_at = now_utc()
+        session.commit()
+    return {"briefing_enabled": wanted}
 
 
 @router.post("/link-code")
@@ -216,6 +270,7 @@ async def link_sso(request: Request, response: Response) -> dict:
         recipient.active = True
         recipient.account_id = identity.id
         recipient.updated_at = now_utc()
+        _queue_subscription_ping(session, recipient)
         session.execute(delete(TeamsSessionLink).where(
             TeamsSessionLink.session_id == identity.session_id))
         session.add(TeamsSessionLink(session_id=identity.session_id, account_id=identity.id,
@@ -456,6 +511,7 @@ def _handle_activity(request: Request, activity: dict) -> None:
                     session.add(TeamsSessionLink(session_id=proof.session_id, account_id=proof.account_id,
                                                  recipient_id=recipient.id, created_at=now))
                 proof.consumed_at = now
+                _queue_subscription_ping(session, recipient)
         session.commit()
 
 

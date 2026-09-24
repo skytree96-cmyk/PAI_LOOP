@@ -21,6 +21,11 @@ class TeamsRecipient(Base):
     conversation_id: Mapped[str] = mapped_column(Text)
     service_url: Mapped[str] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NULL means the person never chose, which reads as subscribed. Pairing is
+    # the opt-in, so a recipient that predates this column keeps receiving the
+    # briefing and only an explicit False stops it. A choice survives
+    # disconnecting and pairing again: turning it off is deliberate.
+    briefing_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
 

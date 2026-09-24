@@ -31,7 +31,8 @@ const el = () => ({hidden: false, disabled: false, textContent: '', innerHTML: '
 for (const id of ['teamsFollowsDialog', 'teamsFollowsStatus', 'teamsFollowsSummary',
   'teamsFollowsError', 'teamsFollowsDeliveryNotice', 'teamsFollowsRefresh', 'teamsLinkButton', 'teamsBotChatLink',
   'teamsLinkCodePanel', 'teamsLinkCommand', 'teamsLinkExpiry', 'teamsFollowsList',
-  'teamsFollowsEmpty', 'teamsPendingFollow', 'teamsPendingFollowLabel', 'teamsPendingFollowButton']) u.els[id] = el();
+  'teamsFollowsEmpty', 'teamsPendingFollow', 'teamsPendingFollowLabel', 'teamsPendingFollowButton',
+  'teamsBriefingToggle', 'teamsBriefingEnabled']) u.els[id] = el();
 u.state.source = 'api';
 u.state.accountSession = {enabled: true, authenticated: true, csrfToken: 'SYN-csrf'};
 const notice = u.normalizeNotice({notice_key: 'SYN-notice/key', title: 'SYN 공고',

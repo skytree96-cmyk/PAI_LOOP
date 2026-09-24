@@ -87,31 +87,42 @@ def test_script_delimiters_in_an_allowed_url_cannot_escape_runtime_json(monkeypa
         assert "\\u003c/script\\u003e" in response.text
 
 
-def test_teams_button_uses_configured_destination_and_blocks_unsafe_runtime_values():
+def test_teams_button_opens_pairing_and_stays_inert_without_a_session():
+    """The sidebar subscribes the person; it no longer opens a channel.
+
+    Delivery goes to the personal chat, so the button's precondition is a
+    signed-in session rather than a configured channel address, and pressing it
+    opens the pairing dialog instead of navigating away.
+    """
+
     source = (ROOT / "src/pai_loop/static/app.js").read_text(encoding="utf-8")
     functions = source[source.index("  function configurePaiBotTeamsAccess()"):source.index("  function detectTeamsContext()")]
     script = r"""
 const assert = require('node:assert/strict');
-let PAI_BOT_TEAMS_URL = '';
 const button = { dataset: {}, setAttribute(name, value) { this[name] = value; } };
 const els = { paiBotTeamsButton: button, paiBotTeamsAccessNote: {} };
+const state = { accountSession: { authenticated: false } };
 const opened = [];
-const window = { open(...args) { opened.push(args); } };
+const navigated = [];
+const window = { open(...args) { navigated.push(args); } };
+function openTeamsFollowups(...args) { opened.push(args); }
 __FUNCTIONS__
-for (const candidate of ['', 'javascript:alert(1)', '//teams.microsoft.com/SYN',
-  'https://teams.microsoft.com.evil.test/SYN', 'https://' + ['SYN', 'teams.microsoft.com/SYN'].join('@'),
-  'https://@teams.microsoft.com/SYN',
-  'https://teams.microsoft.com:444/SYN', 'https://teams.microsoft.com/\nSYN']) {
-  PAI_BOT_TEAMS_URL = candidate;
-  configurePaiBotTeamsAccess(); openPaiBotTeams();
-  assert.equal(button.disabled, true); assert.equal(button['aria-disabled'], 'true');
-  assert.equal(button.dataset.state, 'pending');
-}
-assert.equal(opened.length, 0);
-PAI_BOT_TEAMS_URL = __DESTINATION__;
-configurePaiBotTeamsAccess(); openPaiBotTeams();
-assert.equal(button.disabled, false); assert.equal(button['aria-disabled'], 'false');
+configurePaiBotTeamsAccess();
+assert.equal(button.disabled, true);
+assert.equal(button['aria-disabled'], 'true');
+assert.equal(button.dataset.state, 'pending');
+assert.match(els.paiBotTeamsAccessNote.textContent, /로그인/);
+
+state.accountSession.authenticated = true;
+configurePaiBotTeamsAccess();
+assert.equal(button.disabled, false);
+assert.equal(button['aria-disabled'], 'false');
 assert.equal(button.dataset.state, 'ready');
-assert.deepEqual(opened, [[PAI_BOT_TEAMS_URL, '_blank', 'noopener,noreferrer']]);
-""".replace("__FUNCTIONS__", functions).replace("__DESTINATION__", json.dumps(DESTINATION))
+
+openPaiBotTeams();
+// No notice is pending from the sidebar: this entry only pairs.
+assert.deepEqual(opened, [['', button]]);
+// The page must not send anyone to an external address from here.
+assert.equal(navigated.length, 0);
+""".replace("__FUNCTIONS__", functions)
     subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)

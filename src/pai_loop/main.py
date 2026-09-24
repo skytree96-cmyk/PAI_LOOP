@@ -50,6 +50,8 @@ from .schemas import HealthResponse
 from .teams_readiness import router as teams_readiness_router
 from .teams_bot import router as teams_bot_router, TeamsBotSettings
 from .teams_followups import router as teams_followups_router, dispatch_due, followups_enabled
+from .briefing_delivery import briefings_enabled, dispatch_briefings
+from .briefing_models import TeamsBriefingDelivery  # noqa: F401  (registers the table)
 
 
 def _scrub_private_performance_search_query(request: Request) -> None:
@@ -90,8 +92,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if followups_enabled() and not TeamsBotSettings.from_env().enabled:
-            raise ValueError("Teams follow-up delivery requires a valid bot, tenant and HTTPS public origin")
+        if (followups_enabled() or briefings_enabled()) and not TeamsBotSettings.from_env().enabled:
+            raise ValueError("Teams delivery requires a valid bot, tenant and HTTPS public origin")
         Base.metadata.create_all(engine)
         apply_additive_migrations(engine)
         with session_factory() as session:
@@ -109,16 +111,29 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
                     logging.error("Teams follow-up dispatcher tick failed; pending work remains stored")
                 await asyncio.sleep(30)
 
+        async def briefing_loop():
+            while True:
+                try:
+                    await asyncio.to_thread(dispatch_briefings, session_factory)
+                except Exception:
+                    # Same boundary as follow-ups: never log a destination or card.
+                    logging.error("Teams briefing dispatcher tick failed; pending work remains stored")
+                await asyncio.sleep(60)
+
         followups = None
+        briefings = None
         if followups_enabled():
             followups = asyncio.create_task(followup_loop())
+        if briefings_enabled():
+            briefings = asyncio.create_task(briefing_loop())
         try:
             yield
         finally:
-            if followups:
-                followups.cancel()
-                with suppress(asyncio.CancelledError):
-                    await followups
+            for task in (followups, briefings):
+                if task:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
             engine.dispose()
 
     application = FastAPI(

@@ -71,6 +71,7 @@
     teamsFollowups: { enabled: false, connected: false, deliveryEnabled: null, loaded: false, loading: false,
       items: [], pending: new Set(), linking: false, error: "", message: "", botChatUrl: "",
       botChatCommandUrl: "", poll: null, autoFollowKey: "",
+      briefingEnabled: true, briefingSaving: false,
       linkCode: "", linkExpiresAt: "", pendingNoticeKey: "", trigger: null, sequence: 0 },
     ppsDiscovery: {
       query: "",
@@ -298,6 +299,7 @@
   function cacheElements() {
     const ids = [
       "teamsFollowsButton", "teamsFollowsSummary", "teamsFollowsDialog", "teamsFollowsClose", "teamsFollowsRefresh", "teamsFollowsStatus", "teamsFollowsError", "teamsFollowsDeliveryNotice", "teamsFollowsList", "teamsFollowsEmpty", "teamsLinkButton", "teamsBotChatLink", "teamsLinkCodePanel", "teamsLinkCommand", "teamsLinkExpiry", "teamsLinkCopy", "teamsPendingFollow", "teamsPendingFollowLabel", "teamsPendingFollowButton", "detailFollowButton",
+      "teamsBriefingToggle", "teamsBriefingEnabled",
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navResultEntryCount", "navArchiveCount",
       "navDecisionCount", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiReviewTrend", "kpiGoTrend",
@@ -469,21 +471,22 @@
     }
   }
 
+  // Pairing is a signed-in action, so the button follows the session rather
+  // than a channel address the app no longer posts to.
   function configurePaiBotTeamsAccess() {
-    const teamsUrl = safePaiBotTeamsUrl(PAI_BOT_TEAMS_URL);
-    const isReady = Boolean(teamsUrl);
+    const isReady = Boolean(state.accountSession.authenticated);
     els.paiBotTeamsButton.disabled = !isReady;
     els.paiBotTeamsButton.setAttribute("aria-disabled", String(!isReady));
     els.paiBotTeamsButton.dataset.state = isReady ? "ready" : "pending";
     els.paiBotTeamsAccessNote.textContent = isReady
-      ? "Teams 채널 열기"
-      : "채널 연결 준비 중";
+      ? "매일 아침 브리핑과 관심 공고를 내 Teams 개인 채팅으로"
+      : "로그인하면 내 Teams로 연결할 수 있습니다";
   }
 
+  // The daily briefing now arrives in the personal chat, so this opens the
+  // pairing the briefing needs rather than a channel nobody is posting to.
   function openPaiBotTeams() {
-    const teamsUrl = safePaiBotTeamsUrl(PAI_BOT_TEAMS_URL);
-    if (!teamsUrl) return;
-    window.open(teamsUrl, "_blank", "noopener,noreferrer");
+    void openTeamsFollowups("", els.paiBotTeamsButton);
   }
 
   function safePaiBotTeamsUrl(value) {
@@ -9327,6 +9330,8 @@
     els.teamsFollowsRefresh.addEventListener("click", () => void loadTeamsFollowups());
     els.teamsLinkButton.addEventListener("click", () => void createTeamsLinkCode());
     els.teamsLinkCopy.addEventListener("click", () => void copyTeamsLinkCommand());
+    els.teamsBriefingEnabled.addEventListener("change", (event) =>
+      void setBriefingEnabled(Boolean(event.target.checked)));
     els.teamsPendingFollowButton.addEventListener("click", () => {
       const key = state.teamsFollowups.pendingNoticeKey;
       if (key) void toggleTeamsFollow(key, els.teamsPendingFollowButton);
@@ -9410,6 +9415,7 @@
     state.teamsFollowups = { enabled: false, connected: false, deliveryEnabled: null, loaded: false, loading: false,
       items: [], pending: new Set(), linking: false, error: "", message: "", botChatUrl: "",
       botChatCommandUrl: "", poll: null, autoFollowKey: "",
+      briefingEnabled: true, briefingSaving: false,
       linkCode: "", linkExpiresAt: "", pendingNoticeKey: "", trigger: null,
       sequence: state.teamsFollowups.sequence + 1 };
     if (els.teamsFollowsDialog?.open) els.teamsFollowsDialog.close();
@@ -9425,9 +9431,10 @@
     renderTeamsFollowups();
     if (!els.teamsFollowsDialog.open) els.teamsFollowsDialog.showModal();
     await loadTeamsFollowups();
-    // Arriving here from a notice means the pairing is the only thing in the
-    // way, so start it rather than leaving a panel of buttons to work out.
-    if (noticeKey && followups.enabled && followups.loaded && !followups.connected
+    // Both entries — a notice's star and the sidebar's subscribe button — reach
+    // the same wall, so start the pairing instead of leaving a panel of buttons
+    // to work out. Only a notice carries a registration to finish afterwards.
+    if (followups.enabled && followups.loaded && !followups.connected
       && !followups.linkCode && state.teamsFollowups === followups) {
       followups.autoFollowKey = noticeKey;
       await createTeamsLinkCode();
@@ -9526,6 +9533,7 @@
       }
       followups.enabled = connection.enabled;
       followups.connected = connection.connected;
+      followups.briefingEnabled = connection.briefing_enabled !== false;
       followups.botChatUrl = safePaiBotTeamsUrl(connection.bot_chat_url);
       // Inside Teams the host already knows who is looking. Ask it once, and
       // the pairing code is never needed. Outside Teams, or when the app is
@@ -9716,6 +9724,43 @@
     const pendingNotice = state.notices.find((item) => item.noticeKey === pendingKey);
     els.teamsPendingFollowLabel.textContent = pendingKey ? `등록할 공고: ${pendingNotice?.title || pendingKey}` : "";
     els.teamsPendingFollowButton.disabled = !followups.connected || !followups.loaded || followups.loading || followups.pending.has(pendingKey);
+    els.teamsBriefingToggle.hidden = !followups.connected;
+    els.teamsBriefingEnabled.checked = followups.briefingEnabled !== false;
+    els.teamsBriefingEnabled.disabled = followups.loading || followups.briefingSaving;
+  }
+
+  async function setBriefingEnabled(wanted) {
+    const followups = state.teamsFollowups;
+    const headers = accountMutationHeaders();
+    if (!headers || followups.briefingSaving || !followups.connected) return;
+    const epoch = state.accountEpoch;
+    const previous = followups.briefingEnabled;
+    followups.briefingSaving = true;
+    followups.error = "";
+    followups.briefingEnabled = wanted;
+    renderTeamsFollowups();
+    try {
+      const payload = await apiRequest("/teams/briefing", {
+        method: "POST", headers, body: JSON.stringify({ enabled: wanted }),
+      });
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      if (typeof payload?.briefing_enabled !== "boolean") {
+        throw new Error("브리핑 설정을 확인할 수 없습니다.");
+      }
+      followups.briefingEnabled = payload.briefing_enabled;
+      followups.message = payload.briefing_enabled
+        ? "매일 아침 브리핑을 받습니다." : "브리핑을 받지 않습니다. 관심 공고 알림은 계속됩니다.";
+    } catch (error) {
+      if (epoch !== state.accountEpoch || state.teamsFollowups !== followups) return;
+      // Put the switch back where it was so it never shows an unsaved choice.
+      followups.briefingEnabled = previous;
+      followups.error = humanizeError(error);
+    } finally {
+      if (epoch === state.accountEpoch && state.teamsFollowups === followups) {
+        followups.briefingSaving = false;
+        renderTeamsFollowups();
+      }
+    }
   }
 
   function createDemoData() {
