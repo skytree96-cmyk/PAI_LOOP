@@ -181,3 +181,32 @@ def test_new_review_attempt_cannot_fall_back_to_accepted_requirement(client):
         text = json.dumps(teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW, base_url="https://example.test"), ensure_ascii=False)
         assert condition not in text
         assert "검증된 자격조건 요약이 아직 없습니다" in text
+
+
+def test_the_card_reads_the_clock_it_was_given_not_the_wall_clock(client):
+    """같은 공고를 같은 시각으로 렌더하면 언제 렌더하든 같은 카드가 나와야 한다.
+
+    마감 경과 판정이 벽시계를 보면, 고정 시각으로 만든 카드가 렌더 시점에 따라
+    '현재 검토 제외' 로 뒤집히고 점수·자격 블록이 통째로 빠진다. 같은 공고가 보는
+    때마다 다르게 보이는 셈이다.
+    """
+
+    with client.app.state.session_factory() as session:
+        notice = _notice(session)
+        # 마감 전 시각으로 렌더한다. 실제 오늘이 마감 뒤여도 결과는 같아야 한다.
+        before = json.dumps(
+            teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW, base_url="https://example.test"),
+            ensure_ascii=False,
+        )
+        assert "현재 검토 제외" not in before
+        assert "미판정" in before
+
+        # 마감 뒤 시각을 주면 그때는 검토 대상에서 빠진다.
+        after = json.dumps(
+            teams_cards.build_notice_card(
+                session, notice, "REGISTERED", now=notice.deadline.replace(tzinfo=timezone.utc) + timedelta(days=1),
+                base_url="https://example.test",
+            ),
+            ensure_ascii=False,
+        )
+        assert "현재 검토 제외" in after
