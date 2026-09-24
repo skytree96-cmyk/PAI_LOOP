@@ -78,7 +78,7 @@ def identity_client(monkeypatch):
         yield client
 
 
-def _participation(client, identity, *, key="SYN-submission", status="SUBMITTED"):
+def _participation(client, identity, *, key="SYN-submission", status="SUBMITTED", observed_at=None):
     with client.app.state.session_factory() as session:
         notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
         evidence = {"_workflow": {"record_status": "VALIDATED", "human_reviewed": True}}
@@ -87,7 +87,7 @@ def _participation(client, identity, *, key="SYN-submission", status="SUBMITTED"
         item = BidOutcome(
             notice_id=notice.id, outcome_key=key, status=status, source="MANUAL_UI",
             submitted_bid_amount=95_000, source_reference="SYN 제출 확인",
-            evidence_json=evidence, observed_at=datetime.now(timezone.utc),
+            evidence_json=evidence, observed_at=observed_at or datetime.now(timezone.utc),
         )
         session.add(item)
         session.commit()
@@ -254,14 +254,51 @@ def test_manual_opening_identity_edits_keep_previous_identity_evidence(identity_
 
 @pytest.mark.parametrize("same_opening", [False, True])
 def test_new_submission_or_another_opening_cancellation_does_not_hide_participation(identity_client, same_opening):
+    # 같은 회차라면 "취소한 뒤 다시 제출했다" 가 이 시험의 사실이다. 두 기록을 잇달아
+    # 넣으면서 시각을 벽시계에 맡기면 둘이 같은 틱에 들어와 어느 쪽이 나중인지
+    # 기록에 남지 않는다. 시험이 기대는 순서를 시험이 직접 적는다.
+    earlier = datetime.now(timezone.utc) - timedelta(hours=1)
     if same_opening:
-        _participation(identity_client, _identity(), key="SYN-previous-cancellation", status="CANCELLED")
+        _participation(identity_client, _identity(), key="SYN-previous-cancellation",
+                       status="CANCELLED", observed_at=earlier)
         _participation(identity_client, _identity(), key="SYN-new-submission")
     else:
-        _participation(identity_client, _identity())
+        _participation(identity_client, _identity(), observed_at=earlier)
         _participation(identity_client, _identity(rebid_no="3"), key="SYN-other-cancellation", status="CANCELLED")
     assert _refresh(identity_client)["items"][0]["outcome_status"] == "LOST"
     assert len(_automatic_rows(identity_client)) == 1
+
+
+@pytest.mark.parametrize("order", [("CANCELLED", "SUBMITTED"), ("SUBMITTED", "CANCELLED")])
+def test_indistinguishable_human_records_go_to_review_instead_of_a_coin_flip(identity_client, order):
+    """어느 기록이 최신인지 기록으로 말할 수 없으면 사람에게 넘긴다.
+
+    같은 회차의 취소와 제출이 같은 시각에 기록되면, 남은 것은 행 id 뿐인데 그건
+    uuid4 다. 그 순서로 참여 여부를 정하면 같은 데이터가 실행할 때마다 다른 답을
+    낸다. 삽입 순서를 뒤집어도 답이 같아야 한다.
+    """
+
+    same_instant = datetime(2025, 2, 1, 3, 4, 5, tzinfo=timezone.utc)
+    for index, status in enumerate(order):
+        _participation(identity_client, _identity(), key=f"SYN-tied-{index}",
+                       status=status, observed_at=same_instant)
+    with identity_client.app.state.session_factory() as session:
+        for row in session.scalars(select(BidOutcome).where(BidOutcome.source == "MANUAL_UI")):
+            row.updated_at = same_instant
+            row.created_at = same_instant
+        session.commit()
+    with identity_client.app.state.session_factory() as session:
+        from pai_loop.outcome_feedback import _latest_human_opening_record
+
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        # 행 id 로 순서를 가르면 여기서 둘 중 하나가 뽑힌다. 뽑지 않아야 한다.
+        assert _latest_human_opening_record(
+            session, notice, opening_identity=_identity()) == (None, True)
+    result = _refresh(identity_client)["items"][0]
+    assert result["result"] == "REVIEW"
+    assert result["reason_code"] == "PARTICIPATION_OPENING_NOT_CONFIRMED"
+    assert result["outcome_status"] is None
+    assert _automatic_rows(identity_client) == []
 
 
 def test_unreviewed_provider_observation_does_not_supersede_human_participation(identity_client):
