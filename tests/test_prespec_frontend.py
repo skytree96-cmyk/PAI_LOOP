@@ -21,7 +21,7 @@ def test_pre_specification_is_the_third_notice_discovery_tab_with_two_search_tra
     assert 'data-notice-search-mode="stored" aria-pressed="true" aria-controls="noticePanel"' in html
     assert 'data-notice-search-mode="pps" aria-pressed="false" aria-controls="ppsDiscoverySection"' in html
     assert 'data-notice-search-mode="prespec" aria-pressed="false" aria-controls="prespecSection"' in html
-    assert "PAI 저장 공고" in html
+    assert "저장된 공고" in html
     assert 'id="prespecSection"' in html
     assert 'id="prespecStoredForm"' in html
     assert 'id="prespecStoredStatusFilter"' in html
@@ -122,7 +122,7 @@ def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'href="./styles.css?v=20260924-uiux-v1"' in html
-    assert 'href="./top-navigation.css?v=20260913-dashboard-charts-v2"' in html
+    assert 'href="./top-navigation.css?v=20260924-uiux-v1"' in html
     assert 'src="./app.js?v=20260924-uiux-v1"' in html
 
 
