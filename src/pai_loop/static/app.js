@@ -5068,6 +5068,7 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
+      if (state.noticeScopeChoice === "OPEN" && noticeLifecycleStatus(notice) !== "OPEN") return false;
       if (state.pendingNoticeDecisionFilter) return false;
       if (["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)
         && !matchesDashboardQueue(notice, state.currentView)) return false;

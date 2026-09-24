@@ -59,6 +59,8 @@ assert.equal(new URL(u.buildNoticeRequestPath(),'https://syn.invalid').searchPar
 const link=u.noticeFilterHref();assert.equal(new URL(link).searchParams.get('scope'),'OPEN');
 resetFields();u.state.noticeScopeChoice=null;location(link);u.restoreNoticeFiltersFromRoute();
 assert.equal(u.state.noticeScopeChoice,'OPEN');assert.equal(u.els.searchInput.value,'SYN education');
+u.state.notices=[notice('SYN education OPEN'),{...notice('SYN education ENDED'),deadline:'2020-01-01T00:00:00Z'}];
+u.applyFilters();assert.equal(u.state.filteredNotices.length,1);
 u.state.noticeScopeChoice='ALL';
 assert.equal(new URL(u.buildNoticeRequestPath(),'https://syn.invalid').searchParams.has('status'),false);
 ''')
