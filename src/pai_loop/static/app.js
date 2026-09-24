@@ -3332,7 +3332,7 @@
     els.resultLearningWinningRateBasisReference.value = winningCalculation?.basis_reference || "";
     els.resultLearningOrigin.textContent = !outcome ? "확인한 결과를 우리 부서 기록으로 저장합니다." : isManualRecord
       ? "우리 부서가 확인한 기록입니다. 수정 내용과 계산 근거가 이력으로 남습니다."
-      : "나라장터에서 자동으로 가져온 결과입니다. 확인 후 저장하면 원본과 연결된 우리 부서 검토 기록이 만들어집니다.";
+      : `출처: ${resultSourceLabel(outcome.source)}. 확인 후 저장하면 원본과 연결된 우리 부서 검토 기록이 만들어집니다.`;
     updateResultLearningRate();
     els.resultLearningTechnicalScore.value = outcome?.technicalScore ?? "";
     els.resultLearningPriceScore.value = outcome?.priceScore ?? "";
