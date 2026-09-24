@@ -3245,6 +3245,89 @@ def _logical_candidate_conflict_reasons(
     return reasons
 
 
+def _restated_candidate_identity(candidate: Any) -> str | None:
+    """같은 배점표 한 줄을 두 번 읽은 것인지 가리는 열쇠.
+
+    한 공고가 같은 제안요청서를 hwp 와 pdf 로 함께 첨부하거나, 같은 파일이 첨부
+    두 개로 등록되면 같은 평가항목이 두 번 추출된다. 문서 sha256 이 다르면 결속
+    해시도 달라서 기존 중복 탐지에 걸리지 않고, 배점이 그대로 합산된다. 원문
+    배점표의 "경영상태 5점" 이 10점이 되는 것이다.
+
+    라벨과 구역명은 형식에 따라 달라지므로 열쇠에 넣지 않는다. 원문에서 뽑은
+    인용 문구와 지표·배점·산식이 모두 같을 때만 같은 줄로 본다. 인용이 비어 있으면
+    무엇을 근거로 같다고 할 수 없으므로 접지 않는다.
+    """
+
+    quote = " ".join(str(getattr(candidate.evidence, "quote", "") or "").split())
+    if not quote:
+        return None
+    payload = candidate.model_dump(mode="json")
+    for field in ("source_attachment_id", "table_id", "criterion_id", "label"):
+        payload.pop(field, None)
+    return _canonical_digest(
+        {
+            "restated_criterion": "1.0.0",
+            "quote": quote,
+            "rule": _without_source_anchors(payload),
+        }
+    )
+
+
+def _without_source_anchors(value: Any) -> Any:
+    """어디서 읽었는지를 지우고 무엇을 읽었는지만 남긴다.
+
+    증거 앵커는 구간·표뿐 아니라 사례마다 따로 달려 있고, 저마다 첨부 id 와 쪽번호를
+    품는다. 같은 줄을 hwp 와 pdf 에서 읽으면 그 값들이 전부 달라진다.
+    """
+
+    if isinstance(value, dict):
+        return {
+            key: _without_source_anchors(item)
+            for key, item in value.items()
+            if key != "evidence"
+        }
+    if isinstance(value, list):
+        return [_without_source_anchors(item) for item in value]
+    return value
+
+
+def _fold_restated_candidates(
+    candidates: Sequence[Any],
+) -> tuple[Any, ...]:
+    """같은 줄을 여러 번 읽은 후보를 하나로 접는다. 배점은 합산하지 않는다.
+
+    어느 첨부에서 읽었든 내용이 같으므로 어느 쪽을 남겨도 같은 점수가 나온다.
+    실행마다 같은 것을 남기도록 첨부·표·항목 식별자 순으로 고른다.
+    """
+
+    chosen: dict[str, tuple[tuple[str, str, str], Any]] = {}
+    for candidate in candidates:
+        identity = _restated_candidate_identity(candidate)
+        if identity is None:
+            continue
+        locator = (
+            str(candidate.source_attachment_id or ""),
+            str(candidate.table_id or ""),
+            str(candidate.criterion_id or ""),
+        )
+        current = chosen.get(identity)
+        if current is None or locator < current[0]:
+            chosen[identity] = (locator, candidate)
+
+    folded: list[Any] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        identity = _restated_candidate_identity(candidate)
+        if identity is None:
+            folded.append(candidate)
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        folded.append(chosen[identity][1])
+    return tuple(folded)
+
+
 def _logical_quantitative_program(
     profile: QuantitativeCandidateProfile,
 ) -> _LogicalQuantitativeProgram:
@@ -4195,6 +4278,8 @@ def quantitative_request_from_candidate_profile(
     )
     logical_tables = (row_partial.tables if row_partial is not None else
         tuple(profile.tables) if logical_program is None else logical_program.tables)
+    # 같은 줄을 여러 첨부에서 읽었다면 배점을 두 번 세지 않는다.
+    logical_candidates = _fold_restated_candidates(logical_candidates)
 
     bindings = {
         item.attachment_id: item.document_sha256
