@@ -7920,7 +7920,7 @@ textarea:focus,
 .notice-scope-links { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
 .notice-scope-links > span { color: var(--muted); font-size: var(--fs-xs); }
 .notice-scope-links button[aria-pressed="true"] { color: var(--blue); background: var(--blue-pale); }
-.filters.is-pps-mode ~ .stored-search-only { display: none; }
+.filters.is-pps-mode ~ .stored-search-only, .filters[hidden] ~ .notice-scope-links { display: none; }
 .notice-search-submit { flex: 0 0 auto; }
 .requirement-list { border-top: 0; }
 details.requirement-item { display: block; padding: 0; margin: 10px 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
