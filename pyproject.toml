@@ -54,6 +54,7 @@ exclude = [
 "src/pai_loop/data/pricing_method_profiles_v1.json" = "pai_loop/data/pricing_method_profiles_v1.json"
 "src/pai_loop/data/department_keyword_profiles.json" = "pai_loop/data/department_keyword_profiles.json"
 "src/pai_loop/data/quantitative_notice_profiles.json" = "pai_loop/data/quantitative_notice_profiles.json"
+"src/pai_loop/data/public_agency_registry.json" = "pai_loop/data/public_agency_registry.json"
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers --disable-warnings"
