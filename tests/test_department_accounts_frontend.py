@@ -262,7 +262,7 @@ const raw={notice_key:'SYN-N',title:'SYN notice',estimated_amount:999999,outcome
 u.openResultLearningDialog(u.normalizeResultLearningNotice(raw));
 assert.equal(u.els.resultLearningRateMode.value,'AUTO');
 assert.equal(u.els.resultLearningRateBasisKind.value,'BASE_AMOUNT');
-assert.equal(u.els.resultLearningRateBasisAmount.value,200);
+assert.equal(u.els.resultLearningRateBasisAmount.value,'200');
 assert.equal(u.els.resultLearningSubmittedRate.value,'0.0000');
 u.els.resultLearningSubmittedAmount.value='176.5433';
 const saving=u.saveResultLearning({preventDefault(){}});await tick();

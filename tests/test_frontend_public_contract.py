@@ -98,10 +98,10 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert 'els.priorityKeywordInput.value = ""' in reset_priority_body
     assert "loadApplicationData({ forceApi: true })" in reset_priority_body
     assert 'els.filterForm.addEventListener("reset"' in bind_body
-    assert "저장된 전체 공고 검색" in explanation_body
-    assert "공고를 숨기지 않고 표시 순서에만 반영합니다" in explanation_body
-    assert "검색만으로 AI 비용은 발생하지 않습니다" in explanation_body
-    assert "나라장터에서 아직 수집되지 않은 공고는 포함되지 않습니다" in explanation_body
+    assert "저장된 전체 공고에서 검색 중" in explanation_body
+    assert "추천 순서" in html
+    assert "검색만으로 문서 분석 0회" in html
+    assert "저장" in html
     assert 'id="noticeSearchHelp"' in html
     assert 'id="noticeSearchScope"' in html
     assert "공고번호 검색" in html
@@ -226,9 +226,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'urgent: "/urgent"' in source
     assert '"result-missing": "/result-missing"' in source
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
-    assert 'collected: ["수집 공고", "수집된 전체 공고"]' in view_body
+    assert 'collected: ["공고 찾기", "저장된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "시스템이 GO로 추천한 공고"]' in view_body
-    assert '"in-progress": ["진행 건", "GO로 결정한 입찰마감 전 공고. 마감되면 결과 입력으로 넘어갑니다."]' in view_body
+    assert '"in-progress": ["검토 중인 공고", "GO로 결정한 입찰마감 전 공고. 마감되면 결과 입력으로 넘어갑니다."]' in view_body
     assert 'ended: ["보관함", "마감·종료·취소된 공고와 당시 분석 이력"]' in view_body
     assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260920-filter-links-v1"' in html
-    assert 'href="./top-navigation.css?v=20260913-dashboard-charts-v2"' in html
-    assert 'src="./app.js?v=20260920-filter-links-v1"' in html
+    assert 'href="./styles.css?v=20260924-uiux-v1"' in html
+    assert 'href="./top-navigation.css?v=20260924-uiux-v1"' in html
+    assert 'src="./app.js?v=20260924-uiux-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -266,7 +266,7 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     keyboard_body = _function_body(source, "handleGlobalKeydown", "updateNoticeRoute")
 
     assert "DECIDE WITH EVIDENCE" not in html
-    assert "오늘 처리할 일부터" in html
+    assert "지금 바로 확인하세요!" in html
     assert "전체 공고의 흐름을 한눈에" not in html
     assert "판단 대기" in html
     assert 'aria-label="결과를 입력해야 할 공고 보기"' in html
@@ -298,14 +298,14 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     assert 'class="detail-link-button" type="button" data-open-notice' in actions_body
     assert 'data-result-detail' in actions_body
     assert "전체 상세 보기" in row_body
-    assert "<th scope=\"col\">AI 판단</th>" in html
+    assert "<th scope=\"col\">AI 검토 의견</th>" in html
     assert "<th scope=\"col\">담당자 판단</th>" in html
     assert ">참여</span>" in html
     assert ">보류</span>" in html
     assert ">불참</span>" in html
 
-    assert 'summaryMetric("참가자격"' in detail_body
-    assert 'summaryMetric("AI 판단"' in detail_body
+    assert 'summaryMetric("참가자격 확인 결과"' in detail_body
+    assert 'summaryMetric("AI 검토 의견"' in detail_body
     assert 'summaryMetric("담당자 판단"' in detail_body
     assert "renderRecommendationCondition(notice)" in detail_body
     assert "조건부 GO · 확인할 조건" in condition_body
@@ -353,7 +353,7 @@ def test_external_pps_discovery_and_company_awards_require_explicit_actions() ->
     assert 'data-notice-search-mode="stored"' in html
     assert 'data-notice-search-mode="pps"' in html
     assert 'data-notice-search-mode="prespec"' in html
-    assert "PAI 저장 공고" in html
+    assert "저장된 공고" in html
     assert "나라장터 용역 공고 실시간 조회" in html
     assert "검색·저장: 문서 분석 0회" in html
     assert 'apiRequest("/pps-discovery/search"' in search_body
@@ -814,7 +814,7 @@ def test_notice_sort_groups_pass_review_pending_and_fail_before_secondary_order(
     assert "isActionableEligibilityReview(notice)) return 1" in rank_body
     assert 'eligibility === "FAIL") return 3' in rank_body
     assert "return 2" in rank_body
-    assert '<option value="judgement">판정 우선 · 마감 임박순</option>' in html
+    assert '<option value="judgement">참가자격 결과 · 마감 임박순</option>' in html
     assert "판정 우선 · 부서 적합도순" in html
 
 
@@ -841,7 +841,7 @@ def test_department_recommendation_and_region_routing_are_rendered_separately() 
     assert "regionRouting[0]" in badge_body
     assert '"부서 추천"' in badge_body
     assert '"추가 검토"' in badge_body
-    assert '"지역 라우팅"' in badge_body
+    assert '"관련 지역 부서"' in badge_body
 
 
 def test_private_match_uses_public_text_lines_instead_of_a_dangling_label() -> None:

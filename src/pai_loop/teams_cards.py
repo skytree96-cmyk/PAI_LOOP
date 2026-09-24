@@ -107,7 +107,7 @@ def build_notice_card(session: Session, notice: Notice, event_kind: str, *,
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     authority = _pps_authorities_by_notice_id(session, [notice]).get(notice.id)
-    detail = _detail(notice, public_view=True, provider_authority=authority)
+    detail = _detail(notice, public_view=True, provider_authority=authority, now=now)
     evaluation = detail.latest_evaluation if detail.qualification_status != "NOT_EVALUATED" else None
     current = detail.provider_disposition not in {"CANCELLED", "QUARANTINED"} and detail.status == "OPEN"
     quantitative = _stored_public_quantitative_projection(session, notice) if current else None

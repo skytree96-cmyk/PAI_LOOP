@@ -99,9 +99,9 @@ def test_table_and_card_actions_keep_detail_view_and_label_direct_result_entry()
     assert 'event.target.closest("[data-open-notice]")' in source
     assert ".detail-link-button" in styles
     assert "width: 100vw" in styles
-    assert "styles.css?v=20260920-filter-links-v1" in html
-    assert "top-navigation.css?v=20260913-dashboard-charts-v2" in html
-    assert "app.js?v=20260920-filter-links-v1" in html
+    assert "styles.css?v=20260924-uiux-v1" in html
+    assert "top-navigation.css?v=20260924-uiux-v1" in html
+    assert "app.js?v=20260924-uiux-v1" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:
