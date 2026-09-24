@@ -535,6 +535,7 @@ def _summary(
     public_view: bool = False,
     provider_authority: PpsNoticeAuthority | None = None,
     has_bid_outcome: bool = False,
+    now: datetime | None = None,
 ) -> NoticeSummary:
     source_kind = _source_kind(notice)
     (
@@ -604,7 +605,7 @@ def _summary(
         title=notice.title,
         agency=notice.agency,
         deadline=_comparable_utc(notice.deadline),
-        status=_effective_notice_status(notice),
+        status=_effective_notice_status(notice, now=now),
         provider_disposition=provider_disposition,
         provider_event_kind=provider_event_kind,
         provider_changed_at=provider_changed_at,
@@ -694,9 +695,19 @@ def _source_kind(notice: Notice) -> str:
     return "MANUAL"
 
 
-def _effective_notice_status(notice: Notice) -> str:
+def _effective_notice_status(notice: Notice, *, now: datetime | None = None) -> str:
+    """마감 경과 여부를 호출자가 정한 시각으로 판정한다.
+
+    ``now`` 를 주면 같은 입력이 언제 렌더되든 같은 상태를 낸다. 주지 않으면 지금을
+    본다. 고정 시각으로 만든 카드·보고가 렌더 시점에 따라 뒤집히면, 같은 공고가
+    보는 때마다 다르게 보인다.
+    """
+
     status_value = notice.status.upper()
-    if status_value == "OPEN" and _comparable_utc(notice.deadline) < datetime.now(timezone.utc):
+    as_of = now or datetime.now(timezone.utc)
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+    if status_value == "OPEN" and _comparable_utc(notice.deadline) < as_of:
         return "EXPIRED"
     return status_value
 
@@ -854,6 +865,7 @@ def _detail(
     *,
     public_view: bool = False,
     provider_authority: PpsNoticeAuthority | None = None,
+    now: datetime | None = None,
 ) -> NoticeDetail:
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     return NoticeDetail(
@@ -862,6 +874,7 @@ def _detail(
             public_view=public_view,
             provider_authority=provider_authority,
             has_bid_outcome=bool(notice.bid_outcomes),
+            now=now,
         ).model_dump(),
         id=notice.id,
         published_at=notice.published_at,
