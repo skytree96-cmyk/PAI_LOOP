@@ -237,6 +237,7 @@ class NoticeSummary(ApiModel):
     provider_changed_at: datetime | None = None
     estimated_amount: float | None
     source_kind: Literal["SYNTHETIC", "PPS", "MANUAL"]
+    contract_method: str | None = Field(default=None, max_length=80)
     ingestion_state: Literal["COLLECTED", "VERSIONED", "EVALUATED"]
     analysis_updated_at: datetime | None = None
     analysis_state: Literal["ANALYZED", "REVIEW", "PENDING"]

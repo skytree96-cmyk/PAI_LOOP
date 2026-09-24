@@ -17,8 +17,8 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260920-filter-links-v1" />
-    <link rel="stylesheet" href="./top-navigation.css?v=20260913-dashboard-charts-v2" />
+    <link rel="stylesheet" href="./styles.css?v=20260924-uiux-v1" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260924-uiux-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -46,10 +46,10 @@
             </span>
             <span>오늘 할 일</span>
           </button>
-          <div class="nav-group" data-nav-group="search" aria-label="발견">
+          <div class="nav-group" data-nav-group="search" aria-label="공고 찾기">
             <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupSearchItems">
               <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="m16 8-2.5 5.5L8 16l2.5-5.5L16 8Z" /></svg></span>
-              <span>발견</span>
+              <span>공고 찾기</span>
               <svg class="nav-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
             <div class="nav-group-items" id="navGroupSearchItems" hidden>
@@ -62,10 +62,10 @@
               </button>
             </div>
           </div>
-          <div class="nav-group" data-nav-group="decision" aria-label="판단">
+          <div class="nav-group" data-nav-group="decision" aria-label="입찰 검토">
             <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupDecisionItems">
               <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 3h6v3H9zM9 12l2 2 4-4M9 17h6" /></svg></span>
-              <span>판단</span>
+              <span>입찰 검토</span>
               <svg class="nav-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
             <div class="nav-group-items" id="navGroupDecisionItems" hidden>
@@ -99,10 +99,10 @@
               </button>
             </div>
           </div>
-          <div class="nav-group" data-nav-group="learning" aria-label="결과">
+          <div class="nav-group" data-nav-group="learning" aria-label="입찰 결과">
             <button class="nav-group-toggle" type="button" aria-expanded="false" aria-controls="navGroupLearningItems">
               <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4v16h16M8 16v-4M12 16V8M16 16v-6" /></svg></span>
-              <span>결과</span>
+              <span>입찰 결과</span>
               <svg class="nav-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
             </button>
             <div class="nav-group-items" id="navGroupLearningItems" hidden>
@@ -131,7 +131,7 @@
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M3 20h18" /><path d="m4 7 5-4 6 5 5-5" /></svg>
             </span>
-            <span>회사 수행실적</span>
+            <span>회사 실적</span>
           </button>
         </nav>
 
@@ -165,14 +165,21 @@
           <section class="hero hero--work" id="opportunityHero" aria-labelledby="heroTitle">
             <div>
               <span class="eyebrow"><span aria-hidden="true">●</span> 공고 대시보드</span>
-              <h2 id="heroTitle">오늘 처리할 일부터.</h2>
-              <p>종료·취소를 제외한 활성 공고 기준입니다. 판단 대기부터 결과 입력까지 순서대로 확인하세요.</p>
+              <h2 id="heroTitle">지금 바로 확인하세요!</h2>
+              <p>판단이 필요한 공고부터 결과 입력까지 확인하세요.</p>
             </div>
-            <button class="dashboard-total" type="button" data-dashboard-total-link aria-label="활성 공고 보기">
-              <span>활성 공고</span>
-              <span class="dashboard-total__value"><strong id="dashboardTotalNotices">—</strong><span>건</span></span>
-              <small id="dashboardTotalMeta">종료·취소 제외 · 업무 카드의 공통 분모</small>
+            <div class="dashboard-totals">
+            <button class="dashboard-total" type="button" data-dashboard-total-link="collected" aria-label="저장된 전체 공고 보기">
+              <span>저장된 전체 공고</span>
+              <span class="dashboard-total__value"><strong id="dashboardStoredNotices">—</strong><span>건</span></span>
+              <small>종료·취소 포함</small>
             </button>
+            <button class="dashboard-total" type="button" data-dashboard-total-link="new" aria-label="진행 중 공고 보기">
+              <span>진행 중 공고</span>
+              <span class="dashboard-total__value"><strong id="dashboardTotalNotices">—</strong><span>건</span></span>
+              <small id="dashboardTotalMeta">마감 전 · 종료·취소 제외</small>
+            </button>
+            </div>
           </section>
 
           <section class="cancelled-go-banner" id="cancelledGoBanner" role="status" aria-live="polite" hidden>
@@ -187,7 +194,7 @@
             <button class="button button--ghost" type="button" id="cancelledGoBannerDismiss">확인</button>
           </section>
 
-          <section class="kpi-grid kpi-grid--pipeline" id="opportunityKpis" aria-label="활성 공고 기준 업무 현황">
+          <section class="kpi-grid kpi-grid--pipeline" id="opportunityKpis" aria-label="공고별 처리할 업무 현황">
             <div class="dashboard-summary" id="dashboardSummary" hidden>
               <div role="status" aria-live="polite">
                 <strong id="dashboardSummaryTitle">전체 공고 수를 집계하고 있습니다.</strong>
@@ -198,47 +205,47 @@
             </div>
             <article class="kpi-card kpi-card--action kpi-card--pipeline kpi-card--accent">
               <button class="kpi-card__action" type="button" data-kpi-view="pending-decision" aria-label="담당자 판단이 필요한 공고 보기" aria-pressed="false"><span class="sr-only">담당자 판단이 필요한 공고 보기</span></button>
-              <div class="kpi-card__head"><span>① 판단 대기</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 4h6v3H9z" /><path d="M15 5h3v15H6V5h3" /><path d="M9 13l2 2 4-4" /></svg></span></div>
+              <div class="kpi-card__head"><span>① 판단이 필요한 공고</span><span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 4h6v3H9z" /><path d="M15 5h3v15H6V5h3" /><path d="M9 13l2 2 4-4" /></svg></span></div>
               <div class="kpi-visual kpi-visual--plain">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiReview">—</strong><span>활성 공고 대비</span></div>
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiReview">—</strong><span>담당자 판단 대기</span></div>
               </div>
               <p><span class="trend trend--amber" id="kpiReviewTrend">판단 필요</span> 부서 키워드 매칭 + 자격 PASS·REVIEW 중 담당자 판단 미입력</p>
             </article>
             <article class="kpi-card kpi-card--action kpi-card--pipeline">
               <button class="kpi-card__action" type="button" data-kpi-view="in-progress" aria-label="진행 중인 공고 보기" aria-pressed="false"><span class="sr-only">진행 중인 공고 보기</span></button>
-              <div class="kpi-card__head"><span>② 진행 건</span><span class="kpi-icon kpi-icon--up" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h16" /><path d="M14 4l6 6-9 9H5v-6z" /></svg></span></div>
+              <div class="kpi-card__head"><span>② 검토 중인 공고</span><span class="kpi-icon kpi-icon--up" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h16" /><path d="M14 4l6 6-9 9H5v-6z" /></svg></span></div>
               <div class="kpi-visual kpi-visual--plain">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiGo">—</strong><span>활성 공고 대비</span></div>
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiGo">—</strong><span>참여 결정 · 마감 전</span></div>
               </div>
               <p><span class="trend trend--up" id="kpiGoTrend">제안 작성</span> GO·조건부 GO로 결정하고 결과를 기록하지 않은 공고</p>
             </article>
             <article class="kpi-card kpi-card--action kpi-card--pipeline">
               <button class="kpi-card__action" type="button" data-kpi-view="urgent-in-progress" aria-label="진행 건 중 마감이 임박한 공고 보기" aria-pressed="false"><span class="sr-only">진행 건 중 마감이 임박한 공고 보기</span></button>
-              <div class="kpi-card__head"><span>③ 마감 임박 (5일)</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
+              <div class="kpi-card__head"><span>③ 마감 임박 공고</span><span class="kpi-icon kpi-icon--red" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span></div>
               <div class="kpi-visual kpi-visual--plain">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiUrgent">—</strong><span>활성 공고 대비</span></div>
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiUrgent">—</strong><span>검토 중 · 5일 이내 마감</span></div>
               </div>
               <p>진행 건 중 5일 이내 입찰마감 · 한국 날짜 기준</p>
             </article>
             <article class="kpi-card kpi-card--action kpi-card--pipeline">
               <button class="kpi-card__action" type="button" data-kpi-view="result-missing-decided" aria-label="결과를 입력해야 할 공고 보기" aria-pressed="false"><span class="sr-only">결과를 입력해야 할 공고 보기</span></button>
-              <div class="kpi-card__head"><span>④ 결과 입력</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 14v5h16v-5" /><path d="M12 4v10" /><path d="M8 10l4 4 4-4" /></svg></span></div>
+              <div class="kpi-card__head"><span>④ 결과 입력이 필요한 공고</span><span class="kpi-icon kpi-icon--slate" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 14v5h16v-5" /><path d="M12 4v10" /><path d="M8 10l4 4 4-4" /></svg></span></div>
               <div class="kpi-visual kpi-visual--plain">
-                <div class="kpi-stat"><strong class="kpi-value" id="kpiResultMissing">—</strong><span>활성 공고 대비</span></div>
+                <div class="kpi-stat"><strong class="kpi-value" id="kpiResultMissing">—</strong><span>참여 결정 · 개찰 후</span></div>
               </div>
               <p>GO로 결정하고 개찰이 지난 뒤 결과 미기록</p>
             </article>
 
             <section class="department-coverage" id="departmentCoverage" aria-labelledby="departmentCoverageTitle">
               <div class="department-coverage__head">
-                <h3 id="departmentCoverageTitle">부서별 수집 · 선택 현황</h3>
-                <p id="departmentCoverageStatus">집계 조회 대기</p>
+                <h3 id="departmentCoverageTitle">부서별 공고 검토 현황</h3>
+                <p id="departmentCoverageStatus">현황을 불러오는 중</p>
                 <button class="button button--secondary" type="button" id="departmentCoverageRetry" hidden>다시 조회</button>
               </div>
               <p class="coverage-legend">
                 <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--selected" aria-hidden="true"></span>선택</span>
                 <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--recommended" aria-hidden="true"></span>추천 · 미선택</span>
-                <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--evaluated" aria-hidden="true"></span>평가 · 미추천</span>
+                <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--evaluated" aria-hidden="true"></span>평가 기록 · 미추천</span>
                 <span class="coverage-legend__item"><span class="coverage-legend__dot coverage-legend__dot--collected" aria-hidden="true"></span>수집만</span>
                 <span class="coverage-legend__note">막대 전체 길이는 그 부서 키워드가 가져온 공고 수입니다. 행을 선택하면 키워드별 건수가 펼쳐집니다.</span>
               </p>
@@ -294,7 +301,7 @@
           <section class="notice-section" id="noticeSection" aria-labelledby="noticeHeading">
             <div class="section-heading">
               <div>
-                <p class="section-kicker">공고 검토 목록</p>
+                <p class="section-kicker">확인할 공고 목록</p>
                 <h2 id="noticeHeading">검토할 공고</h2>
                 <p id="noticeSummary" aria-live="polite">공고를 불러오는 중입니다.</p>
               </div>
@@ -315,51 +322,51 @@
 
             <div class="priority-search" id="prioritySearch" role="group" aria-label="부서별 공고 우선순위 설정">
               <div class="priority-search__intro">
-                <strong>부서·관심 키워드 우선순위</strong>
+                <strong>부서·우선 확인 키워드</strong>
                 <span id="rankingProfileVersion">목록을 제외하지 않고 판정 상태 안에서 관련 공고를 위로 정렬합니다</span>
               </div>
               <label class="priority-search__select">
-                <span class="sr-only">관심 부서 · 정렬 기준</span>
-                <select id="departmentSelect" aria-label="관심 부서 · 정렬 기준">
+                <span class="sr-only">추천 기준 부서 · 정렬 기준</span>
+                <select id="departmentSelect" aria-label="추천 기준 부서 · 정렬 기준">
                   <option value="organization">전사 공통 (교육·컨설팅)</option>
                 </select>
               </label>
               <label class="priority-search__keywords">
-                <span class="sr-only">관심 키워드 우선순위</span>
+                <span class="sr-only">우선 확인 키워드</span>
                 <input id="priorityKeywordInput" type="search" maxlength="500" placeholder="관심 키워드 (쉼표 구분 · 결과 제외 없음)" autocomplete="off" aria-describedby="prioritySearchHelp" />
               </label>
-              <button class="button button--primary priority-search__apply" type="button" id="priorityApplyButton">우선순위 적용</button>
+              <button class="button button--primary priority-search__apply" type="button" id="priorityApplyButton">추천 순서에 반영</button>
               <p class="priority-search__help" id="prioritySearchHelp">관심 키워드와 가까운 공고에 정렬 가중치를 적용합니다. 모든 공고는 목록에 그대로 남습니다.</p>
             </div>
 
             <div class="notice-search-toolbar">
+              <button class="notice-search-help-button" type="button" id="noticeSearchHelpButton" aria-label="세 가지 탐색 방식의 차이 안내" aria-haspopup="dialog" aria-controls="noticeSearchHelpDialog" aria-expanded="false">?</button>
               <div class="notice-search-modes" role="group" aria-label="공고 탐색 방식 선택">
                 <button class="notice-search-mode is-active" type="button" data-notice-search-mode="stored" aria-pressed="true" aria-controls="noticePanel">
                   <span class="notice-search-mode__dot notice-search-mode__dot--stored" aria-hidden="true"></span>
-                  PAI 저장 공고
+                  저장된 공고
                 </button>
                 <button class="notice-search-mode" type="button" data-notice-search-mode="pps" aria-pressed="false" aria-controls="ppsDiscoverySection">
                   <span class="notice-search-mode__dot notice-search-mode__dot--pps" aria-hidden="true"></span>
-                  나라장터 용역 공고
+                  나라장터에서 찾기
                 </button>
                 <button class="notice-search-mode" type="button" data-notice-search-mode="prespec" aria-pressed="false" aria-controls="prespecSection">
                   <span class="notice-search-mode__dot notice-search-mode__dot--prespec" aria-hidden="true"></span>
-                  사전규격
+                  사전규격 찾기
                 </button>
               </div>
-              <button class="notice-search-help-button" type="button" id="noticeSearchHelpButton" aria-label="세 가지 탐색 방식의 차이 안내" aria-haspopup="dialog" aria-controls="noticeSearchHelpDialog" aria-expanded="false">?</button>
             </div>
 
-            <form class="filters" id="filterForm" role="search" aria-label="PAI 저장 공고 검색">
+            <form class="filters" id="filterForm" role="search" aria-label="저장된 공고 검색">
               <label class="search-field">
                 <span class="sr-only" id="noticeSearchInputLabel">공고명, 수요기관 또는 공고번호 검색</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
                 <input id="searchInput" type="search" maxlength="200" placeholder="공고명 · 수요기관 · 공고번호 검색" autocomplete="off" aria-describedby="noticeSearchHelp noticeSearchScope" />
                 <span class="sr-only" id="noticeSearchHelp">검색어를 입력하면 PAI에 저장된 전체 공고에서 찾습니다.</span>
-                <kbd aria-hidden="true">/</kbd>
               </label>
+              <button class="button button--primary notice-search-submit" type="submit">검색</button>
               <label class="select-field stored-search-only">
-                <span class="sr-only">자격 판정 필터</span>
+                <span class="sr-only">참가자격 확인 결과</span>
                 <select id="eligibilityFilter">
                   <option value="all">자격 전체</option>
                   <option value="PASS">충족</option>
@@ -370,7 +377,7 @@
                 </select>
               </label>
               <label class="select-field stored-search-only">
-                <span class="sr-only">추천 필터</span>
+                <span class="sr-only">AI 검토 의견</span>
                 <select id="recommendationFilter">
                   <option value="all">추천 전체</option>
                   <option value="GO">GO</option>
@@ -380,8 +387,8 @@
                 </select>
               </label>
               <label class="select-field stored-search-only">
-                <span class="sr-only">담당자 판단 필터</span>
-                <select id="operatorDecisionFilter" aria-label="담당자 판단 필터" aria-describedby="operatorDecisionFilterHelp">
+                <span class="sr-only">최종 판단</span>
+                <select id="operatorDecisionFilter" aria-label="최종 판단" aria-describedby="operatorDecisionFilterHelp">
                   <option value="all">담당자 판단 전체</option>
                   <option value="GO">담당자 · 참여</option>
                   <option value="CONDITIONAL_GO">담당자 · 조건부 참여</option>
@@ -393,15 +400,20 @@
               <label class="select-field select-field--sort stored-search-only">
                 <span class="sr-only">정렬 방식</span>
                 <select id="sortSelect">
-                  <option value="judgement">판정 우선 · 마감 임박순</option>
+                  <option value="judgement">참가자격 결과 · 마감 임박순</option>
                   <option value="department">판정 우선 · 부서 적합도순</option>
                   <option value="readiness">판정 우선 · 준비도 높은순</option>
                   <option value="risk">판정 우선 · 리스크 낮은순</option>
                   <option value="newest">판정 우선 · 최근 수집순</option>
                 </select>
               </label>
-              <button class="button button--ghost filter-reset stored-search-only" type="reset" id="resetFiltersButton">필터 지우기</button>
+              <button class="button button--ghost filter-reset stored-search-only" type="reset" id="resetFiltersButton">선택한 조건 초기화</button>
             </form>
+            <div class="notice-scope-links stored-search-only" role="group" aria-label="저장 공고 조회 범위">
+              <button class="button button--ghost" type="button" data-notice-scope="new" aria-pressed="true">진행 중</button>
+              <button class="button button--ghost" type="button" data-notice-scope="collected" aria-pressed="false">종료·취소 포함 전체</button>
+              <span>범위를 선택하면 검색 조건을 초기화합니다.</span>
+            </div>
             <p class="operator-decision-filter-help stored-search-only" id="operatorDecisionFilterHelp">담당자 판단 조회 상태를 확인하고 있습니다.</p>
             <div class="notice-filter-tools" id="noticeFilterTools" hidden>
               <div class="notice-filter-chips" id="noticeFilterChips" role="group" aria-label="적용된 조건 · 버튼을 누르면 조건 해제"></div>
@@ -414,7 +426,7 @@
             <aside class="pps-search-suggestion" id="ppsSearchSuggestion" hidden>
               <div>
                 <strong>PAI에 저장된 결과가 없습니다.</strong>
-                <span>같은 검색어로 나라장터 용역 공고를 별도 조회할 수 있습니다.</span>
+                <span>같은 검색어로 나라장터 공고를 별도 조회할 수 있습니다.</span>
               </div>
               <button class="button button--pps" type="button" id="ppsSearchSuggestionButton">나라장터에서 찾아보기</button>
             </aside>
@@ -439,7 +451,7 @@
                 </label>
                 <button class="button button--pps" type="submit" id="ppsDiscoverySearchButton">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m20 20-4.8-4.8" /></svg>
-                  나라장터 용역 공고 조회
+                  나라장터 공고 조회
                 </button>
               </form>
               <ol class="pps-discovery__steps" aria-label="나라장터 공고 처리 순서">
@@ -454,16 +466,16 @@
             <div class="notice-panel" id="noticePanel">
               <div class="table-scroll" id="noticeTableWrap">
                 <table class="notice-table">
-                  <caption class="sr-only">입찰 공고별 수요기관, 입찰마감, 추정가격, 참가자격, 제출 준비도, 리스크, AI 판단과 담당자 판단</caption>
+                  <caption class="sr-only">입찰 공고별 수요기관, 입찰마감, 추정가격, 참가자격, 제출 준비 현황, 리스크, AI 검토 의견과 담당자 판단</caption>
                   <thead>
                     <tr>
                       <th scope="col">공고</th>
                       <th scope="col">입찰마감</th>
                       <th scope="col">추정가격</th>
-                      <th scope="col">참가자격</th>
-                      <th scope="col">제출 준비도</th>
-                      <th scope="col">리스크</th>
-                      <th scope="col">AI 판단</th>
+                      <th scope="col">참가자격 확인 결과</th>
+                      <th scope="col">제출 준비 현황</th>
+                      <th scope="col">입찰 주의사항</th>
+                      <th scope="col">AI 검토 의견</th>
                       <th scope="col">담당자 판단</th>
                       <th scope="col">상세</th>
                     </tr>
@@ -491,7 +503,7 @@
                 </span>
                 <strong>조건에 맞는 공고가 없습니다</strong>
                 <p>검색어 또는 필터를 바꿔 다시 확인해 보세요.</p>
-                <button class="button button--ghost" type="button" id="emptyResetButton">필터 지우기</button>
+                <button class="button button--ghost" type="button" id="emptyResetButton">선택한 조건 초기화</button>
               </div>
             </div>
             <section class="performance-section prespec-section" id="prespecSection" aria-labelledby="prespecHeading" hidden>
@@ -561,11 +573,11 @@
                 <span class="data-classification"><span aria-hidden="true">●</span> 담당자 검토</span>
                 <p class="section-kicker">결과 기록</p>
                 <h2 id="resultLearningHeading">결과 학습 입력·수정</h2>
-                <p>입찰마감 경과 공고의 미참여·제출·낙찰·미낙찰 결과를 근거와 함께 기록합니다. 초안은 판단에 사용하지 않고, 검증 완료 기록만 후속 분석의 사실로 취급합니다.</p>
+                <p>입찰마감 경과 공고의 미참여·제출·낙찰·미낙찰 결과를 근거와 함께 기록합니다. 초안은 판단에 사용하지 않고, 확인 완료 기록만 후속 분석의 사실로 취급합니다.</p>
               </div>
               <aside class="performance-boundary" aria-label="결과 학습 데이터 운영 원칙">
                 <span class="performance-boundary__icon" aria-hidden="true">✓</span>
-                <div><strong>자동 환류와 사람 검토를 분리</strong><p>나라장터 자동 환류 결과도 이 화면에서 확인할 수 있습니다. 수정 충돌을 감지하며, 출처가 없는 기록은 검증 완료할 수 없습니다.</p></div>
+                <div><strong>자동 반영된 결과도 담당자가 최종 확인합니다</strong><p>나라장터에서 반영된 결과를 담당자가 확인하고 수정할 수 있습니다. 다른 담당자가 먼저 수정하면 최신 기록을 다시 확인하도록 안내하며, 확인한 출처가 있는 기록만 ‘확인 완료’로 저장할 수 있습니다.</p></div>
               </aside>
             </header>
 
@@ -577,9 +589,9 @@
               <form class="performance-filters operator-filters" id="resultLearningFilterForm" role="search">
                 <label class="search-field performance-search-field"><span class="sr-only">공고 검색</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg><input id="resultLearningSearchInput" type="search" maxlength="200" placeholder="공고명·기관·공고번호 검색" autocomplete="off" /></label>
                 <label class="select-field"><span class="sr-only">결과 상태</span><select id="resultLearningOutcomeFilter"><option value="">전체 결과</option><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
-                <label class="select-field"><span class="sr-only">검증 상태</span><select id="resultLearningRecordFilter"><option value="">전체 검증상태</option><option value="DRAFT">초안</option><option value="VALIDATED">검증 완료</option><option value="ARCHIVED">보관</option></select></label>
+                <label class="select-field"><span class="sr-only">확인 상태</span><select id="resultLearningRecordFilter"><option value="">전체 확인 상태</option><option value="DRAFT">초안</option><option value="VALIDATED">확인 완료</option><option value="ARCHIVED">보관</option></select></label>
                 <button class="button button--secondary" type="submit">검색</button>
-                <button class="button button--ghost" type="reset">필터 지우기</button>
+                <button class="button button--ghost" type="reset">선택한 조건 초기화</button>
               </form>
               <div class="operator-list" id="resultLearningList" role="list"></div>
               <div class="state-view performance-state" id="resultLearningState"><strong>부서 로그인이 필요합니다</strong><p>로그인한 부서의 판단과 결과를 기록하고 다른 부서의 기록을 조회할 수 있습니다.</p></div>
@@ -676,7 +688,7 @@
             <header class="performance-hero">
               <div class="performance-hero__copy">
                 <span class="data-classification"><span aria-hidden="true">●</span> 공개·비식별 데이터</span>
-                <p class="section-kicker">회사 수행실적 후보</p>
+                <p class="section-kicker">회사 실적 후보</p>
                 <h2 id="performanceHeading">회사 수행 실적</h2>
                 <p>공개된 사업 수행 사실을 비식별화한 온라인 데이터에서 유사 실적 후보를 찾아보세요.</p>
               </div>
@@ -759,7 +771,7 @@
                   </select>
                 </label>
                 <button class="button button--primary performance-filter-submit" type="submit">검색</button>
-                <button class="button button--ghost performance-filter-reset" type="reset">필터 지우기</button>
+                <button class="button button--ghost performance-filter-reset" type="reset">선택한 조건 초기화</button>
                 <fieldset class="performance-range-filters">
                   <legend>계약일·계약금액 범위</legend>
                   <label>계약 시작일<input id="performanceDateFrom" type="date" /></label>
@@ -789,7 +801,7 @@
                   </span>
                   <strong>조건에 맞는 실적이 없습니다</strong>
                   <p>검색어, 계약 기간·금액 또는 수행부서 필터를 바꿔 보세요.</p>
-                  <button class="button button--ghost" type="button" id="performanceEmptyResetButton">필터 지우기</button>
+                  <button class="button button--ghost" type="button" id="performanceEmptyResetButton">선택한 조건 초기화</button>
                 </div>
               </div>
 
@@ -912,10 +924,10 @@
 
         <div class="detail-tabs" role="tablist" aria-label="공고 상세 정보">
           <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-tab="overview">요약</button>
-          <button type="button" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" data-tab="evidence">근거 <span id="evidenceCount">0</span></button>
-          <button type="button" role="tab" id="tab-quant" aria-controls="panel-quant" aria-selected="false" data-tab="quant">정량·리스크</button>
-          <button type="button" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" data-tab="history">최근 3년 낙찰</button>
-          <button type="button" role="tab" id="tab-teams" aria-controls="panel-teams" aria-selected="false" data-tab="teams">Teams 알림</button>
+          <button type="button" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" data-tab="evidence">주요 확인 사항 <span id="evidenceCount">0</span></button>
+          <button type="button" role="tab" id="tab-quant" aria-controls="panel-quant" aria-selected="false" data-tab="quant">정량 점수·주의사항</button>
+          <button type="button" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" data-tab="history">최근 3년 낙찰 이력</button>
+          <button type="button" role="tab" id="tab-teams" aria-controls="panel-teams" aria-selected="false" data-tab="teams">Teams 알림 미리보기</button>
         </div>
 
         <section class="tab-panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
@@ -938,20 +950,6 @@
               <span class="document-analysis-state" id="documentAnalysisState">수집 확인 중</span>
             </div>
             <div class="document-analysis-list" id="documentAnalysisList"></div>
-            <section class="private-match-preview" id="privateMatchSection" aria-labelledby="privateMatchHeading" hidden>
-              <div class="private-match-preview__head">
-                <div>
-                  <p class="section-kicker">회사 기준과 비교</p>
-                  <h4 id="privateMatchHeading">조건별 검토 내용</h4>
-                </div>
-                <div class="private-match-preview__actions">
-                  <span class="private-match-badge" id="privateMatchBadge">회사 기준</span>
-                  <button class="text-button" type="button" id="privateMatchRetryButton">다시 확인</button>
-                </div>
-              </div>
-              <div class="private-match-body" id="privateMatchBody" role="status" aria-live="polite"></div>
-              <p class="private-match-note" id="privateMatchNote">증빙 원문은 공개하지 않습니다.</p>
-            </section>
             <p class="document-privacy-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v5c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6l-8-3Z" /><path d="m9 12 2 2 4-4" /></svg>원문 텍스트 없이 구조화 요약과 공개 가능한 증빙 메타데이터만 표시합니다.</p>
           </article>
           <article class="detail-card">
@@ -969,23 +967,37 @@
             <p id="departmentDecisionState">부서 판단 조회가 필요합니다.</p>
             <ul class="department-decision-list" id="departmentDecisionList"></ul>
           </article>
+        </section>
+
+        <section class="tab-panel" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence" data-panel="evidence" hidden>
+          <div class="panel-intro">
+            <div><p class="section-kicker">원문 근거</p><h3>주요 확인 사항</h3></div>
+            <p>원문 위치와 추출 신뢰도를 함께 확인하세요.</p>
+          </div>
           <article class="detail-card" id="actionCard">
             <div class="card-title-row">
               <div>
-                <p class="section-kicker">담당자 검토</p>
+                <p class="section-kicker">제출 전 확인</p>
                 <h3>확인 필요 사항</h3>
               </div>
             </div>
             <p class="submission-check-note">추출된 원문을 항목별로 확인하세요. 조건·예외의 적용 여부는 담당자가 검토하며, 참가자격 판정은 위 점검과 별도로 유지됩니다.</p>
             <ul class="action-list" id="actionList" aria-label="확인 필요 사항 10개"></ul>
           </article>
-        </section>
-
-        <section class="tab-panel" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence" data-panel="evidence" hidden>
-          <div class="panel-intro">
-            <div><p class="section-kicker">원문 근거</p><h3>판정 근거</h3></div>
-            <p>원문 위치와 추출 신뢰도를 함께 확인하세요.</p>
-          </div>
+            <section class="private-match-preview" id="privateMatchSection" aria-labelledby="privateMatchHeading" hidden>
+              <div class="private-match-preview__head">
+                <div>
+                  <p class="section-kicker">우리 회사 기준 확인</p>
+                  <h4 id="privateMatchHeading">조건별 검토 내용</h4>
+                </div>
+                <div class="private-match-preview__actions">
+                  <span class="private-match-badge" id="privateMatchBadge">회사 기준</span>
+                  <button class="text-button" type="button" id="privateMatchRetryButton">다시 확인</button>
+                </div>
+              </div>
+              <div class="private-match-body" id="privateMatchBody" role="status" aria-live="polite"></div>
+              <p class="private-match-note" id="privateMatchNote">증빙 원문은 공개하지 않습니다.</p>
+            </section>
           <div class="evidence-list" id="evidenceList" tabindex="-1"></div>
         </section>
 
@@ -1030,7 +1042,7 @@
           </div>
           <section class="history-award-table" aria-labelledby="historyAwardTableHeading">
             <div class="history-award-table__head">
-              <h4 id="historyAwardTableHeading">최근 3년 낙찰 표</h4>
+              <h4 id="historyAwardTableHeading">최근 3년 낙찰 이력 표</h4>
               <span class="history-award-table__basis" id="historyAwardTableBasis">기준 확인 중</span>
             </div>
             <div class="history-award-summary" id="historyAwardSummary" hidden>
@@ -1174,7 +1186,7 @@
 
     <dialog class="source-link-dialog record-editor-dialog" id="performanceRecordDialog" aria-labelledby="performanceRecordDialogTitle">
       <form class="source-link-dialog__panel record-editor-form" id="performanceRecordForm">
-        <header class="source-link-dialog__header"><div><p class="section-kicker">회사 수행실적</p><h2 id="performanceRecordDialogTitle">회사 실적 등록</h2></div><button class="icon-button" id="performanceRecordCloseButton" type="button" aria-label="회사 실적 편집 닫기">×</button></header>
+        <header class="source-link-dialog__header"><div><p class="section-kicker">회사 실적</p><h2 id="performanceRecordDialogTitle">회사 실적 등록</h2></div><button class="icon-button" id="performanceRecordCloseButton" type="button" aria-label="회사 실적 편집 닫기">×</button></header>
         <div class="source-link-dialog__body record-editor-grid">
           <label class="record-field record-field--wide"><span>사업명 *</span><input id="performanceRecordProject" required minlength="2" maxlength="500" /></label>
           <label class="record-field"><span>발주기관</span><input id="performanceRecordAgency" maxlength="255" /></label>
@@ -1201,21 +1213,28 @@
       <form class="source-link-dialog__panel record-editor-form" id="resultLearningForm">
         <header class="source-link-dialog__header"><div><p class="section-kicker">입찰 결과</p><h2 id="resultLearningDialogTitle">입찰 결과 입력</h2><p id="resultLearningDialogNotice">공고를 확인합니다.</p></div><button class="icon-button" id="resultLearningCloseButton" type="button" aria-label="결과 편집 닫기">×</button></header>
         <div class="source-link-dialog__body result-learning-body">
+        <p class="result-origin-state" id="resultLearningOrigin"></p>
         <fieldset class="record-editor-grid" id="resultLearningFields" aria-label="입찰 결과 입력 항목">
           <label class="record-field"><span>결과 *</span><select id="resultLearningStatus" required><option value="">결과를 선택해 주세요</option><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
-          <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">초안</option><option value="VALIDATED">검증 완료</option><option value="ARCHIVED">보관</option></select></label>
-          <label class="record-field record-field--wide"><span>출처 또는 근거 참조 (검증 완료 시 필수)</span><input id="resultLearningSourceReference" maxlength="1000" aria-describedby="resultLearningSourceHelp" placeholder="나라장터 결과 식별자, 평가결과 공문 등" /></label>
-          <p class="record-editor-note record-field--wide" id="resultLearningSourceHelp">확인한 항목부터 초안으로 저장할 수 있습니다. 출처를 입력하고 필수 결과 정보를 확인한 뒤 ‘검증 완료’로 변경하세요.</p>
-          <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="number" min="0" step="any" /></label>
-          <label class="record-field"><span>우리 투찰률 입력 방식</span><select id="resultLearningRateMode"><option value="MANUAL">수기 입력</option><option value="AUTO">기준가격으로 자동 계산</option></select></label>
+          <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">초안</option><option value="VALIDATED">확인 완료</option><option value="ARCHIVED">보관</option></select></label>
+          <label class="record-field record-field--wide"><span>출처 또는 근거 참조 (확인 완료 시 필수)</span><input id="resultLearningSourceReference" maxlength="1000" aria-describedby="resultLearningSourceHelp" placeholder="나라장터 결과 식별자, 평가결과 공문 등" /></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningSourceHelp">확인한 항목부터 초안으로 저장할 수 있습니다. 출처를 입력하고 필수 결과 정보를 확인한 뒤 ‘확인 완료’로 변경하세요.</p>
+          <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
+          <label class="record-field"><span>우리 투찰률 입력 방식</span><select id="resultLearningRateMode"><option value="AUTO">기준가격으로 자동 계산</option><option value="MANUAL">수기 입력</option></select></label>
           <label class="record-field result-rate-basis" hidden><span>계산 기준 종류 *</span><select id="resultLearningRateBasisKind"><option value="">선택해 주세요</option><option value="PLANNED_PRICE">예정가격</option><option value="BASE_AMOUNT">기초금액</option></select></label>
-          <label class="record-field result-rate-basis" hidden><span>계산 기준금액(원) *</span><input id="resultLearningRateBasisAmount" type="number" min="0" step="any" /></label>
+          <label class="record-field result-rate-basis" hidden><span>계산 기준금액(원) *</span><input id="resultLearningRateBasisAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
           <label class="record-field record-field--wide result-rate-basis" hidden><span>기준가격 출처 *</span><input id="resultLearningRateBasisReference" maxlength="1000" placeholder="기준가격을 확인한 공고·개찰결과 문서와 위치" /></label>
           <label class="record-field"><span>우리 투찰률(%)</span><input id="resultLearningSubmittedRate" type="number" min="0" max="200" step="0.0001" aria-describedby="resultLearningRateStatus resultLearningRatePolicy" /></label>
           <p class="record-editor-note record-field--wide" id="resultLearningRateStatus" role="status" aria-live="polite"></p>
           <p class="record-editor-note record-field--wide" id="resultLearningRatePolicy">우리 투찰금액 ÷ 확인한 기준금액 × 100으로 계산합니다. 예정가격 또는 기초금액과 출처를 입력하세요. 결과는 소수 넷째 자리까지 표시합니다.</p>
-          <label class="record-field"><span>낙찰금액(원)</span><input id="resultLearningWinningAmount" type="number" min="0" /></label>
-          <label class="record-field"><span>낙찰률(수기 입력, %)</span><input id="resultLearningWinningRate" type="number" min="0" max="200" step="0.0001" /></label>
+          <label class="record-field"><span>낙찰금액(원)</span><input id="resultLearningWinningAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
+          <label class="record-field"><span>낙찰자 투찰률 입력 방식</span><select id="resultLearningWinningRateMode"><option value="AUTO">기준가격으로 자동 계산</option><option value="MANUAL">수기 입력</option></select></label>
+          <label class="record-field result-rate-basis" hidden><span>계산 기준 종류 *</span><select id="resultLearningWinningRateBasisKind"><option value="">선택해 주세요</option><option value="PLANNED_PRICE">예정가격</option><option value="BASE_AMOUNT">기초금액</option></select></label>
+          <label class="record-field result-rate-basis" hidden><span>계산 기준금액(원) *</span><input id="resultLearningWinningRateBasisAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
+          <label class="record-field record-field--wide result-rate-basis" hidden><span>기준가격 출처 *</span><input id="resultLearningWinningRateBasisReference" maxlength="1000" placeholder="기준가격을 확인한 공고·개찰결과 문서와 위치" /></label>
+          <label class="record-field"><span>낙찰자 투찰률(%)</span><input id="resultLearningWinningRate" type="number" min="0" max="200" step="0.0001" aria-describedby="resultLearningWinningRateStatus resultLearningWinningRatePolicy" /></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningWinningRateStatus" role="status" aria-live="polite"></p>
+          <p class="record-editor-note record-field--wide" id="resultLearningWinningRatePolicy">낙찰금액 ÷ 확인한 기준금액 × 100으로 계산합니다. 예정가격 또는 기초금액과 출처를 입력하세요. 결과는 소수 넷째 자리까지 표시합니다.</p>
           <label class="record-field"><span>기술점수</span><input id="resultLearningTechnicalScore" type="number" min="0" max="100" step="0.01" /></label>
           <label class="record-field"><span>가격점수</span><input id="resultLearningPriceScore" type="number" min="0" max="100" step="0.01" /></label>
           <label class="record-field"><span>총점</span><input id="resultLearningTotalScore" type="number" min="0" max="200" step="0.01" /></label>
@@ -1229,7 +1248,7 @@
           <label class="record-field"><span>개찰 분류번호 (선택)</span><input id="resultLearningOpeningClassification" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
           <label class="record-field"><span>재입찰번호 (선택)</span><input id="resultLearningOpeningRebid" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
           <p class="record-editor-note record-field--wide" id="resultLearningOpeningHelp">개찰결과에서 확인한 분류번호와 재입찰번호를 함께 입력하세요. 미확인은 두 칸을 비워 두며, 0은 확인한 경우에만 입력합니다. 수기 입력만으로 나라장터 참여 확인이 되지는 않습니다.</p>
-          <p class="record-editor-note record-field--wide">검증 완료로 저장하려면 결과의 출처가 필요합니다. 수기 비율은 근거 참조에 기준가격도 함께 적어주세요.</p>
+          <p class="record-editor-note record-field--wide">확인 완료로 저장하려면 결과의 출처가 필요합니다. 수기 비율은 근거 참조에 기준가격도 함께 적어주세요.</p>
         </fieldset>
         </div>
         <p class="result-learning-error" id="resultLearningError" role="alert" tabindex="-1" hidden></p>
@@ -1379,11 +1398,11 @@
           <button class="icon-button" type="submit" value="close" aria-label="검색 방식 안내 닫기">×</button>
         </header>
         <div class="source-link-dialog__body notice-search-help-dialog__body">
-          <p id="noticeSearchHelpDialogSummary">PAI 저장 공고는 바로 검토하고, 나라장터 공고와 사전규격은 필요한 건을 선택해 저장한 뒤 분석합니다.</p>
+          <p id="noticeSearchHelpDialogSummary">저장된 공고는 바로 검토하고, 나라장터 공고와 사전규격은 필요한 건을 선택해 저장한 뒤 분석합니다.</p>
           <div class="notice-search-help-compare">
             <section class="notice-search-help-compare__stored">
               <span>PAI 저장 목록</span>
-              <h3>PAI 저장 공고</h3>
+              <h3>저장된 공고</h3>
               <ul>
                 <li>저장된 전체 공고에서 즉시 검색</li>
                 <li>기존 자격·정량 점수와 판단 상태 확인</li>
@@ -1438,7 +1457,7 @@
     </script>
     <script src="https://res.cdn.office.net/teams-js/2.19.0/js/MicrosoftTeams.min.js" defer></script>
     <script>
-      // Render free-tier dashboard aggregation can exceed the generic request
+      // Hosted service dashboard aggregation can exceed the generic request
       // timeout while notice pages are loading. Keep only that public summary
       // request alive; every other request retains the application's timeout.
       (() => {
@@ -1452,6 +1471,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260920-filter-links-v1" defer></script>
+    <script src="./app.js?v=20260924-uiux-v1" defer></script>
   </body>
 </html>

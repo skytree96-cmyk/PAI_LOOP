@@ -40,7 +40,7 @@ def test_main_card_and_table_are_explicit_reads_not_automatic_n_plus_one():
     _run(r'''
 assert.match(u.renderNoticeCard(qnotice),/data-notice-quantitative/);
 assert.match(u.renderNoticeRow(qnotice),/data-notice-quantitative/);
-assert.match(u.noticeQuantitativeAction(qnotice),/정량 점수 확인/);
+assert.match(u.noticeQuantitativeAction(qnotice),/점수 확인/);
 assert.equal(requests.length,0,'rendering a list never sends API calls');
 assert.equal(u.noticeQuantitativeSummary(qnotice).value,'미조회');
 assert.doesNotMatch(u.noticeListActions(qnotice,true),/data-load-quantitative/,'result-entry action stays focused');

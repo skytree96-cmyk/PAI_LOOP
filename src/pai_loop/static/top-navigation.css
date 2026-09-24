@@ -351,3 +351,17 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
   .coverage-detail__row { grid-template-columns: minmax(0, 1fr) 48px; }
   .coverage-detail__row .coverage-bar { grid-column: 1 / -1; }
 }
+
+/* Distinguish all stored notices from the actionable population without changing the brand. */
+.dashboard-totals { display: flex; flex: 0 1 460px; gap: 20px; min-width: 0; }
+.dashboard-totals .dashboard-total { flex: 1 1 0; min-width: 0; padding-left: 20px; }
+.dashboard-total small { line-height: 1.6; }
+@media (max-width: 900px) {
+  .hero--work { flex-wrap: wrap; gap: 20px; }
+  .dashboard-totals { flex-basis: 100%; }
+}
+@media (max-width: 680px) {
+  .dashboard-totals { width: 100%; gap: 12px; }
+  .dashboard-totals .dashboard-total { border-left: 1px solid var(--line); padding: 0 0 0 12px; }
+  .dashboard-totals .dashboard-total strong { font-size: var(--fs-xl); }
+}
