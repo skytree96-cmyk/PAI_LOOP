@@ -28,6 +28,7 @@ from .database import Base, build_engine
 from .account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from .teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsSessionLink
 from .followup_models import TeamsFollow, TeamsFollowDelivery
+from .briefing_models import TeamsBriefingDelivery
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
@@ -139,6 +140,11 @@ TEAMS_FOLLOWUPS_MIGRATION_ID = "20260913_01_teams_personal_followups"
 TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM = hashlib.sha256(
     b"teams_recipients:v1;teams_session_links:v1;teams_link_codes:v1;teams_follows:v1;teams_follow_deliveries:v1"
 ).hexdigest()
+TEAMS_BRIEFING_MIGRATION_ID = "20260924_01_teams_daily_briefing"
+TEAMS_BRIEFING_MIGRATION_CHECKSUM = hashlib.sha256(
+    b"teams_briefing_deliveries:v1;"
+    b"teams_recipients:briefing_enabled:boolean|null-means-subscribed"
+).hexdigest()
 _migrations = (
     (MIGRATION_ID, MIGRATION_CHECKSUM, _migration_tables),
     (
@@ -191,6 +197,11 @@ _migrations = (
         TeamsRecipient.__table__, TeamsSessionLink.__table__, TeamsLinkCode.__table__,
         TeamsFollow.__table__, TeamsFollowDelivery.__table__,
     )),
+    (
+        TEAMS_BRIEFING_MIGRATION_ID,
+        TEAMS_BRIEFING_MIGRATION_CHECKSUM,
+        (TeamsBriefingDelivery.__table__,),
+    ),
 )
 _required_base_tables = {
     "notices",
@@ -599,6 +610,29 @@ def _award_agency_metadata_columns(connection: Connection, *, validate_only: boo
         raise MigrationError("notice_award_agency_metadata is missing")
 
 
+def _teams_briefing_columns(connection: Connection, *, validate_only: bool = False) -> None:
+    """Add the per-person briefing opt-out.
+
+    The column must stay nullable: an existing recipient has no stored choice,
+    and NULL is read as subscribed so nobody silently stops receiving the
+    briefing when this migration lands.
+    """
+
+    table_name = TeamsRecipient.__tablename__
+    if table_name not in inspect(connection).get_table_names():
+        raise MigrationError("teams_recipients is missing for the briefing migration")
+    columns = {row["name"]: row for row in inspect(connection).get_columns(table_name)}
+    column = columns.get("briefing_enabled")
+    if column is None:
+        if validate_only:
+            raise MigrationError("teams_recipients briefing_enabled is missing")
+        connection.exec_driver_sql(
+            'ALTER TABLE "teams_recipients" ADD COLUMN "briefing_enabled" BOOLEAN NULL'
+        )
+    elif column["nullable"] is not True:
+        raise MigrationError("teams_recipients briefing_enabled must be nullable")
+
+
 def pending_migrations(engine: Engine) -> list[str]:
     """Return pending migration IDs without creating or changing any table."""
 
@@ -676,6 +710,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                     _account_identity_columns(connection, validate_only=True)
                 if migration_id == AWARD_AGENCY_METADATA_MIGRATION_ID:
                     _award_agency_metadata_columns(connection, validate_only=True)
+                if migration_id == TEAMS_BRIEFING_MIGRATION_ID:
+                    _teams_briefing_columns(connection, validate_only=True)
                 continue
             for table in tables:
                 table.create(connection, checkfirst=True)
@@ -689,6 +725,8 @@ def apply_additive_migrations(engine: Engine) -> list[str]:
                 _account_identity_columns(connection)
             if migration_id == AWARD_AGENCY_METADATA_MIGRATION_ID:
                 _award_agency_metadata_columns(connection)
+            if migration_id == TEAMS_BRIEFING_MIGRATION_ID:
+                _teams_briefing_columns(connection)
             connection.execute(
                 schema_migrations.insert().values(
                     migration_id=migration_id,

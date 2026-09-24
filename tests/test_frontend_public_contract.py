@@ -1125,7 +1125,9 @@ def test_pai_teams_sidebar_and_manual_link_fail_closed_until_configured() -> Non
     open_body = _function_body(source, "openPaiBotTeams", "safePaiBotTeamsUrl")
 
     assert 'id="paiBotTeamsButton"' in html
-    assert "PAI Teams 채널 열기" in html
+    # The briefing arrives in the personal chat, so the sidebar opens the
+    # pairing that feeds it rather than a channel the app no longer posts to.
+    assert "내 Teams로 알림 받기" in html
     assert "등록된 개발자 전용" not in html
     assert 'id="paiUserGuideLink" href="https://pai-loop.pages.dev/"' in html
     assert 'src="/teams-icon.png"' in html
@@ -1140,10 +1142,13 @@ def test_pai_teams_sidebar_and_manual_link_fail_closed_until_configured() -> Non
     runtime_config = json.loads(config_match.group("config"))
     assert runtime_config["paiBotTeamsUrl"] == ""
     assert 'document.getElementById("paiLoopRuntimeConfig")' in source
-    assert "safePaiBotTeamsUrl(PAI_BOT_TEAMS_URL)" in configure_body
+    # Pairing is a signed-in action, so the button stays inert until a session
+    # exists rather than until a channel address is configured.
+    assert "state.accountSession.authenticated" in configure_body
     assert "disabled = !isReady" in configure_body
     assert 'dataset.state = isReady ? "ready" : "pending"' in configure_body
-    assert 'window.open(teamsUrl, "_blank", "noopener,noreferrer")' in open_body
+    assert "openTeamsFollowups(" in open_body
+    assert "window.open(" not in open_body
     assert 'url.protocol === "https:"' in source
     assert 'url.hostname.toLowerCase() === "teams.microsoft.com"' in source
     assert ".pai-bot-access__note" in styles

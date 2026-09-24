@@ -846,15 +846,17 @@
               class="button button--teams"
               type="button"
               id="paiBotTeamsButton"
-              aria-label="PAI Teams 채널 열기"
+              aria-label="내 Teams로 알림 받기"
               aria-describedby="paiBotTeamsAccessNote"
+              aria-haspopup="dialog"
+              aria-controls="teamsFollowsDialog"
               aria-disabled="true"
               disabled
               >
               <img src="/teams-icon.png" width="28" height="30" alt="" aria-hidden="true" />
-              <span>PAI Teams</span>
+              <span>Teams 알림 받기</span>
             </button>
-            <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">채널 연결 준비 중</small>
+            <small class="pai-bot-access__note" id="paiBotTeamsAccessNote">매일 아침 브리핑과 관심 공고를 내 Teams 개인 채팅으로</small>
           </div>
           <div class="sidebar-foot sr-only" id="sidebarAccount" role="status" aria-live="polite" hidden>
             <img class="avatar" src="/favicon.svg?v=20260908-login-brand-v1" width="36" height="36" alt="" aria-hidden="true" />
@@ -1341,6 +1343,13 @@
               <p>봇은 답장하지 않습니다. 명령을 보내면 이 화면이 연결을 감지해 자동으로 넘어갑니다.</p>
             </div>
           </section>
+          <div class="teams-briefing-toggle" id="teamsBriefingToggle" hidden>
+            <label for="teamsBriefingEnabled">
+              <input type="checkbox" id="teamsBriefingEnabled" />
+              <span>매일 아침 브리핑 받기</span>
+            </label>
+            <small>한국시간 오전 8시 30분에 내 부서 기준으로 하루치 공고를 보냅니다. 꺼도 관심 공고 알림은 계속 받습니다.</small>
+          </div>
           <p class="teams-follows-error" id="teamsFollowsError" role="alert" hidden></p>
           <p class="teams-follows-delivery-notice" id="teamsFollowsDeliveryNotice" role="status" hidden></p>
           <div class="teams-pending-follow" id="teamsPendingFollow" hidden>
