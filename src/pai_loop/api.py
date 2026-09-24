@@ -79,6 +79,7 @@ from .pps_enrichment import (
     EORDER_ATTACHMENT_FIELD,
     PPS_ATTACHMENT_SOURCE,
     PPS_METADATA_KIND,
+    PPS_METADATA_SCHEMA,
     build_attachment_manifest,
     department_keyword_coverage_count,
     persist_pps_metadata_version,
@@ -608,6 +609,7 @@ def _summary(
         provider_event_kind=provider_event_kind,
         provider_changed_at=provider_changed_at,
         estimated_amount=notice.estimated_amount,
+        contract_method=_public_contract_method(notice),
         source_kind=source_kind,
         ingestion_state=ingestion_state,
         analysis_updated_at=(latest.evaluated_at if latest else latest_version.created_at if latest_version else None),
@@ -642,6 +644,45 @@ def _summary(
             else None
         ),
     )
+
+
+def _public_contract_method(notice: Notice) -> str | None:
+    """Expose only a known contract label from the current PPS metadata basis."""
+    metadata = [
+        item for item in notice.versions
+        if isinstance(item.source_payload, dict)
+        and item.source_payload.get("kind") == PPS_METADATA_KIND
+    ]
+    if not metadata:
+        return None
+    payload = max(metadata, key=lambda item: item.version_no).source_payload
+    identity = payload.get("notice_identity")
+    basis = payload.get("canonical_notice_basis")
+    fields = payload.get("notice_metadata")
+    if (payload.get("schema_version") != PPS_METADATA_SCHEMA
+            or not isinstance(identity, dict) or not isinstance(basis, dict)
+            or not isinstance(fields, dict)):
+        return None
+    if (identity.get("bid_notice_no") != notice.bid_notice_no
+            or identity.get("revision_no") != notice.revision_no
+            or basis.get("notice_key") != notice.notice_key
+            or basis.get("title") != notice.title
+            or basis.get("agency") != notice.agency):
+        return None
+    try:
+        deadline = datetime.fromisoformat(str(basis.get("deadline")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if _comparable_utc(deadline) != _comparable_utc(notice.deadline):
+        return None
+    value = fields.get("contract_method")
+    if not isinstance(value, str) or len(value) > 80:
+        return None
+    # Never publish arbitrary payload prose, contacts, or identifiers as a label.
+    known = {"일반경쟁", "제한경쟁", "지명경쟁", "수의", "수의계약",
+             "일반경쟁입찰", "제한경쟁입찰", "지명경쟁입찰",
+             "협상에의한계약", "경쟁적대화에의한계약"}
+    return " ".join(value.split()) if re.sub(r"\s+", "", value) in known else None
 
 
 def _source_kind(notice: Notice) -> str:

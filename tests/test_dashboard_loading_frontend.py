@@ -103,7 +103,7 @@ assert.equal(u.els.kpiGo.textContent,"3");
 assert.equal(u.els.dashboardRetryButton.hidden,true);
 assert.match(u.els.dashboardSummaryTotals.textContent,/전체 저장 공고 800건/);
 assert.match(u.els.dashboardSummaryTotals.textContent,/판정 이력 1,500건/);
-assert.match(u.els.dashboardSummaryDetail.textContent,/활성 공고 기준/);
+assert.match(u.els.dashboardSummaryDetail.textContent,/마감 전 공고, 결과 입력은 개찰 후 공고 기준/);
 assert.equal(JSON.stringify(u.state.notices),original);
 assert.equal(statuses.at(-1),"online");
 ''')
@@ -220,7 +220,7 @@ assert.equal(get("departmentRecommendedStem").attributes.y2,"170");
 assert.equal(get("departmentSelectedStem").attributes.y2,"200");
 assert.match(get("departmentComparisonChart").attributes["aria-label"],/전사 공통.*추천 공고 200건.*25%.*선택한 공고 80건.*10%/);
 assert.match(get("departmentSelectionDetail").textContent,/추천 200건 중 40건 선택/);
-assert.match(u.els.dashboardSummaryDetail.textContent,/활성 공고 기준/);
+assert.match(u.els.dashboardSummaryDetail.textContent,/마감 전 공고, 결과 입력은 개찰 후 공고 기준/);
 const original=JSON.stringify(payload);
 u.state.dashboardStatus="loading";u.renderKpis();
 assert.equal(u.els.kpiReview.textContent,"2");
