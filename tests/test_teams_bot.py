@@ -219,7 +219,11 @@ def test_simultaneous_code_redemption_has_one_winner(browser, signer):
 
 def test_unconfigured_bot_exposes_status_but_rejects_link_and_callback(browser, monkeypatch):
     monkeypatch.setattr(bot.TeamsBotSettings, "from_env", classmethod(lambda cls: bot.TeamsBotSettings()))
-    assert browser.get("/api/v1/teams/connection").json() == {"enabled": False, "connected": False, "bot_chat_url": None}
+    assert browser.get("/api/v1/teams/connection").json() == {
+        "enabled": False, "connected": False, "bot_chat_url": None,
+        # Nobody is paired, so there is nothing subscribed to a briefing either.
+        "briefing_enabled": False,
+    }
     assert browser.post("/api/v1/teams/link-code", headers=HEADERS).status_code == 503
     assert browser.post("/api/v1/teams/messages", json=activity()).status_code == 503
 
