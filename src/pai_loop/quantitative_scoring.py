@@ -90,7 +90,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.8"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.9"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -3269,6 +3269,147 @@ def _logical_candidate_conflict_reasons(
     return reasons
 
 
+def _restated_rule_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _restated_rule_payload(item)
+            for key, item in value.items()
+            if key not in {"attachment_id", "page", "confidence"}
+        }
+    if isinstance(value, (list, tuple)):
+        return [_restated_rule_payload(item) for item in value]
+    return " ".join(value.split()) if isinstance(value, str) else value
+
+
+def _restated_table_signature(
+    table: ImmutableQuantitativeTable,
+    candidates: Sequence[ImmutableQuantitativeRuleCandidate],
+) -> str | None:
+    ids = [item.criterion_id for item in candidates]
+    if (
+        table.status != "AVAILABLE"
+        or not candidates
+        or len(ids) != len(set(ids))
+        or set(ids) != set(table.criterion_ids)
+        or set(ids) != set(table.available_criterion_ids)
+        or table.review_criterion_ids
+        or table.total_points is None
+        or table.total_evidence is None
+        or table.total_evidence.attachment_id != table.source_attachment_id
+        or not table.total_evidence.quote.strip()
+        or not (table.total_evidence.section or "").strip()
+        or (table.minimum_score is not None and table.minimum_evidence is None)
+        or sum(Decimal(str(item.max_points)) for item in candidates)
+        != Decimal(str(table.total_points))
+    ):
+        return None
+    if any(
+        not item.evidence.quote.strip()
+        or not (item.evidence.section or "").strip()
+        or item.evidence.attachment_id != table.source_attachment_id
+        for item in candidates
+    ):
+        return None
+    rules = []
+    for candidate in candidates:
+        payload = candidate.model_dump(mode="json")
+        for key in ("source_attachment_id", "table_id", "criterion_id"):
+            payload.pop(key)
+        # Labels and every condition/anchor section carry scoring scope.
+        rules.append(_canonical_digest(_restated_rule_payload(payload)))
+    payload = table.model_dump(mode="json")
+    for key in (
+        "source_attachment_id", "table_id", "criterion_ids",
+        "available_criterion_ids", "review_criterion_ids",
+    ):
+        payload.pop(key)
+    return _canonical_digest({
+        "table": _restated_rule_payload(payload), "rules": sorted(rules),
+    })
+
+
+def _same_restated_document(
+    left: AttachmentDocumentBinding, right: AttachmentDocumentBinding,
+) -> bool:
+    role = _attachment_document_role(left)
+    if role is None or role != _attachment_document_role(right):
+        return False
+    if left.document_sha256 == right.document_sha256:
+        return True
+    labels = [
+        re.fullmatch(r"(.+)\.(hwp|hwpx|pdf)", _normalize_semantic_text(item.source_label))
+        for item in (left, right)
+    ]
+    # A filename is insufficient on its own. The caller also proves the full
+    # validated table program equal; same-format revisions never qualify.
+    return bool(
+        all(labels)
+        and labels[0].group(1) == labels[1].group(1)
+        and labels[0].group(2) != labels[1].group(2)
+    )
+
+
+def _fold_restated_table_candidates(
+    profile: QuantitativeCandidateProfile,
+    candidates: tuple[ImmutableQuantitativeRuleCandidate, ...],
+) -> tuple[ImmutableQuantitativeRuleCandidate, ...]:
+    """Fold complete alternate representations, never similar individual rows."""
+    if (
+        profile.manifest_sha256 is None
+        or len(profile.tables) > _MAX_LOGICAL_PROGRAM_TABLES
+        or any(issue.attachment_id is None for issue in profile.issues)
+    ):
+        return candidates
+    bindings = {item.attachment_id: item for item in profile.document_bindings}
+    if len(bindings) != len(profile.document_bindings):
+        return candidates
+    expected = set(profile.expected_attachment_ids) & set(profile.processed_attachment_ids)
+    programs: dict[str, dict[str, _LogicalTableKey]] = {}
+    invalid: set[str] = set()
+    for table in profile.tables:
+        attachment_id = table.source_attachment_id
+        local = tuple(
+            item for item in profile.available_candidates
+            if (item.source_attachment_id, item.table_id) == _logical_table_key(table)
+        )
+        signature = _restated_table_signature(table, local)
+        program = programs.setdefault(attachment_id, {})
+        if signature is None or signature in program:
+            invalid.add(attachment_id)
+        else:
+            program[signature] = _logical_table_key(table)
+    invalid.update(item.source_attachment_id for item in profile.review_candidates)
+    invalid.update(issue.attachment_id for issue in profile.issues)
+    invalid.update(item.attachment_id for item in profile.not_applicable_evidence)
+    table_keys = {_logical_table_key(table) for table in profile.tables}
+    invalid.update(
+        item.source_attachment_id for item in profile.available_candidates
+        if (item.source_attachment_id, item.table_id) not in table_keys
+    )
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for attachment_id, program in programs.items():
+        if attachment_id not in invalid and attachment_id in bindings and attachment_id in expected:
+            groups.setdefault(tuple(sorted(program)), []).append(attachment_id)
+    selected_keys = {(item.source_attachment_id, item.table_id) for item in candidates}
+    removed: set[_LogicalTableKey] = set()
+    for group in groups.values():
+        if len(group) < 2 or not all(
+            _same_restated_document(bindings[left], bindings[right])
+            for left, right in combinations(group, 2)
+        ):
+            continue
+        # An earlier resolver may already have selected a representation.
+        # Keep its original candidate and fact binding, without synthesizing one.
+        for signature in programs[group[0]]:
+            keys = sorted(programs[attachment_id][signature] for attachment_id in group)
+            active = [key for key in keys if key in selected_keys]
+            removed.update(active[1:])
+    return tuple(
+        item for item in candidates
+        if (item.source_attachment_id, item.table_id) not in removed
+    )
+
+
 def _logical_quantitative_program(
     profile: QuantitativeCandidateProfile,
 ) -> _LogicalQuantitativeProgram:
@@ -4219,6 +4360,7 @@ def quantitative_request_from_candidate_profile(
     )
     logical_tables = (row_partial.tables if row_partial is not None else
         tuple(profile.tables) if logical_program is None else logical_program.tables)
+    logical_candidates = _fold_restated_table_candidates(profile, logical_candidates)
 
     bindings = {
         item.attachment_id: item.document_sha256
