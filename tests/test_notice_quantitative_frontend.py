@@ -89,6 +89,33 @@ setData({...data,lower_points:12});assert.equal(u.noticeQuantitativeSummary(qnot
 ''')
 
 
+def test_partial_source_overview_never_claims_complete_notice_coverage():
+    _run(r'''
+const partial={...data,rule_source_status:'INCOMPLETE',source_validation_status:'INCOMPLETE',
+ activation_status:'PARTIAL_SOURCE',overall_status:'REVIEW',total_max_points:10,
+ lower_points:10,upper_points:10,evidence_coverage_pct:100,readiness_pct:100,readiness_band:'GREEN',
+ activation_reasons:['PUBLIC_ANALYSIS_REVIEW_REQUIRED'],
+ criteria:[{label:'SYN financial',status:'ESTIMATED',max_points:10,lower_points:10,upper_points:10}]};
+setData(partial);
+const summary=u.noticeQuantitativeSummary(qnotice);
+assert.equal(summary.value,'10 / 10점');
+assert.match(summary.label,/부분 소계/);
+assert.match(summary.reason,/공고 총점이 아닙니다/);
+u.renderQuantitativeEstimate(partial);
+const overview=u.els.scoreOverview.innerHTML;
+assert.match(overview,/확인 항목 소계/);
+assert.match(overview,/확인 항목 내 증빙 확정률/);
+assert.match(overview,/확정 항목 배점 ÷ 확인 항목 배점/);
+assert.match(overview,/전체 판단 보류/);
+assert.doesNotMatch(overview,/예상 점수 범위|전체 정량 배점|준비됨|하한 기준 100/);
+assert.match(u.els.quantTableBody.innerHTML,/SYN financial/);
+assert.match(u.els.quantTableBody.innerHTML,/10점/);
+u.renderQuantitativeEstimate({...data,evidence_coverage_pct:100,readiness_pct:100,readiness_band:'GREEN'});
+assert.match(u.els.scoreOverview.innerHTML,/예상 점수 범위|전체 정량 배점|준비됨/);
+assert.doesNotMatch(u.els.scoreOverview.innerHTML,/확인 항목 소계|전체 판단 보류/);
+''')
+
+
 def test_public_review_without_numeric_points_does_not_claim_a_provisional_score():
     _run(r'''
 setData({...data,ruleset_version:'public-quantitative-summary-v1',overall_status:'REVIEW',

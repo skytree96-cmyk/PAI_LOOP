@@ -7459,6 +7459,7 @@
     };
     const sourceValidation = data.source_validation_status || legacySourceMap[ruleSource] || "REVIEW_REQUIRED";
     const activation = data.activation_status || "REVIEW_REQUIRED";
+    const partialSource = activation === "PARTIAL_SOURCE";
     const sourceMissing = sourceValidation === "MISSING" || ruleSource === "MISSING";
     const notApplicable = sourceValidation === "NOT_APPLICABLE" || activation === "NOT_APPLICABLE" || ruleSource === "NOT_APPLICABLE";
     const activationReasonCodes = Array.isArray(data.activation_reasons) ? data.activation_reasons : [];
@@ -7474,9 +7475,9 @@
       ? "미산정"
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
     els.scoreOverview.innerHTML = [
-      quantSummaryCard("예상 점수 범위", range, sourceDetail, "score-card--readiness"),
-      quantSummaryCard("회사 증빙 확정률", `${formatNumber(coverage, 1)}%`, "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
-      quantSummaryCard("정량 준비도", quantReadinessLabel(data.readiness_band), readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
+      quantSummaryCard(partialSource ? "확인 항목 소계" : "예상 점수 범위", range, partialSource ? "확인된 첨부 배점만 포함 · 공고 총점 아님" : sourceDetail, "score-card--readiness"),
+      quantSummaryCard(partialSource ? "확인 항목 내 증빙 확정률" : "회사 증빙 확정률", `${formatNumber(coverage, 1)}%`, partialSource ? "확정 항목 배점 ÷ 확인 항목 배점" : "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("정량 준비도", partialSource ? "전체 판단 보류" : quantReadinessLabel(data.readiness_band), partialSource ? "미해소 첨부가 있어 전체 준비도는 미확정" : readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
     ].join("");
 
     const sourceLabels = {

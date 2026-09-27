@@ -4855,6 +4855,7 @@ def _public_criteria_match_aggregate(
     evidence_coverage_pct: float,
     overall_status: EstimateStatus,
     out_of_scope_points: float | None = None,
+    partial_source: bool = False,
 ) -> bool:
     scored = [item for item in items if item.status != "OUT_OF_SCOPE"]
     excluded_total = _sum_public_points(
@@ -4906,8 +4907,11 @@ def _public_criteria_match_aggregate(
     if expected_coverage is None:
         return False
     statuses = {item.status for item in scored}
-    if not scored:
-        expected_status: EstimateStatus = "UNSCORABLE"
+    if partial_source:
+        # Row scores cannot resolve the unread remainder of the notice.
+        expected_status: EstimateStatus = "REVIEW"
+    elif not scored:
+        expected_status = "UNSCORABLE"
     elif "REVIEW" in statuses:
         expected_status = "REVIEW"
     elif "UNSCORABLE" in statuses:
@@ -4938,6 +4942,18 @@ def build_public_quantitative_criteria_snapshot(
 ) -> dict[str, Any] | None:
     """Build a versioned public-only row snapshot or omit it fail closed."""
 
+    partial_source = result.activation_status == "PARTIAL_SOURCE"
+    if partial_source and (
+        result.rule_source_status != "INCOMPLETE"
+        or result.source_validation_status != "INCOMPLETE"
+        or not result.activation_reasons
+        or not result.criteria
+        or result.overall_status != "REVIEW"
+        or result.estimated_points is not None
+        or result.minimum_score is not None
+        or result.meets_minimum is not None
+    ):
+        return None
     try:
         snapshot = PublicQuantitativeCriteriaSnapshot(
             schema_version=PUBLIC_QUANTITATIVE_CRITERIA_SCHEMA_VERSION,
@@ -4967,6 +4983,7 @@ def build_public_quantitative_criteria_snapshot(
         evidence_coverage_pct=result.evidence_coverage_pct,
         overall_status=result.overall_status,
         out_of_scope_points=result.out_of_scope_points,
+        partial_source=partial_source,
     ):
         return None
     return snapshot.model_dump(mode="json")
@@ -4983,6 +5000,7 @@ def _restore_public_quantitative_criteria_snapshot(
     evidence_coverage_pct: float,
     overall_status: EstimateStatus,
     out_of_scope_points: float | None = None,
+    partial_source: bool = False,
 ) -> list[CriterionEstimate] | None:
     try:
         snapshot = PublicQuantitativeCriteriaSnapshot.model_validate(value)
@@ -4998,6 +5016,7 @@ def _restore_public_quantitative_criteria_snapshot(
         evidence_coverage_pct=evidence_coverage_pct,
         overall_status=overall_status,
         out_of_scope_points=out_of_scope_points,
+        partial_source=partial_source,
     ):
         return None
 
@@ -5060,6 +5079,7 @@ def _public_quantitative_projection(
             evidence_coverage_pct=result.evidence_coverage_pct,
             overall_status=result.overall_status,
             out_of_scope_points=result.out_of_scope_points,
+            partial_source=result.activation_status == "PARTIAL_SOURCE",
         )
         if snapshot is not None
         else None
@@ -5076,7 +5096,8 @@ def _public_quantitative_projection(
             "criteria": criteria or [],
             "assumptions": [
                 "공개 화면에서는 회사 사실값과 원문·내부 증빙 식별자를 제외합니다."
-            ],
+            ] + (["원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."]
+                 if result.activation_status == "PARTIAL_SOURCE" else []),
             "evidence_observations": [],
         }
     )
@@ -5287,6 +5308,7 @@ def public_quantitative_snapshot_projection(
     if activation_status not in {
         "AUTO_ACTIVE",
         "PARTIAL_ACTIVE",
+        "PARTIAL_SOURCE",
         "REVIEW_REQUIRED",
         "NOT_APPLICABLE",
     }:
@@ -5301,6 +5323,19 @@ def public_quantitative_snapshot_projection(
         or source_validation_status != "REVIEW_REQUIRED"
     ):
         return None
+    partial_source = activation_status == "PARTIAL_SOURCE"
+    if partial_source and (
+        rule_source_status != "INCOMPLETE"
+        or source_validation_status != "INCOMPLETE"
+        or score.status != "REVIEW"
+        or estimated is not None
+        or not isinstance(basis.get("activation_reasons"), list)
+        or not basis["activation_reasons"]
+        or any(not isinstance(reason, str) or not reason.strip()
+               for reason in basis["activation_reasons"])
+        or "public_criteria" not in basis
+    ):
+        return None
     if lower is None and (
         activation_status not in {"REVIEW_REQUIRED", "NOT_APPLICABLE"}
         or confidence != 0
@@ -5309,6 +5344,7 @@ def public_quantitative_snapshot_projection(
     if lower is not None and activation_status not in {
         "AUTO_ACTIVE",
         "PARTIAL_ACTIVE",
+        "PARTIAL_SOURCE",
     }:
         return None
     if score.status not in {"CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"}:
@@ -5345,8 +5381,9 @@ def public_quantitative_snapshot_projection(
             evidence_coverage_pct=coverage,
             overall_status=score.status,
             out_of_scope_points=out_of_scope,
+            partial_source=partial_source,
         )
-        if restored_criteria is None:
+        if restored_criteria is None or (partial_source and not restored_criteria):
             return None
         public_criteria = restored_criteria
         # The bounded public rows preserve excluded weights even for a stored
@@ -5369,7 +5406,9 @@ def public_quantitative_snapshot_projection(
         if activation_status == "AUTO_ACTIVE"
         else ["PUBLIC_ANALYSIS_REVIEW_REQUIRED"]
     )
-    if total_max == 0:
+    if partial_source:
+        opinion = "원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다. 미해소 첨부의 배점과 최소점수 충족 여부는 판단하지 않았습니다."
+    elif total_max == 0:
         opinion = "저장된 최신 분석에 정량 산정 대상이 없어 점수를 확정하지 않았습니다. 별도 평가 항목을 확인하세요."
     elif estimated is not None:
         opinion = "저장된 최신 분석에서 확정 가능한 정량 합계를 계산했습니다."
@@ -5407,7 +5446,8 @@ def public_quantitative_snapshot_projection(
             criteria=public_criteria,
             assumptions=[
                 "저장된 최신 분석 스냅샷에서 공개 가능한 배점·범위·상태만 표시합니다."
-            ],
+            ] + (["원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."]
+                 if partial_source else []),
             evidence_observations=[],
             opinion=opinion,
             separation_notice=(

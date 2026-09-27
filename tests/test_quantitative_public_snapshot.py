@@ -460,6 +460,126 @@ def test_public_endpoint_returns_latest_current_sanitised_aggregate_without_rees
         assert private_value not in response.text
 
 
+@pytest.mark.parametrize("mutation", [
+    "available-source", "validated-source", "confirmed-total", "estimated-total",
+    "missing-reasons", "empty-reasons", "invalid-reasons", "blank-reason",
+    "missing-items", "empty-items", "wrong-total", "wrong-item-points",
+])
+def test_partial_source_snapshot_rejects_stronger_or_inconsistent_claims(mutation):
+    score = _quantitative_snapshot(
+        value=None, lower=20, upper=20, status="REVIEW", band="GREEN",
+        confirmed=20, coverage=100, public_criteria=_public_criteria_snapshot(),
+    )
+    score.analysis_run_id = "SYN-PARTIAL-RUN"
+    score.basis_json.update({
+        "rule_source_status": "INCOMPLETE",
+        "source_validation_status": "INCOMPLETE",
+        "activation_status": "PARTIAL_SOURCE",
+        "activation_reasons": ["VALIDATED_RECORD_MISSING"],
+    })
+    run = AnalysisRun(
+        id=score.analysis_run_id, input_sha256=PRIVATE_INPUT_SHA256,
+        basis_versions={"quantitative_engine": QUANTITATIVE_ENGINE_VERSION},
+    )
+    valid = public_quantitative_snapshot_projection(run, score)
+    assert valid is not None
+    assert valid.overall_status == "REVIEW"
+    assert valid.confirmed_points == 20
+    assert len(valid.criteria) == 3
+    assert valid.estimated_points is valid.minimum_score is valid.meets_minimum is None
+
+    if mutation == "available-source":
+        score.basis_json["rule_source_status"] = "AVAILABLE"
+    elif mutation == "validated-source":
+        score.basis_json["source_validation_status"] = "SOURCE_VALIDATED"
+    elif mutation == "confirmed-total":
+        score.status, score.value = "CONFIRMED", 20
+    elif mutation == "estimated-total":
+        score.status, score.value = "ESTIMATED", 20
+    elif mutation == "missing-reasons":
+        del score.basis_json["activation_reasons"]
+    elif mutation == "empty-reasons":
+        score.basis_json["activation_reasons"] = []
+    elif mutation == "invalid-reasons":
+        score.basis_json["activation_reasons"] = "VALIDATED_RECORD_MISSING"
+    elif mutation == "blank-reason":
+        score.basis_json["activation_reasons"] = [" "]
+    elif mutation == "missing-items":
+        del score.basis_json["public_criteria"]
+    elif mutation == "empty-items":
+        score.basis_json["public_criteria"]["items"] = []
+    elif mutation == "wrong-total":
+        score.basis_json["total_max_points"] = 25
+    else:
+        score.basis_json["public_criteria"]["items"][0]["lower_points"] = 3
+    assert public_quantitative_snapshot_projection(run, score) is None
+
+
+def test_public_partial_source_restores_estimated_financial_rows(monkeypatch):
+    from pai_loop import quantitative_scoring as qs
+    from pai_loop.quantitative_rule_extraction import QuantitativeValidationIssue
+    from test_quantitative_financial_binding import AS_OF, _profile, _statement
+
+    profile = _profile().model_copy(update={
+        "status": "INCOMPLETE",
+        "issues": (QuantitativeValidationIssue(
+            code="VALIDATED_RECORD_MISSING", disposition="REVIEW",
+            message="SYN unread attachment", attachment_id="SYN-MISSING",
+        ),),
+    })
+    request = qs.quantitative_request_from_candidate_profile(profile, allow_partial_source=True)
+    request = qs.bind_quantitative_company_inputs(request, [_statement()], as_of=AS_OF)
+    result = qs.estimate_quantitative_score(request)
+    assert result.overall_status == "REVIEW"
+    assert result.lower_points == result.upper_points == 4
+    assert [item.estimated_points for item in result.criteria] == [1.5, 2.5]
+    assert all(item.status == "ESTIMATED" for item in result.criteria)
+    public_items = qs.build_public_quantitative_criteria_snapshot(result)
+    assert public_items is not None
+
+    app = _public_app(monkeypatch)
+    with TestClient(app) as public_client:
+        login_department_reader(public_client)
+        with app.state.session_factory() as session:
+            notice = _notice(notice_key="SYN-PARTIAL-FINANCIAL")
+            version = _version(notice, version_no=1, kind="MATERIALIZED_ANALYSIS", digest_character="7")
+            score = _quantitative_snapshot(
+                value=None, lower=result.lower_points, upper=result.upper_points,
+                status="REVIEW", band=result.readiness_band, confirmed=0, coverage=0,
+                public_criteria=public_items,
+            )
+            score.basis_json.update({
+                "rule_source_status": "INCOMPLETE",
+                "source_validation_status": "INCOMPLETE",
+                "activation_status": "PARTIAL_SOURCE",
+                "activation_reasons": result.activation_reasons,
+                "total_max_points": result.total_max_points,
+            })
+            session.add(_run(notice, version, label="partial-financial", generated_at=AS_OF, score=score))
+            session.commit()
+
+        def unexpected_reestimate(*args, **kwargs):
+            raise AssertionError("a stored partial financial subtotal must survive public projection")
+
+        monkeypatch.setattr(qs, "estimate_for_notice", unexpected_reestimate)
+        response = public_client.get("/api/v1/notices/SYN-PARTIAL-FINANCIAL/quantitative-estimate")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["overall_status"] == "REVIEW"
+    assert payload["activation_status"] == "PARTIAL_SOURCE"
+    assert payload["estimated_points"] is None
+    assert (payload["lower_points"], payload["upper_points"], payload["total_max_points"]) == (4, 4, 5)
+    assert [item["label"] for item in payload["criteria"]] == ["재무비율", "재무비율"]
+    assert [item["estimated_points"] for item in payload["criteria"]] == [1.5, 2.5]
+    assert all(item["status"] == "ESTIMATED" for item in payload["criteria"])
+    assert all(item["fact_binding_sha256"] is None and item["source_anchor"] is None for item in payload["criteria"])
+    assert not any(marker in response.text for marker in (
+        PRIVATE_BASIS_MARKER, PRIVATE_RULESET, PRIVATE_INPUT_SHA256,
+        PRIVATE_OUTPUT_SHA256, "company.financial", "total_assets", "current_liabilities",
+    ))
+
+
 def test_public_endpoint_restores_safe_item_rows_from_current_snapshot(
     monkeypatch,
 ) -> None:
