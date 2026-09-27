@@ -90,7 +90,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.7"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.8"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -1677,7 +1677,7 @@ def _current_dynamic_quantitative_profile(
         item["attachment_id"]: _canonical_digest(item) for item in attachments
     }
     _read_attachments, _read_invalid, attempts = _current_manifest_attempts(
-        versions, validate_accepted=False,
+        versions, validate_accepted=False, preserve_quantitative_proof=True,
     )
 
     expected_documents: dict[str, str] = {}
