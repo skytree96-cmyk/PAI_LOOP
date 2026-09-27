@@ -59,6 +59,15 @@ class _FeedbackClient:
             hit_time_limit=False,
         )
 
+    def fetch_exact_opening_participation(self, **_kwargs):
+        self.request_count += 1
+        company_won = self.rows[0]["company_business_number_match"]
+        return [
+            {"opening_identity": _identity(), "company_business_number_match": own,
+             "final_winner_match": own == company_won, "bid_amount": 95_000}
+            for own in (True, False)
+        ]
+
 
 @pytest.fixture()
 def identity_client(monkeypatch):
@@ -98,6 +107,22 @@ def _refresh(client, **extra):
     response = client.post(REFRESH_URL, json={"notice_keys": [NOTICE_KEY], **extra})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _tied_participation(client, statuses, *, reverse_insertion=False):
+    same_instant = datetime(2025, 2, 1, 3, 4, 5, tzinfo=timezone.utc)
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        rows = [BidOutcome(
+            id=f"00000000-0000-4000-8000-{index + 1:012d}",
+            notice_id=notice.id, outcome_key=f"SYN-tied-{index}", status=status,
+            source="MANUAL_UI", observed_at=same_instant,
+            updated_at=same_instant, created_at=same_instant,
+            evidence_json={"opening_identity": _identity(),
+                           "_workflow": {"record_status": "VALIDATED", "human_reviewed": True}},
+        ) for index, status in enumerate(statuses)]
+        session.add_all(rows[::-1] if reverse_insertion else rows)
+        session.commit()
 
 
 def _automatic_rows(client):
@@ -278,15 +303,7 @@ def test_indistinguishable_human_records_go_to_review_instead_of_a_coin_flip(ide
     낸다. 삽입 순서를 뒤집어도 답이 같아야 한다.
     """
 
-    same_instant = datetime(2025, 2, 1, 3, 4, 5, tzinfo=timezone.utc)
-    for index, status in enumerate(order):
-        _participation(identity_client, _identity(), key=f"SYN-tied-{index}",
-                       status=status, observed_at=same_instant)
-    with identity_client.app.state.session_factory() as session:
-        for row in session.scalars(select(BidOutcome).where(BidOutcome.source == "MANUAL_UI")):
-            row.updated_at = same_instant
-            row.created_at = same_instant
-        session.commit()
+    _tied_participation(identity_client, order)
     with identity_client.app.state.session_factory() as session:
         from pai_loop.outcome_feedback import _latest_human_opening_record
 
@@ -299,6 +316,34 @@ def test_indistinguishable_human_records_go_to_review_instead_of_a_coin_flip(ide
     assert result["reason_code"] == "PARTICIPATION_OPENING_NOT_CONFIRMED"
     assert result["outcome_status"] is None
     assert _automatic_rows(identity_client) == []
+
+
+@pytest.mark.parametrize("order", [("CANCELLED", "SUBMITTED"), ("SUBMITTED", "CANCELLED")])
+@pytest.mark.parametrize("include_participation", [False, True])
+def test_tied_human_conflict_blocks_provider_confirmed_outcome(identity_client, monkeypatch, order, include_participation):
+    _tied_participation(identity_client, order)
+    monkeypatch.setattr(_FeedbackClient, "rows", [_row(
+        company_business_number_match=not include_participation, participant_count=2,
+    )])
+    result = _refresh(identity_client, include_participation=include_participation)["items"][0]
+    assert result["api_calls"] == (2 if include_participation else 1)
+    assert result["result"] == "REVIEW"
+    assert result["reason_code"] == "HUMAN_PARTICIPATION_CONFLICT"
+    assert result["outcome_status"] is None
+    assert _automatic_rows(identity_client) == []
+
+
+@pytest.mark.parametrize("reverse_insertion", [False, True])
+def test_agreeing_tied_submissions_allow_idempotent_loss(identity_client, reverse_insertion):
+    _tied_participation(identity_client, ("SUBMITTED", "SUBMITTED"), reverse_insertion=reverse_insertion)
+    result = _refresh(identity_client)["items"][0]
+    assert result["result"] == "CREATED"
+    assert result["outcome_status"] == "LOST"
+    before = _automatic_rows(identity_client)
+    assert len(before) == 1
+    assert before[0]["evidence"]["participation_basis"]["outcome_key"] in {"SYN-tied-0", "SYN-tied-1"}
+    assert _refresh(identity_client)["items"][0]["result"] == "UNCHANGED"
+    assert _automatic_rows(identity_client) == before
 
 
 def test_unreviewed_provider_observation_does_not_supersede_human_participation(identity_client):
