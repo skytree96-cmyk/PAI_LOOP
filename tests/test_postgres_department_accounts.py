@@ -41,8 +41,8 @@ from pai_loop.teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsS
 
 
 _TEAMS_TABLES_CHILD_FIRST = (
-    TeamsBriefingDelivery.__table__, TeamsFollowDelivery.__table__,
-    TeamsFollow.__table__, TeamsSessionLink.__table__,
+    TeamsBriefingDelivery.__table__,
+    TeamsFollowDelivery.__table__, TeamsFollow.__table__, TeamsSessionLink.__table__,
     TeamsLinkCode.__table__, TeamsRecipient.__table__,
 )
 
