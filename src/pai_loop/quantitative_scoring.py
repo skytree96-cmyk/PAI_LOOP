@@ -81,14 +81,16 @@ from .quantitative_financial import (
 )
 from .quantitative_out_of_scope import out_of_scope_reason
 from .quantitative_personnel import (
+    DerivedPersonnelValue,
     PersonnelRecognitionScope,
     derive_personnel_value,
     load_personnel_roster,
     parse_personnel_recognition_scope,
+    personnel_reference_time,
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.6"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.7"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -2524,12 +2526,17 @@ def resolve_financial_register_facts(
 def _top_bracket_threshold(criterion: QuantitativeCriterion) -> float | None:
     """The value at which a larger count can no longer improve the score."""
 
-    thresholds = [
-        bracket.min_value
+    top_brackets = [
+        bracket
         for bracket in (criterion.brackets or [])
         if bracket.min_value is not None
+        and bracket.max_value is None
+        and bracket.points == criterion.max_points
     ]
-    return max(thresholds) if thresholds else None
+    if len(top_brackets) != 1:
+        return None
+    top = top_brackets[0]
+    return math.ceil(top.min_value) if top.min_inclusive else math.floor(top.min_value) + 1
 
 
 def resolve_personnel_register_facts(
@@ -2537,6 +2544,7 @@ def resolve_personnel_register_facts(
     company_facts: Iterable[CompanyFact],
     *,
     as_of: datetime,
+    bid_notice_at: datetime | None = None,
 ) -> list[QuantitativeFact]:
     """Apply the operator roster to criteria that count the company payroll.
 
@@ -2545,18 +2553,34 @@ def resolve_personnel_register_facts(
     manual: no company record can say who will be assigned to one bid.
     """
 
-    roster = load_personnel_roster(list(company_facts))
+    stored_facts = tuple(company_facts)
     resolved: list[QuantitativeFact] = []
     for criterion in criteria:
         scope = criterion.personnel_scope
         if scope is None:
             continue
-        derived = derive_personnel_value(
-            scope,
-            roster,
-            as_of=as_of,
-            sufficiency_value=_top_bracket_threshold(criterion),
+        reference = personnel_reference_time(
+            scope, as_of=as_of, bid_notice_at=bid_notice_at,
         )
+        if reference is None:
+            derived = DerivedPersonnelValue(
+                status="REVIEW", rationale="인력 산정 기준 공고일이 없어 자동 계산을 중지했습니다.",
+            )
+        else:
+            loaded = load_personnel_roster(stored_facts, as_of=reference)
+            derived = (
+                derive_personnel_value(
+                    scope, loaded.roster.members, as_of=as_of,
+                    bid_notice_at=bid_notice_at,
+                    sufficiency_value=_top_bracket_threshold(criterion),
+                )
+                if loaded.roster is not None else
+                DerivedPersonnelValue(status="REVIEW", rationale=loaded.reason)
+            )
+            if loaded.projected:
+                derived = derived.model_copy(update={
+                    "rationale": (derived.rationale + " " + loaded.reason)[:1_000],
+                })
         resolved.append(
             QuantitativeFact(
                 metric_key=criterion.metric_key,
@@ -4713,7 +4737,7 @@ def bind_quantitative_company_inputs(
         request.criteria, stored_facts, as_of=as_of,
     ))
     register_facts.extend(resolve_personnel_register_facts(
-        request.criteria, stored_facts, as_of=as_of,
+        request.criteria, stored_facts, as_of=as_of, bid_notice_at=bid_notice_at,
     ))
     register_identities = {
         (item.metric_key, item.fact_binding_sha256) for item in register_facts
@@ -5055,7 +5079,11 @@ def _restore_public_quantitative_criteria_snapshot(
                 upper_points=item.upper_points,
                 confidence=0,
                 status=item.status,
-                rationale=rationale_by_status[item.status],
+                rationale=(
+                    "현재 명부 기반 추정이며, 미래 기준일은 현재 명부 유지 가정과 기준일 재확인이 필요합니다."
+                    if item.display_code == "PERSONNEL_COUNT" and item.status == "ESTIMATED"
+                    else rationale_by_status[item.status]
+                ),
                 assumptions=[],
             )
         )

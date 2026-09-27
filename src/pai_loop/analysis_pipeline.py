@@ -66,6 +66,7 @@ from .models import (
 from .notice_freshness import authoritative_pps_notice_is_cancelled
 from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION, BOUND_PREDECESSOR_KINDS, LEGACY_CASE_KINDS
 from .pricing_profiles import pricing_profile_for_document
+from .quantitative_personnel import PERSONNEL_ROSTER_FACT_KEY
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
     QUANTITATIVE_CANONICAL_FACT_KEYS,
@@ -1130,7 +1131,11 @@ def _selected_fact_manifest(
 ) -> list[dict[str, str]]:
     manifest: list[dict[str, str]] = []
     for fact in company_facts:
-        if fact.fact_key not in fact_keys or not fact_is_effective(fact, deadline):
+        if fact.fact_key not in fact_keys:
+            continue
+        # Raw roster selection has its own snapshot/reference-date validation.
+        # Track every candidate privately, even if its score stays unchanged.
+        if fact.fact_key != PERSONNEL_ROSTER_FACT_KEY and not fact_is_effective(fact, deadline):
             continue
         evidence = fact.evidence
         basis_sha256 = _digest(
@@ -1928,6 +1933,7 @@ def run_analysis_pipeline(
                 fact_keys=(
                     {item.fact_key for item in prospective_atomics}
                     | set(QUANTITATIVE_CANONICAL_FACT_KEYS)
+                    | {PERSONNEL_ROSTER_FACT_KEY}
                 ),
                 deadline=notice.deadline,
             )
