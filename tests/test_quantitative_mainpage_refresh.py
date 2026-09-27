@@ -21,7 +21,7 @@ from test_quantitative_auto_activation import _company_fact
 from test_quantitative_count_ranges import ATT, fixture
 
 
-def stored_source(session, *, label, mixed):
+def stored_source(session, *, label, mixed, incomplete=False):
     payload, source = fixture(inline=True)
     criterion = payload["quantitative_tables"][0]["criteria"][0]
     old = criterion["recognition_conditions"][0]["literal"]
@@ -54,6 +54,13 @@ def stored_source(session, *, label, mixed):
     attachment = dict(attachment_id=attachment_id, file_name="SYN 제안요청서.pdf", media_type="application/pdf",
         slot=1, url="https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=SYN-FREE&fileSeq=1")
     manifest = [attachment]
+    if incomplete:
+        manifest.append({
+            "attachment_id": "PPS-ATT-" + hashlib.sha256(b"SYN-MISSING-SOURCE").hexdigest()[:24],
+            "file_name": "SYN unread attachment.pdf", "media_type": "application/pdf",
+            "slot": 2,
+            "url": "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=SYN-FREE&fileSeq=2",
+        })
     document_sha = hashlib.sha256(source.encode()).hexdigest()
     record = validate_quantitative_attachment_extraction(payload, source_text=source,
         attachment_id=attachment_id, document_sha256=document_sha, manifest_sha256=_digest(manifest))
@@ -78,8 +85,10 @@ def stored_source(session, *, label, mixed):
     ]
     session.add(notice)
     session.flush()
-    req = quantitative_request_from_candidate_profile(_current_dynamic_quantitative_profile(notice))
-    assert req.activation_status == "AUTO_ACTIVE", req.activation_reasons
+    req = quantitative_request_from_candidate_profile(
+        _current_dynamic_quantitative_profile(notice), allow_partial_source=incomplete,
+    )
+    assert req.activation_status == ("PARTIAL_SOURCE" if incomplete else "AUTO_ACTIVE"), req.activation_reasons
     credit_binding = next(item.fact_binding_sha256 for item in req.criteria if item.metric_key == "company.credit_rating")
     fact = _company_fact(fact_key="company.credit_rating", value={"value":"A0", "unit":"등급", "fact_binding_sha256":credit_binding})
     fact.source = "SYN"
@@ -158,6 +167,75 @@ def test_stored_inputs_refresh_to_mainpage_without_paid_calls(client, monkeypatc
         assert (result["confirmed_points"], result["lower_points"], result["upper_points"]) == (5, 5, 10)
         assert result["estimated_points"] is None
         assert any(item["estimated_points"] is None and item["rationale"] for item in result["criteria"])
+    assert "SYN-CREDIT-EVIDENCE" not in public.text
+    assert all(item["fact_binding_sha256"] is None and item["source_anchor"] is None for item in result["criteria"])
+    with client.app.state.session_factory() as session:
+        assert session.scalar(select(func.count(AnalysisRun.id))) == before_runs
+        assert session.scalar(select(func.count(NoticeVersion.id))) == before_versions
+
+
+@pytest.mark.parametrize("with_credit_fact", [True, False])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_partial_source_subtotal_persists_and_reaches_public_items_without_reestimate(
+    client, monkeypatch, with_credit_fact, mixed,
+):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("SYN_PAID_OR_SOURCE_ENRICHMENT_FORBIDDEN")
+
+    monkeypatch.setattr("pai_loop.analysis_api._enrich_one_notice", forbidden)
+    monkeypatch.setattr("pai_loop.integrations.openai_extraction.OpenAIExtractionClient.extract", forbidden)
+    monkeypatch.setattr("pai_loop.integrations.openai_extraction.OpenAIExtractionClient.extract_quantitative_probe", forbidden)
+    with client.app.state.session_factory() as session:
+        notice, fact = stored_source(session, label="partial-source", mixed=mixed, incomplete=True)
+        key = notice.notice_key
+        if not with_credit_fact:
+            session.delete(fact)
+        session.commit()
+
+    path = f"/api/v1/notices/{key}/quantitative-estimate"
+    internal = client.get(path)
+    assert internal.status_code == 200, internal.text
+    expected = internal.json()
+    assert expected["activation_status"] == "PARTIAL_SOURCE", expected
+    assert expected["overall_status"] == "REVIEW"
+    assert expected["confirmed_points"] == (5 if with_credit_fact else 0)
+    assert expected["lower_points"] == (5 if with_credit_fact else 0)
+    assert expected["upper_points"] == expected["total_max_points"] == (10 if mixed else 5)
+    assert expected["estimated_points"] is None
+
+    batch = client.post("/api/v1/notices/analysis/batch", json={
+        "notice_keys": [key], "enrich_missing": False, "dry_run": False,
+    })
+    assert batch.status_code == 200, batch.text
+    assert batch.json()["failed"] == 0, batch.json()
+    assert batch.json()["openai_calls"] == 0
+    assert batch.json()["results"][0]["snapshot_status"] in {"CREATED", "REUSED"}
+    with client.app.state.session_factory() as session:
+        score = session.scalar(select(ScoreSnapshot).where(ScoreSnapshot.score_key == "quantitative.total"))
+        assert score.status == "REVIEW"
+        assert score.value is None
+        assert score.basis_json["activation_status"] == "PARTIAL_SOURCE"
+        assert len(score.basis_json["public_criteria"]["items"]) == (2 if mixed else 1)
+        before_runs = session.scalar(select(func.count(AnalysisRun.id)))
+        before_versions = session.scalar(select(func.count(NoticeVersion.id)))
+
+    monkeypatch.setattr("pai_loop.quantitative_scoring.estimate_for_notice", forbidden)
+    client.app.state.settings = replace(client.app.state.settings, public_read_only=True)
+    login_department_reader(client)
+    public = client.get(path)
+    assert public.status_code == 200, public.text
+    result = public.json()
+    assert result["activation_status"] == "PARTIAL_SOURCE"
+    assert result["rule_source_status"] == result["source_validation_status"] == "INCOMPLETE"
+    assert result["overall_status"] == "REVIEW"
+    for field in ("confirmed_points", "lower_points", "upper_points", "total_max_points"):
+        assert result[field] == expected[field]
+    assert result["estimated_points"] is result["minimum_score"] is result["meets_minimum"] is None
+    assert len(result["criteria"]) == (2 if mixed else 1)
+    assert [item["status"] for item in result["criteria"]] == [item["status"] for item in expected["criteria"]]
+    assert any("공고 총점이 아닙니다" in item for item in result["assumptions"])
+    assert result["activation_reasons"]
+    assert public.headers["cache-control"] == "no-store"
     assert "SYN-CREDIT-EVIDENCE" not in public.text
     assert all(item["fact_binding_sha256"] is None and item["source_anchor"] is None for item in result["criteria"])
     with client.app.state.session_factory() as session:
