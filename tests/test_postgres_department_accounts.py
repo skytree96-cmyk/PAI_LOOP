@@ -27,6 +27,7 @@ from sqlalchemy.exc import ArgumentError
 
 from pai_loop.account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, _session_hash, departments, now_utc, password_hash
+from pai_loop.briefing_models import TeamsBriefingDelivery
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_session_factory
 from pai_loop.followup_models import TeamsFollow, TeamsFollowDelivery
@@ -40,7 +41,8 @@ from pai_loop.teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsS
 
 
 _TEAMS_TABLES_CHILD_FIRST = (
-    TeamsFollowDelivery.__table__, TeamsFollow.__table__, TeamsSessionLink.__table__,
+    TeamsBriefingDelivery.__table__, TeamsFollowDelivery.__table__,
+    TeamsFollow.__table__, TeamsSessionLink.__table__,
     TeamsLinkCode.__table__, TeamsRecipient.__table__,
 )
 
@@ -51,6 +53,16 @@ def _drop_empty_teams_tables(connection):
     for table in _TEAMS_TABLES_CHILD_FIRST:
         assert connection.scalar(select(func.count()).select_from(table)) == 0
         table.drop(connection)
+
+
+def test_pre_account_teams_drop_order_covers_foreign_key_dependencies():
+    drop_order = {table: index for index, table in enumerate(_TEAMS_TABLES_CHILD_FIRST)}
+    for table in Base.metadata.tables.values():
+        for foreign_key in table.foreign_keys:
+            parent = foreign_key.column.table
+            if parent in drop_order and table is not parent:
+                assert table in drop_order, f"{table.name} must be dropped before {parent.name}"
+                assert drop_order[table] < drop_order[parent], f"{table.name} must be dropped before {parent.name}"
 
 
 def _disposable_postgres_url() -> URL:
