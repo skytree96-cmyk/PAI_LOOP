@@ -73,6 +73,7 @@ _TARGETED_RECORD_FINGERPRINT_REVISIONS = {
     "ATTACHMENT_LOCAL_QUANTITATIVE_TABLE_ABSENT": "unnamed-local-table-absence-v2",
     "MINIMUM_SCORE_EXCEEDS_TOTAL": "overall-cutoff-source-census-v2",
     "MAX_POINTS_LITERAL_MISMATCH": "own-criterion-maximum-suffix-v1",
+    "CRITERION_LITERAL_MISMATCH": "numbered-criterion-header-body-v1",
     # A bracket award stated as a score anywhere in its own criterion is now
     # provable, so a record that stored this issue must be revalidated. The
     # separate 배점의 content trigger below keeps its own revision.
@@ -5134,6 +5135,71 @@ def _sourcewide_ambiguity_resolution_blocker(
     return None
 
 
+def _rebind_numbered_criterion_headers(
+    payload: ExtractionPayload, *, source: str, attachment_id: str,
+) -> ExtractionPayload:
+    """Reorder a misplaced header suffix only around its unchanged source body."""
+    lines = _source_lines(source)
+    suffix = r"평가\s*기준\s*및\s*배점\s*[:：]\s*(?P<points>\d+(?:\.\d+)?)\s*점"
+    compact = lambda value: re.sub(r"\s+", "", value)
+    repaired_tables = []
+    for table in payload.quantitative_tables:
+        repaired = []
+        for candidate in table.criteria:
+            result = candidate
+            old = re.fullmatch(rf"(?P<body>.+?)\s*{suffix}", candidate.criterion_literal.strip())
+            summary = _unique_anchor_line_span(lines, candidate.evidence.quote)
+            if (
+                candidate.metric not in {"PERSONNEL_COUNT", "PERFORMANCE_COUNT"}
+                or candidate.evidence.attachment_id != attachment_id
+                or old is None or summary is None
+                or _literal_is_anchored(candidate.criterion_literal, candidate.evidence, source)
+                or Decimal(old.group("points")) != _decimal(candidate.max_points)
+                or _condition_numbers(candidate.evidence.quote) != [candidate.max_points]
+                or not compact(candidate.label)
+                or compact(candidate.label) not in compact(candidate.evidence.quote)
+            ):
+                repaired.append(result)
+                continue
+            body = _unique_anchor_line_span(lines, old.group("body"))
+            if body is None or not 1 <= body[1] - body[0] <= 2 or body[0] < 4:
+                repaired.append(result)
+                continue
+            start, end = body[0] - 4, body[1]
+            heading = re.fullmatch(rf"\d{{1,3}}[.)]\s*(?P<label>.+?)\s*{suffix}", lines[start])
+            window = "\n".join(lines[start:end])
+            if (
+                heading is None
+                or compact(heading.group("label")) != compact(candidate.label)
+                or Decimal(heading.group("points")) != _decimal(candidate.max_points)
+                or tuple(compact(line) for line in lines[start + 1:body[0]]) != ("평가항목", "평가기준", "배점")
+                or compact("\n".join(lines[body[0]:end])) != compact(old.group("body"))
+                or _unique_anchor_line_span(lines, lines[start]) != (start, start + 1)
+                or len(window) > _MAX_TABLE_CELL_WINDOW_CHARS
+                or any(not line or _HWP_SECTION_LINE_RE.fullmatch(line) for line in lines[start:end])
+            ):
+                repaired.append(result)
+                continue
+            foreign = []
+            for owner in payload.quantitative_tables:
+                foreign.extend(anchor.quote for anchor in (owner.total_evidence, owner.minimum_evidence) if anchor is not None)
+                for other in owner.criteria:
+                    if other is not candidate:
+                        foreign.extend((other.criterion_literal, other.evidence.quote))
+                    rows = (*other.brackets, *other.cases, *other.recognition_conditions)
+                    if other.threshold is not None:
+                        rows = (*rows, other.threshold)
+                    foreign.extend(text for row in rows for text in (row.literal, row.evidence.quote))
+            if not any(_spans_overlap((start, end), span) for span in _all_anchor_line_spans(lines, foreign)):
+                result = candidate.model_copy(update={
+                    "criterion_literal": window,
+                    "evidence": candidate.evidence.model_copy(update={"quote": window}),
+                })
+            repaired.append(result)
+        repaired_tables.append(table.model_copy(update={"criteria": repaired}))
+    return payload.model_copy(update={"quantitative_tables": repaired_tables})
+
+
 def _rebind_split_table_cell_literals(
     payload: ExtractionPayload,
     *,
@@ -5149,6 +5215,7 @@ def _rebind_split_table_cell_literals(
     lines = _source_lines(source)
     if not payload.quantitative_tables:
         return payload, ()
+    payload = _rebind_numbered_criterion_headers(payload, source=source, attachment_id=attachment_id)
     original_units = {
         (table_index, candidate_index): candidate.unit
         for table_index, table in enumerate(payload.quantitative_tables)

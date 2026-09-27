@@ -14,7 +14,7 @@ scores yields no scope, and no scope means no automatic value.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 
@@ -26,7 +26,9 @@ FinancialRatioKind = Literal[
     "DEBT_TO_EQUITY",
 ]
 FinancialFiscalBasis = Literal["LATEST", "PRIOR_YEAR"]
+FinancialReferenceBasis = Literal["DEADLINE", "PUBLICATION"]
 FINANCIAL_METRIC_KEY = "company.financial.ratio"
+_KST = timezone(timedelta(hours=9))
 # Raw operator input, not a scoreable fact: derivation reads it and stamps the
 # criterion's own binding on the value it produces.
 FINANCIAL_STATEMENT_FACT_KEY = "company.financial.statement"
@@ -42,6 +44,7 @@ class FinancialRecognitionScope(FinancialQuantModel):
     metric_key: Literal["company.financial.ratio"]
     ratio_kind: FinancialRatioKind
     fiscal_basis: FinancialFiscalBasis = "LATEST"
+    reference_basis: FinancialReferenceBasis = "DEADLINE"
     # ``기준비율 31.63%`` printed in the source. When present the score input is
     # the company ratio expressed as a percentage OF that benchmark, which is
     # how 경영상태 평가 is written; when absent the ratio itself is the input.
@@ -50,7 +53,7 @@ class FinancialRecognitionScope(FinancialQuantModel):
 
 
 class CompanyFinancialYear(FinancialQuantModel):
-    """One fiscal year of the operator-maintained statement, in KRW thousands."""
+    """One annual statement, in KRW thousands, without period-end/issuance proof."""
 
     fiscal_year: int = Field(ge=1900, le=2200)
     total_assets: Decimal = Field(gt=0)
@@ -88,7 +91,11 @@ _RATIO_PATTERNS: tuple[tuple[FinancialRatioKind, re.Pattern[str]], ...] = (
     ),
 )
 _BENCHMARK_RE = re.compile(r"기준\s*비율\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%")
-_PRIOR_YEAR_RE = re.compile(r"직전\s*년도|전년도|전기")
+_PRIOR_YEAR_RE = re.compile(r"직전\s*(?:년도|연도)|전\s*년도")
+_AMBIGUOUS_PERIOD_RE = re.compile(r"전전\s*년도|(?<![가-힣])전기(?![가-힣])|전기\s*(?:말|결산|재무)")
+_PUBLICATION_REFERENCE_RE = re.compile(r"(?:입찰\s*)?공고\s*일(?:자)?\s*(?:기준|현재)")
+_DEADLINE_REFERENCE_RE = re.compile(r"(?:입찰\s*)?마감\s*일(?:자)?\s*(?:기준|현재)")
+_UNSUPPORTED_REFERENCE_RE = re.compile(r"공고\s*일(?:자)?\s*전\s*(?:월|년|일)|(?:19|20|21|22)\d{2}\s*년")
 # A row that scores what the bidder proposes, not what the company is.
 _BID_PROPOSAL_RE = re.compile(r"인건비\s*편성|기초\s*금액\s*대비|투찰|제안\s*가격")
 
@@ -117,11 +124,22 @@ def parse_financial_recognition_scope(
         # Silent about the ratio, or scoring more than one in a single row.
         return None
 
+    publication_reference = bool(_PUBLICATION_REFERENCE_RE.search(text))
+    deadline_reference = bool(_DEADLINE_REFERENCE_RE.search(text))
+    if (
+        _AMBIGUOUS_PERIOD_RE.search(text)
+        or _UNSUPPORTED_REFERENCE_RE.search(text)
+        or (publication_reference and deadline_reference)
+        or (re.search(r"공고\s*일", text) and not publication_reference)
+    ):
+        return None
+
     benchmark = _BENCHMARK_RE.search(text)
     return FinancialRecognitionScope(
         metric_key=FINANCIAL_METRIC_KEY,
         ratio_kind=matched[0],
         fiscal_basis="PRIOR_YEAR" if _PRIOR_YEAR_RE.search(text) else "LATEST",
+        reference_basis="PUBLICATION" if publication_reference else "DEADLINE",
         benchmark_pct=float(benchmark.group(1)) if benchmark else None,
         source_literal=text[:2_000],
     )
@@ -145,11 +163,29 @@ def derive_financial_value(
     statements: list[CompanyFinancialYear],
     *,
     as_of: datetime,
+    bid_notice_at: datetime | None = None,
 ) -> DerivedFinancialValue:
     """Compute the score input this criterion asks for, or refuse to guess."""
 
+    reference = as_of
+    if scope.reference_basis == "PUBLICATION":
+        if bid_notice_at is None:
+            return DerivedFinancialValue(
+                status="REVIEW",
+                rationale="원문이 요구하는 공고일이 없어 적용 회계연도를 확정할 수 없습니다.",
+            )
+        reference = bid_notice_at
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    reference_year = reference.astimezone(_KST).year
+    target_year = reference_year - 1 if scope.fiscal_basis == "PRIOR_YEAR" else None
+    # A year-only input cannot prove that the current annual period is closed.
+    # Prior closed-year inputs still remain estimates, not issued-date evidence.
     usable = sorted(
-        (item for item in statements if item.fiscal_year <= as_of.year),
+        (item for item in statements if (
+            item.fiscal_year == target_year if target_year is not None
+            else item.fiscal_year < reference_year
+        )),
         key=lambda item: item.fiscal_year,
         reverse=True,
     )
@@ -157,18 +193,12 @@ def derive_financial_value(
         return DerivedFinancialValue(
             status="REVIEW",
             rationale=(
-                "평가 기준일 이전 회계연도의 재무제표가 없어 자동 계산을 중지했습니다."
+                f"평가 기준일의 전년도인 {target_year}년도 재무제표가 없어 자동 계산을 중지했습니다."
+                if target_year is not None
+                else "평가 기준일 이전 회계연도의 재무제표가 없어 자동 계산을 중지했습니다."
             ),
         )
-    index = 1 if scope.fiscal_basis == "PRIOR_YEAR" else 0
-    if index >= len(usable):
-        return DerivedFinancialValue(
-            status="REVIEW",
-            rationale=(
-                "원문이 요구하는 회계연도의 재무제표가 없어 자동 계산을 중지했습니다."
-            ),
-        )
-    year = usable[index]
+    year = usable[0]
     ratio = _ratio_pct(year, scope.ratio_kind)
     if ratio is None:
         return DerivedFinancialValue(

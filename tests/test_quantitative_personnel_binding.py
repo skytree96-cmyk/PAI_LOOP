@@ -41,6 +41,7 @@ def _member(key="SYN-1", **updates):
         "credentials": [],
         "credentials_recorded": True,
         "research_grade": "RESEARCHER",
+        "regular_employee": None,
     }
     row.update(updates)
     return row

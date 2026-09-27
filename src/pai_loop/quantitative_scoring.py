@@ -90,7 +90,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.9"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.10"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -2482,6 +2482,7 @@ def resolve_financial_register_facts(
     company_facts: Iterable[CompanyFact],
     *,
     as_of: datetime,
+    bid_notice_at: datetime | None = None,
 ) -> list[QuantitativeFact]:
     """Apply the operator statement to criteria that name the ratio they score.
 
@@ -2507,7 +2508,9 @@ def resolve_financial_register_facts(
                 rationale="동일 회계연도의 재무제표 값이 상충하여 적용할 재무비율을 확정할 수 없습니다.",
             ))
             continue
-        derived = derive_financial_value(scope, statement, as_of=as_of)
+        derived = derive_financial_value(
+            scope, statement, as_of=as_of, bid_notice_at=bid_notice_at,
+        )
         resolved.append(
             QuantitativeFact(
                 metric_key=criterion.metric_key,
@@ -2546,12 +2549,7 @@ def resolve_personnel_register_facts(
     as_of: datetime,
     bid_notice_at: datetime | None = None,
 ) -> list[QuantitativeFact]:
-    """Apply the operator roster to criteria that count the company payroll.
-
-    Only criteria whose source binds the count to the payroll produce a scope,
-    so a row scored from ``사업수행인력 투입계획`` is skipped here and stays
-    manual: no company record can say who will be assigned to one bid.
-    """
+    """Apply a reviewed roster, with separately attested assignment forecasts."""
 
     stored_facts = tuple(company_facts)
     resolved: list[QuantitativeFact] = []
@@ -2573,6 +2571,8 @@ def resolve_personnel_register_facts(
                     scope, loaded.roster.members, as_of=as_of,
                     bid_notice_at=bid_notice_at,
                     sufficiency_value=_top_bracket_threshold(criterion),
+                    allow_assignment_capacity=(loaded.roster.assignment_assumption
+                        == "ALL_QUALIFIED_ROSTER_MEMBERS_AVAILABLE"),
                 )
                 if loaded.roster is not None else
                 DerivedPersonnelValue(status="REVIEW", rationale=loaded.reason)
@@ -3901,7 +3901,7 @@ def _shared_fact_key_is_explicitly_scoped(
     if any(scope is None for scope in scopes):
         return False
     identities = {
-        (scope.ratio_kind, scope.fiscal_basis, scope.benchmark_pct)
+        (scope.ratio_kind, scope.fiscal_basis, scope.reference_basis, scope.benchmark_pct)
         for scope in scopes if scope is not None
     }
     return len(identities) == len(candidates)
@@ -4398,9 +4398,8 @@ def quantitative_request_from_candidate_profile(
             " ".join(
                 value
                 for value in (
-                    # The label alone can carry the disqualifier: rows headed
-                    # ``참여인력`` describe the assigned team however the body
-                    # is worded.
+                    # Preserve assignment wording even if it appears only in
+                    # the label; an attested capacity forecast is not staffing.
                     candidate.label,
                     candidate.criterion_literal,
                     candidate.formula_literal or "",
@@ -4412,6 +4411,7 @@ def quantitative_request_from_candidate_profile(
             recognition_literal=" ".join(
                 item.literal for item in candidate.recognition_conditions if item.literal
             ),
+            allow_assignment_capacity=True,
         )
         scoring_fields: dict[str, Any]
         if candidate.scoring_method == "BRACKET":
@@ -4848,6 +4848,7 @@ def bind_quantitative_company_inputs(
     *,
     as_of: datetime,
     bid_notice_at: datetime | None = None,
+    notice: Notice | None = None,
 ) -> QuantitativeEstimateRequest:
     """Resolve company evidence for an already selected, validated rule request.
 
@@ -4877,11 +4878,14 @@ def bind_quantitative_company_inputs(
         bid_notice_at=bid_notice_at,
     )
     register_facts.extend(resolve_financial_register_facts(
-        request.criteria, stored_facts, as_of=as_of,
+        request.criteria, stored_facts, as_of=as_of, bid_notice_at=bid_notice_at,
     ))
     register_facts.extend(resolve_personnel_register_facts(
         request.criteria, stored_facts, as_of=as_of, bid_notice_at=bid_notice_at,
     ))
+    if notice is not None:
+        from .private_company_evidence import resolve_credit_scenario_facts
+        register_facts.extend(resolve_credit_scenario_facts(notice, request.criteria, stored_facts))
     register_identities = {
         (item.metric_key, item.fact_binding_sha256) for item in register_facts
     }
@@ -4925,6 +4929,7 @@ def estimate_for_notice(
             request, company_facts, performance_records,
             as_of=notice.deadline,
             bid_notice_at=getattr(notice, "published_at", None),
+            notice=notice,
         )
         return estimate_quantitative_score(request)
 
@@ -5223,8 +5228,11 @@ def _restore_public_quantitative_criteria_snapshot(
                 confidence=0,
                 status=item.status,
                 rationale=(
-                    "현재 명부 기반 추정이며, 미래 기준일은 현재 명부 유지 가정과 기준일 재확인이 필요합니다."
+                    "현재 명부 기반 추정이며, 미래 기준일은 현재 명부 유지 가정과 기준일 재확인이 필요합니다. "
+                    "투입인력 평가의 경우 투입 가능 가정이며 실제 배정을 뜻하지 않습니다."
                     if item.display_code == "PERSONNEL_COUNT" and item.status == "ESTIMATED"
+                    else "현재 신용등급과 단독입찰을 가정한 추정치이며, 공고 조건과 제출 시점의 증빙 재확인이 필요합니다."
+                    if item.display_code == "CREDIT_RATING" and item.status == "ESTIMATED"
                     else rationale_by_status[item.status]
                 ),
                 assumptions=[],

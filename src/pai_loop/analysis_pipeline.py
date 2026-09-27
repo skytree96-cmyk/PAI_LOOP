@@ -66,6 +66,7 @@ from .notice_freshness import authoritative_pps_notice_is_cancelled
 from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLICY_VERSION, BOUND_PREDECESSOR_KINDS, LEGACY_CASE_KINDS
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_personnel import PERSONNEL_ROSTER_FACT_KEY
+from .quantitative_credit_scenario import CREDIT_SCENARIO_FACT_KEY
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
     QUANTITATIVE_CANONICAL_FACT_KEYS,
@@ -1133,7 +1134,7 @@ def _selected_fact_manifest(
             continue
         # Raw roster selection has its own snapshot/reference-date validation.
         # Track every candidate privately, even if its score stays unchanged.
-        if fact.fact_key != PERSONNEL_ROSTER_FACT_KEY and not fact_is_effective(fact, deadline):
+        if fact.fact_key not in {PERSONNEL_ROSTER_FACT_KEY, CREDIT_SCENARIO_FACT_KEY} and not fact_is_effective(fact, deadline):
             continue
         evidence = fact.evidence
         basis_sha256 = _digest(
@@ -1150,6 +1151,12 @@ def _selected_fact_manifest(
                 "evidence_issued_at": evidence.issued_at if evidence else None,
                 "evidence_valid_from": evidence.valid_from if evidence else None,
                 "evidence_valid_until": evidence.valid_until if evidence else None,
+                **({"credit_certificate_metadata": evidence.metadata_json if evidence else None,
+                    "credit_certificate_key": evidence.evidence_key if evidence else None,
+                    "credit_certificate_name": evidence.name if evidence else None,
+                    "credit_certificate_type": evidence.evidence_type if evidence else None,
+                    "credit_certificate_location": evidence.source_location if evidence else None}
+                   if fact.fact_key == CREDIT_SCENARIO_FACT_KEY else {}),
             }
         )
         manifest.append({"company_fact_id": fact.id, "basis_sha256": basis_sha256})
@@ -1931,7 +1938,7 @@ def run_analysis_pipeline(
                 fact_keys=(
                     {item.fact_key for item in prospective_atomics}
                     | set(QUANTITATIVE_CANONICAL_FACT_KEYS)
-                    | {PERSONNEL_ROSTER_FACT_KEY}
+                    | {PERSONNEL_ROSTER_FACT_KEY, CREDIT_SCENARIO_FACT_KEY}
                 ),
                 deadline=notice.deadline,
             )

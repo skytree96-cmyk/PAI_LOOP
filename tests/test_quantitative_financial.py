@@ -90,13 +90,12 @@ def test_a_printed_benchmark_converts_the_ratio_to_a_percentage_of_it() -> None:
     assert "기준비율" in derived.rationale
 
 
-def test_prior_year_basis_selects_the_year_before_the_latest() -> None:
+def test_prior_year_basis_selects_the_year_before_the_reference_date() -> None:
     scope = scope_for("직전년도 자기자본비율(자기자본/총자산)")
     assert scope is not None and scope.fiscal_basis == "PRIOR_YEAR"
     derived = derive_financial_value(scope, STATEMENT, as_of=AS_OF)
-    # 2024: 12,422,782 / 26,566,360
-    assert derived.value == pytest.approx(46.76, abs=0.01)
-    assert "2024년도" in derived.rationale
+    assert derived.value == pytest.approx(52.25, abs=0.01)
+    assert "2025년도" in derived.rationale
 
 
 @pytest.mark.parametrize(
@@ -132,8 +131,9 @@ def test_a_statement_that_postdates_the_evaluation_is_not_used() -> None:
     derived = derive_financial_value(
         scope, STATEMENT, as_of=datetime(2024, 6, 1, tzinfo=timezone.utc)
     )
-    # 2025 is in the future for this evaluation, so 2024 is the latest usable.
-    assert derived.value == pytest.approx(46.76, abs=0.01)
+    # A year-only annual statement cannot prove the current year's completion.
+    assert derived.value == pytest.approx(48.26, abs=0.01)
+    assert "2023년도" in derived.rationale
 
 
 def test_no_usable_statement_refuses_rather_than_guesses() -> None:

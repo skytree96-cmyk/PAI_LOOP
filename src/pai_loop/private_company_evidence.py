@@ -26,6 +26,11 @@ from .eligibility_policy import load_public_company_profile
 from .private_performance_normalization import router as performance_normalization_router
 from .models import CompanyFact, Evidence, Notice
 from .quantitative_formula import parse_credit_rating
+from .quantitative_credit_scenario import (
+    CREDIT_SCENARIO_FACT_KEY, CREDIT_SCENARIO_SOURCE, CREDIT_SCENARIO_WARNING,
+    CreditScenarioApplication, CreditScenarioPolicy, credit_conditions_sha256,
+    recognized_credit_scenario_conditions,
+)
 from .quantitative_rule_extraction import QuantitativeCandidateProfile
 from .quantitative_scoring import (
     _current_dynamic_quantitative_profile,
@@ -620,3 +625,165 @@ def bind_private_credit_certificate(notice_key: str, payload: PrivateCreditCerti
     result = register_private_credit_rating(session, payload=registration, fact_binding_sha256=binding)
     return PrivateCreditRatingRegistrationResult(notice_key=notice.notice_key,
                                                 rating=certificate.rating, binding_status=result)
+
+
+class PrivateCreditScenarioContext(CreditScenarioApplication):
+    deadline: datetime
+    recognized_conditions: list[str]
+    assurance: Literal["ESTIMATED_ONLY"] = "ESTIMATED_ONLY"
+
+
+class PrivateCreditScenarioResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    registration_status: Literal["CREATED", "UNCHANGED"]
+    application_count: int
+    assurance: Literal["ESTIMATED_ONLY"] = "ESTIMATED_ONLY"
+
+
+def _credit_scenario_context(notice: Notice) -> PrivateCreditScenarioContext:
+    binding = _credit_rating_binding_for_notice(notice, allow_partial_source=True)
+    profile = _current_dynamic_quantitative_profile(notice)
+    candidates = [row for row in profile.available_candidates if row.metric == "CREDIT_RATING"]
+    if len(candidates) != 1:
+        raise HTTPException(422, "시나리오에 적용할 신용평가 항목이 유일하지 않습니다.")
+    literals = [condition.literal for condition in candidates[0].recognition_conditions]
+    recognized = recognized_credit_scenario_conditions(literals)
+    if recognized is None:
+        raise HTTPException(422, "공통 확인사항으로 해석할 수 없는 신용평가 조건이 있어 개별 검토가 필요합니다.")
+    return PrivateCreditScenarioContext(
+        notice_key=notice.notice_key, deadline=notice.deadline,
+        manifest_sha256=profile.manifest_sha256, fact_binding_sha256=binding,
+        conditions_sha256=credit_conditions_sha256(literals),
+        recognized_conditions=list(recognized),
+    )
+
+
+def _scenario_dates_valid(policy: CreditScenarioPolicy,
+                          certificate: PrivateCreditCertificateRegistration,
+                          notice: Notice) -> bool:
+    published = getattr(notice, "published_at", None)
+    if published is None:
+        return False
+    publication = _korean_deadline_date(published)
+    deadline = _korean_deadline_date(notice.deadline)
+    # Issuance before publication is a conservative sufficient date check;
+    # this scenario cannot invoke the post-publication succession exception.
+    return bool(
+        policy.accepted_on <= deadline <= policy.effective_through <= certificate.valid_until
+        and certificate.issued_on < publication <= deadline
+        and certificate.effective_on <= publication <= certificate.valid_until
+        and certificate.effective_on <= deadline <= certificate.valid_until
+    )
+
+
+@router.get("/notices/{notice_key}/credit-rating/scenario-binding", response_model=PrivateCreditScenarioContext)
+def get_private_credit_scenario_context(notice_key: str, response: Response,
+                                        session: DbSession) -> PrivateCreditScenarioContext:
+    response.headers["Cache-Control"] = "no-store"
+    return _credit_scenario_context(_notice_for_credit_binding(session, notice_key))
+
+
+@router.post("/credit-rating-scenarios", response_model=PrivateCreditScenarioResult)
+def register_private_credit_scenario(payload: CreditScenarioPolicy, response: Response,
+                                      session: DbSession) -> PrivateCreditScenarioResult:
+    """Record approved assumptions, never a human notice review or final fact."""
+    response.headers["Cache-Control"] = "no-store"
+    evidence, certificate = _load_certificate(session, payload.certificate_id)
+    # Serialize same-certificate registrations on PostgreSQL. If a different
+    # writer nevertheless creates duplicate inputs, the resolver fails closed.
+    session.scalar(select(Evidence).where(Evidence.id == evidence.id).with_for_update())
+    if payload.certificate_registration_sha256 != _certificate_metadata(certificate)["registration_sha256"]:
+        raise HTTPException(409, "시나리오가 확인한 증빙 등록 내용이 변경되었습니다.")
+    if payload.accepted_on > datetime.now(_KST).date():
+        raise HTTPException(422, "미래의 확인일을 등록할 수 없습니다.")
+    for application in payload.applications:
+        notice = _notice_for_credit_binding(session, application.notice_key)
+        context = _credit_scenario_context(notice)
+        if application != CreditScenarioApplication.model_validate(
+            context.model_dump(include=set(CreditScenarioApplication.model_fields))
+        ):
+            raise HTTPException(409, "공고 원문이나 신용평가 조건이 변경되었습니다.")
+        if not _scenario_dates_valid(payload, certificate, notice):
+            raise HTTPException(422, "시나리오 기간이나 공고일·마감일 기준 증빙 유효성을 확인할 수 없습니다.")
+    existing = list(session.scalars(select(CompanyFact).where(
+        CompanyFact.fact_key == CREDIT_SCENARIO_FACT_KEY)))
+    serialized = payload.model_dump(mode="json")
+    try:
+        previous_policies = [(fact, CreditScenarioPolicy.model_validate(fact.value)) for fact in existing]
+    except ValidationError:
+        raise HTTPException(409, "기존 신용평가 시나리오의 검토가 필요합니다.") from None
+    for fact, previous in previous_policies:
+        overlap = {app.notice_key for app in previous.applications} & {app.notice_key for app in payload.applications}
+        if not overlap:
+            continue
+        if (fact.value == serialized and fact.source == CREDIT_SCENARIO_SOURCE
+                and fact.verified is True and fact.evidence_id == evidence.id
+                and _instant_equal(fact.effective_from, _start_of_korean_date(payload.accepted_on))
+                and _instant_equal(fact.effective_to, _end_of_korean_date(payload.effective_through))):
+            if sum(any(a.notice_key in overlap for a in previous_policy.applications)
+                   for _, previous_policy in previous_policies) != 1:
+                raise HTTPException(409, "시나리오 입력이 중복되어 검토가 필요합니다.")
+            return PrivateCreditScenarioResult(registration_status="UNCHANGED", application_count=len(payload.applications))
+        raise HTTPException(409, "동일 공고에 기존 시나리오가 있어 별도 검토가 필요합니다.")
+    session.add(CompanyFact(
+        fact_key=CREDIT_SCENARIO_FACT_KEY, value=serialized,
+        value_label="비공개 신용평가 추정 시나리오", evidence=evidence,
+        source=CREDIT_SCENARIO_SOURCE, verified=True,
+        effective_from=_start_of_korean_date(payload.accepted_on),
+        effective_to=_end_of_korean_date(payload.effective_through),
+    ))
+    session.commit()
+    return PrivateCreditScenarioResult(registration_status="CREATED", application_count=len(payload.applications))
+
+
+def resolve_credit_scenario_facts(notice: Notice, criteria, stored_facts):
+    """Recheck source and certificate on every read; raw approval stays ESTIMATED."""
+    from .quantitative_scoring import QuantitativeFact
+
+    credit_rows = [row for row in criteria if row.metric_key == _FACT_KEY]
+    raw = [fact for fact in stored_facts if fact.fact_key == CREDIT_SCENARIO_FACT_KEY]
+    if len(credit_rows) != 1 or not raw:
+        return []
+    row = credit_rows[0]
+    review = QuantitativeFact(metric_key=_FACT_KEY, status="REVIEW",
+        evidence_key=_FACT_KEY,
+        fact_binding_sha256=row.fact_binding_sha256,
+        rationale="신용평가 추정 시나리오의 현재 원문·기간·증빙 결속을 재확인해야 합니다.")
+    applicable = []
+    try:
+        for fact in raw:
+            policy = CreditScenarioPolicy.model_validate(fact.value)
+            applications = [app for app in policy.applications if app.notice_key == notice.notice_key]
+            if applications:
+                applicable.append((fact, policy, applications[0]))
+        if not applicable:
+            return []
+        if len(applicable) != 1:
+            return [review]
+        fact, policy, application = applicable[0]
+        context = _credit_scenario_context(notice)
+        current = CreditScenarioApplication.model_validate(
+            context.model_dump(include=set(CreditScenarioApplication.model_fields)))
+        evidence = fact.evidence
+        if evidence is None or not isinstance(evidence.metadata_json, dict):
+            return [review]
+        certificate = PrivateCreditCertificateRegistration.model_validate(evidence.metadata_json.get("registration"))
+        _check_certificate_company(certificate)
+        if not (
+            application == current and application.fact_binding_sha256 == row.fact_binding_sha256
+            and fact.verified is True and fact.source == CREDIT_SCENARIO_SOURCE
+            and str(policy.certificate_id) == str(evidence.id)
+            and fact.evidence_id == evidence.id
+            and policy.certificate_registration_sha256 == _certificate_metadata(certificate)["registration_sha256"]
+            and _certificate_matches(evidence, certificate)
+            and _instant_equal(fact.effective_from, _start_of_korean_date(policy.accepted_on))
+            and _instant_equal(fact.effective_to, _end_of_korean_date(policy.effective_through))
+            and _scenario_dates_valid(policy, certificate, notice)
+        ):
+            return [review]
+        return [QuantitativeFact(metric_key=_FACT_KEY, status="ESTIMATED", value=certificate.rating,
+            fact_binding_sha256=row.fact_binding_sha256, confidence=0.7,
+            evidence_key=_FACT_KEY, evidence_reference=certificate.evidence_reference,
+            evidence_sha256=certificate.document_sha256, rationale=CREDIT_SCENARIO_WARNING)]
+    except (ValidationError, ValueError, HTTPException):
+        return [review]

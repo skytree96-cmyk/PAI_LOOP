@@ -24,7 +24,10 @@ column, not a volatile tenure formula. Formula/error cells in scoring inputs,
 unknown headers, duplicate rows and unsupported degree/grade values fail closed.
 
 Course completion, candidacy and explicitly unfinished attendance are not degree
-awards. Blank credential cells remain unknown. Blank majors remain unknown for
+awards. Blank credential cells remain unknown unless the operator explicitly
+uses `--confirm-blank-credentials-none`. `--confirm-all-regular-employees` records
+regular employment separately from employment itself. Neither is inferred from
+insurance or a roster row. Blank majors remain unknown for
 the corresponding degree; a bachelor's major cannot satisfy a master's-major
 condition by being combined with an unrelated master's degree.
 
@@ -43,8 +46,9 @@ flat-major/static-tenure input must be prepared again, not silently upgraded.
 Tenure is recomputed from the actual joining date at the KST calendar cutoff.
 Explicit publication-date or fixed-date source rules select that reference;
 otherwise the notice deadline applies. Missing/ambiguous dates, unmodeled career
-requirements, and project-assigned teams cannot be answered by the whole-company
-roster. Missing degree/grade information stays unresolved.
+requirements cannot be answered by the whole-company roster. Missing degree/grade
+information stays unresolved. A regular-only population excludes explicitly
+nonregular staff and does not silently count unknown employment types.
 
 ## Bounded future scenarios
 
@@ -54,6 +58,14 @@ with `--confirm-no-change-projection` can add a bounded
 attestation horizon; it is not extended. The outer company-fact effective range
 must also explicitly admit the scenario date. Dates beyond the projection remain
 unscorable. Projected results are always estimates with a deadline recheck warning.
+
+`--confirm-all-qualified-staff-available` separately records an
+`ALL_QUALIFIED_ROSTER_MEMBERS_AVAILABLE` capacity scenario. An assigned-personnel
+criterion may then estimate how many roster members meet its parsed requirements.
+It does not record an actual project assignment. All source qualification, tenure,
+reference-date and regular-employment restrictions still apply. Unknown career,
+availability-fraction or concurrent-assignment rules require review. Without the
+explicit scenario, assigned-personnel counts remain unresolved.
 
 Public estimated personnel items retain a fixed, nonprivate warning about roster
 assumptions and rechecking. Private counts, joining dates, certificate strings,

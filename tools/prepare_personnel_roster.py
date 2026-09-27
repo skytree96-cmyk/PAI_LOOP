@@ -96,6 +96,9 @@ def normalize_roster_rows(
     snapshot_date: date, verified_through: date,
     confirm_corrected_grades: bool, confirm_employment: bool,
     project_through: date | None = None, confirm_no_change_projection: bool = False,
+    confirm_all_regular_employees: bool = False,
+    confirm_blank_credentials_none: bool = False,
+    confirm_all_qualified_staff_available: bool = False,
 ) -> dict[str, Any]:
     from pydantic import ValidationError
     from pai_loop.quantitative_personnel import PersonnelRosterEnvelope
@@ -162,8 +165,10 @@ def normalize_roster_rows(
         members.append({
             "member_key": hashlib.sha256(f"{source_sha256}:{SHEET}:{number}".encode()).hexdigest(),
             "joined_on": joined.isoformat(), "degrees": degrees,
-            "credentials": credentials, "credentials_recorded": bool(credential_text),
+            "credentials": credentials,
+            "credentials_recorded": bool(credential_text) or confirm_blank_credentials_none,
             "research_grade": GRADES[grade],
+            "regular_employee": True if confirm_all_regular_employees else None,
         })
         if len(members) > MAX_MEMBERS:
             raise RosterPreparationError("ROSTER_TOO_LARGE")
@@ -180,6 +185,8 @@ def normalize_roster_rows(
     if project_through is not None:
         payload.update(projection_through=project_through.isoformat(),
                        projection_assumption="CURRENT_ROSTER_UNCHANGED")
+    if confirm_all_qualified_staff_available:
+        payload["assignment_assumption"] = "ALL_QUALIFIED_ROSTER_MEMBERS_AVAILABLE"
     try:
         return PersonnelRosterEnvelope.model_validate(payload).model_dump(mode="json")
     except ValidationError as exc:
@@ -207,9 +214,12 @@ def roster_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "snapshot_date": payload["snapshot_date"], "verified_through": payload["verified_through"],
         "projection_through": payload.get("projection_through"),
         "projection_assumption": payload.get("projection_assumption"),
+        "assignment_assumption": payload.get("assignment_assumption"),
         "member_count": len(members),
         "research_grade_counts": dict(Counter(row["research_grade"] for row in members)),
         "unknown_credential_count": sum(not row["credentials_recorded"] for row in members),
+        "regular_employee_count": sum(row.get("regular_employee") is True for row in members),
+        "unknown_employment_type_count": sum(row.get("regular_employee") is None for row in members),
         "assurance": "USER_ATTESTED_ESTIMATION_INPUT_NOT_CONFIRMED_SCORE",
         "database_writes": 0, "network_calls": 0,
     }
@@ -222,6 +232,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--verified-through", type=date.fromisoformat, required=True)
     parser.add_argument("--confirm-corrected-grades", action="store_true", required=True)
     parser.add_argument("--confirm-employment", action="store_true", required=True)
+    parser.add_argument("--confirm-all-regular-employees", action="store_true")
+    parser.add_argument("--confirm-blank-credentials-none", action="store_true")
+    parser.add_argument("--confirm-all-qualified-staff-available", action="store_true")
     parser.add_argument("--project-through", type=date.fromisoformat)
     parser.add_argument("--confirm-no-change-projection", action="store_true")
     parser.add_argument("--output", type=Path, help="Optional private JSON outside the repository; never overwritten.")
@@ -234,6 +247,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.workbook, snapshot_date=args.snapshot_date, verified_through=args.verified_through,
             confirm_corrected_grades=args.confirm_corrected_grades,
             confirm_employment=args.confirm_employment,
+            confirm_all_regular_employees=args.confirm_all_regular_employees,
+            confirm_blank_credentials_none=args.confirm_blank_credentials_none,
+            confirm_all_qualified_staff_available=args.confirm_all_qualified_staff_available,
             project_through=args.project_through,
             confirm_no_change_projection=args.confirm_no_change_projection,
         )

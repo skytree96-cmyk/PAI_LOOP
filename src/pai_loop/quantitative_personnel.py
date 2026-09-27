@@ -2,18 +2,18 @@
 
 This mirrors :mod:`pai_loop.quantitative_financial`. A roster count is only a
 company-level fact when the source asks about the payroll -- and many notices
-do not. ``[서식 2] 사업수행인력 투입계획에 따라 평가함`` scores the team the
-bidder assigns to this one contract, which no company record can answer, so
-those rows stay manual. Rows whose recognition conditions read ``4대보험
+do not. ``[서식 2] 사업수행인력 투입계획에 따라 평가함`` scores the assigned
+team. A separate explicit operator assumption permits only a potential-capacity
+estimate, never an actual assignment. Rows whose conditions read ``4대보험
 가입자 명부 제출 시에만 인정`` ask exactly what the roster holds, and those
 are the rows this module derives.
 
 Two properties of the roster shape the design:
 
 * ``박사(수료)`` is a candidate, not a degree holder. Counting it as 박사
-  would overstate the company in a bid document, so the rank mapping puts it
+    would overstate the company in a bid document, so the rank mapping puts it
   at the master's level it actually holds.
-* A blank credential column is unknown, not an absence of credentials. A count is
+* An unattested blank credential column is unknown, not an absence. A count is
   therefore a lower bound, and a lower bound may only be scored when it
   already reaches the top bracket -- below that the true count could sit in a
   higher band, so the row goes to review instead.
@@ -78,6 +78,8 @@ class PersonnelRecognitionScope(PersonnelQuantModel):
     credential_keywords: tuple[str, ...] = Field(default=(), max_length=8)
     major_keywords: tuple[str, ...] = Field(default=(), max_length=8)
     minimum_tenure_months: int = Field(default=0, ge=0, le=600)
+    regular_employment_required: StrictBool = False
+    population_basis: Literal["RETAINED", "ASSIGNED_CAPACITY"] = "RETAINED"
     reference_basis: Literal["DEADLINE", "PUBLICATION", "FIXED_DATE"] = "DEADLINE"
     reference_date: date | None = None
     source_literal: str = Field(min_length=1, max_length=2_000)
@@ -122,6 +124,7 @@ class CompanyPersonnelMember(PersonnelQuantModel):
     credentials: tuple[str, ...] = Field(max_length=24)
     credentials_recorded: StrictBool
     research_grade: ResearchGrade | None = None
+    regular_employee: StrictBool | None = None
 
     @field_validator("credentials")
     @classmethod
@@ -150,6 +153,7 @@ class PersonnelRosterEnvelope(PersonnelQuantModel):
     verified_through: date
     projection_through: date | None = None
     projection_assumption: Literal["CURRENT_ROSTER_UNCHANGED"] | None = None
+    assignment_assumption: Literal["ALL_QUALIFIED_ROSTER_MEMBERS_AVAILABLE"] | None = None
     verification_attestation: Literal["HUMAN_REVIEWED_ROSTER_SNAPSHOT"]
     research_grade_basis: Literal["CORRECTED_FINAL"]
     members: tuple[CompanyPersonnelMember, ...] = Field(min_length=1, max_length=10_000)
@@ -211,6 +215,25 @@ _CREDENTIAL_RE = re.compile(
 )
 _TENURE_RE = re.compile(r"(\d+)\s*(년|개월|월)\s*이상\s*(?:근무|재직|근속)")
 _MAJOR_RE = re.compile(r"([가-힣]{2,10})\s*(?:및\s*관련\s*학과|관련\s*학과|관련\s*전공|전공자)")
+
+
+# Assignment forecasts were previously entirely manual. Enable only this small
+# complete vocabulary, not arbitrary conditions with a few known keywords.
+_CAPACITY_HEAD = re.compile(
+    r"(?:SYN|학사학위이상|석사이상|박사(?:이상)?|책임연구원|연구원이상|"
+    r"보유인력|참여인력|참여인원|투입인력|사업수행인력|"
+    r"평가항목|평가기준|배점|\d+(?:\.\d+)?(?:명(?:이상|이하|미만|초과)?|점)|[-:()/])+")
+_CAPACITY_CONDITIONS = re.compile(
+    r"(?:정규직|정규직원|정규근로자)?"
+    r"(?:재직증명서|4대보험가입자명부|건강보험가입자명부)"
+    r"제출(?:시(?:에만|만)?인정)?")
+
+
+def _supported_capacity_text(head: str, conditions: str) -> bool:
+    return bool(
+        _CAPACITY_HEAD.fullmatch(re.sub(r"\s+", "", head))
+        and (not conditions or _CAPACITY_CONDITIONS.fullmatch(re.sub(r"\s+", "", conditions)))
+    )
 
 
 _FIXED_REFERENCE_RE = re.compile(
@@ -289,6 +312,7 @@ def parse_personnel_recognition_scope(
     *,
     metric_key: str,
     recognition_literal: str = "",
+    allow_assignment_capacity: bool = False,
 ) -> PersonnelRecognitionScope | None:
     """Parse the population a row counts, or refuse when it is a bid decision.
 
@@ -304,16 +328,30 @@ def parse_personnel_recognition_scope(
     conditions = " ".join(recognition_literal.split())
     if not head:
         return None
-    if _ASSIGNMENT_RE.search(head) or _ASSIGNMENT_RE.search(conditions):
+    assigned = bool(_ASSIGNMENT_RE.search(head) or _ASSIGNMENT_RE.search(conditions))
+    if assigned and not allow_assignment_capacity:
         return None
 
     combined = head + " " + conditions
+    compact = _normalise(combined)
+    if assigned and not _supported_capacity_text(head, conditions):
+        return None
+    # Mixed or explicitly unrestricted employment populations need their own
+    # grammar; they are not equivalent to a regular-employee-only population.
+    if re.search(r"비정규|계약직|일용직|고용형태무관", compact) or re.search(
+        r"정규(?:직(?:원)?|근로자)(?:여부|을|를|은|는|이)?"
+        r"(?:제외|외|무관|관계없|불문|불필요|아닌)", compact,
+    ):
+        return None
+    regular_employment = bool(re.search(r"정규(?:직(?:원)?|근로자)", compact))
     # A general roster cannot prove domain experience or specialist employment.
     if re.search(r"경력\s*자|업무\s*경력|유사\s*경력|관련\s*경력", combined):
         return None
     reference = _reference_fields(combined)
     if reference is None:
         return None
+    reference["regular_employment_required"] = regular_employment
+    reference["population_basis"] = "ASSIGNED_CAPACITY" if assigned else "RETAINED"
     tenure = _tenure_months(combined)
     head_majors = tuple(dict.fromkeys(_MAJOR_RE.findall(head)))
     condition_majors = tuple(dict.fromkeys(_MAJOR_RE.findall(conditions)))
@@ -413,13 +451,19 @@ def _matches(
     months -= cutoff.day < member.joined_on.day
     if months < scope.minimum_tenure_months:
         return False
+    if scope.regular_employment_required and member.regular_employee is False:
+        return False
+    employment_unknown = scope.regular_employment_required and member.regular_employee is None
     if scope.basis == "DEGREE":
         floor = scope.degree_floor or "NONE"
         qualifying = tuple(
             degree for degree in member.degrees
             if _DEGREE_RANK[degree.level] >= _DEGREE_RANK[floor]
         )
-        return _major_match(qualifying, scope.major_keywords) if qualifying else False
+        degree_match = _major_match(qualifying, scope.major_keywords) if qualifying else False
+        if degree_match is False:
+            return False
+        return None if degree_match is None or employment_unknown else True
     major_match = _major_match(member.degrees, scope.major_keywords)
     basis_match: bool | None = True
     if scope.basis == "RESEARCH_GRADE":
@@ -438,7 +482,7 @@ def _matches(
             basis_match = None
     if major_match is False or basis_match is False:
         return False
-    return None if major_match is None or basis_match is None else True
+    return None if major_match is None or basis_match is None or employment_unknown else True
 
 
 _BASIS_LABEL: dict[str, str] = {
@@ -456,6 +500,7 @@ def derive_personnel_value(
     as_of: datetime,
     bid_notice_at: datetime | None = None,
     sufficiency_value: float | None = None,
+    allow_assignment_capacity: bool = False,
 ) -> DerivedPersonnelValue:
     """Count the population the row asks for, or refuse to guess.
 
@@ -465,6 +510,10 @@ def derive_personnel_value(
     irrelevant, and falling short of it makes them decisive.
     """
 
+    if scope.population_basis == "ASSIGNED_CAPACITY" and not allow_assignment_capacity:
+        return DerivedPersonnelValue(
+            status="REVIEW", rationale="투입 가능 인력 가정에 대한 사용자 승인이 필요합니다.",
+        )
     if not roster:
         return DerivedPersonnelValue(
             status="REVIEW",
@@ -493,6 +542,10 @@ def derive_personnel_value(
         qualifiers.append("전공 " + "·".join(scope.major_keywords))
     if scope.minimum_tenure_months:
         qualifiers.append("재직 %d개월 이상" % scope.minimum_tenure_months)
+    if scope.regular_employment_required:
+        qualifiers.append("정규직")
+    if scope.population_basis == "ASSIGNED_CAPACITY":
+        qualifiers.append("요건 충족 명부 전원 투입 가능 가정, 실제 배정 아님")
     if scope.basis == "CREDENTIAL":
         qualifiers.append("·".join(scope.credential_keywords))
     suffix = " (" + ", ".join(qualifiers) + ")" if qualifiers else ""
