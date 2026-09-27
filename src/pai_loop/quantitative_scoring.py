@@ -4108,8 +4108,9 @@ def quantitative_request_from_candidate_profile(
 
     ``allow_partial_source`` lets notice scoring report a subtotal from the
     attachments whose rules are already source-validated while the manifest as
-    a whole is unresolved. It stays off for the reviewed-input preview and for
-    company-evidence binding, which remain fail-closed on an incomplete source.
+    a whole is unresolved. It stays off by default; the reviewed-input preview
+    keeps that default, while credit binding applies additional source and
+    activation checks before opting in.
     """
 
     ruleset_version = (
