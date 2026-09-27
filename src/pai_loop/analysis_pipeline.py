@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import math
-import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -97,17 +96,8 @@ from .pps_enrichment import (
     _validated_manifest_attachments,
     _current_manifest_attempts,
     _has_valid_quantitative_record,
-    quantitative_record_proves_available,
+    preserved_quantitative_read_proof,
 )
-
-
-def _extraction_demotion_guard_enabled() -> bool:
-    """Deployment switch for keeping a proof a re-extraction lost.
-
-    Read on each call so the switch needs a restart, not a build.
-    """
-
-    return os.getenv("PAI_LOOP_EXTRACTION_DEMOTION_GUARD", "on").strip().casefold() != "off"
 
 
 PIPELINE_VERSION = "analysis-pipeline-0.6.6"
@@ -408,58 +398,46 @@ def _select_source_versions(
     latest_pps_numbers: dict[str, int] = {}
     latest_new_processing_numbers: dict[str, int] = {}
     latest_new_extraction_numbers: dict[str, int] = {}
+    latest_unsupported_numbers: dict[str, int] = {}
     for version in versions:
         payload = version.source_payload
         if isinstance(payload, dict) and payload.get("kind") == SOURCE_KIND and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
             aid = _attachment_identity(payload, version)
+            contract_kind = classify_attempt_header(payload)
             latest_pps_numbers[aid] = max(latest_pps_numbers.get(aid, -1), version.version_no)
-            if classify_attempt_header(payload) in {"CURRENT", "UNSUPPORTED"}:
+            if contract_kind == "UNSUPPORTED":
+                latest_unsupported_numbers[aid] = max(
+                    latest_unsupported_numbers.get(aid, -1), version.version_no,
+                )
+            if contract_kind in {"CURRENT", "UNSUPPORTED"}:
                 latest_new_extraction_numbers[aid] = max(
                     latest_new_extraction_numbers.get(aid, -1), version.version_no,
                 )
-            if classify_attempt_header(payload) in {"CURRENT", "EXACT_PREVIOUS_EXTRACTION", "UNSUPPORTED"}:
+            if contract_kind in {"CURRENT", "EXACT_PREVIOUS_EXTRACTION", "UNSUPPORTED"}:
                 latest_new_processing_numbers[aid] = max(
                     latest_new_processing_numbers.get(aid, -1), version.version_no,
                 )
-    # Re-reading the same document is not deterministic: a second pass of the
-    # SAME generation can come back with rows the validator refuses while the
-    # earlier pass on the same bytes still proves an activatable rule. Keeping
-    # the earlier proof matches the same-generation fallback already granted to
-    # an invalid newer attempt. A NEW generation still supersedes the old one
-    # unconditionally -- that boundary is deliberate and stays untouched.
+    # Quantitative reads and analysis source selection share the same exact
+    # input identity and contiguous-history barriers when preserving a proof.
     preserved_proof: dict[str, int] = {}
-    if _extraction_demotion_guard_enabled():
-        proven: dict[str, tuple[int, str]] = {}
-        newest_same_kind: dict[str, tuple[int, str]] = {}
-        for version in versions:
-            payload = version.source_payload
-            if (
-                not isinstance(payload, dict)
-                or payload.get("kind") != SOURCE_KIND
-                or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
-            ):
-                continue
-            kind = classify_attempt_header(payload)
-            if kind == "UNSUPPORTED":
-                continue
+    pps_histories: dict[str, list[NoticeVersion]] = {}
+    for version in versions:
+        payload = version.source_payload
+        if (
+            isinstance(payload, dict)
+            and payload.get("kind") == SOURCE_KIND
+            and payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        ):
             aid = _attachment_identity(payload, version)
-            newest = newest_same_kind.get(aid)
-            if newest is None or newest[0] < version.version_no:
-                newest_same_kind[aid] = (version.version_no, kind)
-            if quantitative_record_proves_available(
-                version, attachment_id=aid,
-                current_manifest_sha256=str(payload.get("current_manifest_sha256") or ""),
-            ):
-                previous_proof = proven.get(aid)
-                if previous_proof is None or previous_proof[0] < version.version_no:
-                    proven[aid] = (version.version_no, kind)
-        for aid, (version_no, kind) in proven.items():
-            newest = newest_same_kind.get(aid)
-            if newest is None or newest[0] <= version_no:
-                continue
-            if newest[1] != kind:
-                continue  # A new generation supersedes; see the contract tests.
-            preserved_proof[aid] = version_no
+            pps_histories.setdefault(aid, []).append(version)
+    for aid, history in pps_histories.items():
+        preserved = preserved_quantitative_read_proof(history)
+        if preserved is not None:
+            preserved_proof[aid] = preserved.version_no
+    latest_native_digests = {
+        aid: str(max(history, key=lambda item: item.version_no).file_sha256 or "").casefold()
+        for aid, history in pps_histories.items()
+    }
 
     latest_by_attachment: dict[str, NoticeVersion] = {}
     for version in versions:
@@ -474,6 +452,26 @@ def _select_source_versions(
             payload,
             prompt_version=prompt_version,
         )
+        if payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
+            aid = _attachment_identity(payload, version)
+            if version.version_no < latest_pps_numbers.get(aid, -1):
+                latest_digest = latest_native_digests.get(aid, "")
+                if (
+                    re.fullmatch(r"[a-f0-9]{64}", latest_digest) is None
+                    or str(version.file_sha256 or "").casefold() != latest_digest
+                ):
+                    # Invalid newer records may fall back only on the same
+                    # known native document, never an older file at one URL.
+                    continue
+        if (
+            payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+            and version.version_no < latest_unsupported_numbers.get(
+                _attachment_identity(payload, version), -1,
+            )
+        ):
+            # Unknown newer contracts block every older generation, including
+            # CURRENT. Explicit audit selection already narrowed versions above.
+            continue
         if (
             payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
             and classify_attempt_header(payload) in LEGACY_CASE_KINDS

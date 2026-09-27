@@ -322,7 +322,7 @@ def demoted_same_generation_attempt(notice, old, contract):
     payload.update(
         prompt_version=contract.prompt, schema_version=contract.schema,
         processing_version=contract.processing, status='ACCEPTED',
-        quantitative_validation_record=record, document_sha256=old.file_sha256, result=None,
+        quantitative_validation_record=record, document_sha256=old.file_sha256, result=raw,
     )
     return NoticeVersion(
         id='SYN-DEMOTED-SAME-GENERATION', notice=notice, version_no=3,
@@ -344,10 +344,13 @@ def test_same_generation_rerun_does_not_drop_a_proven_rule(contract):
     notice, _, old, _ = modern_range_notice(contract)
     demoted = demoted_same_generation_attempt(notice, old, contract)
 
-    # Known gap: _current_manifest_attempts still answers with the newest
-    # attempt, so the stored profile keeps reading the demoted one. Only the
-    # analysis source selection is guarded here.
+    # Processing history still reports the newest attempt. Quantitative reads
+    # explicitly opt in to preserving the proof from these identical inputs.
     assert list(_current_manifest_attempts(notice.versions)[2].values()) == [demoted]
+    assert list(_current_manifest_attempts(
+        notice.versions, preserve_quantitative_proof=True,
+    )[2].values()) == [old]
+    assert _current_dynamic_quantitative_profile(notice).status == 'AVAILABLE'
     engine = build_engine('sqlite:///:memory:')
     Base.metadata.create_all(engine)
     session = build_session_factory(engine)()
