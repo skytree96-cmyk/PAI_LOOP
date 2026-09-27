@@ -240,14 +240,14 @@ def test_credit_binding_is_derived_from_one_source_bound_notice_criterion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     notice = SimpleNamespace(versions=[])
-    profile = object()
+    profile = SimpleNamespace(status="AVAILABLE")
     monkeypatch.setattr(
         "pai_loop.private_company_evidence._current_dynamic_quantitative_profile",
         lambda _notice: profile,
     )
     monkeypatch.setattr(
         "pai_loop.private_company_evidence.quantitative_request_from_candidate_profile",
-        lambda _profile: SimpleNamespace(
+        lambda _profile, **_kwargs: SimpleNamespace(
             criteria=[
                 SimpleNamespace(
                     metric_key="company.credit_rating",
@@ -261,7 +261,7 @@ def test_credit_binding_is_derived_from_one_source_bound_notice_criterion(
 
     monkeypatch.setattr(
         "pai_loop.private_company_evidence.quantitative_request_from_candidate_profile",
-        lambda _profile: SimpleNamespace(criteria=[]),
+        lambda _profile, **_kwargs: SimpleNamespace(criteria=[]),
     )
     with pytest.raises(HTTPException) as exc_info:
         _credit_rating_binding_for_notice(notice)

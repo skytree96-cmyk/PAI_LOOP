@@ -26,8 +26,10 @@ from .eligibility_policy import load_public_company_profile
 from .private_performance_normalization import router as performance_normalization_router
 from .models import CompanyFact, Evidence, Notice
 from .quantitative_formula import parse_credit_rating
+from .quantitative_rule_extraction import QuantitativeCandidateProfile
 from .quantitative_scoring import (
     _current_dynamic_quantitative_profile,
+    _profile_activation_reason_partition,
     quantitative_company_fact_payload_sha256,
     quantitative_request_from_candidate_profile,
 )
@@ -150,7 +152,34 @@ def _korean_deadline_date(value: datetime) -> date:
     return _as_utc(value).astimezone(_KST).date()
 
 
-def _credit_rating_binding_for_notice(notice: Notice) -> str:
+def _partial_credit_profile_is_bindable(profile: QuantitativeCandidateProfile) -> bool:
+    candidates = [item for item in profile.available_candidates if item.metric == "CREDIT_RATING"]
+    if len(candidates) != 1 or any(
+        item.metric == "CREDIT_RATING" for item in profile.review_candidates
+    ):
+        return False
+    candidate = candidates[0]
+    identity = (candidate.source_attachment_id, candidate.table_id, candidate.criterion_id)
+    expected = set(profile.expected_attachment_ids)
+    if (
+        candidate.source_attachment_id not in profile.processed_attachment_ids
+        or any(issue.attachment_id not in expected for issue in profile.issues)
+    ):
+        return False
+    # Partial scoring skips the full activation gate. Binding still requires
+    # its table program and this row's anchors, units and compiler to pass.
+    partition = _profile_activation_reason_partition(profile)
+    return not (
+        set(partition.notice_reasons) - {
+            "CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE", "SOURCE_VALIDATION_ISSUES_PRESENT",
+        }
+        or any(row_identity == identity for row_identity, _codes in partition.row_reasons)
+    )
+
+
+def _credit_rating_binding_for_notice(
+    notice: Notice, *, allow_partial_source: bool = False,
+) -> str:
     profile = _current_dynamic_quantitative_profile(notice)
     if profile is None:
         raise HTTPException(
@@ -158,7 +187,14 @@ def _credit_rating_binding_for_notice(notice: Notice) -> str:
             detail="현재 첨부 manifest에 결합된 정량평가표가 없습니다.",
         )
     try:
-        request = quantitative_request_from_candidate_profile(profile)
+        allow_partial_source = (
+            allow_partial_source
+            and profile.status == "INCOMPLETE"
+            and _partial_credit_profile_is_bindable(profile)
+        )
+        request = quantitative_request_from_candidate_profile(
+            profile, allow_partial_source=allow_partial_source,
+        )
     except (ValidationError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -562,7 +598,7 @@ def get_private_credit_binding_context(notice_key: str, response: Response,
     response.headers["Cache-Control"] = "no-store"
     notice = _notice_for_credit_binding(session, notice_key)
     return PrivateCreditBindingContext(notice_key=notice.notice_key, deadline=notice.deadline,
-                                       fact_binding_sha256=_credit_rating_binding_for_notice(notice))
+        fact_binding_sha256=_credit_rating_binding_for_notice(notice, allow_partial_source=True))
 
 
 @router.post("/notices/{notice_key}/credit-rating/bind", response_model=PrivateCreditRatingRegistrationResult)
@@ -574,7 +610,7 @@ def bind_private_credit_certificate(notice_key: str, payload: PrivateCreditCerti
     deadline = _korean_deadline_date(notice.deadline)
     if not (certificate.issued_on <= deadline and certificate.effective_on <= deadline <= certificate.valid_until):
         raise HTTPException(422, "신용평가 증빙이 공고 마감일 기준 유효하지 않습니다.")
-    binding = _credit_rating_binding_for_notice(notice)
+    binding = _credit_rating_binding_for_notice(notice, allow_partial_source=True)
     if binding != payload.expected_fact_binding_sha256:
         raise HTTPException(409, "공고의 신용평가 조건이 변경되어 다시 확인해야 합니다.")
     # Preserve the exact legacy scoreable projection contract and idempotency.
