@@ -27,6 +27,7 @@ from sqlalchemy.exc import ArgumentError
 
 from pai_loop.account_models import AccountAudit, AccountBootstrapPreview, AccountLoginBucket, AccountSession, DepartmentAccount
 from pai_loop.accounts import CSRF_COOKIE, SESSION_COOKIE, _session_hash, departments, now_utc, password_hash
+from pai_loop.briefing_models import TeamsBriefingDelivery
 from pai_loop.config import Settings
 from pai_loop.database import Base, build_session_factory
 from pai_loop.followup_models import TeamsFollow, TeamsFollowDelivery
@@ -40,6 +41,7 @@ from pai_loop.teams_identity_models import TeamsLinkCode, TeamsRecipient, TeamsS
 
 
 _TEAMS_TABLES_CHILD_FIRST = (
+    TeamsBriefingDelivery.__table__,
     TeamsFollowDelivery.__table__, TeamsFollow.__table__, TeamsSessionLink.__table__,
     TeamsLinkCode.__table__, TeamsRecipient.__table__,
 )
