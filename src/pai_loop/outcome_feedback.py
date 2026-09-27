@@ -7,7 +7,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -259,15 +259,57 @@ def _select_provider_result(
     return ordered[0], False, "OTHER_WINNER"
 
 
+class _HumanOpeningRecord(NamedTuple):
+    """가장 최근 사람 기록, 또는 어느 것이 최신인지 말할 수 없다는 사실.
+
+    ``ambiguous`` 는 같은 회차에 대한 사람 기록 여러 건이 기록된 시각으로는
+    서로 구별되지 않고, 그 기록들이 참여 여부를 서로 다르게 말한다는 뜻이다.
+    """
+
+    record: BidOutcome | None
+    ambiguous: bool
+
+
+def _opening_record_order_key(candidate: BidOutcome) -> tuple[datetime, datetime, datetime]:
+    """기록된 시각만으로 최신 여부를 판정한다. 동률이면 세 값이 모두 같다."""
+
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    return (
+        _as_utc(candidate.updated_at) if candidate.updated_at is not None else floor,
+        _as_utc(candidate.observed_at) if candidate.observed_at is not None else floor,
+        _as_utc(candidate.created_at) if candidate.created_at is not None else floor,
+    )
+
+
+def _participation_claim(candidate: BidOutcome) -> tuple[str, str]:
+    """이 기록이 참여에 대해 말하는 내용. 두 기록이 같으면 어느 쪽을 골라도 결론이 같다."""
+
+    workflow = candidate.evidence_json.get("_workflow") if isinstance(candidate.evidence_json, dict) else None
+    record_status = str((workflow or {}).get("record_status") or "").upper()
+    return (record_status, str(candidate.status or "").upper())
+
+
 def _latest_human_opening_record(
     session: Session,
     notice: Notice,
     *,
     opening_identity: dict[str, str],
-) -> BidOutcome | None:
-    candidates = list(
-        session.scalars(
-            select(BidOutcome)
+) -> _HumanOpeningRecord:
+    """같은 회차의 사람 기록 중 가장 최근 것을 고른다.
+
+    시각이 동률일 때 행 id 로 순서를 갈랐었다. id 는 uuid4 라 그 선택은 동전
+    던지기였다. ``created_at``/``updated_at`` 은 SQLite 에서 초 단위이고
+    ``observed_at`` 도 밀리초 단위 벽시계라, 같은 회차의 취소와 새 제출이
+    같은 틱 안에 들어오면 실제로 자주 동률이 된다. 그러면 취소가 더 새로운
+    제출을 이겨서 참여 사실이 사라지기도 하고 아니기도 했다.
+
+    이제 동률이면 어느 쪽이 최신인지 말하지 않는다. 동률인 기록들이 참여
+    여부를 같게 말하면 결론이 하나이므로 그 중 하나를 돌려주고, 다르게 말하면
+    ``ambiguous`` 로 알린다. 호출자는 그 경우 사람에게 넘긴다.
+    """
+
+    rows = session.scalars(
+        select(BidOutcome)
         .where(
             BidOutcome.notice_id == notice.id,
             or_(
@@ -275,10 +317,9 @@ def _latest_human_opening_record(
                 BidOutcome.source != OUTCOME_FEEDBACK_SOURCE,
             ),
         )
-        .order_by(BidOutcome.updated_at.desc(), BidOutcome.observed_at.desc(), BidOutcome.created_at.desc(), BidOutcome.id.desc())
-        ).all()
-    )
-    for candidate in candidates:
+    ).all()
+    candidates = []
+    for candidate in rows:
         evidence = candidate.evidence_json if isinstance(candidate.evidence_json, dict) else {}
         if normalise_opening_identity(evidence.get("opening_identity")) != opening_identity:
             continue
@@ -287,12 +328,20 @@ def _latest_human_opening_record(
         workflow = evidence.get("_workflow")
         if not isinstance(workflow, dict) or workflow.get("human_reviewed") is not True:
             continue
-        return candidate
-    return None
+        candidates.append(candidate)
+    if not candidates:
+        return _HumanOpeningRecord(None, False)
+    newest = max(_opening_record_order_key(candidate) for candidate in candidates)
+    tied = [candidate for candidate in candidates if _opening_record_order_key(candidate) == newest]
+    if len({_participation_claim(candidate) for candidate in tied}) > 1:
+        return _HumanOpeningRecord(None, True)
+    return _HumanOpeningRecord(max(tied, key=lambda candidate: candidate.id), False)
 
 
 def _submission_basis(session: Session, notice: Notice, *, opening_identity: dict[str, str]) -> BidOutcome | None:
-    candidate = _latest_human_opening_record(session, notice, opening_identity=opening_identity)
+    candidate, ambiguous = _latest_human_opening_record(session, notice, opening_identity=opening_identity)
+    if ambiguous:
+        return None
     if candidate is not None and (
         str(candidate.evidence_json["_workflow"].get("record_status") or "").upper() == "VALIDATED"
         and candidate.status in {"SUBMITTED", "WON", "LOST"}
@@ -302,7 +351,9 @@ def _submission_basis(session: Session, notice: Notice, *, opening_identity: dic
 
 
 def _human_participation_conflict(session: Session, notice: Notice, identity: dict[str, str], outcome_status: str) -> bool:
-    candidate = _latest_human_opening_record(session, notice, opening_identity=identity)
+    candidate, ambiguous = _latest_human_opening_record(session, notice, opening_identity=identity)
+    if ambiguous:
+        return True
     return candidate is not None and (
         str(candidate.evidence_json["_workflow"].get("record_status") or "").upper() != "VALIDATED"
         or candidate.status not in {"SUBMITTED", outcome_status}

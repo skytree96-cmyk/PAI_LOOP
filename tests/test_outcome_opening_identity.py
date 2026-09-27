@@ -59,6 +59,15 @@ class _FeedbackClient:
             hit_time_limit=False,
         )
 
+    def fetch_exact_opening_participation(self, **_kwargs):
+        self.request_count += 1
+        company_won = self.rows[0]["company_business_number_match"]
+        return [
+            {"opening_identity": _identity(), "company_business_number_match": own,
+             "final_winner_match": own == company_won, "bid_amount": 95_000}
+            for own in (True, False)
+        ]
+
 
 @pytest.fixture()
 def identity_client(monkeypatch):
@@ -78,7 +87,7 @@ def identity_client(monkeypatch):
         yield client
 
 
-def _participation(client, identity, *, key="SYN-submission", status="SUBMITTED"):
+def _participation(client, identity, *, key="SYN-submission", status="SUBMITTED", observed_at=None):
     with client.app.state.session_factory() as session:
         notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
         evidence = {"_workflow": {"record_status": "VALIDATED", "human_reviewed": True}}
@@ -87,7 +96,7 @@ def _participation(client, identity, *, key="SYN-submission", status="SUBMITTED"
         item = BidOutcome(
             notice_id=notice.id, outcome_key=key, status=status, source="MANUAL_UI",
             submitted_bid_amount=95_000, source_reference="SYN 제출 확인",
-            evidence_json=evidence, observed_at=datetime.now(timezone.utc),
+            evidence_json=evidence, observed_at=observed_at or datetime.now(timezone.utc),
         )
         session.add(item)
         session.commit()
@@ -98,6 +107,22 @@ def _refresh(client, **extra):
     response = client.post(REFRESH_URL, json={"notice_keys": [NOTICE_KEY], **extra})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _tied_participation(client, statuses, *, reverse_insertion=False):
+    same_instant = datetime(2025, 2, 1, 3, 4, 5, tzinfo=timezone.utc)
+    with client.app.state.session_factory() as session:
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        rows = [BidOutcome(
+            id=f"00000000-0000-4000-8000-{index + 1:012d}",
+            notice_id=notice.id, outcome_key=f"SYN-tied-{index}", status=status,
+            source="MANUAL_UI", observed_at=same_instant,
+            updated_at=same_instant, created_at=same_instant,
+            evidence_json={"opening_identity": _identity(),
+                           "_workflow": {"record_status": "VALIDATED", "human_reviewed": True}},
+        ) for index, status in enumerate(statuses)]
+        session.add_all(rows[::-1] if reverse_insertion else rows)
+        session.commit()
 
 
 def _automatic_rows(client):
@@ -254,14 +279,71 @@ def test_manual_opening_identity_edits_keep_previous_identity_evidence(identity_
 
 @pytest.mark.parametrize("same_opening", [False, True])
 def test_new_submission_or_another_opening_cancellation_does_not_hide_participation(identity_client, same_opening):
+    # 같은 회차라면 "취소한 뒤 다시 제출했다" 가 이 시험의 사실이다. 두 기록을 잇달아
+    # 넣으면서 시각을 벽시계에 맡기면 둘이 같은 틱에 들어와 어느 쪽이 나중인지
+    # 기록에 남지 않는다. 시험이 기대는 순서를 시험이 직접 적는다.
+    earlier = datetime.now(timezone.utc) - timedelta(hours=1)
     if same_opening:
-        _participation(identity_client, _identity(), key="SYN-previous-cancellation", status="CANCELLED")
+        _participation(identity_client, _identity(), key="SYN-previous-cancellation",
+                       status="CANCELLED", observed_at=earlier)
         _participation(identity_client, _identity(), key="SYN-new-submission")
     else:
-        _participation(identity_client, _identity())
+        _participation(identity_client, _identity(), observed_at=earlier)
         _participation(identity_client, _identity(rebid_no="3"), key="SYN-other-cancellation", status="CANCELLED")
     assert _refresh(identity_client)["items"][0]["outcome_status"] == "LOST"
     assert len(_automatic_rows(identity_client)) == 1
+
+
+@pytest.mark.parametrize("order", [("CANCELLED", "SUBMITTED"), ("SUBMITTED", "CANCELLED")])
+def test_indistinguishable_human_records_go_to_review_instead_of_a_coin_flip(identity_client, order):
+    """어느 기록이 최신인지 기록으로 말할 수 없으면 사람에게 넘긴다.
+
+    같은 회차의 취소와 제출이 같은 시각에 기록되면, 남은 것은 행 id 뿐인데 그건
+    uuid4 다. 그 순서로 참여 여부를 정하면 같은 데이터가 실행할 때마다 다른 답을
+    낸다. 삽입 순서를 뒤집어도 답이 같아야 한다.
+    """
+
+    _tied_participation(identity_client, order)
+    with identity_client.app.state.session_factory() as session:
+        from pai_loop.outcome_feedback import _latest_human_opening_record
+
+        notice = session.scalar(select(Notice).where(Notice.notice_key == NOTICE_KEY))
+        # 행 id 로 순서를 가르면 여기서 둘 중 하나가 뽑힌다. 뽑지 않아야 한다.
+        assert _latest_human_opening_record(
+            session, notice, opening_identity=_identity()) == (None, True)
+    result = _refresh(identity_client)["items"][0]
+    assert result["result"] == "REVIEW"
+    assert result["reason_code"] == "PARTICIPATION_OPENING_NOT_CONFIRMED"
+    assert result["outcome_status"] is None
+    assert _automatic_rows(identity_client) == []
+
+
+@pytest.mark.parametrize("order", [("CANCELLED", "SUBMITTED"), ("SUBMITTED", "CANCELLED")])
+@pytest.mark.parametrize("include_participation", [False, True])
+def test_tied_human_conflict_blocks_provider_confirmed_outcome(identity_client, monkeypatch, order, include_participation):
+    _tied_participation(identity_client, order)
+    monkeypatch.setattr(_FeedbackClient, "rows", [_row(
+        company_business_number_match=not include_participation, participant_count=2,
+    )])
+    result = _refresh(identity_client, include_participation=include_participation)["items"][0]
+    assert result["api_calls"] == (2 if include_participation else 1)
+    assert result["result"] == "REVIEW"
+    assert result["reason_code"] == "HUMAN_PARTICIPATION_CONFLICT"
+    assert result["outcome_status"] is None
+    assert _automatic_rows(identity_client) == []
+
+
+@pytest.mark.parametrize("reverse_insertion", [False, True])
+def test_agreeing_tied_submissions_allow_idempotent_loss(identity_client, reverse_insertion):
+    _tied_participation(identity_client, ("SUBMITTED", "SUBMITTED"), reverse_insertion=reverse_insertion)
+    result = _refresh(identity_client)["items"][0]
+    assert result["result"] == "CREATED"
+    assert result["outcome_status"] == "LOST"
+    before = _automatic_rows(identity_client)
+    assert len(before) == 1
+    assert before[0]["evidence"]["participation_basis"]["outcome_key"] in {"SYN-tied-0", "SYN-tied-1"}
+    assert _refresh(identity_client)["items"][0]["result"] == "UNCHANGED"
+    assert _automatic_rows(identity_client) == before
 
 
 def test_unreviewed_provider_observation_does_not_supersede_human_participation(identity_client):
