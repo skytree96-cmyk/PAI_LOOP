@@ -64,3 +64,47 @@ changes.
 
 No production registration, provider call, deployment or notification is
 implied by this code. Tests use synthetic sources only.
+
+## Sufficient-row approvals
+
+A second private path, `QuantitativeSufficientRowApproval`, lets a person confirm
+the single printed row the company falls into. Only that row is executed as a
+one-row case program; the other rows of the table are not used, so their
+ambiguity no longer blocks the estimate. The row must still exist verbatim in
+the raw extracted row bound by digest, and the current company value is
+retested on every read: when it no longer falls into the confirmed row the
+criterion becomes unscorable (never 0 or full marks).
+
+- Supported metrics: `CREDIT_RATING`, `PERSONNEL_COUNT`, `FINANCIAL_RATIO`,
+  `PERFORMANCE_COUNT`. Supported rows: `N 이상` (GTE), integer `EQ`/`BETWEEN`
+  ranges for counts, open-ended or integer-bounded count brackets, and credit
+  grade lists. Two-sided numeric ratio brackets and lower tails (`미만`,
+  `이하`) cannot stand alone under the engine's safety rules and are refused.
+- Waivable codes are the printed-literal codes above plus other-row and table
+  codes a reader settles by reading the one applicable row (for example
+  `AMBIGUOUS_RULE`, `CASE_TABLE_NOT_DETERMINISTIC`,
+  `EXTRACTION_DECLARED_INCOMPLETE`, `REQUIRED_EVIDENCE_INCOMPLETE`).
+  `UNKNOWN_METRIC` is never waivable: without a metric there is no company
+  value to test.
+- Credit rows bind the registered certificate (id, registration digest), the
+  row's recognition-condition digest and explicit assertions that the
+  certificate is from a qualified issuer, issued before publication, valid
+  through the deadline, and that no succession, joint, cooperative or startup
+  exception applies. Dates are rechecked on every read. A validated
+  (`AVAILABLE`) credit row whose scenario grammar is unsupported may use the
+  same binding for its certificate fact.
+- Performance rows list the exact register records a person selected, with a
+  window, an optional minimum single-contract amount and a VAT requirement.
+  Every read recounts only records that are still `VALIDATED`, completed and
+  inside those bounds, under the reviewer-selected metric key
+  `company.performance.count.reviewer_selected`; keywords never re-derive it.
+- Personnel and financial rows use the existing roster and statement
+  resolvers.
+
+Operator steps: GET
+`/api/v1/operator-evidence/notices/{notice_key}/quantitative-rows/sufficient-context`,
+then POST `/api/v1/operator-evidence/quantitative-sufficient-rows`. Registration
+runs a probe calculation and is refused unless the confirmed row scores the
+stated award right now. A row may carry only one approval of either kind.
+Results are always `ESTIMATED`, disclose the confirmed-row assumption, and join
+the notice's `PARTIAL_SOURCE` subtotal.

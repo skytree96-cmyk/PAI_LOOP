@@ -65,6 +65,7 @@ from .quantitative_formula import (
     compile_arithmetic_formula,
     compile_case_table,
     compile_category_formula,
+    compile_credit_rating_values,
     evaluate_formula,
     evaluate_formula_range,
 )
@@ -87,11 +88,18 @@ from .quantitative_row_approval import (
     ROW_APPROVAL_REASON,
     ROW_APPROVAL_SOURCE,
     ROW_APPROVAL_WARNING,
+    SUFFICIENT_ROW_FACT_KEY,
+    SUFFICIENT_ROW_SOURCE,
+    SUFFICIENT_ROW_WARNING,
+    SUFFICIENT_WAIVABLE_ISSUE_CODES,
     WAIVABLE_ISSUE_CODES,
     QuantitativeRowApproval,
+    QuantitativeSufficientRowApproval,
+    credit_conditions_digest,
     hyphen_case_rows_match,
     raw_candidate_sha256,
     row_program,
+    sufficient_row_choices,
 )
 from .quantitative_personnel import (
     DerivedPersonnelValue,
@@ -4433,6 +4441,7 @@ class ReviewRowSource:
     source_label: str | None
     raw: Any
     issue_codes: frozenset[str]
+    state: str = "REVIEW"
 
 
 def review_row_sources(
@@ -4670,6 +4679,463 @@ def _partial_subtotal_statement(reasons: Sequence[object]) -> str:
     if ROW_APPROVAL_REASON in reasons:
         return "원문 검증이 끝났거나 사람이 행 해석을 승인한 항목만의 부분 소계이며 공고 총점이 아닙니다."
     return "원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."
+
+
+SELECTED_PERFORMANCE_COUNT_KEY = "company.performance.count.reviewer_selected"
+
+
+def available_row_sources(
+    notice: Notice, profile: QuantitativeCandidateProfile,
+) -> dict[tuple[str, str, str], ReviewRowSource]:
+    """Pair AVAILABLE rows with their raw rows, like review_row_sources."""
+
+    versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
+    _attachments, _invalid, attempts = _current_manifest_attempts(
+        versions, validate_accepted=False, preserve_quantitative_proof=True,
+    )
+    bindings = {item.attachment_id: item.document_sha256 for item in profile.document_bindings}
+    labels = {item.attachment_id: item.source_label for item in profile.document_bindings}
+    identities = [
+        (item.source_attachment_id, item.table_id, item.criterion_id)
+        for item in profile.available_candidates
+    ]
+    sources: dict[tuple[str, str, str], ReviewRowSource] = {}
+    for identity in identities:
+        if identities.count(identity) != 1:
+            continue
+        attachment_id, table_id, criterion_id = identity
+        attempt = attempts.get(attachment_id)
+        payload = (
+            attempt.source_payload
+            if attempt is not None and isinstance(attempt.source_payload, dict) else {}
+        )
+        document_sha256 = bindings.get(attachment_id)
+        if (
+            attempt is None or document_sha256 is None
+            or str(attempt.file_sha256 or "").casefold() != document_sha256
+            or payload.get("status") != "ACCEPTED"
+        ):
+            continue
+        try:
+            extraction = ExtractionPayload.model_validate(payload.get("result"))
+        except (TypeError, ValueError):
+            continue
+        tables = [item for item in extraction.quantitative_tables if item.table_id == table_id]
+        rows = [row for item in tables for row in item.criteria if row.criterion_id == criterion_id]
+        if len(tables) != 1 or len(rows) != 1:
+            continue
+        codes = frozenset(
+            issue.code for issue in profile.issues
+            if issue.attachment_id == attachment_id
+            and issue.table_id in {table_id, None}
+            and issue.criterion_id in {criterion_id, None}
+        )
+        sources[identity] = ReviewRowSource(
+            attachment_id=attachment_id, table_id=table_id, criterion_id=criterion_id,
+            document_sha256=document_sha256, source_label=labels.get(attachment_id),
+            raw=rows[0], issue_codes=codes, state="AVAILABLE",
+        )
+    return sources
+
+
+def _sufficient_row_literal(raw: Any, approval: QuantitativeSufficientRowApproval) -> dict[str, Any] | None:
+    """The one confirmed row as a single case, or None when it cannot stand alone."""
+
+    matches = [
+        choice for choice in sufficient_row_choices(raw)
+        if choice["row_kind"] == approval.row_kind and choice["row_index"] == approval.row_index
+    ]
+    if (
+        len(matches) != 1
+        or matches[0]["row_literal"] != approval.row_literal
+        or abs(matches[0]["award_points"] - approval.award_points) > 1e-9
+        or approval.award_points > raw.max_points
+    ):
+        return None
+    discrete = raw.metric in _DISCRETE_COUNT_METRICS
+    if approval.row_kind == "CASE":
+        case = sorted(raw.cases, key=lambda item: item.row_order)[approval.row_index]
+        if case.operator == "IN":
+            if raw.metric != "CREDIT_RATING" or not case.category_values:
+                return None
+        elif case.operator == "GTE":
+            # A lone GTE row keeps no upper bound, so it may stand alone only as
+            # the table's top band: no other row may start above its cutoff.
+            others = [
+                bound for index, other in enumerate(sorted(raw.cases, key=lambda item: item.row_order))
+                if index != approval.row_index
+                for bound in (other.comparison_value, other.comparison_upper_value)
+                if bound is not None
+            ]
+            if raw.metric == "CREDIT_RATING" or case.comparison_value is None or any(
+                bound >= case.comparison_value for bound in others
+            ):
+                return None
+        elif case.operator in {"EQ", "BETWEEN"}:
+            if not discrete:
+                return None
+        else:
+            return None
+        return {"literal": case.literal, "operator": case.operator,
+                "comparison_value": case.comparison_value,
+                "comparison_upper_value": case.comparison_upper_value,
+                "category_values": tuple(case.category_values), "evidence": case.evidence}
+    bracket = raw.brackets[approval.row_index]
+    if raw.metric == "CREDIT_RATING" or bracket.min_value is None:
+        return None
+    if bracket.max_value is None:
+        if any(other.min_value is not None and other.min_value >= bracket.min_value
+               for index, other in enumerate(raw.brackets) if index != approval.row_index):
+            return None
+        if bracket.min_inclusive:
+            lower = bracket.min_value
+        elif discrete and float(bracket.min_value).is_integer():
+            lower = bracket.min_value + 1
+        else:
+            return None
+        return {"literal": bracket.literal, "operator": "GTE", "comparison_value": lower,
+                "comparison_upper_value": None, "category_values": (), "evidence": bracket.evidence}
+    if not discrete or not all(float(value).is_integer() for value in (bracket.min_value, bracket.max_value)):
+        return None
+    lower = int(bracket.min_value) + (0 if bracket.min_inclusive else 1)
+    upper = int(bracket.max_value) - (0 if bracket.max_inclusive else 1)
+    if lower < 0 or upper < lower:
+        return None
+    if lower == upper:
+        return {"literal": bracket.literal, "operator": "EQ", "comparison_value": float(lower),
+                "comparison_upper_value": None, "category_values": (), "evidence": bracket.evidence}
+    return {"literal": bracket.literal, "operator": "BETWEEN", "comparison_value": float(lower),
+            "comparison_upper_value": float(upper), "category_values": (), "evidence": bracket.evidence}
+
+
+def approved_sufficient_criterion(
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    approval: QuantitativeSufficientRowApproval,
+    *,
+    sources: dict[tuple[str, str, str], ReviewRowSource] | None = None,
+) -> QuantitativeCriterion | None:
+    """Rebuild one confirmed REVIEW row as a one-row program, or refuse."""
+
+    if approval.row_state != "REVIEW":
+        return None
+    source = (sources if sources is not None else review_row_sources(notice, profile)).get(
+        approval.row_key()
+    )
+    raw = source.raw if source is not None else None
+    if (
+        source is None
+        or source.state != "REVIEW"
+        or approval.notice_key != notice.notice_key
+        or approval.manifest_sha256 != profile.manifest_sha256
+        or approval.document_sha256 != source.document_sha256
+        or approval.raw_candidate_sha256 != raw_candidate_sha256(raw)
+        or set(approval.waived_issue_codes) != source.issue_codes
+        or not source.issue_codes <= SUFFICIENT_WAIVABLE_ISSUE_CODES
+        or raw.metric != approval.metric
+        or not approval.accepted_on <= _kst_date(notice.deadline) <= approval.effective_through
+        or (approval.credit is not None and approval.credit.conditions_sha256 != credit_conditions_digest(
+            [item.literal for item in raw.recognition_conditions]))
+    ):
+        return None
+    row = _sufficient_row_literal(raw, approval)
+    spec = _CANONICAL_METRIC_REGISTRY.get(raw.metric)
+    if row is None or spec is None:
+        return None
+    unit = raw.unit
+    if raw.metric == "CREDIT_RATING":
+        # A lone grade row cannot prove the implicit rating unit of a complete
+        # table. The confirmed row does; an explicit foreign unit still fails.
+        if unit is not None and _normalize_unit(unit) not in spec["unit_scales"]:
+            return None
+        unit = unit or "등급"
+    required = list(raw.required_evidence)
+    if "REQUIRED_EVIDENCE_INCOMPLETE" in approval.waived_issue_codes or not required:
+        required = [str(spec["fact_key"])]
+    try:
+        candidate = ImmutableQuantitativeRuleCandidate.model_validate({
+            **raw.model_dump(mode="python", exclude={"ambiguity_reason", "cases", "brackets", "threshold", "scoring_method", "unit", "required_evidence"}),
+            "unit": unit,
+            "required_evidence": required,
+            "scoring_method": "CASE_TABLE",
+            "brackets": [], "threshold": None,
+            "cases": [{
+                "literal": row["literal"], "operator": row["operator"],
+                "comparison_value": row["comparison_value"],
+                "comparison_upper_value": row["comparison_upper_value"],
+                "category_values": row["category_values"], "award_kind": "POINTS",
+                "award_value": approval.award_points, "row_order": 1,
+                "evidence": row["evidence"].model_dump(mode="python"),
+            }],
+            "source_attachment_id": source.attachment_id,
+            "table_id": source.table_id,
+        })
+    except ValidationError:
+        return None
+    if raw.metric == "CREDIT_RATING":
+        # The raw row may print several instrument columns; bind each extracted
+        # enterprise expression to the printed row, then canonicalize only it.
+        printed = re.sub(r"\s+", "", unicodedata.normalize("NFKC", row["literal"]))
+        if any(re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)) not in printed
+               for value in row["category_values"]):
+            return None
+        categories = compile_credit_rating_values(
+            row["category_values"], source_literal=chr(10).join(row["category_values"]))
+        if not categories:
+            return None
+        literal_row = CaseTableRowLiteral(operator="IN", category_values=categories,
+                                          source_literal=row["literal"], award_value=approval.award_points)
+        value_kind: Literal["NUMERIC", "DISCRETE", "CATEGORICAL"] = "CATEGORICAL"
+    else:
+        scale = _metric_scale(candidate)
+        comparison = _scaled_value(row["comparison_value"], scale) if scale is not None else None
+        upper = (_scaled_value(row["comparison_upper_value"], scale)
+                 if scale is not None and row["comparison_upper_value"] is not None else None)
+        if comparison is None or (row["comparison_upper_value"] is not None and upper is None):
+            return None
+        try:
+            literal_row = CaseTableRowLiteral(operator=row["operator"], comparison_value=comparison,
+                                              comparison_upper_value=upper, source_literal=row["literal"],
+                                              award_value=approval.award_points)
+        except ValidationError:
+            return None
+        value_kind = "DISCRETE" if raw.metric in _DISCRETE_COUNT_METRICS else "NUMERIC"
+    case_table = compile_case_table((literal_row,), value_kind=value_kind, maximum_points=raw.max_points)
+    if case_table is None:
+        return None
+    criterion = _criterion_from_rule_candidate(
+        candidate, {source.attachment_id: source.document_sha256}, case_table=case_table,
+    )
+    if criterion is not None and raw.metric == "PERFORMANCE_COUNT":
+        # The reviewer's record selection replaces register recognition, so the
+        # row is evaluated on that count only and never re-derived by keywords.
+        criterion = criterion.model_copy(update={
+            "metric_key": SELECTED_PERFORMANCE_COUNT_KEY,
+            "required_evidence_keys": [SELECTED_PERFORMANCE_COUNT_KEY],
+            "performance_scope": None,
+        })
+    return criterion
+
+
+def approved_available_credit_binding(
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    approval: QuantitativeSufficientRowApproval,
+    *,
+    sources: dict[tuple[str, str, str], ReviewRowSource] | None = None,
+) -> str | None:
+    """Criterion id of a validated credit row whose company fact is bound here."""
+
+    if approval.row_state != "AVAILABLE" or approval.metric != "CREDIT_RATING" or approval.credit is None:
+        return None
+    source = (sources if sources is not None else available_row_sources(notice, profile)).get(
+        approval.row_key()
+    )
+    raw = source.raw if source is not None else None
+    if (
+        source is None
+        or source.state != "AVAILABLE"
+        or approval.notice_key != notice.notice_key
+        or approval.manifest_sha256 != profile.manifest_sha256
+        or approval.document_sha256 != source.document_sha256
+        or approval.raw_candidate_sha256 != raw_candidate_sha256(raw)
+        or set(approval.waived_issue_codes) != source.issue_codes
+        or not source.issue_codes <= SUFFICIENT_WAIVABLE_ISSUE_CODES
+        or raw.metric != "CREDIT_RATING"
+        or not approval.accepted_on <= _kst_date(notice.deadline) <= approval.effective_through
+        or approval.credit.conditions_sha256 != credit_conditions_digest(
+            [item.literal for item in raw.recognition_conditions])
+        or _sufficient_row_literal(raw, approval) is None
+    ):
+        return None
+    return "dyn-" + _canonical_digest({
+        "attachment_id": source.attachment_id, "table_id": source.table_id,
+        "criterion_id": source.criterion_id,
+    })[:28]
+
+
+def _partial_source_request(
+    request: QuantitativeEstimateRequest,
+    added: Sequence[QuantitativeCriterion],
+) -> QuantitativeEstimateRequest:
+    """Join human-approved rows to an incomplete-manifest partial subtotal."""
+
+    reasons = list(dict.fromkeys([*request.activation_reasons[:99], ROW_APPROVAL_REASON]))
+    assumptions = (
+        list(request.assumptions)
+        if request.activation_status == "PARTIAL_SOURCE"
+        else [
+            "현재 PPS manifest의 일부 첨부 또는 행이 미해소 상태입니다. 사람이 승인한 행을 포함한 "
+            "항목만 부분 소계로 보여주며, 이 합계는 공고 총점이 아닙니다.",
+            "회사 증빙값이 없는 항목은 0점이나 만점으로 가정하지 않습니다.",
+        ]
+    )
+    if ROW_APPROVAL_ASSUMPTION not in assumptions:
+        assumptions.append(ROW_APPROVAL_ASSUMPTION)
+    return QuantitativeEstimateRequest(
+        ruleset_version=request.ruleset_version,
+        rule_source_status="INCOMPLETE",
+        source_validation_status="INCOMPLETE",
+        activation_status="PARTIAL_SOURCE",
+        activation_reasons=reasons,
+        minimum_score=None,
+        criteria=[*request.criteria, *added],
+        facts=list(request.facts),
+        assumptions=assumptions[:50],
+        source_anchor=request.source_anchor,
+    )
+
+
+def _active_approval_facts(
+    company_facts: Sequence[object], *, fact_key: str, source: str, model: Any, notice: Notice,
+) -> dict[tuple[str, str, str], list[tuple[object, Any]]]:
+    candidates = [fact for fact in company_facts if getattr(fact, "fact_key", None) == fact_key]
+    if not candidates:
+        return {}
+    reference = _aware_utc(notice.deadline)
+    grouped: dict[tuple[str, str, str], list[tuple[object, Any]]] = {}
+    for fact in candidates:
+        try:
+            approval = model.model_validate(getattr(fact, "value", None))
+        except ValidationError:
+            continue
+        if approval.notice_key != notice.notice_key:
+            continue
+        start = getattr(fact, "effective_from", None)
+        end = getattr(fact, "effective_to", None)
+        active = (
+            getattr(fact, "verified", None) is True
+            and getattr(fact, "source", None) == source
+            and isinstance(start, datetime) and _aware_utc(start) <= reference
+            and (end is None or (isinstance(end, datetime) and _aware_utc(end) >= reference))
+        )
+        # An inactive duplicate still makes the row ambiguous: fail closed.
+        grouped.setdefault(approval.row_key(), []).append((fact if active else None, approval))
+    return grouped
+
+
+def _apply_sufficient_rows(
+    request: QuantitativeEstimateRequest,
+    *,
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    company_facts: Sequence[object],
+) -> tuple[QuantitativeEstimateRequest, list[tuple[QuantitativeCriterion, QuantitativeSufficientRowApproval, object]]]:
+    grouped = _active_approval_facts(
+        company_facts, fact_key=SUFFICIENT_ROW_FACT_KEY, source=SUFFICIENT_ROW_SOURCE,
+        model=QuantitativeSufficientRowApproval, notice=notice,
+    )
+    if not grouped or profile.status != "INCOMPLETE" or not (
+        request.activation_status == "PARTIAL_SOURCE"
+        or (request.activation_status == "REVIEW_REQUIRED" and not request.criteria)
+    ):
+        return request, []
+    reviews = review_row_sources(notice, profile)
+    availables = available_row_sources(notice, profile)
+    existing = {item.criterion_id: item for item in request.criteria}
+    added: list[QuantitativeCriterion] = []
+    plan: list[tuple[QuantitativeCriterion, QuantitativeSufficientRowApproval, object]] = []
+    for items in grouped.values():
+        if len(items) != 1 or items[0][0] is None:
+            continue
+        fact, approval = items[0]
+        if approval.row_state == "AVAILABLE":
+            criterion_id = approved_available_credit_binding(notice, profile, approval, sources=availables)
+            criterion = existing.get(criterion_id) if criterion_id else None
+            if criterion is not None:
+                plan.append((criterion, approval, fact))
+            continue
+        criterion = approved_sufficient_criterion(notice, profile, approval, sources=reviews)
+        if criterion is None or criterion.criterion_id in existing:
+            continue
+        existing[criterion.criterion_id] = criterion
+        added.append(criterion)
+        plan.append((criterion, approval, fact))
+    if not plan:
+        return request, []
+    return (_partial_source_request(request, added) if added else request), plan
+
+
+def _sufficient_performance_fact(
+    criterion: QuantitativeCriterion,
+    approval: QuantitativeSufficientRowApproval,
+    performance_records: Sequence[CompanyPerformanceRecord],
+    notice: Notice,
+) -> QuantitativeFact:
+    review = QuantitativeFact(
+        metric_key=criterion.metric_key, status="REVIEW", evidence_key=criterion.metric_key,
+        fact_binding_sha256=criterion.fact_binding_sha256,
+        rationale="선택한 실적 계약이 현재 대장에서 검증·기간·금액 조건을 충족하는지 다시 확인해야 합니다.",
+    )
+    selection = approval.performance
+    if selection is None or selection.window_end > _kst_date(notice.deadline):
+        return review
+    by_id = {str(getattr(record, "id", "")): record for record in performance_records}
+    chosen = [by_id.get(record_id) for record_id in selection.record_ids]
+    for record in chosen:
+        if record is None:
+            return review
+        amount = getattr(record, "gross_contract_amount_krw", None) or getattr(record, "contract_amount", None)
+        end = getattr(record, "end_date", None)
+        if (
+            getattr(record, "record_status", None) != "VALIDATED"
+            or getattr(record, "completed", None) is not True
+            or end is None or not selection.window_start <= end <= selection.window_end
+            or (selection.min_amount_krw is not None and (amount is None or amount < selection.min_amount_krw))
+            or (selection.vat_included_required and getattr(record, "vat_basis", None) != "INCLUDED")
+        ):
+            return review
+    return QuantitativeFact(
+        metric_key=criterion.metric_key, status="ESTIMATED", value=float(len(chosen)),
+        evidence_key=criterion.metric_key, fact_binding_sha256=criterion.fact_binding_sha256,
+        confidence=0.8,
+        rationale=(
+            f"사람이 인정 대상으로 고른 실적 {len(chosen)}건을 현재 대장에서 검증 완료·완료 여부·"
+            "기간·금액 조건으로 다시 확인해 셌습니다."
+        ),
+    )
+
+
+def _bind_sufficient_row_facts(
+    request: QuantitativeEstimateRequest,
+    plan: Sequence[tuple[QuantitativeCriterion, QuantitativeSufficientRowApproval, object]],
+    *,
+    notice: Notice,
+    performance_records: Sequence[CompanyPerformanceRecord],
+) -> tuple[QuantitativeEstimateRequest, frozenset[str]]:
+    """Replace credit/performance facts of confirmed rows; keep roster/financial facts."""
+
+    if not plan:
+        return request, frozenset()
+    from .private_company_evidence import sufficient_credit_fact
+
+    replaced: dict[str, QuantitativeFact] = {}
+    for criterion, approval, fact in plan:
+        if approval.metric == "CREDIT_RATING":
+            replaced[criterion.fact_binding_sha256] = sufficient_credit_fact(notice, criterion, approval, fact)
+        elif approval.metric == "PERFORMANCE_COUNT":
+            replaced[criterion.fact_binding_sha256] = _sufficient_performance_fact(
+                criterion, approval, performance_records, notice)
+    facts = [item for item in request.facts if item.fact_binding_sha256 not in replaced]
+    facts.extend(replaced.values())
+    bindings = frozenset(item.fact_binding_sha256 for item, _approval, _fact in plan if item.fact_binding_sha256)
+    return request.model_copy(update={"facts": facts}), bindings
+
+
+def _cap_sufficient_row_facts(
+    request: QuantitativeEstimateRequest, bindings: frozenset[str],
+) -> QuantitativeEstimateRequest:
+    if not bindings:
+        return request
+    facts = [
+        fact.model_copy(update={
+            "status": "ESTIMATED" if fact.status == "CONFIRMED" else fact.status,
+            "rationale": f"{fact.rationale} {SUFFICIENT_ROW_WARNING}".strip()[:1_000],
+        })
+        if fact.fact_binding_sha256 in bindings else fact
+        for fact in request.facts
+    ]
+    return request.model_copy(update={"facts": facts})
 
 
 def quantitative_request_from_candidate_profile(
@@ -5201,19 +5667,27 @@ def estimate_for_notice(
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
         stored_facts = tuple(company_facts)
+        stored_records = tuple(performance_records)
         request = quantitative_request_from_candidate_profile(
             dynamic_profile, allow_partial_source=True,
         )
         request, approved_bindings = _apply_row_approvals(
             request, notice=notice, profile=dynamic_profile, company_facts=stored_facts,
         )
+        request, sufficient_plan = _apply_sufficient_rows(
+            request, notice=notice, profile=dynamic_profile, company_facts=stored_facts,
+        )
         request = bind_quantitative_company_inputs(
-            request, stored_facts, performance_records,
+            request, stored_facts, stored_records,
             as_of=notice.deadline,
             bid_notice_at=getattr(notice, "published_at", None),
             notice=notice,
         )
         request = _cap_approved_row_facts(request, approved_bindings)
+        request, sufficient_bindings = _bind_sufficient_row_facts(
+            request, sufficient_plan, notice=notice, performance_records=stored_records,
+        )
+        request = _cap_sufficient_row_facts(request, sufficient_bindings)
         return estimate_quantitative_score(request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
