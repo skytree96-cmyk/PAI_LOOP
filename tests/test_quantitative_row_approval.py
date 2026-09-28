@@ -296,3 +296,23 @@ def test_approval_model_rejects_unreviewable_codes_and_reversed_horizon():
                 {"effective_through": "2026-01-01"}):
         with pytest.raises(ValueError):
             QuantitativeRowApproval.model_validate({**base, **bad})
+
+
+def test_row_codes_include_review_candidate_codes_missing_from_profile_issues(client, monkeypatch):
+    payload, source = _payload()
+    _store(client, payload, source)
+    row = _context_row(client)
+    assert row["approvable"] is True
+    original = qs._current_dynamic_quantitative_profile
+
+    def with_hidden_blocker(notice):
+        profile = original(notice)
+        review = profile.review_candidates[0].model_copy(update={"issue_codes": (
+            *profile.review_candidates[0].issue_codes, "REQUIRED_EVIDENCE_INCOMPLETE")})
+        return profile.model_copy(update={"review_candidates": (review,)})
+
+    monkeypatch.setattr(qs, "_current_dynamic_quantitative_profile", with_hidden_blocker)
+    monkeypatch.setattr("pai_loop.private_company_evidence._current_dynamic_quantitative_profile", with_hidden_blocker)
+    [hidden] = client.get(CONTEXT).json()
+    assert "REQUIRED_EVIDENCE_INCOMPLETE" in hidden["issue_codes"] and hidden["approvable"] is False
+    assert client.post(APPROVALS, json=_approval(row)).status_code == 409

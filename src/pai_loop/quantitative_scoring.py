@@ -4440,8 +4440,9 @@ def review_row_sources(
 ) -> dict[tuple[str, str, str], ReviewRowSource]:
     """Pair REVIEW rows with the raw rows of the same attempts the profile read.
 
-    Codes include the row's own issues, its table's issues and its attachment's
-    unlocated issues, so an approval must name every blocker that applies.
+    Codes are the row's own review codes plus every profile issue on its row,
+    its table and its attachment's unlocated issues, so an approval must name
+    every blocker that applies.
     """
 
     versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
@@ -4455,7 +4456,7 @@ def review_row_sources(
         for item in profile.review_candidates
     ]
     sources: dict[tuple[str, str, str], ReviewRowSource] = {}
-    for identity in identities:
+    for review, identity in zip(profile.review_candidates, identities):
         if identities.count(identity) != 1:
             continue
         attachment_id, table_id, criterion_id = identity
@@ -4479,7 +4480,7 @@ def review_row_sources(
         rows = [row for item in tables for row in item.criteria if row.criterion_id == criterion_id]
         if len(tables) != 1 or len(rows) != 1:
             continue
-        codes = frozenset(
+        codes = frozenset(review.issue_codes) | frozenset(
             issue.code for issue in profile.issues
             if issue.attachment_id == attachment_id
             and issue.table_id in {table_id, None}
