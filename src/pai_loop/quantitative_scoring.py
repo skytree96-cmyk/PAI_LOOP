@@ -4989,11 +4989,12 @@ def _partial_source_request(
 def _active_approval_facts(
     company_facts: Sequence[object], *, fact_key: str, source: str, model: Any, notice: Notice,
 ) -> dict[tuple[str, str, str], list[tuple[object, Any]]]:
+    candidates = [fact for fact in company_facts if getattr(fact, "fact_key", None) == fact_key]
+    if not candidates:
+        return {}
     reference = _aware_utc(notice.deadline)
     grouped: dict[tuple[str, str, str], list[tuple[object, Any]]] = {}
-    for fact in company_facts:
-        if getattr(fact, "fact_key", None) != fact_key:
-            continue
+    for fact in candidates:
         try:
             approval = model.model_validate(getattr(fact, "value", None))
         except ValidationError:
