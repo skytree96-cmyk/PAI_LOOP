@@ -16,6 +16,7 @@ from pai_loop.quantitative_rule_extraction import (
 )
 from pai_loop import quantitative_scoring as qs
 from test_personnel_public_roundtrip import _stored_personnel_source
+from test_quantitative_personnel_binding import AS_OF, _fact as _roster_fact
 from test_quantitative_auto_activation import _validated_profile
 
 
@@ -146,8 +147,15 @@ def test_personnel_label_that_changes_scope_is_never_discarded():
     profile = profile.model_copy(update={"available_candidates": (profile.available_candidates[0], assigned)})
     request = _request(profile)
     assert len(request.criteria) == 2
-    assert request.criteria[0].personnel_scope is not None
-    assert request.criteria[1].personnel_scope is None
+    retained, capacity = (row.personnel_scope for row in request.criteria)
+    assert retained is not None and retained.population_basis == "RETAINED"
+    # The assignment row keeps its own scope; it is a capacity forecast only.
+    assert capacity is not None and capacity.population_basis == "ASSIGNED_CAPACITY"
+    # A verified roster without the explicit availability assumption never
+    # scores the assignment row.
+    facts = qs.resolve_personnel_register_facts(request.criteria, [_roster_fact()], as_of=AS_OF)
+    assert facts[1].status == "REVIEW" and facts[1].value is None
+    assert "사용자 승인" in facts[1].rationale
 
 
 def test_repeated_identical_rows_in_one_physical_table_remain_two_rows():
@@ -242,7 +250,7 @@ def test_native_duplicate_subtotal_persists_once_and_public_cache_rejects_old_en
         score = session.scalar(select(ScoreSnapshot).where(ScoreSnapshot.score_key == "quantitative.total"))
         assert score.basis_json["total_max_points"] == 20
         assert len(score.basis_json["public_criteria"]["items"]) == 1
-        assert score.method_version == "pai-loop-quantitative-engine-1.8.9"
+        assert score.method_version == qs.QUANTITATIVE_ENGINE_VERSION
         if obsolete_engine:
             score.method_version = "pai-loop-quantitative-engine-1.8.8"
             run = session.scalar(select(AnalysisRun))

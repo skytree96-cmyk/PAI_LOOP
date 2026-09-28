@@ -198,3 +198,12 @@ def test_malformed_later_policy_returns_explicit_conflict(client, monkeypatch):
                                effective_from=datetime(2026, 8, 1, tzinfo=timezone.utc)))
         session.commit()
     assert client.post(SCENARIO, json=payload).status_code == 409
+
+
+def test_resolver_without_one_credit_row_never_reads_company_inputs():
+    class Unreadable:
+        def __getattr__(self, name):
+            raise AssertionError("SYN company input read without a credit row")
+
+    notice = Notice(notice_key="SYN-NO-CREDIT", title="SYN")
+    assert credit.resolve_credit_scenario_facts(notice, [], [Unreadable()]) == []

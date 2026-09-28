@@ -741,8 +741,12 @@ def resolve_credit_scenario_facts(notice: Notice, criteria, stored_facts):
     from .quantitative_scoring import QuantitativeFact
 
     credit_rows = [row for row in criteria if row.metric_key == _FACT_KEY]
+    # Without exactly one credit row there is nothing to bind; company inputs
+    # are not read, like the other register resolvers.
+    if len(credit_rows) != 1:
+        return []
     raw = [fact for fact in stored_facts if fact.fact_key == CREDIT_SCENARIO_FACT_KEY]
-    if len(credit_rows) != 1 or not raw:
+    if not raw:
         return []
     row = credit_rows[0]
     review = QuantitativeFact(metric_key=_FACT_KEY, status="REVIEW",
