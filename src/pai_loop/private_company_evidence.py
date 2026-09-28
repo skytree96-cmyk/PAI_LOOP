@@ -31,12 +31,18 @@ from .quantitative_credit_scenario import (
     CreditScenarioApplication, CreditScenarioPolicy, credit_conditions_sha256,
     recognized_credit_scenario_conditions,
 )
+from .quantitative_row_approval import (
+    ROW_APPROVAL_FACT_KEY, ROW_APPROVAL_SOURCE, WAIVABLE_ISSUE_CODES,
+    QuantitativeRowApproval, raw_candidate_sha256, row_program,
+)
 from .quantitative_rule_extraction import QuantitativeCandidateProfile
 from .quantitative_scoring import (
     _current_dynamic_quantitative_profile,
     _profile_activation_reason_partition,
+    approved_row_criterion,
     quantitative_company_fact_payload_sha256,
     quantitative_request_from_candidate_profile,
+    review_row_sources,
 )
 
 
@@ -791,3 +797,118 @@ def resolve_credit_scenario_facts(notice: Notice, criteria, stored_facts):
             evidence_sha256=certificate.document_sha256, rationale=CREDIT_SCENARIO_WARNING)]
     except (ValidationError, ValueError, HTTPException):
         return [review]
+
+
+class QuantitativeRowApprovalContext(BaseModel):
+    """What a reviewer must read and bind before approving one REVIEW row."""
+
+    model_config = ConfigDict(extra="forbid")
+    notice_key: str
+    deadline: datetime
+    manifest_sha256: str
+    attachment_id: str
+    source_label: str | None
+    document_sha256: str
+    table_id: str
+    criterion_id: str
+    label: str
+    metric: str
+    max_points: float
+    scoring_method: str
+    raw_candidate_sha256: str
+    issue_codes: list[str]
+    approvable: bool
+    program: dict | None
+    criterion_literal: str
+    evidence_quote: str
+    recognition_conditions: list[str]
+    assurance: Literal["ESTIMATED_ONLY"] = "ESTIMATED_ONLY"
+
+
+class QuantitativeRowApprovalResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    registration_status: Literal["CREATED", "UNCHANGED"]
+    assurance: Literal["ESTIMATED_ONLY"] = "ESTIMATED_ONLY"
+
+
+def _row_approval_contexts(notice: Notice) -> list[QuantitativeRowApprovalContext]:
+    profile = _current_dynamic_quantitative_profile(notice)
+    if profile is None or not profile.manifest_sha256:
+        raise HTTPException(422, "현재 첨부 manifest에 결합된 정량평가표가 없습니다.")
+    sources = review_row_sources(notice, profile)
+    deadline = _korean_deadline_date(notice.deadline)
+    today = datetime.now(_KST).date()
+    contexts = []
+    for source in sources.values():
+        raw = source.raw
+        program = row_program(raw)
+        approvable = False
+        if program is not None and today <= deadline:
+            probe = QuantitativeRowApproval(
+                attestation="HUMAN_REVIEWED_ROW_PROGRAM",
+                interpretation="HYPHEN_SEPARATED_POINTS",
+                accepted_on=today, effective_through=deadline,
+                notice_key=notice.notice_key, manifest_sha256=profile.manifest_sha256,
+                attachment_id=source.attachment_id, document_sha256=source.document_sha256,
+                table_id=source.table_id, criterion_id=source.criterion_id,
+                raw_candidate_sha256=raw_candidate_sha256(raw),
+                waived_issue_codes=sorted(source.issue_codes & WAIVABLE_ISSUE_CODES) or ["CASE_NUMBER_MISMATCH"],
+                program=program,
+            )
+            approvable = approved_row_criterion(notice, profile, probe, sources=sources) is not None
+        contexts.append(QuantitativeRowApprovalContext(
+            notice_key=notice.notice_key, deadline=notice.deadline,
+            manifest_sha256=profile.manifest_sha256, attachment_id=source.attachment_id,
+            source_label=source.source_label, document_sha256=source.document_sha256,
+            table_id=source.table_id, criterion_id=source.criterion_id, label=raw.label,
+            metric=raw.metric, max_points=raw.max_points, scoring_method=raw.scoring_method,
+            raw_candidate_sha256=raw_candidate_sha256(raw),
+            issue_codes=sorted(source.issue_codes), approvable=approvable, program=program,
+            criterion_literal=raw.criterion_literal, evidence_quote=raw.evidence.quote,
+            recognition_conditions=[item.literal for item in raw.recognition_conditions],
+        ))
+    return sorted(contexts, key=lambda item: (item.attachment_id, item.table_id, item.criterion_id))
+
+
+@router.get("/notices/{notice_key}/quantitative-rows/approval-context",
+            response_model=list[QuantitativeRowApprovalContext])
+def get_quantitative_row_approval_context(notice_key: str, response: Response,
+                                          session: DbSession) -> list[QuantitativeRowApprovalContext]:
+    response.headers["Cache-Control"] = "no-store"
+    return _row_approval_contexts(_notice_for_credit_binding(session, notice_key))
+
+
+@router.post("/quantitative-row-approvals", response_model=QuantitativeRowApprovalResult)
+def register_quantitative_row_approval(payload: QuantitativeRowApproval, response: Response,
+                                       session: DbSession) -> QuantitativeRowApprovalResult:
+    """Record one reviewed row reading; it grants no score and runs no analysis."""
+    response.headers["Cache-Control"] = "no-store"
+    if payload.accepted_on > datetime.now(_KST).date():
+        raise HTTPException(422, "미래의 확인일을 등록할 수 없습니다.")
+    notice = _notice_for_credit_binding(session, payload.notice_key)
+    profile = _current_dynamic_quantitative_profile(notice)
+    if profile is None or profile.status != "INCOMPLETE" or approved_row_criterion(notice, profile, payload) is None:
+        raise HTTPException(409, "공고 원문, 행, 검증 결과 또는 승인 내용이 현재와 일치하지 않아 별도 검토가 필요합니다.")
+    serialized = payload.model_dump(mode="json")
+    existing = list(session.scalars(select(CompanyFact).where(
+        CompanyFact.fact_key == ROW_APPROVAL_FACT_KEY).with_for_update()))
+    for fact in existing:
+        try:
+            previous = QuantitativeRowApproval.model_validate(fact.value)
+        except ValidationError:
+            raise HTTPException(409, "기존 정량 행 승인의 검토가 필요합니다.") from None
+        if previous.notice_key != payload.notice_key or previous.row_key() != payload.row_key():
+            continue
+        if (fact.value == serialized and fact.source == ROW_APPROVAL_SOURCE and fact.verified is True
+                and _instant_equal(fact.effective_from, _start_of_korean_date(payload.accepted_on))
+                and _instant_equal(fact.effective_to, _end_of_korean_date(payload.effective_through))):
+            return QuantitativeRowApprovalResult(registration_status="UNCHANGED")
+        raise HTTPException(409, "같은 행에 다른 승인이 있어 별도 검토가 필요합니다.")
+    session.add(CompanyFact(
+        fact_key=ROW_APPROVAL_FACT_KEY, value=serialized,
+        value_label="비공개 정량 행 해석 승인", source=ROW_APPROVAL_SOURCE, verified=True,
+        effective_from=_start_of_korean_date(payload.accepted_on),
+        effective_to=_end_of_korean_date(payload.effective_through),
+    ))
+    session.commit()
+    return QuantitativeRowApprovalResult(registration_status="CREATED")
