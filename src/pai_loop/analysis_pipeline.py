@@ -67,6 +67,7 @@ from .extraction_contracts import classify_attempt_header, EXTRACTION_READ_POLIC
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_personnel import PERSONNEL_ROSTER_FACT_KEY
 from .quantitative_credit_scenario import CREDIT_SCENARIO_FACT_KEY
+from .quantitative_row_approval import ROW_APPROVAL_FACT_KEY
 from .quantitative_scoring import (
     QUANTITATIVE_ENGINE_VERSION,
     QUANTITATIVE_CANONICAL_FACT_KEYS,
@@ -1134,7 +1135,7 @@ def _selected_fact_manifest(
             continue
         # Raw roster selection has its own snapshot/reference-date validation.
         # Track every candidate privately, even if its score stays unchanged.
-        if fact.fact_key not in {PERSONNEL_ROSTER_FACT_KEY, CREDIT_SCENARIO_FACT_KEY} and not fact_is_effective(fact, deadline):
+        if fact.fact_key not in {PERSONNEL_ROSTER_FACT_KEY, CREDIT_SCENARIO_FACT_KEY, ROW_APPROVAL_FACT_KEY} and not fact_is_effective(fact, deadline):
             continue
         evidence = fact.evidence
         basis_sha256 = _digest(
@@ -1938,7 +1939,7 @@ def run_analysis_pipeline(
                 fact_keys=(
                     {item.fact_key for item in prospective_atomics}
                     | set(QUANTITATIVE_CANONICAL_FACT_KEYS)
-                    | {PERSONNEL_ROSTER_FACT_KEY, CREDIT_SCENARIO_FACT_KEY}
+                    | {PERSONNEL_ROSTER_FACT_KEY, CREDIT_SCENARIO_FACT_KEY, ROW_APPROVAL_FACT_KEY}
                 ),
                 deadline=notice.deadline,
             )

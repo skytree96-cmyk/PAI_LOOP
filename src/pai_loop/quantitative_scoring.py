@@ -8,7 +8,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import lru_cache
 from importlib import resources
@@ -26,6 +26,7 @@ from .eligibility_policy import load_public_company_profile
 from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
+    ExtractionPayload,
     evidence_quote_matches_source,
 )
 from .models import AnalysisRun, CompanyFact, CompanyPerformanceRecord, Notice, ScoreSnapshot
@@ -80,6 +81,18 @@ from .quantitative_financial import (
     parse_financial_recognition_scope,
 )
 from .quantitative_out_of_scope import out_of_scope_reason
+from .quantitative_row_approval import (
+    ROW_APPROVAL_ASSUMPTION,
+    ROW_APPROVAL_FACT_KEY,
+    ROW_APPROVAL_REASON,
+    ROW_APPROVAL_SOURCE,
+    ROW_APPROVAL_WARNING,
+    WAIVABLE_ISSUE_CODES,
+    QuantitativeRowApproval,
+    hyphen_case_rows_match,
+    raw_candidate_sha256,
+    row_program,
+)
 from .quantitative_personnel import (
     DerivedPersonnelValue,
     PersonnelRecognitionScope,
@@ -4263,6 +4276,401 @@ def _available_row_partial_plan(
         tuple(sorted({code for codes in bad.values() for code in codes})))
 
 
+def _criterion_from_rule_candidate(
+    candidate: ImmutableQuantitativeRuleCandidate,
+    bindings: dict[str, str],
+    *,
+    case_table: CompiledCaseTable | None = None,
+) -> QuantitativeCriterion | None:
+    """Convert one source rule row into an engine criterion, or refuse.
+
+    ``case_table`` is only for a human-reviewed row whose case program was
+    compiled by its own bounded grammar; every other row compiles here.
+    """
+
+    spec = _metric_spec(candidate)
+    if spec is None:
+        return None
+    performance_scope = (
+        parse_performance_recognition_scope(
+            " ".join(
+                value
+                for value in (
+                    candidate.criterion_literal,
+                    candidate.formula_literal or "",
+                    *(item.literal for item in candidate.cases),
+                    *(item.literal for item in candidate.recognition_conditions),
+                )
+                if value
+            ),
+            metric_key=str(spec["fact_key"]),
+        )
+        if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS
+        else None
+    )
+    financial_scope = _candidate_financial_scope(candidate)
+    personnel_scope = parse_personnel_recognition_scope(
+        " ".join(
+            value
+            for value in (
+                # Preserve assignment wording even if it appears only in
+                # the label; an attested capacity forecast is not staffing.
+                candidate.label,
+                candidate.criterion_literal,
+                candidate.formula_literal or "",
+                *(item.literal for item in candidate.cases),
+            )
+            if value
+        ),
+        metric_key=str(spec["fact_key"]),
+        recognition_literal=" ".join(
+            item.literal for item in candidate.recognition_conditions if item.literal
+        ),
+        allow_assignment_capacity=True,
+    )
+    scoring_fields: dict[str, Any]
+    if candidate.scoring_method == "BRACKET":
+        brackets = _candidate_brackets(candidate)
+        if not brackets:
+            return None
+        scoring_fields = {"formula_type": "BRACKET", "brackets": brackets}
+    elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is not None:
+        scale = _metric_scale(candidate)
+        threshold_value = _scaled_value(candidate.threshold.threshold_value, scale) if scale is not None else None
+        if threshold_value is None:
+            return None
+        scoring_fields = {
+            "formula_type": "THRESHOLD",
+            "threshold_operator": candidate.threshold.operator,
+            "threshold_value": threshold_value,
+            "threshold_points_if_met": candidate.threshold.points_if_met,
+            "threshold_points_if_not_met": candidate.threshold.points_if_not_met,
+        }
+    elif candidate.scoring_method == "FORMULA":
+        compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
+        if compiled_formula is not None:
+            scoring_fields = {
+                "formula_type": "FORMULA",
+                "deterministic_formula": compiled_formula,
+            }
+        elif compiled_categories is not None:
+            scoring_fields = {
+                "formula_type": "CATEGORICAL",
+                "categories": list(compiled_categories),
+            }
+        else:
+            return None
+    elif candidate.scoring_method == "CASE_TABLE":
+        compiled_case_table = (
+            case_table if case_table is not None
+            else _compiled_case_table_contract(candidate)
+        )
+        if compiled_case_table is None:
+            return None
+        scoring_fields = {
+            "formula_type": "CASE_TABLE",
+            "case_table": compiled_case_table,
+        }
+    else:
+        return None
+    criterion_identity = _canonical_digest(
+        {
+            "attachment_id": candidate.source_attachment_id,
+            "table_id": candidate.table_id,
+            "criterion_id": candidate.criterion_id,
+        }
+    )[:28]
+    return QuantitativeCriterion(
+        criterion_id=f"dyn-{criterion_identity}",
+        category=candidate.metric,
+        label=candidate.label,
+        max_points=candidate.max_points,
+        metric_key=str(spec["fact_key"]),
+        unit=str(spec["canonical_unit"]),
+        formula=candidate.criterion_literal,
+        **scoring_fields,
+        performance_scope=performance_scope,
+        financial_scope=financial_scope,
+        personnel_scope=personnel_scope,
+        source_anchor=SourceAnchor(
+            document_label=candidate.source_attachment_id,
+            document_sha256=bindings.get(candidate.source_attachment_id),
+            section=(
+                candidate.evidence.section
+                or f"{candidate.table_id}/{candidate.criterion_id}"
+            ),
+            page=candidate.evidence.page,
+            quote=candidate.evidence.quote,
+        ),
+        required_evidence_keys=list(candidate.required_evidence),
+        fact_binding_sha256=_candidate_fact_binding_sha256(
+            candidate,
+            document_sha256=bindings[candidate.source_attachment_id],
+        ),
+    )
+
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst_date(value: datetime) -> date:
+    moment = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return moment.astimezone(_KST).date()
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True)
+class ReviewRowSource:
+    """One current REVIEW row paired with its exact raw extracted row."""
+
+    attachment_id: str
+    table_id: str
+    criterion_id: str
+    document_sha256: str
+    source_label: str | None
+    raw: Any
+    issue_codes: frozenset[str]
+
+
+def review_row_sources(
+    notice: Notice, profile: QuantitativeCandidateProfile,
+) -> dict[tuple[str, str, str], ReviewRowSource]:
+    """Pair REVIEW rows with the raw rows of the same attempts the profile read.
+
+    Codes include the row's own issues, its table's issues and its attachment's
+    unlocated issues, so an approval must name every blocker that applies.
+    """
+
+    versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
+    _attachments, _invalid, attempts = _current_manifest_attempts(
+        versions, validate_accepted=False, preserve_quantitative_proof=True,
+    )
+    bindings = {item.attachment_id: item.document_sha256 for item in profile.document_bindings}
+    labels = {item.attachment_id: item.source_label for item in profile.document_bindings}
+    identities = [
+        (item.source_attachment_id, item.table_id, item.criterion_id)
+        for item in profile.review_candidates
+    ]
+    sources: dict[tuple[str, str, str], ReviewRowSource] = {}
+    for identity in identities:
+        if identities.count(identity) != 1:
+            continue
+        attachment_id, table_id, criterion_id = identity
+        attempt = attempts.get(attachment_id)
+        payload = (
+            attempt.source_payload
+            if attempt is not None and isinstance(attempt.source_payload, dict) else {}
+        )
+        document_sha256 = bindings.get(attachment_id)
+        if (
+            attempt is None or document_sha256 is None
+            or str(attempt.file_sha256 or "").casefold() != document_sha256
+            or payload.get("status") != "ACCEPTED"
+        ):
+            continue
+        try:
+            extraction = ExtractionPayload.model_validate(payload.get("result"))
+        except (TypeError, ValueError):
+            continue
+        tables = [item for item in extraction.quantitative_tables if item.table_id == table_id]
+        rows = [row for item in tables for row in item.criteria if row.criterion_id == criterion_id]
+        if len(tables) != 1 or len(rows) != 1:
+            continue
+        codes = frozenset(
+            issue.code for issue in profile.issues
+            if issue.attachment_id == attachment_id
+            and issue.table_id in {table_id, None}
+            and issue.criterion_id in {criterion_id, None}
+        )
+        sources[identity] = ReviewRowSource(
+            attachment_id=attachment_id, table_id=table_id, criterion_id=criterion_id,
+            document_sha256=document_sha256, source_label=labels.get(attachment_id),
+            raw=rows[0], issue_codes=codes,
+        )
+    return sources
+
+
+def _approved_hyphen_case_table(
+    candidate: ImmutableQuantitativeRuleCandidate,
+) -> CompiledCaseTable | None:
+    """Compile a reviewed hyphen row; its printed-literal proof ran separately."""
+
+    spec = _metric_spec(candidate)
+    if spec is None or candidate.metric == "CREDIT_RATING" or str(
+        spec.get("value_kind", "NUMERIC")
+    ) in {"CATEGORICAL", "BOOLEAN"}:
+        return None
+    value_kind: Literal["NUMERIC", "DISCRETE"] = (
+        "DISCRETE" if candidate.metric in _DISCRETE_COUNT_METRICS else "NUMERIC"
+    )
+    scale = _metric_scale(candidate)
+    if scale is None:
+        return None
+    rows = []
+    for item in sorted(candidate.cases, key=lambda value: value.row_order):
+        comparison = _scaled_value(item.comparison_value, scale)
+        if comparison is None:
+            return None
+        rows.append(CaseTableRowLiteral(
+            operator=item.operator, comparison_value=comparison,
+            comparison_upper_value=None, category_values=(),
+            source_literal=item.literal, award_kind=item.award_kind,
+            award_value=item.award_value,
+        ))
+    return compile_case_table(
+        tuple(rows), value_kind=value_kind, maximum_points=candidate.max_points,
+    )
+
+
+def approved_row_criterion(
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    approval: QuantitativeRowApproval,
+    *,
+    sources: dict[tuple[str, str, str], ReviewRowSource] | None = None,
+) -> QuantitativeCriterion | None:
+    """Rebuild one approved row only while every bound identity is unchanged."""
+
+    source = (sources if sources is not None else review_row_sources(notice, profile)).get(
+        approval.row_key()
+    )
+    if (
+        source is None
+        or approval.notice_key != notice.notice_key
+        or approval.manifest_sha256 != profile.manifest_sha256
+        or approval.document_sha256 != source.document_sha256
+        or approval.raw_candidate_sha256 != raw_candidate_sha256(source.raw)
+        or set(approval.waived_issue_codes) != source.issue_codes
+        or not source.issue_codes <= WAIVABLE_ISSUE_CODES
+        or approval.program.model_dump(mode="json") != row_program(source.raw)
+        or not hyphen_case_rows_match(source.raw)
+        or not approval.accepted_on <= _kst_date(notice.deadline) <= approval.effective_through
+    ):
+        return None
+    try:
+        candidate = ImmutableQuantitativeRuleCandidate.model_validate({
+            **source.raw.model_dump(mode="python", exclude={"ambiguity_reason"}),
+            "source_attachment_id": source.attachment_id,
+            "table_id": source.table_id,
+        })
+    except ValidationError:
+        return None
+    case_table = _approved_hyphen_case_table(candidate)
+    if case_table is None:
+        return None
+    return _criterion_from_rule_candidate(
+        candidate, {source.attachment_id: source.document_sha256}, case_table=case_table,
+    )
+
+
+def _apply_row_approvals(
+    request: QuantitativeEstimateRequest,
+    *,
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    company_facts: Sequence[object],
+) -> tuple[QuantitativeEstimateRequest, frozenset[str]]:
+    """Add approved REVIEW rows to an incomplete-manifest partial subtotal.
+
+    Duplicate, inactive, unverified or stale approvals are ignored, leaving the
+    row in REVIEW. The notice total, minimum and every other blocker stay open.
+    """
+
+    raw_facts = [
+        fact for fact in company_facts
+        if getattr(fact, "fact_key", None) == ROW_APPROVAL_FACT_KEY
+    ]
+    if not raw_facts or profile.status != "INCOMPLETE" or not (
+        request.activation_status == "PARTIAL_SOURCE"
+        or (request.activation_status == "REVIEW_REQUIRED" and not request.criteria)
+    ):
+        return request, frozenset()
+    reference = _aware_utc(notice.deadline)
+    grouped: dict[tuple[str, str, str], list[tuple[object, QuantitativeRowApproval]]] = {}
+    for fact in raw_facts:
+        try:
+            approval = QuantitativeRowApproval.model_validate(getattr(fact, "value", None))
+        except ValidationError:
+            continue
+        if approval.notice_key == notice.notice_key:
+            grouped.setdefault(approval.row_key(), []).append((fact, approval))
+    if not grouped:
+        return request, frozenset()
+    sources = review_row_sources(notice, profile)
+    existing = {item.criterion_id for item in request.criteria}
+    approved: list[QuantitativeCriterion] = []
+    for items in grouped.values():
+        if len(items) != 1:
+            continue
+        fact, approval = items[0]
+        start = getattr(fact, "effective_from", None)
+        end = getattr(fact, "effective_to", None)
+        if (
+            getattr(fact, "verified", None) is not True
+            or getattr(fact, "source", None) != ROW_APPROVAL_SOURCE
+            or not isinstance(start, datetime)
+            or _aware_utc(start) > reference
+            or (end is not None and (not isinstance(end, datetime) or _aware_utc(end) < reference))
+        ):
+            continue
+        criterion = approved_row_criterion(notice, profile, approval, sources=sources)
+        if criterion is None or criterion.criterion_id in existing:
+            continue
+        existing.add(criterion.criterion_id)
+        approved.append(criterion)
+    if not approved:
+        return request, frozenset()
+    reasons = list(dict.fromkeys([*request.activation_reasons[:99], ROW_APPROVAL_REASON]))
+    assumptions = (
+        list(request.assumptions)
+        if request.activation_status == "PARTIAL_SOURCE"
+        else [
+            "현재 PPS manifest의 일부 첨부 또는 행이 미해소 상태입니다. 사람이 승인한 행을 포함한 "
+            "항목만 부분 소계로 보여주며, 이 합계는 공고 총점이 아닙니다.",
+            "회사 증빙값이 없는 항목은 0점이나 만점으로 가정하지 않습니다.",
+        ]
+    )
+    return QuantitativeEstimateRequest(
+        ruleset_version=request.ruleset_version,
+        rule_source_status="INCOMPLETE",
+        source_validation_status="INCOMPLETE",
+        activation_status="PARTIAL_SOURCE",
+        activation_reasons=reasons,
+        minimum_score=None,
+        criteria=[*request.criteria, *approved],
+        facts=list(request.facts),
+        assumptions=[*assumptions, ROW_APPROVAL_ASSUMPTION][:50],
+        source_anchor=request.source_anchor,
+    ), frozenset(item.fact_binding_sha256 for item in approved if item.fact_binding_sha256)
+
+
+def _cap_approved_row_facts(
+    request: QuantitativeEstimateRequest, bindings: frozenset[str],
+) -> QuantitativeEstimateRequest:
+    """An approved reading never becomes a confirmed score, whatever the evidence."""
+
+    if not bindings:
+        return request
+    facts = [
+        fact.model_copy(update={
+            "status": "ESTIMATED" if fact.status == "CONFIRMED" else fact.status,
+            "rationale": f"{fact.rationale} {ROW_APPROVAL_WARNING}".strip()[:1_000],
+        })
+        if fact.fact_binding_sha256 in bindings else fact
+        for fact in request.facts
+    ]
+    return request.model_copy(update={"facts": facts})
+
+
+def _partial_subtotal_statement(reasons: Sequence[object]) -> str:
+    if ROW_APPROVAL_REASON in reasons:
+        return "원문 검증이 끝났거나 사람이 행 해석을 승인한 항목만의 부분 소계이며 공고 총점이 아닙니다."
+    return "원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."
+
+
 def quantitative_request_from_candidate_profile(
     profile: QuantitativeCandidateProfile,
     *,
@@ -4370,144 +4778,13 @@ def quantitative_request_from_candidate_profile(
     criteria: list[QuantitativeCriterion] = []
     conversion_errors: list[str] = []
     for candidate in logical_candidates:
-        spec = _metric_spec(candidate)
-        if spec is None:
+        criterion = _criterion_from_rule_candidate(candidate, bindings)
+        if criterion is None:
             conversion_errors.append(
                 f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
             )
             continue
-        performance_scope = (
-            parse_performance_recognition_scope(
-                " ".join(
-                    value
-                    for value in (
-                        candidate.criterion_literal,
-                        candidate.formula_literal or "",
-                        *(item.literal for item in candidate.cases),
-                        *(item.literal for item in candidate.recognition_conditions),
-                    )
-                    if value
-                ),
-                metric_key=str(spec["fact_key"]),
-            )
-            if candidate.metric in _UNMODELED_FACT_DIMENSION_METRICS
-            else None
-        )
-        financial_scope = _candidate_financial_scope(candidate)
-        personnel_scope = parse_personnel_recognition_scope(
-            " ".join(
-                value
-                for value in (
-                    # Preserve assignment wording even if it appears only in
-                    # the label; an attested capacity forecast is not staffing.
-                    candidate.label,
-                    candidate.criterion_literal,
-                    candidate.formula_literal or "",
-                    *(item.literal for item in candidate.cases),
-                )
-                if value
-            ),
-            metric_key=str(spec["fact_key"]),
-            recognition_literal=" ".join(
-                item.literal for item in candidate.recognition_conditions if item.literal
-            ),
-            allow_assignment_capacity=True,
-        )
-        scoring_fields: dict[str, Any]
-        if candidate.scoring_method == "BRACKET":
-            brackets = _candidate_brackets(candidate)
-            if not brackets:
-                conversion_errors.append(
-                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
-                )
-                continue
-            scoring_fields = {"formula_type": "BRACKET", "brackets": brackets}
-        elif candidate.scoring_method == "THRESHOLD" and candidate.threshold is not None:
-            scale = _metric_scale(candidate)
-            threshold_value = _scaled_value(candidate.threshold.threshold_value, scale) if scale is not None else None
-            if threshold_value is None:
-                conversion_errors.append(
-                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
-                )
-                continue
-            scoring_fields = {
-                "formula_type": "THRESHOLD",
-                "threshold_operator": candidate.threshold.operator,
-                "threshold_value": threshold_value,
-                "threshold_points_if_met": candidate.threshold.points_if_met,
-                "threshold_points_if_not_met": candidate.threshold.points_if_not_met,
-            }
-        elif candidate.scoring_method == "FORMULA":
-            compiled_formula, compiled_categories = _compiled_formula_contract(candidate)
-            if compiled_formula is not None:
-                scoring_fields = {
-                    "formula_type": "FORMULA",
-                    "deterministic_formula": compiled_formula,
-                }
-            elif compiled_categories is not None:
-                scoring_fields = {
-                    "formula_type": "CATEGORICAL",
-                    "categories": list(compiled_categories),
-                }
-            else:
-                conversion_errors.append(
-                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
-                )
-                continue
-        elif candidate.scoring_method == "CASE_TABLE":
-            compiled_case_table = _compiled_case_table_contract(candidate)
-            if compiled_case_table is None:
-                conversion_errors.append(
-                    f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
-                )
-                continue
-            scoring_fields = {
-                "formula_type": "CASE_TABLE",
-                "case_table": compiled_case_table,
-            }
-        else:
-            conversion_errors.append(
-                f"{candidate.source_attachment_id}:{candidate.table_id}:{candidate.criterion_id}"
-            )
-            continue
-        anchor = candidate.evidence
-        criterion_identity = _canonical_digest(
-            {
-                "attachment_id": candidate.source_attachment_id,
-                "table_id": candidate.table_id,
-                "criterion_id": candidate.criterion_id,
-            }
-        )[:28]
-        criteria.append(
-            QuantitativeCriterion(
-                criterion_id=f"dyn-{criterion_identity}",
-                category=candidate.metric,
-                label=candidate.label,
-                max_points=candidate.max_points,
-                metric_key=str(spec["fact_key"]),
-                unit=str(spec["canonical_unit"]),
-                formula=candidate.criterion_literal,
-                **scoring_fields,
-                performance_scope=performance_scope,
-                financial_scope=financial_scope,
-                personnel_scope=personnel_scope,
-                source_anchor=SourceAnchor(
-                    document_label=candidate.source_attachment_id,
-                    document_sha256=bindings.get(candidate.source_attachment_id),
-                    section=(
-                        candidate.evidence.section
-                        or f"{candidate.table_id}/{candidate.criterion_id}"
-                    ),
-                    page=candidate.evidence.page,
-                    quote=candidate.evidence.quote,
-                ),
-                required_evidence_keys=list(candidate.required_evidence),
-                fact_binding_sha256=_candidate_fact_binding_sha256(
-                    candidate,
-                    document_sha256=bindings[candidate.source_attachment_id],
-                ),
-            )
-        )
+        criteria.append(criterion)
     if conversion_errors or len(criteria) != len(logical_candidates):
         return QuantitativeEstimateRequest(
             ruleset_version=ruleset_version,
@@ -4922,15 +5199,20 @@ def estimate_for_notice(
 ) -> QuantitativeEstimateResult:
     dynamic_profile = _current_dynamic_quantitative_profile(notice)
     if dynamic_profile is not None:
+        stored_facts = tuple(company_facts)
         request = quantitative_request_from_candidate_profile(
             dynamic_profile, allow_partial_source=True,
         )
+        request, approved_bindings = _apply_row_approvals(
+            request, notice=notice, profile=dynamic_profile, company_facts=stored_facts,
+        )
         request = bind_quantitative_company_inputs(
-            request, company_facts, performance_records,
+            request, stored_facts, performance_records,
             as_of=notice.deadline,
             bid_notice_at=getattr(notice, "published_at", None),
             notice=notice,
         )
+        request = _cap_approved_row_facts(request, approved_bindings)
         return estimate_quantitative_score(request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
@@ -5275,7 +5557,7 @@ def _public_quantitative_projection(
             "criteria": criteria or [],
             "assumptions": [
                 "공개 화면에서는 회사 사실값과 원문·내부 증빙 식별자를 제외합니다."
-            ] + (["원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."]
+            ] + ([_partial_subtotal_statement(result.activation_reasons)]
                  if result.activation_status == "PARTIAL_SOURCE" else []),
             "evidence_observations": [],
         }
@@ -5586,7 +5868,10 @@ def public_quantitative_snapshot_projection(
         else ["PUBLIC_ANALYSIS_REVIEW_REQUIRED"]
     )
     if partial_source:
-        opinion = "원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다. 미해소 첨부의 배점과 최소점수 충족 여부는 판단하지 않았습니다."
+        opinion = (
+            _partial_subtotal_statement(basis["activation_reasons"])
+            + " 미해소 첨부의 배점과 최소점수 충족 여부는 판단하지 않았습니다."
+        )
     elif total_max == 0:
         opinion = "저장된 최신 분석에 정량 산정 대상이 없어 점수를 확정하지 않았습니다. 별도 평가 항목을 확인하세요."
     elif estimated is not None:
@@ -5625,7 +5910,7 @@ def public_quantitative_snapshot_projection(
             criteria=public_criteria,
             assumptions=[
                 "저장된 최신 분석 스냅샷에서 공개 가능한 배점·범위·상태만 표시합니다."
-            ] + (["원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."]
+            ] + ([_partial_subtotal_statement(basis["activation_reasons"])]
                  if partial_source else []),
             evidence_observations=[],
             opinion=opinion,
