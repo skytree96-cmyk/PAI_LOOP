@@ -16,7 +16,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 
 ROW_APPROVAL_FACT_KEY = "notice.quantitative.row_approval"
@@ -189,6 +189,139 @@ def hyphen_case_rows_match(raw: Any) -> bool:
     return max(awards) == _decimal(raw.max_points)
 
 
+# ---------------------------------------------------------------------------
+# Sufficient-row approvals: a person confirms the one printed row the company
+# falls into. Only that row is executed; the rest of the table stays unused.
+
+SUFFICIENT_ROW_FACT_KEY = "notice.quantitative.sufficient_row"
+SUFFICIENT_ROW_SOURCE = "PRIVATE_SUFFICIENT_ROW_APPROVAL"
+SUFFICIENT_ROW_WARNING = (
+    "사람이 확인한 원문의 한 배점 행에 회사 값이 해당하는지로 계산한 추정치이며, 다른 행과 공고 원문, 제출 시점 증빙의 재확인이 필요합니다."
+)
+SUFFICIENT_METRICS = frozenset({"CREDIT_RATING", "PERSONNEL_COUNT", "FINANCIAL_RATIO", "PERFORMANCE_COUNT"})
+# Codes about other rows, the table's structure or printed transcription, which
+# a person settles by reading the one row that applies. UNKNOWN_METRIC stays
+# blocking: without a metric there is no company value to test the row with.
+SUFFICIENT_WAIVABLE_ISSUE_CODES = WAIVABLE_ISSUE_CODES | frozenset({
+    "AMBIGUOUS_RULE",
+    "CASE_COMPARATOR_MISMATCH",
+    "CASE_LITERAL_MISMATCH",
+    "CASE_POINTS_EXCEED_MAX",
+    "CASE_TABLE_NOT_DETERMINISTIC",
+    "CRITERION_LITERAL_MISMATCH",
+    "BRACKET_COMPARATOR_MISMATCH",
+    "BRACKET_LITERAL_MISMATCH",
+    "BRACKET_NUMBER_MISMATCH",
+    "EXTRACTION_DECLARED_INCOMPLETE",
+    "MINIMUM_SCORE_EXCEEDS_TOTAL",
+    "RECOGNITION_CONDITION_LITERAL_MISMATCH",
+    "REQUIRED_EVIDENCE_INCOMPLETE",
+    "SOURCEWIDE_AMBIGUITY_SCOPE_UNSUPPORTED",
+    "TABLE_TOTAL_LITERAL_MISMATCH",
+})
+
+
+class CreditSufficiency(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    certificate_id: str = Field(min_length=36, max_length=36)
+    certificate_registration_sha256: str = Field(pattern=_SHA)
+    conditions_sha256: str = Field(pattern=_SHA)
+    qualified_issuer: StrictBool
+    issued_before_publication: StrictBool
+    valid_through_deadline: StrictBool
+    no_succession_joint_cooperative_or_startup_exception: StrictBool
+
+    @model_validator(mode="after")
+    def validate_assertions(self) -> "CreditSufficiency":
+        if not all((self.qualified_issuer, self.issued_before_publication, self.valid_through_deadline,
+                    self.no_succession_joint_cooperative_or_startup_exception)):
+            raise ValueError("Every credit condition assertion must be explicitly confirmed.")
+        return self
+
+
+class PerformanceSufficiency(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_ids: list[str] = Field(min_length=1, max_length=200)
+    window_start: date
+    window_end: date
+    min_amount_krw: int | None = Field(default=None, ge=0)
+    vat_included_required: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "PerformanceSufficiency":
+        if self.record_ids != sorted(set(self.record_ids)):
+            raise ValueError("Selected records must be sorted and unique.")
+        if self.window_end < self.window_start:
+            raise ValueError("The performance window is reversed.")
+        return self
+
+
+class QuantitativeSufficientRowApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["pai-loop-sufficient-row-1.0.0"] = "pai-loop-sufficient-row-1.0.0"
+    attestation: Literal["HUMAN_CONFIRMED_SUFFICIENT_ROW"]
+    accepted_on: date
+    effective_through: date
+    notice_key: str = Field(min_length=1, max_length=255)
+    manifest_sha256: str = Field(pattern=_SHA)
+    attachment_id: str = Field(min_length=1, max_length=255)
+    document_sha256: str = Field(pattern=_SHA)
+    table_id: str = Field(min_length=1, max_length=120)
+    criterion_id: str = Field(min_length=1, max_length=120)
+    raw_candidate_sha256: str = Field(pattern=_SHA)
+    row_state: Literal["REVIEW", "AVAILABLE"]
+    waived_issue_codes: list[str] = Field(default_factory=list, max_length=len(SUFFICIENT_WAIVABLE_ISSUE_CODES))
+    metric: Literal["CREDIT_RATING", "PERSONNEL_COUNT", "FINANCIAL_RATIO", "PERFORMANCE_COUNT"]
+    row_kind: Literal["CASE", "BRACKET"]
+    row_index: int = Field(ge=0, le=99)
+    row_literal: str = Field(min_length=1, max_length=1_000)
+    award_points: float = Field(ge=0)
+    credit: CreditSufficiency | None = None
+    performance: PerformanceSufficiency | None = None
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "QuantitativeSufficientRowApproval":
+        if self.effective_through < self.accepted_on:
+            raise ValueError("The approval horizon precedes its acceptance.")
+        codes = self.waived_issue_codes
+        if codes != sorted(set(codes)) or not set(codes) <= SUFFICIENT_WAIVABLE_ISSUE_CODES:
+            raise ValueError("Waived codes must be sorted, unique and individually reviewable.")
+        if self.row_state == "REVIEW" and not codes:
+            raise ValueError("A REVIEW row approval must name the codes it settles.")
+        if (self.metric == "CREDIT_RATING") != (self.credit is not None):
+            raise ValueError("Credit rows, and only credit rows, carry the certificate binding.")
+        if (self.metric == "PERFORMANCE_COUNT") != (self.performance is not None):
+            raise ValueError("Performance rows, and only performance rows, carry the selected records.")
+        if self.row_state == "AVAILABLE" and self.metric != "CREDIT_RATING":
+            raise ValueError("A validated row needs no approval unless its credit fact is bound here.")
+        return self
+
+    def row_key(self) -> tuple[str, str, str]:
+        return (self.attachment_id, self.table_id, self.criterion_id)
+
+
+def credit_conditions_digest(literals: list[str]) -> str:
+    return hashlib.sha256(json.dumps(literals, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def sufficient_row_choices(raw: Any) -> list[dict[str, Any]]:
+    """Every printed row a reviewer may pick, in stable source order."""
+
+    choices: list[dict[str, Any]] = []
+    for index, case in enumerate(sorted(raw.cases, key=lambda item: item.row_order)):
+        award = case.award_value if case.award_kind == "POINTS" else raw.max_points * case.award_value / 100
+        choices.append({"row_kind": "CASE", "row_index": index, "row_literal": case.literal,
+                        "award_points": float(award)})
+    for index, bracket in enumerate(raw.brackets):
+        choices.append({"row_kind": "BRACKET", "row_index": index, "row_literal": bracket.literal,
+                        "award_points": float(bracket.points)})
+    return choices
+
+
 __all__ = [
     "ApprovedCase",
     "ApprovedRowProgram",
@@ -202,4 +335,14 @@ __all__ = [
     "hyphen_case_rows_match",
     "raw_candidate_sha256",
     "row_program",
+    "CreditSufficiency",
+    "PerformanceSufficiency",
+    "QuantitativeSufficientRowApproval",
+    "SUFFICIENT_METRICS",
+    "SUFFICIENT_ROW_FACT_KEY",
+    "SUFFICIENT_ROW_SOURCE",
+    "SUFFICIENT_ROW_WARNING",
+    "SUFFICIENT_WAIVABLE_ISSUE_CODES",
+    "credit_conditions_digest",
+    "sufficient_row_choices",
 ]
