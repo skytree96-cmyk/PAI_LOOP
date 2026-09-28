@@ -13,6 +13,8 @@ from pai_loop.award_scope import (
     AWARD_AGENCY_UNAVAILABLE,
     AwardScope,
     award_agency_is_verifiable,
+    award_query_term,
+    award_title_matches,
     award_title_tokens,
     derive_award_keyword,
     filter_notice_awards,
@@ -215,6 +217,42 @@ def test_award_keyword_rules_remove_year_suffixes_and_generic_notice_terms() -> 
     assert len(derive_award_keyword("SYN" * 100)) == 100
     with pytest.raises(ValueError, match="검색 키워드"):
         derive_award_keyword("2026년도 긴급 공고 용역")
+
+
+@pytest.mark.parametrize("current, previous, keyword", [
+    # Middle dot and the ordinals around it (production R26BK01737422).
+    ("2026년 제1·2차 정당원 해외정책연수", "2025년 제1·2차 정당원 해외정책연수", "정당원 해외정책연수"),
+    # A procurement word removed from between two terms.
+    ("서울적십자병원 장례식장 위탁운영 사업자 선정", "서울적십자병원 장례식장 위탁운영 사업자 선정", "서울적십자병원 장례식장 사업자"),
+    # A school-year label removed from between two terms.
+    ("송림고등학교 2027학년도 2학년 주제별 체험학습 위탁운영 업체 선정",
+     "송림고등학교 2026학년도 2학년 주제별 체험학습 위탁운영 업체 선정", "송림고등학교 2학년 주제별"),
+    # Brackets glued to the neighbouring words.
+    ("울진군의료원[외주용역비]식당 위탁 운영 용역", "울진군의료원[외주용역비]식당 위탁 운영 용역", "울진군의료원 외주용역비 식당"),
+    ("양자내성암호(PQC)기반 V2X OBU 복호화 서버 실증", "양자내성암호(PQC)기반 V2X OBU 서버 실증", "양자내성암호 pqc 기반"),
+    # Cohort numbers and half-year labels change every edition.
+    ("KAIST 최고경영자과정 63기 미국 해외연수 위탁 용역", "KAIST 최고경영자과정 62기 미국 해외연수 위탁 용역", "kaist 최고경영자과정 미국"),
+    ("2026년 하반기 신입행원 「교육훈련용품」 구매", "2025년 상반기 신입행원 「교육훈련용품」 구매", "신입행원 교육훈련용품 구매"),
+    ("26년 정신건강전문가 긴급지원사업 시스템 운영·유지관리", "25년 정신건강전문가 긴급지원사업 시스템 운영·유지관리",
+     "정신건강전문가 긴급지원사업 시스템"),
+])
+def test_award_keyword_finds_last_years_edition_of_the_same_title(current, previous, keyword) -> None:
+    derived = derive_award_keyword(current)
+    assert derived == keyword
+    assert award_title_matches(derived, previous)
+    # The single provider query term must itself occur in the old title,
+    # otherwise PPS never returns the row for the local check to accept.
+    assert award_query_term(derived) in previous.casefold()
+
+
+def test_award_keyword_keeps_rank_and_grade_and_falls_back_for_edition_only_titles() -> None:
+    assert derive_award_keyword("2026년 5급 승진후보자 역량평가") == "5급 승진후보자 역량평가"
+    assert derive_award_keyword("2학년 수학여행") == "2학년 수학여행"
+    assert derive_award_keyword("제1차 2단계 용역") == "제1차 2단계"
+    assert award_query_term("정당원 해외정책연수") == "해외정책연수"
+    assert not award_title_matches("정당원 해외정책연수", "정당원 국내연수")
+    assert not award_title_matches("", "아무 제목")
+    assert not award_title_matches("정당원", None)
 
 
 def test_common_award_filter_requires_both_current_agency_and_all_keyword_terms() -> None:

@@ -315,6 +315,30 @@ def test_award_client_skips_title_mismatch_and_stops_on_empty_page() -> None:
     assert client.hit_incomplete_response is True
 
 
+def test_award_client_queries_one_term_and_keeps_titles_that_separate_the_terms() -> None:
+    # PPS matches bidNtceNm as one contiguous string, so sending the joined
+    # phrase "정당원 해외정책연수" can never return "정당원·해외정책연수" or a
+    # title with words in between. One term goes to PPS; all terms are
+    # checked here, in any position.
+    titles = ["2025년 제1·2차 정당원 해외정책연수", "정당원(청년) 해외정책연수 용역", "정당원 국내연수"]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"response": {"header": {"resultCode": "00"}, "body": {
+            "totalCount": len(titles),
+            "items": [{**_award_payload(title=title), "bidNtceNo": f"AWARD-{index}"}
+                      for index, title in enumerate(titles)],
+        }}})
+
+    with PpsAwardClient(service_key="key", base_url="https://example.test",
+                        transport=httpx.MockTransport(handler)) as client:
+        items = list(client.iter_awards(start=date(2025, 1, 1), end=date(2025, 1, 1),
+                                        keyword="정당원 해외정책연수", demand_agency_name="합성 발주기관"))
+    assert [request.url.params["bidNtceNm"] for request in requests] == ["해외정책연수"]
+    assert [item["title"] for item in items] == titles[:2]
+
+
 def test_award_client_raises_for_unrecoverable_subwindow_by_default() -> None:
     client = PpsAwardClient(
         service_key="key",

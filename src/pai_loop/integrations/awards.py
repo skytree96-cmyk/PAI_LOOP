@@ -6,7 +6,8 @@ from datetime import date
 from math import isfinite
 from typing import Any, Iterator
 
-from ..award_scope import award_agency_is_verifiable, matches_award_agency, normalize_award_agency
+from ..award_scope import (award_agency_is_verifiable, award_query_term, award_title_matches,
+                           matches_award_agency, normalize_award_agency)
 from ..outcome_identity import normalise_opening_identity
 from .pps import (
     DEFAULT_BASE_URL,
@@ -281,7 +282,7 @@ class PpsAwardClient(PpsClient):
         demand_agency_code: str | None = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        folded_keyword = keyword.casefold()
+        query_term = award_query_term(keyword)
         has_agency_filter = bool(normalize_award_agency(demand_agency_name)
                                  or normalize_award_agency(demand_agency_code))
         page = 1
@@ -299,7 +300,7 @@ class PpsAwardClient(PpsClient):
                         "inqryDiv": "1",
                         "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
                         "inqryEndDt": window.end.strftime("%Y%m%d2359"),
-                        "bidNtceNm": keyword,
+                        "bidNtceNm": query_term,
                         "pageNo": page,
                         "numOfRows": rows,
                         **({"dminsttCd": demand_agency_code.strip()}
@@ -357,7 +358,7 @@ class PpsAwardClient(PpsClient):
                         demand_agency_name=demand_agency_name, demand_agency_code=demand_agency_code):
                     self.hit_incomplete_response = True
                     continue
-                if (folded_keyword in award["title"].casefold()
+                if (award_title_matches(keyword, award["title"])
                         and (not has_agency_filter or matches_award_agency(award,
                             demand_agency_name=demand_agency_name, demand_agency_code=demand_agency_code))):
                     results.append(award)

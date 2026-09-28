@@ -22,6 +22,14 @@ _AWARD_TITLE_STOPWORDS = {
     "공고", "긴급", "변경", "재공고", "입찰", "사업", "용역", "위탁",
     "위탁운영", "운영", "시행", "계약",
 }
+# Words that say how a notice is procured rather than what it buys. They are
+# dropped from search terms only; similarity scoring keeps its own tokens.
+_AWARD_KEYWORD_STOPWORDS = {"선정", "업체", "용역업체", "위탁용역", "위한"}
+# An edition marker names one year's instance of a recurring project (63기,
+# 2차, 제1회, 4차년도, 26년, 하반기). Last year's edition carries a different
+# marker, so a term like this makes the previous award unmatchable by design.
+_AWARD_EDITION_TOKEN = re.compile(
+    r"제?\d+(?:차년도|년차|차수|회차|차|기|회|단계|학기|분기)?|\d{2}(?:학년도|년도|년)|[상하]반기")
 _AwardRow = TypeVar("_AwardRow")
 
 
@@ -36,7 +44,35 @@ def derive_award_keyword(title: str) -> str:
     tokens = award_title_tokens(title)
     if not tokens:
         raise ValueError("낙찰 이력 검색 키워드를 직접 입력해 주세요.")
-    return " ".join(tokens[:3])[:100]
+    terms = [token for token in tokens if token not in _AWARD_KEYWORD_STOPWORDS
+             and not _AWARD_EDITION_TOKEN.fullmatch(token)]
+    # A title made only of edition markers still needs a search; keep its
+    # original leading tokens rather than refusing it.
+    return " ".join((terms or tokens)[:3])[:100]
+
+
+def award_query_term(keyword: str) -> str:
+    """Pick the one term sent to PPS; the others are checked locally.
+
+    PPS matches ``bidNtceNm`` as one contiguous string. Titles separate the
+    same words with brackets, middle dots, spaces or procurement words, so a
+    multi-word phrase misses last year's edition of the very same project.
+    The longest term is the most specific one, and the demand-agency filter
+    keeps the response small.
+    """
+
+    terms = keyword.split()
+    return max(terms, key=len) if terms else keyword
+
+
+def award_title_matches(keyword: str, title: Any) -> bool:
+    """Every search term must appear in the award title, in any position."""
+
+    if not isinstance(title, str):
+        return False
+    folded = title.casefold()
+    terms = keyword.casefold().split()
+    return bool(terms) and all(term in folded for term in terms)
 
 
 def filter_notice_awards(notice: Notice, rows: Iterable[_AwardRow]) -> list[_AwardRow]:
@@ -49,12 +85,11 @@ def filter_notice_awards(notice: Notice, rows: Iterable[_AwardRow]) -> list[_Awa
     if not scope.available:
         return []
     try:
-        terms = derive_award_keyword(notice.title).casefold().split()
+        keyword = derive_award_keyword(notice.title)
     except ValueError:
         return []
     return [row for row in rows if scope.matches_award(row)
-            and isinstance(title := _value(row, "title"), str)
-            and all(term in title.casefold() for term in terms)]
+            and award_title_matches(keyword, _value(row, "title"))]
 
 
 def _agency_text(value: Any) -> str | None:
