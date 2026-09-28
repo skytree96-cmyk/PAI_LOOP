@@ -1,7 +1,7 @@
 # Private credit certificate registration and notice application
 
 The legacy notice-specific credit endpoint first derives one executable credit
-criterion. Missing or incomplete rules can therefore reject both binding and
+criterion. Missing or unsafe credit rules can therefore reject both binding and
 certificate registration. A company certificate must be registerable independently
 of those rules, without turning an unbound value into a confirmed score.
 
@@ -56,6 +56,25 @@ bindings return 409. It does not accept a caller-supplied replacement rating.
 Existing exact source, unit, recognition-condition and score validation remains
 unchanged. A notice may still require review for unrelated rules or missing facts.
 
+An incomplete manifest can supply a binding when its source-validated table
+program contains exactly one executable credit criterion. The credit attachment
+must be processed and bound to the current manifest, and its anchors, units,
+required fact key and deterministic compiler must pass the existing activation
+checks. An unresolved credit review row, ambiguous or invalid table program,
+stale manifest/schema, or invalid source proof still returns 422. Partial binding
+does not complete attachment coverage or make the notice total final: notice
+scoring keeps `PARTIAL_SOURCE`, an overall `REVIEW`, and the explicit subtotal
+warning. This opt-in is limited to `GET .../credit-rating/binding` and
+`POST .../credit-rating/bind`; the write still requires
+`HUMAN_REVIEWED_NOTICE_CONDITIONS`. The legacy document-registration endpoint
+cannot create a partial-source projection with only its document-review attestation.
+
+The automatic date check compares certificate issuance and validity to the
+deadline. It does not enforce a notice-specific requirement to have been rated
+before publication, nor choose the latest rating or a lower simultaneous rating.
+Those recognition rules remain part of the operator's notice-condition review;
+the binding hash preserves the extracted conditions without declaring them met.
+
 The scoreable result uses the existing `PRIVATE_DOCUMENT` CompanyFact and
 `QUANTITATIVE_FACT` Evidence contract. One certificate can produce multiple
 condition-specific projections; identical document-and-condition projections are
@@ -73,12 +92,17 @@ re-scoring is introduced here.
 
 - No DB migration, extraction prompt/schema version change, n8n change, or
   call/token-budget change is required.
-- The existing `/notices/{notice_key}/credit-rating` endpoint retains its behavior.
+- The existing `/notices/{notice_key}/credit-rating` endpoint retains its behavior
+  and continues to reject incomplete source profiles. Partial-source application
+  requires independent registration followed by the notice-condition-reviewed bind.
 - The sibling-document and ZIP/HWPX recovery changes in PR #185 remain intact.
 - SYN-only tests cover source registration without rules, deduplication and
   concurrent registration, private authorization, metadata conflict/tampering,
   stale bindings, Korean date boundaries, and the real validated credit-rule
-  compiler through deterministic scoring and legacy reuse.
+  compiler through deterministic scoring and legacy reuse. Partial-source tests
+  cover actual current-manifest records through binding and notice scoring,
+  retained total review, stale/invalid source rejection, ambiguity, compiler
+  guards, human attestation, and changed recognition-condition bindings.
 - Real certificates and registration payloads belong in private operator storage,
   never repository seeds, tests, workflow JSON, PR text, or public profile assets.
 - A paid re-extraction campaign is not a prerequisite for source registration.

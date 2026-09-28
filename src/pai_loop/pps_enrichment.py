@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import time
 import unicodedata
@@ -124,8 +125,8 @@ from .document_extraction import (
     extract_document_content,
 )
 from .extraction_contracts import (
-    BOUND_PREDECESSOR_KINDS, CURRENT_EXTRACTION_CONTRACT, EXTRACTION_READ_POLICY_VERSION,
-    classify_attempt_header,
+    BOUND_PREDECESSOR_KINDS, CURRENT_EXTRACTION_CONTRACT, CURRENT_SEMANTICS_KINDS,
+    EXTRACTION_READ_POLICY_VERSION, classify_attempt_header, classify_record_contract,
 )
 
 PPS_PROCESSING_VERSION = CURRENT_EXTRACTION_CONTRACT.processing
@@ -724,12 +725,13 @@ def department_keyword_coverage_count(
 
 def _current_manifest_attempts(
     versions: list[NoticeVersion], *, validate_accepted: bool = True,
+    preserve_quantitative_proof: bool = False,
 ) -> tuple[
     list[dict[str, Any]],
     int,
     dict[str, NoticeVersion],
 ]:
-    """Return validated current attachments and their latest bound attempts."""
+    """Return current attempts, with proof preservation only for opt-in reads."""
 
     metadata = next(
         (
@@ -765,6 +767,7 @@ def _current_manifest_attempts(
         for attachment in attachments
     }
     attempts: dict[str, NoticeVersion] = {}
+    bound_history: dict[str, list[NoticeVersion]] = {}
     current_generation_seen: set[str] = set()
     new_processing_generation_seen: set[str] = set()
     new_extraction_generation_seen: set[str] = set()
@@ -780,6 +783,8 @@ def _current_manifest_attempts(
         attachment_id = str(payload.get("attachment_id") or "")
         if payload.get("manifest_sha256") != current_digests.get(attachment_id):
             continue
+        if preserve_quantitative_proof and attachment_id in current_digests:
+            bound_history.setdefault(attachment_id, []).append(version)
         # The first valid bound row wins, exactly as the former ascending
         # scan overwrote older rows. Skip superseded retries before parsing
         # their full quantitative records. Invalid newer rows still fall
@@ -819,6 +824,19 @@ def _current_manifest_attempts(
         ):
             continue
         attempts[attachment_id] = version
+    if preserve_quantitative_proof:
+        for attachment_id, history in bound_history.items():
+            newest = history[0]
+            if classify_attempt_header(newest.source_payload) == "UNSUPPORTED":
+                # A newer unknown contract must not revive an older CURRENT row.
+                attempts.pop(attachment_id, None)
+                continue
+            preserved = preserved_quantitative_read_proof(history)
+            if preserved is not None:
+                attempts[attachment_id] = preserved
+            elif attempts.get(attachment_id) is not newest:
+                # Opt-in reads cannot inherit the less strict invalid-row fallback.
+                attempts.pop(attachment_id, None)
     return attachments, invalid_count, attempts
 
 
@@ -1111,6 +1129,146 @@ def quantitative_record_proves_available(
     except Exception:
         return False
     return bool(record.available_candidates)
+
+
+def _quantitative_read_identity(version: NoticeVersion) -> tuple[str, ...] | None:
+    payload = version.source_payload
+    if (
+        not isinstance(payload, dict)
+        or payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION"
+        or payload.get("source_kind") != PPS_ATTACHMENT_SOURCE
+        or payload.get("status") != "ACCEPTED"
+        or version.extraction_status not in {"ACCEPTED", "COMPLETE"}
+        or version.document_complete is not True
+    ):
+        return None
+    record = payload.get("quantitative_validation_record")
+    processing = payload.get("document_processing")
+    if not isinstance(record, dict) or not isinstance(processing, dict):
+        return None
+    contract = classify_record_contract(payload, record)
+    if contract not in CURRENT_SEMANTICS_KINDS or any(
+        processing.get(field) is not True
+        for field in ("source_read_complete", "analysis_input_complete")
+    ):
+        return None
+    digests = (
+        version.file_sha256, payload.get("document_sha256"), record.get("document_sha256"),
+        payload.get("manifest_sha256"), payload.get("current_manifest_sha256"),
+        record.get("manifest_sha256"), processing.get("source_text_sha256"),
+        processing.get("analysis_input_sha256"),
+    )
+    if any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) for value in digests):
+        return None
+    attachment_id = payload.get("attachment_id")
+    if (
+        not isinstance(attachment_id, str) or not attachment_id
+        or record.get("attachment_id") != attachment_id
+        or len(set(digests[:3])) != 1 or digests[4] != digests[5]
+    ):
+        return None
+    return (attachment_id, contract, *digests)
+
+
+def _numeric_demotion_preserves_scope(
+    previous: NoticeVersion, later: NoticeVersion, *, attachment_id: str,
+    current_manifest_sha256: str,
+) -> bool:
+    """Accept only an unchanged proof or a bounded numeric extraction loss."""
+    try:
+        old = ValidatedQuantitativeAttachmentRecord.model_validate(
+            previous.source_payload["quantitative_validation_record"]
+        )
+        new = ValidatedQuantitativeAttachmentRecord.model_validate(
+            later.source_payload["quantitative_validation_record"]
+        )
+        old_extraction = ExtractionPayload.model_validate(
+            previous.source_payload.get("result")
+        ).model_dump(mode="json")
+        new_extraction = ExtractionPayload.model_validate(
+            later.source_payload.get("result")
+        ).model_dump(mode="json")
+    except (KeyError, TypeError, ValueError):
+        return False
+    if new_extraction["missing_or_unreadable"]:
+        return False
+    if old.status != "AVAILABLE":
+        return False
+    if not _has_valid_quantitative_record(
+        later, attachment_id=attachment_id, current_manifest_sha256=current_manifest_sha256,
+    ):
+        # A malformed copy can preserve only exactly the already validated body.
+        omitted = {"validation_fingerprint_sha256"}
+        return (
+            old.model_dump(exclude=omitted) == new.model_dump(exclude=omitted)
+            and old_extraction == new_extraction
+        )
+    # A rejected CASE number can also make its compiled table nondeterministic.
+    # That secondary code is never sufficient without the literal-number error.
+    allowed = {"CASE_NUMBER_MISMATCH", "CASE_POINTS_EXCEED_MAX", "CASE_TABLE_NOT_DETERMINISTIC"}
+    codes = {issue.code for issue in new.issues}
+    if (
+        new.status != "INCOMPLETE" or new.available_candidates or not new.review_candidates
+        or new.not_applicable_evidence or not codes <= allowed or "CASE_NUMBER_MISMATCH" not in codes
+        or any(not set(candidate.issue_codes) <= allowed for candidate in new.review_candidates)
+    ):
+        return False
+    # Review candidates omit recognition conditions. Compare the complete raw
+    # extraction too, allowing only the CASE numbers that validation rejected.
+    for extraction in (old_extraction, new_extraction):
+        for table in extraction["quantitative_tables"]:
+            for criterion in table["criteria"]:
+                for case in criterion["cases"]:
+                    for field in ("award_value", "comparison_value", "comparison_upper_value"):
+                        case.pop(field, None)
+    if old_extraction != new_extraction:
+        return False
+    table_state = {"status", "available_criterion_ids", "review_criterion_ids"}
+    if [table.model_dump(exclude=table_state) for table in old.tables] != [
+        table.model_dump(exclude=table_state) for table in new.tables
+    ]:
+        return False
+    fields = {"source_attachment_id", "table_id", "criterion_id", "label", "max_points", "scoring_method", "metric"}
+    outline = lambda candidates: {
+        (item.source_attachment_id, item.table_id, item.criterion_id): item.model_dump(include=fields)
+        for item in candidates
+    }
+    return outline(old.available_candidates) == outline(new.review_candidates)
+
+
+def preserved_quantitative_read_proof(
+    history: Iterable[NoticeVersion],
+) -> NoticeVersion | None:
+    """Return a prior proof only within one uninterrupted, identical input run.
+
+    Callers supply every current-bound attempt for one attachment, including
+    failed/unsupported attempts. No fallback crosses those history barriers.
+    This read decision never updates source records or processing/retry history.
+    """
+    if os.getenv("PAI_LOOP_EXTRACTION_DEMOTION_GUARD", "on").strip().casefold() == "off":
+        return None
+    versions = sorted(history, key=lambda version: version.version_no, reverse=True)
+    if len(versions) < 2:
+        return None
+    newest = versions[0]
+    identity = _quantitative_read_identity(newest)
+    if identity is None:
+        return None
+    attachment_id, current_manifest = identity[0], newest.source_payload["current_manifest_sha256"]
+    proof_args = dict(attachment_id=attachment_id, current_manifest_sha256=current_manifest)
+    if quantitative_record_proves_available(newest, **proof_args):
+        return None
+    skipped = [newest]
+    for previous in versions[1:]:
+        if _quantitative_read_identity(previous) != identity:
+            return None
+        if quantitative_record_proves_available(previous, **proof_args):
+            return previous if all(
+                _numeric_demotion_preserves_scope(previous, later, **proof_args)
+                for later in skipped
+            ) else None
+        skipped.append(previous)
+    return None
 
 
 def _accepted_quantitative_review_is_retryable(

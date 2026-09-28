@@ -155,10 +155,9 @@ def test_normal_serialized_proof_survives_without_provider_or_extraction_version
     record, _, _ = validate(raw, source)
     reread = ValidatedQuantitativeAttachmentRecord.model_validate_json(record.model_dump_json())
     assert reread == record
-    # 1.8.2 separates OUT_OF_SCOPE points from quantitative totals. Cached
-    # scores must refresh, but extraction proofs still round-trip unchanged;
-    # the engine bump alone must not require another provider extraction.
-    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.6"
+    # Source-selection policy changes invalidate cached scores, while stored
+    # extraction proofs round-trip without another provider extraction.
+    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.10"
 
 
 @pytest.mark.parametrize("metric,unit,condition,label", [

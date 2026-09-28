@@ -55,6 +55,16 @@ def _drop_empty_teams_tables(connection):
         table.drop(connection)
 
 
+def test_pre_account_teams_drop_order_covers_foreign_key_dependencies():
+    drop_order = {table: index for index, table in enumerate(_TEAMS_TABLES_CHILD_FIRST)}
+    for table in Base.metadata.tables.values():
+        for foreign_key in table.foreign_keys:
+            parent = foreign_key.column.table
+            if parent in drop_order and table is not parent:
+                assert table in drop_order, f"{table.name} must be dropped before {parent.name}"
+                assert drop_order[table] < drop_order[parent], f"{table.name} must be dropped before {parent.name}"
+
+
 def _disposable_postgres_url() -> URL:
     raw = os.environ.get("PAI_LOOP_TEST_POSTGRES_URL")
     if not raw:

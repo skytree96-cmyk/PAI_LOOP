@@ -12,18 +12,21 @@ overstate the company in a bid document.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from itertools import count
 
 import pytest
 
 from pai_loop.quantitative_personnel import (
     PERSONNEL_METRIC_KEY,
     CompanyPersonnelMember,
+    PersonnelDegree,
     derive_personnel_value,
     parse_personnel_recognition_scope,
 )
 
 AS_OF = datetime(2026, 9, 10, tzinfo=timezone.utc)
+_KEYS = count()
 
 
 def _member(
@@ -36,12 +39,12 @@ def _member(
     tenure: int = 24,
 ) -> CompanyPersonnelMember:
     return CompanyPersonnelMember(
-        degree_level=degree,
+        member_key=f"SYN-{next(_KEYS)}",
+        joined_on=date(AS_OF.year + (AS_OF.month - 1 - tenure) // 12, (AS_OF.month - 1 - tenure) % 12 + 1, AS_OF.day),
+        degrees=tuple(PersonnelDegree(level=degree, major=major) for major in (majors or (None,))) if degree != "NONE" else (),
         research_grade=grade,
-        majors=majors,
         credentials=credentials,
         credentials_recorded=recorded,
-        tenure_months=tenure,
     )
 
 
@@ -85,9 +88,9 @@ def scope_for(literal: str, conditions: str = ""):
 def test_the_roster_fixture_matches_the_real_headcount() -> None:
     roster = _roster()
     assert len(roster) == 154
-    assert sum(1 for m in roster if m.degree_level != "NONE") == 153
-    assert sum(1 for m in roster if m.degree_level in ("MASTER", "DOCTORATE")) == 35
-    assert sum(1 for m in roster if m.degree_level == "DOCTORATE") == 1
+    assert sum(bool(m.degrees) for m in roster) == 153
+    assert sum(any(d.level in ("MASTER", "DOCTORATE") for d in m.degrees) for m in roster) == 35
+    assert sum(any(d.level == "DOCTORATE" for d in m.degrees) for m in roster) == 1
     assert sum(1 for m in roster if m.research_grade == "LEAD_RESEARCHER") == 26
     assert sum(1 for m in roster if m.credentials_recorded) == 97
 
@@ -164,7 +167,7 @@ def test_a_tenure_condition_excludes_recent_joiners() -> None:
         "입찰 공고일 기준 4대 보험 증빙자료 기준 3개월 이상 근무한 자에 한함",
     )
     assert scope is not None and scope.minimum_tenure_months == 3
-    assert derive_personnel_value(scope, _roster(), as_of=AS_OF).value == 143
+    assert derive_personnel_value(scope, _roster(), as_of=AS_OF, bid_notice_at=AS_OF).value == 143
 
 
 @pytest.mark.parametrize(
@@ -220,7 +223,7 @@ def test_a_credential_short_of_the_top_bracket_is_only_a_lower_bound() -> None:
     assert scope.credential_keywords == ("국외여행인솔자",)
     assert scope.minimum_tenure_months == 6
     derived = derive_personnel_value(
-        scope, _roster(), as_of=AS_OF, sufficiency_value=5
+        scope, [_member("BACHELOR", recorded=False)], as_of=AS_OF, sufficiency_value=5
     )
     assert derived.status == "REVIEW"
     assert derived.value is None
