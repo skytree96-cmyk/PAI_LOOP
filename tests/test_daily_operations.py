@@ -1032,6 +1032,11 @@ def test_failed_version_refresh_observes_backfill_retry_cooldown(
             payload,
             now=attempt_at + timedelta(hours=25),
         ) == [notice_key]
+        assert _select_backfill_notice_keys(
+            session,
+            payload,
+            now=attempt_at + timedelta(hours=49),
+        ) == []
 
 
 @pytest.mark.parametrize(
