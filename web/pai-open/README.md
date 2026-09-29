@@ -47,3 +47,23 @@ Build checks duplicate IDs, internal anchors, ARIA references and an explicit tw
 Before publishing this revision, verify desktop and 320/390/768px mobile rendering, horizontal overflow, keyboard navigation, native playback controls, reduced-motion behavior, the full video and poster, and the deployed page. Do not reuse validation results from the previous abstract-video layout as proof for the new tour. Local capture and verification inputs are excluded from deployment and source control.
 
 Application login, department account permissions, pre-analysis human decision persistence and production outcome records require a separate backend contract. The public page does not implement or imply that those pending changes are available.
+
+
+## Eight-scene scroll story (2026-09-29)
+
+The recovered left-copy/right-example layout now covers discovery, priority,
+personal Teams notifications, document analysis, company comparison, human
+decisions, reference records, and results. Each example uses synthetic data and
+PAI workspace colors, horizontal navigation, typography, and cards. The examples
+are native HTML/CSS so labels remain sharp and accessible at every size.
+
+`story.js` progressively enhances all eight server-rendered scenes on screens
+at least 1001px wide and 650px tall. Native scrolling and the eight step buttons
+share one position; inactive examples and links are excluded from keyboard
+focus. Reduced-motion preferences default to the sequential experience, with
+an explicit motion toggle. Mobile and JavaScript-disabled pages show every scene
+in order. The public asset allowlist and wheel include `story.css` and `story.js`.
+
+Teams copy describes personal followed-notice alerts and department daily
+briefings. The page sends no messages, connects no accounts, and performs no API
+calls. All example amounts, counts, records and notification cards are fictional.
