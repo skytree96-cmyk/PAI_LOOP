@@ -438,3 +438,42 @@ assert.equal(JSON.stringify(rows), before);
     result = subprocess.run(["node", "-e", _award_renderer_source(source) + "\n" + script],
                             capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
+
+
+def test_other_agency_projects_are_labelled_as_another_agency_not_this_one() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    adapter = _award_renderer_source(source)
+    script = r"""
+const assert = require("node:assert/strict");
+const escapeHtml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escapeAttribute = escapeHtml;
+const numberOrNull = (value) => (value === null || value === undefined || Number.isNaN(Number(value)) ? null : Number(value));
+const formatNumber = (value, digits = 0) => Number(value).toFixed(digits);
+const safeHttpUrl = () => "";
+const row = { year: 2025, result_group_key: "award-9", project_title: "KERIS ISMS-P 인증 사전 컨설팅",
+  agency: "SYN 교육학술정보원", bid_notice_no: "SYN-O1", revision_no: "000", match_kind: "OTHER_AGENCY_SIMILAR",
+  similarity_score: 63.8, source_status: "NOT_COLLECTED", event_date: "2025-05-01", company_name: "SYN 낙찰사",
+  bid_amount: null, technical_evaluation: null, price_evaluation: null, total_evaluation: null,
+  opening_rank: null, participation_kind: "WINNER" };
+const match = awardMatchPresentation(row);
+assert.equal(match.badge, "타 기관 유사");
+assert.match(match.note, /다른 발주기관의 유사 사업 · 제목 유사도 63\.8% · 이 발주처의 이력 아님/);
+const tableRow = renderAwardTableRow(row);
+assert.match(tableRow, /is-other-agency/);
+assert.match(tableRow, /이 발주처의 이력 아님/);
+const card = renderAwardProject({ row, rows: [row], year: 2025, key: "k" }, false);
+assert.match(card, /history-award-project__badge is-candidate is-other-agency">타 기관 유사</);
+assert.equal(AWARD_TABLE_BASIS_LABELS.OTHER_AGENCY_ONLY, "다른 발주기관 · 유사 사업 참고");
+assert.equal(awardMatchPresentation({ match_kind: "SAME_PROJECT" }).badge, "동일 사업 · 기관");
+assert.equal(awardMatchPresentation({ match_kind: "SIMILAR_CANDIDATE", similarity_score: 40 }).badge, "유사 후보");
+"""
+    result = subprocess.run(["node", "-e", adapter + "\n" + script], capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_response_guard_and_summary_accept_other_agency_rows() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    assert '["SAME_PROJECT", "SIMILAR_CANDIDATE", "OTHER_AGENCY_SIMILAR"].includes(row.match_kind)' in source
+    summary = _function_body(source, "awardHistorySummaryState")
+    assert "OTHER_AGENCY_SIMILAR" in summary and "타 기관" in summary
+    assert ".history-award-project__badge.is-other-agency" in STYLES_CSS.read_text(encoding="utf-8")

@@ -75,6 +75,72 @@ def award_title_matches(keyword: str, title: Any) -> bool:
     return bool(terms) and all(term in folded for term in terms)
 
 
+# --- Other-agency similar projects -------------------------------------------
+#
+# When the demand agency has no award in the three-year window, the table may
+# show other agencies' projects with the same core terms, labelled as such.
+# The same-agency keyword usually starts with the agency's own name (동아대학교,
+# 경찰청, 산업통상부), which no other agency's title contains, so core terms drop
+# institution-shaped words, the notice's own agency names, edition markers,
+# procurement words and words that say nothing about the project alone.
+# Measured on a 9,635-award sample (2026-09-29): at similarity >= 30 the
+# matches read as genuine analogues (ISMS-P consulting, ERP rebuild, school
+# theme trips); below 30 they turn arbitrary.
+OTHER_AGENCY_SOURCE = "PPS_OTHER_AGENCY"
+OTHER_AGENCY_MIN_SIMILARITY = 30.0
+OTHER_AGENCY_PER_YEAR = 3
+_INSTITUTION_TOKEN = re.compile(
+    r".+(대학교|대학|고등학교|중학교|초등학교|학교|교육청|교육원|교육지원청|지방청|청|공단|공사|재단|진흥원|연구원|"
+    r"개발원|정보원|평가원|관리원|의료원|병원|센터|협회|본부|위원회|은행|박물관|도서관|문화원|사업소|시청|군청|구청|"
+    r"산학협력단|테크노파크|아카데미)$")
+_MINISTRY_TOKEN = re.compile(r"[가-힣]{3,}(부|처)$")
+_TRAILING_PARTICLE = re.compile(r"(?<=[가-힣]{2})(을|를|의|에|와|과|으로|로)$")
+_GENERIC_PROJECT_WORDS = {
+    "교육", "운영", "지원", "관리", "사업", "구축", "개발", "기반", "용역", "컨설팅", "프로그램", "과정", "시스템",
+    "유지보수", "유지관리", "고도화", "위탁", "연수", "해외연수", "행사", "대행", "제작", "강화", "역량", "역량강화",
+    "관련", "추진", "수립", "연구", "조사", "분석", "협상", "정기", "방안", "수요", "지역", "미래", "환경", "공공",
+    "해외", "모델", "체계", "기능개선", "개선", "전략", "통합", "인프라", "플랫폼", "콘텐츠", "서비스", "기획", "홍보",
+    "제공", "사전규격",
+}
+
+
+def award_core_terms(title: str, agency_names: Iterable[Any] = ()) -> list[str]:
+    """Up to three project words of a title, with every agency-shaped word removed."""
+
+    agency_blob = "".join(normalize_award_agency(name) for name in agency_names if name)
+    terms: list[str] = []
+    for token in award_title_tokens(title):
+        if token in _AWARD_KEYWORD_STOPWORDS or _AWARD_EDITION_TOKEN.fullmatch(token):
+            continue
+        token = _TRAILING_PARTICLE.sub("", token)
+        if (token in _GENERIC_PROJECT_WORDS or _INSTITUTION_TOKEN.fullmatch(token)
+                or _MINISTRY_TOKEN.fullmatch(token) or token in agency_blob):
+            continue
+        terms.append(token)
+    return terms[:3]
+
+
+def award_core_matches(core_terms: list[str], title: Any) -> bool:
+    """At least two core terms (all of them when only two exist) in the title."""
+
+    if len(core_terms) < 2 or not isinstance(title, str):
+        return False
+    folded = title.casefold()
+    return sum(term in folded for term in core_terms) >= 2
+
+
+def filter_other_agency_awards(notice: Notice, rows: Iterable[_AwardRow]) -> list[_AwardRow]:
+    """Stored other-agency candidates that still satisfy the current rule."""
+
+    scope = resolve_notice_award_scope(notice)
+    if not scope.available:
+        return []
+    core = award_core_terms(notice.title, (scope.demand_agency_name, scope.announcing_agency_name))
+    return [row for row in rows if _value(row, "source") == OTHER_AGENCY_SOURCE
+            and not scope.matches_award(row) and award_core_matches(core, _value(row, "title"))
+            and (_value(row, "similarity_score") or 0) >= OTHER_AGENCY_MIN_SIMILARITY]
+
+
 def filter_notice_awards(notice: Notice, rows: Iterable[_AwardRow]) -> list[_AwardRow]:
     """Select explicit demand agency AND every current project keyword term.
 
