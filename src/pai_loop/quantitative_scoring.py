@@ -5317,6 +5317,7 @@ def _apply_company_first_beta(
                 credit_grade=credit_grade, roster=roster, records=performance_records,
                 statement=statement,
                 notice_title=getattr(notice, "title", None),
+                estimated_amount=getattr(notice, "estimated_amount", None),
             )
         if score is None:
             continue

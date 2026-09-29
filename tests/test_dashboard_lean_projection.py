@@ -153,7 +153,10 @@ def test_lean_dashboard_matches_full_graph_projection_and_current_board(client, 
     assert stats["accepted_attachment_count"] == sum(row["analysis_attachments_accepted"] for row in pps)
     assert stats["recorded_attempt_attachment_count"] == 30
     assert stats["analysis_state_counts"]["PENDING"] == 4  # stale prompts: 28/35/42/49
-    assert stats["score_counts"] == {"CONFIRMED": 19, "ESTIMATED": 0, "UNSCORABLE": 0, "REVIEW": 0, "NOT_EVALUATED": 11}
+    # The KPI counts the snapshot each notice's score view shows, which does not
+    # wait for stale-prompt re-extraction: the three PENDING notices with a
+    # current-basis snapshot count too (19 -> 22).
+    assert stats["score_counts"] == {"CONFIRMED": 22, "ESTIMATED": 0, "UNSCORABLE": 0, "REVIEW": 0, "NOT_EVALUATED": 8}
     assert dashboard["totals"]["evaluations"] == 165
     assert len(dashboard["recent_notices"]) == 10
     if public_view:

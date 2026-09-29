@@ -614,15 +614,10 @@ def _record_text(record: Any) -> str:
     ))))).casefold()
 
 
-def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
-                      published_at: datetime | None, rows: Sequence[PrintedRow],
-                      notice_title: str | None = None) -> tuple[float, str]:
-    """Count (or sum) register contracts by printed period, amount and field.
-
-    The field comes from the row's own words, or from the notice title when the
-    row only says 유사/관련; a contract counts when its name, overview or
-    keywords name that field. Without any field word no similarity filter applies.
-    """
+def _performance_contracts(raw: Any, records: Sequence[Any], *, deadline: datetime,
+                           published_at: datetime | None, notice_title: str | None,
+                           count_minimum: bool) -> tuple[list[float], str, str, int]:
+    """Register contracts in the printed period, above the printed amount, in the asked field."""
 
     text = _row_text(raw)
     end = deadline.astimezone(_KST).date()
@@ -634,7 +629,7 @@ def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
     start = date(start_month // 12, start_month % 12 + 1, min(end.day, 28))
     minimum = 0
     amount_match = _AMOUNT.search(text)
-    if amount_match and raw.metric == "PERFORMANCE_COUNT":
+    if amount_match and count_minimum:
         minimum = int(float(amount_match.group(1).replace(",", "")) * _UNIT_KRW[amount_match.group(2)])
     field = similarity_terms(raw, notice_title)
     needles = tuple(_compact(term).casefold() for term in field[1]) if field else ()
@@ -652,6 +647,23 @@ def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
             amounts.append(amount * (share if share else 100) / 100)
     window = f"{start.isoformat()}~{end.isoformat()}"
     similar = f"{field[0]} 관련 계약만(사업명·개요 기준)" if field else "분야 표현 없음 → 유사성 필터 없음"
+    return amounts, window, similar, minimum
+
+
+def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
+                      published_at: datetime | None, rows: Sequence[PrintedRow],
+                      notice_title: str | None = None) -> tuple[float, str]:
+    """Count (or sum) register contracts by printed period, amount and field.
+
+    The field comes from the row's own words, or from the notice title when the
+    row only says 유사/관련; a contract counts when its name, overview or
+    keywords name that field. Without any field word no similarity filter applies.
+    """
+
+    amounts, window, similar, minimum = _performance_contracts(
+        raw, records, deadline=deadline, published_at=published_at, notice_title=notice_title,
+        count_minimum=raw.metric == "PERFORMANCE_COUNT",
+    )
     if raw.metric == "PERFORMANCE_AMOUNT":
         scale = _unit_scale(raw.unit, rows)
         return sum(amounts) / scale, (
@@ -659,6 +671,73 @@ def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
         )
     rule = f", 단일 계약 {minimum:,}원 이상" if minimum else ""
     return float(len(amounts)), f"{window} 완료 실적 {len(amounts)}건(대장 기준{rule}, {similar})."
+
+
+_PENALTY = re.compile(r"체불|미이행|위반|제재|처분|명단\s*(?:을\s*)?(?:공개|공표)|부도|파산|영업\s*정지|사망|감점|△")
+_NOT_APPLICABLE_FULL = re.compile(r"해당(?:하지|되지)\s*않는\s*경우[^.]{0,40}(?:배점\s*한도|만점)|해당\s*없(?:는|을)\s*(?:경우|시)[^.]{0,20}(?:배점\s*한도|만점)")
+
+
+def score_penalty_only(raw: Any, rows: Sequence[PrintedRow]) -> BetaScore | None:
+    """A deduction table that prints only penalty cases: none applies, so the item keeps its points."""
+
+    text = _row_text(raw)
+    if not rows or not all(_PENALTY.search(_norm(row.literal)) for row in rows):
+        return None
+    if any(_CLEAR_ROW.search(_norm(row.literal)) for row in rows):
+        return None
+    note = " (원문: 해당하지 않으면 배점한도 부여)" if _NOT_APPLICABLE_FULL.search(text) else ""
+    return BetaScore(float(raw.max_points), "(감점 사유 해당 없음 → 배점한도)" + note,
+                     "체불·제재·명단 공표 등 감점 사유 이력 없음(회사 확인 사실)", False)
+
+
+_MANAGER = re.compile(r"책임\s*자|PM|총괄|사업\s*관리\s*자|사업\s*책임")
+_CAREER_WORD = re.compile(r"경력|재직|근무|근속")
+
+
+def score_manager_career(raw: Any, rows: Sequence[PrintedRow], roster: Sequence[Any] | None, *,
+                         deadline: datetime, published_at: datetime | None) -> BetaScore | None:
+    """A project manager's career in years: the longest company tenure on the roster."""
+
+    head = _norm(f"{raw.label} {raw.criterion_literal}")
+    if not (_MANAGER.search(head) and _CAREER_WORD.search(head)) or "%" in _norm(raw.unit or ""):
+        return None
+    numeric = [row for row in rows if not row.categories]
+    # Bands printed in people ("7인 이상") count staff, not one manager's years.
+    if not numeric or any(re.search(r"\d+\s*(?:인|명)", _norm(row.literal)) for row in numeric):
+        return None
+    if not roster:
+        return lowest_row(rows, "적용 가능한 확인 인력 명부 없음")
+    reference = published_at if published_at is not None and re.search(r"공고일", _row_text(raw)) else deadline
+    cutoff = (reference if reference.tzinfo else reference.replace(tzinfo=timezone.utc)).astimezone(_KST).date()
+    months = max((_months_between(member.joined_on, cutoff) for member in roster if member.joined_on <= cutoff), default=0)
+    in_months = "개월" in _norm(raw.unit or "")
+    value = float(months) if in_months else months / 12
+    basis = (f"{cutoff.isoformat()} 기준 명부 최장 근속 {months // 12}년 {months % 12}개월을 책임자 경력으로 대체"
+             " (관련 업종 경력은 당사 근속으로 가정)")
+    return score_numeric(rows, value, basis)
+
+
+_BUDGET_RATIO = re.compile(r"사업\s*(?:규모|금액|예산)|추정\s*가격|기초\s*금액|배정\s*예산|계약\s*금액\s*대비|대비")
+
+
+def score_performance_ratio(raw: Any, rows: Sequence[PrintedRow], records: Sequence[Any], *,
+                            deadline: datetime, published_at: datetime | None, notice_title: str | None,
+                            estimated_amount: float | None) -> BetaScore | None:
+    """Performance printed as a percentage of this project's size: field contracts' sum ÷ budget."""
+
+    text = _row_text(raw)
+    if "%" not in _norm(raw.unit or "") and not all("%" in _norm(row.literal) for row in rows if not row.categories):
+        return None
+    if not re.search(r"실적", text) or not _BUDGET_RATIO.search(text):
+        return None
+    if not estimated_amount or estimated_amount <= 0:
+        return lowest_row(rows, "공고 사업금액(추정가격)이 없어 실적 비율을 계산할 수 없음")
+    amounts, window, similar, _minimum = _performance_contracts(
+        raw, records, deadline=deadline, published_at=published_at, notice_title=notice_title, count_minimum=False)
+    ratio = sum(amounts) / estimated_amount * 100
+    basis = (f"{window} 완료 실적 {len(amounts)}건 금액 합계 {sum(amounts):,.0f}원 ÷ 공고 사업금액 "
+             f"{estimated_amount:,.0f}원 = {ratio:.0f}% ({similar})")
+    return score_numeric(rows, ratio, basis)
 
 
 def company_credit_grade(facts: Iterable[Any]) -> str | None:
@@ -711,6 +790,7 @@ def beta_score(
     records: Sequence[Any],
     statement: tuple[Any, ...] | None = None,
     notice_title: str | None = None,
+    estimated_amount: float | None = None,
 ) -> BetaScore | None:
     """Apply company facts to one criterion's printed rows; None when not a company row."""
 
@@ -725,6 +805,16 @@ def beta_score(
     bonus = bool(_BONUS.search(_norm(f"{raw.label} {raw.criterion_literal}")))
     if is_sanction_row(raw):
         return score_sanction(raw, rows)
+    penalty = score_penalty_only(raw, rows)
+    if penalty is not None:
+        return penalty
+    ratio = score_performance_ratio(raw, rows, records, deadline=deadline, published_at=published_at,
+                                    notice_title=notice_title, estimated_amount=estimated_amount)
+    if ratio is not None:
+        return ratio
+    manager = score_manager_career(raw, rows, roster, deadline=deadline, published_at=published_at)
+    if manager is not None:
+        return manager
     metric = raw.metric
     if metric == "CREDIT_RATING":
         if credit_grade is None:
