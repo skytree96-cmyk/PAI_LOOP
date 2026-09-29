@@ -11,8 +11,9 @@ company's stored facts to the printed rows:
   period and above the printed single-contract amount (similarity unchecked);
 * personnel: roster members meeting every roster-checkable condition (degree,
   major, research grade, credential, tenure, regular employment, reference
-  date); conditions the roster cannot show (age, residence, specific project
-  careers) are treated as unmet.
+  date); a printed career of N years is read as N years of company tenure and
+  residence/assignment as every approved member being available; conditions
+  the roster cannot show at all (age, demographic status) are treated as unmet.
 
 When the company value reaches no printed row, the table's lowest printed award
 is used so a subtotal exists. This is an explicit user exception to the "no
@@ -371,10 +372,10 @@ def score_financial(raw: Any, rows: Sequence[PrintedRow], statement: tuple[Any, 
 
 
 # Roster cannot show these; the people they name are treated as not qualifying.
+# Careers (including similar-project careers) are read as company tenure and
+# residence/assignment as "every approved member is available" instead.
 _UNVERIFIABLE_PERSONNEL = re.compile(
-    r"나이|연령|만\s*\d+\s*세|\d+\s*세\s*(?:이하|미만|이상)|상주|거주|"
-    r"(?:사업|용역|과업|프로젝트)\s*(?:수행\s*)?(?:경력|경험|실적)|"
-    r"(?:수행|참여)\s*(?:경력|경험|실적)|유사\s*(?:사업|용역)|"
+    r"나이|연령|만\s*\d+\s*세|\d+\s*세\s*(?:이하|미만|이상)|"
     r"지역\s*주민|장애인|여성|청년|경력\s*단절"
 )
 _CAREER_YEARS = re.compile(r"(?:경력\s*(\d+)\s*년\s*이상|(\d+)\s*년\s*이상\s*(?:의\s*)?경력)")
@@ -483,13 +484,16 @@ def personnel_count(raw: Any, members: Sequence[Any], *, deadline: datetime,
     """Count roster members meeting every roster-checkable condition of one row.
 
     Alternatives printed with 이거나/또는 are each tried; a generic "관련 학과·
-    분야" without a named major is taken as met. Conditions the roster cannot
-    show (age, residence, specific project careers) count nobody.
+    분야" without a named major is taken as met. A printed career of N years
+    (similar-project careers included) is read as N years of company tenure,
+    and residence/assignment as every approved member being available.
+    Conditions the roster cannot show at all (age, demographic status) count
+    nobody.
     """
 
     text = _row_text(raw)
     if _UNVERIFIABLE_PERSONNEL.search(text):
-        return 0, "명부로 확인할 수 없는 조건(나이·상주·특정 사업 경력 등)이 있어 해당 인원을 미충족으로 보았습니다."
+        return 0, "명부로 확인할 수 없는 조건(나이·연령·신분 요건 등)이 있어 해당 인원을 미충족으로 보았습니다."
     reference = deadline
     if published_at is not None and re.search(r"공고일\s*(?:기준|현재)|공고일", text) and not re.search(r"마감일", text):
         reference = published_at
@@ -506,7 +510,7 @@ def personnel_count(raw: Any, members: Sequence[Any], *, deadline: datetime,
     options = f" 중 하나({len(requirements)}가지)" if len(requirements) > 1 else ""
     return count, (
         f"{cutoff.isoformat()} 기준 명부에서 {condition}{options} 조건을 충족한 {count}명"
-        " (확인 안 된 조건은 미충족, 관련 학과·분야는 충족 가정, 승인 인원 전원 투입 가정)."
+        " (경력은 당사 근속으로 대체, 관련 학과·분야는 충족 가정, 승인 인원 전원 상주·투입 가정)."
     )
 
 

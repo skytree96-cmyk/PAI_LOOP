@@ -123,7 +123,7 @@ def test_personnel_applies_every_roster_condition_and_unverifiable_ones_count_no
     count, basis = beta.personnel_count(raw, roster, deadline=DEADLINE, published_at=None)
     assert count == 1 and "학위" in basis and "정규직" in basis
     assert _score(raw, roster=roster).points == 3
-    unverifiable = _raw("상주 인력", "PERSONNEL_COUNT", rows, unit="명", literal="현장 상주 인력 수")
+    unverifiable = _raw("청년 인력", "PERSONNEL_COUNT", rows, unit="명", literal="만 34세 이하 청년 인력 수")
     score = _score(unverifiable, roster=roster)
     assert score.points == 1 and "미충족" in score.basis  # nobody counted: the printed 0명 row
 
@@ -213,3 +213,15 @@ def test_one_item_holding_two_ratios_scores_each_on_its_own_rows():
                                                    ("기준비율의 100% 이상 5", "GTE", 100.0, None, (), 5.0)),
                     max_points=5)
     assert _score(relative, statement=statement).floor_applied  # industry benchmark not printed
+
+
+def test_careers_read_as_company_tenure_and_residence_assumes_every_member_is_available():
+    roster = [_member("M1", joined=date(2020, 1, 1)), _member("M2", joined=date(2026, 1, 1)),
+              _member("M3", joined=date(2029, 12, 1))]
+    rows = (("2명 이상 10", "GTE", 2.0, None, (), 10.0), ("1명 이하 4", "LTE", 1.0, None, (), 4.0))
+    career = _raw("인력경력(최근 5년간 유사사업 수행 경력)", "PERSONNEL_COUNT", rows, unit="명", conditions=(
+        "최근 5년 내 회계·세무 분야 감사 지원 등 관련분야 경력 1년 이상 참여 인력 수",))
+    count, basis = beta.personnel_count(career, roster, deadline=DEADLINE, published_at=None)
+    assert count == 2 and "근속" in basis  # M3 joined a month before the deadline
+    resident = _raw("상주 직원 수", "PERSONNEL_COUNT", rows, unit="명", literal="현장 상주 직원 수")
+    assert _score(resident, roster=roster).points == 10
