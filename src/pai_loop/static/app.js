@@ -303,7 +303,7 @@
       "teamsBriefingToggle", "teamsBriefingEnabled",
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
       "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navResultEntryCount", "navArchiveCount",
-      "navDecisionCount", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing", "kpiReviewTrend", "kpiGoTrend",
+      "navDecisionCount", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing",
       "dashboardSummary", "dashboardSummaryTitle", "dashboardSummaryDetail", "dashboardSummaryTotals", "dashboardRetryButton",
       "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
       "noticeHeading", "noticeSummary", "noticeViewToggle", "noticeSearchScope", "noticeSearchHelp", "noticeSearchInputLabel", "noticeSearchHelpButton", "noticeSearchHelpDialog", "prioritySearch", "departmentSelect", "priorityKeywordInput", "priorityApplyButton", "rankingProfileVersion", "filterForm", "searchInput", "eligibilityFilter", "recommendationFilter", "operatorDecisionFilter", "operatorDecisionFilterHelp", "sortSelect",
@@ -1554,6 +1554,7 @@
 
   function renderNoticeSearchScope() {
     if (!els.noticeSearchScope) return;
+    els.noticeSearchScope.hidden = false;
     if (state.noticeSearchMode === "prespec") {
       els.noticeSearchScope.classList.remove("is-global", "is-pps");
       els.noticeSearchScope.textContent = "사전규격은 입찰공고 전 단계의 요구조건 검토용이며, 입찰 참여 GO/NO-GO를 결정하지 않습니다.";
@@ -1572,6 +1573,8 @@
     document.querySelectorAll("[data-notice-scope]").forEach((button) => {
       button.setAttribute("aria-pressed", String(scope === (button.dataset.noticeScope === "collected" ? "ALL" : "OPEN")));
     });
+    // 범위 버튼이 이미 현재 범위를 보여 주므로, 전체 검색으로 범위가 넓어졌을 때만 문장을 보인다.
+    els.noticeSearchScope.hidden = !globalSearch;
     els.noticeSearchScope.textContent = globalSearch
       ? "저장된 전체 공고에서 검색 중 · 종료·취소 포함"
       : scope === "ALL" ? "저장된 전체 공고 · 종료·취소 포함"
@@ -4609,8 +4612,6 @@
     els.kpiGo.textContent = displayNumber(data.inProgressCount);
     els.kpiUrgent.textContent = displayNumber(data.urgentInProgressCount);
     els.kpiResultMissing.textContent = displayNumber(data.resultMissingDecidedCount);
-    els.kpiReviewTrend.textContent = state.source === "demo" ? "데모" : "판단 필요";
-    els.kpiGoTrend.textContent = "제안 작성";
     const total = document.getElementById("dashboardTotalNotices");
     if (total) total.textContent = displayNumber(data.actionableCount);
     const stored = document.getElementById("dashboardStoredNotices");
@@ -4960,7 +4961,8 @@
     const totalMeta = document.getElementById("dashboardTotalMeta");
     if (totalMeta) totalMeta.textContent = hasPrevious ? `마지막 확인 ${formatKstDateTime(data.generatedAt)}`
       : data.actionableCount == null ? "활성 공고 집계 확인 대기" : state.source === "demo" ? "데모 공고 기준" : "마감 전 · 종료·취소 제외";
-    els.dashboardSummary.hidden = state.source !== "api" && !applicationFailed;
+    // 정상 집계일 때의 기준 설명은 보여 주지 않는다. 집계 중·실패·연결 실패만 알린다.
+    els.dashboardSummary.hidden = !(applicationFailed || (state.source === "api" && (loading || failed)));
     els.dashboardSummary.classList.toggle("is-warning", failed);
     els.dashboardRetryButton.hidden = !failed;
     els.dashboardRetryButton.disabled = loading || state.loading;
@@ -4985,6 +4987,7 @@
     const valueIds = ["analysisAttachmentValue", "analysisEligibilityValue", "analysisScoreValue"];
     if (!stats || stats.scope !== "OPEN_PPS_NOT_CANCELLED") {
       valueIds.forEach((id) => { els[id].textContent = "—"; });
+      els.analysisProgressScope.hidden = false;
       els.analysisProgressScope.textContent = state.source === "api" && ["error", "partial"].includes(state.dashboardStatus)
         ? "전체 통계 조회 실패 · 공고 목록은 조회됐습니다. 집계 다시 조회로 확인해 주세요."
         : "전체 통계 조회 대기 · 하단 새로고침으로 다시 조회할 수 있습니다.";
@@ -5001,6 +5004,8 @@
     const recordedFiles = stats.recorded_attempt_attachment_count;
     const history = Number.isInteger(recordedNotices) && Number.isInteger(recordedFiles)
       ? `누적 처리 ${formatNumber(count(recordedNotices))}개 공고·${formatNumber(count(recordedFiles))}개 파일 · ` : "";
+    // 집계 기준 문장은 정상일 때 숨기고(스크린리더용 텍스트는 유지) 조회 실패·대기일 때만 보인다.
+    els.analysisProgressScope.hidden = true;
     els.analysisProgressScope.textContent = `진행 중인 나라장터 공고 ${formatNumber(n)}건 · 취소 제외 · ${history}현재 기준 분석 시도 ${formatNumber(count(stats.attempted_notice_count))}건 · 현재 기준 대기 ${formatNumber(count(analysis.PENDING))}건 · ${formatKstDateTime(state.dashboard.generatedAt)} 기준`;
     els.analysisAttachmentValue.textContent = ratio(count(stats.accepted_attachment_count), count(stats.attachment_count));
     els.analysisAttachmentDetail.textContent = `현재 기준 파일 ${formatNumber(count(stats.audited_attachment_count))}개 검증 · 전체 첨부 성공 ${formatNumber(count(analysis.ANALYZED))}개 공고 · 첨부 검토 ${formatNumber(count(analysis.REVIEW))}개 공고`;
@@ -5111,6 +5116,8 @@
     els.operatorDecisionFilter.options[0].textContent = decisionFilterAvailable
       ? "담당자 판단 전체" : adminDecisionReader ? "부서별 판단은 상세에서 조회" : decisionAccessAllowed ? "담당자 판단 조회 필요" : "판단 조회 권한 필요";
     els.operatorDecisionFilterHelp.textContent = decisionFilterMessage;
+    // 판단 필터를 정상적으로 쓸 수 있을 때의 안내는 숨긴다. 쓸 수 없는 이유만 화면에 남긴다.
+    els.operatorDecisionFilterHelp.hidden = decisionFilterAvailable && !state.pendingNoticeDecisionFilter;
     if (state.pendingNoticeDecisionFilter) els.operatorDecisionFilterHelp.textContent = "공유된 담당자 판단 조건을 적용하려면 내 부서의 판단 조회가 완료되어야 합니다. 조회를 마칠 때까지 목록을 표시하지 않습니다.";
     if (!decisionFilterAvailable) els.operatorDecisionFilter.value = "all";
     const operatorDecision = els.operatorDecisionFilter.value;
@@ -5994,12 +6001,12 @@
       all: ["오늘 할 일", "오늘의 확인 항목"],
       collected: ["공고 찾기", "저장된 전체 공고"],
       new: ["공고 찾기", "진행 중 공고"],
-      review: ["검토 대기", "PASS·REVIEW 중 첨부·자격 확인이 필요한 공고"],
+      review: ["검토 대기", "확인할 공고"],
       go: ["GO 후보", "시스템이 GO로 추천한 공고"],
       "pending-decision": ["판단이 필요한 공고", "부서 키워드 매칭·자격 확인을 마치고 담당자 판단을 기다리는 공고"],
-      "in-progress": ["검토 중인 공고", "GO로 결정한 입찰마감 전 공고. 마감되면 결과 입력으로 넘어갑니다."],
+      "in-progress": ["검토 중인 공고", "마감 직전 공고"],
       "urgent-in-progress": [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `진행 건 중 ${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
-      "result-missing-decided": ["결과 입력이 필요한 공고", "GO로 결정하고 개찰이 지난 뒤 결과를 기록하지 않은 공고"],
+      "result-missing-decided": ["결과 입력이 필요한 공고", "결과 기록 필요 공고"],
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       fail: ["FAIL 공고", "저장된 현재 자격 판정이 FAIL인 공고"],
       cancelled: ["취소공고", "당시 자격 판정 PASS·REVIEW인 취소 공고"],
@@ -6012,8 +6019,7 @@
       performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[nextView]?.[0] || titles.all[0];
-    els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];
-    const navigationView = nextView === "prespec"
+    els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];    const navigationView = nextView === "prespec"
       ? "new"
       : ["collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
     const showDashboardCards = nextView === "all";
@@ -9953,6 +9959,7 @@
       : "내 Teams 개인 채팅을 연결해 주세요";
     els.teamsFollowsStatus.textContent = followups.message || status;
     els.teamsFollowsSummary.textContent = status;
+    if (els.teamsFollowsButton) els.teamsFollowsButton.title = status;
     els.teamsFollowsError.textContent = followups.error;
     els.teamsFollowsError.hidden = !followups.error;
     els.teamsFollowsDeliveryNotice.hidden = !followups.connected || followups.deliveryEnabled === true;

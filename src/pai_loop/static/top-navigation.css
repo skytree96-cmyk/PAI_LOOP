@@ -57,14 +57,15 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
 .app-header .nav-list > .nav-item:focus-visible { outline: 2px solid #fff; outline-offset: -6px; }
 .app-header .nav-group-items .nav-item:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }
 .app-header .mobile-menu-button { display: none; }
+/* 페이지 제목은 상단 메뉴가 이미 알려 주므로 화면에서 뺀다(스크린리더·포커스용으로만 남김).
+   샘플 분석 버튼이 없을 때는 본문 위 여백만 남는다. */
 .topbar {
-  position: relative; top: auto; z-index: auto; min-height: 105px;
-  max-width: var(--content-width); margin: 0 auto; padding: 26px 32px 20px;
+  position: relative; top: auto; z-index: auto; min-height: 0;
+  max-width: var(--content-width); margin: 0 auto; padding: 24px 32px 0;
   border: 0; background: transparent; box-shadow: none; backdrop-filter: none;
 }
+.topbar:has(.topbar__actions > :not([hidden])) { padding-bottom: 16px; }
 .demo-banner:not([hidden]) + .topbar { top: auto; }
-.topbar__context p { font-size: var(--fs-xs); font-weight: 500; margin-bottom: 6px; }
-.topbar__context h1 { font-size: var(--fs-xl); }
 .main-content { max-width: var(--content-width); margin: 0 auto; padding: 0 32px 32px; }
 .demo-banner { position: relative; top: auto; }
 .utility-dock {
@@ -185,8 +186,7 @@ html { scroll-padding-top: calc(var(--app-header-height) + 20px); scroll-padding
 @media (max-width: 760px) {
   :root { --utility-dock-height: 106px; }
   .app-header { padding-inline: 18px; }
-  .topbar { min-height: 86px; padding: 22px 20px 16px; }
-  .topbar__context p { display: block; }
+  .topbar { min-height: 0; padding: 18px 20px 0; }
   .main-content { padding-inline: 20px; }
   .hero--work { gap: 18px; padding: 24px; }
   .hero--work h2 { font-size: var(--fs-lg); }
