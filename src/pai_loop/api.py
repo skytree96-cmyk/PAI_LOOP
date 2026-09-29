@@ -39,7 +39,7 @@ from .integrations.awards import (
 )
 from .award_intelligence import build_annual_award_table, build_award_intelligence
 from .award_scope import (AWARD_SCOPE_VERSION, award_agency_is_verifiable,
-                         award_title_tokens, derive_award_keyword, filter_notice_awards,
+                         award_title_tokens, derive_award_keyword, filter_notice_awards, filter_other_agency_awards,
                          resolve_notice_award_scope)
 from .integrations.pps import (
     KST,
@@ -75,6 +75,7 @@ from .notice_freshness import (
     latest_current_analysis_run,
     latest_quantitative_snapshot_run,
     latest_current_evaluation,
+    has_current_independent_failure,
 )
 from .pps_enrichment import (
     EORDER_ATTACHMENT_FIELD,
@@ -168,6 +169,8 @@ def _dashboard_qualification(notice: Notice, evaluation: Evaluation | None) -> s
     """Require current source/deadline and complete PPS audit for work queues."""
     if evaluation is None:
         return "NOT_EVALUATED"
+    if evaluation.eligibility == "FAIL" and has_current_independent_failure(notice, evaluation):
+        return "FAIL"
     if _source_kind(notice) == "PPS" and (
         not pps_attachment_coverage(notice.versions).complete
         or public_analysis_reason(notice.versions, evaluated=True, source_kind="PPS").state != "ANALYZED"
@@ -638,6 +641,9 @@ def _summary(
         recommendation_evidence_count=recommendation_evidence_count,
         recommendation_updated_at=recommendation_updated_at,
         latest_evaluation=evaluation,
+        eligibility_independent_failure=bool(
+            latest is not None and has_current_independent_failure(notice, latest)
+        ),
         qualification_status="NOT_EVALUATED" if authoritative_cancelled else valid_qualification,
         historical_qualification=(
             {
@@ -3389,6 +3395,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
             .order_by(AwardHistoryItem.awarded_at.desc(), AwardHistoryItem.created_at.desc())
         ).all()
     )
+    other_agency = filter_other_agency_awards(notice, candidates)
     candidates = _scoped_award_history(notice, candidates)
     scope = resolve_notice_award_scope(notice)
     # Keep undated stored candidates visible but mark their missing date in the
@@ -3420,7 +3427,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
     # Resolve source URLs only from stored notices with the historical identity.
     # Ambiguous or unavailable URLs remain absent, never the target's URL.
     historical_urls: dict[tuple[str, str], set[str]] = {}
-    notice_numbers = {item.bid_notice_no for item in candidates}
+    notice_numbers = {item.bid_notice_no for item in [*candidates, *other_agency]}
     if notice_numbers:
         for historical_notice in session.scalars(
             select(Notice).where(Notice.bid_notice_no.in_(notice_numbers))
@@ -3434,6 +3441,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
         target_agency=scope.demand_agency_name,
         as_of=datetime.now(timezone.utc),
         historical_notice_urls={key: next(iter(urls)) for key, urls in historical_urls.items() if len(urls) == 1},
+        other_agency_records=other_agency,
     )
     result["target_amount_basis"] = {
         "kind": "NOTICE_ESTIMATED_AMOUNT" if notice.estimated_amount else "UNAVAILABLE",

@@ -134,10 +134,32 @@ def analysis_basis_is_current(notice: Notice, notice_version_id: str | None) -> 
     return basis is not None and basis.version_no >= current_metadata.version_no
 
 
+def has_current_independent_failure(notice: Notice, evaluation: Evaluation) -> bool:
+    """Expose the server's mandatory failure proof only against current sources.
+
+    This grants no current AnalysisRun, quantitative score or PASS. A changed
+    attachment attempt, manifest, deadline or policy invalidates the proof.
+    """
+    if evaluation.eligibility != "FAIL" or not analysis_basis_is_current(notice, evaluation.notice_version_id):
+        return False
+    if _as_utc(evaluation.deadline_snapshot_at) != _as_utc(notice.deadline):
+        return False
+    basis = next((v for v in notice.versions if v.id == evaluation.notice_version_id), None)
+    payload = basis.source_payload if basis is not None else None
+    proof = payload.get("independent_failure") if isinstance(payload, dict) and payload.get("kind") == "ANALYSIS_PIPELINE_MATERIALIZATION" else None
+    if not isinstance(proof, dict) or not isinstance(proof.get("requirement_keys"), list) or not proof["requirement_keys"]:
+        return False
+    from .analysis_pipeline import PIPELINE_VERSION, PROMPT_VERSION, _select_source_versions_from_list
+    from .eligibility_policy import POLICY_VERSION
+    if proof.get("pipeline_version") != PIPELINE_VERSION or proof.get("policy_version") != POLICY_VERSION:
+        return False
+    selected = _select_source_versions_from_list(notice.versions, prompt_version=PROMPT_VERSION)
+    return bool(selected) and proof.get("source_version_ids") == sorted(v.id for v in selected)
+
+
 def latest_current_evaluation(notice: Notice) -> Evaluation | None:
     has_pps_material = _latest_pps_metadata_version(notice) is not None
-    if has_pps_material and not _current_pps_attachment_audit_is_complete(notice):
-        return None
+    audit_complete = not has_pps_material or _current_pps_attachment_audit_is_complete(notice)
     evaluations = sorted(
         notice.evaluations,
         key=lambda item: _as_utc(item.evaluated_at),
@@ -150,6 +172,10 @@ def latest_current_evaluation(notice: Notice) -> Evaluation | None:
             notice.deadline
         ):
             continue
+        basis = next((v for v in notice.versions if v.id == evaluation.notice_version_id), None)
+        proof = (basis.source_payload or {}).get("independent_failure") if basis else None
+        if (proof or not audit_complete) and not has_current_independent_failure(notice, evaluation):
+            return None
         return evaluation
     return None
 

@@ -286,6 +286,7 @@ class NoticeSummary(ApiModel):
     )
     recommendation_updated_at: datetime | None = None
     latest_evaluation: EvaluationOut | None = None
+    eligibility_independent_failure: bool = False
     qualification_status: Literal["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"] = Field(
         default="NOT_EVALUATED",
         description="현재 원문·마감 기준에 유효한 저장 자격 판정입니다. 문서 분석 상태와 구분합니다.",
@@ -348,7 +349,7 @@ class AnnualAwardTableRowOut(ApiModel):
     agency: str
     bid_notice_no: str
     revision_no: str
-    match_kind: Literal["SAME_PROJECT", "SIMILAR_CANDIDATE"]
+    match_kind: Literal["SAME_PROJECT", "SIMILAR_CANDIDATE", "OTHER_AGENCY_SIMILAR"]
     similarity_score: float | None
     source_status: str
     source_notice_url: str | None
@@ -366,7 +367,7 @@ class AnnualAwardTableOut(ApiModel):
     table_version: str
     generated_as_of: datetime
     years: list[int]
-    match_basis: Literal["SAME_PROJECT_AND_AGENCY", "SIMILAR_CANDIDATES_ONLY", "MIXED_BY_YEAR", "NONE"]
+    match_basis: Literal["SAME_PROJECT_AND_AGENCY", "SIMILAR_CANDIDATES_ONLY", "MIXED_BY_YEAR", "OTHER_AGENCY_ONLY", "NONE"]
     target_project_key: str
     row_count: int
     scored_row_count: int
