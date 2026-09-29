@@ -8,7 +8,8 @@ company's stored facts to the printed rows:
 * credit: the row whose grade set contains the registered grade;
 * sanctions: the printed "해당 없음" row (the company has never been sanctioned);
 * performance: validated, completed register contracts inside the printed
-  period and above the printed single-contract amount (similarity unchecked);
+  period and above the printed single-contract amount whose name/overview
+  names the row's field (or the notice title's field when the row only says 유사);
 * personnel: roster members meeting every roster-checkable condition (degree,
   major, research grade, credential, tenure, regular employment, reference
   date); a printed career of N years is read as N years of company tenure and
@@ -532,9 +533,88 @@ def _unit_scale(unit: str | None, rows: Sequence[PrintedRow]) -> float:
     return 1 if bounds and max(bounds) >= 1_000_000 else 100_000_000
 
 
+# Field words that make a contract "similar". A row naming one of these only
+# counts register contracts whose name, overview or keywords name the same field.
+_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("행사", ("행사", "박람회", "박람", "전시", "축제", "페스타", "엑스포", "EXPO", "컨퍼런스", "콘퍼런스", "포럼",
+             "페어", "대회", "기념식", "시상식", "설명회", "세미나", "심포지엄", "페스티벌", "MICE")),
+    ("해외연수·여행", ("해외연수", "국외연수", "해외 연수", "국외 연수", "교육여행", "수학여행", "테마형", "여행",
+                   "탐방", "견학", "체험학습")),
+    ("교육·연수", ("교육", "연수", "훈련", "아카데미", "캠프", "강의", "워크숍", "역량강화")),
+    ("연구·조사", ("연구", "조사", "분석", "학술")),
+    ("컨설팅", ("컨설팅", "진단", "자문", "코칭")),
+    ("홍보", ("홍보", "마케팅", "광고", "캠페인", "콘텐츠", "영상")),
+    ("채용·시험", ("채용", "시험", "출제", "면접")),
+    ("인증", ("인증",)),
+    ("정보시스템", ("시스템", "플랫폼", "소프트웨어", "정보화", "홈페이지", "웹사이트", "전산")),
+)
+# A named technology is narrower than its field: only the technology itself counts.
+_SPECIFIC = ("디지털트윈", "디지털 트윈", "메타버스", "블록체인", "드론", "DRT", "GIS", "BIM", "빅데이터", "인공지능")
+# Institution names that carry field words without describing the work.
+_INSTITUTION = re.compile(r"[가-힣]*(?:교육청|교육지원청|교육부|교육원|교육대학교|연구원|연구소|진흥원|개발원|평가원)")
+_SIMILAR = re.compile(r"유사|동종|동일|관련|해당\s*분야|같은\s*분야")
+
+
+def _fields_in(text: str) -> tuple[str, tuple[str, ...]] | None:
+    text = _INSTITUTION.sub(" ", _norm(text))
+    specific = tuple(term for term in _SPECIFIC if _compact(term).casefold() in _compact(text).casefold())
+    if specific:
+        return "·".join(dict.fromkeys(specific)), specific
+    compact = _compact(text)
+    spans: dict[str, list[tuple[int, int]]] = {}
+    for name, terms in _FIELDS:
+        for term in terms:
+            needle = _compact(term)
+            spans.setdefault(name, []).extend(
+                (match.start(), match.start() + len(needle)) for match in re.finditer(re.escape(needle), compact))
+    spans = {name: found for name, found in spans.items() if found}
+
+    def inside(span: tuple[int, int], owner: str) -> bool:
+        return any(other[0] <= span[0] and span[1] <= other[1] and other != span
+                   for name, found in spans.items() if name != owner for other in found)
+
+    # "해외연수" or "교육여행" names travel, not generic training: a field whose
+    # every hit sits inside another field's longer word is not asked for.
+    found = [(name, terms) for name, terms in _FIELDS
+             if name in spans and not all(inside(span, name) for span in spans[name])]
+    if not found:
+        return None
+    return "·".join(name for name, _terms in found), tuple(term for _name, terms in found for term in terms)
+
+
+def similarity_terms(raw: Any, notice_title: str | None) -> tuple[str, tuple[str, ...]] | None:
+    """The field a performance row asks for: from its own text, else the notice title."""
+
+    row = " ".join(value for value in (
+        raw.label, raw.criterion_literal, *(item.literal for item in raw.recognition_conditions),
+    ) if value)
+    own = _fields_in(row)
+    if own is not None:
+        return f"원문 '{own[0]}'", own[1]
+    if notice_title and _SIMILAR.search(_norm(row)):
+        derived = _fields_in(notice_title)
+        if derived is not None:
+            return f"공고명 기준 '{derived[0]}'", derived[1]
+    return None
+
+
+def _record_text(record: Any) -> str:
+    keywords = getattr(record, "keywords", None) or []
+    return _compact(_INSTITUTION.sub(" ", _norm(" ".join(str(value) for value in (
+        getattr(record, "project_name", "") or "", getattr(record, "overview", "") or "",
+        " ".join(str(item) for item in keywords),
+    ))))).casefold()
+
+
 def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
-                      published_at: datetime | None, rows: Sequence[PrintedRow]) -> tuple[float, str]:
-    """Count (or sum) register contracts by printed period and amount only."""
+                      published_at: datetime | None, rows: Sequence[PrintedRow],
+                      notice_title: str | None = None) -> tuple[float, str]:
+    """Count (or sum) register contracts by printed period, amount and field.
+
+    The field comes from the row's own words, or from the notice title when the
+    row only says 유사/관련; a contract counts when its name, overview or
+    keywords name that field. Without any field word no similarity filter applies.
+    """
 
     text = _row_text(raw)
     end = deadline.astimezone(_KST).date()
@@ -548,6 +628,8 @@ def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
     amount_match = _AMOUNT.search(text)
     if amount_match and raw.metric == "PERFORMANCE_COUNT":
         minimum = int(float(amount_match.group(1).replace(",", "")) * _UNIT_KRW[amount_match.group(2)])
+    field = similarity_terms(raw, notice_title)
+    needles = tuple(_compact(term).casefold() for term in field[1]) if field else ()
     amounts = []
     for record in records:
         amount = getattr(record, "gross_contract_amount_krw", None) or getattr(record, "contract_amount", None) or 0
@@ -557,16 +639,18 @@ def performance_value(raw: Any, records: Sequence[Any], *, deadline: datetime,
             getattr(record, "record_status", None) == "VALIDATED"
             and getattr(record, "completed", None) is True
             and closed is not None and start <= closed <= end and amount >= minimum
+            and (not needles or any(needle in _record_text(record) for needle in needles))
         ):
             amounts.append(amount * (share if share else 100) / 100)
     window = f"{start.isoformat()}~{end.isoformat()}"
+    similar = f"{field[0]} 관련 계약만(사업명·개요 기준)" if field else "분야 표현 없음 → 유사성 필터 없음"
     if raw.metric == "PERFORMANCE_AMOUNT":
         scale = _unit_scale(raw.unit, rows)
         return sum(amounts) / scale, (
-            f"{window} 완료 실적 {len(amounts)}건 금액 합계 {sum(amounts):,.0f}원(대장 기준, 유사성 미확인)."
+            f"{window} 완료 실적 {len(amounts)}건 금액 합계 {sum(amounts):,.0f}원(대장 기준, {similar})."
         )
     rule = f", 단일 계약 {minimum:,}원 이상" if minimum else ""
-    return float(len(amounts)), f"{window} 완료 실적 {len(amounts)}건(대장 기준{rule}, 유사성 미확인)."
+    return float(len(amounts)), f"{window} 완료 실적 {len(amounts)}건(대장 기준{rule}, {similar})."
 
 
 def company_credit_grade(facts: Iterable[Any]) -> str | None:
@@ -618,6 +702,7 @@ def beta_score(
     roster: Sequence[Any] | None,
     records: Sequence[Any],
     statement: tuple[Any, ...] | None = None,
+    notice_title: str | None = None,
 ) -> BetaScore | None:
     """Apply company facts to one criterion's printed rows; None when not a company row."""
 
@@ -633,7 +718,8 @@ def beta_score(
             return lowest_row(rows, "등록된 기업신용평가등급 없음", bonus=bonus)
         return score_grade(rows, credit_grade, f"등록된 기업신용평가등급 {credit_grade}")
     if metric in {"PERFORMANCE_COUNT", "PERFORMANCE_AMOUNT"}:
-        value, basis = performance_value(raw, records, deadline=deadline, published_at=published_at, rows=rows)
+        value, basis = performance_value(raw, records, deadline=deadline, published_at=published_at, rows=rows,
+                                         notice_title=notice_title)
         return score_numeric(rows, value, basis, bonus=bonus)
     if metric == "PERSONNEL_COUNT":
         if roster is None:

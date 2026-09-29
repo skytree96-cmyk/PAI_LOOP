@@ -5263,6 +5263,7 @@ def _apply_company_first_beta(
                 raw, deadline=deadline, published_at=published_at,
                 credit_grade=credit_grade, roster=roster, records=performance_records,
                 statement=statement,
+                notice_title=getattr(notice, "title", None),
             )
         if score is None:
             continue

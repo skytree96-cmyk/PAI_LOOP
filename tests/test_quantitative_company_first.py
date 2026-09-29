@@ -180,7 +180,7 @@ def test_performance_row_counts_register_contracts_by_period_and_amount(client, 
     _store(client, "SYN-BETA-PERFORMANCE", attachment_id, payload, source, records=_records(6))
     [item] = _estimate(client, "SYN-BETA-PERFORMANCE")["criteria"]
     assert item["status"] == "ESTIMATED" and item["estimated_points"] == 6
-    assert "6건" in item["rationale"] and "유사성 미확인" in item["rationale"]
+    assert "6건" in item["rationale"] and "유사성 필터 없음" in item["rationale"]
 
 
 def test_printed_alternatives_each_count_and_technician_tiers_need_the_tier_on_record():
@@ -225,3 +225,33 @@ def test_careers_read_as_company_tenure_and_residence_assumes_every_member_is_av
     assert count == 2 and "근속" in basis  # M3 joined a month before the deadline
     resident = _raw("상주 직원 수", "PERSONNEL_COUNT", rows, unit="명", literal="현장 상주 직원 수")
     assert _score(resident, roster=roster).points == 10
+
+
+def _named(name, overview=""):
+    return type("R", (), dict(record_status="VALIDATED", completed=True, end_date=date(2029, 6, 1),
+                              gross_contract_amount_krw=200_000_000, contract_amount=None, share_pct=100.0,
+                              project_name=name, overview=overview, keywords=[]))()
+
+
+def test_performance_counts_only_contracts_in_the_field_the_row_or_title_names():
+    rows = (("3건 이상 10", "GTE", 3.0, None, (), 10.0), ("2건 6", "EQ", 2.0, None, (), 6.0),
+            ("1건 이하 2", "LTE", 1.0, None, (), 2.0))
+    records = [_named("SYN 박람회 운영"), _named("SYN 위탁", "지역 축제 기획·운영"), _named("SYN 직무교육"),
+               _named("SYN 경기도교육청 컨설팅")]
+    event = _raw("행사 관련 용역 수행실적", "PERFORMANCE_COUNT", rows, unit="건")
+    score = _score(event, records=records)
+    assert score.points == 6 and "2건" in score.basis and "행사" in score.basis  # name or overview
+    similar = _raw("유사 용역 수행실적", "PERFORMANCE_COUNT", rows, unit="건")
+    by_title = beta.beta_score(similar, deadline=DEADLINE, published_at=None, credit_grade=None, roster=None,
+                               records=records, notice_title="2026 SYN 직무 교육 운영 용역")
+    assert by_title.points == 2 and "공고명" in by_title.basis  # 교육청 is an institution, not training
+    twin = _raw("디지털트윈 개발 수행실적", "PERFORMANCE_COUNT", rows, unit="건")
+    twin_score = _score(twin, records=records + [_named("SYN 정보시스템 구축")])
+    assert twin_score.points == 2 and " 0건" in twin_score.basis  # a system contract is not a digital twin
+
+
+def test_a_field_word_nested_in_a_narrower_one_is_not_asked_for():
+    assert beta._fields_in("2027학년도 소규모테마형교육여행 수행경험")[0] == "해외연수·여행"
+    assert beta._fields_in("최근 5년간 해외연수 실적 건수")[0] == "해외연수·여행"
+    assert beta._fields_in("교원 직무연수 운영")[0] == "교육·연수"
+    assert beta._fields_in("경기도교육청 박람회")[0] == "행사"
