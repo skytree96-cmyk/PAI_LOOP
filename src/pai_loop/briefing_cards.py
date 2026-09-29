@@ -35,7 +35,7 @@ ELIGIBILITY_LABELS = {
 ELIGIBILITY_STYLES = {"PASS": "good", "REVIEW": "warning", "FAIL": "attention"}
 # The stored risk band is the evaluator's recommendation band (GO / CONDITIONAL_GO /
 # NO_GO / UNKNOWN), so it is printed with the same labels as the web.
-RISK_BAND_LABELS = {**RECOMMENDATION_LABELS, "CONDITIONAL_GO": "조건부 GO"}
+RISK_BAND_LABELS = {**RECOMMENDATION_LABELS, "CONDITIONAL_GO": "조건부 검토"}
 
 
 def _won(value: object) -> str:
@@ -72,7 +72,7 @@ def _notice_row(item: dict[str, Any], base_url: str, now: datetime) -> dict:
     signals = []
     band = RISK_BAND_LABELS.get(fit.get("risk_band"))
     if band:
-        signals.append(f"추천 {band}")
+        signals.append(band)
     if fit.get("readiness_score") is not None:
         signals.append(f"준비도 {_number(fit.get('readiness_score'))}")
     department = _department(item)

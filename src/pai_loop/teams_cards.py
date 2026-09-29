@@ -30,7 +30,7 @@ STATUS_LABELS = {
     "RED": "보완 필요", "AMBER": "일부 확인 필요", "GREEN": "준비됨",
 }
 # Same wording as the web preview (`RECOMMENDATION_LABELS` in app.js).
-RECOMMENDATION_LABELS = {"GO": "GO", "HOLD": "조건부 GO", "NO_GO": "NO-GO"}
+RECOMMENDATION_LABELS = {"GO": "적극 검토", "HOLD": "조건부 검토", "NO_GO": "입찰 제외"}
 # Teams only offers its own named container colors; these follow the host theme.
 QUALIFICATION_STYLES = {"PASS": "good", "REVIEW": "warning", "FAIL": "attention"}
 WEEKDAYS = "월화수목금토일"
@@ -196,7 +196,7 @@ def build_notice_card(session: Session, notice: Notice, event_kind: str, *,
         {"type": "Container", "style": "emphasis", "spacing": "Medium",
          "items": [_block(_plain(detail.analysis_reason, 350))]},
         {"type": "ColumnSet", "spacing": "Medium", "columns": [
-            _metric("준비도", readiness), _metric("리스크", risk), _metric("추천", recommendation)]},
+            _metric("준비도", readiness), _metric("리스크", risk), _metric("입찰 판단", recommendation)]},
         {"type": "FactSet", "spacing": "Medium", "facts": facts},
         {"type": "ActionSet", "actions": [{"type": "Action.ToggleVisibility", "title": "전체 분석 펼치기",
                                            "targetElements": [DETAILS_ID]}]},
@@ -243,7 +243,7 @@ def build_notice_card(session: Session, notice: Notice, event_kind: str, *,
         details.append(_block(f"경쟁·집중 리스크: 추정 {_number(competition['score'])} / 100 · 3년 유사공고 표본 {competition['sample_count']}건"))
     else:
         details.append(_block("경쟁·집중 리스크: 표본·사실 부족으로 미산정"))
-    details.append(_block(f"시스템 검토 의견: {recommendation} · 최종 입찰 판단은 담당자가 결정합니다."))
+    details.append(_block(f"시스템 입찰 판단: {recommendation} · 최종 입찰 판단은 담당자가 결정합니다."))
     for condition in detail.recommendation_conditions[:4] if current else []:
         details.append(_block("• " + _plain(condition, 200)))
     details.append(_block("자격 판정·정량점수·경쟁 리스크는 각각 별도 지표입니다. 전체 항목과 근거는 공고 상세에서 확인해 주세요.", isSubtle=True))

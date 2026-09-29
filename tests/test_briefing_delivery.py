@@ -284,7 +284,10 @@ def test_briefing_rows_are_compact_tappable_and_never_invent_scores(store):
     assert badges["items"][0]["items"][0]["text"] == "미판정"
     assert deadline["items"][0]["items"][0]["text"].startswith("D-6 · 09.28")
     # Unevaluated: no recommendation and no readiness number is printed.
-    assert "추천" not in signals["items"][0]["text"] and "준비도" not in signals["items"][0]["text"]
+    from pai_loop.briefing_cards import RISK_BAND_LABELS
+    signal = signals["items"][0]["text"]
+    assert signal.startswith("담당 ") and "준비도" not in signal
+    assert not any(label in signal for label in RISK_BAND_LABELS.values())
     assert card["actions"][0]["url"] == BASE_URL + "/"
     assert "FactSet" not in str(card)
 

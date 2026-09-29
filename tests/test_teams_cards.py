@@ -213,7 +213,7 @@ def test_card_shows_preview_layout_and_keeps_full_analysis_collapsed(client):
     # Three metric tiles never invent a score for an unevaluated notice.
     metrics = card["body"][6]["columns"]
     assert [[block["text"] for block in column["items"][0]["items"]] for column in metrics] == [
-        ["준비도", "미산정"], ["리스크", "미산정"], ["추천", "확인 필요"]]
+        ["준비도", "미산정"], ["리스크", "미산정"], ["입찰 판단", "확인 필요"]]
     details = _details(card)
     assert details["isVisible"] is False
     toggle = next(element for element in elements if element.get("type") == "Action.ToggleVisibility")
