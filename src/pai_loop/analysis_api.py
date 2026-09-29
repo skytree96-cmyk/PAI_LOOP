@@ -1580,11 +1580,23 @@ def _reserved_backfill_keys(
         ).all()
     )
     reserved: set[str] = set()
+    idle_cutoff = now - timedelta(hours=ttl_hours)
     for parent in parents:
-        terminal_keys = _effective_terminal_keys(
-            parent,
-            _backfill_children(session, parent.id),
-        )
+        children = _backfill_children(session, parent.id)
+        activity = [
+            _utc(value)
+            for value in (
+                parent.created_at,
+                *(child.created_at for child in children),
+                *(child.completed_at for child in children),
+            )
+            if value is not None
+        ]
+        # A lease nobody touched within its reservation TTL no longer holds
+        # its notices; otherwise one stalled run blocks them indefinitely.
+        if activity and max(activity) < idle_cutoff:
+            continue
+        terminal_keys = _effective_terminal_keys(parent, children)
         reserved.update(
             key for key in (parent.notice_keys or []) if key not in terminal_keys
         )

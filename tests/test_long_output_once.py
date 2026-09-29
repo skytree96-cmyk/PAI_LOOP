@@ -405,3 +405,26 @@ def test_several_20k_failures_plan_the_first_one_instead_of_rejecting(long_case)
     assert response.status_code == 200, response.text
     assert response.json()["retry_target_count"] == 1
     assert downloads == []
+
+
+GATEWAY_TIMEOUT = dict(version="gateway-failure-v1", stage="MODEL_EXECUTION", code="MODEL_EXECUTION_FAILED",
+                       upstream_http_status=None, detail_code="MODEL_TRANSPORT_UNKNOWN")
+
+
+@pytest.mark.parametrize(("failure", "status"), [
+    (GATEWAY_TIMEOUT, 200),
+    ({**GATEWAY_TIMEOUT, "detail_code": "MODEL_TRANSPORT_TIMEOUT"}, 200),
+    ({**GATEWAY_TIMEOUT, "detail_code": "MODEL_HTTP_ERROR", "upstream_http_status": 529}, 409),
+    ({**GATEWAY_TIMEOUT, "detail_code": "MODEL_CONNECTION_REFUSED"}, 409),
+])
+def test_gateway_timeout_at_180s_may_take_the_300s_path(long_case, failure, status):
+    client, _, row_id, downloads = long_case
+    with client.app.state.session_factory() as session:
+        row = session.get(NoticeVersion, row_id)
+        payload = deepcopy(row.source_payload)
+        payload["gateway_failure"] = deepcopy(failure)
+        row.source_payload = payload
+        session.commit()
+    response = client.post(PLAN, json=long_body())
+    assert response.status_code == status, response.text
+    assert downloads == []
