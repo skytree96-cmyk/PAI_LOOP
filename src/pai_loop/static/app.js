@@ -3469,6 +3469,8 @@
 
   function resultLearningRateCalculation(kind = "submitted") {
     const prefix = kind === "winning" ? "resultLearningWinningRate" : "resultLearningRate";
+    if (kind === "winning" && !String(els.resultLearningWinningAmount.value ?? "").trim()
+      && els[`${prefix}Mode`].value === "AUTO") return { mode: "MANUAL" };
     return els[`${prefix}Mode`].value === "AUTO" ? {
       mode: "AUTO", basis_kind: els[`${prefix}BasisKind`].value,
       basis_amount: moneyInputValue(els[`${prefix}BasisAmount`].value),
@@ -3488,15 +3490,21 @@
     const amountInput = winning ? els.resultLearningWinningAmount : els.resultLearningSubmittedAmount;
     const rateInput = winning ? els.resultLearningWinningRate : els.resultLearningSubmittedRate;
     const automatic = els[`${prefix}Mode`].value === "AUTO";
+    const unknownWinningAmount = winning && automatic && !String(amountInput.value ?? "").trim();
     const fields = [els[`${prefix}BasisKind`], els[`${prefix}BasisAmount`], els[`${prefix}BasisReference`]];
     fields.forEach((input) => {
       input.closest(".result-rate-basis")?.toggleAttribute("hidden", !automatic);
-      input.required = automatic;
-      input.disabled = !automatic;
+      input.required = automatic && !unknownWinningAmount;
+      input.disabled = !automatic || unknownWinningAmount;
     });
-    amountInput.required = automatic;
+    amountInput.required = automatic && !winning;
     rateInput.readOnly = automatic;
     amountInput.setCustomValidity("");
+    if (unknownWinningAmount) {
+      rateInput.value = "";
+      els[`${prefix}Status`].textContent = "낙찰금액 미확인으로 저장됩니다. 금액을 입력하면 자동 계산됩니다.";
+      return true;
+    }
     if (!automatic) {
       els[`${prefix}Status`].textContent = "확인한 비율을 직접 입력하거나 비워 둘 수 있습니다. 금액과 기준가격이 있으면 자동 계산을 선택하세요.";
       return true;

@@ -439,5 +439,70 @@ for (const status of ['WON','LOST']) {
 u.els.resultLearningWinningRateMode.value='AUTO';
 u.els.resultLearningWinningRateMode.dataset.userSelected='true';onChange();
 assert.equal(u.els.resultLearningWinningRateMode.value,'AUTO');
-assert.equal(u.els.resultLearningWinningAmount.required,true);
+assert.equal(u.els.resultLearningWinningAmount.required,false);
+''')
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("status", ["WON", "LOST"])
+def test_auto_mode_saves_unknown_award_without_manual_mode_change(existing, status):
+    _run("const existing=" + json.dumps(existing) + ";const outcomeStatus=" + json.dumps(status) + r'''
+const calculation={mode:'AUTO',basis_kind:'BASE_AMOUNT',basis_amount:70000000,basis_reference:'SYN 나라장터'};
+u.openResultLearningDialog(u.normalizeResultLearningNotice({notice_key:'SYN-N',title:'SYN unknown award',outcomes:existing?[{
+ id:'SYN-existing',department_id:'SYN-A',source:'MANUAL_UI',status:outcomeStatus,record_status:'VALIDATED',
+ updated_at:'2026-09-29T00:00:00Z',winning_bid_amount:63000000,winning_bid_rate:90,winning_rate_calculation:calculation
+}]:[]}));
+u.els.resultLearningStatus.value=outcomeStatus;
+u.els.resultLearningRecordStatus.value='VALIDATED';
+u.els.resultLearningWinner.value='SYN awardee';
+u.els.resultLearningSourceReference.value='SYN official result';
+u.els.resultLearningLossReason.value='SYN evaluated second';
+u.els.resultLearningWinningRateMode.value='AUTO';
+u.els.resultLearningWinningRateBasisKind.value='BASE_AMOUNT';
+u.els.resultLearningWinningRateBasisAmount.value='70,000,000';
+u.els.resultLearningWinningRateBasisReference.value='SYN 나라장터';
+u.els.resultLearningWinningAmount.value='63,000,000';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningWinningRate.value,'90.0000');
+u.els.resultLearningWinningAmount.value='';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningWinningRateMode.value,'AUTO');
+assert.equal(u.els.resultLearningWinningAmount.required,false);
+assert.equal(u.els.resultLearningWinningRateBasisAmount.required,false);
+assert.equal(u.els.resultLearningWinningRate.value,'');
+assert.match(u.els.resultLearningWinningRateStatus.textContent,/미확인/);
+assert.equal(u.updateResultLearningValidation(),true);
+assert.equal(u.els.resultLearningForm.checkValidity(),true);
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(requests.length,1);
+assert.equal(requests[0].options.method,existing?'PATCH':'POST');
+const body=JSON.parse(requests[0].options.body);
+assert.equal(body.winning_bid_amount,null);assert.equal(body.winning_bid_rate,null);
+assert.deepEqual(body.winning_rate_calculation,{mode:'MANUAL'});
+respond(requests[0],200,{outcome:{...body,id:'SYN-saved',source:'MANUAL_UI',department_id:'SYN-A'}});await saving;
+assert.equal(u.els.resultLearningDialog.open,false);
+assert.equal(details[0][2].initialTab,'result');
+u.renderDetailResult(details[0][2].resultRecord);
+assert.match(u.els.detailResultContent.innerHTML,/<dt>낙찰금액<\/dt><dd>미확인<\/dd>/);
+''')
+
+
+def test_unknown_auto_award_does_not_require_basis_but_known_amount_does():
+    _run(r'''
+openEmptyResult();
+u.els.resultLearningWinningRateMode.value='AUTO';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningWinningRateBasisAmount.required,false);
+u.els.resultLearningWinningAmount.value='100';
+assert.equal(u.updateResultLearningRate(),false);
+assert.equal(u.els.resultLearningWinningRateBasisAmount.required,true);
+u.els.resultLearningWinningRateBasisKind.value='BASE_AMOUNT';
+u.els.resultLearningWinningRateBasisAmount.value='200';
+u.els.resultLearningWinningRateBasisReference.value='SYN basis';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningWinningRate.value,'50.0000');
+u.els.resultLearningWinningAmount.value='0';
+assert.equal(u.updateResultLearningRate(),true);
+assert.equal(u.els.resultLearningWinningRate.value,'0.0000');
+assert.equal(u.resultLearningRateCalculation('winning').mode,'AUTO');
 ''')

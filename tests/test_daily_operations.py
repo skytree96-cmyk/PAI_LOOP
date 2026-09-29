@@ -973,6 +973,8 @@ def test_failed_version_refresh_observes_backfill_retry_cooldown(
             if stale_run.generated_at.tzinfo is None
             else stale_run.generated_at.astimezone(timezone.utc),
         ) + timedelta(minutes=1)
+        # Keep the notice open across both checks regardless of the wall-clock date.
+        notice.deadline = attempt_at + timedelta(days=2)
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
             mode="LIVE",

@@ -26,7 +26,7 @@ def test_both_rates_use_independent_bases_and_server_rounding(client, amount, ba
 
 
 @pytest.mark.parametrize("changes", [
-    {"winning_bid_amount": None}, {"winning_bid_amount": "NaN"},
+    {"winning_bid_amount": "NaN"},
     {"winning_bid_amount": 401}, {"winning_rate_calculation": None},
     {"winning_rate_calculation": {"mode": "AUTO"}},
     {"winning_rate_calculation": {**AUTO, "basis_amount": 0}},
@@ -63,3 +63,31 @@ def test_legacy_patch_preserves_winner_basis_and_records_only_changed_rate(clien
     assert manual.status_code == 200, manual.text
     assert manual.json()["outcome"]["winning_bid_rate"] == 84.25
     assert manual.json()["outcome"]["winning_rate_calculation"]["basis_amount"] is None
+
+
+@pytest.mark.parametrize("status", ["WON", "LOST"])
+def test_unknown_award_amount_clears_stale_auto_rate_and_can_be_added_later(client, status):
+    _notice(client)
+    payload = _payload(status=status, record_status="VALIDATED",
+        winner_name="SYN awardee", loss_reason="SYN evaluated second", source_reference="SYN result",
+        winning_bid_amount=None, winning_bid_rate=95,
+        winning_rate_calculation={**AUTO, "basis_kind": "BASE_AMOUNT", "basis_amount": 70000000})
+    response = client.post(ENDPOINT, json=payload)
+    assert response.status_code == 201, response.text
+    row = response.json()["outcome"]
+    assert row["winning_bid_amount"] is None and row["winning_bid_rate"] is None
+    assert row["winning_rate_calculation"]["mode"] == "MANUAL"
+    path = f"{ENDPOINT}/{row['id']}"
+    added = client.patch(path, json={"expected_updated_at": row["updated_at"],
+        "winning_bid_amount": 180, "winning_rate_calculation": AUTO})
+    assert added.status_code == 200, added.text
+    row = added.json()["outcome"]
+    assert row["winning_bid_rate"] == 90
+    cleared = client.patch(path, json={"expected_updated_at": row["updated_at"], "winning_bid_amount": None})
+    assert cleared.status_code == 200, cleared.text
+    row = cleared.json()["outcome"]
+    assert row["winning_bid_amount"] is None and row["winning_bid_rate"] is None
+    assert row["winning_rate_calculation"]["mode"] == "MANUAL"
+    history = _stored(client, row["id"])["_winning_bid_rate"]["history"]
+    assert history[-1]["before"]["winning_bid_rate"] == 90
+    assert history[-1]["after"]["winning_bid_rate"] is None
