@@ -239,4 +239,6 @@ def test_no_request_starts_unless_its_full_timeout_fits_in_the_step(bulk, client
     monkeypatch.setattr(award_bulk, "_client_factory", lambda _settings: fake)
     with client.app.state.session_factory() as session:
         result = advance_bulk_sweep(session, settings, NOW, monotonic=lambda: clock[0])
-    assert result["status"] == "COMPLETED" and fake.request_count == 11  # starts at 0,6,...,60
+    windows = len(award_bulk._windows(NOW.astimezone(award_bulk._KST).date()))
+    fits = int((award_bulk.STEP_WALL_SECONDS - award_bulk.REQUEST_TIMEOUT_SECONDS) // 6) + 1
+    assert result["status"] == "COMPLETED" and fake.request_count == min(windows, fits)
