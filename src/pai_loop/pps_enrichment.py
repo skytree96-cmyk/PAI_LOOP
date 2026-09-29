@@ -3169,6 +3169,12 @@ def _persist_extraction_version(
         "corrective_retry_used": outcome.corrective_retry_used if outcome else False,
         "correction_prompt_version": outcome.correction_prompt_version if outcome else None,
         "result": data,
+        **(
+            {"unverified_quantitative_tables": outcome.unverified_quantitative_tables}
+            if outcome is not None and not accepted and outcome.error_code == "UNVERIFIED_QUOTE"
+            and outcome.unverified_quantitative_tables
+            else {}
+        ),
         "document_processing": processing_audit,
         "quantitative_validation_record": (
             quantitative_validation_record.model_dump(mode="json")

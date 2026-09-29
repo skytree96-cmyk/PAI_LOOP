@@ -27,6 +27,7 @@ from .integrations.openai_extraction import (
     PROMPT_VERSION,
     SCHEMA_VERSION,
     ExtractionPayload,
+    QuantitativeTableCandidate,
     evidence_quote_matches_source,
 )
 from .models import AnalysisRun, CompanyFact, CompanyPerformanceRecord, Notice, ScoreSnapshot
@@ -5216,13 +5217,23 @@ def _extracted_row_sources(notice: Notice) -> dict[tuple[str, str, str], ReviewR
         attempt = attempts.get(attachment_id)
         payload = attempt.source_payload if attempt is not None and isinstance(attempt.source_payload, dict) else {}
         document_sha256 = str(getattr(attempt, "file_sha256", "") or "").casefold()
-        if payload.get("status") != "ACCEPTED" or re.fullmatch(r"[a-f0-9]{64}", document_sha256) is None:
+        if re.fullmatch(r"[a-f0-9]{64}", document_sha256) is None:
             continue
+        state = "EXTRACTED"
         try:
-            extraction = ExtractionPayload.model_validate(payload.get("result"))
+            if payload.get("status") == "ACCEPTED":
+                tables = ExtractionPayload.model_validate(payload.get("result")).quantitative_tables
+            elif payload.get("status") == "REVIEW" and payload.get("error_code") == "UNVERIFIED_QUOTE":
+                # The response's quotes failed exact verification; its printed
+                # scoring rows still bound a labeled estimate.
+                tables = [QuantitativeTableCandidate.model_validate(item)
+                          for item in payload.get("unverified_quantitative_tables") or []]
+                state = "UNVERIFIED"
+            else:
+                continue
         except (TypeError, ValueError):
             continue
-        for table in extraction.quantitative_tables:
+        for table in tables:
             for row in table.criteria:
                 identity = (attachment_id, table.table_id, row.criterion_id)
                 if identity in sources:
@@ -5231,7 +5242,7 @@ def _extracted_row_sources(notice: Notice) -> dict[tuple[str, str, str], ReviewR
                 sources[identity] = ReviewRowSource(
                     attachment_id=attachment_id, table_id=table.table_id, criterion_id=row.criterion_id,
                     document_sha256=document_sha256, source_label=attachment.get("file_name"),
-                    raw=row, issue_codes=frozenset(), state="EXTRACTED",
+                    raw=row, issue_codes=frozenset(), state=state,
                 )
     return sources
 
@@ -5346,6 +5357,7 @@ def _apply_company_first_beta(
         rationale = (
             f"[{COMPANY_FIRST_LABEL}] {score.basis} → 적용 행: {score.row_literal} = {points:g}점"
             + (f" · {COMPANY_FIRST_FLOOR_NOTE}" if score.floor_applied else "")
+            + (" · 원문 인용 미검증 표" if source.state == "UNVERIFIED" else "")
         )
         facts.append(QuantitativeFact(
             metric_key=metric_key, status="ESTIMATED", value=1.0, evidence_key=metric_key,

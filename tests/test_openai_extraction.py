@@ -1333,3 +1333,38 @@ def test_schema_diagnostic_deduplicates_rows_and_caps_distinct_errors():
     assert len(diagnostics) == 8
     assert "SYN-PRIVATE" not in outcome.message
     assert len(outcome.message) < 1800
+
+
+def test_nul_characters_never_reach_the_gateway_and_quotes_still_verify() -> None:
+    bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.content)
+        return httpx.Response(200, json=response_payload(valid_output()))
+
+    client = OpenAIExtractionClient(api_key="key", transport=httpx.MockTransport(handler),
+                                    base_url="https://api.openai.test/v1")
+    outcome = client.extract(document_text="참가자격: 부산광역시에\x00 소재한 업체\x00",
+                             allowed_attachment_ids={"ATT-1"})
+    client.close()
+    assert outcome.status == "ACCEPTED"
+    assert bodies and all(b"\u0000" not in body and b"\x00" not in body for body in bodies)
+
+
+def test_unverified_response_keeps_its_quantitative_tables_only() -> None:
+    from test_quantitative_sufficient_row import _performance_payload
+
+    attachment_id, payload, _source = _performance_payload()
+    output = payload.model_dump(mode="json")
+
+    client = OpenAIExtractionClient(
+        api_key="key",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=response_payload(output))),
+        base_url="https://api.openai.test/v1", max_retries=0,
+    )
+    outcome = client.extract(document_text="SYN 원문에는 인용문이 없다", allowed_attachment_ids={attachment_id})
+    client.close()
+    assert outcome.status == "REVIEW" and outcome.error_code == "UNVERIFIED_QUOTE"
+    assert outcome.data is None
+    [table] = outcome.unverified_quantitative_tables
+    assert table["table_id"] == "SYN-PERF" and table["criteria"][0]["metric"] == "PERFORMANCE_COUNT"
