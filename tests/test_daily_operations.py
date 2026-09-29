@@ -969,6 +969,9 @@ def test_failed_version_refresh_observes_backfill_retry_cooldown(
             if stale_run.generated_at.tzinfo is None
             else stale_run.generated_at.astimezone(timezone.utc),
         ) + timedelta(minutes=1)
+        # Exercise cooldown while the notice is still open, regardless of the
+        # wall-clock date used by the seeded analysis run.
+        notice.deadline = attempt_at + timedelta(hours=48)
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
             mode="LIVE",
@@ -1026,6 +1029,11 @@ def test_failed_version_refresh_observes_backfill_retry_cooldown(
             payload,
             now=attempt_at + timedelta(hours=25),
         ) == [notice_key]
+        assert _select_backfill_notice_keys(
+            session,
+            payload,
+            now=attempt_at + timedelta(hours=49),
+        ) == []
 
 
 @pytest.mark.parametrize(
