@@ -3928,7 +3928,10 @@
       source.latest_evaluation,
       source.latestEvaluation,
     );
-    const evaluation = ["PENDING", "REVIEW", "COLLECTED", "VERSIONED"].includes(declaredAnalysisState)
+    const independentFailure = source.eligibility_independent_failure === true
+      && source.qualification_status === "FAIL"
+      && evaluationCandidate.eligibility === "FAIL";
+    const evaluation = ["PENDING", "REVIEW", "COLLECTED", "VERSIONED"].includes(declaredAnalysisState) && !independentFailure
       ? {}
       : evaluationCandidate;
     const historicalEvaluation = firstObject(source.historical_evaluation, source.historicalEvaluation);
@@ -4097,6 +4100,7 @@
         source.historical_evaluation_reason,
         source.historicalEvaluationReason,
       ), "공고 변경 전 당시 판정으로 보관합니다."),
+      eligibilityIndependentFailure: independentFailure,
       analysisState,
       analysisReasonCode: analysisReason.code,
       analysisReason: analysisReason.message,
@@ -4522,6 +4526,7 @@
         && ["PASS", "REVIEW", "FAIL"].includes(historical.eligibility)
         ? historical.eligibility : "NOT_EVALUATED";
     }
+    if (notice.eligibilityIndependentFailure && notice.qualificationStatus === "FAIL") return "FAIL";
     if (notice.sourceKind === "PPS" && !notice.analysisAttachmentCoverageComplete) return "NOT_EVALUATED";
     if (["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"].includes(notice.qualificationStatus)) return notice.qualificationStatus;
     return notice.analysisState === "EVALUATED"
@@ -9387,6 +9392,9 @@
     const providerDisposition = stringValue(firstValue(source.provider_disposition, source.providerDisposition)).toUpperCase();
     if (providerDisposition === "CANCELLED") {
       return { code: "CANCELLED", message: "조달청 취소 공고로 확인되어 현재 입찰 검토 대상에서 제외되었습니다." };
+    }
+    if (source.eligibility_independent_failure === true) {
+      return { code: code || "PARTIAL", message: `필수 참가자격 미충족 확인 · ${detail || "첨부·정량 분석 확인 필요"}` };
     }
     if (analysisState === "ANALYZED" && code === "ANALYZED") {
       return { code: "EVALUATION_MISSING", message: ANALYSIS_REASON_LABELS.EVALUATION_MISSING };
