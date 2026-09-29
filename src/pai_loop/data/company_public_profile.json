@@ -1,6 +1,7 @@
 {
-  "profile_version": "2026.09.03-v3",
-  "published_at": "2026-09-03T00:00:00+09:00",
+  "profile_version": "2026.09.29-v4",
+  "published_at": "2026-09-29T00:00:00+09:00",
+  "eligibility_assessment_mode": "PROTOTYPE_CURRENT_FACTS",
   "classification": "PUBLIC_SAFE_COMPANY_PROFILE",
   "organization": {
     "display_name": "사단법인 한국능률협회",
@@ -39,6 +40,24 @@
     }
   ],
   "facts": {
+    "bidder_identity_consistent": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-09-29",
+      "effective_to": null,
+      "last_verified_at": "2026-09-29",
+      "evidence_key": null,
+      "deadline_policy": "COMPANY_DECLARED_PROTOTYPE_BASELINE"
+    },
+    "domestic_entity": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-09-29",
+      "effective_to": null,
+      "last_verified_at": "2026-09-29",
+      "evidence_key": null,
+      "deadline_policy": "COMPANY_DECLARED_PROTOTYPE_BASELINE"
+    },
     "bidder_registration": {
       "value": true,
       "evidence_state": "VERIFIED_CURRENT_SNAPSHOT",

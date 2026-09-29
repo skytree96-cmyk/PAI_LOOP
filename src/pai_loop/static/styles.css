@@ -6754,13 +6754,13 @@ body {
 }
 
 .requirement-item.is-pass .requirement-status { color: var(--eligibility-pass); background: #fff; border-color: var(--eligibility-pass); box-shadow: inset 3px 0 var(--eligibility-pass); }
-.requirement-item.is-pass_exception .requirement-status { color: #1f2933; background: #fff; border-color: var(--eligibility-exception); box-shadow: inset 3px 0 var(--eligibility-exception); }
-.requirement-item.is-pass_current .requirement-status { color: #1f2933; background: #fff; border-color: var(--eligibility-current); box-shadow: inset 3px 0 var(--eligibility-current); }
+.requirement-item.is-pass_exception .requirement-status { color: var(--eligibility-pass); background: #fff; border-color: var(--eligibility-pass); box-shadow: inset 3px 0 var(--eligibility-pass); }
+.requirement-item.is-pass_current .requirement-status { color: var(--eligibility-pass); background: #fff; border-color: var(--eligibility-pass); box-shadow: inset 3px 0 var(--eligibility-pass); }
 .requirement-item.is-review .requirement-status,
 .requirement-item.is-unknown .requirement-status { color: #1f2933; background: #fff; border-color: var(--eligibility-review); box-shadow: inset 3px 0 var(--eligibility-review); }
 .requirement-item.is-fail .requirement-status { color: var(--eligibility-fail); background: #fff; border-color: var(--eligibility-fail); box-shadow: inset 3px 0 var(--eligibility-fail); }
-.requirement-item.is-pass_exception .requirement-icon { color: #8a5a00; background: #fff2cf; }
-.requirement-item.is-pass_current .requirement-icon { color: var(--eligibility-current); background: #fff0d5; }
+.requirement-item.is-pass_exception .requirement-icon { color: var(--eligibility-pass); background: var(--green-pale); }
+.requirement-item.is-pass_current .requirement-icon { color: var(--eligibility-pass); background: var(--green-pale); }
 
 .detail-drawer {
   inset: 0;
@@ -6811,8 +6811,8 @@ body {
 .summary-metric--eligibility-review { border-color: var(--eligibility-review); }
 .summary-metric--eligibility-fail { border-color: var(--eligibility-fail); }
 
-.private-match-state.is-pass_current { color: #1f2933; background: #fff; border-color: var(--eligibility-current); box-shadow: inset 3px 0 var(--eligibility-current); }
-.private-match-state.is-pass_exception { color: #1f2933; background: #fff; border-color: var(--eligibility-exception); box-shadow: inset 3px 0 var(--eligibility-exception); }
+.private-match-state.is-pass_current { color: var(--eligibility-pass); background: #fff; border-color: var(--eligibility-pass); box-shadow: inset 3px 0 var(--eligibility-pass); }
+.private-match-state.is-pass_exception { color: var(--eligibility-pass); background: #fff; border-color: var(--eligibility-pass); box-shadow: inset 3px 0 var(--eligibility-pass); }
 .private-match-state.is-review { color: #1f2933; background: #fff; border-color: var(--eligibility-review); box-shadow: inset 3px 0 var(--eligibility-review); }
 
 .summary-metric--operator {
@@ -7933,9 +7933,9 @@ details.requirement-item > summary { display: grid; grid-template-columns: 26px 
 details.requirement-item > summary::-webkit-details-marker { display: none; }
 details.requirement-item > summary::after { content: '+'; color: var(--muted); }
 details.requirement-item[open] > summary::after { content: '−'; }
-details.requirement-item.is-review > summary, details.requirement-item.is-pass_exception > summary, details.requirement-item.is-pass_current > summary { background: var(--amber-pale); }
+details.requirement-item.is-review > summary { background: var(--amber-pale); }
 details.requirement-item.is-fail > summary { background: var(--red-pale); }
-details.requirement-item.is-pass > summary { background: var(--green-pale); }
+details.requirement-item.is-pass > summary, details.requirement-item.is-pass_current > summary, details.requirement-item.is-pass_exception > summary { background: var(--green-pale); }
 .requirement-description { padding: 0 14px 14px 49px; color: var(--ink-soft); font-size: var(--fs-sm); }
 .requirement-description p { margin: 12px 0 6px; }
 .requirement-status { font-size: var(--fs-xs); white-space: normal; }
@@ -7957,3 +7957,5 @@ details.requirement-item.is-pass > summary { background: var(--green-pale); }
 .result-detail-grid dt { color: var(--text-muted, #64748b); font-size: .875rem; margin-bottom: 6px; }
 .result-detail-grid dd { margin: 0; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-detail-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+
+.private-match-badge.is-fail { color: var(--red); background: var(--red-pale); }

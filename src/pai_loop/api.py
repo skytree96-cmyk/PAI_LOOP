@@ -3858,9 +3858,10 @@ def requirement_policy(
 ) -> dict[str, Any]:
     """Separate eligibility, required actions, checklist work, and information.
 
-    The result uses only the repository-backed public profile. Eligibility
-    evidence retains its notice-deadline recheck policy; procedural clauses do
-    not become eligibility REVIEW merely because they are mandatory.
+    The result uses the repository-backed public profile and its explicit
+    prototype scope. Equivalent display rows retain their original source
+    conditions; procedural clauses do not become eligibility REVIEW merely
+    because they are mandatory.
     """
 
     notice = _load_notice(session, notice_key)

@@ -545,7 +545,7 @@ def test_company_declaration_does_not_invent_an_evidence_requirement(db_session:
         )
     )
     assert requirement is not None
-    assert requirement.fact_key == "conviction_clear"
+    assert requirement.fact_key == "prototype.conviction_clear"
     assert requirement.evidence_required is False
 
 
@@ -600,7 +600,7 @@ def test_missing_industry_code_is_persisted_as_fail_not_review(db_session: Sessi
     assert result.eligibility == "FAIL"
     assert result.reason_code == "DF-000"
     assert requirement_row is not None
-    assert requirement_row.fact_key == "industry_code_inventory"
+    assert requirement_row.fact_key == "prototype.industry_code_inventory"
     assert requirement_row.operator == "contains"
     assert requirement_row.required_value == "1263"
 
@@ -2092,7 +2092,10 @@ def test_known_non_eligibility_gap_preserves_company_evidence_review(
     )
     db_session.commit()
 
-    result = run_analysis_pipeline(db_session, notice_id=notice.id)
+    from pai_loop.eligibility_policy import load_public_company_profile
+    strict_profile = load_public_company_profile()
+    strict_profile["eligibility_assessment_mode"] = "DEADLINE_EVIDENCE"
+    result = run_analysis_pipeline(db_session, notice_id=notice.id, company_profile=strict_profile)
 
     assert result.status == "PARTIAL"
     assert result.eligibility == "REVIEW"
@@ -2409,7 +2412,7 @@ def test_statutory_compound_materializes_two_anchored_and_gates() -> None:
     pairs = _policy_items([merged], notice=notice, profile=load_public_company_profile())
     atomics = [_atomic_requirement(item, policy, sequence=i) for i, (item, policy) in enumerate(pairs, 1)]
     assert len(atomics) == 2
-    assert {item.fact_key for item in atomics} == {"bidder_registration", "sanction_clear"}
+    assert {item.fact_key for item in atomics} == {"prototype.bidder_registration", "prototype.sanction_clear"}
     assert all(item.mandatory and item.path_key == "PATH-PRIMARY" for item in atomics)
     assert len({item.requirement_key for item in atomics}) == 2
     assert len({item.group_key for item in atomics}) == 2

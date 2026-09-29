@@ -6710,7 +6710,8 @@
       profileVersion: stringValue(firstValue(source.profile_version, source.profileVersion), "미확인"),
       policyVersion: stringValue(firstValue(source.policy_version, source.policyVersion), "미확인"),
       note: stringValue(firstValue(source.decision_boundary, source.decisionBoundary), "적격성, 행동필요, 체크리스트, 정보를 서로 분리합니다."),
-      matches: arrayValue(source.items).map(normalizePrivateMatchItem),
+      matches: arrayValue(firstValue(source.display_items, source.items)).map(normalizePrivateMatchItem),
+      verdictCounts: firstObject(source.verdict_counts),
     };
   }
 
@@ -6730,6 +6731,8 @@
       category: stringValue(firstValue(source.policy_class, source.policyClass), "INFORMATION").toUpperCase(),
       sourceCategory: stringValue(firstValue(source.source_category, source.sourceCategory), "OTHER").toUpperCase(),
       condition,
+      sourceConditions: arrayValue(source.source_conditions),
+      duplicateCount: numberOrNull(source.duplicate_count) ?? 0,
       mandatory: booleanValue(source.mandatory) ?? true,
       outcome: stringValue(source.outcome, "INFORMATION").toUpperCase(),
       blocking: booleanValue(source.blocking) ?? false,
@@ -6759,34 +6762,27 @@
     // class policy preview remains in its own section below.
     const preview = state.privateMatchPreviews[notice?.noticeKey];
     if (preview?.status !== "ready") return [];
-    // A failed AND condition must not erase independently satisfied conditions.
-    // Keep incomplete/stale document projections provisional, independently of
-    // the persisted aggregate verdict (which this adapter never changes).
-    const currentEvidence = notice.analysisState === "EVALUATED"
-      && !isDocumentQualityReview(notice);
+    // The endpoint already restricts rows to accepted, current source evidence.
+    // Whole-notice document readiness is separate from these individual verdicts.
     return arrayValue(preview.data?.matches)
       .filter((item) => item?.category === "ELIGIBILITY")
       .map((item, index) => {
         const outcome = stringValue(item.outcome).toUpperCase();
         const publicProfileMatches = ["PASS_CURRENT", "PASS_EXCEPTION"].includes(outcome);
         const status = publicProfileMatches
-          ? currentEvidence ? outcome : "REVIEW"
-          : outcome === "FAIL_CONFIRMED" && currentEvidence
+          ? outcome
+          : outcome === "FAIL_CONFIRMED"
             ? "FAIL"
             : outcome === "REVIEW" || item.blocking
             ? "REVIEW"
             : "UNKNOWN";
-        const description = publicProfileMatches
-          ? currentEvidence
-            ? outcome === "PASS_EXCEPTION"
-              ? "허용 예외에 따라 현재 충족합니다. 예외 적용 조건과 마감일 기준 증빙을 다시 확인하세요."
-              : "현재 회사 정보와 일치합니다. 공고 마감일 기준으로 최신 증빙을 다시 확인하세요."
-            : "공개 회사정보와 일치하지만 현재 첨부 검증이 완료되지 않았습니다. 공고 마감일 기준으로 다시 확인하세요."
-          : stringValue(item.message, "공개 정책 보조 근거입니다. 공고 마감일 기준으로 최신 증빙을 확인하세요.");
+        const description = stringValue(item.message, "현재 회사 기준으로 판단한 개별 자격입니다.");
         return {
           id: stringValue(item.requirementId, `public-eligibility-${index + 1}`),
           title: stringValue(item.condition, `자격 조건 ${index + 1}`),
           description,
+          sourceConditions: item.sourceConditions,
+          duplicateCount: item.duplicateCount,
           status,
           evidenceId: "",
           reasonCode: outcome,
@@ -6853,6 +6849,7 @@
       ["확인할 일", source.action],
       ["판단 이유", source.why],
       ["판정 안내", source.message],
+      ["같은 조건의 다른 문구", source.source_conditions],
     ];
     const seen = new Set([stringValue(condition).replace(/\s+/g, " ").trim().toLocaleLowerCase("ko-KR")]);
     const details = [];
@@ -6899,8 +6896,9 @@
     }
 
     const data = preview.data;
-    els.privateMatchBadge.textContent = data.blockingActions ? `확인 전 보류 ${data.blockingActions}건` : "회사 기준 적용";
-    els.privateMatchBadge.classList.add(data.blockingActions ? "is-review" : "is-ready");
+    const verdicts = data.verdictCounts || {};
+    els.privateMatchBadge.textContent = `P ${verdicts.P || 0} · F ${verdicts.F || 0} · R ${verdicts.R || 0}`;
+    els.privateMatchBadge.classList.add(verdicts.F ? "is-fail" : verdicts.R || data.blockingActions ? "is-review" : "is-ready");
     els.privateMatchBody.innerHTML = `
       <div class="private-match-summary" aria-label="판단 기준 4분류 요약">
         ${privateMatchMetric("적격성", data.eligibilityCount, "건")}
@@ -6921,15 +6919,15 @@
 
   function renderPrivateMatchItem(item) {
     const outcomeLabels = {
-      PASS_CURRENT: "현재 충족 · 마감일 재확인",
-      PASS_EXCEPTION: "조건부 충족 · 적용조건 재확인",
-      FAIL_CONFIRMED: "미충족",
+      PASS_CURRENT: "P · 충족",
+      PASS_EXCEPTION: "P · 예외 충족",
+      FAIL_CONFIRMED: "F · 미충족",
       BLOCK_UNTIL_CONFIRMED: "확인 전 보류",
       READY: "체크 준비",
       CHECK_REQUIRED: "체크 필요",
       ACKNOWLEDGED: "정보 확인",
       INFORMATION: "정보",
-      REVIEW: "확인 필요",
+      REVIEW: "R · 확인 필요",
     };
     const stateClass = ({
       PASS_CURRENT: "is-pass_current",
@@ -7001,13 +6999,10 @@
   }
 
   function renderRequirement(requirement) {
+    const verdictLabel = ({ PASS: "P · 충족", PASS_CURRENT: "P · 충족", PASS_EXCEPTION: "P · 예외 충족", FAIL: "F · 미충족", REVIEW: "R · 확인 필요" })[requirement.status];
     const mode = requirement.status.toLowerCase();
-    const icon = requirement.status === "PASS"
+    const icon = ["PASS", "PASS_CURRENT", "PASS_EXCEPTION"].includes(requirement.status)
       ? '<path d="m5 12 4 4L19 6" />'
-      : requirement.status === "PASS_CURRENT"
-        ? '<circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" />'
-        : requirement.status === "PASS_EXCEPTION"
-          ? '<path d="M12 7v6M12 17h.01" />'
       : requirement.status === "FAIL"
         ? '<path d="m7 7 10 10M17 7 7 17" />'
         : '<path d="M12 7v6M12 17h.01" />';
@@ -7016,9 +7011,10 @@
         <summary>
         <span class="requirement-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${icon}</svg></span>
         <span class="requirement-copy"><strong>${escapeHtml(requirement.title)}</strong></span>
-        <span class="requirement-status">${escapeHtml(STATUS_LABELS[requirement.status] || STATUS_LABELS.UNKNOWN)}</span>
+        <span class="requirement-status">${escapeHtml(verdictLabel || STATUS_LABELS[requirement.status] || STATUS_LABELS.UNKNOWN)}</span>
         </summary>
         <div class="requirement-description"><p>${escapeHtml(requirement.description)}</p>
+        ${requirement.duplicateCount ? `<p>동일 조건 ${requirement.duplicateCount + 1}건 통합</p><ul>${arrayValue(requirement.sourceConditions).map(text => `<li>${escapeHtml(text)}</li>`).join("")}</ul>` : ""}
         ${requirement.evidenceId ? `<button type="button" class="evidence-jump" data-evidence-jump="${escapeAttribute(requirement.evidenceId)}">근거 보기</button>` : ''}
         </div>
       </details>`;

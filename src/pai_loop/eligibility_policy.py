@@ -18,9 +18,25 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # re-queues a notice whose analysis ran under an older one. Any change that
 # makes this module decide differently has to move it, or the new rule reaches
 # new notices only and every existing decision keeps the answer it already had.
-# v13 carries the structural reading of a nonprofit alternative, which turns 94
-# of 95 confirmed absences into a pass or a review.
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.17-v13"
+# v14 applies the approved current-company prototype baseline and groups
+# equivalent display rows without removing their evaluation/source records.
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.29-v15"
+
+# Approved prototype scope: assess these known company facts as they stand now.
+# Other qualifications retain deadline-based evidence checks.
+PROTOTYPE_FACT_KEYS = frozenset({
+    "industry_code_inventory", "bidder_registration", "direct_production_certificate",
+    "small_business_certificate", "sme_certificate", "sanction_clear",
+    "conviction_clear", "disqualification_clear", "bidder_identity_consistent",
+    "domestic_entity", "nonprofit_entity",
+})
+
+
+def prototype_fact_enabled(profile: dict[str, Any], fact_key: str) -> bool:
+    return (
+        profile.get("eligibility_assessment_mode") == "PROTOTYPE_CURRENT_FACTS"
+        and fact_key in PROTOTYPE_FACT_KEYS
+    )
 
 # How many days a RECHECK_ONLINE_AT_EACH_NOTICE_DEADLINE / RECONFIRM_BEFORE_EACH_SUBMISSION
 # fact may go without a fresh verification before we stop trusting it and force REVIEW.
@@ -95,8 +111,8 @@ def _required_industry_codes(text: str, *, category: str) -> list[str]:
 
     explicit_marker = _contains(text, "업종코드", "업종 코드")
     if not explicit_marker and not (
-        category == "INDUSTRY_CODE"
-        and _contains(text, "등록", "업종")
+        _contains(text, "등록")
+        and (category == "INDUSTRY_CODE" or _contains(text, "업종", "나라장터", "g2b"))
         and re.search(r"[\[(]\s*\d{4}\s*[\])]", text)
     ):
         return []
@@ -770,7 +786,9 @@ def _is_two_person_attendee_limit(text: str, *, category: str) -> bool:
 def _is_small_business_eligibility(text: str, *, category: str) -> bool:
     """Distinguish an SME participation condition from an SME lookback rule."""
 
-    if not _contains(text, "중소기업", "소기업", "소상공인"):
+    # The purchasing statute / competitive-product label alone is not an SME gate.
+    sme_text = re.sub(r"중소기업\s*(?:제품|자\s*간)", "", text)
+    if not _contains(sme_text, "중소기업", "소기업", "소상공인"):
         return False
     if category in {"ENTITY", "CERTIFICATION", "DIRECT_PRODUCTION"}:
         return True
@@ -936,13 +954,24 @@ def _is_product_registration_eligibility(text: str) -> bool:
 
 
 def _is_direct_production_certificate_eligibility(text: str) -> bool:
-    return _contains(
-        text,
-        "직접생산확인증명서",
-        "직접생산 확인증명서",
-        "직접생산확인서",
-        "직접생산 확인서",
+    return bool(re.search(r"직접\s*생산\s*확인\s*(?:증명서|서)", text))
+
+
+def _is_bidder_identity_consistency(text: str) -> bool:
+    return (
+        _contains(text, "입찰참가등록증", "입찰참가자격등록증", "등록증상")
+        and "상호" in text and "대표자" in text
+        and _contains(text, "법인등기", "사업자등록증")
+        and _contains(text, "변경등록", "변경 등록", "일치")
     )
+
+
+def _is_domestic_bid(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    return bool(re.fullmatch(
+        r"(?:본(?:건|공고|입찰)은?)?국내입찰(?:로(?:구분|진행)(?:됨|함|한다|됩니다)|이다|임)?[.]?",
+        compact,
+    ))
 
 
 def _is_integrity_conduct_clause(text: str) -> bool:
@@ -1337,6 +1366,15 @@ def _is_current_sanction_clearance(text: str) -> bool:
         "제재 중이지 않",
         "부정당업자가 아닌",
         "부정당업자가 아니어야",
+        "제한 대상이 아니",
+        "제한 대상이 아닐",
+        "제재 대상이 아니",
+        "제재 대상이 아닐",
+        "제한된 업체가 아니",
+        "제한을 받지 아니",
+        "제한 처분을 받지 아니",
+        "제재를 받지 아니",
+        "제한) 상태가 아닌",
     )
     return sanction_context and clear_condition
 
@@ -1483,6 +1521,7 @@ def _eligibility_item(
     item = _base_item(requirement, "ELIGIBILITY")
     fact = dict(profile.get("facts", {}).get(fact_key) or {})
     evidence = _public_evidence(profile, fact.get("evidence_key"))
+    prototype = prototype_fact_enabled(profile, fact_key)
     start = _as_date(fact.get("effective_from"))
     end = _as_date(fact.get("effective_to"))
     evidence_start = _as_date(evidence.get("valid_from")) if evidence else None
@@ -1501,6 +1540,9 @@ def _eligibility_item(
         and (evidence_start is None or evidence_start <= deadline)
         and (evidence_end is None or deadline <= evidence_end)
     )
+    if prototype:
+        in_effect = True
+        freshness_recheck = False
     effective = (
         _policy_value_matches(fact.get("value"), operator, required_value)
         and in_effect
@@ -1522,11 +1564,16 @@ def _eligibility_item(
             "operator": operator,
             "required_value": required_value,
             "review_trigger_value": "__MISSING__",
-            "evaluation_fact_key": f"reconfirm.{fact_key}" if freshness_recheck else fact_key,
+            "evaluation_fact_key": (
+                f"prototype.{fact_key}" if prototype and (effective or confirmed_absence)
+                else f"reconfirm.{fact_key}" if prototype
+                else f"reconfirm.{fact_key}" if freshness_recheck else fact_key
+            ),
+            "assessment_basis": "PROTOTYPE_CURRENT_FACTS" if prototype else "DEADLINE_EVIDENCE",
             "evidence_state": fact.get("evidence_state") or "MISSING",
             "evidence": evidence,
             "deadline_as_of": deadline.isoformat() if deadline else None,
-            "deadline_check_required": recheck_required,
+            "deadline_check_required": recheck_required and not prototype,
             "message": (
                 message
                 if effective
@@ -1536,6 +1583,11 @@ def _eligibility_item(
             ),
         }
     )
+    if prototype and (effective or confirmed_absence):
+        item["message"] = (
+            "프로토타입 회사 기준: "
+            + (message if effective else failure_message or "회사 확인 결과 해당 자격을 보유하지 않습니다.")
+        )
     return item
 
 
@@ -1883,13 +1935,25 @@ def classify_requirements(
                     "현재 부정당 제재 여부의 PASS 근거로 사용하지 않습니다."
                 ),
             )
+        elif prototype_fact_enabled(profile, "bidder_identity_consistent") and _is_bidder_identity_consistency(text):
+            item = _eligibility_item_now(
+                requirement, profile=profile, fact_key="bidder_identity_consistent",
+                deadline=as_of, fail_on_confirmed_absence=True,
+                message="상호·대표자 등록정보를 일치 상태로 유지한다는 회사 확인값에 따라 충족합니다.",
+            )
+        elif prototype_fact_enabled(profile, "domestic_entity") and _is_domestic_bid(text):
+            item = _eligibility_item_now(
+                requirement, profile=profile, fact_key="domestic_entity",
+                deadline=as_of, fail_on_confirmed_absence=True,
+                message="국내 법인이라는 회사 확인값에 따라 국내입찰 조건을 충족합니다.",
+            )
         elif _is_bidder_registration_eligibility(text):
             item = _eligibility_item_now(
                 requirement,
                 profile=profile,
                 fact_key="bidder_registration",
                 deadline=as_of,
-                message="경쟁입찰참가자격 등록 보유 근거가 연결되었습니다. 마감일에는 나라장터 상태를 다시 확인합니다.",
+                message="경쟁입찰참가자격 등록 보유 근거가 연결되어 충족합니다.",
             )
         elif _is_descriptive_entity_clause(text, category=category):
             item = _information_item(
@@ -1921,7 +1985,7 @@ def classify_requirements(
                 profile=profile,
                 fact_key="sanction_clear",
                 deadline=as_of,
-                message="현재 확인된 부정당 제재 사례가 없어 PASS 상태이며 마감일 기준 동적 조회를 유지합니다.",
+                message="회사 확인값상 부정당 제재 이력이 없어 충족합니다.",
             )
         elif _is_current_disqualification_clearance(text):
             item = _eligibility_item_now(
@@ -1929,7 +1993,7 @@ def classify_requirements(
                 profile=profile,
                 fact_key="disqualification_clear",
                 deadline=as_of,
-                message="현재 회사 확인값상 결격사유가 없으며 제출 전 다시 확인합니다.",
+                message="회사 확인값상 결격사유가 없어 충족합니다.",
             )
         elif _contains(text, "유죄판결", "조세포탈") and not _contains(text, "서약서"):
             item = _eligibility_item_now(
@@ -1937,7 +2001,7 @@ def classify_requirements(
                 profile=profile,
                 fact_key="conviction_clear",
                 deadline=as_of,
-                message="현재 확인된 유죄판결 사례가 없어 PASS 상태이며 제출 전 재확인합니다.",
+                message="회사 확인값상 조세포탈 등 유죄판결 이력이 없어 충족합니다.",
             )
         elif _is_integrity_conduct_clause(text):
             item = _checklist_item(
@@ -2290,15 +2354,17 @@ def classify_requirements(
                 item["requires_performance_scope_binding"] = True
         items.append(item)
 
-    counts = Counter(item["policy_class"] for item in items)
+    display_items = group_equivalent_policy_items(items)
+    counts = Counter(item["policy_class"] for item in display_items)
     groups = {
-        key: [item for item in items if item["policy_class"] == key]
+        key: [item for item in display_items if item["policy_class"] == key]
         for key in ("ELIGIBILITY", "ACTION_REQUIRED", "CHECKLIST", "INFORMATION")
     }
     return {
         "policy_version": POLICY_VERSION,
         "profile_version": profile.get("profile_version"),
         "profile_classification": profile.get("classification"),
+        "assessment_mode": profile.get("eligibility_assessment_mode", "DEADLINE_EVIDENCE"),
         "deadline_as_of": as_of.isoformat() if as_of else None,
         "counts": {key: counts.get(key, 0) for key in groups},
         "blocking_actions": sum(
@@ -2307,9 +2373,48 @@ def classify_requirements(
         ),
         "blocking_items": sum(bool(item["blocking"]) for item in items),
         "items": items,
+        "display_items": display_items,
+        "duplicate_count": len(items) - len(display_items),
+        "verdict_counts": dict(Counter(
+            "P" if item["outcome"].startswith("PASS") else "F" if item["outcome"] == "FAIL_CONFIRMED" else "R"
+            for item in display_items if item["policy_class"] == "ELIGIBILITY"
+        )),
         "groups": groups,
         "decision_boundary": (
-            "적격성만 PASS/REVIEW에 반영합니다. 행동필요는 완료 전 BLOCK, "
+            ("현재 회사 확인값으로 점검하는 프로토타입입니다. " if profile.get("eligibility_assessment_mode") == "PROTOTYPE_CURRENT_FACTS" else "공고 마감일 기준 증빙으로 점검합니다. ")
+            + "참가 자격은 P 충족 / F 미충족 / R 근거 부족·예외 범위 확인으로 표시합니다. "
+            "행동필요는 완료 전 BLOCK, "
             "체크리스트와 정보는 그 자체로 참가자격 REVIEW를 만들지 않습니다."
         ),
     }
+
+
+def group_equivalent_policy_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group only equivalent known gates for display; preserve every source row.
+
+    Evaluation still consumes `items` one-to-one. Different codes, verdicts,
+    exceptions, mandatory flags and unresolved compound gates never collapse.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(items):
+        fact_key = item.get("company_fact_key")
+        groupable = (
+            item.get("policy_class") == "ELIGIBILITY"
+            and fact_key in PROTOTYPE_FACT_KEYS - {"nonprofit_entity", "disqualification_clear"}
+            and item.get("outcome") != "REVIEW"
+            and not item.get("performance_relation_unresolved")
+        )
+        key = json.dumps({
+            "fact": fact_key, "operator": item.get("operator"),
+            "required": item.get("required_value"), "outcome": item.get("outcome"),
+            "mandatory": item.get("mandatory"),
+            "products": sorted(re.findall(r"(?<!\d)\d{10}(?!\d)", str(item.get("condition")))),
+        }, ensure_ascii=False, sort_keys=True) if groupable else f"row:{index}"
+        if key not in groups:
+            groups[key] = {**copy.deepcopy(item), "source_requirement_ids": [], "source_conditions": []}
+        group = groups[key]
+        group["source_requirement_ids"].append(item.get("requirement_id"))
+        if item.get("condition") not in group["source_conditions"]:
+            group["source_conditions"].append(item.get("condition"))
+        group["duplicate_count"] = len(group["source_requirement_ids"]) - 1
+    return list(groups.values())

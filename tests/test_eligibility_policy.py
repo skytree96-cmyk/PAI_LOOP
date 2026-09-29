@@ -10,8 +10,18 @@ from pai_loop.eligibility_policy import (
     _assert_public_safe,
     classify_nonprofit_alternative,
     classify_requirements,
-    load_public_company_profile,
+    load_public_company_profile as _load_public_company_profile,
 )
+
+
+def load_public_company_profile():
+    """Keep the original deadline-evidence policy regression suite explicit.
+
+    Production prototype behavior is covered in test_prototype_eligibility.py.
+    """
+    profile = _load_public_company_profile()
+    profile["eligibility_assessment_mode"] = "DEADLINE_EVIDENCE"
+    return profile
 
 
 def requirement(
