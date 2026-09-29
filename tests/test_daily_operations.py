@@ -959,7 +959,11 @@ def test_requirement_policy_v4_open_snapshot_enters_daily_and_backfill_once(
 def test_failed_version_refresh_observes_backfill_retry_cooldown(
     client: TestClient,
 ) -> None:
-    notice_key = _seed_stale_analysis_snapshot(client)
+    # The check looks 25 hours past the latest attempt, which follows the
+    # real clock; a fixed deadline expires under it (failed on 2026-09-29).
+    notice_key = _seed_stale_analysis_snapshot(
+        client, deadline=datetime.now(timezone.utc) + timedelta(days=30),
+    )
     with client.app.state.session_factory() as session:
         notice = session.query(Notice).filter_by(notice_key=notice_key).one()
         stale_run = session.query(AnalysisRun).filter_by(notice_id=notice.id).one()
@@ -969,9 +973,8 @@ def test_failed_version_refresh_observes_backfill_retry_cooldown(
             if stale_run.generated_at.tzinfo is None
             else stale_run.generated_at.astimezone(timezone.utc),
         ) + timedelta(minutes=1)
-        # This test probes cooldown while the notice is still open. A fixed
-        # calendar deadline can expire before the wall-clock-based +25h probe.
-        notice.deadline = attempt_at + timedelta(days=7)
+        # Keep the notice open across both checks regardless of the wall-clock date.
+        notice.deadline = attempt_at + timedelta(days=2)
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
             mode="LIVE",
