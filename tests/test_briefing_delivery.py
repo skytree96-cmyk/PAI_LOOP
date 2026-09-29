@@ -267,3 +267,34 @@ def test_unknown_department_falls_back_instead_of_failing(store):
         unscoped = build_briefing_card(session, kind="DAILY", department_id=None,
                                        base_url=BASE_URL, now=kst(22, 9))
     assert scoped["body"] == unscoped["body"]
+
+
+def test_briefing_rows_are_compact_tappable_and_never_invent_scores(store):
+    with store() as session:
+        card = build_briefing_card(session, kind="DAILY", department_id=None,
+                                   base_url=BASE_URL, now=kst(22, 9))
+    rows = [element for element in card["body"] if element.get("selectAction")]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["selectAction"]["url"] == BASE_URL + "/?notice=SYN-BRIEF-1"
+    # Title, one agency/amount line, one badge row: no per-notice fact table.
+    assert [element["type"] for element in row["items"]] == ["TextBlock", "TextBlock", "ColumnSet"]
+    assert row["items"][1]["text"] == "SYN 기관 · 금액 미확인"
+    badges, deadline, signals = row["items"][2]["columns"]
+    assert badges["items"][0]["items"][0]["text"] == "미판정"
+    assert deadline["items"][0]["items"][0]["text"].startswith("D-6 · 09.28")
+    # Unevaluated: no recommendation and no readiness number is printed.
+    from pai_loop.briefing_cards import RISK_BAND_LABELS
+    signal = signals["items"][0]["text"]
+    assert signal.startswith("담당 ") and "준비도" not in signal
+    assert not any(label in signal for label in RISK_BAND_LABELS.values())
+    assert card["actions"][0]["url"] == BASE_URL + "/"
+    assert "FactSet" not in str(card)
+
+
+def test_briefing_amounts_are_short_enough_for_a_row():
+    from pai_loop.briefing_cards import _won
+    assert _won(120_000_000) == "1.2억원"
+    assert _won(300_000_000) == "3억원"
+    assert _won(35_000_000) == "3,500만원"
+    assert _won(None) == "금액 미확인"

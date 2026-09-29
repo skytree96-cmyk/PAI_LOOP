@@ -308,7 +308,7 @@ def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() ->
     assert 'summaryMetric("AI 검토 의견"' in detail_body
     assert 'summaryMetric("담당자 판단"' in detail_body
     assert "renderRecommendationCondition(notice)" in detail_body
-    assert "조건부 GO · 확인할 조건" in condition_body
+    assert "조건부 검토 · 확인할 조건" in condition_body
     assert "권고 보류 · 조건 근거 없음" in condition_body
     assert "hasPublishedCondition" in condition_body
     assert "conditions.map" in condition_body

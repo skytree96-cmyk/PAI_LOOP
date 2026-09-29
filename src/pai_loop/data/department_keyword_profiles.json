@@ -1,5 +1,5 @@
 {
-  "version": "2026.08.18-1",
+  "version": "2026.09.29-1",
   "source": "2026 조직도와 조직별 사업영역(개인 이름 제외)",
   "description": "공고 검색과 부서별 검토 우선순위를 위한 설명 가능한 키워드 프로필입니다. 사업부 추천과 지역 라우팅을 분리하며 교육·컨설팅을 전사 공통 기본값으로 사용합니다.",
   "ranking_policy": {
@@ -100,7 +100,7 @@
       "strong_keywords": ["역량평가", "승진후보자", "승진 후보자", "역량개발센터", "Assessment Center", "Development Center"],
       "supporting_keywords": ["AC", "DC", "역량교육", "역량 교육", "조직활성화", "팀빌딩", "중앙정부", "지자체"],
       "excluded_keywords": [],
-      "regions": []
+      "regions": ["서울", "경기", "인천", "수도권"]
     },
     {
       "id": "future-job-creation",
@@ -267,11 +267,11 @@
       "id": "region-central",
       "group": "지역그룹",
       "name": "중부본부",
-      "aliases": ["중부권", "충청권", "수도권"],
-      "strong_keywords": ["중부권 교육", "충청권 교육", "수도권 교육", "중부권 컨설팅"],
-      "supporting_keywords": ["서울", "경기", "인천", "대전", "세종", "충북", "충남", "강원"],
+      "aliases": ["중부권", "충청권", "강원권"],
+      "strong_keywords": ["중부권 교육", "충청권 교육", "강원권 교육", "중부권 컨설팅"],
+      "supporting_keywords": ["대전", "세종", "충북", "충남", "강원"],
       "excluded_keywords": [],
-      "regions": ["서울", "경기", "인천", "대전", "세종", "충북", "충남", "강원", "충청"]
+      "regions": ["대전", "세종", "충북", "충남", "충청", "강원"]
     },
     {
       "id": "region-honam-jeju",

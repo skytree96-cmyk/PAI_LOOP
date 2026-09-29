@@ -55,7 +55,7 @@ def test_pre_specification_help_explains_boundaries_and_zero_openai_search() -> 
         "검색·저장 문서 분석 0회",
         "선택 저장",
         "분석은 별도 실행",
-        "GO 판정 아님",
+        "입찰 판단 아님",
     ):
         assert phrase in html
     assert "저장 자료 검색은 외부 조회 0회" in html
@@ -87,7 +87,7 @@ def test_pre_specification_analysis_requires_explicit_cost_approval_and_bounded_
         "문서당 최대 2회",
         "사전규격 1건당 총 최대 10회",
         "중복 실행 잠금과 공고별 재시도 대기 적용",
-        "GO 판정이 아님",
+        "입찰 판단이 아님",
     ):
         assert phrase in source
     assert "window.confirm" in source

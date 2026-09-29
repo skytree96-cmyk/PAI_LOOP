@@ -149,8 +149,8 @@ def test_bare_region_name_does_not_fill_a_regional_department_queue(client):
     """
 
     with client.app.state.session_factory() as session:
-        _notice(session, "region-only", "서울 청사 도로 포장 보수 공사")
-        _notice(session, "region-work", "서울 공무원 직무 교육 위탁운영", evaluated=True)
+        _notice(session, "region-only", "대전 청사 도로 포장 보수 공사")
+        _notice(session, "region-work", "대전 공무원 직무 교육 위탁운영", evaluated=True)
         session.commit()
 
     row = next(
@@ -162,8 +162,43 @@ def test_bare_region_name_does_not_fill_a_regional_department_queue(client):
     assert row["recommended_count"] == 1
     assert row["region_gate_blocked_count"] == 1
     counts = {item["keyword"]: item["count"] for item in row["keywords"]}
-    assert counts["서울"] == 1
+    assert counts["대전"] == 1
     assert row["selected_matched_count"] <= row["matched_count"]
+
+
+def test_capital_area_fills_competency_solution_queue_not_central(client):
+    """서울·경기·인천 belong to 역량솔루션본부; 중부본부 keeps 충청·강원."""
+
+    with client.app.state.session_factory() as session:
+        _notice(session, "capital-only", "서울 청사 도로 포장 보수 공사")
+        _notice(session, "capital-work", "서울 공무원 직무 교육 위탁운영", evaluated=True)
+        _notice(session, "gangwon-work", "강원 공무원 직무 교육 위탁운영")
+        session.commit()
+
+    departments = client.get("/api/v1/dashboard/departments").json()["departments"]
+    competency = next(
+        item for item in departments if item["department_id"] == "future-competency-solution"
+    )
+    central = next(item for item in departments if item["department_id"] == "region-central")
+
+    assert competency["matched_count"] == 1
+    assert competency["recommended_count"] == 1
+    assert competency["region_gate_blocked_count"] == 1
+    competency_counts = {item["keyword"]: item["count"] for item in competency["keywords"]}
+    assert competency_counts["서울"] == 1
+    assert {"서울", "경기", "인천"} <= set(competency_counts)
+    assert central["matched_count"] == 1
+    central_counts = {item["keyword"]: item["count"] for item in central["keywords"]}
+    assert central_counts["강원"] == 1
+    assert not {"서울", "경기", "인천"} & set(central_counts)
+
+    def dashboard_recommended(department_id):
+        response = client.get("/api/v1/dashboard", params={"department_id": department_id})
+        assert response.status_code == 200
+        return response.json()["department_statistics"]["recommended_count"]
+
+    assert dashboard_recommended("future-competency-solution") == 1
+    assert dashboard_recommended("region-central") == 1
 
 
 def test_region_tokens_appear_in_the_keyword_table(client):

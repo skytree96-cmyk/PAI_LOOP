@@ -30,7 +30,7 @@ REGION_GROUP = "지역그룹"
 # truth for geography stays the profile's ``regions``; this table only covers
 # place names that were also registered as strong/supporting keywords.
 _REGION_ONLY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "region-central": ("서울", "경기", "인천", "대전", "세종", "충북", "충남", "강원"),
+    "region-central": ("대전", "세종", "충북", "충남", "강원"),
     "region-busan-gyeongnam": ("부산광역시", "경상남도", "울산광역시", "부울경"),
     "region-daegu-gyeongbuk": ("대구광역시", "경상북도", "대경권"),
     "region-honam-jeju": (
@@ -430,17 +430,18 @@ def rank_notice_for_department(
             item for item in matched_department_supporting if has_required_business_context(item)
         ]
     is_regional = bool(department and department.get("group") == REGION_GROUP)
+    # A business department can also own a territory (역량솔루션본부 covers
+    # 서울·경기·인천). Its regions route exactly like a regional office's, under
+    # the same gate, while its keywords keep deciding business recommendations.
+    routes_regions = bool(department and department["regions"])
     region_tokens, discounted_places = (
         _region_place_names(str(department["id"]), tuple(department["regions"]))
-        if is_regional
+        if routes_regions
         else ((), frozenset())
     )
-    matched_regions = _matched_keywords(
-        searchable_text,
-        list(region_tokens) if is_regional else (department["regions"] if department else []),
-    )
+    matched_regions = _matched_keywords(searchable_text, list(region_tokens))
     blocked_region_signals: list[str] = []
-    if is_regional:
+    if routes_regions:
         # A place name is a single location boost. Regional profiles list both
         # an official name (supporting) and its short form (region); counting
         # both would let geography outrank the actual business owner. Only the
@@ -502,21 +503,24 @@ def rank_notice_for_department(
         sum(float(item["weight"]) for item in breakdown if item["source"] == "REGION"),
         1,
     )
-    ranking_scope = (
-        "REGION" if department and department.get("group") == "지역그룹" else "BUSINESS"
-    )
+    ranking_scope = "REGION" if is_regional else "BUSINESS"
     if ranking_scope == "REGION":
         recommendation_tier = "ROUTING" if matched_regions else "NONE"
-    elif matched_exclusions:
-        # Non-core procurement signals block business recommendations even
-        # when a strong department term happens to be present. Geography is
-        # handled above as routing metadata, not as a bid recommendation.
-        recommendation_tier = "NONE"
-    elif department and (
+    elif not matched_exclusions and department and (
         len(matched_department_strong) >= BUSINESS_TOP_MIN_STRONG
         or len(matched_department_supporting) >= BUSINESS_TOP_MIN_SUPPORTING
     ):
+        # Non-core procurement signals block business recommendations even
+        # when a strong department term happens to be present.
         recommendation_tier = "TOP"
+    elif matched_regions:
+        # Geography is routing, not a bid recommendation. Like a regional
+        # office's, it survives exclusions, and a business owner's routed
+        # result is scored and displayed in the region scope.
+        recommendation_tier = "ROUTING"
+        ranking_scope = "REGION"
+    elif matched_exclusions:
+        recommendation_tier = "NONE"
     elif department and (
         not matched_department_strong
         and len(matched_department_supporting) == BUSINESS_REVIEW_SUPPORTING
@@ -685,7 +689,7 @@ def route_notice_across_regions(
             user_keywords=user_keywords,
         )
         for profile in catalog["departments"]
-        if profile.get("group") == "지역그룹"
+        if profile.get("group") == REGION_GROUP or profile["regions"]
     ]
     return _region_rankings(routes, limit=limit)
 
