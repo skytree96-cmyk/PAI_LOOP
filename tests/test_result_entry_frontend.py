@@ -396,3 +396,48 @@ def test_queue_refresh_keeps_the_open_result_detail_tab():
  assert.equal(details.length,1);
  assert.equal(details[0][0],'SYN-OTHER');
 ''')
+
+
+@pytest.mark.parametrize("status", ["WON", "LOST"])
+def test_confirmed_result_submits_unknown_award_amount_as_null(status):
+    _run("const outcomeStatus=" + json.dumps(status) + r'''
+openEmptyResult();fillWonResult();
+u.els.resultLearningStatus.value=outcomeStatus;
+u.els.resultLearningRecordStatus.value='VALIDATED';
+u.els.resultLearningSourceReference.value='SYN official result';
+u.els.resultLearningLossReason.value='SYN evaluated second';
+u.els.resultLearningWinningAmount.value='';
+u.els.resultLearningWinningRate.value='';
+assert.equal(u.updateResultLearningValidation(),true);
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+assert.equal(requests.length,1);
+const body=JSON.parse(requests[0].options.body);
+assert.equal(body.record_status,'VALIDATED');
+assert.equal(body.winning_bid_amount,null);assert.equal(body.winning_bid_rate,null);
+assert.equal(body.winning_rate_calculation.mode,'MANUAL');
+respond(requests[0],200,{outcome:{...body,id:'SYN-result',source:'MANUAL_UI',department_id:'SYN-A'}});
+await saving;
+assert.equal(u.els.resultLearningDialog.open,false);
+assert.equal(details[0][2].initialTab,'result');
+u.renderDetailResult(details[0][2].resultRecord);
+assert.match(u.els.detailResultContent.innerHTML,/<dt>낙찰금액<\/dt><dd>미확인<\/dd>/);
+''')
+
+
+def test_new_outcome_status_keeps_unknown_award_amount_optional():
+    _run(r'''
+const start=source.indexOf('    els.resultLearningStatus.addEventListener("change", () => {');
+const end=source.indexOf('    });',start)+7;
+let onChange;u.els.resultLearningStatus.addEventListener=(_event,callback)=>{onChange=callback;};
+vm.runInContext(source.slice(start,end).replace(/els\./g,'ui.els.').replace(/state\./g,'ui.state.').replace('updateResultLearningRate();','ui.updateResultLearningRate();'),context);
+openEmptyResult();
+for (const status of ['WON','LOST']) {
+ u.els.resultLearningStatus.value=status;onChange();
+ assert.equal(u.els.resultLearningWinningRateMode.value,'MANUAL');
+ assert.equal(u.els.resultLearningWinningAmount.required,false);
+}
+u.els.resultLearningWinningRateMode.value='AUTO';
+u.els.resultLearningWinningRateMode.dataset.userSelected='true';onChange();
+assert.equal(u.els.resultLearningWinningRateMode.value,'AUTO');
+assert.equal(u.els.resultLearningWinningAmount.required,true);
+''')

@@ -251,7 +251,7 @@ data.records[0].outcome.submittedBidAmount=0;
 data.records[0].outcome.winningBidAmount=null;
 u.renderResults();
 assert.match(u.els.resultLearningList.innerHTML,/<dt>우리 투찰<\/dt><dd>0원<\/dd>/);
-assert.match(u.els.resultLearningList.innerHTML,/<dt>낙찰금액<\/dt><dd>미입력<\/dd>/);
+assert.match(u.els.resultLearningList.innerHTML,/<dt>낙찰금액<\/dt><dd>미확인<\/dd>/);
 assert.equal(u.formatBudget(null),'예산 미확인');
 ''')
 

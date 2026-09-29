@@ -73,6 +73,7 @@ from .models import (
 from .notice_freshness import (
     authoritative_pps_notice_is_cancelled,
     latest_current_analysis_run,
+    latest_quantitative_snapshot_run,
     latest_current_evaluation,
 )
 from .pps_enrichment import (
@@ -1469,7 +1470,9 @@ def dashboard(
                     stats["accepted_attachment_count"] += coverage.accepted
                     stats["analysis_state_counts"][reason.state] += 1
                     stats["eligibility_counts"][latest.eligibility if latest else "NOT_EVALUATED"] += 1
-                    quantitative_runs.append(run)
+                    # Count the snapshot each notice's score view shows, which
+                    # does not wait for every attachment to be audited.
+                    quantitative_runs.append(latest_quantitative_snapshot_run(notice))
                 if latest and effective_status in lifecycle_counts:
                     analyzed_ended_count += 1
                 if is_cancelled:
@@ -1517,7 +1520,7 @@ def dashboard(
                     )
 
         scores_by_run, recommendations_by_run = _load_dashboard_run_snapshots(
-            session, {run.id for run in open_runs if run is not None}
+            session, {run.id for run in (*open_runs, *quantitative_runs) if run is not None}
         )
         for run in quantitative_runs:
             totals = scores_by_run.get(run.id, []) if run is not None else []

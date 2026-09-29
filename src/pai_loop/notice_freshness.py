@@ -171,6 +171,26 @@ def latest_current_analysis_run(notice: Notice) -> AnalysisRun | None:
     return None
 
 
+def latest_quantitative_snapshot_run(notice: Notice) -> AnalysisRun | None:
+    """The run whose quantitative snapshot the notice's score view reads.
+
+    Mirrors ``_stored_public_quantitative_projection``: the newest run on the
+    current PPS metadata basis, without requiring every attachment to be
+    audited. A partial-source subtotal is labeled as such on its own, so the
+    dashboard counts what each notice actually shows.
+    """
+
+    metadata = _latest_pps_metadata_version(notice)
+    runs = list(notice.analysis_runs)
+    if metadata is not None:
+        current_ids = {item.id for item in notice.versions if item.version_no >= metadata.version_no}
+        runs = [run for run in runs if run.notice_version_id in current_ids]
+    if not runs:
+        return None
+    # Only id, notice_version_id and generated_at are loaded on the dashboard path.
+    return max(runs, key=lambda item: (_as_utc(item.generated_at), str(item.id)))
+
+
 def analysis_run_versions_are_current(
     run: AnalysisRun,
     *,
