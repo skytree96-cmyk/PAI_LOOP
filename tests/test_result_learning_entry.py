@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -124,3 +125,38 @@ def test_exact_result_entry_internal_projection_matches_list_when_accounts_disab
     assert exact.json() == client.get(ENDPOINT).json()["records"][0]
     assert exact.json()["latest_outcome"]["id"] == created.json()["outcome"]["id"]
     assert exact.json()["outcomes"] == []
+
+
+@pytest.mark.parametrize("status", ["WON", "LOST"])
+def test_validated_result_allows_unknown_award_amount_and_later_correction(account_client, status):
+    client = account_client
+    headers, _ = _login(client)
+    payload = _won_payload(record_status="VALIDATED", status=status,
+        winning_bid_amount=None, winning_bid_rate=None,
+        source_reference="SYN official result", loss_reason="SYN evaluated second")
+    saved = _outcome(client, headers, **payload)
+    assert saved.status_code == 201, saved.text
+    row = saved.json()["outcome"]
+    assert row["record_status"] == "VALIDATED"
+    assert row["winning_bid_amount"] is None and row["winning_bid_rate"] is None
+    assert client.get(NOTICE_ENDPOINT).json()["latest_outcome"]["winning_bid_amount"] is None
+    assert client.get(f"/api/v1/notices/{NOTICE}", params={"department_id": row["department_id"]}).json()["result_entry_status"] == "COMPLETE"
+    for amount in (12345678, None):
+        updated = client.patch(f"{ENDPOINT}/{row['id']}", headers=headers, json={
+            "expected_updated_at": row["updated_at"], "winning_bid_amount": amount,
+        })
+        assert updated.status_code == 200, updated.text
+        row = updated.json()["outcome"]
+        assert row["winning_bid_amount"] == amount
+        assert row["winning_bid_rate"] is None
+        assert row["record_status"] == "VALIDATED"
+
+
+@pytest.mark.parametrize("missing", ["winner_name", "source_reference"])
+def test_unknown_award_amount_still_requires_winner_and_evidence(account_client, missing):
+    headers, _ = _login(account_client)
+    payload = _won_payload(record_status="VALIDATED", winning_bid_amount=None,
+        winning_bid_rate=None, source_reference="SYN official result")
+    payload[missing] = None
+    response = _outcome(account_client, headers, **payload)
+    assert response.status_code == 422, response.text

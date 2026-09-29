@@ -17,8 +17,8 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260929-result-flow-v1" />
-    <link rel="stylesheet" href="./top-navigation.css?v=20260929-result-flow-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260929-optional-award-v1" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260929-optional-award-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -1242,8 +1242,9 @@
           <label class="record-field"><span>우리 투찰률(%)</span><input id="resultLearningSubmittedRate" type="number" min="0" max="200" step="0.0001" aria-describedby="resultLearningRateStatus resultLearningRatePolicy" /></label>
           <p class="record-editor-note record-field--wide" id="resultLearningRateStatus" role="status" aria-live="polite"></p>
           <p class="record-editor-note record-field--wide" id="resultLearningRatePolicy">우리 투찰금액 ÷ 확인한 기준금액 × 100으로 계산합니다. 예정가격 또는 기초금액과 출처를 입력하세요. 결과는 소수 넷째 자리까지 표시합니다.</p>
-          <label class="record-field"><span>낙찰금액(원)</span><input id="resultLearningWinningAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
-          <label class="record-field"><span>낙찰자 투찰률 입력 방식</span><select id="resultLearningWinningRateMode"><option value="AUTO">기준가격으로 자동 계산</option><option value="MANUAL">수기 입력</option></select></label>
+          <label class="record-field"><span>낙찰금액(원 · 선택)</span><input id="resultLearningWinningAmount" aria-describedby="resultLearningWinningAmountHelp" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
+          <label class="record-field"><span>낙찰자 투찰률 입력 방식</span><select id="resultLearningWinningRateMode"><option value="AUTO">기준가격으로 자동 계산</option><option value="MANUAL">수기 입력·미확인</option></select></label>
+          <p class="record-editor-note record-field--wide" id="resultLearningWinningAmountHelp">낙찰금액과 낙찰률을 모르면 빈칸으로 두어도 확인 완료로 저장할 수 있습니다. 0원으로 대신 입력하지 마세요. 자동 계산을 선택했다면 수기 입력·미확인으로 바꿔 주세요.</p>
           <label class="record-field result-rate-basis" hidden><span>계산 기준 종류 *</span><select id="resultLearningWinningRateBasisKind"><option value="">선택해 주세요</option><option value="PLANNED_PRICE">예정가격</option><option value="BASE_AMOUNT">기초금액</option></select></label>
           <label class="record-field result-rate-basis" hidden><span>계산 기준금액(원) *</span><input id="resultLearningWinningRateBasisAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
           <label class="record-field record-field--wide result-rate-basis" hidden><span>기준가격 출처 *</span><input id="resultLearningWinningRateBasisReference" maxlength="1000" placeholder="기준가격을 확인한 공고·개찰결과 문서와 위치" /></label>
@@ -1493,6 +1494,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260929-result-flow-v1" defer></script>
+    <script src="./app.js?v=20260929-optional-award-v1" defer></script>
   </body>
 </html>

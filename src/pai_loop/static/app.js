@@ -3267,7 +3267,7 @@
         <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
         ${outcome?.openingIdentity ? `<p>${outcome.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(outcome.openingIdentity.revision_no)} / 분류 ${escapeHtml(outcome.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(outcome.openingIdentity.rebid_no)}</p>` : ""}
-        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(outcome?.submittedBidAmount == null ? "미입력" : formatBudget(outcome.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(outcome?.winningBidAmount == null ? "미입력" : formatBudget(outcome.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome, "winning"))}</dd></div></dl>
+        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(outcome?.submittedBidAmount == null ? "미입력" : formatBudget(outcome.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(outcome?.winningBidAmount == null ? "미확인" : formatBudget(outcome.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome, "winning"))}</dd></div></dl>
         ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
         <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
       </article>`;
@@ -3413,7 +3413,6 @@
       if (status === "SUBMITTED" && !hasValue(els.resultLearningSubmittedAmount) && !hasValue(els.resultLearningSubmittedRate)) return fail(els.resultLearningSubmittedAmount, "제출 완료에는 우리 투찰금액 또는 투찰률이 필요합니다.");
       if (status === "WON") {
         if (!hasValue(els.resultLearningWinner)) return fail(els.resultLearningWinner, "낙찰자를 입력해 주세요.");
-        if (!hasValue(els.resultLearningWinningAmount) && !hasValue(els.resultLearningWinningRate)) return fail(els.resultLearningWinningAmount, "낙찰금액 또는 낙찰률을 입력해 주세요.");
       }
       if (status === "LOST" && !hasValue(els.resultLearningLossReason)) return fail(els.resultLearningLossReason, "확인 완료에는 미낙찰 사유가 필요합니다.");
     }
@@ -8506,7 +8505,7 @@
     const rows = [
       ["기록 상태", outcome.recordStatus === "DRAFT" ? "작성 중 · 임시저장" : resultRecordStatusLabel(outcome.recordStatus)],
       ["입찰 결과", resultStatusLabel(outcome.status)], ["우리 투찰금액", amount(outcome.submittedBidAmount)],
-      ["우리 투찰률", resultLearningRateLabel(outcome)], ["낙찰금액", amount(outcome.winningBidAmount)],
+      ["우리 투찰률", resultLearningRateLabel(outcome)], ["낙찰금액", outcome.winningBidAmount == null ? "미확인" : amount(outcome.winningBidAmount)],
       ["낙찰자 투찰률", outcome.winningBidRate == null ? "미입력" : `${outcome.winningBidRate}%`],
       ["기술 점수", score(outcome.technicalScore)], ["가격 점수", score(outcome.priceScore)],
       ["총점", score(outcome.totalScore)], ["순위", outcome.rank == null ? "미입력" : `${outcome.rank}위`],
