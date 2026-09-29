@@ -1492,7 +1492,7 @@ def test_verified_failure_is_visible_while_unfinished_analysis_stays_visible():
 const assert=require("node:assert/strict"),vm=require("node:vm"),source=require("node:fs").readFileSync(0,"utf8");
 const context=vm.createContext({document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
   window:{matchMedia(){return {matches:false};}},URL,URLSearchParams});
-vm.runInContext(source.replace(/\}\)\(\);\s*$/, "globalThis.ui={normalizeNotice,decisionAnalysisComplete,dashboardEligibilityStatus};\n})();"),context);
+vm.runInContext(source.replace(/\}\)\(\);\s*$/, "globalThis.ui={state,normalizeNotice,decisionAnalysisComplete,dashboardEligibilityStatus,manualAnalysisAvailability};\n})();"),context);
 const u=context.ui, raw={notice_key:"PPS-SYN_GATE",source_kind:"PPS",title:"SYN unfinished",status:"OPEN",deadline:"2099-01-01",
   analysis_state:"REVIEW",analysis_attachment_coverage_complete:false,analysis_reason:"첨부 분석 확인 필요",
   qualification_status:"FAIL",eligibility_independent_failure:true,
@@ -1504,6 +1504,12 @@ assert.equal(verified.evaluationId,"SYN-verified");
 assert.match(verified.analysisReason,/필수 참가자격 미충족 확인/);
 assert.match(verified.analysisReason,/첨부 분석 확인 필요/);
 assert.equal(u.decisionAnalysisComplete(verified),false);
+const audited=u.normalizeNotice({...raw,analysis_attachment_coverage_complete:true,analysis_reason_code:"PDF_EXTRACT_FAILED"});
+assert.equal(u.decisionAnalysisComplete(audited),false);
+Object.assign(u.state,{source:"api",manualAnalysisEnabled:true});
+assert.equal(u.manualAnalysisAvailability(audited).enabled,true);
+assert.equal(u.manualAnalysisAvailability(audited).recomputeCurrent,false);
+assert.notEqual(u.manualAnalysisAvailability(audited).label,"저장된 자료로 다시 검토");
 assert.equal(u.normalizeNotice({...raw,eligibility_independent_failure:false}).evaluationId,"");
 assert.equal(u.normalizeNotice({...raw,qualification_status:"PASS",latest_evaluation:{...raw.latest_evaluation,eligibility:"PASS"}}).evaluationId,"");
 '''
