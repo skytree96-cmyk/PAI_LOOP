@@ -20,7 +20,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # new notices only and every existing decision keeps the answer it already had.
 # v14 applies the approved current-company prototype baseline and groups
 # equivalent display rows without removing their evaluation/source records.
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.29-v14"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.29-v15"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -1366,6 +1366,15 @@ def _is_current_sanction_clearance(text: str) -> bool:
         "제재 중이지 않",
         "부정당업자가 아닌",
         "부정당업자가 아니어야",
+        "제한 대상이 아니",
+        "제한 대상이 아닐",
+        "제재 대상이 아니",
+        "제재 대상이 아닐",
+        "제한된 업체가 아니",
+        "제한을 받지 아니",
+        "제한 처분을 받지 아니",
+        "제재를 받지 아니",
+        "제한) 상태가 아닌",
     )
     return sanction_context and clear_condition
 

@@ -137,3 +137,23 @@ def test_pipeline_persists_example_and_recomputes_when_current_fact_changes():
         # The prototype projection never creates or rewrites stored company facts.
         assert not session.scalar(select(CompanyFact).where(CompanyFact.fact_key.like("prototype.%")))
     engine.dispose()
+
+@pytest.mark.parametrize("condition", [
+    "국가계약법 제27조 및 시행령 제76조에 따른 부정당업자 입찰참가자격 제한 대상이 아니어야 함",
+    "지방계약법 제31조 및 시행령 제92조에 따른 부정당업자 제재 대상이 아닐 것",
+    "국가계약법 제27조 및 시행령 제76조에 따른 입찰참가자격 제한 대상이 아닐 것",
+    "국가계약법 제27조 및 시행령 제76조에 따른 부정당업자(입찰참가자격 제한) 상태가 아닌 자",
+    "부정당업자 제재를 받아 입찰참가자격이 제한된 업체가 아니어야 함",
+    "입찰참가자격 제한을 받지 아니한 업체이어야 함",
+])
+def test_current_sanction_exclusion_wording_uses_declared_clearance(condition):
+    result = classify_requirements(requirements([("SANCTION", condition)]),
+                                   profile=load_public_company_profile(), deadline="2026-10-01")
+    assert result["items"][0]["outcome"] == "PASS_CURRENT"
+    assert result["items"][0]["company_fact_key"] == "sanction_clear"
+
+
+def test_future_penalty_is_not_proof_of_current_sanction_clearance():
+    result = classify_requirements(requirements([("SANCTION", "계약상대자가 시행령 제76조에 해당하는 경우 일정기간 입찰참가자격 제한 조치를 받음")]),
+                                   profile=load_public_company_profile(), deadline="2026-10-01")
+    assert result["items"][0].get("company_fact_key") != "sanction_clear"

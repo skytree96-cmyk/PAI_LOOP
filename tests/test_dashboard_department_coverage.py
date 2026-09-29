@@ -2,10 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from pai_loop.models import Evaluation, Notice, NoticeVersion, PpsNoticeAuthority, UserDecision
 
 
 NOW = datetime(2026, 9, 19, 6, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def fixed_dashboard_clock(monkeypatch):
+    # These fixtures describe September 19; their deadlines must not expire in CI.
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr("pai_loop.api.datetime", FixedDateTime)
 
 
 def _notice(session, label, title, *, cancelled=False, ended=False, evaluated=False):

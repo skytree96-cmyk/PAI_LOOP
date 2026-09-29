@@ -201,13 +201,15 @@ def test_packaged_notice_reproduces_four_policy_groups() -> None:
     )
 
     assert result["counts"] == {
-        "ELIGIBILITY": 6,
+        "ELIGIBILITY": 5,
         "ACTION_REQUIRED": 1,
         "CHECKLIST": 13,
         "INFORMATION": 3,
     }
     assert result["blocking_actions"] == 1
     assert len(result["items"]) == 23
+    assert len(result["display_items"]) == 22
+    assert result["duplicate_count"] == 1
 
 
 def test_public_notice_validation_fails_closed_on_digest_and_pii_tampering() -> None:
@@ -270,7 +272,7 @@ def test_imported_seed_drives_requirement_policy_api_without_startup_seed(tmp_pa
     assert response.status_code == 200
     payload = response.json()
     assert payload["counts"] == {
-        "ELIGIBILITY": 6,
+        "ELIGIBILITY": 5,
         "ACTION_REQUIRED": 1,
         "CHECKLIST": 13,
         "INFORMATION": 3,

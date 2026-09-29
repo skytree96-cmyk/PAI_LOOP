@@ -300,7 +300,7 @@ def test_public_document_analysis_is_digest_bound_and_metadata_allowlisted(monke
         )
         assert policy.status_code == 200
         assert policy.json()["counts"] == {
-            "ELIGIBILITY": 6,
+            "ELIGIBILITY": 5,
             "ACTION_REQUIRED": 1,
             "CHECKLIST": 13,
             "INFORMATION": 3,
