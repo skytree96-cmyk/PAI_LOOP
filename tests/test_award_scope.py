@@ -13,6 +13,8 @@ from pai_loop.award_scope import (
     AWARD_AGENCY_UNAVAILABLE,
     AwardScope,
     award_agency_is_verifiable,
+    award_core_matches,
+    award_core_terms,
     award_query_term,
     award_title_matches,
     award_title_tokens,
@@ -253,6 +255,23 @@ def test_award_keyword_keeps_rank_and_grade_and_falls_back_for_edition_only_titl
     assert not award_title_matches("정당원 해외정책연수", "정당원 국내연수")
     assert not award_title_matches("", "아무 제목")
     assert not award_title_matches("정당원", None)
+
+
+@pytest.mark.parametrize("title, agency, core", [
+    ("경찰청 교육용 112시스템 기능개선 및 고도화", "경찰청", ["교육용", "112시스템"]),
+    ("(재공고)동아대학교 마이크로모듈제 교육과정 개편 전략 수립 컨설팅 용역", "동아대학교", ["마이크로모듈제", "교육과정", "개편"]),
+    ("2026년 산업통상부 행정정보시스템 고도화 사업", "산업통상자원부", ["행정정보시스템"]),
+    ("농지은행사업 선진사례 습득을 위한 해외연수 용역", "한국농어촌공사", ["농지은행사업", "선진사례", "습득"]),
+])
+def test_core_terms_drop_the_agency_so_other_agencies_can_match(title, agency, core) -> None:
+    assert award_core_terms(title, [agency]) == core
+
+
+def test_core_match_needs_two_terms_and_never_a_single_generic_word() -> None:
+    core = award_core_terms("정보보호 및 개인정보보호 관리체계 인증(ISMS-P) 컨설팅 용역")
+    assert award_core_matches(core, "KERIS 정보보호 및 개인정보보호 관리체계(ISMS-P) 인증 사전 컨설팅")
+    assert not award_core_matches(core, "정보보호 교육 운영")
+    assert not award_core_matches(["행정정보시스템"], "행정정보시스템 유지관리")  # one term is never enough
 
 
 def test_common_award_filter_requires_both_current_agency_and_all_keyword_terms() -> None:

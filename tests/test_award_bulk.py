@@ -70,8 +70,10 @@ def bulk(client, monkeypatch):
 
     def history():
         with client.app.state.session_factory() as session:
+            # Same-agency history only; other-agency candidates are asserted separately.
             return [(row.target_notice_id, row.title, row.winner_name)
-                    for row in session.scalars(select(AwardHistoryItem).order_by(AwardHistoryItem.title))]
+                    for row in session.scalars(select(AwardHistoryItem).where(AwardHistoryItem.source == "PPS")
+                                               .order_by(AwardHistoryItem.title))]
 
     def jobs():
         with client.app.state.session_factory() as session:
@@ -96,6 +98,7 @@ def test_one_sweep_matches_every_notice_by_agency_and_terms_and_finishes(bulk) -
     result = run(fake)
     assert result["status"] == "COMPLETED" and result["next"] is None
     assert result["created"] == 2 and result["matched"] == 2
+    assert result["other_agency_created"] == 1  # A2: same terms, other agency, kept as its own kind
     assert history() == [(party, "2025년 제1·2차 정당원 해외정책연수", "SYN 낙찰사"),
                          (school, "2026학년도 SYN고등학교 2학년 현장체험학습", "SYN 낙찰사")]
     windows = award_bulk._windows(NOW.astimezone(award_bulk._KST).date())
@@ -262,3 +265,21 @@ def test_real_failures_still_stop_the_day(bulk) -> None:
     for _ in range(award_bulk.DAILY_FAILURE_CAP):
         assert run(_FakePps([], fail_after=0, error=broken))["status"] == "FAILED"
     assert run(_FakePps([]))["status"] == "DAILY_LIMIT"
+
+
+def test_sweep_keeps_other_agency_projects_as_their_own_kind(bulk, client) -> None:
+    from pai_loop.award_scope import OTHER_AGENCY_SOURCE
+    add, run, _history, _jobs, _settings = bulk
+    target = add("I", "정보보호 및 개인정보보호 관리체계 인증(ISMS-P) 컨설팅 용역")
+    rows = [
+        _award("O1", "KERIS 정보보호 및 개인정보보호 관리체계(ISMS-P) 인증 사전 컨설팅",
+               code="SYN-KERIS", name="SYN 교육학술정보원"),
+        _award("O2", "정보보호 교육 운영", code="SYN-OTHER", name="SYN 다른기관"),  # one core term only
+    ]
+    result = run(_FakePps(rows))
+    assert result["other_agency_created"] == 1 and result["created"] == 0
+    with client.app.state.session_factory() as session:
+        stored = list(session.scalars(select(AwardHistoryItem)))
+    assert [(row.target_notice_id, row.bid_notice_no, row.source) for row in stored] == [
+        (target, "O1", OTHER_AGENCY_SOURCE)]
+    assert stored[0].similarity_score >= 30

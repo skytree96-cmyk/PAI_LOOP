@@ -103,7 +103,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.6"
+PIPELINE_VERSION = "analysis-pipeline-0.6.7"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -336,6 +336,17 @@ def _select_source_versions(
         .order_by(NoticeVersion.version_no)
     )
     versions = list(session.scalars(statement).all())
+    return _select_source_versions_from_list(
+        versions, prompt_version=prompt_version, source_version_ids=source_version_ids,
+    )
+
+
+def _select_source_versions_from_list(
+    versions: Sequence[NoticeVersion], *, prompt_version: str,
+    source_version_ids: Sequence[str] | None = None,
+) -> list[NoticeVersion]:
+    """Share exact current-source selection with read-only eligibility freshness."""
+    versions = sorted(versions, key=lambda version: version.version_no)
     requested = set(source_version_ids or ())
     if source_version_ids is not None:
         if len(requested) != len(source_version_ids):
@@ -2236,6 +2247,45 @@ def run_analysis_pipeline(
             if _stage_hook:
                 _stage_hook("after_materialization")
 
+            # Only actual mandatory FAIL atoms can cross this prototype gate.
+            # Unread documents never establish PASS, nor erase a verified mismatch.
+            independent_candidates = frozenset(
+                item.requirement_key for item, policy in materialized_policy_items
+                if item.requirement.mandatory
+                and policy.get("policy_class") == "ELIGIBILITY"
+                and policy.get("assessment_basis") == "PROTOTYPE_CURRENT_FACTS"
+                and policy.get("outcome") == "FAIL_CONFIRMED"
+                and not item.requirement.ambiguity_reason
+                and not policy.get("performance_relation_unresolved")
+                and _has_verified_anchor(item)
+            ) if run_status == "PARTIAL" else frozenset()
+            independent_failures = frozenset()
+            if independent_candidates:
+                candidate_result = evaluate_notice(
+                    notice, materialized_version, prospective_atomics,
+                    eligibility_company_facts,
+                    verified_document_requirement_keys=independent_candidates,
+                    risk_dimensions={},
+                )
+                independent_failures = frozenset(
+                    atom["requirement_key"] for atom in candidate_result.atomic_results
+                    if atom["requirement_key"] in independent_candidates
+                    and atom["result"] == "FAIL" and atom["reason_code"] == "DF-000"
+                    and atom.get("actual_value") is not None
+                )
+            if independent_failures:
+                gate_candidate_keys = gate_candidate_keys | independent_failures
+                warnings = sorted(set(warnings) | {"VERIFIED_MANDATORY_FAILURE_IN_PARTIAL_DOCUMENTS"})
+                materialized_version.source_payload = {
+                    **materialized_version.source_payload,
+                    "independent_failure": {
+                        "pipeline_version": PIPELINE_VERSION,
+                        "policy_version": POLICY_VERSION,
+                        "requirement_keys": sorted(independent_failures),
+                        "source_version_ids": sorted(source.version.id for source in sources),
+                    },
+                }
+
             provisional_evaluation = evaluate_notice(
                 notice,
                 materialized_version,
@@ -2255,7 +2305,7 @@ def run_analysis_pipeline(
             verified_requirement_keys = (
                 gate_candidate_keys if eligibility_gate_applied else frozenset()
             )
-            if eligibility_gate_applied:
+            if eligibility_gate_applied and not independent_failures:
                 confidence_gate_applied = _current_complete_pps_evidence(
                     sources, pps_manifest_basis,
                 )
@@ -2282,7 +2332,7 @@ def run_analysis_pipeline(
                 policy_items=policy_items,
                 sources=sources,
                 run_status=run_status,
-                eligibility_gate_applied=eligibility_gate_applied,
+                eligibility_gate_applied=eligibility_gate_applied and not independent_failures,
                 award_intelligence=award_intelligence,
             )
             evaluation_result = evaluate_notice(
@@ -2314,6 +2364,7 @@ def run_analysis_pipeline(
                     else True
                 ),
                 "eligibility_gate_applied": eligibility_gate_applied,
+                "independent_verified_failure": bool(independent_failures),
                 "warnings": warnings,
             }
             reason_code = evaluation_result.reason_code

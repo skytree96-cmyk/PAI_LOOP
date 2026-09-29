@@ -10,6 +10,7 @@ RUN addgroup --system pai && adduser --system --ingroup pai pai
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY web/pai-open ./web/pai-open
 RUN pip install --no-cache-dir ".[postgres]"
 
 RUN mkdir -p /app/data && chown -R pai:pai /app

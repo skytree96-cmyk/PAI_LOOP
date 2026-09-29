@@ -29,8 +29,9 @@ from sqlalchemy.orm import Session, selectinload
 from .api import _award_similarity, _comparable_utc
 from .award_automation import _active_notice_ids, _classification
 from .award_intelligence import build_annual_award_table
-from .award_scope import (award_title_matches, derive_award_keyword, filter_notice_awards, normalize_award_agency,
-                          resolve_notice_award_scope)
+from .award_scope import (OTHER_AGENCY_MIN_SIMILARITY, OTHER_AGENCY_SOURCE, award_core_matches, award_core_terms,
+                          award_title_matches, derive_award_keyword, filter_notice_awards,
+                          filter_other_agency_awards, normalize_award_agency, resolve_notice_award_scope)
 from .integrations.awards import OpeningResultsIncomplete, PpsAwardClient, is_pps_rate_limit_error, normalise_award
 from .integrations.pps import PpsApiError, PpsClient, parse_paged_response, split_date_range
 from .models import AwardHistoryItem, IngestionJob, Notice
@@ -116,7 +117,8 @@ class _TargetIndex:
                 if target[1].matches_award(award) and award_title_matches(target[2], award.get("title"))]
 
 
-def _history_row(notice: Notice, award: dict[str, Any]) -> AwardHistoryItem:
+def _history_row(notice: Notice, award: dict[str, Any], *, source: str = "PPS",
+                 similarity: float | None = None) -> AwardHistoryItem:
     return AwardHistoryItem(
         target_notice_id=notice.id, external_identity=award["identity"],
         bid_notice_no=award["bid_notice_no"], revision_no=award.get("revision_no") or "000",
@@ -126,7 +128,8 @@ def _history_row(notice: Notice, award: dict[str, Any]) -> AwardHistoryItem:
         award_rate=award.get("award_rate"),
         opened_at=_comparable_utc(award["opened_at"]) if award.get("opened_at") else None,
         awarded_at=_comparable_utc(award["awarded_at"]) if award.get("awarded_at") else None,
-        similarity_score=_award_similarity(notice.title, award["title"]), source="PPS",
+        similarity_score=_award_similarity(notice.title, award["title"]) if similarity is None else similarity,
+        source=source,
     )
 
 
@@ -187,6 +190,10 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
     windows = _windows(date.fromisoformat(sweep))
     targets = _targets(session, now)
     index = _TargetIndex(targets)
+    # Other-agency candidates for every notice with at least two core terms.
+    cores = [(notice, scope, core) for notice, scope, _keyword in targets
+             if len(core := award_core_terms(notice.title, (scope.demand_agency_name,
+                                                            scope.announcing_agency_name))) >= 2]
     target_ids = [notice.id for notice, _scope, _keyword in targets]
     existing = set(session.execute(
         select(AwardHistoryItem.target_notice_id, AwardHistoryItem.external_identity)
@@ -200,7 +207,7 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
     session.commit()
     job_id = job.id
     deadline = monotonic() + STEP_WALL_SECONDS
-    fetched = matched = created = 0
+    fetched = matched = created = other_created = 0
     client = _client_factory(settings)
     try:
         while cursor is not None and calls_today + client.request_count < DAILY_CALL_CAP and monotonic() + REQUEST_TIMEOUT_SECONDS <= deadline:
@@ -225,6 +232,18 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
                     session.add(_history_row(notice, award))
                     existing.add(key)
                     created += 1
+                for notice, scope, core in cores:
+                    if scope.matches_award(award) or not award_core_matches(core, award["title"]):
+                        continue
+                    key = (notice.id, award["identity"])
+                    if key in existing:
+                        continue
+                    similarity = _award_similarity(notice.title, award["title"])
+                    if similarity < OTHER_AGENCY_MIN_SIMILARITY:
+                        continue
+                    session.add(_history_row(notice, award, source=OTHER_AGENCY_SOURCE, similarity=similarity))
+                    existing.add(key)
+                    other_created += 1
             if cursor["page"] * cursor["rows"] >= total or not items:
                 cursor = {"window": cursor["window"] + 1, "page": 1, "rows": cursor["rows"]}
                 if cursor["window"] >= len(windows):
@@ -233,7 +252,7 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
                 cursor = {**cursor, "page": cursor["page"] + 1}
             # Rows and progress commit together, page by page, so a killed
             # step resumes exactly where its last durable page ended.
-            job.request_json = {**job.request_json, "next": cursor}
+            job.request_json = {**job.request_json, "next": cursor, "other_agency_created": other_created}
             job.api_calls, job.fetched, job.matched, job.created_count = (
                 client.request_count, fetched, matched, created)
             session.commit()
@@ -258,7 +277,8 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
     job.completed_at = datetime.now(timezone.utc)
     session.commit()
     return {"status": job.status, "calls": client.request_count, "fetched": fetched,
-            "matched": matched, "created": created, "next": (job.request_json or {}).get("next")}
+            "matched": matched, "created": created, "other_agency_created": other_created,
+            "next": (job.request_json or {}).get("next")}
 
 
 # --- Opening results for the rows the screen actually shows ---------------
@@ -293,11 +313,14 @@ def _displayed_unread(session: Session, targets: list[tuple[Notice, Any, str]], 
     # Longest-lived notices first: they stay on screen the longest.
     for notice, scope, _keyword in sorted(targets, key=lambda target: _comparable_utc(target[0].deadline),
                                           reverse=True):
-        rows = filter_notice_awards(notice, by_notice.get(notice.id, []))
+        stored = by_notice.get(notice.id, [])
+        same, others = filter_notice_awards(notice, stored), filter_other_agency_awards(notice, stored)
+        rows = [*same, *others]
         if not rows:
             continue
-        table = build_annual_award_table(rows, target_title=notice.title,
-                                         target_agency=scope.demand_agency_name, as_of=now)
+        table = build_annual_award_table(same, target_title=notice.title,
+                                         target_agency=scope.demand_agency_name, as_of=now,
+                                         other_agency_records=others)
         shown = {(item["bid_notice_no"], item["revision_no"]) for item in table["rows"]}
         for row in rows:
             # A recorded status means a read was already attempted; do not spend again.

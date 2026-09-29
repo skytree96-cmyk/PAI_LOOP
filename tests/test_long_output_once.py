@@ -383,3 +383,25 @@ def test_real_batch_inherits_policy_and_replay_never_repeats_provider(long_case,
     assert events == ["PROVIDER_CALLED"]
     with client.app.state.session_factory() as session:
         assert session.get(IngestionJob, claim_for(client, row_id)) is not None
+
+
+def test_several_20k_failures_plan_the_first_one_instead_of_rejecting(long_case):
+    client, notice_id, original_id, downloads = long_case
+    with client.app.state.session_factory() as session:
+        notice = session.get(Notice, notice_id)
+        second = next(v for v in notice.versions if v.source_payload.get("status") == "ACCEPTED"
+                      and v.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION")
+        payload = deepcopy(second.source_payload)
+        payload.update(status="REVIEW", error_code="HTTP_ERROR", message="모델 API가 HTTP 500를 반환했습니다.",
+                       gateway_failure=deepcopy(FAILURE), result=None, quantitative_validation_record=None)
+        second.source_payload = payload
+        session.commit()
+        scope = enrichment.failed_attachment_retry_snapshot(
+            list(notice.versions), error_codes=["HTTP_ERROR"], max_attachments=1, notice_key=KEY,
+            revision_no=notice.revision_no, budget_policy=POLICY, session=session,
+            source_boundary=api._review_source_boundary(notice))
+    assert len(scope["targets"]) == 1 and scope["budget_policy"] == POLICY
+    response = client.post(PLAN, json=long_body())
+    assert response.status_code == 200, response.text
+    assert response.json()["retry_target_count"] == 1
+    assert downloads == []

@@ -157,6 +157,32 @@ def test_a_matching_title_at_another_agency_is_only_a_candidate() -> None:
     assert table["match_basis"] == "SIMILAR_CANDIDATES_ONLY"
 
 
+def test_other_agency_projects_fill_only_years_without_any_own_record() -> None:
+    """Another agency's project never displaces or mixes with this agency's history."""
+
+    other = lambda year, winner, sim: _award(title=f"{year}년 타기관 리더십 교육과정", year=year, winner=winner,
+                                             agency="SYN 다른기관", similarity_score=sim)
+    table = build_annual_award_table(
+        [_award(title="2025년 SYN 리더십 교육과정 위탁운영", year=2025, winner="SYN-기관A")],
+        target_title=TARGET_TITLE, target_agency=TARGET_AGENCY, as_of=AS_OF,
+        other_agency_records=[other(2025, "SYN-타A", 80),                 # own record exists: hidden
+                              other(2024, "SYN-타B", 40), other(2024, "SYN-타C", 70),
+                              other(2024, "SYN-타D", 55), other(2024, "SYN-타E", 35)],  # top 3 only
+    )
+    kinds = [(item["year"], item["match_kind"], item["company_name"]) for item in table["rows"]]
+    assert (2025, "SAME_PROJECT", "SYN-기관A") in kinds
+    assert sorted(name for year, kind, name in kinds if kind == "OTHER_AGENCY_SIMILAR") == ["SYN-타B", "SYN-타C", "SYN-타D"]
+    assert all(year == 2024 for year, kind, _name in kinds if kind == "OTHER_AGENCY_SIMILAR")
+    assert table["match_basis"] == "MIXED_BY_YEAR"
+    assert any("다른 기관의 유사 사업" in note for note in table["notes"])
+    AnnualAwardTableOut.model_validate(table)
+
+    only = build_annual_award_table([], target_title=TARGET_TITLE, target_agency=TARGET_AGENCY, as_of=AS_OF,
+                                    other_agency_records=[other(2026, "SYN-타F", 60)])
+    assert only["match_basis"] == "OTHER_AGENCY_ONLY"
+    assert [item["match_kind"] for item in only["rows"]] == ["OTHER_AGENCY_SIMILAR"]
+
+
 def test_every_opening_company_becomes_a_row_with_its_own_scores() -> None:
     table = build_annual_award_table(
         [

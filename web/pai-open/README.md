@@ -4,11 +4,21 @@ Static Korean introduction for PAI's AI-assisted public procurement review workf
 
 The product tour uses the actual application interface with synthetic demonstration data. It is not evidence of a real notice's analysis, company eligibility, score or award outcome. The public page makes no application API requests, analysis calls or data writes.
 
-## Publication status
+## Hosting and deployment
 
-The revised AI introduction and product tour were deployed on 2026-09-07 to [PAI on Cloudflare Pages](https://pai-loop.pages.dev/), without a personal account name in the hostname. This static site is independent of the Render application deployment.
+The public introduction is served by the existing PAI Cloud Run service at
+`https://pai.kma.or.kr/open` (both `/open` and `/open/` work). Application links
+use same-origin paths such as `/` and `/notices`; the app's login is unchanged.
+No new domain, DNS record, or certificate is needed.
 
-## Local preview and build
+The six public files are packaged into `pai_loop/open/` by the wheel build.
+Docker copies `web/pai-open` before installing the wheel, so the normal main
+branch Cloud Build deployment publishes the introduction together with the app.
+Only GET/HEAD requests for the exact public file allowlist bypass account login.
+Other files and API paths retain their existing access controls. The old
+Cloudflare Pages deployment is left available during the transition.
+
+## Local preview and validation
 
 ```sh
 node preview.mjs
@@ -16,9 +26,10 @@ node --check app.js
 node build.mjs
 ```
 
-Preview: `http://127.0.0.1:8788/`. Build after both product-tour assets have been generated. Only the allowlisted files in `dist/` are deployment assets; README files and local capture inputs are not included. Upload the contents of `dist/` to the existing Cloudflare Pages project `pai-loop` through the logged-in internal browser.
-
-The current application links use `https://pai-yd7xtctmra-an.a.run.app`. When the application URL changes, update those links in `index.html` together and rebuild. `data-app-path` records the intended destination route. Renaming the public site does not rename the Render application.
+Preview the introduction at `http://127.0.0.1:8788/open`. To exercise application
+links and authentication, run the FastAPI app and visit `/open` on its port.
+`build.mjs` validates the page and creates a standalone asset bundle; Cloud Run
+packages the authoritative source files directly, so no Node runtime is needed.
 
 ## Design and interaction
 

@@ -104,6 +104,13 @@ jobs:
           if len(wheels) != 1:
               raise SystemExit(f"Expected exactly one PAI_LOOP wheel, found {len(wheels)}")
           required = {
+              "pai_loop/public_open.py",
+              "pai_loop/open/index.html",
+              "pai_loop/open/styles.css",
+              "pai_loop/open/app.js",
+              "pai_loop/open/favicon.svg",
+              "pai_loop/open/assets/pai-product-poster.webp",
+              "pai_loop/open/assets/pai-product-tour.webm",
               "pai_loop/static/index.html",
               "pai_loop/static/styles.css",
               "pai_loop/static/top-navigation.css",

@@ -8,6 +8,7 @@ from fastapi import HTTPException, Request
 
 from .accounts import authenticated_account, browser_request
 from .auth import require_private_evidence_access
+from .public_open import OPEN_PATHS
 
 
 FRONTEND_PATHS = frozenset({
@@ -38,7 +39,7 @@ def require_app_access(request: Request) -> None:
             and os.getenv("PAI_TEAMS_TAB_AUTH_ENABLED", "").lower() == "true"):
         return  # Data-free tab configuration must load before account login.
     if request.method in {"GET", "HEAD"} and (
-        path in FRONTEND_PATHS or path in _ASSETS or path == "/healthz"
+        path in FRONTEND_PATHS or path in _ASSETS or path in OPEN_PATHS or path == "/healthz"
     ):
         return  # Frontend routes choose a data-free login page themselves.
     if path.rstrip("/") in _ACCOUNT_ENTRY:

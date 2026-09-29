@@ -41,6 +41,7 @@ from .prespec_api import router as prespec_router
 from .private_company_evidence import router as private_company_evidence_router
 from .pps_discovery import router as pps_discovery_router
 from .public_performance import public_performance_router
+from .public_open import OPEN_CSP, OPEN_PATHS, router as public_open_router
 from .quantitative_scoring import quantitative_scoring_router
 from .reference_api import router as reference_data_router
 from .reference_registry import sync_packaged_reference_data, sync_public_company_profile
@@ -181,6 +182,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             "https://*.teams.microsoft.com https://*.cloud.microsoft"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
+        if request.url.path in OPEN_PATHS:
+            response.headers["Content-Security-Policy"] = OPEN_CSP
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         if request.url.path.startswith(
             ("/api/v1/performance-records", "/api/v1/operator-evidence", "/api/v1/accounts", "/api/v1/operator-decisions", "/api/v1/result-learning")
@@ -258,6 +261,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             content={"detail": "요청을 처리하지 못했습니다.", "code": "INTERNAL_ERROR"},
         )
 
+    application.include_router(public_open_router)
     static_dir = Path(__file__).parent / "static"
     if (static_dir / "index.html").exists():
         index_file = static_dir / "index.html"

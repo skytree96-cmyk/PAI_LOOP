@@ -3971,6 +3971,8 @@ svg {
 
 .history-award-project__badge.is-candidate { color: var(--amber); background: var(--amber-pale); }
 .history-award-project__badge.is-same-project { color: var(--green); background: var(--green-pale); }
+.history-award-project__badge.is-other-agency { color: #475569; background: #eef2f7; }
+.award-table__row.is-other-agency { background: #f8fafc; }
 .history-award-project__meta {
   display: flex;
   flex-wrap: wrap;

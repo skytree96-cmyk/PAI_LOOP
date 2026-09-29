@@ -1,0 +1,43 @@
+"""Public, data-free introduction served alongside the authenticated app."""
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+
+OPEN_FILES = frozenset({
+    "index.html", "styles.css", "app.js", "favicon.svg",
+    "assets/pai-product-poster.webp", "assets/pai-product-tour.webm",
+})
+OPEN_PATHS = frozenset({"/open", "/open/", *(f"/open/{name}" for name in OPEN_FILES)})
+OPEN_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' https://cdn.jsdelivr.net; "
+    "font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; media-src 'self'; "
+    "connect-src 'none'; frame-ancestors 'none'; base-uri 'self'; "
+    "form-action 'none'; object-src 'none'"
+)
+router = APIRouter(include_in_schema=False)
+
+
+def _open_file(name: str) -> FileResponse:
+    if name not in OPEN_FILES:
+        raise HTTPException(404, "Not found")
+    # Wheels carry only allowlisted public files. Source checkouts use the
+    # authoritative web directory without generating duplicate assets.
+    root = Path(__file__).parent / "open"
+    if not root.is_dir():
+        root = Path(__file__).resolve().parents[2] / "web" / "pai-open"
+    return FileResponse(root / name, headers={
+        "Cache-Control": "no-cache" if name == "index.html" else "public, max-age=300",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    })
+
+
+@router.api_route("/open", methods=["GET", "HEAD"])
+@router.api_route("/open/", methods=["GET", "HEAD"])
+def open_index() -> FileResponse:
+    return _open_file("index.html")
+
+
+@router.api_route("/open/{name:path}", methods=["GET", "HEAD"])
+def open_asset(name: str) -> FileResponse:
+    return _open_file(name)
