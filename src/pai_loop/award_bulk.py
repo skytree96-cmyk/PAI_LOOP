@@ -46,7 +46,9 @@ DAILY_CALL_CAP = 990
 DAILY_FAILURE_CAP = 5
 PAGE_ROWS = 999
 WINDOW_DAYS = 28  # PPS enforces a calendar-month range; 28 days is always safe.
-STEP_WALL_SECONDS = 90
+# Planner-only cycles have the whole W14 execution limit (570 s) to themselves:
+# 240 s here plus the 90 s opening step leaves room for planning and HTTP.
+STEP_WALL_SECONDS = 240
 # A request is started only when its full client timeout still fits in the step.
 # Squeezing the last request into the remaining seconds turned slow-but-healthy
 # pages into NETWORK_ERROR failures, and five failures stop the sweep for the day.
