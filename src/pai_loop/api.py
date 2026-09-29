@@ -39,7 +39,7 @@ from .integrations.awards import (
 )
 from .award_intelligence import build_annual_award_table, build_award_intelligence
 from .award_scope import (AWARD_SCOPE_VERSION, award_agency_is_verifiable,
-                         award_title_tokens, derive_award_keyword, filter_notice_awards,
+                         award_title_tokens, derive_award_keyword, filter_notice_awards, filter_other_agency_awards,
                          resolve_notice_award_scope)
 from .integrations.pps import (
     KST,
@@ -3389,6 +3389,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
             .order_by(AwardHistoryItem.awarded_at.desc(), AwardHistoryItem.created_at.desc())
         ).all()
     )
+    other_agency = filter_other_agency_awards(notice, candidates)
     candidates = _scoped_award_history(notice, candidates)
     scope = resolve_notice_award_scope(notice)
     # Keep undated stored candidates visible but mark their missing date in the
@@ -3420,7 +3421,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
     # Resolve source URLs only from stored notices with the historical identity.
     # Ambiguous or unavailable URLs remain absent, never the target's URL.
     historical_urls: dict[tuple[str, str], set[str]] = {}
-    notice_numbers = {item.bid_notice_no for item in candidates}
+    notice_numbers = {item.bid_notice_no for item in [*candidates, *other_agency]}
     if notice_numbers:
         for historical_notice in session.scalars(
             select(Notice).where(Notice.bid_notice_no.in_(notice_numbers))
@@ -3434,6 +3435,7 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
         target_agency=scope.demand_agency_name,
         as_of=datetime.now(timezone.utc),
         historical_notice_urls={key: next(iter(urls)) for key, urls in historical_urls.items() if len(urls) == 1},
+        other_agency_records=other_agency,
     )
     result["target_amount_basis"] = {
         "kind": "NOTICE_ESTIMATED_AMOUNT" if notice.estimated_amount else "UNAVAILABLE",

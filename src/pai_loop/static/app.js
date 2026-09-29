@@ -6561,6 +6561,9 @@
     if (meta.status === "loading") return { value: "확인 중", pending: true };
     if (meta.status === "error") return { value: "확인 실패", pending: true };
     if (notice.awardHistory.length) return { value: `${formatNumber(notice.awardHistory.length)}건`, pending: false };
+    const otherAgencyProjects = new Set((meta.intelligence?.annual_award_table?.rows || [])
+      .filter((row) => row.match_kind === "OTHER_AGENCY_SIMILAR").map((row) => row.result_group_key)).size;
+    if (otherAgencyProjects) return { value: `타 기관 ${formatNumber(otherAgencyProjects)}건`, pending: false };
     if (["empty", "ready"].includes(meta.status) || state.source === "demo") {
       return { value: "저장본 0건", pending: false };
     }
@@ -7807,7 +7810,7 @@
           || table.years.length !== 3 || !table.years.every((year, index) => Number.isInteger(year) && year === table.years[0] - index)
           || table.rows.some((row) => !row || !table.years.includes(row.year)
             || typeof row.company_name !== "string" || typeof row.bid_notice_no !== "string"
-            || !["SAME_PROJECT", "SIMILAR_CANDIDATE"].includes(row.match_kind)
+            || !["SAME_PROJECT", "SIMILAR_CANDIDATE", "OTHER_AGENCY_SIMILAR"].includes(row.match_kind)
             || numericFields.some((field) => row[field] !== null && (typeof row[field] !== "number" || !Number.isFinite(row[field]))))) {
         throw new Error("낙찰 표 응답이 불완전하여 이전 저장본을 유지합니다.");
       }
@@ -7871,7 +7874,8 @@
         els.historyStatusLabel.textContent = "발주처 확인 필요";
         els.historyStatusText.textContent = "실제 발주처가 확인되면 사업 키워드와 함께 최근 3년 낙찰 이력을 조회합니다.";
       } else {
-        els.historyStatusText.textContent = `최근 3년 · ${criteria.demand_agency_name || "동일 발주처"} · ${criteria.keyword || "사업 키워드"} 기준입니다.`;
+        const otherAgency = (meta.intelligence?.annual_award_table?.rows || []).some((row) => row.match_kind === "OTHER_AGENCY_SIMILAR");
+        els.historyStatusText.textContent = `최근 3년 · ${criteria.demand_agency_name || "동일 발주처"} · ${criteria.keyword || "사업 키워드"} 기준입니다.${otherAgency ? " 이 발주처 기록이 없는 연도는 다른 기관의 유사 사업을 참고로 보여 줍니다." : ""}`;
       }
     }
 
@@ -7886,10 +7890,28 @@
   const AWARD_TABLE_BASIS_LABELS = {
     SAME_PROJECT_AND_AGENCY: "동일 사업명 · 동일 발주기관",
     SIMILAR_CANDIDATES_ONLY: "동일 발주처 · 유사 사업 후보",
-    MIXED_BY_YEAR: "동일 발주처 · 연도별 동일 사업 우선",
+    MIXED_BY_YEAR: "연도별 동일 사업 우선 · 없는 연도는 후보",
+    OTHER_AGENCY_ONLY: "다른 발주기관 · 유사 사업 참고",
     NONE: "표시할 기록 없음",
   };
   const AWARD_PARTICIPATION_LABELS = { WINNER: "낙찰", PARTICIPANT: "참여", UNKNOWN: "구분 미확인" };
+
+  // Three kinds, never blurred: this agency's same project, this agency's
+  // similar candidate, and another agency's similar project shown only for a
+  // year in which this agency has no record at all.
+  function awardMatchPresentation(row) {
+    const similarity = numberOrNull(row.similarity_score);
+    const score = similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`;
+    if (row.match_kind === "SAME_PROJECT") {
+      return { className: "is-same-project", badge: "동일 사업 · 기관", note: "동일 사업명 · 동일 발주기관", flag: "" };
+    }
+    if (row.match_kind === "OTHER_AGENCY_SIMILAR") {
+      const note = `다른 발주기관의 유사 사업${score} · 이 발주처의 이력 아님`;
+      return { className: "is-candidate is-other-agency", badge: "타 기관 유사", note, flag: note };
+    }
+    const note = `유사 사업 후보${score} · 동일 발주 확정 아님`;
+    return { className: "is-candidate", badge: "유사 후보", note, flag: note };
+  }
   const AWARD_TABLE_COLUMNS = 7;
 
   function awardTableMessageRow(message) {
@@ -7913,21 +7935,20 @@
   function renderAwardTableRow(row) {
     const year = row.year === null || row.year === undefined ? "연도 미확인" : String(row.year);
     const participation = AWARD_PARTICIPATION_LABELS[row.participation_kind] || AWARD_PARTICIPATION_LABELS.UNKNOWN;
-    const candidate = row.match_kind !== "SAME_PROJECT";
-    const similarity = numberOrNull(row.similarity_score);
+    const match = awardMatchPresentation(row);
     const link = safeHttpUrl(row.source_notice_url || "");
     const noticeRef = [row.bid_notice_no, row.revision_no].filter(Boolean).join("-");
     const sourceLine = link
       ? `<a class="award-table__source" href="${escapeAttribute(link)}" target="_blank" rel="noopener noreferrer">공고 원문 열기${noticeRef ? ` · ${escapeHtml(noticeRef)}` : ""}</a>`
       : `<span class="award-table__source">${escapeHtml(noticeRef || "공고번호 미확인")}</span>`;
     return `
-      <tr class="award-table__row ${candidate ? "is-candidate" : "is-same-project"} ${row.participation_kind === "WINNER" ? "is-winner" : ""}">
+      <tr class="award-table__row ${match.className} ${row.participation_kind === "WINNER" ? "is-winner" : ""}">
         <th scope="row">
           <strong>${escapeHtml(year)}</strong>
           <span>${escapeHtml(row.project_title || "사업명 미확인")}</span>
           <small>${escapeHtml(row.agency || "발주기관 미확인")}${row.event_date ? ` · 결과일 ${escapeHtml(row.event_date)}` : ""}</small>
           <small>${sourceLine} · 개찰자료 ${escapeHtml(row.source_status === "COLLECTED" ? "수집됨" : row.source_status === "PARTIAL" ? "부분 응답 · 이전 저장본 또는 미확인" : row.source_status === "ERROR" ? "조회 실패 · 이전 저장본 또는 미확인" : row.source_status === "UNAVAILABLE" ? "응답 업체 행 없음" : "미수집")}</small>
-          ${candidate ? `<em class="award-table__candidate-flag">유사 사업 후보${similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`} · 동일 발주 확정 아님</em>` : ""}
+          ${match.flag ? `<em class="award-table__candidate-flag">${escapeHtml(match.flag)}</em>` : ""}
         </th>
         <td>${escapeHtml(row.company_name || "업체명 미확인")}</td>
         <td>${awardTableAmount(row.bid_amount)}</td>
@@ -7959,7 +7980,7 @@
 
   function renderAwardProject(group, open) {
     const row = group.row;
-    const candidate = row.match_kind !== "SAME_PROJECT";
+    const match = awardMatchPresentation(row);
     const winner = group.rows.find((item) => item.participation_kind === "WINNER");
     const link = safeHttpUrl(row.source_notice_url || "");
     const reference = [row.bid_notice_no, row.revision_no].filter(Boolean).join("-");
@@ -7968,10 +7989,7 @@
       : `<span class="history-award-project__source">${escapeHtml(reference || "공고번호 미확인")}</span>`;
     const sourceLabels = { COLLECTED: "수집됨", PARTIAL: "부분 응답 · 이전 저장본 또는 미확인", ERROR: "조회 실패 · 이전 저장본 또는 미확인", UNAVAILABLE: "응답 업체 행 없음", NOT_COLLECTED: "미수집" };
     const sources = [...new Set(group.rows.map((item) => sourceLabels[item.source_status] || "미수집"))];
-    const similarity = numberOrNull(row.similarity_score);
-    const candidateNote = candidate
-      ? `유사 사업 후보${similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`} · 동일 발주 확정 아님`
-      : "동일 사업명 · 동일 발주기관";
+    const candidateNote = match.note;
     const companyRows = group.rows.map((item) => {
       const participation = AWARD_PARTICIPATION_LABELS[item.participation_kind] || AWARD_PARTICIPATION_LABELS.UNKNOWN;
       const rank = numberOrNull(item.opening_rank);
@@ -7982,7 +8000,7 @@
         <td><span class="award-table__participation is-${escapeAttribute(String(item.participation_kind || "UNKNOWN").toLowerCase())}">${escapeHtml(participation)}</span></td></tr>`;
     }).join("");
     return `<details class="history-award-project"${open ? " open" : ""}>
-      <summary><div><span class="history-award-project__title">${escapeHtml(row.project_title || "사업명 미확인")} <span class="history-award-project__badge ${candidate ? "is-candidate" : "is-same-project"}">${candidate ? "유사 후보" : "동일 사업 · 기관"}</span></span>
+      <summary><div><span class="history-award-project__title">${escapeHtml(row.project_title || "사업명 미확인")} <span class="history-award-project__badge ${match.className}">${escapeHtml(match.badge)}</span></span>
         <span class="history-award-project__meta"><span>${escapeHtml(row.agency || "발주기관 미확인")}</span><span>결과일 ${escapeHtml(row.event_date || "미확인")}</span><span>참여 기록 ${formatNumber(group.rows.length)}건</span></span></div>
         <div class="history-award-project__winner"><small>낙찰 업체</small><strong>${escapeHtml(winner?.company_name || "미확인")}</strong></div>
         <div class="history-award-project__amount"><small>낙찰사 투찰금액</small><strong>${awardTableAmount(winner?.bid_amount)}</strong></div>

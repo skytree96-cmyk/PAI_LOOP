@@ -8,6 +8,8 @@ from math import exp, log
 from statistics import mean, median
 from typing import Any, Iterable, Mapping
 
+from .award_scope import OTHER_AGENCY_PER_YEAR
+
 
 ANALYTICS_VERSION = "award-intelligence-1.1.0"
 COMPETITION_RISK_VERSION = "competition-risk-1.0.0"
@@ -604,8 +606,14 @@ def build_annual_award_table(
     as_of: datetime | None = None,
     notice_source_url: str | None = None,
     historical_notice_urls: Mapping[tuple[str, str], str] | None = None,
+    other_agency_records: Iterable[Any] = (),
 ) -> dict[str, Any]:
     """Lay stored award facts out as one row per company per year.
+
+    ``other_agency_records`` are similar projects of other demand agencies.
+    They fill only a year with no record of the notice's own agency, at most
+    ``OTHER_AGENCY_PER_YEAR`` projects by title similarity, and carry their own
+    match kind so they never read as this agency's history.
 
     Rows for the same project (title with its year removed, plus the same
     agency) are preferred independently in each calendar year. Similar-title
@@ -625,9 +633,11 @@ def build_annual_award_table(
 
     same_project: list[dict[str, Any]] = []
     similar: list[dict[str, Any]] = []
+    other_agency: list[dict[str, Any]] = []
     undated = 0
+    tagged = [(row, False) for row in records] + [(row, True) for row in other_agency_records]
 
-    for record_index, row in enumerate(records):
+    for record_index, (row, is_other_agency) in enumerate(tagged):
         occurred_at = _event_date(row)
         year = _row_year(occurred_at)
         if year is not None and year not in years:
@@ -640,7 +650,7 @@ def build_annual_award_table(
         title = str(_value(row, "title") or "")
         agency = str(_value(row, "agency") or "")
         winner_name = str(_value(row, "winner_name") or "").strip()
-        is_same_project = bool(
+        is_same_project = not is_other_agency and bool(
             target_key
             and normalise_project_title(title) == target_key
             and target_agency_key
@@ -662,7 +672,8 @@ def build_annual_award_table(
             "agency": agency,
             "bid_notice_no": str(_value(row, "bid_notice_no") or ""),
             "revision_no": str(_value(row, "revision_no") or ""),
-            "match_kind": "SAME_PROJECT" if is_same_project else "SIMILAR_CANDIDATE",
+            "match_kind": ("OTHER_AGENCY_SIMILAR" if is_other_agency
+                           else "SAME_PROJECT" if is_same_project else "SIMILAR_CANDIDATE"),
             "similarity_score": _similarity_score(_value(row, "similarity_score")),
             "source_status": source_status,
             # The target notice URL is deliberately never used for history.
@@ -696,15 +707,26 @@ def build_annual_award_table(
                 "opening_rank": None,
                 "participation_kind": "WINNER" if winner_name else "UNKNOWN",
             }]
-        (same_project if is_same_project else similar).extend(entries)
+        (other_agency if is_other_agency else same_project if is_same_project else similar).extend(entries)
 
     selected = []
     for year in years:
         exact = [item for item in same_project if item["year"] == year]
-        selected.extend(exact or [item for item in similar if item["year"] == year])
+        own = exact or [item for item in similar if item["year"] == year]
+        if own:
+            selected.extend(own)
+            continue
+        ranked: list[str] = []
+        for item in sorted((item for item in other_agency if item["year"] == year),
+                           key=lambda item: -(item["similarity_score"] or 0)):
+            if item["result_group_key"] not in ranked:
+                ranked.append(item["result_group_key"])
+        keep = set(ranked[:OTHER_AGENCY_PER_YEAR])
+        selected.extend(item for item in other_agency if item["year"] == year and item["result_group_key"] in keep)
     kinds = {item["match_kind"] for item in selected}
     match_basis = (
-        "MIXED_BY_YEAR" if len(kinds) == 2
+        "OTHER_AGENCY_ONLY" if kinds == {"OTHER_AGENCY_SIMILAR"}
+        else "MIXED_BY_YEAR" if len(kinds) >= 2
         else "SAME_PROJECT_AND_AGENCY" if "SAME_PROJECT" in kinds
         else "SIMILAR_CANDIDATES_ONLY" if kinds
         else "NONE"
@@ -742,6 +764,11 @@ def build_annual_award_table(
         notes.append(
             "동일 사업명·동일 발주기관 기록이 없는 연도는 제목 유사 후보를 표시합니다. "
             "유사도는 동일 발주라는 증거가 아닙니다."
+        )
+    if "OTHER_AGENCY_SIMILAR" in kinds:
+        notes.append(
+            "동일 발주처 기록이 없는 연도는 다른 기관의 유사 사업을 최대 "
+            f"{OTHER_AGENCY_PER_YEAR}건 표시합니다. 발주처가 다르며, 유사도는 같은 사업이라는 증거가 아닙니다."
         )
     if match_basis == "NONE":
         notes.append("최근 3년 창에 표시할 저장 기록이 없습니다.")
