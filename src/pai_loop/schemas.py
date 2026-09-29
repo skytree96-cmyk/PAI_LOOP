@@ -286,6 +286,7 @@ class NoticeSummary(ApiModel):
     )
     recommendation_updated_at: datetime | None = None
     latest_evaluation: EvaluationOut | None = None
+    eligibility_independent_failure: bool = False
     qualification_status: Literal["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"] = Field(
         default="NOT_EVALUATED",
         description="현재 원문·마감 기준에 유효한 저장 자격 판정입니다. 문서 분석 상태와 구분합니다.",
