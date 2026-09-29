@@ -170,7 +170,7 @@ def test_campaign_replay_immutable_scope_and_worker_inheritance(failed_case):
 
 
 @pytest.mark.parametrize("change", [{"retry_error_codes": ["XLS_ANYTHING"]}, {"retry_error_codes": []},
-    {"retry_max_attachments": 4}, {"notice_keys": [KEY, "PPS-SYN-OTHER"]}, {"retry_reviewed": False}])
+    {"retry_max_attachments": 11}, {"notice_keys": [KEY, "PPS-SYN-OTHER"]}, {"retry_reviewed": False}])
 def test_scope_request_rejects_unbounded_or_unknown_filters(failed_case, change):
     client, _, downloads, _, _ = failed_case
     body = narrow_body()

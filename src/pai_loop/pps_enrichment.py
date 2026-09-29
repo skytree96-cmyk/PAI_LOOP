@@ -964,7 +964,8 @@ def failed_attachment_retry_snapshot(
     """Freeze only explicitly selected failed bindings; never accepted reviews."""
     attachments, invalid, attempts = _current_manifest_attempts(versions, validate_accepted=False)
     codes = sorted(set(error_codes))
-    if invalid or not codes or not set(codes) <= FAILED_ATTACHMENT_RETRY_CODES or not 1 <= max_attachments <= 3:
+    if (invalid or not codes or not set(codes) <= FAILED_ATTACHMENT_RETRY_CODES
+            or not 1 <= max_attachments <= MAX_ATTACHMENTS_IN_MANIFEST):
         raise ValueError("FAILED_RETRY_SCOPE_INVALID")
     targets = []
     for attachment in attachments:
@@ -980,6 +981,17 @@ def failed_attachment_retry_snapshot(
                         "error_code": payload["error_code"]})
     if not targets:
         raise ValueError("FAILED_RETRY_TARGETS_EMPTY")
+    if budget_policy is not None and len(targets) > 1 and session is not None:
+        # Several attachments of one notice can stop at 20k. One 32k call fits
+        # one execution, so take the first still-eligible failure per plan;
+        # the next plan picks the next one.
+        by_id = {version.id: version for version in versions}
+        eligible_targets = [
+            target for target in targets
+            if (version := by_id.get(target["version_id"])) is not None
+            and eligible_long_output_failure(version) and not long_output_consumed(session, version.id)
+        ]
+        targets = eligible_targets[:1] or targets
     if len(targets) > max_attachments:
         raise ValueError("FAILED_RETRY_TARGET_LIMIT")
     selected = {target["attachment_id"] for target in targets}
