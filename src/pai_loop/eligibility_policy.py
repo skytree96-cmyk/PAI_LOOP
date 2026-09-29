@@ -20,7 +20,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # new notices only and every existing decision keeps the answer it already had.
 # v14 applies the approved current-company prototype baseline and groups
 # equivalent display rows without removing their evaluation/source records.
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.29-v15"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.29-v16"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -29,6 +29,7 @@ PROTOTYPE_FACT_KEYS = frozenset({
     "small_business_certificate", "sme_certificate", "sanction_clear",
     "conviction_clear", "disqualification_clear", "bidder_identity_consistent",
     "domestic_entity", "nonprofit_entity",
+    "public_dues_arrears_clear", "court_receivership_clear", "contract_nonperformance_clear",
 })
 
 
@@ -1344,6 +1345,43 @@ def _registration_mapping_is_only_a_performance_heading(text: str) -> bool:
     )
 
 
+# These are company declarations, not certificates or forecasts of performance.
+_DECLARED_CLEARANCE_MESSAGES = {
+    "public_dues_arrears_clear": "회사 확인값상 국세·지방세·과태료 등 체납이 없어 충족합니다.",
+    "court_receivership_clear": "회사 확인값상 법정관리 이력이 없어 충족합니다.",
+    "contract_nonperformance_clear": "회사 확인값상 계약 불이행 이력이 없어 충족합니다.",
+}
+
+
+def _declared_clearance_fact_key(text: str) -> str | None:
+    """Bind only a complete, single clearance clause; never swallow other gates."""
+    compact = re.sub(r"\s+", "", text).rstrip(".")
+    prefix = r"(?:(?:입찰)?공고일(?:현재|기준)|제안서제출일기준|현재)?"
+    party = r"(?:업체|사업자|자|법인)"
+    ending = rf"(?:{party}(?:이어야함|여야함|일것|이어야한다)?)?"
+    absent = rf"(?:이|사실이|내역이|이력이)?(?:없는{ending}|없어야(?:함|한다)|없음|없을것)"
+    dues = r"(?:(?:국세|지방세|과태료|세금|제세공과금|공과금)(?:및|와|과|등|[,·ㆍ/])?)*"
+    if re.fullmatch(prefix + dues + r"체납" + absent, compact):
+        return "public_dues_arrears_clear"
+    if re.fullmatch(prefix + "법정관리" + absent, compact) or re.fullmatch(
+        prefix + r"법정관리(?:이력이없는" + ending
+        + r"|중이(?:아닌" + ending + r"|아니어야함)|상태가아닌" + ending + r"|가아닌" + ending + r")",
+        compact,
+    ):
+        return "court_receivership_clear"
+    if re.fullmatch(prefix + r"계약불이행" + absent, compact):
+        return "contract_nonperformance_clear"
+    # A never-breached declaration covers a narrower historical exclusion, even
+    # when the notice limits the customer, lookback, or means of establishing it.
+    history = prefix + r"(?:최근\d+년이내)?(?:협회와(?:의|체결한)|발주기관과(?:의|체결한))?계약을"
+    breach = r"(?:정당한이유없이)?(?:불이행한|이행하지않은)사실"
+    proof = r"(?:(?:법원)?확정판결|중재판정|(?:협회의공식계약)?해지통보)(?:(?:[,·ㆍ]|또는)(?:(?:법원)?확정판결|중재판정|(?:협회의공식계약)?해지통보))*등으로"
+    exclusion = rf"이(?:{proof})?확인된{party}는(?:입찰)?참가(?:불가|불가능|할수없음)"
+    if re.fullmatch(history + breach + r"(?:이없는" + ending + r"|" + exclusion + r")", compact):
+        return "contract_nonperformance_clear"
+    return None
+
+
 def _is_current_sanction_clearance(text: str) -> bool:
     """Match a present no-restriction condition, not a future penalty."""
 
@@ -1755,6 +1793,7 @@ def classify_requirements(
 
     for requirement, text in zip(requirements, normalized, strict=True):
         category = str(requirement.get("category") or "OTHER").upper()
+        declared_clearance_key = _declared_clearance_fact_key(text)
         product_registration = _is_product_registration_eligibility(text)
         direct_production_certificate = _is_direct_production_certificate_eligibility(text)
         small_business = _is_small_business_eligibility(text, category=category)
@@ -1934,6 +1973,27 @@ def classify_requirements(
                     "입찰보증금 면제·납부·귀속 및 조건부 제재에 관한 안내입니다. "
                     "현재 부정당 제재 여부의 PASS 근거로 사용하지 않습니다."
                 ),
+            )
+        elif declared_clearance_key:
+            item = _eligibility_item_now(
+                requirement, profile=profile, fact_key=declared_clearance_key,
+                deadline=as_of,
+                fail_on_confirmed_absence=(
+                    (profile.get("facts", {}).get(declared_clearance_key) or {}).get("value") is False
+                ),
+                message=_DECLARED_CLEARANCE_MESSAGES[declared_clearance_key],
+                failure_message="회사 확인값상 해당 제한 사유 없음 조건을 충족하지 않습니다.",
+            )
+        elif (
+            re.search(r"법정\s*관리", text) and _contains(
+                text, "화의", "회생", "파산", "휴업", "폐업", "청산", "합병", "매각", "부정당"
+            )
+        ) or (
+            "부정당" in text and re.search(r"체납|계약.*(?:불이행|이행하지 않은).*(?:사실|이력)", text)
+        ):
+            item = _unmapped_eligibility_item(
+                requirement, fact_key="compound_company_status_qualification", deadline=as_of,
+                message="체납·법정관리·계약 불이행 없음 확인만으로 복합 조건 전체를 충족할 수 없어, 함께 적힌 조건의 관계를 추가 확인해야 합니다.",
             )
         elif prototype_fact_enabled(profile, "bidder_identity_consistent") and _is_bidder_identity_consistency(text):
             item = _eligibility_item_now(

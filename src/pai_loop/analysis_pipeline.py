@@ -1200,6 +1200,7 @@ def _prototype_eligibility_facts(
             effective_from=deadline, effective_to=None, verified=False,
         )
         for key, fact in sorted(latest.items())
+        if fact.value is not None  # Unknown is missing, never an explicit negative.
     ]
 
 
