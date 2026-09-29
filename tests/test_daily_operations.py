@@ -71,7 +71,7 @@ def test_daily_briefing_is_seven_day_stored_data_view_with_zero_source_calls(
         notice_key="DAILY-RECENT",
         published_at="2026-08-16T08:30:00+09:00",
         title="공공기관 팀빌딩 및 조직문화 교육 위탁운영",
-        agency="인천광역시",
+        agency="대전광역시",
     )
     _create_notice(
         client,
