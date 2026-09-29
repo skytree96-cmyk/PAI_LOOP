@@ -143,11 +143,11 @@
   };
 
   const RECOMMENDATION_LABELS = {
-    GO: "GO",
-    CONDITIONAL_GO: "조건부 GO",
-    HOLD: "조건부 GO",
+    GO: "적극 검토",
+    CONDITIONAL_GO: "조건부 검토",
+    HOLD: "조건부 검토",
     DEFERRED: "권고 보류",
-    NO_GO: "NO-GO",
+    NO_GO: "입찰 제외",
     UNKNOWN: "확인 필요",
   };
 
@@ -1556,7 +1556,7 @@
     if (!els.noticeSearchScope) return;
     if (state.noticeSearchMode === "prespec") {
       els.noticeSearchScope.classList.remove("is-global", "is-pps");
-      els.noticeSearchScope.textContent = "사전규격은 입찰공고 전 단계의 요구조건 검토용이며, 입찰 참여 GO/NO-GO를 결정하지 않습니다.";
+      els.noticeSearchScope.textContent = "사전규격은 입찰공고 전 단계의 요구조건 검토용이며, 입찰 판단(적극 검토·입찰 제외)을 내리지 않습니다.";
       return;
     }
     if (state.noticeSearchMode === "pps") {
@@ -2915,7 +2915,7 @@
         return `<span>${escapeHtml(`첨부 ${numberOrNull(item?.slot) ?? "—"} · ${auditStatusLabels[status] || "상태 확인 필요"} · ${reason}`)}</span>`;
       }).join("")}</div>`
       : "";
-    return `<section class="prespec-analysis-result"><div class="prespec-analysis-result__head"><h3>${resultHeading}</h3><span>확인 완료 ${formatNumber(completion.documentsAccepted)} / 전체 ${formatNumber(completion.documentsTotal)} 문서</span></div>${summaries.map((summary) => `<p>${escapeHtml(summary)}</p>`).join("")}${requirementMarkup}${auditMarkup}<p class="prespec-analysis-boundary">요구조건 사전 구조화 결과이며 입찰 GO/NO-GO 판정이 아닙니다.</p></section>`;
+    return `<section class="prespec-analysis-result"><div class="prespec-analysis-result__head"><h3>${resultHeading}</h3><span>확인 완료 ${formatNumber(completion.documentsAccepted)} / 전체 ${formatNumber(completion.documentsTotal)} 문서</span></div>${summaries.map((summary) => `<p>${escapeHtml(summary)}</p>`).join("")}${requirementMarkup}${auditMarkup}<p class="prespec-analysis-boundary">요구조건 사전 구조화 결과이며 입찰 판단(적극 검토·입찰 제외)이 아닙니다.</p></section>`;
   }
 
   function derivePreSpecificationCompletion({ documentsTotal, documentsAccepted, documentsProcessed, fallbackProcessed = 0, declaredComplete = false }) {
@@ -2977,7 +2977,7 @@
   }
 
   function confirmPreSpecificationAnalysis(detail) {
-    return window.confirm(`${detail.title}\n\n사전규격 첨부문서를 분석합니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 중복 실행 잠금과 공고별 재시도 대기 적용\n- 결과는 요구조건 구조화이며 GO 판정이 아님\n\n분석을 시작할까요?`);
+    return window.confirm(`${detail.title}\n\n사전규격 첨부문서를 분석합니다.\n- 현재 저장 문서 ${formatNumber(detail.documents.length)}개\n- 문서당 최대 2회\n- 사전규격 1건당 총 최대 10회\n- 중복 실행 잠금과 공고별 재시도 대기 적용\n- 결과는 요구조건 구조화이며 입찰 판단이 아님\n\n분석을 시작할까요?`);
   }
 
   async function requestPreSpecificationAnalysis() {
@@ -6044,7 +6044,7 @@
     els.replayButton.hidden = true;
     renderNoticeSearchMode();
     els.footerDisclaimer.textContent = prespecView
-      ? "사전규격 분석은 요구조건 사전 검토용이며 입찰 참여 GO/NO-GO 판정을 실행하지 않습니다."
+      ? "사전규격 분석은 요구조건 사전 검토용이며 입찰 판단(적극 검토·입찰 제외)을 실행하지 않습니다."
       : resultLearningView
       ? "결과 학습은 출처가 있는 확인 완료 기록만 후속 분석 사실로 사용합니다."
       : awardsView
@@ -6537,7 +6537,7 @@
     }
     const hasPublishedCondition = conditions.length > 0;
     const heading = hasPublishedCondition
-      ? `조건부 GO · 확인할 조건 ${formatNumber(conditions.length)}건`
+      ? `조건부 검토 · 확인할 조건 ${formatNumber(conditions.length)}건`
       : "권고 보류 · 조건 근거 없음";
     const conditionContent = hasPublishedCondition
       ? `<ul>${conditions.map((condition) => `<li>${escapeHtml(condition)}</li>`).join("")}</ul>`
@@ -7481,7 +7481,7 @@
     els.quantAssumptionList.innerHTML = "";
     els.quantTableBody.innerHTML = `<tr><td colspan="4">${emptyPanel(loading ? "정량 배점표를 확인하고 있습니다" : "정량 조회를 시작하지 않았습니다", loading ? "누락값은 임의 점수로 채우지 않습니다." : "정량 점수·주의사항 탭을 열면 저장된 공개 데이터를 조회합니다.")}</td></tr>`;
     els.quantObservationList.innerHTML = emptyPanel("적용 전 공개 근거 확인 중", "공개 실적 후보와 회사 프로필의 적용 경계를 함께 표시합니다.");
-    els.quantSeparationNote.textContent = "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.";
+    els.quantSeparationNote.textContent = "정량 준비도는 참가자격과 입찰 판단을 바꾸지 않는 별도 보조지표입니다.";
   }
 
   function renderLegacyQuantitative(notice) {
@@ -7500,7 +7500,7 @@
       ? notice.quantitative.map(renderQuantRow).join("")
       : `<tr><td colspan="4">${emptyPanel("정량 산식이 연결되지 않았습니다", "실제 평가표 구조화 후 확정점수 또는 예상 범위를 제공합니다.")}</td></tr>`;
     els.quantObservationList.innerHTML = emptyPanel("실제 공개 근거 없음", "명시적 데모에서는 공개 실적을 점수로 적용하지 않습니다.");
-    els.quantSeparationNote.textContent = "예시 데이터 · 정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.";
+    els.quantSeparationNote.textContent = "예시 데이터 · 정량 준비도는 참가자격과 입찰 판단을 바꾸지 않는 별도 보조지표입니다.";
   }
 
   function renderQuantitativeEstimate(data) {
@@ -7639,7 +7639,7 @@
         : emptyPanel("적용 전 공개 근거 없음", "공고별 배점 산식과 연결된 공개 근거가 없습니다.");
     els.quantSeparationNote.textContent = [
       outOfScope > 0 ? `정량 외 배점 ${formatNumber(outOfScope, 1)}점은 정량 점수·총배점·예상 상한에서 제외했습니다.` : "",
-      data.separation_notice || "정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않습니다.",
+      data.separation_notice || "정량 준비도는 참가자격과 입찰 판단을 바꾸지 않습니다.",
     ].filter(Boolean).join(" ");
   }
 
@@ -8938,9 +8938,18 @@
 
   function openNoticeFromRoute() {
     if (!isNoticeListView()) return;
-    const key = new URLSearchParams(window.location.search).get("notice");
+    const query = new URLSearchParams(window.location.search);
+    const key = query.get("notice");
     if (key && !(state.selectedNotice?.noticeKey === key && els.detailDrawer.classList.contains("is-open"))) {
-      void openDetail(key, null, { updateRoute: false });
+      // The Teams card's "담당자 판단" button links here with decision=1.
+      const focusDecision = query.get("decision") === "1";
+      void openDetail(key, null, { updateRoute: false }).then(() => {
+        if (!focusDecision || state.selectedNotice?.noticeKey !== key) return;
+        const url = new URL(window.location.href);
+        url.searchParams.delete("decision");
+        history.replaceState(history.state, "", url);
+        focusDecisionDockFromPreview();
+      });
     }
   }
 

@@ -217,7 +217,7 @@
               <div class="kpi-visual kpi-visual--plain">
                 <div class="kpi-stat"><strong class="kpi-value" id="kpiGo">—</strong><span>참여 결정 · 마감 전</span></div>
               </div>
-              <p><span class="trend trend--up" id="kpiGoTrend">제안 작성</span> GO·조건부 GO로 결정하고 결과를 기록하지 않은 공고</p>
+              <p><span class="trend trend--up" id="kpiGoTrend">제안 작성</span> 참여·조건부 참여로 결정하고 결과를 기록하지 않은 공고</p>
             </article>
             <article class="kpi-card kpi-card--action kpi-card--pipeline">
               <button class="kpi-card__action" type="button" data-kpi-view="urgent-in-progress" aria-label="진행 건 중 마감이 임박한 공고 보기" aria-pressed="false"><span class="sr-only">진행 건 중 마감이 임박한 공고 보기</span></button>
@@ -278,7 +278,7 @@
                 </div>
               <div class="department-dashboard__metrics">
                 <article class="department-stat"><span>추천 공고</span><div class="department-stat__value"><strong id="departmentRecommendedCount">—</strong><span>건</span><b id="departmentRecommendedShare">—</b></div><p>전체 수집 공고 대비 · 진행 중 키워드 상위·지역 연관 공고</p></article>
-                <article class="department-stat"><span>선택한 공고</span><div class="department-stat__value"><strong id="departmentSelectedCount">—</strong><span>건</span><b id="departmentSelectedShare">—</b></div><p>전체 수집 공고 대비 · 부서의 최신 GO·조건부 GO 판단</p></article>
+                <article class="department-stat"><span>선택한 공고</span><div class="department-stat__value"><strong id="departmentSelectedCount">—</strong><span>건</span><b id="departmentSelectedShare">—</b></div><p>전체 수집 공고 대비 · 부서의 최신 참여·조건부 참여 판단</p></article>
               </div>
               </div>
               <div class="department-dashboard__footer"><span>추천 공고 중 선택 비율</span><strong id="departmentSelectionRate">—</strong><span id="departmentSelectionDetail">추천 공고 기준</span></div>
@@ -379,11 +379,11 @@
               <label class="select-field stored-search-only">
                 <span class="sr-only">AI 검토 의견</span>
                 <select id="recommendationFilter">
-                  <option value="all">추천 전체</option>
-                  <option value="GO">GO</option>
-                  <option value="CONDITIONAL_GO">조건부 GO</option>
+                  <option value="all">입찰 판단 전체</option>
+                  <option value="GO">적극 검토</option>
+                  <option value="CONDITIONAL_GO">조건부 검토</option>
                   <option value="DEFERRED">권고 보류</option>
-                  <option value="NO_GO">NO-GO</option>
+                  <option value="NO_GO">입찰 제외</option>
                 </select>
               </label>
               <label class="select-field stored-search-only">
@@ -1017,7 +1017,7 @@
         </section>
 
         <section class="tab-panel" id="panel-quant" role="tabpanel" aria-labelledby="tab-quant" data-panel="quant" hidden>
-          <div class="quant-separation-note" id="quantSeparationNote" role="note">정량 준비도는 참가자격과 GO/NO-GO 판단을 바꾸지 않는 별도 보조지표입니다.</div>
+          <div class="quant-separation-note" id="quantSeparationNote" role="note">정량 준비도는 참가자격과 입찰 판단을 바꾸지 않는 별도 보조지표입니다.</div>
           <div class="score-overview" id="scoreOverview"></div>
           <article class="detail-card quant-opinion-card">
             <div class="card-title-row">
@@ -1140,7 +1140,7 @@
                 <dl class="adaptive-facts">
                   <div><dt>준비도</dt><dd id="teamsMockReadiness">미산정</dd></div>
                   <div><dt>리스크</dt><dd id="teamsMockRisk">미산정</dd></div>
-                  <div><dt>추천</dt><dd id="teamsMockRecommendation">분석 전</dd></div>
+                  <div><dt>입찰 판단</dt><dd id="teamsMockRecommendation">분석 전</dd></div>
                 </dl>
                 <div class="adaptive-actions" aria-label="카드 액션 미리보기">
                   <button type="button" id="teamsPreviewOpenButton">근거 상세보기</button>
@@ -1285,7 +1285,7 @@
             <li><strong>검색·저장 문서 분석 0회</strong><span>저장 자료 검색은 외부 조회 0회, 나라장터 검색·선택 저장도 문서 분석 0회입니다.</span></li>
             <li><strong>선택 저장</strong><span>나라장터 검색 결과가 자동 저장되지 않습니다. 필요한 사전규격만 저장 버튼으로 선택합니다.</span></li>
             <li><strong>분석은 별도 실행</strong><span>저장본 상세의 분석 버튼을 눌렀을 때만 문서를 분석합니다. 시간당 총량 제한은 없고 중복 실행 잠금과 공고별 재시도 대기는 유지됩니다.</span></li>
-            <li><strong>GO 판정 아님</strong><span>분석 결과는 요구조건을 미리 구조화한 참고자료이며 입찰 참여 GO/NO-GO를 결정하지 않습니다.</span></li>
+            <li><strong>입찰 판단 아님</strong><span>분석 결과는 요구조건을 미리 구조화한 참고자료이며 입찰 판단(적극 검토·입찰 제외)을 내리지 않습니다.</span></li>
           </ol>
         </div>
         <footer class="source-link-dialog__actions"><button class="button button--primary" type="submit" value="close">확인했습니다</button></footer>
@@ -1447,7 +1447,7 @@
               <ul>
                 <li>저장 자료와 나라장터 사전규격을 한곳에서 검색</li>
                 <li>필요한 건만 선택 저장하고 문서 분석은 별도 실행</li>
-                <li>입찰 GO/NO-GO가 아닌 요구조건 사전 검토</li>
+                <li>입찰 판단이 아닌 요구조건 사전 검토</li>
               </ul>
             </section>
           </div>
