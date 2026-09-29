@@ -262,3 +262,49 @@
 .is-enhanced .ps-copy-detailed .ps-cta{margin-top:17px}
 .demo-worklist .demo-item{padding-block:13px}
 @media(min-width:1001px) and (max-width:1200px){.is-enhanced .ps-copy-detailed h3{font-size:26px}.is-enhanced .ps-copy-detailed .ps-copy-lead{font-size:14px}.is-enhanced .ps-copy-detailed .ps-points{font-size:12px}}
+
+/* Real product photographs inside an uninterrupted fold-style exterior. */
+.ps-product-capture{display:block;width:100%;height:auto;aspect-ratio:8/5;object-fit:contain;background:#f2f5f7}
+.ps-panel{border-radius:26px;border:7px solid #101e29;outline:2px solid #c8d8e4;box-shadow:0 3px 0 4px #738b9d,0 24px 46px #020d2740}
+.ps-step{perspective:1500px}
+.ps-step>.ps-panel{transform:rotateY(-5deg) rotateX(3deg);transform-origin:center;max-width:100%;margin-block:12px}
+.ps-copy{backdrop-filter:blur(24px) saturate(125%);-webkit-backdrop-filter:blur(24px) saturate(125%);background:linear-gradient(135deg,#dff1ff25,#c9dfff0a);box-shadow:inset 0 1px 0 #ffffff60,0 20px 55px #0002}
+.ps-device-front{padding:8px;border-radius:31px;background:#0f1d28;box-shadow:inset 0 0 0 2px #e0edf5,inset 0 0 0 4px #778fa1,0 16px 36px #0003}
+.ps-device-front::after{border-radius:31px}
+.ps-device-camera,.ps-home-indicator{display:none}
+.ps-metal-back,.ps-metal-core,.ps-metal-edge{border-radius:32px}
+.is-enhanced .ps-device-screen{height:auto;min-height:0;aspect-ratio:8/5;border-radius:23px;background:#edf3f7}
+.is-enhanced .ps-panel{outline:0;transform:none}
+.is-enhanced .ps-panel .ps-product-capture{height:100%;object-fit:contain}
+.ps-callout{position:relative;left:auto;bottom:auto;transform:none;min-width:0;width:fit-content;max-width:100%;margin:22px auto 0;background:linear-gradient(130deg,#f5fbffbb,#dcecf47a);border-color:#ecfaffaa;box-shadow:inset 0 1px 0 #fff,0 14px 24px #03182724;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
+.ps-callout strong{white-space:normal;color:#173c57}.ps-callout small{color:#345a73}
+.ps-metal-back,.ps-metal-core,.ps-metal-edge{bottom:90px}
+.ps-visual-caption{margin-top:8px!important}
+.ps-pinned{min-height:0}
+.ps-motion-toggle{font-size:12px;color:#315c7d;background:#eaf4fb;border-color:#afcbdc}
+@media(min-width:901px) and (max-height:760px){
+ .ps-pinned{padding-block:12px}.is-enhanced .ps-glass{height:414px}
+ .is-enhanced .ps-copy h3{font-size:27px;margin-top:13px}.is-enhanced .ps-copy-lead{font-size:13px;line-height:1.7;margin-top:14px!important}
+ .is-enhanced .ps-points{font-size:11px;gap:6px;margin-top:13px}.is-enhanced .ps-copy .ps-cta{font-size:12px;margin-top:15px}
+ .is-enhanced .ps-copy-detailed h3{font-size:25px}.is-enhanced .ps-copy-detailed .ps-copy-lead{font-size:12px}.is-enhanced .ps-copy-detailed .ps-points{font-size:11px}
+ .ps-step-nav{margin-bottom:10px}.ps-step-nav>button{font-size:10px;padding:6px 2px}.ps-scroll-hint{font-size:10px;margin-top:8px!important}
+ .ps-scene-bottom,.ps-visual-caption{display:none}.ps-callout{margin-top:18px;padding:12px}.ps-callout strong{font-size:12px}
+}
+@media(min-width:901px) and (max-width:1100px){.is-enhanced .ps-scene-grid{grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);gap:28px}.is-enhanced .ps-copy{padding-inline:23px}.ps-pinned{width:calc(100% - 48px)}.ps-step-nav>button{font-size:10px}}
+@media(max-width:900px){.ps-panel{border-width:6px;border-radius:22px}.ps-copy{background:linear-gradient(125deg,#e5f5ff24,#d7edff0b)}.ps-step>.ps-panel{transform:rotateY(-3deg) rotateX(2deg)}.ps-product-capture{border-radius:15px}}
+/* Size the reading area independently of the device's aspect ratio. */
+.is-enhanced .ps-glass{height:520px}
+.ps-copy-window{mask-image:none;-webkit-mask-image:none}
+@media(min-width:901px) and (max-height:760px){
+ .is-enhanced .ps-glass{height:415px}
+ .is-enhanced .ps-copy{padding:16px 24px}
+ .is-enhanced .ps-copy h3,.is-enhanced .ps-copy-detailed h3{font-size:24px;line-height:1.35;margin-top:12px}
+ .is-enhanced .ps-copy-lead,.is-enhanced .ps-copy-detailed .ps-copy-lead{font-size:12px;line-height:1.6;margin-top:12px!important}
+ .is-enhanced .ps-points,.is-enhanced .ps-copy-detailed .ps-points{font-size:11px;line-height:1.5;gap:5px;margin-top:12px}
+ .is-enhanced .ps-copy .ps-cta{font-size:12px;line-height:1.4;padding:8px 0 5px;margin-top:12px}
+}
+/* Never blend two readable interfaces on top of one another. */
+.is-enhanced .ps-panel{transition:none}
+.is-enhanced .ps-panel.is-active{animation:ps-screen-in .32s ease-out both}
+@keyframes ps-screen-in{from{opacity:.5}to{opacity:1}}
+.ps-story[data-motion-state="off"] .ps-panel{animation:none}

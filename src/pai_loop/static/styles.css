@@ -3478,6 +3478,7 @@ svg {
 }
 
 .progress-bar {
+  display: block;
   height: 5px;
 }
 

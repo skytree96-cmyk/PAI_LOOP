@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 OPEN_FILES = frozenset({
     "index.html", "styles.css", "app.js", "favicon.svg", "story.css", "story.js",
     "assets/pai-product-poster.webp", "assets/pai-product-tour.webm",
+    *(f"assets/pai-screen-{i}.webp" for i in range(1, 9)),
 })
 OPEN_PATHS = frozenset({"/open", "/open/", *(f"/open/{name}" for name in OPEN_FILES)})
 OPEN_CSP = (
