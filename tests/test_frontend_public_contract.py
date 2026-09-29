@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260929-award-other-agency-v17"' in html
-    assert 'href="./top-navigation.css?v=20260929-award-other-agency-v17"' in html
-    assert 'src="./app.js?v=20260929-award-other-agency-v17"' in html
+    assert 'href="./styles.css?v=20260929-award-other-agency-v18"' in html
+    assert 'href="./top-navigation.css?v=20260929-award-other-agency-v18"' in html
+    assert 'src="./app.js?v=20260929-award-other-agency-v18"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -1484,3 +1484,34 @@ assert.match(renderEvidence({...evidence, status:"VERIFIED"}), /검증됨/);
 assert.match(renderEvidence({...evidence, status:"MISSING"}), /누락/);
 """
     subprocess.run(["node", "-e", adapter + "\n" + script], check=True)
+
+
+def test_verified_failure_is_visible_while_unfinished_analysis_stays_visible():
+    source = APP_JS.read_text(encoding="utf-8")
+    script = r'''
+const assert=require("node:assert/strict"),vm=require("node:vm"),source=require("node:fs").readFileSync(0,"utf8");
+const context=vm.createContext({document:{documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
+  window:{matchMedia(){return {matches:false};}},URL,URLSearchParams});
+vm.runInContext(source.replace(/\}\)\(\);\s*$/, "globalThis.ui={state,normalizeNotice,decisionAnalysisComplete,dashboardEligibilityStatus,manualAnalysisAvailability};\n})();"),context);
+const u=context.ui, raw={notice_key:"PPS-SYN_GATE",source_kind:"PPS",title:"SYN unfinished",status:"OPEN",deadline:"2099-01-01",
+  analysis_state:"REVIEW",analysis_attachment_coverage_complete:false,analysis_reason:"첨부 분석 확인 필요",
+  qualification_status:"FAIL",eligibility_independent_failure:true,
+  latest_evaluation:{id:"SYN-verified",eligibility:"FAIL",evaluated_at:"2026-09-29T00:00:00Z"}};
+const verified=u.normalizeNotice(raw);
+assert.equal(verified.eligibilityStatus,"FAIL");
+assert.equal(u.dashboardEligibilityStatus(verified),"FAIL");
+assert.equal(verified.evaluationId,"SYN-verified");
+assert.match(verified.analysisReason,/필수 참가자격 미충족 확인/);
+assert.match(verified.analysisReason,/첨부 분석 확인 필요/);
+assert.equal(u.decisionAnalysisComplete(verified),false);
+const audited=u.normalizeNotice({...raw,analysis_attachment_coverage_complete:true,analysis_reason_code:"PDF_EXTRACT_FAILED"});
+assert.equal(u.decisionAnalysisComplete(audited),false);
+Object.assign(u.state,{source:"api",manualAnalysisEnabled:true});
+assert.equal(u.manualAnalysisAvailability(audited).enabled,true);
+assert.equal(u.manualAnalysisAvailability(audited).recomputeCurrent,false);
+assert.notEqual(u.manualAnalysisAvailability(audited).label,"저장된 자료로 다시 검토");
+assert.equal(u.normalizeNotice({...raw,eligibility_independent_failure:false}).evaluationId,"");
+assert.equal(u.normalizeNotice({...raw,qualification_status:"PASS",latest_evaluation:{...raw.latest_evaluation,eligibility:"PASS"}}).evaluationId,"");
+'''
+    result = subprocess.run(["node", "-e", script], input=source, text=True, encoding="utf-8", capture_output=True)
+    assert result.returncode == 0, result.stderr

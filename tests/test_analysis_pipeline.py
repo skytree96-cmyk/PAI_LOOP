@@ -644,7 +644,7 @@ def test_pipeline_excludes_unverified_agency_awards_from_competition_and_profita
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.6"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.7"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.1"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.3.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -2442,7 +2442,8 @@ def test_statutory_compound_pipeline_cannot_pass_without_both_facts(db_session: 
 
 @contextmanager
 def _current_pps_confidence_source(*, eligibility_confidence=0.98, other_confidence=0.72,
-                                   missing=None, company_fact=True, other_eligibility=False):
+                                   missing=None, company_fact=True, other_eligibility=False,
+                                   eligibility_condition=None):
     """Persist a real current-contract extraction using only synthetic local transports."""
     import httpx
     import json
@@ -2451,7 +2452,7 @@ def _current_pps_confidence_source(*, eligibility_confidence=0.98, other_confide
     from pai_loop.integrations.openai_extraction import OpenAIExtractionClient, OpenAITelemetry
     from pai_loop.pps_enrichment import enrich_notice_from_pps
 
-    lines = ["경쟁입찰참가자격 등록을 완료한 업체여야 함",
+    lines = [eligibility_condition or "경쟁입찰참가자격 등록을 완료한 업체여야 함",
              "경쟁입찰참가자격을 등록한 업체여야 함" if other_eligibility
              else "제안서 분량은 20페이지 내외를 권장한다"]
     class SyntheticClient:
@@ -2609,7 +2610,7 @@ def test_confidence_fix_recalculates_old_pipeline_run_once_without_extraction(mo
         assert not current.reused
         assert run_analysis_pipeline(case.session, notice_id=case.notice_id).reused
         assert case.client.calls == 1
-        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.6"
+        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.7"
 
 
 @pytest.mark.parametrize("malformed", [None, {}, "invalid", "__MISSING__"])

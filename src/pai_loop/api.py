@@ -75,6 +75,7 @@ from .notice_freshness import (
     latest_current_analysis_run,
     latest_quantitative_snapshot_run,
     latest_current_evaluation,
+    has_current_independent_failure,
 )
 from .pps_enrichment import (
     EORDER_ATTACHMENT_FIELD,
@@ -168,6 +169,8 @@ def _dashboard_qualification(notice: Notice, evaluation: Evaluation | None) -> s
     """Require current source/deadline and complete PPS audit for work queues."""
     if evaluation is None:
         return "NOT_EVALUATED"
+    if evaluation.eligibility == "FAIL" and has_current_independent_failure(notice, evaluation):
+        return "FAIL"
     if _source_kind(notice) == "PPS" and (
         not pps_attachment_coverage(notice.versions).complete
         or public_analysis_reason(notice.versions, evaluated=True, source_kind="PPS").state != "ANALYZED"
@@ -638,6 +641,9 @@ def _summary(
         recommendation_evidence_count=recommendation_evidence_count,
         recommendation_updated_at=recommendation_updated_at,
         latest_evaluation=evaluation,
+        eligibility_independent_failure=bool(
+            latest is not None and has_current_independent_failure(notice, latest)
+        ),
         qualification_status="NOT_EVALUATED" if authoritative_cancelled else valid_qualification,
         historical_qualification=(
             {

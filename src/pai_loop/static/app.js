@@ -1902,7 +1902,7 @@
     const storedNotice = stored
       ? state.notices.find((notice) => notice.noticeKey === candidate.storedNoticeKey) || null
       : null;
-    const completed = storedNotice?.analysisState === "EVALUATED"
+    const completed = !storedNotice?.eligibilityIndependentFailure && storedNotice?.analysisState === "EVALUATED"
       && storedNotice.analysisAttachmentCoverageComplete;
     const candidateDeadline = validDate(candidate.deadline);
     const ended = storedNotice
@@ -3936,7 +3936,10 @@
       source.latest_evaluation,
       source.latestEvaluation,
     );
-    const evaluation = ["PENDING", "REVIEW", "COLLECTED", "VERSIONED"].includes(declaredAnalysisState)
+    const independentFailure = source.eligibility_independent_failure === true
+      && source.qualification_status === "FAIL"
+      && evaluationCandidate.eligibility === "FAIL";
+    const evaluation = ["PENDING", "REVIEW", "COLLECTED", "VERSIONED"].includes(declaredAnalysisState) && !independentFailure
       ? {}
       : evaluationCandidate;
     const historicalEvaluation = firstObject(source.historical_evaluation, source.historicalEvaluation);
@@ -4105,6 +4108,7 @@
         source.historical_evaluation_reason,
         source.historicalEvaluationReason,
       ), "공고 변경 전 당시 판정으로 보관합니다."),
+      eligibilityIndependentFailure: independentFailure,
       analysisState,
       analysisReasonCode: analysisReason.code,
       analysisReason: analysisReason.message,
@@ -4530,6 +4534,7 @@
         && ["PASS", "REVIEW", "FAIL"].includes(historical.eligibility)
         ? historical.eligibility : "NOT_EVALUATED";
     }
+    if (notice.eligibilityIndependentFailure && notice.qualificationStatus === "FAIL") return "FAIL";
     if (notice.sourceKind === "PPS" && !notice.analysisAttachmentCoverageComplete) return "NOT_EVALUATED";
     if (["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"].includes(notice.qualificationStatus)) return notice.qualificationStatus;
     return notice.analysisState === "EVALUATED"
@@ -5373,7 +5378,7 @@
           <button class="notice-title-button" type="button" data-open-notice aria-label="${escapeAttribute(notice.title)} ${resultEntry ? "결과 입력" : "전체 상세 보기"}">
             <span class="notice-title">${escapeHtml(notice.title)}</span>
             <span class="notice-meta">${sourceKindBadge(notice)}${noticeLifecycleBadge(notice)}<span>${escapeHtml(notice.demandAgency || notice.agency)}</span></span>
-            ${notice.historicalAnalysis ? `<span class="notice-analysis-reason" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 120))}</span>` : analyzed ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
+            ${notice.historicalAnalysis ? `<span class="notice-analysis-reason" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 판정 참고 · ${escapeHtml(truncateText(notice.historicalAnalysisReason, 120))}</span>` : analyzed && !notice.eligibilityIndependentFailure ? "" : `<span class="notice-analysis-reason" title="${escapeAttribute(notice.analysisReason)}">${pendingLabel} · ${escapeHtml(truncateText(notice.analysisReason, 120))}</span>`}
             ${departmentPriorityBadge(notice)}
           </button>
           ${renderNoticeQuantitativeSummary(notice)}
@@ -5511,7 +5516,7 @@
       };
     }
     const quantitativeRetry = quantitativeRuleRetryRequired(notice);
-    const recomputeCurrent = notice.analysisState === "EVALUATED"
+    const recomputeCurrent = !notice.eligibilityIndependentFailure && notice.analysisState === "EVALUATED"
       && notice.analysisAttachmentCoverageComplete
       && !isDocumentQualityReview(notice)
       && !quantitativeRetry;
@@ -5555,7 +5560,7 @@
       ? "분석 요청 확인 중…" : "첨부 분석 중…";
     if (quantitativeRuleRetryRequired(notice)) return "정량 근거 재검증";
     if (
-      notice.analysisState === "EVALUATED"
+      !notice.eligibilityIndependentFailure && notice.analysisState === "EVALUATED"
       && notice.analysisAttachmentCoverageComplete
       && !isDocumentQualityReview(notice)
     ) return "저장된 자료로 다시 검토";
@@ -6644,7 +6649,11 @@
     let title = "공고 원문 수집 완료";
     let description = notice.analysisReason;
 
-    if (notice.analysisState === "VERSIONED") {
+    if (notice.eligibilityIndependentFailure) {
+      stateLabel = "필수 자격 미충족 · 문서 확인 필요";
+      title = "첨부·정량 분석은 아직 완료되지 않았습니다";
+      els.documentAnalysisState.classList.add("is-review");
+    } else if (notice.analysisState === "VERSIONED") {
       stateLabel = "문서 버전 수집됨";
       title = `첨부문서 버전 ${versionCount || 1}건 수집 완료`;
       description = notice.analysisReason;
@@ -8659,7 +8668,7 @@
   }
 
   function decisionAnalysisComplete(notice) {
-    return notice?.analysisState === "EVALUATED"
+    return !notice?.eligibilityIndependentFailure && notice?.analysisState === "EVALUATED"
       && (notice.sourceKind !== "PPS" || notice.analysisAttachmentCoverageComplete === true);
   }
 
@@ -9413,6 +9422,9 @@
     const providerDisposition = stringValue(firstValue(source.provider_disposition, source.providerDisposition)).toUpperCase();
     if (providerDisposition === "CANCELLED") {
       return { code: "CANCELLED", message: "조달청 취소 공고로 확인되어 현재 입찰 검토 대상에서 제외되었습니다." };
+    }
+    if (source.eligibility_independent_failure === true) {
+      return { code: code || "PARTIAL", message: `필수 참가자격 미충족 확인 · ${detail || "첨부·정량 분석 확인 필요"}` };
     }
     if (analysisState === "ANALYZED" && code === "ANALYZED") {
       return { code: "EVALUATION_MISSING", message: ANALYSIS_REASON_LABELS.EVALUATION_MISSING };
