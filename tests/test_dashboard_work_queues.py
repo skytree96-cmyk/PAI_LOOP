@@ -79,7 +79,7 @@ def _notice(session, label, eligibility, *, status="OPEN", deadline=None, cancel
         ))
     if outcome:
         notice.bid_outcomes.append(BidOutcome(
-            outcome_key=f"SYN-OUTCOME-{label}", status="WON", source="MANUAL", evidence_json={},
+            outcome_key=f"SYN-OUTCOME-{label}", status="WON", source="MANUAL", evidence_json={"_workflow": {"record_status": "VALIDATED"}},
         ))
     return notice
 
@@ -323,3 +323,58 @@ def test_cancelled_go_banner_stays_empty_for_other_departments(client, monkeypat
     ).json()
     assert dashboard["cancelled_go_notices"] == []
     assert dashboard["work_queue_counts"]["in_progress"] == 0
+
+@pytest.mark.parametrize("record_status,status,expected", [
+    ("DRAFT", "WON", "DRAFT"), ("VALIDATED", "SUBMITTED", "DRAFT"),
+    ("VALIDATED", "WON", "COMPLETE"), ("VALIDATED", "LOST", "COMPLETE"),
+    ("VALIDATED", "NO_BID", "COMPLETE"), ("ARCHIVED", "WON", "MISSING"),
+])
+def test_result_queue_counts_list_and_detail_agree_on_completion(client, monkeypatch, record_status, status, expected):
+    monkeypatch.setattr(api_module, "datetime", FixedDateTime)
+    department = "future-ai-education"
+    with client.app.state.session_factory() as session:
+        notice = _notice(session, "result-state", "PASS", status="CLOSED")
+        _decide(session, notice, "GO", department_id=department)
+        notice.bid_outcomes.append(BidOutcome(
+            outcome_key="SYN-current", department_id=department, department_revision=2,
+            source="MANUAL_UI", status=status,
+            evidence_json={"_workflow": {"record_status": record_status}},
+        ))
+        # An older validated result and another department's completion must not
+        # take priority over our newest draft/reopened record.
+        notice.bid_outcomes.append(BidOutcome(
+            outcome_key="SYN-older", department_id=department, department_revision=1,
+            source="MANUAL_UI", status="WON",
+            evidence_json={"_workflow": {"record_status": "VALIDATED"}},
+        ))
+        notice.bid_outcomes.append(BidOutcome(
+            outcome_key="SYN-other", department_id="future-ai-capability", department_revision=99,
+            source="MANUAL_UI", status="WON",
+            evidence_json={"_workflow": {"record_status": "VALIDATED"}},
+        ))
+        session.commit()
+        key = notice.notice_key
+    params = {"department_id": department}
+    dashboard = client.get("/api/v1/dashboard", params=params).json()
+    rows = client.get("/api/v1/notices", params=params).json()
+    detail = client.get(f"/api/v1/notices/{key}", params=params).json()
+    assert rows[0]["has_bid_outcome"] is True
+    assert rows[0]["result_entry_status"] == detail["result_entry_status"] == expected
+    assert dashboard["work_queue_counts"]["result_missing_decided"] == int(expected != "COMPLETE")
+    assert dashboard["work_queue_counts"]["result_missing"] == int(expected != "COMPLETE")
+    assert dashboard["result_missing_count"] == int(expected != "COMPLETE")
+
+
+def test_other_department_completed_result_does_not_hide_our_missing_result(client, monkeypatch):
+    monkeypatch.setattr(api_module, "datetime", FixedDateTime)
+    with client.app.state.session_factory() as session:
+        notice = _notice(session, "foreign-complete", "PASS", status="CLOSED")
+        _decide(session, notice, "GO", department_id="future-ai-education")
+        notice.bid_outcomes.append(BidOutcome(
+            outcome_key="SYN-other-only", department_id="future-ai-capability", department_revision=1,
+            source="MANUAL_UI", status="WON", evidence_json={"_workflow": {"record_status": "VALIDATED"}},
+        ))
+        session.commit()
+    params = {"department_id": "future-ai-education"}
+    assert client.get("/api/v1/notices", params=params).json()[0]["result_entry_status"] == "MISSING"
+    assert client.get("/api/v1/dashboard", params=params).json()["work_queue_counts"]["result_missing_decided"] == 1

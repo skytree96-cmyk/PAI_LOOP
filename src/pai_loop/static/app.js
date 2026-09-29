@@ -340,7 +340,7 @@
       "performanceRecordDialog", "performanceRecordForm", "performanceRecordDialogTitle", "performanceRecordCloseButton", "performanceRecordCancelButton", "performanceRecordSaveButton",
       "performanceRecordProject", "performanceRecordAgency", "performanceRecordDivision", "performanceRecordStatus", "performanceRecordContractDate", "performanceRecordStartDate", "performanceRecordEndDate", "performanceRecordAmount", "performanceRecordVat", "performanceRecordShare", "performanceRecordCertificate", "performanceRecordCompleted", "performanceRecordEvidence", "performanceRecordKeywords", "performanceRecordOverview",
       "resultLearningSummary", "resultLearningUnlockButton", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
-      "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
+      "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningDraftButton", "detailResultContent", "detailResultEditButton", "detailResultListButton", "detailResultRetryButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
       "resultLearningRateMode", "resultLearningRateBasisKind", "resultLearningRateBasisAmount", "resultLearningRateBasisReference", "resultLearningRateStatus",
       "resultLearningWinningRateMode", "resultLearningWinningRateBasisKind", "resultLearningWinningRateBasisAmount", "resultLearningWinningRateBasisReference", "resultLearningWinningRateStatus", "resultLearningOrigin",
       "resultLearningOpeningNotice", "resultLearningOpeningRevision", "resultLearningOpeningClassification", "resultLearningOpeningRebid",
@@ -671,6 +671,17 @@
     els.resultLearningPreviousButton.addEventListener("click", () => changeResultLearningPage(-1));
     els.resultLearningNextButton.addEventListener("click", () => changeResultLearningPage(1));
     els.resultLearningForm.addEventListener("submit", saveResultLearning);
+    els.detailResultEditButton.addEventListener("click", () => {
+      if (state.selectedNotice) void openNoticeResultLearning(state.selectedNotice.noticeKey, els.detailResultEditButton);
+    });
+    els.detailResultListButton.addEventListener("click", () => {
+      closeDetail();
+      if (!isResultEntryView()) setView("result-missing-decided");
+      els.pageTitle.focus();
+    });
+    els.detailResultRetryButton.addEventListener("click", () => {
+      if (state.selectedNotice) void loadDetailResult(state.selectedNotice.noticeKey);
+    });
     ["input", "change"].forEach((type) => els.resultLearningForm.addEventListener(type, updateResultLearningValidation));
     els.resultLearningForm.addEventListener("invalid", (event) => showResultLearningError(event.target.validationMessage), true);
     els.resultLearningDialog.addEventListener("cancel", (event) => {
@@ -1361,6 +1372,9 @@
     els.resultLearningCancelButton.disabled = false;
     els.resultLearningUnlockButton.disabled = false;
     els.resultLearningSaveButton.disabled = false;
+    els.resultLearningDraftButton.disabled = false;
+    state.detailResultRecord = null;
+    els.detailResultContent.textContent = "";
     els.resultLearningPagination.hidden = true;
     els.resultLearningState.hidden = false;
     els.resultLearningList.innerHTML = "";
@@ -3309,14 +3323,14 @@
     state.resultLearning.editingNotice = notice;
     state.resultLearning.editingOutcome = outcome;
     els.resultLearningDialogTitle.textContent = !outcome ? "입찰 결과 입력" : (isManualRecord ? "입찰 결과 수정" : "자동 환류 결과 검토본 만들기");
-    els.resultLearningDialogNotice.textContent = `${notice.title} · ${notice.bidNoticeNo}`;
+    els.resultLearningDialogNotice.textContent = `${notice.title} · ${notice.agency || "발주기관 미확인"} · ${notice.bidNoticeNo}`;
     els.resultLearningOpeningNotice.value = notice.bidNoticeNo || outcome?.openingIdentity?.bid_notice_no || "";
     els.resultLearningOpeningRevision.value = notice.revisionNo || outcome?.openingIdentity?.revision_no || "";
     els.resultLearningOpeningClassification.value = outcome?.openingIdentity?.classification_no ?? "";
     els.resultLearningOpeningRebid.value = outcome?.openingIdentity?.rebid_no ?? "";
     els.resultLearningOpeningClassification.setCustomValidity("");
     els.resultLearningStatus.value = outcome?.status || "";
-    els.resultLearningRecordStatus.value = outcome?.recordStatus || "DRAFT";
+    els.resultLearningRecordStatus.value = outcome?.recordStatus || "VALIDATED";
     els.resultLearningSubmittedAmount.value = formatMoneyInput(outcome?.submittedBidAmount);
     els.resultLearningSubmittedRate.value = outcome?.submittedBidRate ?? "";
     const calculation = outcome?.submittedRateCalculation;
@@ -3382,7 +3396,7 @@
         return fail(field, "금액은 0 이상의 숫자로 입력해 주세요. 쉼표는 세 자리마다 사용할 수 있습니다.");
       }
     }
-    els.resultLearningSaveButton.textContent = state.resultLearning.saving ? "저장 중…" : validated ? "확인 완료 저장" : els.resultLearningRecordStatus.value === "ARCHIVED" ? "보관 저장" : "초안 저장";
+    els.resultLearningSaveButton.textContent = state.resultLearning.saving ? "저장 중…" : "저장하고 상세 보기";
     showResultLearningError("");
     if (!status) return fail(els.resultLearningStatus, "입찰 결과를 선택해 주세요. 낙찰 정보를 입력하려면 ‘낙찰’을 선택하세요.");
     if (status === "NO_BID" && [els.resultLearningSubmittedAmount, els.resultLearningSubmittedRate,
@@ -3527,6 +3541,7 @@
     const notice = state.resultLearning.editingNotice;
     const outcome = state.resultLearning.editingOutcome;
     if (!notice || !canWriteResults() || state.resultLearning.saving) return;
+    if (event.submitter === els.resultLearningDraftButton) els.resultLearningRecordStatus.value = "DRAFT";
     const validOutcome = updateResultLearningValidation();
     const openingIdentity = resultLearningOpeningIdentity();
     if (!validOutcome || openingIdentity === undefined || !updateResultLearningRate() || !els.resultLearningForm.checkValidity()) {
@@ -3563,15 +3578,18 @@
     state.resultLearning.saving = true;
     els.resultLearningFields.disabled = true;
     els.resultLearningSaveButton.disabled = true;
+    els.resultLearningDraftButton.disabled = true;
     els.resultLearningCloseButton.disabled = true;
     els.resultLearningCancelButton.disabled = true;
     els.resultLearningSaveButton.textContent = "저장 중…";
     showResultLearningError("");
     let saved = false;
+    let savedResponse = null;
+    const savedView = state.currentView;
     try {
       const headers = await manualAnalysisAuthHeaders();
       if (!headers || epoch !== state.accountEpoch) return;
-      await apiRequest(path, { method: isManualRecord ? "PATCH" : "POST", headers, body: JSON.stringify(payload) });
+      savedResponse = unwrapObject(await apiRequest(path, { method: isManualRecord ? "PATCH" : "POST", headers, body: JSON.stringify(payload) }));
       if (epoch !== state.accountEpoch) return;
       saved = true;
     } catch (error) {
@@ -3583,9 +3601,10 @@
         state.resultLearning.saving = false;
         els.resultLearningFields.disabled = false;
         els.resultLearningSaveButton.disabled = false;
+        els.resultLearningDraftButton.disabled = false;
         els.resultLearningCloseButton.disabled = false;
         els.resultLearningCancelButton.disabled = false;
-        els.resultLearningSaveButton.textContent = els.resultLearningRecordStatus.value === "VALIDATED" ? "확인 완료 저장" : els.resultLearningRecordStatus.value === "ARCHIVED" ? "보관 저장" : "초안 저장";
+        els.resultLearningSaveButton.textContent = "저장하고 상세 보기";
       }
     }
     if (!saved || epoch !== state.accountEpoch) return;
@@ -3595,6 +3614,16 @@
       !isManualRecord && outcome ? "자동 환류 원본은 변경하지 않고 검토본을 별도로 저장했습니다." : "검증 상태와 출처를 함께 저장했습니다.",
       "success",
     );
+    // Navigate immediately after the acknowledged save, before slow list refreshes.
+    // The server response contains the canonical saved values (including calculated rates).
+    if (state.currentView === savedView) {
+      const resultRecord = savedResponse?.outcome ? normalizeResultLearningNotice({
+        notice_key: notice.noticeKey, title: notice.title, agency: notice.agency,
+        bid_notice_no: notice.bidNoticeNo, notice_status: notice.noticeStatus,
+        latest_outcome: savedResponse.outcome, outcomes: [savedResponse.outcome],
+      }) : null;
+      void openDetail(notice.noticeKey, null, { initialTab: "result", resultRecord });
+    }
     // Finish the editor before reloading: a slow refresh must not lock a newly opened form.
     try {
       if (state.currentView === "closed" || state.resultLearning.loaded) await loadResultLearning({ force: true });
@@ -4024,6 +4053,7 @@
       decidedBy: stringValue(state.accountSession?.enabled ? latestDecision.actorLabel : firstValue(latestDecision.actorLabel, source.decided_by, source.decider), ""),
       decidedAt: state.accountSession?.enabled ? latestDecision.createdAt || null : firstValue(latestDecision.createdAt, source.decided_at, source.decision_at, null),
       resultStatus: stringValue(firstValue(source.result_status, source.award_result, source.outcome), ""),
+      resultEntryStatus: stringValue(source.result_entry_status),
       hasBidOutcome: booleanValue(firstValue(source.has_bid_outcome, source.hasBidOutcome))
         ?? Boolean(stringValue(firstValue(source.result_status, source.award_result, source.outcome), "")),
       noticeStatus: stringValue(firstValue(source.status, source.notice_status), ""),
@@ -4501,6 +4531,10 @@
       ? notice.eligibilityStatus : "NOT_EVALUATED";
   }
 
+  function resultEntryComplete(notice) {
+    return notice.resultEntryStatus ? notice.resultEntryStatus === "COMPLETE" : notice.hasBidOutcome;
+  }
+
   function matchesDashboardQueue(notice, queue) {
     if (queue === "go") return isCurrentGoCandidate(notice);
     if (PIPELINE_QUEUES.includes(queue)) return matchesPipelineQueue(notice, queue);
@@ -4509,7 +4543,7 @@
     if (!["PASS", "REVIEW"].includes(eligibility)) return false;
     if (queue === "cancelled") return isCancelledNotice(notice);
     if (isCancelledNotice(notice)) return false;
-    if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome;
+    if (queue === "result-missing") return isVisibleEndedNotice(notice) && !resultEntryComplete(notice);
     if (noticeLifecycleStatus(notice) !== "OPEN") return false;
     if (queue === "review") return needsAnalysisOrReview(notice);
     if (queue === "urgent") {
@@ -4528,7 +4562,7 @@
   function matchesPipelineQueue(notice, queue) {
     if (isCancelledNotice(notice)) return false;
     if (queue === "result-missing-decided") {
-      return departmentGoDecision(notice) && isVisibleEndedNotice(notice) && !notice.hasBidOutcome;
+      return departmentGoDecision(notice) && isVisibleEndedNotice(notice) && !resultEntryComplete(notice);
     }
     if (noticeLifecycleStatus(notice) !== "OPEN") return false;
     if (queue === "pending-decision") {
@@ -5312,8 +5346,12 @@
     els.noticeCardGrid.innerHTML = state.filteredNotices.map(renderNoticeCard).join("");
   }
 
+  function isResultEntryView(view = state.currentView) {
+    return ["result-missing", "result-missing-decided"].includes(view);
+  }
+
   function renderNoticeRow(notice) {
-    const resultEntry = state.currentView === "result-missing" && canWriteResults();
+    const resultEntry = isResultEntryView() && canWriteResults();
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
@@ -5349,7 +5387,7 @@
   }
 
   function renderNoticeCard(notice) {
-    const resultEntry = state.currentView === "result-missing" && canWriteResults();
+    const resultEntry = isResultEntryView() && canWriteResults();
     const deadline = deadlineInfo(notice.deadline);
     const analyzed = notice.analysisState === "EVALUATED";
     const cancelled = isCancelledNotice(notice);
@@ -5386,8 +5424,9 @@
 
   function noticeListActions(notice, resultEntry) {
     const label = escapeAttribute(notice.title);
+    const action = notice.resultEntryStatus === "DRAFT" ? "이어서 입력" : "결과 입력";
     return resultEntry
-      ? `<span class="result-entry-actions"><button class="button button--primary" type="button" data-open-notice aria-label="${label} 결과 입력">결과 입력</button><button class="button button--ghost" type="button" data-open-notice data-result-detail aria-label="${label} 전체 상세 보기">공고 상세</button></span>`
+      ? `<span class="result-entry-actions">${notice.resultEntryStatus === "DRAFT" ? '<span class="record-status record-status--draft">작성 중</span>' : ""}<button class="button button--primary" type="button" data-open-notice aria-label="${label} ${action}">${action}</button><button class="button button--ghost" type="button" data-open-notice data-result-detail aria-label="${label} 전체 상세 보기">공고 상세</button></span>`
       : `${noticeQuantitativeAction(notice)}<button class="detail-link-button" type="button" data-open-notice aria-label="${label} 전체 상세 보기">전체 상세 보기</button>`;
   }
 
@@ -6098,7 +6137,7 @@
     const row = event.target.closest("[data-notice-key]");
     if (!row) return;
     if (!explicitTarget && event.target.closest("button, a, input, select, textarea")) return;
-    if (state.currentView === "result-missing" && canWriteResults() && !event.target.closest("[data-result-detail]")) {
+    if (isResultEntryView() && canWriteResults() && !event.target.closest("[data-result-detail]")) {
       void openNoticeResultLearning(row.dataset.noticeKey, explicitTarget || row);
       return;
     }
@@ -6218,7 +6257,7 @@
     if ((event.key === "Enter" || event.key === " ") && event.target.closest(".notice-row") && !event.target.closest("button")) {
       event.preventDefault();
       const row = event.target.closest(".notice-row");
-      if (state.currentView === "result-missing" && canWriteResults()) void openNoticeResultLearning(row.dataset.noticeKey, row);
+      if (isResultEntryView() && canWriteResults()) void openNoticeResultLearning(row.dataset.noticeKey, row);
       else openDetail(row.dataset.noticeKey, row);
     }
   }
@@ -6227,7 +6266,9 @@
     const existingIndex = state.notices.findIndex((notice) => notice.noticeKey === noticeKey);
     const existing = existingIndex >= 0 ? state.notices[existingIndex] : null;
     if (existing && !force) return existing;
-    const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}`);
+    const department = selectedDashboardDepartmentId();
+    const suffix = department && department !== "organization" ? `?department_id=${encodeURIComponent(department)}` : "";
+    const payload = await apiRequest(`/notices/${encodeURIComponent(noticeKey)}${suffix}`);
     const detail = normalizeNotice(unwrapObject(payload));
     const mergedSource = existing
       ? { ...existing.raw, ...detail.raw, notice_key: noticeKey }
@@ -6301,7 +6342,7 @@
     renderAll();
   }
 
-  async function openDetail(noticeKey, trigger = null, { updateRoute = true } = {}) {
+  async function openDetail(noticeKey, trigger = null, { updateRoute = true, initialTab = "overview", resultRecord = null } = {}) {
     const accountEpoch = state.accountEpoch;
     let baseNotice = state.notices.find((notice) => notice.noticeKey === noticeKey);
     let hydratedFromRoute = false;
@@ -6324,7 +6365,11 @@
     els.detailDrawer.setAttribute("aria-hidden", "false");
     els.drawerScrim.hidden = true;
     document.body.classList.add("is-locked");
-    selectTab("overview", { resetScroll: false });
+    state.detailResultRequestId = (state.detailResultRequestId || 0) + 1;
+    state.detailResultRecord = resultRecord;
+    els.detailResultContent.textContent = "입찰 결과를 불러오는 중입니다.";
+    els.detailResultRetryButton.hidden = true;
+    selectTab(initialTab, { resetScroll: initialTab === "result" });
     requestAnimationFrame(() => els.closeDetailButton.focus({ preventScroll: true }));
     window.setTimeout(() => {
       if (els.detailDrawer.classList.contains("is-open") && !els.detailDrawer.contains(document.activeElement)) {
@@ -8409,6 +8454,56 @@
     updateDecisionButton();
   }
 
+  async function loadDetailResult(noticeKey) {
+    const epoch = state.accountEpoch;
+    const requestId = (state.detailResultRequestId || 0) + 1;
+    state.detailResultRequestId = requestId;
+    const current = () => epoch === state.accountEpoch && state.selectedNotice?.noticeKey === noticeKey
+      && requestId === state.detailResultRequestId;
+    els.detailResultContent.textContent = "입찰 결과를 불러오는 중입니다.";
+    els.detailResultRetryButton.hidden = true;
+    els.detailResultEditButton.hidden = !canWriteResults();
+    try {
+      const headers = await manualAnalysisAuthHeaders();
+      if (!current()) return;
+      if (!headers) { els.detailResultContent.textContent = "부서 로그인 후 결과를 확인할 수 있습니다."; return; }
+      const raw = unwrapObject(await apiRequest(`/result-learning/notices/${encodeURIComponent(noticeKey)}`, { headers }));
+      if (!current()) return;
+      if (raw.notice_key !== noticeKey) throw new Error("공고 정보를 확인하지 못했습니다.");
+      state.detailResultRecord = normalizeResultLearningNotice(raw);
+      renderDetailResult(state.detailResultRecord);
+    } catch (error) {
+      if (!current()) return;
+      els.detailResultContent.textContent = `결과를 불러오지 못했습니다. ${humanizeError(error)}`;
+      els.detailResultRetryButton.hidden = false;
+    }
+  }
+
+  function renderDetailResult(record) {
+    const outcome = record.outcome;
+    els.detailResultEditButton.hidden = !canWriteResults() || isCancelledNotice(state.selectedNotice);
+    els.detailResultEditButton.textContent = outcome ? "결과 수정" : "결과 입력";
+    els.detailResultRetryButton.hidden = true;
+    if (!outcome) {
+      els.detailResultContent.textContent = "아직 입력한 결과가 없습니다. 결과 입력 버튼으로 기록을 시작하세요.";
+      return;
+    }
+    const amount = value => value == null ? "미입력" : `${new Intl.NumberFormat("ko-KR").format(value)}원`;
+    const score = value => value == null ? "미입력" : `${value}점`;
+    const rows = [
+      ["기록 상태", outcome.recordStatus === "DRAFT" ? "작성 중 · 임시저장" : resultRecordStatusLabel(outcome.recordStatus)],
+      ["입찰 결과", resultStatusLabel(outcome.status)], ["우리 투찰금액", amount(outcome.submittedBidAmount)],
+      ["우리 투찰률", resultLearningRateLabel(outcome)], ["낙찰금액", amount(outcome.winningBidAmount)],
+      ["낙찰자 투찰률", outcome.winningBidRate == null ? "미입력" : `${outcome.winningBidRate}%`],
+      ["기술 점수", score(outcome.technicalScore)], ["가격 점수", score(outcome.priceScore)],
+      ["총점", score(outcome.totalScore)], ["순위", outcome.rank == null ? "미입력" : `${outcome.rank}위`],
+      ["낙찰업체", outcome.winnerName || "미입력"], ["결과일", outcome.occurredAt ? formatKstDateTime(outcome.occurredAt) : "미입력"],
+      ["미낙찰 사유", outcome.lossReason || "미입력"], ["출처·근거", outcome.sourceReference || "미입력"],
+      ["메모", outcome.operatorNote || "미입력"],
+    ];
+    els.detailResultContent.innerHTML = `<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
+  }
+
   function selectTab(tabName, { evidenceId = "", focusEvidence = false, resetScroll = true } = {}) {
     els.tabButtons.forEach((button) => {
       const selected = button.dataset.tab === tabName;
@@ -8419,6 +8514,10 @@
       panel.hidden = panel.dataset.panel !== tabName;
     });
     if (resetScroll) requestAnimationFrame(() => scrollDetailPanel(tabName, evidenceId, focusEvidence));
+    if (tabName === "result" && state.selectedNotice?.noticeKey) {
+      if (state.detailResultRecord?.noticeKey === state.selectedNotice.noticeKey) renderDetailResult(state.detailResultRecord);
+      else void loadDetailResult(state.selectedNotice.noticeKey);
+    }
     if (tabName === "history" && state.selectedNotice?.noticeKey && state.source === "api") {
       void loadStoredAwardHistory(state.selectedNotice.noticeKey);
     }
@@ -8475,6 +8574,7 @@
     const trigger = state.selectedTrigger;
     const noticeKey = state.selectedNotice?.noticeKey;
     state.selectedNotice = null;
+    state.detailResultRecord = null;
     const replacement = noticeKey
       ? [...document.querySelectorAll("[data-notice-key]")].find((node) => node.dataset.noticeKey === noticeKey)
       : null;
@@ -8482,6 +8582,7 @@
       ? trigger
       : replacement?.querySelector("[data-open-notice]") || replacement;
     if (focusTarget && typeof focusTarget.focus === "function") focusTarget.focus();
+    else els.pageTitle.focus();
   }
 
   function trapDrawerFocus(event) {
@@ -8795,7 +8896,9 @@
   function openNoticeFromRoute() {
     if (!isNoticeListView()) return;
     const key = new URLSearchParams(window.location.search).get("notice");
-    if (key) void openDetail(key, null, { updateRoute: false });
+    if (key && !(state.selectedNotice?.noticeKey === key && els.detailDrawer.classList.contains("is-open"))) {
+      void openDetail(key, null, { updateRoute: false });
+    }
   }
 
   function handleRouteChange() {

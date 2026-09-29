@@ -11,7 +11,8 @@ from test_department_accounts_frontend import APP, BEHAVIOR_HARNESS
 HARNESS = BEHAVIOR_HARNESS.replace(
     "globalThis.ui={state,els,apiRequest,",
     """globalThis.ui={state,els,apiRequest,
- openNoticeResultLearning,handleNoticeActivation,closeResultLearningDialog,updateResultLearningValidation,
+ openNoticeResultLearning,handleNoticeActivation,handleNoticeKeydown,closeResultLearningDialog,updateResultLearningValidation,
+ renderDetailResult,loadDetailResult,noticeListActions,matchesPipelineQueue,openNoticeFromRoute,
  setApplicationReload(fn){loadApplicationData=fn;},""",
 ).replace(
     "new Promise(resolve=>requests.push({path,options,resolve}))",
@@ -99,10 +100,11 @@ assert.equal(toasts.filter(row=>row[2]==='error').length,0);
 ''')
 
 
+@pytest.mark.parametrize('view', ['result-missing', 'result-missing-decided'])
 @pytest.mark.parametrize('activation', ['row', 'title'])
-def test_missing_result_queue_row_and_title_open_result_form(activation):
-    _run('const activation=' + json.dumps(activation) + ';' + r'''
-u.state.currentView='result-missing';
+def test_missing_result_queue_row_and_title_open_result_form(activation, view):
+    _run('const activation=' + json.dumps(activation) + ';const view=' + json.dumps(view) + ';' + r'''
+u.state.currentView=view;
 const details=[];u.setOpenDetail((...args)=>details.push(args));
 const row=Object.assign(field(),{dataset:{noticeKey:'SYN-N'}});
 const title=Object.assign(field(),{dataset:{openNotice:'SYN-N'}});
@@ -121,11 +123,12 @@ assert.equal(u.els.resultLearningDialog.open,true);
 ''')
 
 
-def test_missing_result_queue_explicit_detail_keeps_general_detail_available():
-    _run(r'''
-u.state.currentView='result-missing';
+@pytest.mark.parametrize("view", ["result-missing", "result-missing-decided"])
+def test_missing_result_queue_explicit_detail_keeps_general_detail_available(view):
+    _run('const view=' + json.dumps(view) + ';' + r'''
+u.state.currentView=view;
 const details=[];u.setOpenDetail((...args)=>details.push(args));
-const row={dataset:{noticeKey:'SYN-N'}};
+const row=Object.assign(field(),{dataset:{noticeKey:'SYN-N'}});
 const detail={dataset:{resultDetail:'SYN-N',openNotice:'SYN-N'}};
 const target={closest(selector){
  if(selector==='[data-notice-key]')return row;
@@ -321,4 +324,75 @@ if(failure==='validation')assert.match(u.els.resultLearningError.textContent,/�
 assert.equal(u.els.resultLearningSaveButton.disabled,false);
 assert.equal(requests.length,1,'failure must not discard values by replacing the record');
 assert.equal(reloads.length,0);
+''')
+
+
+@pytest.mark.parametrize("view", ["result-missing", "result-missing-decided"])
+@pytest.mark.parametrize("key", ["Enter", " "])
+def test_result_queue_keyboard_opens_editor(view, key):
+    _run('u.state.currentView=' + json.dumps(view) + ';const key=' + json.dumps(key) + ';' + r'''
+const row=Object.assign(field(),{dataset:{noticeKey:'SYN-N'}});
+u.handleNoticeKeydown({key,preventDefault(){},target:{closest(selector){return selector==='.notice-row'?row:null;}}});
+await tick();assert.equal(details.length,0);assert.equal(requests.length,1);
+respond(requests[0],200,{notice_key:'SYN-N',outcomes:[]});await tick();
+assert.equal(u.els.resultLearningDialog.open,true);
+''')
+
+
+def test_save_opens_canonical_result_before_slow_list_refresh():
+    _run(r'''
+let finish;u.setApplicationReload(()=>new Promise(resolve=>{finish=resolve;}));
+openEmptyResult();fillWonResult();u.els.resultLearningRecordStatus.value='VALIDATED';
+u.els.resultLearningSourceReference.value='SYN official record';
+const saving=u.saveResultLearning({preventDefault(){}});await tick();
+respond(requests[0],200,{notice_key:'SYN-N',outcome:{id:'SYN-result',department_id:'SYN-A',department_revision:1,
+ source:'MANUAL_UI',record_status:'VALIDATED',status:'WON',winning_bid_amount:35501500,winning_bid_rate:95.1234,
+ source_reference:'SYN official record',operator_note:'<script>SYN</script>'}});await tick();
+assert.equal(u.els.resultLearningDialog.open,false);assert.equal(details.length,1);
+assert.equal(details[0][0],'SYN-N');assert.equal(details[0][2].initialTab,'result');
+assert.equal(details[0][2].resultRecord.outcome.winningBidRate,95.1234);
+u.state.selectedNotice=notice();u.renderDetailResult(details[0][2].resultRecord);
+assert.match(u.els.detailResultContent.innerHTML,/35,501,500/);
+assert.match(u.els.detailResultContent.innerHTML,/95.1234%/);
+assert.match(u.els.detailResultContent.innerHTML,/&lt;script&gt;/);
+assert.equal(u.els.detailResultEditButton.textContent,'결과 수정');
+finish();await saving;
+''')
+
+
+def test_draft_action_does_not_require_confirmation_source_and_stays_in_queue():
+    _run(r'''
+openEmptyResult();fillWonResult();u.els.resultLearningRecordStatus.value='VALIDATED';
+const saving=u.saveResultLearning({preventDefault(){},submitter:u.els.resultLearningDraftButton});await tick();
+assert.equal(JSON.parse(requests[0].options.body).record_status,'DRAFT');
+respond(requests[0],200,{outcome:{id:'SYN-result',source:'MANUAL_UI',department_id:'SYN-A',status:'WON',record_status:'DRAFT'}});
+await saving;
+const draft={...notice(),decision:'GO',status:'CLOSED',noticeStatus:'CLOSED',deadline:'2020-01-01',hasBidOutcome:true,resultEntryStatus:'DRAFT'};
+assert.equal(u.matchesPipelineQueue(draft,'result-missing-decided'),true);
+assert.match(u.noticeListActions(draft,true),/작성 중/);assert.match(u.noticeListActions(draft,true),/이어서 입력/);
+assert.equal(u.matchesPipelineQueue({...draft,resultEntryStatus:'COMPLETE'},'result-missing-decided'),false);
+''')
+
+
+def test_result_detail_late_response_cannot_leak_across_accounts():
+    _run(r'''
+u.state.selectedNotice=notice();const loading=u.loadDetailResult('SYN-N');await tick();
+login('SYN-B');u.state.selectedNotice=notice();
+respond(requests[0],200,{notice_key:'SYN-N',outcomes:[{source:'MANUAL_UI',department_id:'SYN-A',operator_note:'SYN PRIVATE'}]});
+await loading;assert.doesNotMatch(u.els.detailResultContent.innerHTML,/SYN PRIVATE/);
+''')
+
+
+def test_queue_refresh_keeps_the_open_result_detail_tab():
+    _run(r'''
+ u.state.currentView='result-missing-decided';
+ context.window.location.search='?notice=SYN-N';
+ u.state.selectedNotice={noticeKey:'SYN-N'};
+ u.els.detailDrawer.classList.contains=value=>value==='is-open';
+ u.openNoticeFromRoute();
+ assert.equal(details.length,0);
+ context.window.location.search='?notice=SYN-OTHER';
+ u.openNoticeFromRoute();
+ assert.equal(details.length,1);
+ assert.equal(details[0][0],'SYN-OTHER');
 ''')

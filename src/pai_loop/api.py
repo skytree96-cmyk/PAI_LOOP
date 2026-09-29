@@ -95,6 +95,7 @@ from .pps_enrichment import (
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import public_quantitative_snapshot_projection
 from .public_notice_seed import load_public_notice_seed
+from .result_learning import result_entry_state
 from .schemas import (
     AtomicRequirementCreate,
     AwardHistoryItemOut,
@@ -535,6 +536,7 @@ def _summary(
     public_view: bool = False,
     provider_authority: PpsNoticeAuthority | None = None,
     has_bid_outcome: bool = False,
+    result_entry_status: str | None = None,
     now: datetime | None = None,
 ) -> NoticeSummary:
     source_kind = _source_kind(notice)
@@ -629,6 +631,7 @@ def _summary(
         ),
         analysis_attempted=analysis_reason.attempted,
         has_bid_outcome=has_bid_outcome,
+        result_entry_status=result_entry_status,
         recommendation=recommendation,
         recommendation_conditions=recommendation_conditions,
         recommendation_evidence_count=recommendation_evidence_count,
@@ -866,6 +869,7 @@ def _detail(
     public_view: bool = False,
     provider_authority: PpsNoticeAuthority | None = None,
     now: datetime | None = None,
+    result_entry_status: str | None = None,
 ) -> NoticeDetail:
     latest_version = max(notice.versions, key=lambda item: item.version_no) if notice.versions else None
     return NoticeDetail(
@@ -874,6 +878,7 @@ def _detail(
             public_view=public_view,
             provider_authority=provider_authority,
             has_bid_outcome=bool(notice.bid_outcomes),
+            result_entry_status=result_entry_status,
             now=now,
         ).model_dump(),
         id=notice.id,
@@ -1069,6 +1074,23 @@ def _bid_outcome_notice_ids(
     )
 
 
+def _result_entry_states(session: Session, notice_ids: list[str], department_id: str | None = None) -> dict[str, str]:
+    if not notice_ids:
+        return {}
+    groups: dict[str, list[BidOutcome]] = {}
+    statement = select(BidOutcome).where(BidOutcome.notice_id.in_(notice_ids))
+    if department_id:
+        statement = statement.where(or_(BidOutcome.department_id == department_id, BidOutcome.department_id.is_(None)))
+    statement = statement.options(load_only(
+        BidOutcome.id, BidOutcome.notice_id, BidOutcome.department_id, BidOutcome.department_revision,
+        BidOutcome.source, BidOutcome.status, BidOutcome.evidence_json, BidOutcome.observed_at, BidOutcome.updated_at,
+        raiseload=True,
+    ), raiseload("*"))
+    for item in session.scalars(statement):
+        groups.setdefault(item.notice_id, []).append(item)
+    return {notice_id: result_entry_state(items, department_id) for notice_id, items in groups.items()}
+
+
 def _department_decision_index(
     session: Session,
     *,
@@ -1150,6 +1172,7 @@ def _notice_summaries_for_ids(
     notice_ids: list[str],
     *,
     public_view: bool,
+    department_id: str | None = None,
 ) -> list[NoticeSummary]:
     """Serialize a requested page without retaining every extraction graph."""
 
@@ -1159,12 +1182,14 @@ def _notice_summaries_for_ids(
         notices = _load_notice_summary_batch(session, batch_ids)
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
+        result_states = _result_entry_states(session, batch_ids, department_id)
         summaries.extend(
             _summary(
                 notice,
                 public_view=public_view,
                 provider_authority=authorities.get(notice.id),
                 has_bid_outcome=notice.id in outcome_notice_ids,
+                result_entry_status=result_states.get(notice.id, "MISSING"),
             )
             for notice in notices
         )
@@ -1362,6 +1387,7 @@ def dashboard(
         )
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
+        result_states = _result_entry_states(session, batch_ids, selected_department["id"] if selected_department else None)
         open_runs: list[AnalysisRun | None] = []
         quantitative_runs: list[AnalysisRun | None] = []
         for notice in notices:
@@ -1422,7 +1448,7 @@ def dashboard(
                     not is_cancelled
                     and effective_status in lifecycle_counts
                     and department_go
-                    and notice.id not in outcome_notice_ids
+                    and result_states.get(notice.id) != "COMPLETE"
                 ):
                     work_queue_counts["result_missing_decided"] += 1
                 run = latest_current_analysis_run(notice) if effective_status == "OPEN" and not is_cancelled else None
@@ -1454,7 +1480,7 @@ def dashboard(
                 if (
                     not is_cancelled
                     and effective_status in lifecycle_counts
-                    and notice.id not in outcome_notice_ids
+                    and result_states.get(notice.id) != "COMPLETE"
                 ):
                     result_missing_count += 1
                     work_queue_counts["result_missing"] += int(qualified)
@@ -1486,6 +1512,7 @@ def dashboard(
                             public_view=public_read_allowed(request),
                             provider_authority=authority,
                             has_bid_outcome=notice.id in outcome_notice_ids,
+                            result_entry_status=result_states.get(notice.id, "MISSING"),
                         ).model_dump(mode="json")
                     )
 
@@ -1945,6 +1972,7 @@ def list_notices(
             session,
             page_ids,
             public_view=public_read_allowed(request),
+            department_id=selected_department["id"] if selected_department else None,
         )
 
     # Ranking and exact text matching only need small Notice columns.  Loading
@@ -2010,6 +2038,7 @@ def list_notices(
             session,
             [row.id for row in page_rows],
             public_view=public_read_allowed(request),
+            department_id=selected_department["id"] if selected_department else None,
         )
 
     # ``search_keywords`` contributes explainable ordering but never hides a
@@ -2112,6 +2141,7 @@ def list_notices(
             session,
             [item["notice"].id for item in batch_candidates],
         )
+        result_states = _result_entry_states(session, [item["notice"].id for item in batch_candidates], selected_department["id"] if selected_department else None)
         loaded_by_id = {notice.id: notice for notice in notices}
         for item in batch_candidates:
             notice = loaded_by_id.get(item["notice"].id)
@@ -2127,6 +2157,7 @@ def list_notices(
                             public_view=public_view,
                             provider_authority=authorities.get(notice.id),
                             has_bid_outcome=notice.id in outcome_notice_ids,
+                            result_entry_status=result_states.get(notice.id, "MISSING"),
                         ).model_dump(),
                         "department_ranking": selected_ranking,
                         "top_department_rankings": views[
@@ -2157,7 +2188,11 @@ def create_notice(payload: NoticeCreate, session: DbSession) -> NoticeDetail:
 
 
 @router.get("/notices/{notice_key}", response_model=NoticeDetail)
-def get_notice(notice_key: str, request: Request, session: DbSession) -> NoticeDetail:
+def get_notice(notice_key: str, request: Request, session: DbSession, department_id: Annotated[str | None, Query(max_length=80)] = None) -> NoticeDetail:
+    try:
+        department = get_department_profile(department_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail="부서를 확인하세요.") from exc
     notice = _load_notice(session, notice_key)
     provider_authority = _pps_authorities_by_notice_id(session, [notice]).get(
         notice.id
@@ -2166,6 +2201,7 @@ def get_notice(notice_key: str, request: Request, session: DbSession) -> NoticeD
         notice,
         public_view=public_read_allowed(request),
         provider_authority=provider_authority,
+        result_entry_status=result_entry_state(list(notice.bid_outcomes), department["id"] if department else None),
     )
 
 

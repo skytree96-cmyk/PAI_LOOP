@@ -7952,3 +7952,8 @@ details.requirement-item.is-pass > summary { background: var(--green-pale); }
   .requirement-description { padding-left: 14px; }
   details.requirement-item > summary { grid-template-columns: 24px minmax(0,1fr) auto 12px; gap: 6px; }
 }
+
+.result-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px 24px; }
+.result-detail-grid dt { color: var(--text-muted, #64748b); font-size: .875rem; margin-bottom: 6px; }
+.result-detail-grid dd { margin: 0; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-detail-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }

@@ -10,7 +10,7 @@ APP = Path(__file__).parents[1] / 'src/pai_loop/static/app.js'
 BEHAVIOR_HARNESS = r'''
 const assert=require('node:assert/strict'),vm=require('node:vm');
 const source=require('node:fs').readFileSync(0,'utf8');
-const requests=[],toasts=[],rendered=[];
+const requests=[],toasts=[],rendered=[],details=[];
 const context=vm.createContext({URL,URLSearchParams,Intl,Headers,AbortController,
  fetch(path,options){return new Promise(resolve=>requests.push({path,options,resolve}));},
  document:{created:[],head:{append(){}},createElement(tag){const node={tag,children:[],events:{},append(...nodes){this.children.push(...nodes);},addEventListener(name,fn){this.events[name]=fn;},focus(){}};this.created.push(node);return node;},body:{hidden:false,cleared:false,children:[],append(node){this.children.push(node);},replaceChildren(){this.cleared=true;this.children=[];}},documentElement:{dataset:{}},getElementById(){return null;},addEventListener(){}},
@@ -22,6 +22,7 @@ const originalRenderResultLearning=renderResultLearning;
 const originalLoadApplicationData=loadApplicationData;
 renderAll=()=>{};renderDataSource=()=>{};renderResultLearning=()=>{};
 closeDetail=()=>{state.selectedNotice=null;};
+openDetail=(...args)=>globalThis.onDetail(args);
 renderExistingDecision=n=>globalThis.onRender(n);renderPipelineIntoExisting=()=>{};
 renderDetail=n=>globalThis.onRender(n);applyFilters=()=>{};
 updateDecisionButton=()=>{};setDecisionDockExpanded=()=>{};
@@ -46,6 +47,7 @@ globalThis.ui={state,els,apiRequest,applyAccountSession,loadAccountSession,login
  loadApplicationData:(...args)=>loadApplicationData(...args),
  setOpenDetail(fn){openDetail=fn;},
  setRefresh(fn){refreshDashboardAfterMutation=fn;}};`;
+context.onDetail=args=>details.push(args);
 context.onToast=args=>toasts.push(args);context.onRender=n=>rendered.push(n);
 vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+'\n})();'),context);
 const u=context.ui;
@@ -165,6 +167,7 @@ def test_opening_correction_clears_custom_error_before_browser_submit(event_type
 u.bindResultLearningOpeningEvents();
 u.openResultLearningDialog(u.normalizeResultLearningNotice({notice_key:'SYN-N',bid_notice_no:'SYN-NUMBER',revision_no:'0',outcomes:[]}));
 u.els.resultLearningStatus.value='SUBMITTED';
+u.els.resultLearningRecordStatus.value='DRAFT';
 const changed=u.els['resultLearningOpening'+editedField];
 const other=u.els['resultLearningOpening'+(editedField==='Rebid'?'Classification':'Rebid')];
 other.value='0';
@@ -654,7 +657,7 @@ const sent=JSON.parse(requests[0].options.body);
 assert.equal(sent.expected_decision_id,'SYN-A2');assert.equal(sent.actor_label,'SYN-A');
 assert.equal(sent.choice,'HOLD');assert.equal(sent.rationale,'SYN own reason');
 respond(requests[0],409,{detail:'SYN department decision changed'});await tick();
-assert.match(requests[1].path,/\/notices\/SYN-N$/);
+assert.match(requests[1].path,/\/notices\/SYN-N\?department_id=SYN-A$/);
 respond(requests[1],200,noticeRaw);await tick();
 assert.match(requests[2].path,/\/operator-decisions\/notices\/SYN-N$/);
 respond(requests[2],200,[...decisions,{id:'SYN-A3',department_id:'SYN-A',department_revision:3,choice:'NO_GO',rationale:'SYN new'}]);
@@ -684,7 +687,7 @@ def test_result_form_uses_own_record_and_safe_create_patch_versions():
 const other={id:'SYN-B99',department_id:'SYN-B',department_revision:99,source:'MANUAL_UI',status:'WON',operator_note:'SYN other private form'};
 const own={id:'SYN-A2',department_id:'SYN-A',department_revision:2,source:'MANUAL_UI',status:'LOST',operator_note:'SYN own note',updated_at:'2026-09-01T01:00:00Z'};
 let n=u.normalizeResultLearningNotice({notice_key:'SYN-N',outcomes:[other,own],latest_outcome:other});
-u.openResultLearningDialog(n);assert.equal(u.els.resultLearningOperatorNote.value,'SYN own note');
+u.openResultLearningDialog(n);u.els.resultLearningRecordStatus.value="DRAFT";assert.equal(u.els.resultLearningOperatorNote.value,'SYN own note');
 let saving=u.saveResultLearning({preventDefault(){}});await tick();
 assert.match(requests[0].path,/\/result-learning\/SYN-A2$/);assert.equal(requests[0].options.method,'PATCH');
 assert.equal(JSON.parse(requests[0].options.body).expected_updated_at,own.updated_at);
@@ -693,7 +696,7 @@ assert.equal(u.els.resultLearningDialog.open,true);
 assert.equal(u.els.resultLearningOperatorNote.value,'SYN own note');
 assert.equal(requests.length,1);await saving;
 n=u.normalizeResultLearningNotice({notice_key:'SYN-N',outcomes:[other],latest_outcome:other});
-u.openResultLearningDialog(n);assert.equal(u.els.resultLearningOperatorNote.value,'');
+u.openResultLearningDialog(n);u.els.resultLearningRecordStatus.value="DRAFT";assert.equal(u.els.resultLearningOperatorNote.value,'');
 u.els.resultLearningOperatorNote.value='SYN first own note';
 u.els.resultLearningStatus.value='SUBMITTED';
 saving=u.saveResultLearning({preventDefault(){}});await tick();

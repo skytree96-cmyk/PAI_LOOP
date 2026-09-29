@@ -213,14 +213,14 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert "notices.filter(isVisibleEndedNotice)" in derived_body
     assert "resultMissingCount:" in derived_body
     assert (
-        "isVisibleEndedNotice(notice) && !notice.hasBidOutcome"
+        "isVisibleEndedNotice(notice) && !resultEntryComplete(notice)"
         in derived_body
     )
     assert "workQueues.result_missing" in dashboard_body
     assert "els.kpiReview.textContent = displayNumber(data.pendingDecisionCount)" in source
     assert "els.kpiGo.textContent = displayNumber(data.inProgressCount)" in source
     assert '["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)' in filter_body
-    assert 'if (queue === "result-missing") return isVisibleEndedNotice(notice) && !notice.hasBidOutcome' in derived_body
+    assert 'if (queue === "result-missing") return isVisibleEndedNotice(notice) && !resultEntryComplete(notice)' in derived_body
     assert "source.has_bid_outcome" in source
     assert "effectiveRecommendation(notice) !== recommendation" in filter_body
     assert 'urgent: "/urgent"' in source
@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260924-uiux-v1"' in html
-    assert 'href="./top-navigation.css?v=20260924-uiux-v1"' in html
-    assert 'src="./app.js?v=20260924-uiux-v1"' in html
+    assert 'href="./styles.css?v=20260929-result-flow-v1"' in html
+    assert 'href="./top-navigation.css?v=20260929-result-flow-v1"' in html
+    assert 'src="./app.js?v=20260929-result-flow-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -432,7 +432,7 @@ def test_three_track_search_help_cards_and_deep_links_are_explicit() -> None:
 
     assert 'url.searchParams.set("notice", noticeKey)' in route_body
     assert "new URL(window.location.href)" in route_body
-    assert 'apiRequest(`/notices/${encodeURIComponent(noticeKey)}`)' in hydrate_body
+    assert 'apiRequest(`/notices/${encodeURIComponent(noticeKey)}${suffix}`)' in hydrate_body
     assert "state.notices.push(hydrated)" in hydrate_body
     assert "noticeDetailHref(notice.noticeKey)" in copy_body
     assert "notice.sourceUrl ||" not in copy_body
