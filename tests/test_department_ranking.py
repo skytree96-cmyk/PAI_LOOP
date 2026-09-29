@@ -23,7 +23,7 @@ from pai_loop.department_ranking import (
 def test_profile_catalog_is_versioned_and_contains_no_personnel_fields() -> None:
     catalog = load_department_keyword_profiles()
 
-    assert catalog["version"] == "2026.08.18-1"
+    assert catalog["version"] == "2026.09.29-1"
     assert catalog["baseline"]["strong_keywords"] == ["교육", "컨설팅"]
     assert len(catalog["departments"]) >= 24
     serialized = json.dumps(catalog, ensure_ascii=False).casefold()
@@ -145,7 +145,7 @@ def test_top_departments_only_include_differentiated_matches() -> None:
 def test_region_is_single_boost_and_does_not_outrank_business_expertise() -> None:
     rankings = rank_notice_across_departments(
         title="2026년 7급 승진후보자 역량(시책교육) 위탁운영 용역",
-        agency="인천광역시인재개발원",
+        agency="대전광역시인재개발원",
         category="교육용역",
         limit=10,
     )
@@ -153,17 +153,79 @@ def test_region_is_single_boost_and_does_not_outrank_business_expertise() -> Non
     assert rankings[0]["department_id"] == "future-competency-solution"
     routes = route_notice_across_regions(
         title="2026년 7급 승진후보자 역량(시책교육) 위탁운영 용역",
-        agency="인천광역시인재개발원",
+        agency="대전광역시인재개발원",
         category="교육용역",
         limit=10,
     )
     central = next(item for item in routes if item["department_id"] == "region-central")
     assert central["ranking_scope"] == "REGION"
     assert central["recommendation_tier"] == "ROUTING"
-    assert central["matched_regions"] == ["인천"]
+    assert central["matched_regions"] == ["대전"]
     assert central["matched_department_keywords"] == []
     assert central["department_score"] == 14
     assert rankings[0]["department_score"] > central["department_score"]
+
+
+def test_capital_area_routes_to_competency_solution_not_central() -> None:
+    payload = {
+        "title": "서울특별시 공무원 직무 교육 위탁운영",
+        "agency": "서울특별시인재개발원",
+        "category": "교육용역",
+    }
+    routes = route_notice_across_regions(**payload, limit=10)
+    central = rank_notice_for_department(**payload, department_id="region-central")
+
+    assert [item["department_id"] for item in routes] == ["future-competency-solution"]
+    routed = routes[0]
+    assert routed["group"] == "미래혁신그룹"
+    assert routed["ranking_scope"] == "REGION"
+    assert routed["recommendation_tier"] == "ROUTING"
+    assert routed["matched_regions"] == ["서울"]
+    assert routed["department_score"] == routed["routing_score"] == 14
+    assert routed["business_score"] == 0
+    assert central["matched_regions"] == []
+    assert central["recommendation_tier"] == "NONE"
+    for place in ("경기도", "인천광역시", "수도권"):
+        ranking = rank_notice_for_department(
+            title=f"{place} 공무원 직무 교육 위탁운영",
+            department_id="future-competency-solution",
+        )
+        assert ranking["recommendation_tier"] == "ROUTING", place
+    for place in ("대전", "세종", "충북", "충남", "충청", "강원"):
+        ranking = rank_notice_for_department(
+            title=f"{place} 공무원 직무 교육 위탁운영", department_id="region-central",
+        )
+        assert ranking["recommendation_tier"] == "ROUTING", place
+
+
+def test_competency_solution_business_match_outranks_its_own_routing() -> None:
+    # Its own work in its own territory is a business recommendation, and it
+    # must not also show up a second time as a region route.
+    payload = {
+        "title": "7급 승진후보자 역량평가 위탁운영",
+        "agency": "인천광역시인재개발원",
+        "category": "교육용역",
+    }
+    selected = rank_notice_for_department(**payload, department_id="future-competency-solution")
+    top = rank_notice_across_departments(**payload, limit=30)
+    routes = route_notice_across_regions(**payload, limit=10)
+
+    assert selected["recommendation_tier"] == "TOP"
+    assert selected["ranking_scope"] == "BUSINESS"
+    assert selected["matched_regions"] == ["인천"]
+    assert top[0]["department_id"] == "future-competency-solution"
+    assert routes == []
+
+
+def test_bare_capital_area_name_does_not_route_to_competency_solution() -> None:
+    ranking = rank_notice_for_department(
+        title="서울 청사 도로 포장 보수 공사", agency="SYN agency",
+        department_id="future-competency-solution",
+    )
+
+    assert ranking["matched_regions"] == []
+    assert ranking["blocked_region_signals"] == ["서울"]
+    assert ranking["recommendation_tier"] == "NONE"
 
 
 def test_bare_region_name_alone_does_not_match_or_route() -> None:
@@ -226,13 +288,20 @@ def test_official_place_name_routes_when_the_title_names_the_work() -> None:
 
 def test_multiple_bare_region_names_do_not_accumulate_a_score() -> None:
     ranking = rank_notice_for_department(
-        title="서울 경기 인천 대전 세종 충북 충남 순회 정비", agency="SYN agency",
+        title="대전 세종 충북 충남 강원 순회 정비", agency="SYN agency",
         department_id="region-central",
+    )
+    capital = rank_notice_for_department(
+        title="서울 경기 인천 순회 정비", agency="SYN agency",
+        department_id="future-competency-solution",
     )
 
     assert ranking["score"] == 0
     assert ranking["recommendation_tier"] == "NONE"
     assert len(ranking["blocked_region_signals"]) >= 5
+    assert capital["score"] == 0
+    assert capital["recommendation_tier"] == "NONE"
+    assert len(capital["blocked_region_signals"]) == 3
 
 
 def test_forum_counts_as_business_evidence_for_a_regional_office() -> None:
@@ -276,7 +345,7 @@ def test_region_declarations_must_stay_in_sync_with_the_profile(
     # A declared place name that no region covers would silently delete a
     # regional queue, so the loader must refuse it too.
     monkeypatch.setitem(
-        ranking_module._REGION_ONLY_KEYWORDS, "region-central", ("서울", "중부권 컨설팅"),
+        ranking_module._REGION_ONLY_KEYWORDS, "region-central", ("대전", "중부권 컨설팅"),
     )
     monkeypatch.delitem(ranking_module._REGION_ALIASES, "management-planning")
     with pytest.raises(ValueError, match="not covered by regions"):
@@ -396,18 +465,30 @@ def test_keyword_phrase_cannot_be_fabricated_across_agency_and_category_fields()
 
 def test_region_owner_receives_region_weight() -> None:
     central = rank_notice_for_department(
+        title="대전광역시 공무원 교육 운영",
+        agency="대전광역시",
+        department_id="region-central",
+    )
+    busan = rank_notice_for_department(
+        title="대전광역시 공무원 교육 운영",
+        agency="대전광역시",
+        department_id="region-busan-gyeongnam",
+    )
+    competency = rank_notice_for_department(
+        title="인천광역시 공무원 교육 운영",
+        agency="인천광역시",
+        department_id="future-competency-solution",
+    )
+    central_in_incheon = rank_notice_for_department(
         title="인천광역시 공무원 교육 운영",
         agency="인천광역시",
         department_id="region-central",
     )
-    busan = rank_notice_for_department(
-        title="인천광역시 공무원 교육 운영",
-        agency="인천광역시",
-        department_id="region-busan-gyeongnam",
-    )
 
     assert central["score"] > busan["score"]
-    assert "인천" in central["matched_regions"]
+    assert "대전" in central["matched_regions"]
+    assert competency["score"] > central_in_incheon["score"]
+    assert "인천" in competency["matched_regions"]
 
 
 def test_internal_support_profiles_are_present_but_conservatively_weighted() -> None:
@@ -481,8 +562,9 @@ def test_exclusion_blocks_business_recommendation_but_not_separate_region_routin
     assert selected["recommendation_tier"] == "NONE"
     assert "talent-development" not in {item["department_id"] for item in top}
     assert "talent-development" not in {item["department_id"] for item in review}
-    assert routes[0]["department_id"] == "region-central"
+    assert routes[0]["department_id"] == "future-competency-solution"
     assert routes[0]["recommendation_tier"] == "ROUTING"
+    assert "future-competency-solution" not in {item["department_id"] for item in top}
 
 
 def test_keyword_profile_and_ranked_notice_api(client: TestClient) -> None:
@@ -523,7 +605,9 @@ def test_keyword_profile_and_ranked_notice_api(client: TestClient) -> None:
     assert body[0]["department_ranking"]["reasons"]
     assert body[0]["top_department_rankings"][0]["department_id"] == "future-competency-solution"
     assert body[0]["department_review_candidates"]
-    assert body[0]["region_routing"][0]["department_id"] == "region-central"
+    # 인천 is 역량솔루션본부's territory and it already owns this notice as a
+    # business recommendation, so no separate region route is added.
+    assert body[0]["region_routing"] == []
     assert all(
         item["recommendation_tier"] == "TOP"
         for item in body[0]["top_department_rankings"]
