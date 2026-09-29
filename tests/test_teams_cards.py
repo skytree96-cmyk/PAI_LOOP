@@ -169,7 +169,7 @@ def test_card_separates_eligibility_from_participation_and_submission(client):
         _append_card_attachment(session, notice, version_no=1, identity="a", conditions=[
             ("ENTITY", eligibility), ("SUBMISSION", action), ("SUBMISSION", checklist)])
         card = teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW, base_url="https://example.test")
-        blocks = [block.get("text", "") for block in card["body"]]
+        blocks = [block.get("text", "") for block in _details(card)["items"]]
         eligibility_start = blocks.index("자격사항 · 확인할 조건")
         action_start = blocks.index("참여 전 처리할 사항")
         checklist_start = blocks.index("제출·계약 확인사항")
@@ -179,7 +179,66 @@ def test_card_separates_eligibility_from_participation_and_submission(client):
         assert any(action in text for text in blocks[action_start:checklist_start])
         assert any(checklist in text for text in blocks[checklist_start:quantitative_start])
         # Display classification does not manufacture an overall company verdict.
-        assert card["body"][2]["facts"][2]["value"] == "미판정"
+        facts = {fact["title"]: fact["value"] for fact in _first(card, "FactSet")["facts"]}
+        assert facts["참가자격"] == "미판정"
+
+
+def _walk(element):
+    if isinstance(element, dict):
+        yield element
+        for key in ("body", "items", "columns", "actions"):
+            for child in element.get(key, []):
+                yield from _walk(child)
+
+
+def _first(card, kind):
+    return next(element for element in _walk(card) if element.get("type") == kind)
+
+
+def _details(card):
+    return next(element for element in card["body"] if element.get("id") == teams_cards.DETAILS_ID)
+
+
+def test_card_shows_preview_layout_and_keeps_full_analysis_collapsed(client):
+    with client.app.state.session_factory() as session:
+        notice = _notice(session)
+        card = teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW, base_url="https://example.test")
+    elements = list(_walk(card))
+    # Status badges: qualification then deadline, each a Teams-styled container.
+    badges = card["body"][4]["columns"]
+    assert [column["items"][0]["items"][0]["text"] for column in badges] == [
+        "자격 미판정", f"D-10 · {(NOW + timedelta(days=10)).astimezone(KST):%m.%d}"
+        + " (" + "월화수목금토일"[(NOW + timedelta(days=10)).astimezone(KST).weekday()] + ")"]
+    assert badges[0]["items"][0]["style"] == "emphasis"
+    # Three metric tiles never invent a score for an unevaluated notice.
+    metrics = card["body"][6]["columns"]
+    assert [[block["text"] for block in column["items"][0]["items"]] for column in metrics] == [
+        ["준비도", "미산정"], ["리스크", "미산정"], ["추천", "확인 필요"]]
+    details = _details(card)
+    assert details["isVisible"] is False
+    toggle = next(element for element in elements if element.get("type") == "Action.ToggleVisibility")
+    assert toggle["targetElements"] == [teams_cards.DETAILS_ID]
+    assert [action["url"] for action in card["actions"]] == [
+        "https://example.test/?notice=SYN-TEAMS-CARD", "https://example.test/?notice=SYN-TEAMS-CARD&decision=1"]
+    assert "SYN 카드 공고" in card["fallbackText"]
+    assert card["msteams"] == {"width": "Full"}
+
+
+def test_cancelled_card_offers_no_decision_button(client):
+    with client.app.state.session_factory() as session:
+        notice = _notice(session)
+        notice.status = "CANCELLED"
+        card = teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW, base_url="https://example.test")
+    assert [action["title"] for action in card["actions"]] == ["근거 상세보기"]
+
+
+@pytest.mark.parametrize("days,text,style", [
+    (0, "오늘 마감", "attention"), (3, "D-3", "warning"), (12, "D-12", "accent"), (-1, "마감 ·", "emphasis")])
+def test_deadline_badge_escalates_as_the_deadline_nears(days, text, style):
+    now = datetime(2026, 10, 1, 1, tzinfo=timezone.utc)
+    badge = teams_cards._deadline_badge((now + timedelta(days=days)).astimezone(KST), now)
+    assert badge["items"][0]["style"] == style
+    assert badge["items"][0]["items"][0]["text"].startswith(text)
 
 
 def test_new_review_attempt_cannot_fall_back_to_accepted_requirement(client):

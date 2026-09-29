@@ -8938,9 +8938,18 @@
 
   function openNoticeFromRoute() {
     if (!isNoticeListView()) return;
-    const key = new URLSearchParams(window.location.search).get("notice");
+    const query = new URLSearchParams(window.location.search);
+    const key = query.get("notice");
     if (key && !(state.selectedNotice?.noticeKey === key && els.detailDrawer.classList.contains("is-open"))) {
-      void openDetail(key, null, { updateRoute: false });
+      // The Teams card's "담당자 판단" button links here with decision=1.
+      const focusDecision = query.get("decision") === "1";
+      void openDetail(key, null, { updateRoute: false }).then(() => {
+        if (!focusDecision || state.selectedNotice?.noticeKey !== key) return;
+        const url = new URL(window.location.href);
+        url.searchParams.delete("decision");
+        history.replaceState(history.state, "", url);
+        focusDecisionDockFromPreview();
+      });
     }
   }
 
