@@ -30,6 +30,7 @@ from .eligibility_policy import (
     classify_requirements,
     expand_statutory_qualification_requirements,
     load_public_company_profile,
+    prototype_fact_enabled,
 )
 from .evaluator import (
     MIN_EXTRACTION_CONFIDENCE,
@@ -1111,6 +1112,7 @@ def _atomic_requirement(
         # its policy is PASS-current plus a pre-submission reconfirmation.
         evidence_required=(
             policy_class == "ELIGIBILITY" and bool(policy.get("evidence"))
+            and policy.get("assessment_basis") != "PROTOTYPE_CURRENT_FACTS"
         ),
         mandatory=True,
         pass_rule_id=_PASS_RULE_BY_CATEGORY.get(category, "P-DOCUMENT"),
@@ -1162,6 +1164,32 @@ def _selected_fact_manifest(
         )
         manifest.append({"company_fact_id": fact.id, "basis_sha256": basis_sha256})
     return sorted(manifest, key=lambda item: (item["company_fact_id"], item["basis_sha256"]))
+
+
+def _prototype_eligibility_facts(
+    profile: dict[str, Any], *, deadline: datetime,
+    company_facts: Sequence[CompanyFact],
+) -> list[CompanyFact]:
+    """Use the latest stored company values only for the approved prototype scope.
+
+    Separate transient keys leave historical facts and scoring untouched. Missing
+    values stay missing, and an explicit stored False still fails the condition.
+    """
+    latest: dict[str, CompanyFact] = {}
+    for fact in company_facts:
+        if not prototype_fact_enabled(profile, fact.fact_key):
+            continue
+        previous = latest.get(fact.fact_key)
+        if previous is None or fact.effective_from > previous.effective_from:
+            latest[fact.fact_key] = fact
+    return [
+        CompanyFact(
+            fact_key=f"prototype.{key}", value=copy.deepcopy(fact.value),
+            value_label="PROTOTYPE_CURRENT_FACTS", source="PROTOTYPE_COMPANY_BASELINE",
+            effective_from=deadline, effective_to=None, verified=False,
+        )
+        for key, fact in sorted(latest.items())
+    ]
 
 
 def _safe_actual_value(value: Any) -> Any:
@@ -1934,6 +1962,10 @@ def run_analysis_pipeline(
                 fact for fact in company_facts
                 if fact.fact_key not in pending_performance_fact_keys
             ]
+            prototype_company_facts = _prototype_eligibility_facts(
+                profile, deadline=notice.deadline, company_facts=company_facts,
+            )
+            eligibility_company_facts.extend(prototype_company_facts)
             fact_manifest = _selected_fact_manifest(
                 company_facts,
                 fact_keys=(
@@ -2034,6 +2066,10 @@ def run_analysis_pipeline(
                     "policy_version": POLICY_VERSION,
                     "profile_version": profile_version,
                     "profile_sha256": profile_sha256,
+                    "prototype_company_fact_basis_sha256": _digest([
+                        {"key": fact.fact_key, "value": fact.value}
+                        for fact in prototype_company_facts
+                    ]),
                     "notice_basis_sha256": notice_basis_sha256,
                     "sources": source_semantics,
                     "pps_manifest_basis": pps_manifest_basis,

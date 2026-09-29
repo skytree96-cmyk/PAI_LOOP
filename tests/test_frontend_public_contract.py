@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260929-result-flow-v1"' in html
-    assert 'href="./top-navigation.css?v=20260929-result-flow-v1"' in html
-    assert 'src="./app.js?v=20260929-result-flow-v1"' in html
+    assert 'href="./styles.css?v=20260929-eligibility-v14"' in html
+    assert 'href="./top-navigation.css?v=20260929-eligibility-v14"' in html
+    assert 'src="./app.js?v=20260929-eligibility-v14"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -897,11 +897,11 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
 
     assert '.filter((item) => item?.category === "ELIGIBILITY")' in adapter_body
     assert 'source: "PUBLIC_POLICY_SUPPLEMENT"' in adapter_body
-    assert 'notice.analysisState === "EVALUATED"' in adapter_body
+    assert "const currentEvidence" not in adapter_body
     assert 'notice.eligibilityStatus === "PASS"' not in adapter_body
-    assert 'currentEvidence ? outcome : "REVIEW"' in adapter_body
-    assert "현재 첨부 검증이 완료되지 않았습니다" in adapter_body
-    assert "공고 마감일 기준" in adapter_body
+    assert 'outcome === "FAIL_CONFIRMED"' in adapter_body
+    assert "Whole-notice document readiness is separate" in adapter_body
+    assert "item.message" in adapter_body
 
     assert "analysisStatusPill(notice)" in panel_body
     assert "검증된 공개 자격정책이 없습니다" in panel_body
@@ -949,7 +949,7 @@ for (const incomplete of [
   { ...notice, documentQualityReview: true },
 ]) {
   assert.deepEqual(eligibilityRequirementsForDisplay(incomplete).map(x => x.status),
-    ["REVIEW", "REVIEW", "REVIEW", "REVIEW"]);
+    ["PASS_CURRENT", "PASS_EXCEPTION", "FAIL", "REVIEW"]);
 }
 const stored = [{ status: "FAIL", source: "STORED" }];
 assert.equal(eligibilityRequirementsForDisplay({ ...notice, requirements: stored }), stored);

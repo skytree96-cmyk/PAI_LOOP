@@ -99,7 +99,7 @@ def test_provider_id_cannot_select_evaluation_fact_key():
     # that the key above still derives from the condition alone. v13 carries
     # the structural reading of a nonprofit alternative, which changes which
     # requirements pass but not how this key is built.
-    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.17-v13"
+    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.29-v14"
 
 
 def test_public_generic_or_exact_boolean_never_claims_scope_is_bound():
