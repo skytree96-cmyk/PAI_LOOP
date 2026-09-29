@@ -5198,6 +5198,44 @@ def _strict_row_probe(
     )
 
 
+def _extracted_row_sources(notice: Notice) -> dict[tuple[str, str, str], ReviewRowSource]:
+    """Every row of every accepted current extraction, for the beta only.
+
+    A table the validator could not link (summary/detail conflict, total
+    mismatch) drops its rows from the profile altogether; the beta still reads
+    them from the stored extraction, bound to that attachment's document hash.
+    """
+
+    versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
+    attachments, _invalid, attempts = _current_manifest_attempts(
+        versions, validate_accepted=False, preserve_quantitative_proof=True,
+    )
+    sources: dict[tuple[str, str, str], ReviewRowSource] = {}
+    for attachment in attachments:
+        attachment_id = attachment["attachment_id"]
+        attempt = attempts.get(attachment_id)
+        payload = attempt.source_payload if attempt is not None and isinstance(attempt.source_payload, dict) else {}
+        document_sha256 = str(getattr(attempt, "file_sha256", "") or "").casefold()
+        if payload.get("status") != "ACCEPTED" or re.fullmatch(r"[a-f0-9]{64}", document_sha256) is None:
+            continue
+        try:
+            extraction = ExtractionPayload.model_validate(payload.get("result"))
+        except (TypeError, ValueError):
+            continue
+        for table in extraction.quantitative_tables:
+            for row in table.criteria:
+                identity = (attachment_id, table.table_id, row.criterion_id)
+                if identity in sources:
+                    sources.pop(identity)  # repeated identity: ambiguous, skip it
+                    continue
+                sources[identity] = ReviewRowSource(
+                    attachment_id=attachment_id, table_id=table.table_id, criterion_id=row.criterion_id,
+                    document_sha256=document_sha256, source_label=attachment.get("file_name"),
+                    raw=row, issue_codes=frozenset(), state="EXTRACTED",
+                )
+    return sources
+
+
 def _apply_company_first_beta(
     request: QuantitativeEstimateRequest,
     *,
@@ -5217,7 +5255,10 @@ def _apply_company_first_beta(
     if not company_first_enabled():
         return None
     try:
-        sources = {**review_row_sources(notice, profile), **available_row_sources(notice, profile)}
+        sources = {
+            **_extracted_row_sources(notice),
+            **review_row_sources(notice, profile), **available_row_sources(notice, profile),
+        }
     except (ValidationError, ValueError, TypeError, KeyError):
         return None
     if not sources:
@@ -5241,6 +5282,11 @@ def _apply_company_first_beta(
     seen: set[tuple[str, str, str, float]] = set()
     for item in request.criteria:
         seen.add((item.category, re.sub(r"\s+", "", item.label), re.sub(r"\s+", "", item.formula)[:200], item.max_points))
+    chosen: list[tuple[str, str, float, str]] = [
+        (item.source_anchor.document_label if item.source_anchor else "", item.category, item.max_points,
+         re.sub(r"\s+", "", item.label))
+        for item in request.criteria
+    ]
     replaced: set[str] = set()
     criteria: list[QuantitativeCriterion] = []
     facts: list[QuantitativeFact] = []
@@ -5250,8 +5296,15 @@ def _apply_company_first_beta(
         if criterion_id in settled:
             continue
         key = (raw.metric, re.sub(r"\s+", "", raw.label), re.sub(r"\s+", "", raw.criterion_literal)[:200], raw.max_points)
-        if criterion_id not in kept_ids and key in seen:
-            continue  # the same printed row read twice (summary and detail table)
+        compact_label = re.sub(r"\s+", "", raw.label)
+        if criterion_id not in kept_ids and (key in seen or any(
+            other_attachment != attachment_id and metric == raw.metric and maximum == raw.max_points
+            and (label in compact_label or compact_label in label)
+            for other_attachment, metric, maximum, label in chosen
+        )):
+            # The same printed row read twice: a summary and a detail table, or
+            # one announcement uploaded as both HWP and PDF.
+            continue
         score = None
         if raw.metric != "CREDIT_RATING" or credit_grade is None:
             score = _strict_row_probe(
@@ -5268,6 +5321,7 @@ def _apply_company_first_beta(
         if score is None:
             continue
         seen.add(key)
+        chosen.append((attachment_id, raw.metric, raw.max_points, compact_label))
         metric_key = f"beta.company_first.{criterion_id}"
         points = _round_points(min(score.points, raw.max_points))
         try:
