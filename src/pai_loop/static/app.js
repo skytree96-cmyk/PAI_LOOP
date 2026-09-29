@@ -704,7 +704,7 @@
         els.resultLearningRateMode.value = els.resultLearningStatus.value === "SUBMITTED" ? "AUTO" : "MANUAL";
       }
       if (!state.resultLearning.editingOutcome && !els.resultLearningWinningRateMode.dataset.userSelected) {
-        els.resultLearningWinningRateMode.value = ["WON", "LOST"].includes(els.resultLearningStatus.value) ? "AUTO" : "MANUAL";
+        els.resultLearningWinningRateMode.value = "MANUAL";
       }
       updateResultLearningRate();
     });

@@ -422,3 +422,22 @@ assert.equal(details[0][2].initialTab,'result');
 u.renderDetailResult(details[0][2].resultRecord);
 assert.match(u.els.detailResultContent.innerHTML,/<dt>낙찰금액<\/dt><dd>미확인<\/dd>/);
 ''')
+
+
+def test_new_outcome_status_keeps_unknown_award_amount_optional():
+    _run(r'''
+const start=source.indexOf('    els.resultLearningStatus.addEventListener("change", () => {');
+const end=source.indexOf('    });',start)+7;
+let onChange;u.els.resultLearningStatus.addEventListener=(_event,callback)=>{onChange=callback;};
+vm.runInContext(source.slice(start,end).replace(/els\./g,'ui.els.').replace(/state\./g,'ui.state.').replace('updateResultLearningRate();','ui.updateResultLearningRate();'),context);
+openEmptyResult();
+for (const status of ['WON','LOST']) {
+ u.els.resultLearningStatus.value=status;onChange();
+ assert.equal(u.els.resultLearningWinningRateMode.value,'MANUAL');
+ assert.equal(u.els.resultLearningWinningAmount.required,false);
+}
+u.els.resultLearningWinningRateMode.value='AUTO';
+u.els.resultLearningWinningRateMode.dataset.userSelected='true';onChange();
+assert.equal(u.els.resultLearningWinningRateMode.value,'AUTO');
+assert.equal(u.els.resultLearningWinningAmount.required,true);
+''')
