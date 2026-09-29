@@ -34,7 +34,7 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     for asset in assets:
         assert public_client.get(asset).status_code == 200
     assert re.findall(r'data-ps-step="(\d+)"', response.text) == [str(i) for i in range(8)]
-    assert "관심 공고 · Teams 개인 알림" in response.text
+    assert "MS Teams<br>맞춤 알림 연동" in response.text
     assert "데일리 브리핑" in response.text
     assert "로그인과 권한 관리는 현재 준비 중" not in response.text
     assert public_client.head(path).status_code == 200

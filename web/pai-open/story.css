@@ -255,3 +255,10 @@
 .is-enhanced .demo-body{padding:16px 18px}
 .is-enhanced .demo-heading{margin-bottom:12px}
 @media(min-width:1001px) and (max-height:760px){.ps-visual-caption{display:none}.ps-example-label{margin-bottom:10px!important}.ps-callout{padding:13px 17px}.ps-pinned{padding-block:8px}.ps-scene-bottom{margin-top:10px}}
+/* Long editorial copy from the September 29 review fits the same glass card. */
+.is-enhanced .ps-copy-detailed .ps-copy-lead{font-size:14px;line-height:1.7;margin-top:15px!important}
+.is-enhanced .ps-copy-detailed .ps-points{font-size:12px;line-height:1.65;gap:7px;margin-top:15px}
+.is-enhanced .ps-copy-detailed h3{font-size:30px;margin-top:15px}
+.is-enhanced .ps-copy-detailed .ps-cta{margin-top:17px}
+.demo-worklist .demo-item{padding-block:13px}
+@media(min-width:1001px) and (max-width:1200px){.is-enhanced .ps-copy-detailed h3{font-size:26px}.is-enhanced .ps-copy-detailed .ps-copy-lead{font-size:14px}.is-enhanced .ps-copy-detailed .ps-points{font-size:12px}}

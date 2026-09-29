@@ -1,6 +1,6 @@
 # PAI public introduction
 
-Static Korean introduction for PAI's AI-assisted public procurement review workflow. The hero, seven feature sections and guide explain three distinct roles: AI extracts requirements, scoring-table candidates and source evidence from documents; PAI validates the extraction and compares verified rules with company facts; a human records the final participation decision. Search, deadline sorting, award lookups and result records are not presented as autonomous AI decisions. Uncalculated, estimated and confirmed scores remain distinct.
+Static Korean introduction for PAI's AI-assisted public procurement review workflow. The hero, eight scroll scenes and guide explain three distinct roles: AI extracts requirements, scoring-table candidates and source evidence from documents; PAI validates the extraction and compares verified rules with company facts; a human records the final participation decision. Search, deadline sorting, award lookups and result records are not presented as autonomous AI decisions. Uncalculated, estimated and confirmed scores remain distinct.
 
 The product tour uses the actual application interface with synthetic demonstration data. It is not evidence of a real notice's analysis, company eligibility, score or award outcome. The public page makes no application API requests, analysis calls or data writes.
 
@@ -11,7 +11,7 @@ The public introduction is served by the existing PAI Cloud Run service at
 use same-origin paths such as `/` and `/notices`; the app's login is unchanged.
 No new domain, DNS record, or certificate is needed.
 
-The six public files are packaged into `pai_loop/open/` by the wheel build.
+The eight public files are packaged into `pai_loop/open/` by the wheel build.
 Docker copies `web/pai-open` before installing the wheel, so the normal main
 branch Cloud Build deployment publishes the introduction together with the app.
 Only GET/HEAD requests for the exact public file allowlist bypass account login.
@@ -46,14 +46,13 @@ Build checks duplicate IDs, internal anchors, ARIA references and an explicit tw
 
 Before publishing this revision, verify desktop and 320/390/768px mobile rendering, horizontal overflow, keyboard navigation, native playback controls, reduced-motion behavior, the full video and poster, and the deployed page. Do not reuse validation results from the previous abstract-video layout as proof for the new tour. Local capture and verification inputs are excluded from deployment and source control.
 
-Application login, department account permissions, pre-analysis human decision persistence and production outcome records require a separate backend contract. The public page does not implement or imply that those pending changes are available.
+Application login and department permissions remain governed by the main application. The introduction does not modify those backend contracts.
 
 
 ## Eight-scene scroll story (2026-09-29)
 
-The recovered left-copy/right-example layout now covers discovery, priority,
-personal Teams notifications, document analysis, company comparison, human
-decisions, reference records, and results. Each example uses synthetic data and
+The recovered left-copy/right-example layout now covers discovery, document analysis, company comparison, human decisions, reference
+records, results, personal Teams notifications, and workflow management. Each example uses synthetic data and
 PAI workspace colors, horizontal navigation, typography, and cards. The examples
 are native HTML/CSS so labels remain sharp and accessible at every size.
 
@@ -67,3 +66,8 @@ in order. The public asset allowlist and wheel include `story.css` and `story.js
 Teams copy describes personal followed-notice alerts and department daily
 briefings. The page sends no messages, connects no accounts, and performs no API
 calls. All example amounts, counts, records and notification cards are fictional.
+
+The September 29 editorial review updates hero terminology, workflow management,
+Teams reminders/recommendations and five FAQ answers. The separate principles
+section and duplicate Teams preview note are removed. Scene order and its
+keyboard navigation follow the same sequence on desktop, mobile and without JS.
