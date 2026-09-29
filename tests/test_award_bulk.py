@@ -221,3 +221,22 @@ def test_failed_opening_read_stays_unread_and_is_not_retried(bulk, client, monke
         assert row.opening_results is None and row.opening_results_status == "ERROR"
         assert award_bulk.advance_opening_backfill(session, settings, NOW)["status"] == "IDLE"
     assert fake.request_count == 1
+
+
+def test_no_request_starts_unless_its_full_timeout_fits_in_the_step(bulk, client, monkeypatch) -> None:
+    add, _run, _history, _jobs, settings = bulk
+    add("P", "정당원 해외정책연수")
+    clock = [0.0]
+
+    class _SlowPps(_FakePps):
+        def _request(self, operation, params, *, timeout_seconds=None):
+            assert timeout_seconds is None  # the client's own full timeout applies
+            assert clock[0] + award_bulk.REQUEST_TIMEOUT_SECONDS <= award_bulk.STEP_WALL_SECONDS
+            clock[0] += 6.0  # a healthy 999-row page
+            return super()._request(operation, params)
+
+    fake = _SlowPps([])
+    monkeypatch.setattr(award_bulk, "_client_factory", lambda _settings: fake)
+    with client.app.state.session_factory() as session:
+        result = advance_bulk_sweep(session, settings, NOW, monotonic=lambda: clock[0])
+    assert result["status"] == "COMPLETED" and fake.request_count == 11  # starts at 0,6,...,60

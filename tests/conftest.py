@@ -15,6 +15,15 @@ from pai_loop.main import create_app
 SYN_SERVER_HEADERS = {"X-PAI-LOOP-API-KEY": "SYN-internal-api-tests-only"}
 
 
+@pytest.fixture(autouse=True)
+def strict_quantitative_path(monkeypatch):
+    """The company-first beta is on in production; tests pin the strict path.
+
+    Beta tests opt in explicitly with ``PAI_QUANT_COMPANY_FIRST_BETA=true``.
+    """
+    monkeypatch.setenv("PAI_QUANT_COMPANY_FIRST_BETA", "false")
+
+
 def internal_server_client(app, **kwargs) -> TestClient:
     """Explicit opt-in for internal API tests, never browser/auth rejection cases."""
     configured = app.state.settings.api_key

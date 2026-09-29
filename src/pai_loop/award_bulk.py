@@ -47,13 +47,17 @@ DAILY_FAILURE_CAP = 5
 PAGE_ROWS = 999
 WINDOW_DAYS = 28  # PPS enforces a calendar-month range; 28 days is always safe.
 STEP_WALL_SECONDS = 90
+# A request is started only when its full client timeout still fits in the step.
+# Squeezing the last request into the remaining seconds turned slow-but-healthy
+# pages into NETWORK_ERROR failures, and five failures stop the sweep for the day.
+REQUEST_TIMEOUT_SECONDS = 30
 STALE_RUNNING = timedelta(minutes=15)
 _KST = timezone(timedelta(hours=9))
 
 
 def _client_factory(settings: Any) -> PpsClient:
     return PpsClient(service_key=settings.pps_api_key, base_url=settings.pps_base_url,
-                     timeout_seconds=30, max_retries=0)
+                     timeout_seconds=REQUEST_TIMEOUT_SECONDS, max_retries=0)
 
 
 def _kst_midnight(now: datetime) -> datetime:
@@ -190,14 +194,14 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
     fetched = matched = created = 0
     client = _client_factory(settings)
     try:
-        while cursor is not None and calls_today + client.request_count < DAILY_CALL_CAP and monotonic() < deadline:
+        while cursor is not None and calls_today + client.request_count < DAILY_CALL_CAP and monotonic() + REQUEST_TIMEOUT_SECONDS <= deadline:
             window = windows[cursor["window"]]
             payload = client._request(BULK_OPERATION, {
                 "inqryDiv": BULK_INQUIRY_DIVISION,
                 "inqryBgnDt": window.start.strftime("%Y%m%d0000"),
                 "inqryEndDt": window.end.strftime("%Y%m%d2359"),
                 "pageNo": cursor["page"], "numOfRows": cursor["rows"],
-            }, timeout_seconds=max(1.0, deadline - monotonic()))
+            })
             items, total = parse_paged_response(payload)
             fetched += len(items)
             for raw in items:
@@ -259,11 +263,12 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
 OPENING_SOURCE = "PPS_OPENING_BULK"
 OPENING_DAILY_CALL_CAP = 990
 OPENING_STEP_WALL_SECONDS = 90
+OPENING_REQUEST_SECONDS = 20
 
 
 def _opening_client_factory(settings: Any) -> PpsAwardClient:
     return PpsAwardClient(service_key=settings.pps_api_key, base_url=settings.pps_base_url,
-                          timeout_seconds=20, max_retries=0)
+                          timeout_seconds=OPENING_REQUEST_SECONDS, max_retries=0)
 
 
 def _displayed_unread(session: Session, targets: list[tuple[Notice, Any, str]], now: datetime) -> list[str]:
@@ -326,7 +331,7 @@ def advance_opening_backfill(session: Session, settings: Any, now: datetime, *,
     client = _opening_client_factory(settings)
     try:
         for identity in wanted:
-            if calls_today + client.request_count >= OPENING_DAILY_CALL_CAP or monotonic() >= deadline:
+            if calls_today + client.request_count >= OPENING_DAILY_CALL_CAP or monotonic() + OPENING_REQUEST_SECONDS * 3 > deadline:
                 break
             rows = list(session.scalars(select(AwardHistoryItem).where(
                 AwardHistoryItem.external_identity == identity, AwardHistoryItem.opening_results.is_(None))))
@@ -337,7 +342,9 @@ def advance_opening_backfill(session: Session, settings: Any, now: datetime, *,
                 companies = client.fetch_opening_results(
                     bid_notice_no=notice_no, revision_no=revision or "000",
                     classification_no=classification or "0", rebid_no=rebid or "000",
-                    rows=100, max_pages=3, deadline_monotonic=deadline)
+                    # No step deadline here: a read cut short would be recorded as
+                    # PARTIAL and never retried. Up to three pages fit by the guard above.
+                    rows=100, max_pages=3)
                 status = "COLLECTED" if companies else "UNAVAILABLE"
             except OpeningResultsIncomplete:
                 companies, status = None, "PARTIAL"
