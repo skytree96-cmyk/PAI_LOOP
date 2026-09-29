@@ -17,8 +17,8 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260924-uiux-v1" />
-    <link rel="stylesheet" href="./top-navigation.css?v=20260924-uiux-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260929-result-flow-v1" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260929-result-flow-v1" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -151,7 +151,7 @@
 
           <div class="topbar__context">
             <p>공고·근거·판단 현황</p>
-            <h1 id="pageTitle">오늘 할 일</h1>
+            <h1 id="pageTitle" tabindex="-1">오늘 할 일</h1>
           </div>
           <div class="topbar__actions">
             <button class="button button--primary" type="button" id="replayButton" hidden>
@@ -589,7 +589,7 @@
               <form class="performance-filters operator-filters" id="resultLearningFilterForm" role="search">
                 <label class="search-field performance-search-field"><span class="sr-only">공고 검색</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg><input id="resultLearningSearchInput" type="search" maxlength="200" placeholder="공고명·기관·공고번호 검색" autocomplete="off" /></label>
                 <label class="select-field"><span class="sr-only">결과 상태</span><select id="resultLearningOutcomeFilter"><option value="">전체 결과</option><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
-                <label class="select-field"><span class="sr-only">확인 상태</span><select id="resultLearningRecordFilter"><option value="">전체 확인 상태</option><option value="DRAFT">초안</option><option value="VALIDATED">확인 완료</option><option value="ARCHIVED">보관</option></select></label>
+                <label class="select-field"><span class="sr-only">확인 상태</span><select id="resultLearningRecordFilter"><option value="">전체 확인 상태</option><option value="DRAFT">작성 중 (임시저장)</option><option value="VALIDATED">확인 완료</option><option value="ARCHIVED">보관</option></select></label>
                 <button class="button button--secondary" type="submit">검색</button>
                 <button class="button button--ghost" type="reset">선택한 조건 초기화</button>
               </form>
@@ -926,11 +926,24 @@
 
         <div class="detail-tabs" role="tablist" aria-label="공고 상세 정보">
           <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-tab="overview">요약</button>
+          <button type="button" role="tab" id="tab-result" aria-controls="panel-result" aria-selected="false" data-tab="result">입찰 결과</button>
           <button type="button" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" data-tab="evidence">주요 확인 사항 <span id="evidenceCount">0</span></button>
           <button type="button" role="tab" id="tab-quant" aria-controls="panel-quant" aria-selected="false" data-tab="quant">정량 점수·주의사항</button>
           <button type="button" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" data-tab="history">최근 3년 낙찰 이력</button>
           <button type="button" role="tab" id="tab-teams" aria-controls="panel-teams" aria-selected="false" data-tab="teams">Teams 알림 미리보기</button>
         </div>
+
+        <section class="tab-panel" id="panel-result" role="tabpanel" aria-labelledby="tab-result" data-panel="result" hidden>
+          <article class="detail-card">
+            <div class="card-title-row"><div><p class="section-kicker">저장된 기록</p><h3>입찰 결과</h3></div></div>
+            <div id="detailResultContent" aria-live="polite"></div>
+            <div class="result-detail-actions">
+              <button class="button button--primary" id="detailResultEditButton" type="button">결과 수정</button>
+              <button class="button button--secondary" id="detailResultListButton" type="button">결과 입력 목록으로</button>
+              <button class="button button--secondary" id="detailResultRetryButton" type="button" hidden>다시 불러오기</button>
+            </div>
+          </article>
+        </section>
 
         <section class="tab-panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
           <article class="detail-card summary-card">
@@ -1218,7 +1231,7 @@
         <p class="result-origin-state" id="resultLearningOrigin"></p>
         <fieldset class="record-editor-grid" id="resultLearningFields" aria-label="입찰 결과 입력 항목">
           <label class="record-field"><span>결과 *</span><select id="resultLearningStatus" required><option value="">결과를 선택해 주세요</option><option value="NO_BID">미참여</option><option value="SUBMITTED">제출</option><option value="WON">낙찰</option><option value="LOST">미낙찰</option><option value="CANCELLED">취소</option></select></label>
-          <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">초안</option><option value="VALIDATED">확인 완료</option><option value="ARCHIVED">보관</option></select></label>
+          <label class="record-field"><span>기록 상태</span><select id="resultLearningRecordStatus"><option value="DRAFT">작성 중 (임시저장)</option><option value="VALIDATED">확인 완료</option><option value="ARCHIVED">보관</option></select></label>
           <label class="record-field record-field--wide"><span>출처 또는 근거 참조 (확인 완료 시 필수)</span><input id="resultLearningSourceReference" maxlength="1000" aria-describedby="resultLearningSourceHelp" placeholder="나라장터 결과 식별자, 평가결과 공문 등" /></label>
           <p class="record-editor-note record-field--wide" id="resultLearningSourceHelp">확인한 항목부터 초안으로 저장할 수 있습니다. 출처를 입력하고 필수 결과 정보를 확인한 뒤 ‘확인 완료’로 변경하세요.</p>
           <label class="record-field"><span>우리 투찰금액(원)</span><input id="resultLearningSubmittedAmount" type="text" inputmode="decimal" data-money-input autocomplete="off" /></label>
@@ -1250,11 +1263,11 @@
           <label class="record-field"><span>개찰 분류번호 (선택)</span><input id="resultLearningOpeningClassification" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
           <label class="record-field"><span>재입찰번호 (선택)</span><input id="resultLearningOpeningRebid" inputmode="numeric" pattern="[0-9]+" maxlength="20" aria-describedby="resultLearningOpeningHelp" /></label>
           <p class="record-editor-note record-field--wide" id="resultLearningOpeningHelp">개찰결과에서 확인한 분류번호와 재입찰번호를 함께 입력하세요. 미확인은 두 칸을 비워 두며, 0은 확인한 경우에만 입력합니다. 수기 입력만으로 나라장터 참여 확인이 되지는 않습니다.</p>
-          <p class="record-editor-note record-field--wide">확인 완료로 저장하려면 결과의 출처가 필요합니다. 수기 비율은 근거 참조에 기준가격도 함께 적어주세요.</p>
+          <p class="record-editor-note record-field--wide">작성 중인 기록은 결과 입력 목록에 남습니다. 확인 완료된 최종 결과만 목록에서 제외됩니다. 확인 완료로 저장하려면 결과의 출처가 필요합니다. 수기 비율은 근거 참조에 기준가격도 함께 적어주세요.</p>
         </fieldset>
         </div>
         <p class="result-learning-error" id="resultLearningError" role="alert" tabindex="-1" hidden></p>
-        <footer class="source-link-dialog__actions"><button class="button button--secondary" id="resultLearningCancelButton" type="button">취소</button><button class="button button--primary" id="resultLearningSaveButton" type="submit">초안 저장</button></footer>
+        <footer class="source-link-dialog__actions"><button class="button button--secondary" id="resultLearningCancelButton" type="button">취소</button><button class="button button--secondary" id="resultLearningDraftButton" type="submit" formnovalidate>임시저장</button><button class="button button--primary" id="resultLearningSaveButton" type="submit">저장하고 상세 보기</button></footer>
       </form>
     </dialog>
 
@@ -1480,6 +1493,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260924-uiux-v1" defer></script>
+    <script src="./app.js?v=20260929-result-flow-v1" defer></script>
   </body>
 </html>

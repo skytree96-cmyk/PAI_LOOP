@@ -518,6 +518,7 @@ def test_dashboard_counts_ended_notices_without_a_recorded_result(
                 notice_id=recorded.id,
                 outcome_key="manual:recorded",
                 status="NO_BID",
+                evidence_json={"_workflow": {"record_status": "VALIDATED"}},
             )
         )
         session.commit()

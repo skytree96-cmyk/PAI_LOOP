@@ -349,6 +349,26 @@ def _workflow(item: BidOutcome) -> dict[str, Any]:
     }
 
 
+def result_entry_state(items: list[BidOutcome], department_id: str | None = None) -> str:
+    """Own department revisions take priority; drafts never complete the queue."""
+    own = [item for item in items if department_id and item.department_id == department_id]
+    if own:
+        latest = max(own, key=lambda item: (item.department_revision or 0, _utc(item.updated_at), item.id))
+    else:
+        candidates = [item for item in items if not department_id or (
+            not item.department_id and item.source != "MANUAL_UI"
+        )]
+        latest = max(candidates, key=lambda item: (_utc(item.observed_at), _utc(item.updated_at), item.id), default=None)
+    if latest is None:
+        return "MISSING"
+    record_status = _workflow(latest)["record_status"]
+    if record_status == "ARCHIVED":
+        return "MISSING"
+    if record_status == "VALIDATED" and latest.status in {"WON", "LOST", "NO_BID", "CANCELLED"}:
+        return "COMPLETE"
+    return "DRAFT"
+
+
 def _rate_calculation(item: BidOutcome, prefix: str = "submitted") -> SubmittedRateCalculation:
     evidence = item.evidence_json if isinstance(item.evidence_json, dict) else {}
     stored = evidence.get(f"_{prefix}_bid_rate")

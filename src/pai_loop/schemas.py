@@ -264,9 +264,10 @@ class NoticeSummary(ApiModel):
         default=False,
         description=(
             "입찰 결과 레코드가 하나 이상 저장되어 있는지 여부입니다. "
-            "결과 입력 필요 공고 목록과 대시보드 집계의 동일 모집단 계약에 사용합니다."
+            "기록의 완료 여부는 result_entry_status로 구분합니다."
         ),
     )
+    result_entry_status: Literal["MISSING", "DRAFT", "COMPLETE"] | None = None
     recommendation: Literal["GO", "HOLD", "NO_GO"] | None = None
     recommendation_conditions: list[str] = Field(
         default_factory=list,
