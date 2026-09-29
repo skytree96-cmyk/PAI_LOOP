@@ -28,8 +28,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from .api import _award_similarity, _comparable_utc
 from .award_automation import _active_notice_ids, _classification
-from .award_scope import award_title_matches, derive_award_keyword, normalize_award_agency, resolve_notice_award_scope
-from .integrations.awards import is_pps_rate_limit_error, normalise_award
+from .award_intelligence import build_annual_award_table
+from .award_scope import (award_title_matches, derive_award_keyword, filter_notice_awards, normalize_award_agency,
+                          resolve_notice_award_scope)
+from .integrations.awards import OpeningResultsIncomplete, PpsAwardClient, is_pps_rate_limit_error, normalise_award
 from .integrations.pps import PpsApiError, PpsClient, parse_paged_response, split_date_range
 from .models import AwardHistoryItem, IngestionJob, Notice
 
@@ -244,3 +246,130 @@ def advance_bulk_sweep(session: Session, settings: Any, now: datetime, *,
     session.commit()
     return {"status": job.status, "calls": client.request_count, "fetched": fetched,
             "matched": matched, "created": created, "next": (job.request_json or {}).get("next")}
+
+
+# --- Opening results for the rows the screen actually shows ---------------
+#
+# The award list names the winner only. Participants, their bids, ranks and
+# evaluation scores come from getOpengResultListInfoOpengCompt, read by exact
+# notice number (one call per award) on its own 1,000/day quota. Only rows the
+# annual table displays are read: per year the same project first, similar
+# candidates only in years without one. An award linked to several notices is
+# read once and written to all of them.
+OPENING_SOURCE = "PPS_OPENING_BULK"
+OPENING_DAILY_CALL_CAP = 990
+OPENING_STEP_WALL_SECONDS = 90
+
+
+def _opening_client_factory(settings: Any) -> PpsAwardClient:
+    return PpsAwardClient(service_key=settings.pps_api_key, base_url=settings.pps_base_url,
+                          timeout_seconds=20, max_retries=0)
+
+
+def _displayed_unread(session: Session, targets: list[tuple[Notice, Any, str]], now: datetime) -> list[str]:
+    """Award identities shown on some notice's table whose openings were never read."""
+    ids = [notice.id for notice, _scope, _keyword in targets]
+    if not ids:
+        return []
+    by_notice: dict[str, list[AwardHistoryItem]] = defaultdict(list)
+    for row in session.scalars(select(AwardHistoryItem).where(AwardHistoryItem.target_notice_id.in_(ids))):
+        by_notice[row.target_notice_id].append(row)
+    wanted: list[str] = []
+    seen: set[str] = set()
+    # Longest-lived notices first: they stay on screen the longest.
+    for notice, scope, _keyword in sorted(targets, key=lambda target: _comparable_utc(target[0].deadline),
+                                          reverse=True):
+        rows = filter_notice_awards(notice, by_notice.get(notice.id, []))
+        if not rows:
+            continue
+        table = build_annual_award_table(rows, target_title=notice.title,
+                                         target_agency=scope.demand_agency_name, as_of=now)
+        shown = {(item["bid_notice_no"], item["revision_no"]) for item in table["rows"]}
+        for row in rows:
+            # A recorded status means a read was already attempted; do not spend again.
+            if (row.opening_results is None and row.opening_results_status is None
+                    and (row.bid_notice_no, row.revision_no) in shown
+                    and row.external_identity not in seen):
+                seen.add(row.external_identity)
+                wanted.append(row.external_identity)
+    return wanted
+
+
+def advance_opening_backfill(session: Session, settings: Any, now: datetime, *,
+                             monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """Read openings for displayed rows for at most OPENING_STEP_WALL_SECONDS."""
+    if not getattr(settings, "pps_api_key", None):
+        return {"status": "NO_KEY"}
+    if str(getattr(settings, "environment", "")).casefold() != "production":
+        return {"status": "DISABLED"}
+    jobs = list(session.scalars(select(IngestionJob).where(
+        IngestionJob.source == OPENING_SOURCE, IngestionJob.created_at >= _kst_midnight(now))))
+    calls_today = sum(max(0, job.api_calls or 0) for job in jobs)
+    if (calls_today >= OPENING_DAILY_CALL_CAP
+            or sum(job.status == "FAILED" for job in jobs) >= DAILY_FAILURE_CAP
+            or any("BULK_PROVIDER_RATE_LIMIT" in (job.warnings or []) for job in jobs)
+            or any(job.status == "RUNNING" and _comparable_utc(job.created_at) > now - STALE_RUNNING
+                   for job in jobs)):
+        return {"status": "DAILY_LIMIT", "calls_today": calls_today}
+    wanted = _displayed_unread(session, _targets(session, now), now)
+    if not wanted:
+        return {"status": "IDLE"}
+    job = IngestionJob(source=OPENING_SOURCE, mode="LIVE", status="RUNNING", window_json={}, keyword=None,
+                       request_json={"operation": "as/ScsbidInfoService/getOpengResultListInfoOpengCompt",
+                                     "pending": len(wanted)},
+                       notice_keys=[], warnings=[], created_at=now)
+    session.add(job)
+    session.commit()
+    job_id = job.id
+    deadline = monotonic() + OPENING_STEP_WALL_SECONDS
+    read = collected = 0
+    client = _opening_client_factory(settings)
+    try:
+        for identity in wanted:
+            if calls_today + client.request_count >= OPENING_DAILY_CALL_CAP or monotonic() >= deadline:
+                break
+            rows = list(session.scalars(select(AwardHistoryItem).where(
+                AwardHistoryItem.external_identity == identity, AwardHistoryItem.opening_results.is_(None))))
+            if not rows:
+                continue
+            notice_no, revision, classification, rebid = (identity.split("|") + ["", "", "", ""])[:4]
+            try:
+                companies = client.fetch_opening_results(
+                    bid_notice_no=notice_no, revision_no=revision or "000",
+                    classification_no=classification or "0", rebid_no=rebid or "000",
+                    rows=100, max_pages=3, deadline_monotonic=deadline)
+                status = "COLLECTED" if companies else "UNAVAILABLE"
+            except OpeningResultsIncomplete:
+                companies, status = None, "PARTIAL"
+            except PpsApiError as exc:
+                if is_pps_rate_limit_error(exc):
+                    raise
+                companies, status = None, "ERROR"
+            read += 1
+            stamp = datetime.now(timezone.utc)
+            for row in rows:
+                # NULL means "never read". A failed read stays NULL and records
+                # why in the status column, so the table never shows a false
+                # empty competitor set.
+                if companies is not None:
+                    row.opening_results, row.opening_results_read_at = companies, stamp
+                    collected += 1
+                row.opening_results_status = status
+            job.api_calls, job.fetched, job.matched = client.request_count, read, collected
+            session.commit()
+        job.status = "COMPLETED"
+    except PpsApiError:
+        session.rollback()
+        job = session.get(IngestionJob, job_id)
+        job.status, job.warnings = "PARTIAL", ["BULK_PROVIDER_RATE_LIMIT"]
+    except Exception:
+        session.rollback()
+        job = session.get(IngestionJob, job_id)
+        job.status, job.error_code = "FAILED", "OPENING_CLIENT_ERROR"
+    finally:
+        client.close()
+    job.api_calls = client.request_count
+    job.completed_at = datetime.now(timezone.utc)
+    session.commit()
+    return {"status": job.status, "calls": client.request_count, "read": read, "collected": collected,
+            "pending": len(wanted)}

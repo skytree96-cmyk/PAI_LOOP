@@ -159,3 +159,65 @@ def test_planner_survives_a_sweep_crash(client, monkeypatch) -> None:
     monkeypatch.setattr(award_bulk, "advance_bulk_sweep", boom)
     response = client.post("/api/v1/operations/award-refresh/plan", json={})
     assert response.status_code == 200 and response.json()["status"] == "PLANNED"
+
+
+class _FakeOpenings:
+    def __init__(self, *, fail=()):
+        self.fail, self.request_count, self.read = set(fail), 0, []
+
+    def fetch_opening_results(self, *, bid_notice_no, **_kwargs):
+        self.request_count += 1
+        self.read.append(bid_notice_no)
+        if bid_notice_no in self.fail:
+            raise PpsApiError("SYN opening failure", error_type="SERVICE_ERROR", provider_code="99")
+        return [{"company_name": "SYN 낙찰사", "bid_amount": 97000000.0, "technical_evaluation": 85.0,
+                 "price_evaluation": 9.5, "total_evaluation": 94.5, "opening_rank": 1}]
+
+    def close(self):
+        pass
+
+
+def _stored(client, notice_id, no, title, year, *, code="SYN-DEMAND"):
+    with client.app.state.session_factory() as session:
+        session.add(AwardHistoryItem(
+            target_notice_id=notice_id, external_identity=f"{no}|000|0|000", bid_notice_no=no,
+            revision_no="000", title=title, agency="SYN 수요기관", demand_agency_code=code,
+            winner_name="SYN 낙찰사", similarity_score=50.0, source="PPS",
+            awarded_at=datetime(year, 6, 1, tzinfo=timezone.utc)))
+        session.commit()
+
+
+def test_openings_are_read_once_per_displayed_award_by_notice_number(bulk, client, monkeypatch) -> None:
+    add, _run, _history, _jobs, settings = bulk
+    party = add("P", "2026년 정당원 해외정책연수")
+    twin = add("T", "정당원 해외정책연수 추가 공고")  # shares one historical award with party
+    _stored(client, party, "Y2025", "2025년 정당원 해외정책연수", 2025)       # same project: shown
+    _stored(client, party, "C2025", "정당원 해외정책연수 사전교육", 2025)      # similar, year has same project: hidden
+    _stored(client, party, "C2024", "정당원 해외정책연수 사전교육 2024", 2024)  # similar, only row of 2024: shown
+    _stored(client, twin, "Y2025", "2025년 정당원 해외정책연수", 2025)        # same award on another notice
+    fake = _FakeOpenings()
+    monkeypatch.setattr(award_bulk, "_opening_client_factory", lambda _settings: fake)
+    with client.app.state.session_factory() as session:
+        result = award_bulk.advance_opening_backfill(session, settings, NOW)
+    assert sorted(fake.read) == ["C2024", "Y2025"] and result["read"] == 2
+    with client.app.state.session_factory() as session:
+        rows = {(row.target_notice_id, row.bid_notice_no): row for row in session.scalars(select(AwardHistoryItem))}
+    assert rows[(party, "Y2025")].opening_results[0]["total_evaluation"] == 94.5
+    assert rows[(twin, "Y2025")].opening_results_status == "COLLECTED"  # written to both notices
+    assert rows[(party, "C2025")].opening_results is None                 # never displayed, never read
+    with client.app.state.session_factory() as session:
+        assert award_bulk.advance_opening_backfill(session, settings, NOW)["status"] == "IDLE"
+
+
+def test_failed_opening_read_stays_unread_and_is_not_retried(bulk, client, monkeypatch) -> None:
+    add, _run, _history, _jobs, settings = bulk
+    party = add("P", "정당원 해외정책연수")
+    _stored(client, party, "Y2025", "2025년 정당원 해외정책연수", 2025)
+    fake = _FakeOpenings(fail={"Y2025"})
+    monkeypatch.setattr(award_bulk, "_opening_client_factory", lambda _settings: fake)
+    with client.app.state.session_factory() as session:
+        award_bulk.advance_opening_backfill(session, settings, NOW)
+        row = session.scalar(select(AwardHistoryItem))
+        assert row.opening_results is None and row.opening_results_status == "ERROR"
+        assert award_bulk.advance_opening_backfill(session, settings, NOW)["status"] == "IDLE"
+    assert fake.request_count == 1
