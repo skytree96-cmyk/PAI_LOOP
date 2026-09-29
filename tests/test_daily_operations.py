@@ -969,6 +969,9 @@ def test_failed_version_refresh_observes_backfill_retry_cooldown(
             if stale_run.generated_at.tzinfo is None
             else stale_run.generated_at.astimezone(timezone.utc),
         ) + timedelta(minutes=1)
+        # This test probes cooldown while the notice is still open. A fixed
+        # calendar deadline can expire before the wall-clock-based +25h probe.
+        notice.deadline = attempt_at + timedelta(days=7)
         parent = IngestionJob(
             source="ANALYSIS_BACKFILL",
             mode="LIVE",
