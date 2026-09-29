@@ -122,11 +122,8 @@ class ResultLearningFields(ApiModel):
                 raise ValueError("검증 완료 결과에는 출처 또는 근거 참조가 필요합니다.")
             if self.status == "SUBMITTED" and self.submitted_bid_amount is None and self.submitted_bid_rate is None:
                 raise ValueError("제출 완료 결과에는 투찰금액 또는 투찰률이 필요합니다.")
-            if self.status == "WON" and (
-                not self.winner_name
-                or (self.winning_bid_amount is None and self.winning_bid_rate is None)
-            ):
-                raise ValueError("낙찰 결과에는 낙찰자와 낙찰금액 또는 낙찰률이 필요합니다.")
+            if self.status == "WON" and not self.winner_name:
+                raise ValueError("낙찰 결과에는 낙찰자가 필요합니다.")
             if self.status == "LOST" and not self.loss_reason:
                 raise ValueError("실주 결과에는 실주 사유가 필요합니다.")
         return self
