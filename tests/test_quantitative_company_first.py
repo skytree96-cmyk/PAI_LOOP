@@ -255,3 +255,11 @@ def test_a_field_word_nested_in_a_narrower_one_is_not_asked_for():
     assert beta._fields_in("최근 5년간 해외연수 실적 건수")[0] == "해외연수·여행"
     assert beta._fields_in("교원 직무연수 운영")[0] == "교육·연수"
     assert beta._fields_in("경기도교육청 박람회")[0] == "행사"
+
+
+def test_credit_row_pointing_to_the_standard_table_uses_it():
+    raw = _raw("경영 상태", "CREDIT_RATING", (), max_points=10,
+               literal="1. 경영 상태 / ◦ '신용평가등급에 의한 경영상태 평가기준' 의거 평가 / 10")
+    score = _score(raw)
+    assert score.points == 10 and "표준" in score.basis
+    assert _score(raw, credit_grade="BB0").points == 9.5

@@ -262,6 +262,14 @@ _SANCTION = re.compile(r"부정당|제재|입찰\s*참가\s*자격\s*제한|행�
 _CLEAR_ROW = re.compile(r"없음|없는|없을|해당\s*없|미해당|무\s*$|^\s*무|0\s*회|0\s*건")
 
 
+def standard_credit_rows(max_points: float) -> list[PrintedRow]:
+    """The standard negotiated-contract credit table: 100/95/90/70% of the item."""
+
+    bands = (("AAA ~ BBB0", 100), ("BBB- ~ BB-", 95), ("B+ ~ B-", 90), ("CCC+ 이하", 70))
+    return [PrintedRow(literal=f"[표준표] {band} 배점의 {pct}%", points=float(max_points) * pct / 100,
+                       operator="IN", categories=(band,)) for band, pct in bands]
+
+
 def is_sanction_row(raw: Any) -> bool:
     head = _norm(f"{raw.label} {raw.criterion_literal}")
     if _SANCTION.search(head):
@@ -707,6 +715,11 @@ def beta_score(
     """Apply company facts to one criterion's printed rows; None when not a company row."""
 
     rows = printed_rows(raw)
+    standard = False
+    if not rows and raw.metric == "CREDIT_RATING":
+        # "신용평가등급에 의한 경영상태 평가기준 의거" / "세부기준: 붙임" point to the
+        # standard negotiated-contract table instead of printing it.
+        rows, standard = standard_credit_rows(raw.max_points), True
     if not rows or not is_company_fact_row(raw):
         return None
     bonus = bool(_BONUS.search(_norm(f"{raw.label} {raw.criterion_literal}")))
@@ -716,7 +729,8 @@ def beta_score(
     if metric == "CREDIT_RATING":
         if credit_grade is None:
             return lowest_row(rows, "등록된 기업신용평가등급 없음", bonus=bonus)
-        return score_grade(rows, credit_grade, f"등록된 기업신용평가등급 {credit_grade}")
+        return score_grade(rows, credit_grade, f"등록된 기업신용평가등급 {credit_grade}" + (
+            " (원문이 참조한 표준 신용평가 기준표 적용)" if standard else ""))
     if metric in {"PERFORMANCE_COUNT", "PERFORMANCE_AMOUNT"}:
         value, basis = performance_value(raw, records, deadline=deadline, published_at=published_at, rows=rows,
                                          notice_title=notice_title)
