@@ -12,7 +12,7 @@ if (new Set(ids).size !== ids.length) throw new Error('Duplicate HTML id');
 for (const [, target] of html.matchAll(/href="#([^"]+)"/g)) if (!ids.includes(target)) throw new Error(`Missing anchor ${target}`);
 for (const [, target] of html.matchAll(/aria-(?:controls|labelledby)="([^"]+)"/g)) for (const id of target.split(' ')) if (!ids.includes(id)) throw new Error(`Missing ARIA target ${id}`);
 if (/사업자등록번호|운영 PIN\s*[:=]\s*\d/.test(html)) throw new Error('Unexpected private data in public page');
-const referencedMedia = new Set([...html.matchAll(/(?:src|poster)="\/(assets\/[^"?]+)"/g)].map(([, file]) => file));
+const referencedMedia = new Set([...html.matchAll(/(?:src|poster)="\/(?:open\/)?(assets\/[^"?]+)"/g)].map(([, file]) => file));
 for (const file of referencedMedia) if (!mediaFiles.includes(file)) throw new Error(`Unexpected media reference ${file}`);
 for (const file of mediaFiles) {
   if (!referencedMedia.has(file)) throw new Error(`Missing product-tour reference ${file}`);
