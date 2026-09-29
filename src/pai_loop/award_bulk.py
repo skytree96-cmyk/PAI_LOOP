@@ -44,6 +44,9 @@ SWEEP_START = date(2024, 1, 1)
 # manual checks against the same operation.
 DAILY_CALL_CAP = 990
 DAILY_FAILURE_CAP = 5
+# A slow provider page (older windows take longer) is not a broken request;
+# it is retried from the same cursor next cycle and has its own, looser cap.
+DAILY_NETWORK_FAILURE_CAP = 20
 PAGE_ROWS = 999
 WINDOW_DAYS = 28  # PPS enforces a calendar-month range; 28 days is always safe.
 # Planner-only cycles have the whole W14 execution limit (570 s) to themselves:
@@ -52,7 +55,7 @@ STEP_WALL_SECONDS = 240
 # A request is started only when its full client timeout still fits in the step.
 # Squeezing the last request into the remaining seconds turned slow-but-healthy
 # pages into NETWORK_ERROR failures, and five failures stop the sweep for the day.
-REQUEST_TIMEOUT_SECONDS = 30
+REQUEST_TIMEOUT_SECONDS = 60
 STALE_RUNNING = timedelta(minutes=15)
 _KST = timezone(timedelta(hours=9))
 
@@ -153,7 +156,11 @@ def _today_usage(session: Session, now: datetime) -> tuple[int, int, bool]:
     jobs = list(session.scalars(select(IngestionJob).where(
         IngestionJob.source == BULK_SOURCE, IngestionJob.created_at >= _kst_midnight(now))))
     calls = sum(max(0, job.api_calls or 0) for job in jobs)
-    failures = sum(job.status == "FAILED" for job in jobs)
+    failed = [job for job in jobs if job.status == "FAILED"]
+    network = sum(job.error_code == "BULK_NETWORK_ERROR" for job in failed)
+    failures = len(failed) - network
+    if network >= DAILY_NETWORK_FAILURE_CAP:
+        failures = max(failures, DAILY_FAILURE_CAP)
     limited = any("BULK_PROVIDER_RATE_LIMIT" in (job.warnings or []) for job in jobs)
     return calls, failures, limited
 
