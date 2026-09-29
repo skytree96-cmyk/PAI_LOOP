@@ -464,6 +464,15 @@ def merge_openai_telemetry(*items: OpenAITelemetry) -> OpenAITelemetry:
     )
 
 
+def _unverified_tables(data: Any) -> list[dict[str, Any]] | None:
+    """The quantitative tables of an unverified response, or None when there are none."""
+
+    tables = getattr(data, "quantitative_tables", None)
+    if not tables:
+        return None
+    return [table.model_dump(mode="json") for table in tables]
+
+
 class ExtractionOutcome(BaseModel):
     status: Literal["ACCEPTED", "REVIEW"]
     review_code: Literal["R07"] | None = None
@@ -479,6 +488,10 @@ class ExtractionOutcome(BaseModel):
     corrective_retry_used: bool = False
     correction_prompt_version: str | None = None
     data: ExtractionPayload | None = None
+    # Quantitative tables of a response whose evidence quotes failed exact
+    # verification. Never used for eligibility; kept so a labeled estimate can
+    # still read the printed scoring rows instead of discarding a paid call.
+    unverified_quantitative_tables: list[dict[str, Any]] | None = None
 
 
 class QuantitativeProbeOutcome(BaseModel):
@@ -865,6 +878,7 @@ class OpenAIExtractionClient:
             openai_telemetry=telemetry,
             corrective_retry_used=bool(metadata.get("corrective_retry_used", False)),
             correction_prompt_version=metadata.get("correction_prompt_version"),
+            unverified_quantitative_tables=metadata.get("unverified_quantitative_tables"),
         )
 
     def _post(
@@ -1166,6 +1180,7 @@ class OpenAIExtractionClient:
             return self._review(
                 "UNVERIFIED_QUOTE",
                 "모델의 근거 인용문을 원문에서 확인할 수 없습니다.",
+                unverified_quantitative_tables=_unverified_tables(data),
                 **metadata,
             )
         data = _attest_verified_quantitative_anchors(data)
@@ -1317,6 +1332,14 @@ class OpenAIExtractionClient:
     ) -> ExtractionOutcome:
         if self.budget_policy == QUANTITATIVE_PROBE_ONCE and not quantitative_only:
             raise ValueError("QUANTITATIVE_PROBE_ONCE_REQUIRES_PROBE_ENTRY")
+        # PDF text layers can carry NUL characters; the gateway rejects any
+        # NUL in the request (INPUT_CONTENT_NUL). They carry no text, so drop
+        # them from both the prompt and the quote-verification source.
+        document_text = document_text.replace("\x00", "")
+        if verification_source is not None:
+            verification_source = verification_source.replace("\x00", "")
+        if untrusted_source_context is not None:
+            untrusted_source_context = untrusted_source_context.replace("\x00", "")
         if not document_text.strip():
             return self._review("EMPTY_INPUT", "추출할 문서 텍스트가 없습니다.", api_calls=0)
         if len(document_text) + len(untrusted_source_context or "") > self.max_input_chars:
@@ -1656,6 +1679,7 @@ class OpenAIExtractionClient:
             return self._review(
                 "UNVERIFIED_QUOTE",
                 "교정 응답이 원 판단 구조를 변경해 사람 검토로 전환했습니다.",
+                unverified_quantitative_tables=_unverified_tables(initial_payloads[0]),
                 response_id=corrected_outcome.response_id,
                 model=corrected_outcome.model,
                 api_calls=corrected_outcome.api_calls,
