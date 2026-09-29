@@ -242,3 +242,23 @@ def test_no_request_starts_unless_its_full_timeout_fits_in_the_step(bulk, client
     windows = len(award_bulk._windows(NOW.astimezone(award_bulk._KST).date()))
     fits = int((award_bulk.STEP_WALL_SECONDS - award_bulk.REQUEST_TIMEOUT_SECONDS) // 6) + 1
     assert result["status"] == "COMPLETED" and fake.request_count == min(windows, fits)
+
+
+def test_slow_page_timeouts_do_not_stop_the_day_like_real_failures(bulk) -> None:
+    add, run, _history, jobs, _settings = bulk
+    add("P", "정당원 해외정책연수")
+    timeout = PpsApiError("slow", error_type="NETWORK_ERROR")
+    for _ in range(award_bulk.DAILY_FAILURE_CAP):
+        assert run(_FakePps([], fail_after=0, error=timeout))["status"] == "FAILED"
+    # Five slow pages: the sweep keeps going from the same cursor.
+    assert run(_FakePps([]))["status"] == "COMPLETED"
+    assert jobs()[-1].request_json["start"] == {"window": 0, "page": 1, "rows": 999}
+
+
+def test_real_failures_still_stop_the_day(bulk) -> None:
+    add, run, _history, _jobs, _settings = bulk
+    add("P", "정당원 해외정책연수")
+    broken = PpsApiError("bad", error_type="INVALID_JSON")
+    for _ in range(award_bulk.DAILY_FAILURE_CAP):
+        assert run(_FakePps([], fail_after=0, error=broken))["status"] == "FAILED"
+    assert run(_FakePps([]))["status"] == "DAILY_LIMIT"
