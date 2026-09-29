@@ -108,6 +108,8 @@ jobs:
               "pai_loop/open/index.html",
               "pai_loop/open/styles.css",
               "pai_loop/open/app.js",
+              "pai_loop/open/story.css",
+              "pai_loop/open/story.js",
               "pai_loop/open/favicon.svg",
               "pai_loop/open/assets/pai-product-poster.webp",
               "pai_loop/open/assets/pai-product-tour.webm",

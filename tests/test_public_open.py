@@ -26,13 +26,17 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert response.headers["cache-control"] == "no-cache"
     assert "connect-src 'none'" in response.headers["content-security-policy"]
     links = re.findall(r'data-app-path="([^"]+)" href="([^"]+)"', response.text)
-    assert len(links) == 10
+    assert len(links) == 13
     assert all(route == href and href.startswith("/") for route, href in links)
     assert "run.app" not in response.text and "onrender.com" not in response.text
     assets = re.findall(r'(?:src|poster|href)="(/open/[^"?]+)', response.text)
-    assert len(assets) == 5
+    assert len(assets) == 7
     for asset in assets:
         assert public_client.get(asset).status_code == 200
+    assert re.findall(r'data-ps-step="(\d+)"', response.text) == [str(i) for i in range(8)]
+    assert "MS Teams<br>맞춤 알림 연동" in response.text
+    assert "데일리 브리핑" in response.text
+    assert "로그인과 권한 관리는 현재 준비 중" not in response.text
     assert public_client.head(path).status_code == 200
     assert not public_client.head(path).content
 

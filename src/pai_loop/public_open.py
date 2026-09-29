@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 OPEN_FILES = frozenset({
-    "index.html", "styles.css", "app.js", "favicon.svg",
+    "index.html", "styles.css", "app.js", "favicon.svg", "story.css", "story.js",
     "assets/pai-product-poster.webp", "assets/pai-product-tour.webm",
 })
 OPEN_PATHS = frozenset({"/open", "/open/", *(f"/open/{name}" for name in OPEN_FILES)})
