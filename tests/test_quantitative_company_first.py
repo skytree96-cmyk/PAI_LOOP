@@ -1,4 +1,5 @@
 """SYN company-first beta: company facts applied to printed rows, lowest row when unmet."""
+import json
 from datetime import date, datetime, timezone
 
 import pytest
@@ -263,3 +264,53 @@ def test_credit_row_pointing_to_the_standard_table_uses_it():
     score = _score(raw)
     assert score.points == 10 and "표준" in score.basis
     assert _score(raw, credit_grade="BB0").points == 9.5
+
+
+def test_one_announcement_extracted_twice_is_counted_once(client, beta_on):
+    import hashlib
+    from test_quantitative_sufficient_row import (
+        Notice, NoticeVersion, PPS_ATTACHMENT_SOURCE, PPS_METADATA_SCHEMA, PPS_PROCESSING_VERSION,
+        PROMPT_VERSION, SCHEMA_VERSION, _digest, validate_quantitative_attachment_extraction,
+    )
+
+    payload, source = hyphen_payload()
+    first = payload.quantitative_tables[0].criteria[0].evidence.attachment_id
+    second = "PPS-ATT-" + "b" * 24
+    url = "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=SYN-BETA-TWICE&fileSeq="
+    manifest = [dict(attachment_id=first, file_name="SYN 공고문.hwp", media_type="application/x-hwp", slot=1, url=url + "1"),
+                dict(attachment_id=second, file_name="SYN 공고문.pdf", media_type="application/pdf", slot=2, url=url + "2")]
+    versions = [NoticeVersion(version_no=1, file_sha256="c" * 64, extraction_status="METADATA", document_complete=False,
+                              source_payload={"kind": "PPS_NOTICE_METADATA", "schema_version": PPS_METADATA_SCHEMA,
+                                              "attachment_manifest": manifest})]
+    for number, (attachment, text) in enumerate(((manifest[0], source), (manifest[1], source + " ")), start=2):
+        document_sha = hashlib.sha256(text.encode()).hexdigest()
+        if attachment is manifest[0]:
+            body = payload.model_copy(deep=True)
+        else:  # the PDF copy reads the label a little differently
+            raw = json.loads(payload.model_dump_json().replace(first, second))
+            raw["quantitative_tables"][0]["criteria"][0]["label"] += " (인력)"
+            body = type(payload).model_validate(raw)
+        record = validate_quantitative_attachment_extraction(
+            body, source_text=text, attachment_id=attachment["attachment_id"],
+            document_sha256=document_sha, manifest_sha256=_digest(manifest))
+        versions.append(NoticeVersion(
+            version_no=number, file_sha256=document_sha, extraction_status="ACCEPTED", document_complete=True,
+            extraction_confidence=1, source_payload={
+                "kind": "OPENAI_REQUIREMENT_EXTRACTION", "source_kind": PPS_ATTACHMENT_SOURCE,
+                "attachment_id": attachment["attachment_id"], "source_label": attachment["file_name"],
+                "document_sha256": document_sha, "manifest_sha256": _digest(attachment),
+                "current_manifest_sha256": _digest(manifest), "prompt_version": PROMPT_VERSION,
+                "schema_version": SCHEMA_VERSION, "processing_version": PPS_PROCESSING_VERSION,
+                "status": "ACCEPTED", "result": body.model_dump(mode="json"),
+                "document_processing": {"source_read_complete": True, "analysis_input_complete": True},
+                "quantitative_validation_record": record.model_dump(mode="json")}))
+    notice = Notice(notice_key="SYN-BETA-TWICE", bid_notice_no="SYN-BETA-TWICE", revision_no="00",
+                    title="SYN twice", agency="SYN agency", status="OPEN",
+                    published_at=datetime(2030, 1, 1, tzinfo=timezone.utc), deadline=DEADLINE)
+    notice.versions = versions
+    with client.app.state.session_factory() as session:
+        session.add(notice)
+        session.commit()
+    estimate = _estimate(client, "SYN-BETA-TWICE")
+    scored = [item for item in estimate["criteria"] if item["estimated_points"] is not None]
+    assert len(scored) == 1 and estimate["total_max_points"] == scored[0]["max_points"]
