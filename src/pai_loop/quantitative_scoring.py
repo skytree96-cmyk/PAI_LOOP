@@ -101,6 +101,17 @@ from .quantitative_row_approval import (
     row_program,
     sufficient_row_choices,
 )
+from .quantitative_company_first import (
+    COMPANY_FIRST_FLOOR_NOTE,
+    COMPANY_FIRST_LABEL,
+    COMPANY_FIRST_REASON,
+    COMPANY_FIRST_STATEMENT,
+    BetaScore,
+    beta_score,
+    company_credit_grade,
+    company_first_enabled,
+    financial_ratios,
+)
 from .quantitative_personnel import (
     DerivedPersonnelValue,
     PersonnelRecognitionScope,
@@ -111,7 +122,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.8.10"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.9.0"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -4676,6 +4687,8 @@ def _cap_approved_row_facts(
 
 
 def _partial_subtotal_statement(reasons: Sequence[object]) -> str:
+    if COMPANY_FIRST_REASON in reasons:
+        return COMPANY_FIRST_STATEMENT
     if ROW_APPROVAL_REASON in reasons:
         return "원문 검증이 끝났거나 사람이 행 해석을 승인한 항목만의 부분 소계이며 공고 총점이 아닙니다."
     return "원문 검증이 끝난 첨부만의 부분 소계이며 공고 총점이 아닙니다."
@@ -5136,6 +5149,175 @@ def _cap_sufficient_row_facts(
         for fact in request.facts
     ]
     return request.model_copy(update={"facts": facts})
+
+
+def _row_criterion_id(attachment_id: str, table_id: str, criterion_id: str) -> str:
+    identity = _canonical_digest({
+        "attachment_id": attachment_id, "table_id": table_id, "criterion_id": criterion_id,
+    })[:28]
+    return f"dyn-{identity}"
+
+
+def _strict_row_probe(
+    source: ReviewRowSource,
+    request: QuantitativeEstimateRequest,
+    *,
+    notice: Notice,
+    company_facts: Sequence[object],
+    performance_records: Sequence[CompanyPerformanceRecord],
+) -> BetaScore | None:
+    """Score one row with its own compiled rule when only its table was blocked."""
+
+    try:
+        candidate = ImmutableQuantitativeRuleCandidate.model_validate({
+            **source.raw.model_dump(mode="python", exclude={"ambiguity_reason"}),
+            "source_attachment_id": source.attachment_id,
+            "table_id": source.table_id,
+        })
+        criterion = _criterion_from_rule_candidate(
+            candidate, {source.attachment_id: source.document_sha256},
+        )
+        if criterion is None or _rule_error(criterion) is not None:
+            return None
+        probe = QuantitativeEstimateRequest(
+            ruleset_version=request.ruleset_version, rule_source_status="INCOMPLETE",
+            source_validation_status="INCOMPLETE", activation_status="PARTIAL_SOURCE",
+            activation_reasons=[COMPANY_FIRST_REASON], criteria=[criterion],
+        )
+        probe = bind_quantitative_company_inputs(
+            probe, company_facts, performance_records, as_of=notice.deadline,
+            bid_notice_at=getattr(notice, "published_at", None), notice=notice,
+        )
+        [estimate] = estimate_quantitative_score(probe).criteria
+    except (ValidationError, ValueError, TypeError, KeyError, ArithmeticError):
+        return None
+    if estimate.status not in {"CONFIRMED", "ESTIMATED"} or estimate.estimated_points is None:
+        return None
+    return BetaScore(
+        estimate.estimated_points, "원문 배점 규칙 그대로 계산", estimate.rationale, False,
+    )
+
+
+def _apply_company_first_beta(
+    request: QuantitativeEstimateRequest,
+    *,
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    company_facts: Sequence[object],
+    performance_records: Sequence[CompanyPerformanceRecord],
+) -> QuantitativeEstimateRequest | None:
+    """Fill every unscored printed row from company facts (beta lower bound).
+
+    Rows the strict path already scored are kept untouched. Each other current
+    row is scored by its own compiled rule when that works, else by applying
+    company facts to its printed rows, else by its lowest printed award. The
+    result is always a PARTIAL_SOURCE subtotal labeled as a beta lower bound.
+    """
+
+    if not company_first_enabled():
+        return None
+    try:
+        sources = {**review_row_sources(notice, profile), **available_row_sources(notice, profile)}
+    except (ValidationError, ValueError, TypeError, KeyError):
+        return None
+    if not sources:
+        return None
+    current = estimate_quantitative_score(request)
+    settled = {
+        item.criterion_id for item in current.criteria
+        if item.status == "OUT_OF_SCOPE"
+        or (item.status in {"CONFIRMED", "ESTIMATED"} and item.estimated_points is not None)
+    }
+    deadline = _aware_utc(notice.deadline)
+    published_at = getattr(notice, "published_at", None)
+    published_at = _aware_utc(published_at) if isinstance(published_at, datetime) else None
+    roster_load = load_personnel_roster(company_facts, as_of=deadline)
+    if roster_load.roster is None:
+        roster_load = load_personnel_roster(company_facts, as_of=datetime.now(timezone.utc))
+    roster = roster_load.roster.members if roster_load.roster is not None else None
+    credit_grade = company_credit_grade(company_facts)
+    statement = financial_ratios(company_facts)
+    kept_ids = {item.criterion_id for item in request.criteria}
+    seen: set[tuple[str, str, str, float]] = set()
+    for item in request.criteria:
+        seen.add((item.category, re.sub(r"\s+", "", item.label), re.sub(r"\s+", "", item.formula)[:200], item.max_points))
+    replaced: set[str] = set()
+    criteria: list[QuantitativeCriterion] = []
+    facts: list[QuantitativeFact] = []
+    for (attachment_id, table_id, row_id), source in sorted(sources.items()):
+        raw = source.raw
+        criterion_id = _row_criterion_id(attachment_id, table_id, row_id)
+        if criterion_id in settled:
+            continue
+        key = (raw.metric, re.sub(r"\s+", "", raw.label), re.sub(r"\s+", "", raw.criterion_literal)[:200], raw.max_points)
+        if criterion_id not in kept_ids and key in seen:
+            continue  # the same printed row read twice (summary and detail table)
+        score = None
+        if raw.metric != "CREDIT_RATING" or credit_grade is None:
+            score = _strict_row_probe(
+                source, request, notice=notice, company_facts=company_facts,
+                performance_records=performance_records,
+            )
+        if score is None:
+            score = beta_score(
+                raw, deadline=deadline, published_at=published_at,
+                credit_grade=credit_grade, roster=roster, records=performance_records,
+                statement=statement,
+            )
+        if score is None:
+            continue
+        seen.add(key)
+        metric_key = f"beta.company_first.{criterion_id}"
+        points = _round_points(min(score.points, raw.max_points))
+        try:
+            criteria.append(QuantitativeCriterion(
+                criterion_id=criterion_id, category=raw.metric, label=raw.label[:300],
+                max_points=raw.max_points, metric_key=metric_key, unit=None,
+                formula_type="BRACKET", formula=raw.criterion_literal[:1_000],
+                brackets=[ScoreBracket(
+                    bracket_id="company-first", label=(score.row_literal or COMPANY_FIRST_LABEL)[:300],
+                    points=points,
+                )],
+                source_anchor=SourceAnchor(
+                    document_label=attachment_id[:200], document_sha256=source.document_sha256,
+                    section=(raw.evidence.section or f"{table_id}/{row_id}")[:300],
+                    page=raw.evidence.page, quote=(raw.evidence.quote or None),
+                ),
+                required_evidence_keys=[metric_key],
+            ))
+        except ValidationError:
+            continue
+        rationale = (
+            f"[{COMPANY_FIRST_LABEL}] {score.basis} → 적용 행: {score.row_literal} = {points:g}점"
+            + (f" · {COMPANY_FIRST_FLOOR_NOTE}" if score.floor_applied else "")
+        )
+        facts.append(QuantitativeFact(
+            metric_key=metric_key, status="ESTIMATED", value=1.0, evidence_key=metric_key,
+            confidence=0.3 if score.floor_applied else 0.6, rationale=rationale[:1_000],
+        ))
+        replaced.add(criterion_id)
+    if not criteria:
+        return None
+    kept = [item for item in request.criteria if item.criterion_id not in replaced]
+    all_criteria = [*kept, *criteria][:100]
+    reasons = list(dict.fromkeys([
+        *request.activation_reasons[:98],
+        *([] if request.activation_reasons else ["CURRENT_ATTACHMENT_COVERAGE_INCOMPLETE"]),
+        COMPANY_FIRST_REASON,
+    ]))
+    assumptions = [*request.assumptions[:48], COMPANY_FIRST_STATEMENT]
+    return QuantitativeEstimateRequest(
+        ruleset_version=request.ruleset_version,
+        rule_source_status="INCOMPLETE",
+        source_validation_status="INCOMPLETE",
+        activation_status="PARTIAL_SOURCE",
+        activation_reasons=reasons,
+        minimum_score=None,
+        criteria=all_criteria,
+        facts=[*request.facts, *facts][:200],
+        assumptions=assumptions,
+        source_anchor=request.source_anchor,
+    )
 
 
 def quantitative_request_from_candidate_profile(
@@ -5688,7 +5870,11 @@ def estimate_for_notice(
             request, sufficient_plan, notice=notice, performance_records=stored_records,
         )
         request = _cap_sufficient_row_facts(request, sufficient_bindings)
-        return estimate_quantitative_score(request)
+        beta_request = _apply_company_first_beta(
+            request, notice=notice, profile=dynamic_profile,
+            company_facts=stored_facts, performance_records=stored_records,
+        )
+        return estimate_quantitative_score(beta_request or request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
     if profile is None:
