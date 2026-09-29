@@ -247,8 +247,14 @@ def award_refresh_status(session: DbSession) -> dict:
     return _snapshot(session, _now())
 
 
+def _run_follows(snapshot: dict) -> bool:
+    """Mirror W14's own gate: it calls /run only when this holds after /plan."""
+    return (snapshot["eligible"] > 0 and snapshot["running"] == 0
+            and snapshot["api_calls_24h"] + snapshot["budget_reserved_24h"] + 50 <= 1000)
+
+
 @router.post("/plan")
-def plan_award_refresh(payload: PlanRequest, session: DbSession) -> dict:
+def plan_award_refresh(payload: PlanRequest, request: Request, session: DbSession) -> dict:
     now = _now()
     enrolled = requeued = 0
     with _serialized(session):
@@ -281,6 +287,15 @@ def plan_award_refresh(payload: PlanRequest, session: DbSession) -> dict:
                     requeued += 1
         session.flush()
         result = _snapshot(session, now)
+    if not _run_follows(result):
+        # W14 would only wait this cycle. Spend it on the plain award list,
+        # which has its own PPS quota; the W14 execution limit (570 s) cannot
+        # hold both this step and a /run batch, so they never share a cycle.
+        from .award_bulk import advance_bulk_sweep
+        try:
+            advance_bulk_sweep(session, request.app.state.settings, now)
+        except Exception:
+            session.rollback()
     return {**result, "status": "PLANNED", "enrolled": enrolled, "requeued": requeued}
 
 
