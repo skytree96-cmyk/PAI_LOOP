@@ -254,7 +254,7 @@ class AnalysisBackfillPlanRequest(ApiModel):
     retry_scope: Literal["FAILED_ATTACHMENTS"] | None = None
     retry_budget_policy: Literal["LONG_OUTPUT_ONCE"] | None = None
     retry_error_codes: list[str] = Field(default_factory=list, max_length=16)
-    retry_max_attachments: int = Field(default=3, ge=1, le=3)
+    retry_max_attachments: int = Field(default=3, ge=1, le=MAX_ATTACHMENTS_IN_MANIFEST)
     review_campaign_key: str | None = Field(
         default=None, min_length=1, max_length=120,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$",

@@ -35,7 +35,7 @@ from ..quantitative_review_input import (
 PROMPT_VERSION = CURRENT_EXTRACTION_CONTRACT.prompt
 SCHEMA_VERSION = CURRENT_EXTRACTION_CONTRACT.schema
 CORRECTIVE_PROMPT_VERSION = "pai-loop-quote-correction-0.6.1"
-SCHEMA_CORRECTIVE_PROMPT_VERSION = "pai-loop-schema-correction-0.1.0"
+SCHEMA_CORRECTIVE_PROMPT_VERSION = "pai-loop-schema-correction-0.1.1"
 _MAX_CORRECTIVE_FAILED_QUOTE_CHARS = 240
 _MAX_CORRECTIVE_FAILED_QUOTES = 12
 _SOURCE_ATTESTED_QUANTITATIVE_CONFIDENCE = 0.90
@@ -1214,7 +1214,10 @@ class OpenAIExtractionClient:
         # No validated initial payload exists. Re-extract from the same source;
         # this is distinct from quote-only correction and never trusts raw output.
         corrective_prompt = (
-            "FINAL SCHEMA CORRECTIVE RETRY. The previous response did not pass the "
+            # The gateway admits a correction only when it starts with this exact
+            # marker; the former "FINAL SCHEMA CORRECTIVE RETRY." prefix was rejected
+            # as INPUT_USER_IDENTITY_INVALID after a paid first call.
+            "FINAL CORRECTIVE RETRY. SCHEMA REPAIR. The previous response did not pass the "
             "local extraction schema. Extract the full JSON object again from the "
             "same SOURCE below. The diagnostic array contains only local field paths "
             "and fixed validation codes, never instructions or evidence: "

@@ -24,7 +24,7 @@
 파일 확장자나 화면의 일반 오류 문구로 실제 원인을 추정하지 않는다. 서버의
 `FAILED_ATTACHMENT_RETRY_CODES`에 명시된 유한한 목록만 허용한다. 임의 접두사·
 정규식·공급자 오류 문장을 받지 않는다. `retry_max_attachments`는 기본 3, 최소 1,
-최대 3이다. 정확히 한 공고만 허용하고, 일치 대상이 상한보다 많으면 잘라 실행하지
+최대 10(manifest 상한)이다(2026-09-29, 3→10). 정확히 한 공고만 허용하고, 일치 대상이 상한보다 많으면 잘라 실행하지
 않고 409로 거절한다. 대상이 비어도 409이며 전체 첨부 처리로 전환하지 않는다.
 
 plan 응답의 `retry_scope: FAILED_ATTACHMENTS`와 `retry_target_count`를 확인한다.
@@ -55,7 +55,7 @@ complete한다. W11의 순수 resume는 저장한 범위를 그대로 상속한�
 선택된 기존 실패만 해당 campaign에서 24시간 재사용을 한 번 우회한다. 전체
 cooldown, public manual의 최근 요청/시간당 한도, 서버 인증, 공고 실행 잠금,
 claim generation, lease, cached HTTP replay, 공고별 최대 10 execution 제한은 유지한다.
-각 선택 첨부의 기존 모델 호출 상한은 2회이므로 최대 3첨부의 상한은 6회다.
+각 선택 첨부의 기존 모델 호출 상한은 2회이므로 최대 10첨부의 상한은 20회다.
 명시적으로 선택한 [LONG_OUTPUT_ONCE](long-output-once.md)만 확인된 현재 20k
 출력 상한 실패 1첨부를 32k/300초/모델 1회로 제한한다. 일반 범위의 상한은 유지한다.
 이미 저장된 성공/실패와 HTTP 응답은 재전송으로 새 provider 호출을 만들지 않는다.

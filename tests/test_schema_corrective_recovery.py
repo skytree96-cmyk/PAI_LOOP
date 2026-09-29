@@ -94,6 +94,10 @@ def test_case_shape_has_safe_fixed_reason_and_recovers_from_source(kind, code):
     assert outcome.corrective_retry_used
     assert outcome.correction_prompt_version == SCHEMA_CORRECTIVE_PROMPT_VERSION
     prompt = calls[1]["input"][1]["content"][0]["text"]
+    # The gateway (scripts/native-gateway-request.mjs) admits a correction only
+    # with this prefix; anything else is INPUT_USER_IDENTITY_INVALID.
+    assert prompt.startswith("FINAL CORRECTIVE RETRY.")
+    assert "Allowed attachment IDs:" in prompt and "\n\nSOURCE:\n" in prompt
     assert code in prompt and "SYN-PRIVATE-CATEGORY" not in prompt
     assert prompt.endswith(calls[0]["input"][1]["content"][0]["text"])
     assert calls[1]["input"][0] == calls[0]["input"][0]
