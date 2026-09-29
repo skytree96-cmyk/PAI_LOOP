@@ -157,7 +157,7 @@ def test_normal_serialized_proof_survives_without_provider_or_extraction_version
     assert reread == record
     # Source-selection policy changes invalidate cached scores, while stored
     # extraction proofs round-trip without another provider extraction.
-    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.8.10"
+    assert QUANTITATIVE_ENGINE_VERSION == "pai-loop-quantitative-engine-1.9.0"
 
 
 @pytest.mark.parametrize("metric,unit,condition,label", [

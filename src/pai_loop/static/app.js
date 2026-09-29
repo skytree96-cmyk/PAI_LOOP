@@ -7474,8 +7474,15 @@
     const range = lower === null || upper === null || total === null || total <= 0
       ? "미산정"
       : `${formatNumber(lower, 1)}${lower === upper ? "" : `–${formatNumber(upper, 1)}`} / ${formatNumber(total, 1)}`;
+    // Company-first beta: rows filled from company facts, unmet rows at the table minimum.
+    const betaLowerBound = partialSource && Array.isArray(data.assumptions)
+      && data.assumptions.some((item) => String(item).includes("베타·회사 기준 역산"));
+    const subtotalLabel = betaLowerBound ? "베타 하한 합계" : "확인 항목 소계";
+    const subtotalNote = betaLowerBound
+      ? "베타·회사 기준 역산·하한 추정 · 미충족 → 최하점 적용(하한) · 공고 총점 아님"
+      : "확인된 첨부 배점만 포함 · 공고 총점 아님";
     els.scoreOverview.innerHTML = [
-      quantSummaryCard(partialSource ? "확인 항목 소계" : "예상 점수 범위", range, partialSource ? "확인된 첨부 배점만 포함 · 공고 총점 아님" : sourceDetail, "score-card--readiness"),
+      quantSummaryCard(partialSource ? subtotalLabel : "예상 점수 범위", range, partialSource ? subtotalNote : sourceDetail, "score-card--readiness"),
       quantSummaryCard(partialSource ? "확인 항목 내 증빙 확정률" : "회사 증빙 확정률", `${formatNumber(coverage, 1)}%`, partialSource ? "확정 항목 배점 ÷ 확인 항목 배점" : "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
       quantSummaryCard("정량 준비도", partialSource ? "전체 판단 보류" : quantReadinessLabel(data.readiness_band), partialSource ? "미해소 첨부가 있어 전체 준비도는 미확정" : readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
     ].join("");
@@ -7498,7 +7505,7 @@
     const scoreStatusLabel = data.overall_status === "UNSCORABLE" && total > 0 && lower !== null && upper !== null
       ? "일부 항목 미산정"
       : quantStatusLabel(data.overall_status);
-    els.quantSourceStatus.textContent = `${tableNotEstablished ? "추출 결과 미확보" : sourceLabels[sourceValidation] || "원문 추가 확인"} · ${activationLabels[activation] || "자동 산정 보류"} · ${scoreStatusLabel}`;
+    els.quantSourceStatus.textContent = `${tableNotEstablished ? "추출 결과 미확보" : sourceLabels[sourceValidation] || "원문 추가 확인"} · ${betaLowerBound ? "베타·회사 기준 역산·하한 추정" : activationLabels[activation] || "자동 산정 보류"} · ${scoreStatusLabel}`;
     els.quantOpinion.textContent = data.opinion || "정량 의견이 없습니다.";
     const anchor = data.source_anchor;
     els.quantSourceAnchor.textContent = anchor
@@ -7534,6 +7541,7 @@
       TABLE_TOTAL_INCOMPLETE: "평가표 총점을 완전하게 확인하지 못했습니다.",
       UNKNOWN_METRIC: "제안서·제품·수기평가 항목이라 회사 사실만으로 자동 계산할 수 없습니다.",
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
+      COMPANY_FIRST_BETA: "베타: 회사 사실을 배점 행에 대입했고, 확인 안 된 조건은 미충족 → 최하점 적용(하한)했습니다.",
     };
     // Preserve the server blockers; only omit the legacy display fallback when
     // the more specific extraction-gap diagnosis is present.
@@ -7614,6 +7622,7 @@
       ALTERNATIVE_TABLE_AMBIGUOUS: "이 공고에 적용할 평가 기준을 확인해야 합니다.",
       TABLE_TOTAL_INCOMPLETE: "정량 평가의 총배점을 완전히 확인하지 못했습니다.",
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
+      COMPANY_FIRST_BETA: "베타: 회사 사실을 배점 행에 대입했고, 확인 안 된 조건은 미충족 → 최하점 적용(하한)했습니다.",
     };
     const unresolved = Array.isArray(data.criteria) ? data.criteria.find((item) => !["CONFIRMED", "OUT_OF_SCOPE"].includes(item.status) && item.rationale) : null;
     const reason = reasons.length
@@ -7636,13 +7645,17 @@
     const confirmed = overall === "CONFIRMED" && lower === upper && validation === "SOURCE_VALIDATED"
       && activation === "AUTO_ACTIVE" && !reasons.length;
     const partialSource = activation === "PARTIAL_SOURCE";
+    const betaLowerBound = partialSource && (reasons.includes("COMPANY_FIRST_BETA")
+      || (Array.isArray(data.assumptions) && data.assumptions.some((item) => String(item).includes("베타·회사 기준 역산"))));
     return {
       value: `${formatNumber(lower, 1)} / ${formatNumber(total, 1)}점`,
       status: confirmed ? "confirmed" : "estimated",
-      label: confirmed ? "확정" : partialSource ? "부분 소계 · 일부 첨부 미해소" : "잠정 · 보수 기준",
+      label: confirmed ? "확정" : betaLowerBound ? "베타 하한 합계" : partialSource ? "부분 소계 · 일부 첨부 미해소" : "잠정 · 보수 기준",
       reason: confirmed
         ? "현재 근거로 확정된 정량점수입니다. 참가자격·담당자 판단과는 별도입니다."
-        : partialSource
+        : betaLowerBound
+          ? "베타·회사 기준 역산·하한 추정 · 미충족 → 최하점 적용(하한) · 공고 총점 아님"
+          : partialSource
           ? `원문 검증이 끝난 첨부만의 소계이며 공고 총점이 아닙니다. 미확정 사유: ${reason}`
           : `미확정 사유: ${reason}`,
     };
