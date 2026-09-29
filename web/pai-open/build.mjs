@@ -5,7 +5,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const output = path.join(root, 'dist');
 await mkdir(output, { recursive: true });
 const files = ['index.html', 'styles.css', 'app.js', 'story.css', 'story.js', 'favicon.svg', '_headers'];
-const mediaFiles = ['assets/pai-product-tour.webm', 'assets/pai-product-poster.webp'];
+const mediaFiles = ['assets/pai-product-tour.webm', 'assets/pai-product-poster.webp', ...Array.from({length: 8}, (_, i) => `assets/pai-screen-${i + 1}.webp`)];
 const html = await readFile(path.join(root, 'index.html'), 'utf8');
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 if (new Set(ids).size !== ids.length) throw new Error('Duplicate HTML id');
