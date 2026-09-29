@@ -49,11 +49,25 @@ def eligible_long_output_failure(version: NoticeVersion) -> bool:
         and processing.get("source_read_complete") is True
         and processing.get("analysis_input_complete") is True
         and version.file_sha256 == payload.get("document_sha256")
-        and failure is not None and failure.detail_code == "NATIVE_STOP_MAX_TOKENS"
-        and failure.stop_reason == "max_tokens" and failure.usage is not None
-        and failure.usage.output_tokens == 20_000
+        and failure is not None and (_stopped_at_20k(failure) or _gateway_timed_out(failure))
         and _source_identity(version) is not None
     )
+
+
+def _stopped_at_20k(failure) -> bool:
+    return bool(failure.detail_code == "NATIVE_STOP_MAX_TOKENS" and failure.stop_reason == "max_tokens"
+                and failure.usage is not None and failure.usage.output_tokens == 20_000)
+
+
+# The gateway cuts an ordinary call at 180 s; a response near 20k output tokens
+# takes longer and surfaces as an unclassified transport failure. The one-shot
+# 300 s budget of this policy is the only admitted path that can finish it.
+_GATEWAY_TIMEOUT_DETAILS = frozenset({"MODEL_TRANSPORT_UNKNOWN", "MODEL_TRANSPORT_TIMEOUT"})
+
+
+def _gateway_timed_out(failure) -> bool:
+    return bool(failure.stage == "MODEL_EXECUTION" and failure.detail_code in _GATEWAY_TIMEOUT_DETAILS
+                and failure.upstream_http_status is None)
 
 
 def _source_identity(version: NoticeVersion) -> str | None:

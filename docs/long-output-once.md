@@ -42,6 +42,8 @@ URL만으로 영구 재사용하지 않으므로 같은 URL의 문서 교체나 
 - 엄격 검증된 gateway failure의 `NATIVE_STOP_MAX_TOKENS` / `max_tokens`,
   output usage 정확히 20,000. 원시 오류 문장이나 공개 일반 오류 코드만으로 허용하지 않는다.
 - 완전한 source/input 처리 기록과 일치하는 저장 문서 지문. 단순 부분 입력은 거절한다.
+- 또는(2026-09-29부터) 게이트웨이 모델 실행 단계의 `MODEL_TRANSPORT_UNKNOWN`/`MODEL_TRANSPORT_TIMEOUT` 실패(상위 HTTP 상태 없음).
+  일반 호출은 게이트웨이에서 180초에 끊기며, 출력이 2만 토큰 가까운 응답은 이보다 오래 걸린다. 이 정책의 300초 1회만 그 응답을 끝낼 수 있는 허용 경로다.
 - 현재 공고가 유효한 OPEN이며 차수·manifest·원래 실패 행이 고정 범위와 일치한다.
 
 실제 호출 직전에도 최신 메타데이터/공고 차수/실패 버전 및 전체 source/input 지문을

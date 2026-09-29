@@ -22,7 +22,7 @@ const originalRenderResultLearning=renderResultLearning;
 const originalLoadApplicationData=loadApplicationData;
 renderAll=()=>{};renderDataSource=()=>{};renderResultLearning=()=>{};
 closeDetail=()=>{state.selectedNotice=null;};
-openDetail=(...args)=>globalThis.onDetail(args);
+openDetail=async (...args)=>globalThis.onDetail(args);
 renderExistingDecision=n=>globalThis.onRender(n);renderPipelineIntoExisting=()=>{};
 renderDetail=n=>globalThis.onRender(n);applyFilters=()=>{};
 updateDecisionButton=()=>{};setDecisionDockExpanded=()=>{};
