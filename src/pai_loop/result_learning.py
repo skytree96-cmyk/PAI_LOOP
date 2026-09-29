@@ -87,6 +87,11 @@ class ResultLearningFields(ApiModel):
             if calculation.mode != "AUTO":
                 continue
             amount = getattr(self, f"{prefix}_bid_amount")
+            if amount is None and prefix == "winning":
+                # A missing award amount cannot retain a previously calculated rate.
+                self.winning_bid_rate = None
+                self.winning_rate_calculation = SubmittedRateCalculation()
+                continue
             if amount is None:
                 raise ValueError(f"자동 계산에는 {label}이 필요합니다.")
             with localcontext() as context:

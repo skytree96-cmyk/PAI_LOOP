@@ -347,3 +347,42 @@ def test_performance_as_a_share_of_the_project_size():
     no_budget = beta.beta_score(raw, deadline=DEADLINE, published_at=None, credit_grade=None, roster=None,
                                 records=records)
     assert no_budget.floor_applied
+
+
+def test_beta_reads_tables_kept_from_an_unverified_response():
+    import hashlib
+    from pai_loop import quantitative_scoring as qs
+    from pai_loop.models import Notice, NoticeVersion
+    from test_quantitative_sufficient_row import (
+        PPS_ATTACHMENT_SOURCE, PPS_METADATA_SCHEMA, PPS_PROCESSING_VERSION, PROMPT_VERSION, SCHEMA_VERSION,
+        _digest, _performance_payload,
+    )
+
+    attachment_id, payload, source = _performance_payload()
+    url = "https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=SYN-UNVERIFIED&fileSeq=1"
+    attachment = dict(attachment_id=attachment_id, file_name="SYN 제안요청서.hwp", media_type="application/x-hwp",
+                      slot=1, url=url)
+    manifest = [attachment]
+    document_sha = hashlib.sha256(source.encode()).hexdigest()
+    notice = Notice(notice_key="SYN-UNVERIFIED", bid_notice_no="SYN-UNVERIFIED", revision_no="00", title="SYN",
+                    agency="SYN", status="OPEN", published_at=datetime(2030, 1, 1, tzinfo=timezone.utc), deadline=DEADLINE)
+    notice.versions = [
+        NoticeVersion(version_no=1, file_sha256="c" * 64, extraction_status="METADATA", document_complete=False,
+                      source_payload={"kind": "PPS_NOTICE_METADATA", "schema_version": PPS_METADATA_SCHEMA,
+                                      "attachment_manifest": manifest}),
+        NoticeVersion(version_no=2, file_sha256=document_sha, extraction_status="REVIEW", document_complete=False,
+                      source_payload={
+                          "kind": "OPENAI_REQUIREMENT_EXTRACTION", "source_kind": PPS_ATTACHMENT_SOURCE,
+                          "attachment_id": attachment_id, "source_label": attachment["file_name"],
+                          "document_sha256": document_sha, "manifest_sha256": _digest(attachment),
+                          "current_manifest_sha256": _digest(manifest), "prompt_version": PROMPT_VERSION,
+                          "schema_version": SCHEMA_VERSION, "processing_version": PPS_PROCESSING_VERSION,
+                          "status": "REVIEW", "error_code": "UNVERIFIED_QUOTE", "result": None,
+                          "unverified_quantitative_tables": [t.model_dump(mode="json") for t in payload.quantitative_tables],
+                          "document_processing": {"source_read_complete": True, "analysis_input_complete": True},
+                      }),
+    ]
+    sources = qs._extracted_row_sources(notice)
+    assert [(key[2], item.state) for key, item in sources.items()] == [("performance_count", "UNVERIFIED")]
+    notice.versions[1].source_payload = {**notice.versions[1].source_payload, "error_code": "HTTP_ERROR"}
+    assert qs._extracted_row_sources(notice) == {}  # only quote failures keep their tables
