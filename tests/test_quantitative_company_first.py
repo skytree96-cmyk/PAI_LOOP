@@ -314,3 +314,36 @@ def test_one_announcement_extracted_twice_is_counted_once(client, beta_on):
     estimate = _estimate(client, "SYN-BETA-TWICE")
     scored = [item for item in estimate["criteria"] if item["estimated_points"] is not None]
     assert len(scored) == 1 and estimate["total_max_points"] == scored[0]["max_points"]
+
+
+def test_penalty_only_rows_keep_the_item_points():
+    raw = _raw("사회적 책임", "UNKNOWN", (
+        ("체불사업주로 명단이 공개중인 자 △2.0", "IN", None, None, ("체불사업주",), 2.0),
+        ("고용개선조치 미이행 사업주로 명단이 공표된 자 △2.0", "IN", None, None, ("미이행",), 2.0),
+    ), max_points=4, conditions=("모든 세부평가항목에 해당하지 않는 경우, 해당 평가항목의 배점한도를 부여한다.",))
+    score = _score(raw)
+    assert score.points == 4 and not score.floor_applied and "배점한도" in score.row_literal
+
+
+def test_manager_career_reads_the_longest_roster_tenure():
+    roster = [_member("M1", joined=date(2023, 1, 1)), _member("M2", joined=date(2019, 6, 1))]
+    raw = _raw("사업책임자(PM) 경력", "UNKNOWN", brackets=(
+        ("5년 이상 6.0", 5.0, None, 6.0), ("3년 이상 ~ 5년 미만 4.8", 3.0, 5.0, 4.8),
+        ("1년 미만 2.4", None, 1.0, 2.4)), max_points=6, unit="년")
+    score = _score(raw, roster=roster)
+    assert score.points == 6 and "최장 근속 10년" in score.basis
+    assert _score(raw, roster=[_member("M3", joined=date(2026, 6, 1))]).points == 4.8  # 3y7m
+
+
+def test_performance_as_a_share_of_the_project_size():
+    raw = _raw("관련사업 수행실적", "UNKNOWN", brackets=(
+        ("100% 이상 4.0", 100.0, None, 4.0), ("40% 이상~70% 미만 3.2", 40.0, 70.0, 3.2),
+        ("40% 미만 2.8", None, 40.0, 2.8)), max_points=4, unit="%",
+        conditions=("해당 사업규모 대비 입찰공고일 기준 최근 3년간 교육·연수 사업수행실적(금액 기준)을 합산 적용",))
+    records = [_named("SYN 교육 운영") for _ in range(3)]  # 3 × 2억
+    score = beta.beta_score(raw, deadline=DEADLINE, published_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                            credit_grade=None, roster=None, records=records, estimated_amount=500_000_000)
+    assert score.points == 4 and "120%" in score.basis
+    no_budget = beta.beta_score(raw, deadline=DEADLINE, published_at=None, credit_grade=None, roster=None,
+                                records=records)
+    assert no_budget.floor_applied

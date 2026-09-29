@@ -122,7 +122,7 @@ from .quantitative_personnel import (
 )
 
 
-QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.9.0"
+QUANTITATIVE_ENGINE_VERSION = "pai-loop-quantitative-engine-1.9.1"
 QUANTITATIVE_PROFILE_RESOURCE = "data/quantitative_notice_profiles.json"
 
 EstimateStatus = Literal["CONFIRMED", "ESTIMATED", "UNSCORABLE", "REVIEW"]
@@ -5317,6 +5317,7 @@ def _apply_company_first_beta(
                 credit_grade=credit_grade, roster=roster, records=performance_records,
                 statement=statement,
                 notice_title=getattr(notice, "title", None),
+                estimated_amount=getattr(notice, "estimated_amount", None),
             )
         if score is None:
             continue
