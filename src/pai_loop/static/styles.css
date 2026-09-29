@@ -8001,3 +8001,7 @@ details.requirement-item.is-pass > summary, details.requirement-item.is-pass_cur
 .analysis-progress__grid { gap: 18px; }
 .analysis-progress .kpi-card { padding: 22px 24px; }
 .analysis-progress .kpi-card .kpi-value { display: block; margin-top: 12px; line-height: 1.2; }
+/* 회사 실적 · 등록된 운영 실적: 검색 · 부서 · 정렬 · 초기화 한 줄 */
+.performance-editor-filters { grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.35fr) minmax(150px, 0.3fr) auto; }
+@media (max-width: 900px) { .performance-editor-filters { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 680px) { .performance-editor-filters { grid-template-columns: 1fr; } }

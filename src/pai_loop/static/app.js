@@ -123,6 +123,7 @@
     },
     performanceEditor: {
       records: [], total: 0, loaded: false, loading: false, editingRecord: null,
+      page: 1, query: "", division: "", sort: "newest",
     },
     managedAccounts: { records: [], loading: false, pending: false },
     resultLearning: {
@@ -218,6 +219,9 @@
     "/urgent-in-progress": "urgent-in-progress",
     "/result-entry": "result-missing-decided",
   });
+
+  const PERFORMANCE_EDITOR_PAGE_SIZE = 20;
+  const PERFORMANCE_EDITOR_FETCH_LIMIT = 2000;
 
   const NOTICE_FILTER_FIELDS = Object.freeze({
     q: ["searchInput", "", "검색", 200],
@@ -337,6 +341,7 @@
       "performanceRetryButton", "performanceEmptyState", "performanceEmptyResetButton", "performancePagination",
       "performancePageRange", "performancePageLabel", "performancePreviousButton", "performanceNextButton",
       "performanceEditorSummary", "performanceEditorUnlockButton", "performanceEditorCreateButton", "performanceEditorList", "performanceEditorState",
+      "performanceEditorFilterForm", "performanceEditorSearchInput", "performanceEditorDivisionFilter", "performanceEditorSort", "performanceEditorPagination", "performanceEditorPageRange", "performanceEditorPageLabel", "performanceEditorPreviousButton", "performanceEditorNextButton",
       "performanceRecordDialog", "performanceRecordForm", "performanceRecordDialogTitle", "performanceRecordCloseButton", "performanceRecordCancelButton", "performanceRecordSaveButton",
       "performanceRecordProject", "performanceRecordAgency", "performanceRecordDivision", "performanceRecordStatus", "performanceRecordContractDate", "performanceRecordStartDate", "performanceRecordEndDate", "performanceRecordAmount", "performanceRecordVat", "performanceRecordShare", "performanceRecordCertificate", "performanceRecordCompleted", "performanceRecordEvidence", "performanceRecordKeywords", "performanceRecordOverview",
       "resultLearningSummary", "resultLearningUnlockButton", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
@@ -651,6 +656,21 @@
     els.performanceEditorUnlockButton.addEventListener("click", () => loadPerformanceEditor({ force: true }));
     els.performanceEditorCreateButton.addEventListener("click", () => openPerformanceRecordDialog());
     els.performanceEditorList.addEventListener("click", handlePerformanceEditorAction);
+    // 운영 실적은 비공개 조회에서 URL 검색어를 쓸 수 없어, 받은 목록을 화면 안에서 거르고 나눈다.
+    const updatePerformanceEditorView = () => {
+      const editor = state.performanceEditor;
+      editor.query = els.performanceEditorSearchInput.value.trim();
+      editor.division = els.performanceEditorDivisionFilter.value;
+      editor.sort = els.performanceEditorSort.value;
+      editor.page = 1;
+      renderPerformanceEditor();
+    };
+    els.performanceEditorFilterForm.addEventListener("input", updatePerformanceEditorView);
+    els.performanceEditorFilterForm.addEventListener("change", updatePerformanceEditorView);
+    els.performanceEditorFilterForm.addEventListener("submit", (event) => event.preventDefault());
+    els.performanceEditorFilterForm.addEventListener("reset", () => window.setTimeout(updatePerformanceEditorView, 0));
+    els.performanceEditorPreviousButton.addEventListener("click", () => changePerformanceEditorPage(-1));
+    els.performanceEditorNextButton.addEventListener("click", () => changePerformanceEditorPage(1));
     els.performanceRecordForm.addEventListener("submit", savePerformanceRecord);
     els.performanceRecordCloseButton.addEventListener("click", closePerformanceRecordDialog);
     els.performanceRecordCancelButton.addEventListener("click", closePerformanceRecordDialog);
@@ -3077,8 +3097,19 @@
     try {
       const payload = unwrapObject(await apiRequest("/performance-records?limit=200", { headers }));
       if (epoch !== state.accountEpoch) return;
-      state.performanceEditor.records = arrayValue(payload.records).map(normalizeEditablePerformance);
-      state.performanceEditor.total = Math.max(numberOrNull(payload.total) ?? state.performanceEditor.records.length, 0);
+      const records = arrayValue(payload.records);
+      const total = Math.max(numberOrNull(payload.total) ?? records.length, 0);
+      // 서버는 한 번에 200건까지 준다. 나머지는 이어 받아 화면 안에서 나눠 보여 준다(최대 2,000건).
+      for (let offset = records.length; offset < total && offset < PERFORMANCE_EDITOR_FETCH_LIMIT; offset += 200) {
+        const next = unwrapObject(await apiRequest(`/performance-records?limit=200&offset=${offset}`, { headers }));
+        if (epoch !== state.accountEpoch) return;
+        const rows = arrayValue(next.records);
+        if (!rows.length) break;
+        records.push(...rows);
+      }
+      state.performanceEditor.records = records.map(normalizeEditablePerformance);
+      state.performanceEditor.total = total;
+      state.performanceEditor.page = 1;
       state.performanceEditor.loaded = true;
       renderPerformanceEditor();
     } catch (error) {
@@ -3107,6 +3138,44 @@
     };
   }
 
+  function performanceEditorView() {
+    const editor = state.performanceEditor;
+    const query = editor.query.toLocaleLowerCase("ko");
+    const rows = editor.records
+      .map((record, index) => ({ record, index }))
+      .filter(({ record }) => (!editor.division || record.division === editor.division)
+        && (!query || [record.projectName, record.agency, record.division].some((value) => value.toLocaleLowerCase("ko").includes(query))));
+    const byName = (a, b) => a.record.projectName.localeCompare(b.record.projectName, "ko");
+    const byDate = (a, b) => (b.record.contractDate || "").localeCompare(a.record.contractDate || "") || byName(a, b);
+    const compare = {
+      newest: byDate,
+      amount: (a, b) => (b.record.contractAmount ?? -1) - (a.record.contractAmount ?? -1) || byDate(a, b),
+      // 수행부서가 비어 있는 실적은 부서순 맨 뒤로 보낸다.
+      division: (a, b) => (!a.record.division - !b.record.division) || a.record.division.localeCompare(b.record.division, "ko") || byDate(a, b),
+      name: byName,
+    }[editor.sort] || byDate;
+    rows.sort(compare);
+    const pages = Math.max(Math.ceil(rows.length / PERFORMANCE_EDITOR_PAGE_SIZE), 1);
+    editor.page = Math.min(Math.max(editor.page, 1), pages);
+    const start = (editor.page - 1) * PERFORMANCE_EDITOR_PAGE_SIZE;
+    return { rows, pages, start, visible: rows.slice(start, start + PERFORMANCE_EDITOR_PAGE_SIZE) };
+  }
+
+  function changePerformanceEditorPage(step) {
+    state.performanceEditor.page += step;
+    renderPerformanceEditor();
+    els.performanceEditorList.closest("section")?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  function syncPerformanceEditorDivisions() {
+    const select = els.performanceEditorDivisionFilter;
+    const divisions = [...new Set(state.performanceEditor.records.map((record) => record.division).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));
+    const current = state.performanceEditor.division;
+    select.innerHTML = `<option value="">전체 부서</option>${divisions.map((division) => `<option value="${escapeAttribute(division)}">${escapeHtml(division)}</option>`).join("")}`;
+    state.performanceEditor.division = divisions.includes(current) ? current : "";
+    select.value = state.performanceEditor.division;
+  }
+
   function renderPerformanceEditor() {
     const editor = state.performanceEditor;
     els.performanceEditorCreateButton.hidden = true;
@@ -3114,11 +3183,22 @@
     els.performanceEditorSummary.textContent = editor.loaded
       ? `직접 등록 실적 ${formatNumber(editor.total)}건 · 공개 실적 자료 ${formatNumber(state.performance.summary?.recordCount || 0)}건과 별도 관리`
       : "부서 로그인으로 공개 실적 자료와 분리된 운영 실적을 조회할 수 있습니다.";
-    els.performanceEditorState.hidden = editor.records.length > 0;
+    els.performanceEditorFilterForm.hidden = !editor.loaded || !editor.records.length;
+    if (editor.loaded) syncPerformanceEditorDivisions();
+    const view = performanceEditorView();
+    els.performanceEditorState.hidden = view.visible.length > 0;
     if (!editor.records.length && editor.loaded) {
       els.performanceEditorState.innerHTML = "<strong>직접 등록한 실적이 없습니다</strong><p>증빙 담당자가 등록한 실적을 이곳에서 확인할 수 있습니다.</p>";
+    } else if (!view.rows.length && editor.loaded) {
+      els.performanceEditorState.innerHTML = "<strong>조건에 맞는 실적이 없습니다</strong><p>검색어나 부서를 바꾸거나 조건을 초기화해 주세요.</p>";
     }
-    els.performanceEditorList.innerHTML = editor.records.map((record, index) => `
+    els.performanceEditorPagination.hidden = !view.rows.length;
+    els.performanceEditorPageRange.textContent = view.rows.length
+      ? `${formatNumber(view.start + 1)}–${formatNumber(view.start + view.visible.length)} / ${formatNumber(view.rows.length)}건` : "—";
+    els.performanceEditorPageLabel.textContent = `${formatNumber(editor.page)} / ${formatNumber(view.pages)}`;
+    els.performanceEditorPreviousButton.disabled = editor.page <= 1;
+    els.performanceEditorNextButton.disabled = editor.page >= view.pages;
+    els.performanceEditorList.innerHTML = view.visible.map(({ record }) => `
       <article class="operator-record" role="listitem">
         <div><span class="record-status record-status--${escapeAttribute(record.recordStatus.toLowerCase())}">${escapeHtml(recordStatusLabel(record.recordStatus))}</span><small>rev.${formatNumber(record.revision)}</small></div>
         <h4>${escapeHtml(record.projectName)}</h4>
