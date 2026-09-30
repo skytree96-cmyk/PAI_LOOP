@@ -55,15 +55,30 @@ def test_no_positive_default_for_missing_or_contrary_company_declarations(condit
     assert item(condition, profile)["outcome"] == outcome
 
 
-@pytest.mark.parametrize("condition", [
-    "입찰공고일 현재 법정관리·화의개시 중이 아니며 정부기관에 의한 부정당업체 제재 중이 아닌 자",
-    "입찰공고일 현재 청산·합병·매각 등 정리절차 중이거나 계획 중인 업체, 법원에 화의 또는 법정관리(신청 중)인 업체는 입찰 참가 불가",
-    "법정관리 중이 아니고 부정당업자로 지정되지 않은 업체",
-    "국세 체납이 없고 부정당 제재를 받지 않는 업체",
-    "계약 불이행 이력이 없고 부정당 제재를 받지 않는 업체",
+@pytest.mark.parametrize("condition,keys", [
+    ("입찰공고일 현재 법정관리·화의개시 중이 아니며 정부기관에 의한 부정당업체 제재 중이 아닌 자",
+     {"court_receivership_clear", "business_continuity_clear", "sanction_clear"}),
+    ("입찰공고일 현재 청산·합병·매각 등 정리절차 중이거나 계획 중인 업체, 법원에 화의 또는 법정관리(신청 중)인 업체는 입찰 참가 불가",
+     {"court_receivership_clear", "business_continuity_clear"}),
+    ("법정관리 중이 아니고 부정당업자로 지정되지 않은 업체",
+     {"court_receivership_clear", "sanction_clear"}),
+    ("국세 체납이 없고 부정당 제재를 받지 않는 업체",
+     {"public_dues_arrears_clear", "sanction_clear"}),
+    ("계약 불이행 이력이 없고 부정당 제재를 받지 않는 업체",
+     {"contract_nonperformance_clear", "sanction_clear"}),
 ])
-def test_compound_conditions_do_not_inherit_one_clearance(condition):
-    assert item(condition)["outcome"] == "REVIEW"
+@pytest.mark.parametrize("value,expected", [(True, "PASS_CURRENT"), (False, "FAIL_CONFIRMED"), (None, "REVIEW"), ("MISSING", "REVIEW")])
+def test_compound_conditions_require_each_independent_clearance(condition, keys, value, expected):
+    complete = item(condition)
+    assert complete["outcome"] == "PASS_CURRENT"
+    assert set(complete["component_fact_keys"]) == keys
+    for key in keys:
+        profile = load_public_company_profile()
+        if value == "MISSING":
+            del profile["facts"][key]
+        else:
+            profile["facts"][key]["value"] = value
+        assert item(condition, profile)["outcome"] == expected, key
 
 
 @pytest.mark.parametrize("condition", [
