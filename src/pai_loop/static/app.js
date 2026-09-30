@@ -129,6 +129,9 @@
     resultLearning: {
       records: [], total: 0, offset: 0, limit: 40, loaded: false, loading: false,
       editingNotice: null, editingOutcome: null, opening: null, saving: false,
+      // "" lists every record; AUTO_REVIEW narrows to provider results that
+      // still wait for this department's own review.
+      queue: "", withOutcomeCount: null, autoReviewCount: null,
     },
   };
 
@@ -306,7 +309,7 @@
       "teamsFollowsButton", "teamsFollowsSummary", "teamsFollowsDialog", "teamsFollowsClose", "teamsFollowsRefresh", "teamsFollowsStatus", "teamsFollowsError", "teamsFollowsDeliveryNotice", "teamsFollowsList", "teamsFollowsEmpty", "teamsLinkButton", "teamsBotChatLink", "teamsLinkCodePanel", "teamsLinkCommand", "teamsLinkExpiry", "teamsLinkCopy", "teamsPendingFollow", "teamsPendingFollowLabel", "teamsPendingFollowButton", "detailFollowButton",
       "teamsBriefingToggle", "teamsBriefingEnabled",
       "demoBanner", "demoBannerTitle", "demoBannerReason", "retryApiButton", "systemStatusDot", "systemStatusText", "lastSyncText",
-      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navResultEntryCount", "navArchiveCount",
+      "pageTitle", "appHeader", "primaryNavigation", "mobileMenuButton", "paiBotTeamsButton", "paiBotTeamsAccessNote", "refreshButton", "replayButton", "mainContent", "navNewCount", "navReviewCount", "navInProgressCount", "navResultEntryCount", "navResultReviewCount", "navArchiveCount",
       "navDecisionCount", "kpiReview", "kpiGo", "kpiUrgent", "kpiResultMissing",
       "dashboardSummary", "dashboardSummaryTitle", "dashboardSummaryDetail", "dashboardSummaryTotals", "dashboardRetryButton",
       "analysisProgress", "analysisProgressScope", "analysisAttachmentValue", "analysisAttachmentDetail", "analysisEligibilityValue", "analysisEligibilityDetail", "analysisScoreValue", "analysisScoreDetail",
@@ -344,7 +347,7 @@
       "performanceEditorFilterForm", "performanceEditorSearchInput", "performanceEditorDivisionFilter", "performanceEditorSort", "performanceEditorPagination", "performanceEditorPageRange", "performanceEditorPageLabel", "performanceEditorPreviousButton", "performanceEditorNextButton",
       "performanceRecordDialog", "performanceRecordForm", "performanceRecordDialogTitle", "performanceRecordCloseButton", "performanceRecordCancelButton", "performanceRecordSaveButton",
       "performanceRecordProject", "performanceRecordAgency", "performanceRecordDivision", "performanceRecordStatus", "performanceRecordContractDate", "performanceRecordStartDate", "performanceRecordEndDate", "performanceRecordAmount", "performanceRecordVat", "performanceRecordShare", "performanceRecordCertificate", "performanceRecordCompleted", "performanceRecordEvidence", "performanceRecordKeywords", "performanceRecordOverview",
-      "resultLearningSummary", "resultLearningUnlockButton", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
+      "resultLearningSummary", "resultLearningUnlockButton", "resultLearningQueueTabs", "resultLearningAllCount", "resultLearningReviewCount", "resultLearningFilterForm", "resultLearningSearchInput", "resultLearningOutcomeFilter", "resultLearningRecordFilter", "resultLearningList", "resultLearningState", "resultLearningPagination", "resultLearningPageRange", "resultLearningPageLabel", "resultLearningPreviousButton", "resultLearningNextButton",
       "resultLearningDialog", "resultLearningForm", "resultLearningDialogTitle", "resultLearningDialogNotice", "resultLearningCloseButton", "resultLearningCancelButton", "resultLearningSaveButton", "resultLearningDraftButton", "detailResultContent", "detailResultEditButton", "detailResultListButton", "detailResultRetryButton", "resultLearningStatus", "resultLearningRecordStatus", "resultLearningSubmittedAmount", "resultLearningSubmittedRate", "resultLearningWinningAmount", "resultLearningWinningRate", "resultLearningTechnicalScore", "resultLearningPriceScore", "resultLearningTotalScore", "resultLearningRank", "resultLearningWinner", "resultLearningOccurredAt", "resultLearningLossReason", "resultLearningSourceReference", "resultLearningOperatorNote",
       "resultLearningRateMode", "resultLearningRateBasisKind", "resultLearningRateBasisAmount", "resultLearningRateBasisReference", "resultLearningRateStatus",
       "resultLearningWinningRateMode", "resultLearningWinningRateBasisKind", "resultLearningWinningRateBasisAmount", "resultLearningWinningRateBasisReference", "resultLearningWinningRateStatus", "resultLearningOrigin",
@@ -676,6 +679,11 @@
     els.performanceRecordCancelButton.addEventListener("click", closePerformanceRecordDialog);
 
     els.resultLearningUnlockButton.addEventListener("click", () => loadResultLearning({ force: true }));
+    els.resultLearningQueueTabs.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-result-queue]");
+      if (!button) return;
+      selectResultLearningQueue(button.dataset.resultQueue || "");
+    });
     els.resultLearningFilterForm.addEventListener("submit", (event) => {
       event.preventDefault();
       state.resultLearning.offset = 0;
@@ -860,10 +868,22 @@
     // Render the usable board before scanning all-history aggregates. Running
     // both relationship-heavy reads together can exceed a small worker's
     // memory limit as the stored extraction history grows.
-    const [noticesResult, runtimeResult] = await Promise.allSettled([
-      fetchNoticePages({ statusScope: requestedStatusScope }),
-      apiRequest("/runtime-profile"),
-    ]);
+    const noticesRequest = fetchNoticePages({ statusScope: requestedStatusScope });
+    // Account discovery needs only the runtime profile. Finishing it as soon as
+    // that arrives lets the results view read its own records instead of
+    // waiting for every notice page, which takes tens of seconds on a full DB.
+    const discovery = apiRequest("/runtime-profile").then(async (profile) => {
+      if (sequence !== state.requestSequence) return;
+      applyRuntimeProfile(profile);
+      if (state.accountSession.enabled) await loadAccountSession();
+      if (sequence !== state.requestSequence) return;
+      state.authDiscoveryReady = true;
+      if (state.currentView === "closed"
+        && (!state.accountSession.enabled || state.accountSession.authenticated)) {
+        void loadResultLearning();
+      }
+    });
+    const [noticesResult, runtimeResult] = await Promise.allSettled([noticesRequest, discovery]);
 
     if (sequence !== state.requestSequence) return;
     if (requestedStatusScope !== noticeStatusScopeForView(state.currentView)) {
@@ -873,16 +893,7 @@
 
     if (noticesResult.status === "fulfilled") {
       state.runtimeProfileAvailable = runtimeResult.status === "fulfilled";
-      if (runtimeResult.status === "fulfilled") {
-        applyRuntimeProfile(runtimeResult.value);
-        if (state.accountSession.enabled) await loadAccountSession();
-        if (sequence !== state.requestSequence) return;
-        state.authDiscoveryReady = true;
-        if (state.currentView === "closed"
-          && (!state.accountSession.enabled || state.accountSession.authenticated)) {
-          void loadResultLearning();
-        }
-      } else {
+      if (runtimeResult.status !== "fulfilled") {
         state.manualAnalysisEnabled = false;
         state.manualAnalysisAuthRequired = false;
         state.manualAnalysisPolicy = null;
@@ -1386,6 +1397,9 @@
     state.resultLearning.loading = false;
     state.resultLearning.offset = 0;
     state.resultLearning.total = 0;
+    state.resultLearning.queue = "";
+    state.resultLearning.withOutcomeCount = null;
+    state.resultLearning.autoReviewCount = null;
     state.resultLearning.opening = null;
     els.resultLearningFields.disabled = false;
     els.resultLearningCloseButton.disabled = false;
@@ -3275,10 +3289,27 @@
     }
   }
 
+  function selectResultLearningQueue(queue) {
+    const next = queue === "AUTO_REVIEW" ? "AUTO_REVIEW" : "";
+    if (state.resultLearning.queue === next && state.resultLearning.loaded) return;
+    state.resultLearning.queue = next;
+    state.resultLearning.offset = 0;
+    renderResultLearningQueueTabs();
+    void loadResultLearning({ force: true });
+  }
+
   async function loadResultLearning({ force = false } = {}) {
     const epoch = state.accountEpoch;
     // Wait for the account capability discovery before requesting protected records.
-    if (!state.authDiscoveryReady) return;
+    // Say so instead of ignoring the request: discovery finishes on its own and
+    // then loads the open results view without another click.
+    if (!state.authDiscoveryReady) {
+      if (state.currentView === "closed" && !state.resultLearning.loading) {
+        els.resultLearningState.hidden = false;
+        els.resultLearningState.innerHTML = '<span class="spinner" aria-hidden="true"></span><strong>로그인 상태를 확인하고 있습니다</strong><p>확인이 끝나면 결과 기록을 바로 불러옵니다.</p>';
+      }
+      return;
+    }
     if (state.resultLearning.loading || (state.resultLearning.loaded && !force)) return;
     const headers = await manualAnalysisAuthHeaders();
     if (!headers || epoch !== state.accountEpoch || state.resultLearning.loading) return;
@@ -3291,11 +3322,14 @@
     if (q) params.set("q", q);
     if (els.resultLearningOutcomeFilter.value) params.set("outcome_status", els.resultLearningOutcomeFilter.value);
     if (els.resultLearningRecordFilter.value) params.set("record_status", els.resultLearningRecordFilter.value);
+    if (state.resultLearning.queue) params.set("queue", state.resultLearning.queue);
     try {
       const payload = unwrapObject(await apiRequest(`/result-learning?${params}`, { headers }));
       if (epoch !== state.accountEpoch) return;
       state.resultLearning.records = arrayValue(payload.records).map(normalizeResultLearningNotice);
       state.resultLearning.total = Math.max(numberOrNull(payload.total) ?? state.resultLearning.records.length, 0);
+      state.resultLearning.withOutcomeCount = numberOrNull(payload.with_outcome_count);
+      state.resultLearning.autoReviewCount = numberOrNull(payload.auto_review_count);
       state.resultLearning.loaded = true;
       renderResultLearning();
     } catch (error) {
@@ -3320,6 +3354,7 @@
     return {
       noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), revisionNo: stringValue(raw.revision_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
       deadline: stringValue(raw.deadline), noticeStatus: stringValue(raw.notice_status),
+      autoReviewPending: raw.auto_review_pending === true,
       expectedOutcomeId: own[0]?.id || null,
       departmentOutcomes: outcomes.map((row) => ({ departmentName: stringValue(row.department_name, row.source === "MANUAL_UI" ? "기존 기록" : "나라장터"), status: stringValue(row.status), note: stringValue(row.operator_note), updatedAt: row.updated_at })),
       outcome: outcome ? {
@@ -3333,21 +3368,45 @@
         winnerName: stringValue(outcome.winner_name), lossReason: stringValue(outcome.loss_reason), source: stringValue(outcome.source), sourceReference: stringValue(outcome.source_reference),
         basisOutcomeId: stringValue(outcome.basis_outcome_id), basisSource: stringValue(outcome.basis_source),
         operatorNote: stringValue(outcome.operator_note), occurredAt: stringValue(outcome.occurred_at), updatedAt: stringValue(outcome.updated_at),
+        demo: outcome.demo === true,
       } : null,
     };
+  }
+
+  function renderResultLearningQueueTabs() {
+    const data = state.resultLearning;
+    els.resultLearningQueueTabs.querySelectorAll?.("[data-result-queue]").forEach((button) => {
+      button.setAttribute("aria-pressed", String((button.dataset.resultQueue || "") === data.queue));
+    });
+    els.resultLearningAllCount.textContent = data.withOutcomeCount === null ? "" : `결과 ${formatNumber(data.withOutcomeCount)}건`;
+    els.resultLearningReviewCount.textContent = data.autoReviewCount === null ? "" : `${formatNumber(data.autoReviewCount)}건`;
   }
 
   function renderResultLearning() {
     const data = state.resultLearning;
     els.resultLearningUnlockButton.textContent = data.loaded ? "목록 새로고침" : "결과 기록 열기";
-    els.resultLearningSummary.textContent = data.loaded ? `대상 공고 ${formatNumber(data.total)}건${state.accountSession?.enabled ? " · 부서별 기록 조회" : ""}` : state.accountSession?.enabled ? "부서 로그인 후 결과 기록을 불러오세요." : "부서 계정 활성화 후 결과 기록을 조회할 수 있습니다.";
+    els.resultLearningSummary.textContent = data.loaded
+      ? `${data.queue === "AUTO_REVIEW" ? "확인이 필요한 자동 반영 " : "대상 공고 "}${formatNumber(data.total)}건 · 결과가 기록된 공고를 먼저 표시${state.accountSession?.enabled ? " · 부서별 기록 조회" : ""}`
+      : !state.accountSession?.enabled ? "부서 계정 활성화 후 결과 기록을 조회할 수 있습니다."
+        : state.accountSession.authenticated ? "결과 기록을 불러오고 있습니다." : "부서 로그인 후 결과 기록을 불러오세요.";
+    renderResultLearningQueueTabs();
+    renderNavigationCounts();
     els.resultLearningState.hidden = data.records.length > 0;
-    if (data.loaded && !data.records.length) els.resultLearningState.innerHTML = "<strong>조건에 맞는 공고가 없습니다</strong><p>필터를 바꾸거나 종료 공고 수집 상태를 확인해 주세요.</p>";
+    if (data.loaded && !data.records.length) {
+      els.resultLearningState.innerHTML = data.queue === "AUTO_REVIEW"
+        ? "<strong>확인할 자동 반영 결과가 없습니다</strong><p>나라장터 결과가 새로 반영되면 이곳에 표시됩니다.</p>"
+        : "<strong>조건에 맞는 공고가 없습니다</strong><p>필터를 바꾸거나 종료 공고 수집 상태를 확인해 주세요.</p>";
+    }
     els.resultLearningList.innerHTML = data.records.map((notice, index) => {
       const outcome = notice.outcome;
       const outcomeLabel = outcome ? resultStatusLabel(outcome.status) : "결과 미입력";
+      // A provider result the department has not reviewed yet reads as work to
+      // confirm, whatever its stored workflow state.
+      const awaitingReview = Boolean(outcome && notice.autoReviewPending && outcome.source !== "MANUAL_UI");
+      const statusClass = awaitingReview ? "review" : (outcome?.recordStatus || "missing").toLowerCase();
+      const statusLabel = awaitingReview ? "확인 필요" : outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력";
       return `<article class="operator-record result-record" role="listitem">
-        <div><span class="record-status record-status--${escapeAttribute((outcome?.recordStatus || "missing").toLowerCase())}">${escapeHtml(outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력")}</span><small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
+        <div><span class="record-status record-status--${escapeAttribute(statusClass)}">${escapeHtml(statusLabel)}</span>${outcome?.demo ? '<span class="demo-record-badge" title="발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.">시연</span>' : ""}<small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
         ${outcome?.openingIdentity ? `<p>${outcome.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(outcome.openingIdentity.revision_no)} / 분류 ${escapeHtml(outcome.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(outcome.openingIdentity.rebid_no)}</p>` : ""}
         <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(outcome?.submittedBidAmount == null ? "미입력" : formatBudget(outcome.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(outcome?.winningBidAmount == null ? "미확인" : formatBudget(outcome.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome, "winning"))}</dd></div></dl>
@@ -4543,6 +4602,7 @@
       inProgressCount: localQueues ? derived.inProgressCount : numberOrNull(workQueues.in_progress),
       urgentInProgressCount: localQueues ? derived.urgentInProgressCount : numberOrNull(workQueues.urgent_in_progress),
       resultMissingDecidedCount: localQueues ? derived.resultMissingDecidedCount : numberOrNull(workQueues.result_missing_decided),
+      resultReviewCount: localQueues ? null : numberOrNull(source.result_review_count),
       actionableCount: numberOrNull(firstValue(source.work_queue_denominator, kpis.work_queue_denominator))
         ?? (localQueues ? derived.actionableCount : null),
       cancelledGoNotices: Array.isArray(source.cancelled_go_notices) ? source.cancelled_go_notices : [],
@@ -5113,6 +5173,16 @@
     // went in the same menu, so the work is never silently dropped from view.
     if (els.navResultEntryCount) {
       els.navResultEntryCount.textContent = displayNumber(state.dashboard.resultMissingDecidedCount) + "건";
+    }
+    // Automatic results waiting for review. A freshly loaded results list is
+    // newer than the dashboard aggregate, so its count wins once present.
+    if (els.navResultReviewCount) {
+      const reviewCount = state.resultLearning.loaded && state.resultLearning.autoReviewCount !== null
+        ? state.resultLearning.autoReviewCount : numberOrNull(state.dashboard.resultReviewCount);
+      els.navResultReviewCount.hidden = !reviewCount;
+      els.navResultReviewCount.textContent = reviewCount ? `확인 ${formatNumber(reviewCount)}` : "";
+      els.navResultReviewCount.setAttribute("aria-label", reviewCount
+        ? `나라장터 자동 반영 결과 중 확인이 필요한 공고 ${formatNumber(reviewCount)}건` : "확인이 필요한 자동 반영 결과 없음");
     }
     if (els.navArchiveCount) {
       els.navArchiveCount.textContent = displayNumber(state.dashboard.endedCount) + "건";
@@ -8706,7 +8776,9 @@
       ["미낙찰 사유", outcome.lossReason || "미입력"], ["출처·근거", outcome.sourceReference || "미입력"],
       ["메모", outcome.operatorNote || "미입력"],
     ];
-    els.detailResultContent.innerHTML = `<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
+    if (outcome.source && outcome.source !== "MANUAL_UI") rows.unshift(["기록 출처", resultSourceLabel(outcome.source)]);
+    const demoNote = outcome.demo ? '<p class="demo-record-note"><span class="demo-record-badge">시연</span>발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.</p>' : "";
+    els.detailResultContent.innerHTML = `${demoNote}<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
   }
 
   function selectTab(tabName, { evidenceId = "", focusEvidence = false, resetScroll = true } = {}) {

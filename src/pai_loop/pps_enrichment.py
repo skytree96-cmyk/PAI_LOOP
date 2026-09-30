@@ -1016,6 +1016,61 @@ def failed_attachment_retry_snapshot(
     return {**data, "scope_sha256": _digest(data)}
 
 
+AUTO_LONG_OUTPUT_ENV = "PAI_AUTO_LONG_OUTPUT"
+
+
+def auto_long_output_enabled() -> bool:
+    """Kill switch for the in-request 32k escalation (default on)."""
+    return os.environ.get(AUTO_LONG_OUTPUT_ENV, "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _auto_long_output_scope(
+    session: Session, *, notice_id: str, attachment: dict[str, Any], version_id: str | None,
+) -> dict[str, Any] | None:
+    """Freeze the same one-shot LONG_OUTPUT_ONCE scope an operator would plan.
+
+    Only for the failure this request just produced or reused for this attachment.
+    Every guard of the operator path still applies downstream: the durable
+    one-time claim, the exact failed-attempt digest and the source boundary.
+    """
+    if not auto_long_output_enabled() or not version_id:
+        return None
+    try:
+        return _freeze_auto_long_output_scope(session, notice_id=notice_id, attachment=attachment, version_id=version_id)
+    finally:
+        # consume_long_output needs a clean session; end the read-only transaction.
+        if session.in_transaction():
+            session.commit()
+
+
+def _freeze_auto_long_output_scope(
+    session: Session, *, notice_id: str, attachment: dict[str, Any], version_id: str,
+) -> dict[str, Any] | None:
+    session.expire_all()
+    notice = session.get(Notice, notice_id, populate_existing=True)
+    version = session.get(NoticeVersion, version_id)
+    if (notice is None or version is None or not isinstance(version.source_payload, dict)
+            or version.source_payload.get("attachment_id") != attachment["attachment_id"]
+            or not eligible_long_output_failure(version) or long_output_consumed(session, version.id)):
+        return None
+    metadata = session.scalar(select(NoticeVersion).where(
+        NoticeVersion.notice_id == notice_id,
+        NoticeVersion.source_payload["kind"].as_string() == PPS_METADATA_KIND,
+    ).order_by(NoticeVersion.version_no.desc()).limit(1))
+    try:
+        scope = failed_attachment_retry_snapshot(
+            list(notice.versions), error_codes=["HTTP_ERROR"], max_attachments=1,
+            notice_key=notice.notice_key, revision_no=notice.revision_no,
+            budget_policy=LONG_OUTPUT_ONCE, session=session,
+            source_boundary=long_output_source_boundary(notice, metadata))
+    except ValueError:
+        return None
+    target = scope["targets"][0]
+    if target["attachment_id"] != attachment["attachment_id"] or target["version_id"] != version.id:
+        return None
+    return scope
+
+
 def valid_failed_attachment_retry_scope(scope: object) -> bool:
     fields = {"notice_key", "revision_no", "error_codes", "max_attachments", "targets", "version_ids", "scope_sha256"}
     if not isinstance(scope, dict) or set(scope) not in (fields, fields | {"budget_policy", "source_boundary"}):
@@ -4490,6 +4545,73 @@ def enrich_notice_from_pps(
                     openai_telemetry=OpenAITelemetry(accounting_complete=False),
                 )
             reason_code = None
+            # A 20k stop or a 180s gateway timeout used to wait for a separate
+            # operator LONG_OUTPUT_ONCE plan. Take that one 32k/300s call now,
+            # in this request, when it still fits the remaining time budget.
+            if (item_result.status == "REVIEW" and not long_output_once
+                    and (retry_targets is None or target is not None)
+                    and deadline_monotonic is not None
+                    and deadline_monotonic - time.monotonic() >= attachment_start_reservation_seconds(
+                        download_timeout_seconds=download_timeout_seconds,
+                        model_timeout_seconds=LONG_OUTPUT_TIMEOUT_SECONDS,
+                        max_model_calls=LONG_OUTPUT_MAX_CALLS,
+                        guard_seconds=ATTACHMENT_TIMEOUT_GUARD_SECONDS)):
+                auto_scope = _auto_long_output_scope(
+                    session, notice_id=notice_id, attachment=attachment, version_id=item_result.version_id)
+                if auto_scope is not None:
+                    first_result = item_result
+                    auto_version_no = auto_scope["targets"][0]["version_no"]
+                    try:
+                        long_result = _enrich_selected_pps_attachment(
+                            session,
+                            notice_id=notice_id,
+                            versions=list(session.get(Notice, notice_id).versions),
+                            attachment=attachment,
+                            manifest_sha256=_digest(attachment),
+                            current_manifest_sha256=current_manifest_sha256,
+                            attachments_discovered=discovered,
+                            openai_api_key=openai_api_key,
+                            openai_model=openai_model,
+                            llm_provider=llm_provider,
+                            llm_gateway_base_url=llm_gateway_base_url,
+                            transport=transport,
+                            openai_client_factory=openai_client_factory,
+                            download_timeout_seconds=download_timeout_seconds,
+                            openai_timeout_seconds=LONG_OUTPUT_TIMEOUT_SECONDS,
+                            openai_max_retries=openai_max_retries,
+                            retry_reviewed_version_ids=retry_reviewed_version_ids | frozenset(auto_scope["version_ids"]),
+                            retry_failed_version_no=auto_version_no,
+                            long_output_scope=auto_scope,
+                            long_output_deadline=deadline_monotonic,
+                        )
+                    except PpsPostOpenAIProcessingError as exc:
+                        session.rollback()
+                        long_result = replace(
+                            record_internal_pps_enrichment_failure(
+                                session,
+                                notice_id=notice_id,
+                                attachment=attachment,
+                                manifest_sha256=_digest(attachment),
+                                current_manifest_sha256=current_manifest_sha256,
+                                attachments_discovered=discovered,
+                                retry_reviewed_version_ids=retry_reviewed_version_ids,
+                                retry_failed_version_no=auto_version_no,
+                            ),
+                            openai_calls=exc.openai_calls,
+                            openai_telemetry=exc.openai_telemetry,
+                        )
+                    except Exception:
+                        # Keep the 20k failure. A claim taken before the error stays spent.
+                        session.rollback()
+                        long_result = None
+                    if long_result is not None:
+                        item_result = replace(
+                            long_result,
+                            openai_calls=first_result.openai_calls + long_result.openai_calls,
+                            openai_telemetry=merge_openai_telemetry(
+                                first_result.openai_telemetry, long_result.openai_telemetry),
+                            downloaded_bytes=first_result.downloaded_bytes + long_result.downloaded_bytes,
+                        )
         audit = _audit_result_for_attachment(
             attachment,
             item_result,
