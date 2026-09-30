@@ -1027,7 +1027,8 @@ def valid_failed_attachment_retry_scope(scope: object) -> bool:
             return False
         return (isinstance(scope["notice_key"], str) and scope["notice_key"].startswith("PPS-")
                 and isinstance(scope["revision_no"], str)
-                and type(scope["max_attachments"]) is int and 1 <= scope["max_attachments"] <= 3
+                and type(scope["max_attachments"]) is int
+                and 1 <= scope["max_attachments"] <= MAX_ATTACHMENTS_IN_MANIFEST
                 and isinstance(scope["error_codes"], list) and bool(scope["error_codes"])
                 and set(scope["error_codes"]) <= FAILED_ATTACHMENT_RETRY_CODES
                 and isinstance(scope["targets"], list) and 1 <= len(scope["targets"]) <= scope["max_attachments"]
