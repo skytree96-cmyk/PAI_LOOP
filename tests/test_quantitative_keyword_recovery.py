@@ -1,17 +1,79 @@
 """Synthetic production persistence boundary; no external calls."""
 import json
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 
 from pai_loop.integrations.openai_extraction import OpenAIExtractionClient
-from pai_loop.models import Notice, NoticeVersion
+from pai_loop.models import Notice, NoticeVersion, IngestionJob, NoticeAnalysisPolicy, PpsNoticeAuthority
 from pai_loop.pps_enrichment import enrich_notice_from_pps, has_current_accepted_pps_extraction
 from pai_loop.quantitative_scoring import _current_dynamic_quantitative_profile
 from test_pps_enrichment import _single_hwpx_reuse_case, _RetryableReviewClient
 from test_quantitative_count_ranges import fixture, ATT
 from test_quantitative_probe_client import response, make_client
 from test_long_output_once import FAILURE
+
+
+@pytest.mark.parametrize("defer", [False, True])
+def test_ordinary_then_long_failure_automatically_recovers_once(defer, monkeypatch):
+    payload, source = fixture(inline=True)
+    source = "SYN unrelated task description\n" * 100 + source
+    engine, factory, notice_id, download = _single_hwpx_reuse_case(
+        notice_key="SYN-AUTO-RECOVERY", source_text=source)
+    calls, budgets = [], []
+    clock = [1000.0]
+    monkeypatch.setattr("pai_loop.pps_enrichment.time.monotonic", lambda: clock[0])
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if len(calls) <= 2:
+            failure = json.loads(json.dumps(FAILURE))
+            tokens = 20_000 if len(calls) == 1 else 32_000
+            failure["usage"].update(output_tokens=tokens, total_tokens=tokens + 100)
+            if defer and len(calls) == 2:
+                clock[0] = 1700.0
+            return httpx.Response(500, json={"gateway_error": failure})
+        if len(calls) == 3:
+            return httpx.Response(200, json={"status": "completed", "output_text": '{"requirements": []}'})
+        # Bind the synthetic result to the actual generated fixture attachment.
+        with factory() as session:
+            metadata = next(v for v in session.get(Notice, notice_id).versions
+                            if v.source_payload.get("kind") == "PPS_NOTICE_METADATA")
+            attachment_id = metadata.source_payload["attachment_manifest"][0]["attachment_id"]
+        return response(json.loads(json.dumps(payload).replace(ATT, attachment_id)))
+
+    def client_factory(**kwargs):
+        budgets.append(kwargs.get("budget_policy"))
+        return OpenAIExtractionClient(**kwargs, transport=httpx.MockTransport(handler))
+
+    options = dict(notice_id=notice_id, openai_api_key="SYN-key", openai_model="claude-sonnet-5",
+        llm_provider="n8n_claude", llm_gateway_base_url="https://syn-gateway.test/v1",
+        transport=download, openai_client_factory=client_factory)
+    with factory() as session:
+        result = enrich_notice_from_pps(session, **options, deadline_monotonic=1900.0)
+    if defer:
+        assert len(calls) == result.openai_calls == 2
+        assert "ATTACHMENT_CONTINUATION_REQUIRED" in result.warnings
+        with factory() as session:
+            result = enrich_notice_from_pps(session, **options, deadline_monotonic=2600.0)
+        assert result.openai_calls == 2
+    else:
+        assert result.openai_calls == 4
+    assert len(calls) == 4
+    assert budgets == [None, "LONG_OUTPUT_ONCE", None]
+    assert "<source_excerpts" in calls[-1]["input"][1]["content"][0]["text"]
+    with factory() as session:
+        stored = session.get(NoticeVersion, result.version_id)
+        assert stored.source_payload["status"] == "ACCEPTED"
+        assert not stored.document_complete
+        assert session.query(IngestionJob).filter_by(source="QUANTITATIVE_RECOVERY_ONCE").count() == 1
+    with factory() as session:
+        reused = enrich_notice_from_pps(session, **options, deadline_monotonic=2600.0)
+    assert reused.openai_calls == 0
+    assert len(calls) == 4
+    engine.dispose()
 
 
 @pytest.mark.parametrize("failure_kind", ["INCOMPLETE_RESPONSE", "HTTP20", "HTTP32"])
@@ -114,3 +176,48 @@ def test_failed_recovery_quotes_never_supply_unverified_scoring_rows():
     assert outcome.api_calls == len(calls) == 2
     assert audit["attachment_coverage_complete"] is False
     assert audit["eligibility_complete"] is False
+
+
+@pytest.mark.parametrize("guard", ["closed", "cancelled", "expired", "manual", "consumed", "failed_recovery"])
+def test_automatic_recovery_guards_and_failed_attempt_is_terminal(guard):
+    payload, source = fixture(inline=True)
+    source = "SYN unrelated\n" * 100 + source
+    engine, factory, notice_id, download = _single_hwpx_reuse_case(
+        notice_key="PPS-SYN-AUTO-GUARD", source_text=source)
+    options = dict(notice_id=notice_id, openai_api_key="SYN-key", openai_model="claude-sonnet-5",
+        llm_provider="n8n_claude", llm_gateway_base_url="https://syn-gateway.test/v1", transport=download)
+    with factory() as session:
+        first = enrich_notice_from_pps(session, **options, openai_client_factory=_RetryableReviewClient)
+        version = session.get(NoticeVersion, first.version_id)
+        saved = json.loads(json.dumps(version.source_payload))
+        saved["document_processing"]["retry_budget_policy"] = "LONG_OUTPUT_ONCE"
+        version.source_payload = saved
+        notice = session.get(Notice, notice_id)
+        if guard == "closed": notice.status = "CLOSED"
+        if guard == "cancelled":
+            session.add(PpsNoticeAuthority(bid_notice_no=notice.bid_notice_no,
+                revision_no=notice.revision_no, disposition="CANCELLED", authority_sha256="c" * 64))
+        if guard == "expired": notice.deadline = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        if guard == "manual":
+            session.add(NoticeAnalysisPolicy(notice_key=notice.notice_key,
+                bid_notice_no=notice.bid_notice_no, analysis_policy="MANUAL_ONLY"))
+        session.commit()
+    if guard == "consumed":
+        from pai_loop import quantitative_recovery_policy as policy
+        with factory() as session:
+            with session.begin(): version = session.get(NoticeVersion, first.version_id)
+            assert policy.consume(session, version, lambda: True)
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"status": "completed", "output_text": '{"requirements": []}'})
+    def client_factory(**kwargs):
+        return OpenAIExtractionClient(**kwargs, transport=httpx.MockTransport(handler))
+    import time
+    for _ in range(2):
+        with factory() as session:
+            result = enrich_notice_from_pps(session, **options, openai_client_factory=client_factory,
+                                            deadline_monotonic=time.monotonic() + 900)
+        assert result.status in {"REVIEW", "REUSED"}
+    assert len(calls) == (2 if guard == "failed_recovery" else 0)
+    engine.dispose()

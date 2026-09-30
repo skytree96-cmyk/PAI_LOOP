@@ -50,6 +50,8 @@ from .long_output_policy import (
     long_output_source_boundary,
 )
 from .notice_freshness import authoritative_pps_cancelled_notice_keys
+from .analysis_selection import manual_only_notice_keys
+from . import quantitative_recovery_policy
 from .gateway_diagnostics import safe_gateway_failure
 from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
 from .quantitative_rule_extraction import (
@@ -3780,6 +3782,57 @@ def _keyword_recovery_failure(version: NoticeVersion) -> bool:
     ))
 
 
+def _continue_quantitative_recovery(
+    session: Session, *, result: PpsEnrichmentResult, attachment: dict[str, Any],
+    current_manifest_sha256: str, deadline_monotonic: float | None,
+    remaining_calls: int, options: dict[str, Any],
+) -> PpsEnrichmentResult:
+    """Continue a failed 32k stage once, including on a later queue lease."""
+    if deadline_monotonic is None or not result.version_id or options["llm_provider"] != "n8n_claude":
+        return result
+    with session.begin():
+        version = session.get(NoticeVersion, result.version_id)
+        payload = version.source_payload if version is not None else {}
+        processing = payload.get("document_processing")
+        if (version is None or not _keyword_recovery_failure(version)
+                or not isinstance(processing, dict)
+                or processing.get("retry_budget_policy") != LONG_OUTPUT_ONCE
+                or processing.get("quantitative_recovery")
+                or payload.get("attachment_id") != attachment["attachment_id"]
+                or payload.get("current_manifest_sha256") != current_manifest_sha256
+                or quantitative_recovery_policy.consumed(session, version)):
+            return result
+        versions = list(session.get(Notice, options["notice_id"]).versions)
+    required = attachment_start_reservation_seconds(
+        download_timeout_seconds=options["download_timeout_seconds"],
+        model_timeout_seconds=options["openai_timeout_seconds"], max_model_calls=2,
+        guard_seconds=ATTACHMENT_TIMEOUT_GUARD_SECONDS)
+    if remaining_calls < 2 or deadline_monotonic - time.monotonic() < required:
+        return replace(result, warnings=[*result.warnings, "ATTACHMENT_CONTINUATION_REQUIRED",
+                                         "ATTACHMENT_COVERAGE_INCOMPLETE"])
+    try:
+        recovered = _enrich_selected_pps_attachment(
+            session, **options, versions=versions, attachment=attachment,
+            manifest_sha256=_digest(attachment), current_manifest_sha256=current_manifest_sha256,
+            retry_reviewed_version_ids=frozenset({version.id}), retry_failed_version_no=version.version_no,
+            automatic_keyword_recovery=True, long_output_deadline=deadline_monotonic,
+        )
+    except PpsPostOpenAIProcessingError as exc:
+        session.rollback()
+        return replace(result, openai_calls=result.openai_calls + exc.openai_calls,
+            openai_telemetry=merge_openai_telemetry(result.openai_telemetry, exc.openai_telemetry),
+            warnings=[*result.warnings, "QUANTITATIVE_RECOVERY_POST_PROCESSING_FAILED"])
+    except Exception:
+        session.rollback()
+        # A committed reservation stays spent even if the response is uncertain.
+        return replace(result, openai_telemetry=merge_openai_telemetry(
+            result.openai_telemetry, OpenAITelemetry(accounting_complete=False)),
+            warnings=[*result.warnings, "QUANTITATIVE_RECOVERY_FAILED"])
+    return replace(recovered, openai_calls=result.openai_calls + recovered.openai_calls,
+        openai_telemetry=merge_openai_telemetry(result.openai_telemetry, recovered.openai_telemetry),
+        downloaded_bytes=result.downloaded_bytes + recovered.downloaded_bytes)
+
+
 def _enrich_selected_pps_attachment(
     session: Session,
     *,
@@ -3802,6 +3855,7 @@ def _enrich_selected_pps_attachment(
     retry_failed_version_no: int | None = None,
     long_output_scope: dict[str, Any] | None = None,
     long_output_deadline: float | None = None,
+    automatic_keyword_recovery: bool = False,
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> PpsEnrichmentResult:
     """Run one exact selected attachment; expected document failures are persisted."""
@@ -4089,6 +4143,33 @@ def _enrich_selected_pps_attachment(
             version_id=version.id,
             warnings=["OPENAI_KEY_MISSING"],
         )
+
+    if automatic_keyword_recovery:
+        # Never fall through to another full-document call under this stage.
+        if not use_keyword_recovery:
+            return PpsEnrichmentResult(status="REVIEW", attachments_discovered=attachments_discovered,
+                warnings=["QUANTITATIVE_RECOVERY_SOURCE_CHANGED"])
+        if (long_output_deadline is None
+                or long_output_deadline - time.monotonic() < 2 * openai_timeout_seconds + ATTACHMENT_TIMEOUT_GUARD_SECONDS):
+            return PpsEnrichmentResult(status="REVIEW", attachments_discovered=attachments_discovered,
+                version_id=recovery_source.id, warnings=["ATTACHMENT_CONTINUATION_REQUIRED", "ATTACHMENT_COVERAGE_INCOMPLETE"])
+        def validate_recovery_source():
+            session.expire_all()
+            active = session.get(Notice, notice_id)
+            latest = session.scalar(select(NoticeVersion).where(
+                NoticeVersion.notice_id == notice_id,
+                NoticeVersion.source_payload["kind"].as_string() == "OPENAI_REQUIREMENT_EXTRACTION",
+                NoticeVersion.source_payload["attachment_id"].as_string() == attachment["attachment_id"],
+            ).order_by(NoticeVersion.version_no.desc()).limit(1))
+            return bool(active and active.status == "OPEN" and _as_utc(active.deadline) > datetime.now(timezone.utc)
+                and not authoritative_pps_cancelled_notice_keys(session, [active])
+                and not manual_only_notice_keys(session, [active.notice_key])
+                and latest and latest.id == recovery_source.id
+                and latest.file_sha256 == document_sha256
+                and _manifest_binding_is_current(session, notice_id=notice_id, attachment=attachment,
+                    manifest_sha256=manifest_sha256, current_manifest_sha256=current_manifest_sha256))
+        if not quantitative_recovery_policy.consume(session, recovery_source, validate_recovery_source):
+            return _stored_attachment_result(recovery_source, attachments_discovered=attachments_discovered, reuse_only=True)
 
     long_options = {}
     if long_output_scope is not None:
@@ -4469,6 +4550,11 @@ def enrich_notice_from_pps(
     members_discovered = members_processed = 0
     new_attempts = 0
     last_version_id: str | None = None
+    recovery_options = dict(notice_id=notice_id, attachments_discovered=discovered,
+        openai_api_key=openai_api_key, openai_model=openai_model, llm_provider=llm_provider,
+        llm_gateway_base_url=llm_gateway_base_url, transport=transport,
+        openai_client_factory=openai_client_factory, download_timeout_seconds=download_timeout_seconds,
+        openai_timeout_seconds=openai_timeout_seconds, openai_max_retries=openai_max_retries)
     # 커버리지는 그대로다. 예산이 끊기기 전에 배점표를 만날 확률만 높인다.
     for attachment in sorted(attachments, key=_scoring_table_reading_order):
         stored_version = current_attempts.get(attachment["attachment_id"])
@@ -4492,6 +4578,11 @@ def enrich_notice_from_pps(
             else None
         )
         if stored_result is not None:
+            if not long_output_once and (can_retry or target is not None):
+                stored_result = _continue_quantitative_recovery(
+                    session, result=stored_result, attachment=attachment,
+                    current_manifest_sha256=current_manifest_sha256, deadline_monotonic=deadline_monotonic,
+                    remaining_calls=MAX_OPENAI_CALLS_PER_NOTICE - openai_calls, options=recovery_options)
             audit = _audit_result_for_attachment(
                 attachment,
                 stored_result,
@@ -4500,6 +4591,9 @@ def enrich_notice_from_pps(
             audits.append(audit)
             warnings.extend(stored_result.warnings)
             processed += stored_result.attachments_processed
+            openai_calls += stored_result.openai_calls
+            downloaded_bytes += stored_result.downloaded_bytes
+            openai_telemetry = merge_openai_telemetry(openai_telemetry, stored_result.openai_telemetry)
             source_characters += stored_result.source_characters
             analysis_input_characters += stored_result.analysis_input_characters
             members_discovered += stored_result.members_discovered
@@ -4718,6 +4812,12 @@ def enrich_notice_from_pps(
                                 first_result.openai_telemetry, long_result.openai_telemetry),
                             downloaded_bytes=first_result.downloaded_bytes + long_result.downloaded_bytes,
                         )
+        if not long_output_once:
+            item_result = _continue_quantitative_recovery(
+                session, result=item_result, attachment=attachment,
+                current_manifest_sha256=current_manifest_sha256, deadline_monotonic=deadline_monotonic,
+                remaining_calls=MAX_OPENAI_CALLS_PER_NOTICE - openai_calls - item_result.openai_calls,
+                options=recovery_options)
         audit = _audit_result_for_attachment(
             attachment,
             item_result,

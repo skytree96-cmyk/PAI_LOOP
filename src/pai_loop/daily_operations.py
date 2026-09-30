@@ -622,6 +622,7 @@ def apply_operational_retention(
         & (IngestionJob.status != "RUNNING")
         # Durable one-shot cost reservations are not disposable execution logs.
         & (IngestionJob.source != "LONG_OUTPUT_ONCE")
+        & (IngestionJob.source != "QUANTITATIVE_RECOVERY_ONCE")
     )
     old_notifications = MockNotification.created_at < cutoff
     eligible = {

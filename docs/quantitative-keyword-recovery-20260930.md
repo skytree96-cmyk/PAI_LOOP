@@ -41,15 +41,30 @@ failed attachment can use the separate `extract_quantitative_recovery` entry.
 Schema, quote and incomplete-response failures are eligible. A strictly parsed
 20k/32k output-limit or gateway timeout is eligible only when keyword selection
 actually reduces the input; identical full-input stops retain their existing
-no-repeat behavior. Scheduled reads and accepted extraction records do not
-activate this path. The separate LONG_OUTPUT_ONCE contract is unchanged.
+no-repeat behavior. Accepted extraction records do not activate this path.
+
+The ordinary production chain now continues automatically after its existing
+32k escalation fails: normal extraction, bounded 32k escalation, keyword text,
+then XML on an eligible output-validation failure. Success stops progression.
+The recovery portion adds at most two calls; existing normal corrective-call
+and 32k limits remain unchanged. No n8n edit is needed for this orchestration.
+If the request cannot reserve time for both recovery calls, it records attachment
+continuation and resumes from the failed 32k result on the next queue lease.
+The separately requested single-call LONG_OUTPUT_ONCE execution remains one call.
+
+Automatic recovery commits a unique QUANTITATIVE_RECOVERY_ONCE reservation before
+provider I/O. Its identity binds the notice, attachment, document and manifest,
+not the attempt ID. Concurrent attempts, ambiguous failures and new retry version
+IDs cannot create another allowance. These reservations survive log retention.
+Current status, deadline, cancellation, MANUAL_ONLY and latest source bindings
+are checked before reserving. Failed recovery remains REVIEW and is terminal.
 
 A completed gateway JSON/schema normalization failure also permits the one XML
 fallback. An ambiguous transport timeout, refusal, provider error or token stop
 does not trigger an immediate second call. Failed quote output is not persisted
 as unverified recovery scoring rows.
 
-The recovery keeps the existing two-call attachment ceiling: one keyword text
+The recovery stage has a two-call ceiling: one keyword text
 call, then XML on an eligible validation failure, without transport retries.
 Native HWPX tables are included when present; a paragraph-encoded HWPX table
 uses source-text XML framing. Optional native XML that exceeds its size or
