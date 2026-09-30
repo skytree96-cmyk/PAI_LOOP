@@ -48,7 +48,7 @@ def test_user_example_has_six_definite_groups_without_losing_nine_source_rows(de
     ("중소기업확인서는 비영리법인에 적용하지 않으며 참여 가능함.", "PASS_EXCEPTION"),
     ("중소기업확인서는 비영리법인도 보유해야 함.", "FAIL_CONFIRMED"),
     ("직접생산확인증명서는 비영리법인도 보유해야 함.", "FAIL_CONFIRMED"),
-    ("중소기업 확인서 소지자 또는 중소기업자로 간주되는 비영리법인이어야 함", "REVIEW"),
+    ("중소기업 확인서 소지자 또는 중소기업자로 간주되는 비영리법인이어야 함", "PASS_EXCEPTION"),
     ("나라장터 업종코드 9901 또는 9998로 등록해야 함", "PASS_CURRENT"),
     ("나라장터 업종코드 9901 및 9998로 모두 등록해야 함", "FAIL_CONFIRMED"),
     ("나라장터 업종코드 9901/9998로 등록해야 함", "REVIEW"),

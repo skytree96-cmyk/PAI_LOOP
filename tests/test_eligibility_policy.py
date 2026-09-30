@@ -393,7 +393,7 @@ def test_nonprofit_direct_production_exception_is_scoped_fail_closed() -> None:
     assert direct["company_fact_key"] == "direct_production_nonprofit_exception_scope"
 
 
-def test_nonprofit_small_business_exception_is_scoped_fail_closed() -> None:
+def test_nonprofit_exception_applies_to_repeated_certificate_duty() -> None:
     profile = load_public_company_profile()
     result = classify_requirements(
         [
@@ -415,10 +415,9 @@ def test_nonprofit_small_business_exception_is_scoped_fail_closed() -> None:
 
     assert by_id["SME-SAME-CLAUSE"]["outcome"] == "PASS_EXCEPTION"
     assert by_id["SME-SAME-CLAUSE"]["company_fact_key"] == "nonprofit_entity"
-    assert by_id["SME-SEPARATE"]["outcome"] == "REVIEW"
-    assert by_id["SME-SEPARATE"]["company_fact_key"] == (
-        "small_business_nonprofit_exception_scope"
-    )
+    assert by_id["SME-SEPARATE"]["outcome"] == "PASS_EXCEPTION"
+    assert by_id["SME-SEPARATE"]["company_fact_key"] == "nonprofit_entity"
+    assert by_id["SME-SEPARATE"]["nonprofit_route_source"] == "NOTICE_SIBLING_CLAUSE"
 
 
 _NONPROFIT_SMALL_BUSINESS_OR = (
@@ -562,7 +561,7 @@ def test_nonprofit_small_business_or_rejects_negation_and_extra_gates(condition:
     assert all(item["company_fact_key"] != "nonprofit_entity" for item in items)
 
 
-def test_nonprofit_small_business_or_does_not_extend_to_another_requirement() -> None:
+def test_nonprofit_small_business_or_covers_repeated_certificate_duty() -> None:
     result = classify_requirements(
         [
             requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
@@ -575,12 +574,10 @@ def test_nonprofit_small_business_or_does_not_extend_to_another_requirement() ->
     by_id = {item["requirement_id"]: item for item in result["items"]}
 
     assert by_id["SYN-SME-OR"]["outcome"] == "PASS_EXCEPTION"
-    # A separate row does not establish independent applicability: this remains
-    # the SME certificate family, and its relation to the OR clause is unbound.
-    # Match the existing same-family scope REVIEW contract, without granting PASS.
-    assert by_id["SYN-SME-SEPARATE"]["outcome"] == "REVIEW"
-    assert by_id["SYN-SME-SEPARATE"]["blocking"] is True
-    assert by_id["SYN-SME-SEPARATE"]["company_fact_key"] == "small_business_nonprofit_exception_scope"
+    # The reviewed policy links a plain repetition within this notice only.
+    assert by_id["SYN-SME-SEPARATE"]["outcome"] == "PASS_EXCEPTION"
+    assert by_id["SYN-SME-SEPARATE"]["blocking"] is False
+    assert by_id["SYN-SME-SEPARATE"]["company_fact_key"] == "nonprofit_entity"
 
 
 def test_nonprofit_small_business_or_never_downgrades_direct_production_fail() -> None:
@@ -609,8 +606,8 @@ def test_nonprofit_small_business_or_never_downgrades_direct_production_fail() -
     )
 
 
-def test_separate_certificate_review_does_not_deny_a_nonprofit_clause_elsewhere() -> None:
-    """The same-family scope review must not deny the notice's stated alternative."""
+def test_inherited_certificate_exception_explains_its_sibling_source() -> None:
+    """The inherited exception must explain its notice-local basis."""
 
     result = classify_requirements(
         [
@@ -625,11 +622,11 @@ def test_separate_certificate_review_does_not_deny_a_nonprofit_clause_elsewhere(
         "SYN-SME-SEPARATE"
     ]
 
-    assert separate["outcome"] == "REVIEW"
-    assert separate["blocking"] is True
-    assert separate["company_fact_key"] != "nonprofit_entity"
+    assert separate["outcome"] == "PASS_EXCEPTION"
+    assert separate["blocking"] is False
+    assert separate["company_fact_key"] == "nonprofit_entity"
     assert "비영리법인 예외가 없어" not in separate["message"]
-    assert "원문 검토" in separate["message"]
+    assert "같은 공고의 다른 조항" in separate["message"]
 
 
 def test_absence_claim_survives_when_no_requirement_mentions_a_nonprofit() -> None:
@@ -886,8 +883,8 @@ def test_satisfied_sme_or_never_masks_an_independent_direct_production_fail(cond
     "소기업·소상공인 확인서를 보유해야 함.",
     "소기업·소상공인 확인서는 유효기간 내에 있어야 함.",
 ])
-def test_satisfied_sme_or_keeps_the_separate_scope_review(related: str) -> None:
-    """A satisfied OR clause does not resolve another clause's nonprofit scope."""
+def test_satisfied_certificate_also_satisfies_its_repeated_duty(related: str) -> None:
+    """Use the held certificate before trying the nonprofit alternative."""
 
     items = classify_requirements(
         [
@@ -901,17 +898,15 @@ def test_satisfied_sme_or_keeps_the_separate_scope_review(related: str) -> None:
     by_id = {item["requirement_id"]: item for item in items}
 
     assert by_id["SYN-SME-OR-HOLDER"]["outcome"] == "PASS_CURRENT"
-    assert by_id["SYN-SME-RELATED"]["outcome"] == "REVIEW"
-    assert by_id["SYN-SME-RELATED"]["company_fact_key"] == (
-        "small_business_nonprofit_exception_scope"
-    )
+    assert by_id["SYN-SME-RELATED"]["outcome"] == "PASS_CURRENT"
+    assert by_id["SYN-SME-RELATED"]["company_fact_key"] == "small_business_certificate"
 
 
 @pytest.mark.parametrize("condition", [
     "소기업·소상공인 확인서를 보유해야 함.",
     "소기업·소상공인 확인서는 유효기간 내에 있어야 함.",
 ])
-def test_separate_sme_possession_or_validity_keeps_scope_review(condition: str) -> None:
+def test_repeated_sme_duty_inherits_exception_but_preserves_freshness(condition: str) -> None:
     items = classify_requirements(
         [
             requirement("SYN-SME-OR", "CERTIFICATION", _NONPROFIT_SMALL_BUSINESS_OR),
@@ -923,8 +918,10 @@ def test_separate_sme_possession_or_validity_keeps_scope_review(condition: str) 
     )["items"]
     related = next(item for item in items if item["requirement_id"] == "SYN-SME-RELATED")
 
-    assert related["outcome"] == "REVIEW"
-    assert related["company_fact_key"] == "small_business_nonprofit_exception_scope"
+    expected = "REVIEW" if "유효기간" in condition else "PASS_EXCEPTION"
+    assert related["outcome"] == expected
+    assert related["company_fact_key"] == "nonprofit_entity"
+    assert related["nonprofit_route_source"] == "NOTICE_SIBLING_CLAUSE"
 
 
 @pytest.mark.parametrize("alternative", [
@@ -1577,8 +1574,11 @@ def test_unknown_entity_region_and_sanction_clauses_remain_fail_closed() -> None
     )
 
     assert {item["policy_class"] for item in result["items"]} == {"ELIGIBILITY"}
-    assert {item["outcome"] for item in result["items"]} == {"REVIEW"}
-    assert result["blocking_items"] == 3
+    by_id = {item["requirement_id"]: item for item in result["items"]}
+    assert by_id["UNKNOWN-REGION"]["outcome"] == "PASS_CURRENT"
+    assert by_id["UNKNOWN-ENTITY"]["outcome"] == "REVIEW"
+    assert by_id["UNKNOWN-SANCTION"]["outcome"] == "REVIEW"
+    assert result["blocking_items"] == 2
 
 
 def test_known_information_guards_do_not_override_embedded_eligibility() -> None:
