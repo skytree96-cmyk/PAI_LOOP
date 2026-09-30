@@ -837,7 +837,7 @@
 
   async function loadApplicationData({ forceApi = false } = {}) {
     if (state.noticeSearchMode === "stored" && els.operatorDecisionFilter.value !== "all"
-      && state.accountSession?.authenticated && state.accountSession.account?.role !== "ADMIN") {
+      && state.accountSession?.authenticated && (isDepartmentProgressView() || state.accountSession.account?.role !== "ADMIN")) {
       state.pendingNoticeDecisionFilter = els.operatorDecisionFilter.value;
     }
     if (applicationLocked || !state.accountSession.authenticated) return;
@@ -2145,7 +2145,7 @@
   function applyDepartmentRanking() {
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
     syncDashboardDepartmentSelect();
-    els.sortSelect.value = "department";
+    if (!isDepartmentProgressView()) els.sortSelect.value = "department";
     renderNoticeFilterTools();
     syncNoticeFilterLocation();
     void loadApplicationData({ forceApi: true });
@@ -4714,6 +4714,50 @@
     return ["GO", "CONDITIONAL_GO"].includes(notice.decision || "");
   }
 
+  function isDepartmentProgressView(view = state.currentView) {
+    return ["in-progress", "urgent-in-progress"].includes(view);
+  }
+
+  function progressDepartmentDecisions(notice) {
+    if (!hasKnownOperatorDecision(notice) || !notice.decisions?.length) return [];
+    const departmentId = selectedDashboardDepartmentId();
+    const catalogIds = arrayValue(state.departmentCatalog?.departments).map((item) => item.id);
+    const seen = new Set();
+    return arrayValue(notice.decisions).slice().sort((a, b) =>
+      compareDepartmentRevision(a, b) || String(b.id).localeCompare(String(a.id))
+    ).filter((record) => {
+      if (!record.departmentId || (catalogIds.length && !catalogIds.includes(record.departmentId))) return false;
+      if (departmentId !== "organization" && record.departmentId !== departmentId) return false;
+      if (seen.has(record.departmentId)) return false;
+      seen.add(record.departmentId);
+      return ["GO", "CONDITIONAL_GO"].includes(record.choice);
+    });
+  }
+
+  function progressDecisionListAvailable() {
+    return (state.source === "demo" || (state.source === "api" && (state.accessMode === "SERVER_AUTHENTICATED"
+      || (state.accountSession?.enabled && state.accountSession.authenticated))))
+      && state.notices.every(hasKnownOperatorDecision);
+  }
+
+  function renderProgressDepartmentControl() {
+    const progress = isDepartmentProgressView();
+    const label = document.getElementById("departmentSelectLabel");
+    if (label) label.textContent = progress ? "진행 부서" : "추천 부서";
+    els.departmentSelect?.setAttribute?.("aria-label", progress ? "진행 공고 조회 부서" : "추천 기준 부서 · 정렬 기준");
+    const common = Array.from(els.departmentSelect?.options || []).find((option) => option.value === "organization");
+    if (common) common.textContent = progress ? "전사" : "전사 공통 (교육·컨설팅)";
+    if (progress && els.rankingProfileVersion) {
+      els.rankingProfileVersion.textContent = "선택한 부서가 참여·조건부 참여로 결정한 진행 공고만 표시합니다. 전사는 모든 부서의 진행 공고를 표시합니다.";
+    } else if (els.rankingProfileVersion) {
+      els.rankingProfileVersion.textContent = "추천 부서는 목록을 제외하지 않고 관련 공고를 위로 정렬합니다.";
+    }
+    const shareHelp = document.getElementById("noticeFilterShareHelp");
+    if (shareHelp) shareHelp.textContent = progress
+      ? "링크를 저장하거나 공유하면 같은 진행 부서와 조건으로 다시 조회합니다. 조회 시점에 따라 결과가 달라질 수 있습니다."
+      : "링크를 저장하거나 공유하면 같은 조건으로 다시 조회합니다. 담당자 판단은 접속한 부서 기준이며, 조회 시점에 따라 결과가 달라질 수 있습니다.";
+  }
+
   function matchesPipelineQueue(notice, queue) {
     if (isCancelledNotice(notice)) return false;
     if (queue === "result-missing-decided") {
@@ -4723,7 +4767,7 @@
     if (queue === "pending-decision") {
       return ["PASS", "REVIEW"].includes(dashboardEligibilityStatus(notice)) && !notice.decision;
     }
-    if (!departmentGoDecision(notice) || notice.hasBidOutcome) return false;
+    if (!progressDepartmentDecisions(notice).length || notice.hasBidOutcome) return false;
     if (queue === "in-progress") return true;
     const days = daysUntil(notice.deadline);
     return days !== null && days >= 0 && days <= URGENT_DEADLINE_DAYS;
@@ -5236,6 +5280,7 @@
 
   function applyFilters() {
     if (state.loading) { renderNoticeFilterTools(); return; }
+    renderProgressDepartmentControl();
     renderNoticeSearchScope();
     const query = els.searchInput.value.trim().replace(/\s+/g, " ").toLocaleLowerCase("ko-KR");
     const globalSearch = Boolean(query);
@@ -5246,13 +5291,16 @@
     const decisionAccessAllowed = state.source === "demo"
       || (state.source === "api" && (state.accessMode === "SERVER_AUTHENTICATED"
         || (state.accountSession?.enabled && state.accountSession.authenticated)));
-    const decisionFilterAvailable = operatorDecisionListAvailable();
-    const adminDecisionReader = state.accountSession?.enabled && state.accountSession.account?.role === "ADMIN";
+    const progress = isDepartmentProgressView();
+    const decisionFilterAvailable = progress ? progressDecisionListAvailable() : operatorDecisionListAvailable();
+    const adminDecisionReader = !progress && state.accountSession?.enabled && state.accountSession.account?.role === "ADMIN";
     if (state.pendingNoticeDecisionFilter && (decisionFilterAvailable || adminDecisionReader)) {
       els.operatorDecisionFilter.value = adminDecisionReader ? "all" : state.pendingNoticeDecisionFilter;
       state.pendingNoticeDecisionFilter = null;
     }
-    const decisionFilterMessage = adminDecisionReader
+    const decisionFilterMessage = progress && decisionFilterAvailable
+      ? "선택한 진행 부서의 최신 참여·조건부 참여 판단으로 분류합니다."
+      : adminDecisionReader
       ? "관리자는 부서 판단을 조회할 수 있습니다. 상세에서 부서별 기록을 확인하세요."
       : !decisionAccessAllowed
       ? state.accountSession?.enabled ? "부서 로그인 후 내 부서의 판단으로 분류할 수 있습니다. 다른 부서의 판단은 공고 상세에서 확인하세요." : state.operatorDecisionEnabled
@@ -5274,6 +5322,7 @@
     const sort = els.sortSelect.value;
 
     let notices = state.notices.filter((notice) => {
+      if (progress && !decisionFilterAvailable) return false;
       if (state.noticeScopeChoice === "OPEN" && noticeLifecycleStatus(notice) !== "OPEN") return false;
       if (state.pendingNoticeDecisionFilter) return false;
       if (["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)
@@ -5289,7 +5338,9 @@
       if (eligibility !== "all" && qualification !== eligibility) return false;
       if (recommendation !== "all" && effectiveRecommendation(notice) !== recommendation) return false;
       const decision = notice.decision || (hasKnownOperatorDecision(notice) ? "UNDECIDED" : "UNAVAILABLE");
-      if (operatorDecision !== "all" && decision !== operatorDecision) return false;
+      if (operatorDecision !== "all" && (progress
+        ? !progressDepartmentDecisions(notice).some((record) => record.choice === operatorDecision)
+        : decision !== operatorDecision)) return false;
       const searchable = `${notice.title} ${notice.agency} ${notice.noticeNumber} ${notice.noticeKey}`
         .replace(/\s+/g, " ")
         .toLocaleLowerCase("ko-KR");
@@ -5496,11 +5547,18 @@
         ? `현재 조회 범위의 담당자 판단 · ${formatNumber(count)}건 표시`
         : "담당자 판단 목록 조회 필요 · 아래는 공고 탐색 목록이며 미결정 공고 수가 아닙니다.";
     }
+    if (isDepartmentProgressView() && state.noticeSearchMode === "stored") {
+      const failed = state.notices.some((notice) => operatorDecisionReadStatus(notice) === "ERROR");
+      els.noticeSummary.textContent = progressDecisionListAvailable()
+        ? `${ownerLabel} · 참여·조건부 참여로 결정한 공고 ${formatNumber(count)}건 · ${state.currentView === "urgent-in-progress" ? `${URGENT_DEADLINE_DAYS}일 이내 마감` : "입찰 마감 전"}`
+        : failed ? "부서별 판단 조회에 실패했습니다. 새로고침해 주세요."
+          : "부서별 판단을 불러오고 있습니다.";
+    }
 
     els.noticePanel.hidden = state.noticeSearchMode !== "stored";
     els.loadingState.hidden = true;
     els.errorState.hidden = true;
-    els.emptyState.hidden = count !== 0;
+    els.emptyState.hidden = count !== 0 || (isDepartmentProgressView() && !progressDecisionListAvailable());
     els.noticeTableWrap.hidden = count === 0 || state.layout !== "table";
     els.noticeCardGrid.hidden = count === 0 || state.layout !== "cards";
     renderPpsDiscovery();
@@ -5980,7 +6038,7 @@
   }
 
   function noticeFilterViewSupported(view = state.currentView) {
-    return ["new", "review", "undecided", "collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing"].includes(view);
+    return ["new", "review", "undecided", "collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing", "in-progress", "urgent-in-progress"].includes(view);
   }
 
   function noticeFilterValue(key) {
@@ -6192,7 +6250,7 @@
       review: ["검토 대기", "확인할 공고"],
       go: ["GO 후보", "시스템이 GO로 추천한 공고"],
       "pending-decision": ["판단이 필요한 공고", "부서 키워드 매칭·자격 확인을 마치고 담당자 판단을 기다리는 공고"],
-      "in-progress": ["검토 중인 공고", "마감 직전 공고"],
+      "in-progress": ["진행 건", "참여·조건부 참여로 결정한 공고"],
       "urgent-in-progress": [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `진행 건 중 ${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
       "result-missing-decided": ["결과 입력이 필요한 공고", "결과 기록 필요 공고"],
       urgent: [`마감 임박 (${URGENT_DEADLINE_DAYS}일)`, `${URGENT_DEADLINE_DAYS}일 이내 마감 공고`],
@@ -6207,6 +6265,7 @@
       performance: ["회사 실적", "회사 수행 실적"],
     };
     els.pageTitle.textContent = titles[nextView]?.[0] || titles.all[0];
+    renderProgressDepartmentControl();
     els.noticeHeading.textContent = titles[nextView]?.[1] || titles.all[1];    const navigationView = nextView === "prespec"
       ? "new"
       : ["collected", "go", "urgent", "fail", "cancelled", "ended", "result-missing"].includes(nextView) ? "all" : nextView;
@@ -9421,12 +9480,21 @@
   }
 
   function operatorDecisionIndicator(notice) {
+    if (isDepartmentProgressView()) {
+      return progressDepartmentDecisions(notice).map((record) =>
+        `<span class="operator-decision operator-decision--${record.choice === "GO" ? "participate" : "hold"}"><small>${escapeHtml(record.departmentName || record.departmentId)}</small><strong>${escapeHtml(DECISION_LABELS[record.choice])}</strong></span>`
+      ).join(" ");
+    }
     const label = operatorDecisionLabel(notice);
     const tone = notice.decision === "GO" ? "participate" : notice.decision === "NO_GO" ? "decline" : notice.decision ? "hold" : hasKnownOperatorDecision(notice) ? "undecided" : "unavailable";
     return `<span class="operator-decision operator-decision--${tone}"><small>담당자</small><strong>${escapeHtml(label)}</strong></span>`;
   }
 
   function operatorDecisionClass(notice) {
+    if (isDepartmentProgressView()) {
+      const records = progressDepartmentDecisions(notice);
+      return records.some((record) => record.choice === "GO") ? "decision-participate" : records.length ? "decision-hold" : "";
+    }
     if (notice.decision === "GO") return "decision-participate";
     if (notice.decision === "NO_GO") return "decision-decline";
     if (notice.decision) return "decision-hold";
