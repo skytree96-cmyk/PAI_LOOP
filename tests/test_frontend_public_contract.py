@@ -1131,7 +1131,7 @@ def test_pai_teams_sidebar_and_manual_link_fail_closed_until_configured() -> Non
     # pairing that feeds it rather than a channel the app no longer posts to.
     assert "내 Teams로 알림 받기" in html
     assert "등록된 개발자 전용" not in html
-    assert 'id="paiUserGuideLink" href="https://pai-loop.pages.dev/"' in html
+    assert 'id="paiUserGuideLink" href="/open"' in html
     assert 'src="/teams-icon.png"' in html
     assert 'aria-disabled="true"' in html
     assert "disabled" in html

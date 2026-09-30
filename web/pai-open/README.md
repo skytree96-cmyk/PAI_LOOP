@@ -27,6 +27,11 @@ no API calls, production reads, analysis calls, messages or data writes.
 - Reduced motion keeps the glass/device composition, switching scenes without
   animated interpolation. An explicit toggle enables motion. Smaller screens
   and JavaScript-disabled pages show all eight scenes in sequence.
+- The application user-guide link opens the same-origin `/open` page.
+- The approved studio film uses a clean gradient background and uninterrupted
+  metallic mockup frame. It covers search, evidence and scores, participation,
+  Teams notifications, automatic result recording and subsequent history review.
+  Result feedback illustrates accumulated evidence, not automatic rule changes.
 - The 60-second silent film remains QHD (2560x1440, 30fps), with a VP9 WebM for
   the page and an H.264 MP4 master. A floating PAI wordmark opens and closes it.
   Measured DOM targets drive zoom, subtle glass highlights and visible cursors.
