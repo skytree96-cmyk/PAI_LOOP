@@ -5513,6 +5513,44 @@
 
     els.noticeTableBody.innerHTML = state.filteredNotices.map(renderNoticeRow).join("");
     els.noticeCardGrid.innerHTML = state.filteredNotices.map(renderNoticeCard).join("");
+    observeVisibleQuantitativeSummaries();
+  }
+
+  // 목록에 보이는 공고의 정량 점수를 자동으로 조회해 "정량 점수 예측" 막대를 바로 보여준다.
+  // 저장된 자료로 계산만 하는 읽기(문서 분석 없음)이며, 화면에 들어온 행만 동시에 2건씩 부른다.
+  function observeVisibleQuantitativeSummaries() {
+    if (state.source !== "api" || typeof IntersectionObserver !== "function" || !document.querySelectorAll) return;
+    const auto = observeVisibleQuantitativeSummaries.auto ||= { observer: null, queue: [], active: 0 };
+    auto.observer?.disconnect();
+    auto.queue = [];
+    auto.observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        auto.observer.unobserve(entry.target);
+        enqueueQuantitativeAutoLoad(auto, entry.target.dataset.noticeQuantitative);
+      });
+    }, { rootMargin: "200px 0px" });
+    document.querySelectorAll("[data-notice-quantitative]").forEach((element) => auto.observer.observe(element));
+  }
+
+  function enqueueQuantitativeAutoLoad(auto, noticeKey) {
+    const notice = state.notices.find((item) => item.noticeKey === noticeKey);
+    if (!notice || isCancelledNotice(notice) || notice.historicalAnalysis) return;
+    if (state.quantitativeEstimates[noticeKey] || auto.queue.includes(noticeKey)) return;
+    auto.queue.push(noticeKey);
+    drainQuantitativeAutoLoad(auto);
+  }
+
+  function drainQuantitativeAutoLoad(auto) {
+    while (auto.active < 2 && auto.queue.length) {
+      const noticeKey = auto.queue.shift();
+      if (state.quantitativeEstimates[noticeKey]) continue;
+      auto.active += 1;
+      loadQuantitativeEstimate(noticeKey).finally(() => {
+        auto.active -= 1;
+        drainQuantitativeAutoLoad(auto);
+      });
+    }
   }
 
   function isResultEntryView(view = state.currentView) {

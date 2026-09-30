@@ -63,3 +63,41 @@ def test_requirement_and_attachment_cards_start_collapsed() -> None:
     assert " open" not in requirement
     assert '<details class="document-analysis-item">' in documents
     assert '<summary class="document-analysis-item__head">' in documents
+
+
+def test_visible_list_rows_auto_load_quantitative_forecast_two_at_a_time() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    helpers = "function observeVisibleQuantitativeSummaries" + _function_body(
+        source, "observeVisibleQuantitativeSummaries", "enqueueQuantitativeAutoLoad"
+    )
+    helpers += "\nfunction enqueueQuantitativeAutoLoad" + _function_body(
+        source, "enqueueQuantitativeAutoLoad", "drainQuantitativeAutoLoad"
+    )
+    helpers += "\nfunction drainQuantitativeAutoLoad" + _function_body(
+        source, "drainQuantitativeAutoLoad", "isResultEntryView"
+    )
+    script = r"""
+const assert = require("node:assert/strict");
+const state = { source: "api", quantitativeEstimates: {}, notices: [
+  { noticeKey: "A" }, { noticeKey: "B" }, { noticeKey: "C" }, { noticeKey: "X", cancelled: true }, { noticeKey: "OFF" },
+] };
+const isCancelledNotice = (notice) => Boolean(notice.cancelled);
+const elements = ["A", "B", "C", "X", "OFF"].map((key) => ({ dataset: { noticeQuantitative: key } }));
+const document = { querySelectorAll: () => elements };
+let callback;
+class IntersectionObserver { constructor(cb) { callback = cb; } observe() {} unobserve() {} disconnect() {} }
+const started = []; const resolvers = [];
+const loadQuantitativeEstimate = (key) => { started.push(key); state.quantitativeEstimates[key] = { status: "loading" };
+  return new Promise((resolve) => resolvers.push(resolve)); };
+observeVisibleQuantitativeSummaries();
+callback(elements.map((target) => ({ target, isIntersecting: target.dataset.noticeQuantitative !== "OFF" })));
+assert.deepEqual(started, ["A", "B"]);
+resolvers.shift()();
+setTimeout(() => {
+  assert.deepEqual(started, ["A", "B", "C"]);
+  state.source = "demo"; started.length = 0; callback = null;
+  observeVisibleQuantitativeSummaries();
+  assert.equal(callback, null);
+}, 0);
+"""
+    subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
