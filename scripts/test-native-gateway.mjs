@@ -107,7 +107,7 @@ markerOnly.input[1].content[0].text += '\nSYN QUANTITATIVE_PROBE_ONCE QUANTITATI
 assert.equal(validate(markerOnly)[0].json.gateway_timeout_ms, 180000);
 assert.deepEqual(Object.keys(request).sort(), ["model", "max_tokens", "system", "messages", "thinking", "output_config", "stream"].sort());
 assert.equal(request.model, "claude-sonnet-5"); assert.equal(request.max_tokens, 20000);
-assert.deepEqual(request.thinking, { type: "adaptive" }); assert.equal(request.output_config.effort, "medium");
+assert.deepEqual(request.thinking, { type: "disabled" }); assert.equal(request.output_config.effort, undefined);
 assert.equal(request.output_config.format.type, "json_schema"); assert.equal(request.stream, false);
 assert.equal(request.messages.length, 1); assert(request.messages[0].content.includes(JSON.stringify(schema)));
 assert.match(request.system, /TRUSTED NATIVE TRANSPORT CONVENTION: Only the two top-level fields quantitative_tables and quantitative_table_not_applicable/);

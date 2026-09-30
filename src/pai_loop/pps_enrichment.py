@@ -2220,7 +2220,24 @@ def _extract_hwpx_text(content: bytes) -> str:
         entries = archive.infolist()
         if len(entries) > MAX_HWPX_ENTRIES:
             raise PpsEnrichmentError("HWPX_ENTRY_LIMIT")
-        total_uncompressed = sum(item.file_size for item in entries)
+        if len({item.filename for item in entries}) != len(entries):
+            raise PpsEnrichmentError("HWPX_DUPLICATE_ENTRY")
+        # Count every member until a bounded signature check proves it is an
+        # unused raster image. Never decompress images merely to discard them.
+        ignored_images: set[str] = set()
+        for item in entries:
+            if item.filename.casefold().startswith("bindata/") and not item.is_dir() and not (item.flag_bits & 0x1):
+                try:
+                    with archive.open(item) as member:
+                        prefix = member.read(16)
+                except Exception as exc:
+                    raise PpsEnrichmentError("HWPX_EMBEDDED_READ_FAILED") from exc
+                suffix = PurePath(item.filename).suffix.casefold()
+                if ((suffix == ".png" and prefix.startswith(b"\x89PNG\r\n\x1a\n"))
+                        or (suffix in {".jpg", ".jpeg"} and prefix.startswith(b"\xff\xd8\xff"))
+                        or (suffix == ".gif" and prefix.startswith((b"GIF87a", b"GIF89a")))):
+                    ignored_images.add(item.filename)
+        total_uncompressed = sum(item.file_size for item in entries if item.filename not in ignored_images)
         if total_uncompressed > MAX_HWPX_UNCOMPRESSED_BYTES:
             raise PpsEnrichmentError("HWPX_UNCOMPRESSED_LIMIT")
         for item in entries:
@@ -2241,7 +2258,8 @@ def _extract_hwpx_text(content: bytes) -> str:
             if not item.is_dir() and lowered.startswith("bindata/"):
                 extension = PurePath(name).suffix.casefold()
                 try:
-                    prefix = archive.read(item)[:16]
+                    with archive.open(item) as member:
+                        prefix = member.read(16)
                 except Exception as exc:
                     raise PpsEnrichmentError("HWPX_EMBEDDED_READ_FAILED") from exc
                 if extension in _EXTRACTABLE_EXTENSIONS or prefix.startswith(

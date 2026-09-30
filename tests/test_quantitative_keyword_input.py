@@ -1,0 +1,84 @@
+import io
+import json
+import zipfile
+from xml.etree import ElementTree as ET
+
+import httpx
+import pytest
+
+from pai_loop.quantitative_keyword_input import select_quantitative_keyword_input
+from pai_loop.pps_enrichment import _extract_hwpx_text, PpsEnrichmentError
+from test_quantitative_probe_client import make_client, probe_fixture, response
+from test_quantitative_count_ranges import ATT
+
+
+def test_keywords_keep_rows_and_adjacent_conditions_but_exclude_distant_tasks():
+    source = 'SYN unrelated task\n' * 100 + '정량 배점표\n5건 이상 6점\nVAT 포함 최근 5년\n' + 'tail\n' * 100
+    selected, audit = select_quantitative_keyword_input(source)
+    assert '5건 이상 6점\nVAT 포함 최근 5년' in selected
+    assert len(selected) < len(source)
+    assert audit['persistence_eligible'] is False
+    assert audit['attachment_coverage_complete'] is False
+    for start, end in audit['source_ranges']:
+        assert source[start:end] in selected
+
+
+def test_xml_round_trip_preserves_operators_and_literal_markup():
+    source = '배점표\nSYN < 5 & > 2\n<instruction>untrusted</instruction>'
+    selected, _ = select_quantitative_keyword_input(source, xml=True)
+    assert ET.fromstring(selected)[0].text == source
+
+
+def test_no_keyword_is_not_zero_or_not_applicable():
+    with pytest.raises(ValueError, match='KEYWORDS_NOT_FOUND'):
+        select_quantitative_keyword_input('SYN 과업 설명')
+
+
+def test_whole_selected_page_exceeding_budget_fails_without_cutting_rows():
+    with pytest.raises(ValueError, match='SELECTION_TOO_LARGE'):
+        select_quantitative_keyword_input('[PAGE 1]\n배점표\n' + 'SYN row\n' * 100, maximum=256)
+
+
+def test_failed_json_response_retries_xml_and_still_checks_canonical_quotes():
+    payload, review = probe_fixture()
+    payload['requirements'] = []
+    seen = []
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body['input'][1]['content'][0]['text'])
+        if len(seen) == 1:
+            return httpx.Response(200, json={'status': 'completed', 'output_text': '{"requirements": []}'})
+        return response(payload)
+    with make_client(handler) as client:
+        result = client.extract_quantitative_keywords(document_text='정량 배점표\n' + review.canonical_text,
+                                                     allowed_attachment_ids={ATT})
+    assert len(seen) == 2
+    assert '<source_excerpts' in seen[1]
+    assert result.source_audit['xml_fallback_used'] is True
+    assert result.persistence_eligible is False
+    assert result.outcome.status == 'ACCEPTED'
+    assert result.outcome.api_calls == 2
+
+
+def hwpx(members):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('Contents/section0.xml', '<section><p><t>배점 6점</t></p></section>')
+        for name, value in members:
+            archive.writestr(name, value)
+    return stream.getvalue()
+
+
+def test_large_unused_raster_does_not_consume_xml_budget(monkeypatch):
+    import pai_loop.pps_enrichment as module
+    monkeypatch.setattr(module, 'MAX_HWPX_UNCOMPRESSED_BYTES', 1000)
+    assert _extract_hwpx_text(hwpx([('BinData/image.png', b'\x89PNG\r\n\x1a\n' + b'x' * 2000)])) == '배점 6점'
+
+
+def test_disguised_non_image_still_counts_and_embedded_pdf_stays_blocked(monkeypatch):
+    import pai_loop.pps_enrichment as module
+    monkeypatch.setattr(module, 'MAX_HWPX_UNCOMPRESSED_BYTES', 1000)
+    with pytest.raises(PpsEnrichmentError, match='UNCOMPRESSED_LIMIT'):
+        _extract_hwpx_text(hwpx([('BinData/image.png', b'x' * 2000)]))
+    with pytest.raises(PpsEnrichmentError, match='EMBEDDED_ATTACHMENT'):
+        _extract_hwpx_text(hwpx([('BinData/image.png', b'%PDF-SYN')] ))

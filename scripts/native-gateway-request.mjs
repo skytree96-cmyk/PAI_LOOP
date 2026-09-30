@@ -61,7 +61,7 @@ export function validateNativeGatewayRequest(json, itemsCount, projectSchema) {
   return [{ json: { original_schema: schema, gateway_timeout_ms: gatewayTimeoutMs, provider_request: {
     model: 'claude-sonnet-5', max_tokens: body.max_output_tokens,
     system: providerSystem, messages: [{ role: 'user', content: userPrompt + schemaInstruction }],
-    thinking: { type: 'adaptive' }, output_config: { effort: 'medium', format: { type: 'json_schema', schema: projection.schema } },
+    thinking: { type: 'disabled' }, output_config: { format: { type: 'json_schema', schema: projection.schema } },
     stream: false,
   } } }];
 }

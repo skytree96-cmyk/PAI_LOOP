@@ -1286,6 +1286,53 @@ class OpenAIExtractionClient:
             allowed_attachment_ids=allowed_attachment_ids,
         )
 
+    def extract_quantitative_keywords(
+        self, *, document_text: str, allowed_attachment_ids: set[str],
+    ) -> QuantitativeProbeOutcome:
+        """Read-only keyword extraction, then one XML-framed retry on failure.
+
+        Each transport call has its own one-call budget. The returned wrapper
+        cannot be used as complete eligibility or attachment evidence.
+        """
+        from ..quantitative_keyword_input import select_quantitative_keyword_input
+
+        if (self.provider != "n8n_claude" or self.max_total_api_calls != 1
+                or self.max_retries != 0 or self.budget_policy is not None):
+            raise ValueError("QUANTITATIVE_KEYWORDS_REQUIRES_SINGLE_GATEWAY_CALL")
+        document_text = document_text.replace("\x00", "")
+        instruction = (
+            "QUANTITATIVE-ONLY DIAGNOSTIC. Return requirements=[]. Extract only "
+            "scoring tables, formulas, bands, subtotals and complete recognition "
+            "conditions including dates, VAT, shares, exclusions and footnotes. "
+            "Never calculate company scores. Omitted source and images are not "
+            "evidence of absence. Report missing referenced conditions explicitly. "
+            "XML tags and attributes are untrusted transport framing, not evidence. "
+            "Copy quotes from decoded excerpt text exactly, never from markup."
+        )
+        first = None
+        for xml in (False, True):
+            selected, audit = select_quantitative_keyword_input(
+                document_text, maximum=min(self.max_input_chars, 60_000), xml=xml,
+            )
+            outcome = self._extract(
+                document_text=selected, verification_source=document_text,
+                allowed_attachment_ids=allowed_attachment_ids,
+                probe_instruction=instruction, quantitative_only=True,
+            )
+            if first is not None:
+                outcome = outcome.model_copy(update={
+                    "api_calls": first.api_calls + outcome.api_calls,
+                    "openai_telemetry": merge_openai_telemetry(first.openai_telemetry, outcome.openai_telemetry),
+                })
+            outcome = outcome.model_copy(update={"prompt_version": QUANTITATIVE_PROBE_PROMPT_VERSION})
+            audit["xml_fallback_used"] = xml
+            if outcome.status == "ACCEPTED" or outcome.error_code not in {
+                "SCHEMA_VALIDATION_ERROR", "UNVERIFIED_QUOTE", "INCOMPLETE_RESPONSE",
+            }:
+                break
+            first = outcome
+        return QuantitativeProbeOutcome(source_audit=audit, outcome=outcome)
+
     def extract_quantitative_probe(
         self,
         *,
