@@ -7927,7 +7927,8 @@ textarea:focus,
 .notice-scope-links { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
 .notice-scope-links > span { color: var(--muted); font-size: var(--fs-xs); }
 .notice-scope-links button[aria-pressed="true"] { color: var(--blue); background: var(--blue-pale); }
-.filters.is-pps-mode ~ .stored-search-only, .filters[hidden] ~ .notice-scope-links { display: none; }
+.filters.is-pps-mode ~ .stored-search-only, .filters[hidden] ~ .notice-scope-links,
+.filters.is-pps-mode ~ .notice-list-controls .stored-search-only, .filters[hidden] ~ .notice-list-controls .notice-scope-links { display: none; }
 .notice-search-submit { flex: 0 0 auto; }
 .requirement-list { border-top: 0; }
 details.requirement-item { display: block; padding: 0; margin: 10px 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
@@ -7962,3 +7963,42 @@ details.requirement-item.is-pass > summary, details.requirement-item.is-pass_cur
 .result-detail-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
 
 .private-match-badge.is-fail { color: var(--red); background: var(--red-pale); }
+
+/* 2026-09-29 UI 검토 반영: 공고 목록 머리 한 줄 정리, 탐색 안내 창 확대 */
+.notice-section > .section-heading { align-items: center; }
+.section-heading__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.section-heading__actions .teams-follow-toolbar { margin: 0; }
+@media (min-width: 681px) {
+  .notice-search-help-dialog { width: min(960px, calc(100vw - 48px)); }
+}
+@media (max-width: 680px) {
+  .notice-section > .section-heading { flex-wrap: wrap; }
+  .section-heading__actions { width: 100%; justify-content: stretch; }
+  .section-heading__actions .teams-follow-toolbar { flex: 1; }
+}
+/* 조회 범위 버튼과 적용 조건 칩·링크 복사를 한 줄에 둔다(세로로 쌓이던 줄 정리). */
+.notice-list-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; }
+.notice-list-controls .notice-scope-links { margin: 0; }
+.notice-list-controls .notice-filter-tools { flex: 1 1 320px; margin: 0; }
+/* 입찰 결과 두 화면(결과 학습·회사별 낙찰)의 머리 상자와 본문 상자 간격을 같게 둔다. */
+.performance-hero + .performance-explorer { margin-top: 24px; }
+@media (max-width: 680px) { .performance-hero + .performance-explorer { margin-top: 14px; } }
+/* 관심 키워드 입력을 공고 검색창으로 통합한 뒤, 추천 부서 선택만 탐색 방식 줄 오른쪽에 둔다. */
+.notice-search-toolbar .priority-search {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 0 auto; padding: 0; border: 0; background: none;
+}
+.notice-search-toolbar .priority-search__select { display: flex; align-items: center; gap: 8px; }
+.notice-search-toolbar .priority-search__label { color: var(--muted); font-size: var(--fs-xs); font-weight: 700; white-space: nowrap; }
+.notice-search-toolbar .priority-search select { width: auto; min-width: 180px; max-width: 260px; }
+@media (max-width: 680px) {
+  .notice-search-toolbar { flex-wrap: wrap; }
+  .notice-search-toolbar .priority-search { width: 100%; margin-left: 0; }
+  .notice-search-toolbar .priority-search__select { width: 100%; }
+  .notice-search-toolbar .priority-search select { flex: 1; max-width: none; }
+}
+/* 오늘 할 일 · 첨부/정량 자격/정량 점수: 설명 줄을 뺀 만큼 제목·카드 사이 여백을 넉넉히 둔다. */
+.analysis-progress > .section-heading { margin-bottom: 16px; }
+.analysis-progress__grid { gap: 18px; }
+.analysis-progress .kpi-card { padding: 22px 24px; }
+.analysis-progress .kpi-card .kpi-value { display: block; margin-top: 12px; line-height: 1.2; }

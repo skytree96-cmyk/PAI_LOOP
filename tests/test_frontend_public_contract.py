@@ -228,7 +228,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["공고 찾기", "저장된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "시스템이 GO로 추천한 공고"]' in view_body
-    assert '"in-progress": ["검토 중인 공고", "GO로 결정한 입찰마감 전 공고. 마감되면 결과 입력으로 넘어갑니다."]' in view_body
+    assert '"in-progress": ["검토 중인 공고", "마감 직전 공고"]' in view_body
     assert 'ended: ["보관함", "마감·종료·취소된 공고와 당시 분석 이력"]' in view_body
     assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260929-award-other-agency-v18"' in html
-    assert 'href="./top-navigation.css?v=20260929-award-other-agency-v18"' in html
-    assert 'src="./app.js?v=20260929-award-other-agency-v18"' in html
+    assert 'href="./styles.css?v=20260929-uiux-review-v1"' in html
+    assert 'href="./top-navigation.css?v=20260929-uiux-review-v1"' in html
+    assert 'src="./app.js?v=20260929-uiux-review-v1"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
