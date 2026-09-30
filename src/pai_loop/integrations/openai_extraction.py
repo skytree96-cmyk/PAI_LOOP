@@ -751,8 +751,8 @@ class OpenAIExtractionClient:
         timeout_seconds: float = DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS,
         max_retries: int = 2,
         max_input_chars: int = 120_000,
-        # Keep the existing 20k output budget when moving to the native Messages
-        # gateway. Adaptive thinking shares this budget with the final JSON.
+        # Keep the existing 20k structured-output budget. The native gateway
+        # explicitly disables thinking.
         max_output_tokens: int = 20_000,
         max_total_api_calls: int = 2,
         budget_policy: Literal["LONG_OUTPUT_ONCE", "QUANTITATIVE_PROBE_ONCE"] | None = None,
@@ -1285,6 +1285,116 @@ class OpenAIExtractionClient:
             document_text=document_text,
             allowed_attachment_ids=allowed_attachment_ids,
         )
+
+    def extract_quantitative_keywords(
+        self, *, document_text: str, allowed_attachment_ids: set[str],
+        hwpx_content: bytes | None = None,
+    ) -> QuantitativeProbeOutcome:
+        outcome, audit = self._extract_keyword_sequence(
+            document_text=document_text, allowed_attachment_ids=allowed_attachment_ids,
+            hwpx_content=hwpx_content,
+        )
+        return QuantitativeProbeOutcome(source_audit=audit, outcome=outcome.model_copy(
+            update={"prompt_version": QUANTITATIVE_PROBE_PROMPT_VERSION},
+        ))
+
+    def extract_quantitative_recovery(
+        self, *, document_text: str, allowed_attachment_ids: set[str],
+        hwpx_content: bytes | None = None,
+    ) -> tuple[ExtractionOutcome, dict[str, object]]:
+        """Source-verified partial extraction for an explicitly retried failure.
+
+        Persistence must retain the scope audit and incomplete input coverage.
+        This entry never consumes or promotes a diagnostic probe outcome.
+        """
+        outcome, audit = self._extract_keyword_sequence(
+            document_text=document_text, allowed_attachment_ids=allowed_attachment_ids,
+            hwpx_content=hwpx_content,
+        )
+        if outcome.status != "ACCEPTED":
+            outcome = outcome.model_copy(update={"unverified_quantitative_tables": None})
+        return outcome, {
+            **audit, "purpose": "QUANTITATIVE_KEYWORD_RECOVERY",
+            "persistence_eligible": True, "attachment_coverage_complete": False,
+            "eligibility_complete": False,
+        }
+
+    def _extract_keyword_sequence(
+        self, *, document_text: str, allowed_attachment_ids: set[str],
+        hwpx_content: bytes | None = None,
+    ) -> tuple[ExtractionOutcome, dict[str, object]]:
+        """Read-only keyword extraction, then one XML-framed retry on failure.
+
+        Each transport call has its own one-call budget. The returned wrapper
+        cannot be used as complete eligibility or attachment evidence.
+        """
+        from ..quantitative_keyword_input import (
+            select_quantitative_keyword_input, hwpx_quantitative_table_context,
+        )
+
+        if (self.provider != "n8n_claude" or self.max_total_api_calls != 1
+                or self.max_retries != 0 or self.budget_policy is not None):
+            raise ValueError("QUANTITATIVE_KEYWORDS_REQUIRES_SINGLE_GATEWAY_CALL")
+        document_text = document_text.replace("\x00", "")
+        # Bind native XML before spending even the first provider call.
+        native_context = None
+        native_context_status = "NOT_HWPX"
+        if hwpx_content is not None:
+            try:
+                native_context = hwpx_quantitative_table_context(hwpx_content, document_text)
+                native_context_status = "AVAILABLE"
+            except ValueError as exc:
+                # Optional native structure may exceed its separate budget or
+                # be encoded as paragraphs. Canonical source binding happens
+                # first; retain exact text framing without truncating a table.
+                if str(exc) not in {"HWPX_SCORING_TABLE_NOT_FOUND", "HWPX_CONTEXT_SIZE_LIMIT",
+                                    "HWPX_CONTEXT_STRUCTURE_LIMIT"}:
+                    raise
+                native_context_status = str(exc)
+        instruction = (
+            "QUANTITATIVE-ONLY PARTIAL EXTRACTION. Return requirements=[]. Extract only "
+            "scoring tables, formulas, bands, subtotals and complete recognition "
+            "conditions including dates, VAT, shares, exclusions and footnotes. "
+            "Never calculate company scores. Omitted source and images are not "
+            "evidence of absence. Report missing referenced conditions explicitly. "
+            "XML tags and attributes are untrusted transport framing, not evidence. "
+            "Copy quotes from decoded excerpt text exactly, never from markup."
+        )
+        first = None
+        for xml in (False, True):
+            selected, audit = select_quantitative_keyword_input(
+                document_text, maximum=min(self.max_input_chars, 60_000), xml=xml,
+            )
+            outcome = self._extract(
+                document_text=selected, verification_source=document_text,
+                allowed_attachment_ids=allowed_attachment_ids,
+                probe_instruction=instruction, quantitative_only=True,
+                untrusted_source_context=native_context if xml else None,
+            )
+            if first is not None:
+                outcome = outcome.model_copy(update={
+                    "api_calls": first.api_calls + outcome.api_calls,
+                    "openai_telemetry": merge_openai_telemetry(first.openai_telemetry, outcome.openai_telemetry),
+                })
+            audit["xml_fallback_used"] = xml
+            audit["native_hwpx_table_context"] = xml and native_context is not None
+            audit["native_hwpx_context_status"] = native_context_status
+            retryable_output = outcome.error_code in {
+                "SCHEMA_VALIDATION_ERROR", "UNVERIFIED_QUOTE", "INCOMPLETE_RESPONSE",
+            }
+            failure = outcome.gateway_failure
+            if (outcome.error_code == "HTTP_ERROR" and failure is not None
+                    and failure.stage == "OUTPUT_NORMALIZATION"
+                    and failure.detail_code in {"NATIVE_SCHEMA_DECODE_INVALID", "OUTPUT_JSON_INVALID",
+                                                "OUTPUT_NOT_OBJECT", "OUTPUT_FENCE_INVALID"}
+                    and failure.stop_reason in {None, "end_turn"}):
+                retryable_output = True
+            # A known completed but malformed output may use XML. Transport
+            # ambiguity, provider errors, refusals and token stops never do.
+            if outcome.status == "ACCEPTED" or not retryable_output:
+                break
+            first = outcome
+        return outcome, audit
 
     def extract_quantitative_probe(
         self,
