@@ -63,10 +63,10 @@ def failed_case(client, monkeypatch):
     run()
     downloads.clear()
     _RetryableReviewClient.calls = 0
-    def snapshot():
+    def snapshot(max_attachments=3):
         with client.app.state.session_factory() as session:
             notice = session.get(Notice, notice_id)
-            return enrichment.failed_attachment_retry_snapshot(list(notice.versions), error_codes=["XLS_PARSE_FAILED"], max_attachments=3,
+            return enrichment.failed_attachment_retry_snapshot(list(notice.versions), error_codes=["XLS_PARSE_FAILED"], max_attachments=max_attachments,
                                                                 notice_key=notice.notice_key, revision_no=notice.revision_no)
     def worker(request, *, notice_id, payload, deadline_monotonic, retry_reviewed_version_ids=frozenset(), failed_attachment_retry=None):
         assert failed_attachment_retry is not None
@@ -186,6 +186,19 @@ def test_empty_matching_error_scope_is_not_an_all_attachment_retry(failed_case):
     response = client.post(PLAN, json=body)
     assert response.status_code == 409 and "FAILED_RETRY_TARGETS_EMPTY" in response.text
     assert downloads == []
+
+
+def test_manifest_wide_budget_scope_is_executable(failed_case):
+    # The planner accepts up to MAX_ATTACHMENTS_IN_MANIFEST; the executor must accept the same scope
+    # instead of failing every such retry with FAILED_RETRY_SCOPE_INVALID before any download.
+    client, notice_id, downloads, run, snapshot = failed_case
+    scope = snapshot(max_attachments=enrichment.MAX_ATTACHMENTS_IN_MANIFEST)
+    assert scope["max_attachments"] == enrichment.MAX_ATTACHMENTS_IN_MANIFEST
+    assert enrichment.valid_failed_attachment_retry_scope(scope)
+    result = run(scope)
+    assert "FAILED_RETRY_SCOPE_INVALID" not in result.warnings
+    assert len(downloads) == 1 and result.openai_calls == 1
+    assert not enrichment.valid_failed_attachment_retry_scope({**scope, "max_attachments": enrichment.MAX_ATTACHMENTS_IN_MANIFEST + 1})
 
 
 @pytest.mark.parametrize("count", [3, 4])
