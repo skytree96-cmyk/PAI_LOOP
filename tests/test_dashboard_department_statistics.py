@@ -94,6 +94,11 @@ def test_department_counts_use_complete_store_and_latest_decision_per_department
     assert stats["selection_scope"] == "ALL_STORED_NOTICES"
     assert stats["recommended_definition"] == "OPEN_KEYWORD_TOP_OR_REGION_ROUTING"
     assert stats["selected_definition"] == "LATEST_DEPARTMENT_GO_OR_CONDITIONAL_GO"
+    comparison = client.get("/api/v1/dashboard/departments").json()
+    assert comparison["total_notice_count"] == 31
+    comparison_rows = {row["department_id"]: row for row in comparison["departments"]}
+    for key in ("recommended_count", "selected_count", "selected_recommended_count", "selection_available"):
+        assert comparison_rows["management-planning"][key] == stats[key]
     # Independent discovery and human selection counts require no qualification.
     assert dashboard["totals"]["evaluations"] == 0
     assert dashboard["go_count"] == 0
@@ -104,6 +109,8 @@ def test_department_counts_use_complete_store_and_latest_decision_per_department
     assert finance_stats["selected_count"] == 3
     assert finance_stats["selected_recommended_count"] == 1
     assert finance_stats["selection_rate"] == 1
+    for key in ("recommended_count", "selected_count", "selected_recommended_count"):
+        assert comparison_rows["finance-support"][key] == finance_stats[key]
     # Department selection does not narrow the global queues or denominator.
     assert finance["totals"] == dashboard["totals"]
     assert finance["work_queue_denominator"] == dashboard["work_queue_denominator"]

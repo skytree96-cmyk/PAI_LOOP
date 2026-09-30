@@ -1683,6 +1683,7 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
         evaluated_count = 0
         recommended_count = 0
         selected_matched_count = 0
+        selected_recommended_count = 0
         region_gate_blocked_count = 0
         _decided, go_ids = _department_decision_index(session, department=profile)
         for notice_id, title, agency, category in actionable:
@@ -1697,6 +1698,10 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
             evaluated_count += int(notice_id in evaluated_ids)
             recommended_count += int(
                 ranking["recommendation_tier"] in {"TOP", "ROUTING"}
+            )
+            selected_recommended_count += int(
+                ranking["recommendation_tier"] in {"TOP", "ROUTING"}
+                and notice_id in go_ids
             )
             selected_matched_count += int(notice_id in go_ids)
             for keyword in matched:
@@ -1719,6 +1724,8 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
                 # segment overflowing the one that contains it.
                 "selected_matched_count": selected_matched_count,
                 "selected_count": len(go_ids),
+                "selected_recommended_count": selected_recommended_count,
+                "selection_available": True,
                 "selection_rate": (
                     len(go_ids) / recommended_count if recommended_count else None
                 ),
@@ -1737,6 +1744,7 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
         "profile_version": catalog["version"],
         "scope": "OPEN_NOT_CANCELLED",
         "notice_count": len(actionable),
+        "total_notice_count": session.scalar(select(func.count(Notice.id))) or 0,
         "evaluated_notice_count": len(evaluated_ids),
         "selection_scope": "ALL_STORED_NOTICES",
         "selection_definition": "LATEST_DEPARTMENT_GO_OR_CONDITIONAL_GO",

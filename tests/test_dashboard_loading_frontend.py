@@ -23,7 +23,7 @@ renderAll=renderKpis;renderAnalysisProgress=()=>{};
 setSystemStatus=value=>globalThis.status(value);populateDepartmentProfiles=()=>{};
 globalThis.ui={state,els,normalizeDashboard,dashboardWithoutGlobalTotals,renderKpis,
  dashboardShare,formatDashboardShare,renderDashboardShare,renderDepartmentDashboard,renderDepartmentComparisonChart,selectedDashboardDepartmentId,
- applyDashboardDepartmentSelection,initializeDashboardDepartmentSelection,
+ departmentComparisonRows,selectDepartmentComparison,initializeDashboardDepartmentSelection,loadDepartmentCoverage,
  useDepartmentReloadSpy(){loadApplicationData=options=>globalThis.onDepartmentReload(options);},
  loadDashboardTotals,retryDashboardTotals,hydrateApplicationMetadata,refreshDashboardAfterMutation,
  loadApplicationData,clearAccountPrivateState,normalizeNotice,
@@ -33,10 +33,10 @@ globalThis.ui={state,els,normalizeDashboard,dashboardWithoutGlobalTotals,renderK
 };`;
 vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
 const u=context.ui;
-function element(){return {value:"",textContent:"",hidden:false,disabled:false,attributes:{},
+function element(){return {value:"",textContent:"",hidden:false,disabled:false,attributes:{},style:{},dataset:{},children:[],
  classList:{values:new Set(),toggle(name,enabled){if(enabled)this.values.add(name);else this.values.delete(name);},contains(name){return this.values.has(name);}},
  setAttribute(key,value){this.attributes[key]=value;},removeAttribute(key){delete this.attributes[key];},
- replaceChildren(){},reset(){},close(){}};}
+ append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},querySelector(){return null;},focus(){},reset(){},close(){}};}
 const fields=new Map();
 Object.setPrototypeOf(u.els,new Proxy({}, {get(_,key){if(!fields.has(key))fields.set(key,element());return fields.get(key);}}));
 u.els.decisionInputs=[];
@@ -59,7 +59,8 @@ function enableDashboardElements(){
  const nodes=new Map();
  const get=id=>{if(!nodes.has(id))nodes.set(id,{...element(),style:{},parentElement:{classList:element().classList}});return nodes.get(id);};
  context.document.getElementById=get;
- context.document.createElement=()=>({value:"",textContent:"",cloneNode(){return {...this};}});
+ context.document.createElement=()=>({...element(),cloneNode(){return {...this};}});
+ context.CSS={escape:value=>value};
  u.els.departmentSelect.children=[];
  u.els.departmentSelect.options=[{value:"organization"}];
  u.els.departmentSelect.selectedOptions=[{textContent:"전사 공통"}];
@@ -171,7 +172,9 @@ assert.equal(requests.length,3);
 def test_mutation_refresh_failure_keeps_known_totals_and_exposes_retry():
     _run(r'''
 u.state.dashboard=u.normalizeDashboard(payload,u.state.notices);u.state.dashboardStatus="ready";
-const refresh=u.refreshDashboardAfterMutation();requests[0].reject(Error("SYN aggregate failure"));await refresh;
+const refresh=u.refreshDashboardAfterMutation();
+requests.find(r=>r.path.startsWith("/dashboard?")).reject(Error("SYN aggregate failure"));
+requests.find(r=>r.path==="/dashboard/departments").reject(Error("SYN comparison failure"));await refresh;
 assert.equal(u.state.dashboardStatus,"error");
 assert.equal(u.state.dashboard.totalNotices,800);
 assert.equal(u.state.dashboard.resultMissingCount,1);
@@ -214,11 +217,7 @@ assert.equal(get("departmentRecommendedCount").textContent,"200");
 assert.equal(get("departmentRecommendedShare").textContent,"25%");
 assert.equal(get("departmentSelectedShare").textContent,"10%");
 assert.equal(get("departmentSelectionRate").textContent,"20%");
-assert.equal(get("departmentRecommendedPoint").attributes.cy,"170");
-assert.equal(get("departmentSelectedPoint").attributes.cy,"200");
-assert.equal(get("departmentRecommendedStem").attributes.y2,"170");
-assert.equal(get("departmentSelectedStem").attributes.y2,"200");
-assert.match(get("departmentComparisonChart").attributes["aria-label"],/전사 공통.*추천 공고 200건.*25%.*선택한 공고 80건.*10%/);
+assert.equal(get("departmentComparisonChart").children.length,0);
 assert.match(get("departmentSelectionDetail").textContent,/추천 200건 중 40건 선택/);
 assert.match(u.els.dashboardSummaryDetail.textContent,/마감 전 공고, 결과 입력은 개찰 후 공고 기준/);
 const original=JSON.stringify(payload);
@@ -248,10 +247,7 @@ assert.equal(get("departmentRecommendedShare").textContent,"25%");
 assert.equal(get("departmentSelectedCount").textContent,"—");
 assert.equal(get("departmentSelectedShare").textContent,"—");
 assert.equal(get("departmentSelectionRate").textContent,"—");
-assert.equal(get("departmentRecommendedPoint").attributes.visibility,"visible");
-assert.equal(get("departmentSelectedPoint").attributes.visibility,"hidden");
-assert.equal(get("departmentSelectedStem").attributes.visibility,"hidden");
-assert.match(get("departmentComparisonEmpty").textContent,/선택한 공고 집계 확인 필요/);
+assert.equal(get("departmentComparisonChart").children.length,0);
 assert.match(get("departmentDashboardMeta").textContent,/조회 권한 필요/);
 ''')
 
@@ -271,7 +267,7 @@ assert.equal(get("departmentRecommendedCount").textContent,"—");
 requests[1].resolve({...payload,department_statistics:{...payload.department_statistics,department_id:"SYN-B",department_name:"SYN B"}});await second;
 assert.equal(u.state.dashboardStatus,"ready");
 assert.match(get("departmentDashboardTitle").textContent,/SYN B/);
-assert.equal(get("dashboardDepartmentSelect").value,"SYN-B");
+assert.equal(get("dashboardDepartmentAccount").textContent,"전사 계정");
 u.els.departmentSelect.value="SYN-C";u.renderKpis();
 assert.equal(get("departmentRecommendedCount").textContent,"—");
 assert.equal(get("departmentSelectedShare").textContent,"—");
@@ -306,34 +302,49 @@ assert.equal(get("kpiReviewProgress").parentElement.classList.contains("is-unava
 ''')
 
 
-def test_department_chart_uses_common_zero_to_one_hundred_axis_and_removes_unknown_points():
+def test_department_bars_pin_own_and_top_four_with_independent_click_details():
     _run(r'''
 const get=enableDashboardElements();
-get("departmentRecommendedPoint").setAttribute("hidden","");
-get("departmentRecommendedStem").setAttribute("hidden","");
-u.renderDepartmentComparisonChart("SYN 부서",0,800,800);
-assert.equal(get("departmentRecommendedPoint").attributes.hidden,undefined);
-assert.equal(get("departmentRecommendedStem").attributes.hidden,undefined);
-assert.equal(get("departmentRecommendedPoint").attributes.cy,"220");
-assert.equal(get("departmentRecommendedPoint").attributes.visibility,"visible");
-assert.equal(get("departmentRecommendedStem").attributes.y2,"220");
-assert.equal(get("departmentSelectedPoint").attributes.cy,"20");
-assert.equal(get("departmentSelectedStem").attributes.y2,"20");
-assert.match(get("departmentSelectedPointTitle").textContent,/SYN 부서.*선택한 공고 800건.*100%/);
-assert.equal(get("departmentComparisonEmpty").attributes.visibility,"hidden");
-u.renderDepartmentComparisonChart("SYN 부서",0,0,0);
-for(const key of ["Recommended","Selected"]){
- assert.equal(get(`department${key}Point`).attributes.visibility,"hidden");
- assert.equal(get(`department${key}Point`).attributes.cy,undefined);
- assert.equal(get(`department${key}Stem`).attributes.visibility,"hidden");
- assert.equal(get(`department${key}Stem`).attributes.y2,undefined);
-}
-assert.equal(get("departmentComparisonEmpty").attributes.visibility,"visible");
-assert.match(get("departmentComparisonChart").attributes["aria-label"],/추천 공고 집계 확인 필요.*선택한 공고 집계 확인 필요/);
-u.renderDepartmentComparisonChart("SYN 부서",40,null,100);
-assert.equal(get("departmentRecommendedPoint").attributes.cy,"140");
-assert.equal(get("departmentSelectedPoint").attributes.visibility,"hidden");
-assert.equal(get("departmentComparisonEmpty").textContent,"선택한 공고 집계 확인 필요");
+u.state.accountSession.account={id:"SYN-A",department_id:"SYN-own",department_name:"SYN 우리 부서"};
+u.els.departmentSelect.value="organization";
+u.state.dashboard=u.normalizeDashboard(payload,u.state.notices);
+const row=(id,rec,sel)=>({department_id:id,department_name:id,recommended_count:rec,selected_count:sel,
+ selected_recommended_count:Math.min(rec,sel),selection_available:true});
+const rows=[row("SYN-own",27,1),row("SYN-a",34,8),row("SYN-b",24,7),row("SYN-c",18,6),row("SYN-d",0,4),row("SYN-e",30,3)];
+u.state.departmentCoverage={status:"ready",data:{total_notice_count:100,departments:rows,generated_at:payload.generated_at}};
+u.renderDepartmentDashboard(u.state.dashboard.departmentStatistics);
+const groups=()=>get("departmentComparisonChart").children[1].children;
+assert.deepEqual(Array.from(groups(),b=>b.dataset.departmentId),["SYN-own","SYN-a","SYN-b","SYN-c","SYN-d"]);
+assert.equal(get("departmentRecommendedCount").textContent,"27");
+assert.equal(groups()[0].attributes["aria-pressed"],"true");
+const listBefore=u.els.departmentSelect.value;
+groups()[3].onclick();
+assert.equal(get("departmentRecommendedCount").textContent,"18");
+assert.equal(get("departmentSelectedCount").textContent,"6");
+assert.equal(get("departmentSelectionRate").textContent,"33.3%");
+assert.equal(groups()[3].attributes["aria-pressed"],"true");
+assert.equal(groups()[0].dataset.departmentId,"SYN-own");
+assert.equal(u.els.departmentSelect.value,listBefore);
+assert.equal(requests.length,0);
+// Zero stays zero; independent bars must not clamp selections to recommendations.
+const pair=groups()[4].children[0].children;
+assert.equal(pair[0].style.height,"0%");
+assert.ok(parseFloat(pair[1].style.height)>0);
+const max=Math.max(...groups().flatMap(b=>b.children[0].children.map(v=>parseFloat(v.style.height))));
+assert.ok(max<=100);
+rows[0].selected_count=100;u.renderDepartmentDashboard(u.state.dashboard.departmentStatistics);
+assert.equal(groups().filter(b=>b.dataset.departmentId==="SYN-own").length,1);
+assert.equal(groups().length,5);
+// A missing own selection is visibly unknown, never zero or a fabricated ranking.
+rows[0].selection_available=false;u.selectDepartmentComparison("SYN-own");
+assert.equal(get("departmentSelectedCount").textContent,"—");
+assert.equal(groups()[0].children[0].children[1].children[0].textContent,"—");
+u.state.departmentCoverage.status="error";u.renderDepartmentDashboard(u.state.dashboard.departmentStatistics);
+assert.equal(get("departmentComparisonRetry").hidden,false);
+assert.match(get("departmentComparisonStatus").textContent,/마지막 확인/);
+u.clearAccountPrivateState();
+assert.equal(u.state.departmentComparisonId,null);
+assert.equal(u.state.departmentCoverage.data,null);
 ''')
 
 
@@ -348,31 +359,30 @@ assert.match(u.els.dashboardSummaryTitle.textContent,/실데이터를 불러오�
 assert.match(u.els.dashboardSummaryDetail.textContent,/SYN connection unavailable/);
 assert.equal(u.els.dashboardRetryButton.hidden,false);
 assert.equal(u.els.dashboardRetryButton.textContent,"서버 연결 다시 시도");
-assert.equal(get("departmentRecommendedPoint").attributes.visibility,"hidden");
+assert.equal(get("departmentComparisonChart").children.length,0);
 await u.retryDashboardTotals();
 assert.equal(reloads.length,1);assert.equal(reloads[0].forceApi,true);
 assert.equal(requests.length,0);
 ''')
 
 
-def test_account_department_defaults_once_and_dashboard_selector_updates_list_ranking():
+def test_account_department_defaults_once_and_account_label_stays_fixed():
     _run(r'''
 const get=enableDashboardElements(),reloads=[];
 context.onDepartmentReload=options=>reloads.push(options);u.useDepartmentReloadSpy();
 u.state.accountSession.account={id:"SYN-A",department_id:"SYN-DEP-A",department_name:"SYN A"};
 u.initializeDashboardDepartmentSelection();
 assert.equal(u.els.departmentSelect.value,"SYN-DEP-A");
-assert.equal(get("dashboardDepartmentSelect").value,"SYN-DEP-A");
-u.applyDashboardDepartmentSelection({target:{value:"organization"}});
+assert.equal(get("dashboardDepartmentAccount").textContent,"SYN A");
+u.els.departmentSelect.value="organization";
 assert.equal(u.els.departmentSelect.value,"organization");
-assert.equal(u.els.sortSelect.value,"department");
-assert.equal(reloads.length,1);assert.equal(reloads[0].forceApi,true);
+assert.equal(reloads.length,0);
 u.initializeDashboardDepartmentSelection();
 assert.equal(u.els.departmentSelect.value,"organization");
 u.state.accountSession.account={id:"SYN-B",department_id:"SYN-DEP-B",department_name:"SYN B"};
 u.initializeDashboardDepartmentSelection();
 assert.equal(u.els.departmentSelect.value,"SYN-DEP-B");
-assert.equal(get("dashboardDepartmentSelect").value,"SYN-DEP-B");
+assert.equal(get("dashboardDepartmentAccount").textContent,"SYN B");
 ''')
 
 
