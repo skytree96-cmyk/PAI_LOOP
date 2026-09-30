@@ -15,6 +15,55 @@ from test_quantitative_probe_client import response, make_client
 from test_long_output_once import FAILURE
 
 
+@pytest.mark.parametrize("first_raises", [False, True])
+@pytest.mark.parametrize("retry_sibling", [False, True])
+def test_failed_sibling_refresh_preserves_next_attempt_and_accounting(first_raises, retry_sibling):
+    import time
+    from copy import deepcopy
+
+    _, source = fixture(inline=True)
+    engine, factory, notice_id, download = _single_hwpx_reuse_case(
+        notice_key="SYN-SIBLING-TRANSACTION", source_text=source)
+    with factory() as session:
+        metadata = session.get(Notice, notice_id).versions[0]
+        saved = deepcopy(metadata.source_payload)
+        sibling = deepcopy(saved["attachment_manifest"][0])
+        sibling.update(attachment_id="PPS-ATT-" + "a" * 24, slot=2,
+                       file_name="SYN 제안요청서2.hwpx")
+        saved["attachment_manifest"].append(sibling)
+        metadata.source_payload = saved
+        session.commit()
+    options = dict(notice_id=notice_id, openai_api_key="SYN-key", openai_model="SYN-model",
+                   llm_provider="n8n_claude", llm_gateway_base_url="https://syn-gateway.test/v1",
+                   transport=download)
+    with factory() as session:
+        enrich_notice_from_pps(session, **options, openai_client_factory=_RetryableReviewClient)
+        failed = [v for v in session.get(Notice, notice_id).versions
+                  if v.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"]
+        ids = frozenset(v.id for v in failed)
+    assert len(ids) == 2
+    if not retry_sibling:
+        ids = frozenset(v.id for v in failed if v.source_payload["attachment_id"] != sibling["attachment_id"])
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if first_raises and len(calls) == 1:
+            raise RuntimeError("SYN-UNEXPECTED-FAILURE")
+        return httpx.Response(502, json={"error": "SYN-FAILURE"})
+    def client_factory(**kwargs):
+        return OpenAIExtractionClient(**kwargs, transport=httpx.MockTransport(handler))
+    with factory() as session:
+        result = enrich_notice_from_pps(session, **options, openai_client_factory=client_factory,
+            retry_reviewed_version_ids=ids, deadline_monotonic=time.monotonic() + 900)
+        assert not session.in_transaction()
+    assert len(calls) == (2 if retry_sibling else 1)
+    assert result.openai_calls == len(calls) - int(first_raises)
+    assert ("INTERNAL_ENRICHMENT_ERROR" in result.warnings) is first_raises
+    if first_raises:
+        assert not result.openai_telemetry.accounting_complete
+    engine.dispose()
+
+
 @pytest.mark.parametrize("defer", [False, True])
 def test_ordinary_then_long_failure_automatically_recovers_once(defer, monkeypatch):
     payload, source = fixture(inline=True)

@@ -84,6 +84,13 @@ Current-manifest reuse prevents a continuation from repeating a saved recovery.
 Notice lifecycle, queue admission, MANUAL_ONLY and existing scoped-retry guards
 continue to apply before this attachment path is reached.
 
+Before moving to a sibling attachment, expired rows in the frozen source
+history are refreshed inside an explicit read transaction. Source revalidation
+and rollback can expire these rows even with `expire_on_commit=False`; allowing
+an implicit refresh later would collide with the next claim/result transaction
+and could discard the response's accumulated provider telemetry. This refresh
+does not expand the retry scope or commit pending caller writes.
+
 ## Image and provider behavior
 
 HWPX BinData inspection reads only 16 bytes instead of inflating an entire unused

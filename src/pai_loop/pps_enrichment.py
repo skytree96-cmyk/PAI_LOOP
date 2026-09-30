@@ -20,7 +20,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -4557,6 +4557,16 @@ def enrich_notice_from_pps(
         openai_timeout_seconds=openai_timeout_seconds, openai_max_retries=openai_max_retries)
     # 커버리지는 그대로다. 예산이 끊기기 전에 배점표를 만날 확률만 높인다.
     for attachment in sorted(attachments, key=_scoring_table_reading_order):
+        # Source revalidation and a sibling rollback expire cached ORM rows.
+        # Refresh the frozen history inside an owned read transaction so later
+        # field access cannot implicitly start a transaction before a claim or
+        # result write. Never commit arbitrary pending work to clear autobegin.
+        expired_ids = [inspect(version).identity[0] for version in versions
+                       if inspect(version).expired]
+        if expired_ids:
+            with session.begin():
+                session.scalars(select(NoticeVersion).where(
+                    NoticeVersion.id.in_(expired_ids))).all()
         stored_version = current_attempts.get(attachment["attachment_id"])
         target = retry_targets.get(attachment["attachment_id"]) if retry_targets is not None else None
         can_retry = retry_targets is None or (target is not None and stored_version is not None
