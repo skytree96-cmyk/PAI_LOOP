@@ -130,3 +130,26 @@ def test_native_xml_fallback_rejects_quotes_from_a_different_document():
     assert result.source_audit['native_hwpx_table_context'] is True
     assert result.outcome.status == 'REVIEW'
     assert result.outcome.error_code == 'UNVERIFIED_QUOTE'
+
+
+def test_oversized_optional_native_structure_does_not_block_bounded_text():
+    from xml.sax.saxutils import escape
+    payload, review = probe_fixture()
+    stream = io.BytesIO()
+    rows = ''.join('<tr><tc><p><t>SYN task row</t></p></tc></tr>' for _ in range(700))
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('Contents/section0.xml',
+            '<section><tbl><tr><tc><p><t>정량 배점표</t></p></tc></tr>'
+            + ''.join('<tr><tc><p><t>' + escape(line) + '</t></p></tc></tr>'
+                      for line in review.canonical_text.splitlines()) + rows + '</tbl></section>')
+    content = stream.getvalue()
+    canonical = _extract_hwpx_text(content)
+    with pytest.raises(ValueError, match='CONTEXT_SIZE_LIMIT'):
+        hwpx_quantitative_table_context(content, canonical)
+    with make_client(lambda request: response(payload)) as client:
+        result = client.extract_quantitative_keywords(document_text=canonical,
+            allowed_attachment_ids={ATT}, hwpx_content=content)
+    assert result.outcome.status == 'ACCEPTED'
+    assert result.outcome.api_calls == 1
+    assert result.source_audit['native_hwpx_context_status'] == 'HWPX_CONTEXT_SIZE_LIMIT'
+    assert result.source_audit['native_hwpx_table_context'] is False

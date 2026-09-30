@@ -47,7 +47,9 @@ activate this path. The separate LONG_OUTPUT_ONCE contract is unchanged.
 The recovery keeps the existing two-call attachment ceiling: one keyword text
 call, then XML on an eligible validation failure, without transport retries.
 Native HWPX tables are included when present; a paragraph-encoded HWPX table
-uses source-text XML framing. Source mismatches still fail before paid calls.
+uses source-text XML framing. Optional native XML that exceeds its size or
+structure budget is omitted with an audit reason, without blocking bounded
+source text or truncating table rows. Source mismatches still fail before paid calls.
 
 Persistence stores the failed-version identity, canonical and selected hashes,
 source ranges, XML usage and `QUANTITATIVE_KEYWORD_RECOVERY` scope. Requirements

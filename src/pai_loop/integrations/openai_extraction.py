@@ -1338,14 +1338,19 @@ class OpenAIExtractionClient:
         document_text = document_text.replace("\x00", "")
         # Bind native XML before spending even the first provider call.
         native_context = None
+        native_context_status = "NOT_HWPX"
         if hwpx_content is not None:
             try:
                 native_context = hwpx_quantitative_table_context(hwpx_content, document_text)
+                native_context_status = "AVAILABLE"
             except ValueError as exc:
-                # Some valid HWPX files encode a table as paragraphs. Retain
-                # exact text/XML framing, but never ignore a source mismatch.
-                if str(exc) != "HWPX_SCORING_TABLE_NOT_FOUND":
+                # Optional native structure may exceed its separate budget or
+                # be encoded as paragraphs. Canonical source binding happens
+                # first; retain exact text framing without truncating a table.
+                if str(exc) not in {"HWPX_SCORING_TABLE_NOT_FOUND", "HWPX_CONTEXT_SIZE_LIMIT",
+                                    "HWPX_CONTEXT_STRUCTURE_LIMIT"}:
                     raise
+                native_context_status = str(exc)
         instruction = (
             "QUANTITATIVE-ONLY PARTIAL EXTRACTION. Return requirements=[]. Extract only "
             "scoring tables, formulas, bands, subtotals and complete recognition "
@@ -1373,6 +1378,7 @@ class OpenAIExtractionClient:
                 })
             audit["xml_fallback_used"] = xml
             audit["native_hwpx_table_context"] = xml and native_context is not None
+            audit["native_hwpx_context_status"] = native_context_status
             if outcome.status == "ACCEPTED" or outcome.error_code not in {
                 "SCHEMA_VALIDATION_ERROR", "UNVERIFIED_QUOTE", "INCOMPLETE_RESPONSE",
             }:
