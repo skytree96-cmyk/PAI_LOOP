@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20260930-award-same-agency-v20"' in html
-    assert 'href="./top-navigation.css?v=20260930-award-same-agency-v20"' in html
-    assert 'src="./app.js?v=20260930-award-same-agency-v20"' in html
+    assert 'href="./styles.css?v=20260930-uiux-award-v21"' in html
+    assert 'href="./top-navigation.css?v=20260930-uiux-award-v21"' in html
+    assert 'src="./app.js?v=20260930-uiux-award-v21"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -1073,7 +1073,9 @@ def test_recommendation_filter_and_errors_fail_closed_without_raw_internal_text(
     assert "PASS_CURRENT: 1" in eligibility_body
     assert "PASS_EXCEPTION: 2" in eligibility_body
     assert "FAIL: 4" in eligibility_body
-    assert "arrayValue(notice?.requirements).forEach" in eligibility_body
+    assert "const stored = arrayValue(notice?.requirements)" in eligibility_body
+    assert "currentPolicyEligibilityCards(notice)" in eligibility_body
+    assert 'persisted === "FAIL" ? ["FAIL"] : []' in eligibility_body
     assert "requirement?.mandatory !== false" in eligibility_body
     assert "severity[candidate] > severity[current]" in eligibility_body
     assert 'return worst === "UNKNOWN" ? "REVIEW" : worst' in eligibility_body
@@ -1202,7 +1204,7 @@ const notice = {versions: [], documentAnalyses: [
 renderDocumentAnalyses(notice);
 assert.match(els.documentAnalysisState.textContent, /검토 1건 · 분석 대기 1건/);
 assert.doesNotMatch(els.documentAnalysisState.textContent, /구조화 완료/);
-assert.equal((els.documentAnalysisList.innerHTML.match(/<article /g)||[]).length, 3);
+assert.equal((els.documentAnalysisList.innerHTML.match(/<details class="document-analysis-item"/g)||[]).length, 3);
 assert.match(els.documentAnalysisList.innerHTML, /성공한 현재 공고문/);
 assert.match(els.documentAnalysisList.innerHTML, /모델 형식 검증 실패/);
 assert.match(els.documentAnalysisList.innerHTML, /SYN-&lt;form&gt;.pdf/);
@@ -1236,7 +1238,8 @@ const data = {ruleset_version:"public-quantitative-summary-v1", rule_source_stat
  total_max_points:20,lower_points:10,upper_points:20,evidence_coverage_pct:0,criteria:[criterion],
  assumptions:["저장된 최신 분석 스냅샷에서 공개 가능한 배점·범위·상태만 표시합니다."]};
 renderQuantitativeEstimate(data);
-assert.match(els.scoreOverview.innerHTML,/회사 증빙 확정률:0%/);
+assert.match(els.scoreOverview.innerHTML,/정량 점수 예측:10–20 \/ 20/);
+assert.doesNotMatch(els.scoreOverview.innerHTML,/증빙 확정률/);
 assert.match(els.quantSourceStatus.textContent,/원문 검증 완료.*일부 항목 미산정/);
 assert.match(els.quantTableBody.innerHTML,/원문 위치 세부 비공개/);
 assert.doesNotMatch(els.quantTableBody.innerHTML,/원문 위치 없음/);

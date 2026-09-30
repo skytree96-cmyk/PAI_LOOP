@@ -5474,7 +5474,7 @@
         </td>
         <td><span class="deadline ${deadline.urgent ? "is-urgent" : ""}">${escapeHtml(deadline.relative)}<small>${escapeHtml(deadline.date)} ${escapeHtml(deadline.time || "시각 미확인")} KST</small></span></td>
         <td><span class="budget-cell">${escapeHtml(formatBudget(notice.budget))}</span></td>
-        <td>${analysisStatusPill(notice)}</td>
+        <td data-notice-eligibility="${escapeAttribute(notice.noticeKey)}">${analysisStatusPill(notice)}</td>
         <td><div class="score-cell ${readinessClass}"><strong class="${displayAnalyzed ? "" : "metric-pending"}">${displayAnalyzed ? `${readiness}/100` : readiness}</strong><span class="mini-bar" aria-hidden="true"><span style="width:${displayAnalyzed ? clamp(notice.readinessScore ?? 0, 0, 100) : 0}%"></span></span></div></td>
         <td><span class="risk-score ${displayAnalyzed ? riskClass(notice.riskScore) : "is-unknown"}">${displayAnalyzed ? riskDisplayValue(notice) : "미산정"}</span></td>
         <td>${analysisRecommendationPill(notice)}</td>
@@ -6714,18 +6714,20 @@
           : ["FAILED", "ERROR"].includes(item.status) ? `${pointInTime}분석 오류` : `${pointInTime}분석 완료`;
         const requirementLabel = item.requirementCount === null ? "미확인" : `${formatNumber(item.requirementCount)}건`;
         return `
-          <article class="document-analysis-item">
-            <div class="document-analysis-item__head">
+          <details class="document-analysis-item">
+            <summary class="document-analysis-item__head">
               <strong title="${escapeAttribute(item.documentName)}">${escapeHtml(item.documentName)}</strong>
               <span class="${item.needsReview ? "is-review" : ""}">${escapeHtml(statusLabel)}</span>
+            </summary>
+            <div class="document-analysis-item__body">
+              <p>${escapeHtml(truncateText(item.summary, 260))}</p>
+              <dl>
+                <div><dt>추출 요구조건</dt><dd>${escapeHtml(requirementLabel)}</dd></div>
+                <div><dt>분석 신뢰도</dt><dd>${item.confidence === null ? "미제공" : `${Math.round(item.confidence)}%`}</dd></div>
+                ${item.analyzedAt ? `<div><dt>분석 시각</dt><dd>${escapeHtml(formatShortDateTime(item.analyzedAt))}</dd></div>` : ""}
+              </dl>
             </div>
-            <p>${escapeHtml(truncateText(item.summary, 260))}</p>
-            <dl>
-              <div><dt>추출 요구조건</dt><dd>${escapeHtml(requirementLabel)}</dd></div>
-              <div><dt>분석 신뢰도</dt><dd>${item.confidence === null ? "미제공" : `${Math.round(item.confidence)}%`}</dd></div>
-              ${item.analyzedAt ? `<div><dt>분석 시각</dt><dd>${escapeHtml(formatShortDateTime(item.analyzedAt))}</dd></div>` : ""}
-            </dl>
-          </article>`;
+          </details>`;
       }).join("");
       return;
     }
@@ -6800,8 +6802,29 @@
         renderPrivateMatchPreview(notice);
         renderEligibilityPanel(notice);
         renderActions(notice);
+        refreshEligibilitySummaryMetric(notice);
       }
+      refreshNoticeEligibilityCell(notice);
     }
+  }
+
+  // 카드 판정이 도착하면 상세 상단 요약과 목록 행의 참가자격 배지도 같은 값으로 바꾼다.
+  function refreshEligibilitySummaryMetric(notice) {
+    if (!document.querySelectorAll || isCancelledNotice(notice) || notice.analysisState !== "EVALUATED") return;
+    document.querySelectorAll(".summary-metric").forEach((metric) => {
+      if (metric.querySelector("small")?.textContent !== "참가자격 확인 결과") return;
+      const value = metric.querySelector("strong");
+      if (value) value.textContent = analysisStatusLabel(notice);
+      const status = effectiveEligibilityStatus(notice).toLowerCase();
+      metric.className = metric.className.replace(/summary-metric--eligibility-[a-z_]+/, `summary-metric--eligibility-${status}`);
+    });
+  }
+
+  function refreshNoticeEligibilityCell(notice) {
+    if (!document.querySelectorAll) return;
+    document.querySelectorAll("[data-notice-eligibility]").forEach((cell) => {
+      if (cell.dataset.noticeEligibility === notice.noticeKey) cell.innerHTML = analysisStatusPill(notice);
+    });
   }
 
   function normalizePrivateMatchPreview(raw) {
@@ -6904,11 +6927,12 @@
   }
 
   function renderEligibilityPanel(notice, requirements = eligibilityRequirementsForDisplay(notice)) {
-    // The aggregate pill always comes from the persisted analysis. Public
-    // policy matches are supplemental cards and never rewrite this headline.
+    // The aggregate pill follows effectiveEligibilityStatus, which derives it
+    // from the displayed cards (F → 미충족, 모두 P → 충족) so the two never disagree.
     els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
     if (requirements.length) {
-      els.requirementList.innerHTML = requirements.slice().sort((a, b) => (a.status === "PASS") - (b.status === "PASS")).map(renderRequirement).join("");
+      const order = { FAIL: 0, REVIEW: 1, UNKNOWN: 1, PASS_EXCEPTION: 2, PASS_CURRENT: 3, PASS: 3 };
+      els.requirementList.innerHTML = requirements.slice().sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1)).map(renderRequirement).join("");
       return;
     }
     if (publicEligibilityPolicyPending(notice)) {
@@ -7113,7 +7137,7 @@
         ? '<path d="m7 7 10 10M17 7 7 17" />'
         : '<path d="M12 7v6M12 17h.01" />';
     return `
-      <details class="requirement-item is-${escapeAttribute(mode)}"${requirement.status !== "PASS" ? " open" : ""}>
+      <details class="requirement-item is-${escapeAttribute(mode)}">
         <summary>
         <span class="requirement-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${icon}</svg></span>
         <span class="requirement-copy"><strong>${escapeHtml(requirement.title)}</strong></span>
@@ -7554,8 +7578,7 @@
   function renderQuantitativePending(status, message) {
     const loading = status === "loading";
     els.scoreOverview.innerHTML = [
-      quantSummaryCard("예상 점수 범위", "미산정", loading ? "배점표 확인 중" : "공고별 산식 필요", "score-card--readiness"),
-      quantSummaryCard("회사 증빙 확정률", "0%", "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("정량 점수 예측", "미산정", loading ? "배점표 확인 중" : "공고별 산식 필요", "score-card--readiness score-card--forecast"),
       quantSummaryCard("정량 준비도", "산정 보류", "참가자격과 별도", "score-card--risk"),
     ].join("");
     els.quantSourceStatus.className = `quant-source-status ${status === "error" ? "is-error" : "is-loading"}`;
@@ -7574,7 +7597,6 @@
     const analyzed = notice.analysisState === "EVALUATED";
     els.scoreOverview.innerHTML = [
       scoreCard("준비도", notice.readinessScore, "score-card--readiness", analyzed),
-      scoreCard("증빙 커버리지", notice.evidenceCoverage, "score-card--coverage", analyzed),
       quantSummaryCard("정량 데이터", "예시", "실제 공고 점수 아님", "score-card--risk"),
     ].join("");
     els.quantSourceStatus.className = "quant-source-status is-demo";
@@ -7594,7 +7616,6 @@
     const lower = numberOrNull(data.lower_points);
     const upper = numberOrNull(data.upper_points);
     const outOfScope = numberOrNull(data.out_of_scope_points);
-    const coverage = numberOrNull(data.evidence_coverage_pct) ?? 0;
     const readiness = numberOrNull(data.readiness_pct);
     const ruleSource = String(data.rule_source_status || "").toUpperCase();
     const legacySourceMap = {
@@ -7623,13 +7644,12 @@
     // Company-first beta: rows filled from company facts, unmet rows at the table minimum.
     const betaLowerBound = partialSource && Array.isArray(data.assumptions)
       && data.assumptions.some((item) => String(item).includes("베타·회사 기준 역산"));
-    const subtotalLabel = betaLowerBound ? "베타 하한 합계" : "확인 항목 소계";
     const subtotalNote = betaLowerBound
-      ? "베타·회사 기준 역산·하한 추정 · 미충족 → 최하점 적용(하한) · 공고 총점 아님"
-      : "확인된 첨부 배점만 포함 · 공고 총점 아님";
+      ? "회사 자료로 역산한 하한 예측 · 확인 안 된 조건은 최하점 적용 · 공고 총점 아님"
+      : "확인 항목 소계 · 확인된 첨부 배점만 포함 · 공고 총점 아님";
+    const forecastBar = range === "미산정" ? null : { lower, upper, total };
     els.scoreOverview.innerHTML = [
-      quantSummaryCard(partialSource ? subtotalLabel : "예상 점수 범위", range, partialSource ? subtotalNote : sourceDetail, "score-card--readiness"),
-      quantSummaryCard(partialSource ? "확인 항목 내 증빙 확정률" : "회사 증빙 확정률", `${formatNumber(coverage, 1)}%`, partialSource ? "확정 항목 배점 ÷ 확인 항목 배점" : "확정 항목 배점 ÷ 전체 정량 배점", "score-card--coverage"),
+      quantSummaryCard("정량 점수 예측", range, partialSource ? subtotalNote : sourceDetail, "score-card--readiness score-card--forecast", forecastBar),
       quantSummaryCard("정량 준비도", partialSource ? "전체 판단 보류" : quantReadinessLabel(data.readiness_band), partialSource ? "미해소 첨부가 있어 전체 준비도는 미확정" : readiness === null ? "산정 불가" : `하한 기준 ${formatNumber(readiness, 1)}%`, "score-card--risk"),
     ].join("");
 
@@ -7729,8 +7749,24 @@
     ].filter(Boolean).join(" ");
   }
 
-  function quantSummaryCard(label, value, detail, className) {
-    return `<div class="score-card quant-summary-card ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><span class="quant-card-detail">${escapeHtml(detail)}</span></div>`;
+  function quantSummaryCard(label, value, detail, className, bar = null) {
+    if (!bar) {
+      return `<div class="score-card quant-summary-card ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><span class="quant-card-detail">${escapeHtml(detail)}</span></div>`;
+    }
+    // 오픈페이지 예시와 같은 "점수 / 배점 + 막대" 모양. 하한은 진한 막대, 상한까지는 옅은 막대.
+    const scoreText = `${formatNumber(bar.lower, 1)}${bar.lower === bar.upper ? "" : `–${formatNumber(bar.upper, 1)}`}`;
+    return `<div class="score-card quant-summary-card ${className}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(scoreText)}<span class="quant-forecast__total"> / ${escapeHtml(formatNumber(bar.total, 1))}점</span></strong>${quantForecastBar(bar, label)}<span class="quant-card-detail">${escapeHtml(detail)}</span></div>`;
+  }
+
+  function quantForecastBar(bar, label = "정량 점수 예측") {
+    const total = numberOrNull(bar?.total);
+    const lower = numberOrNull(bar?.lower);
+    const upper = numberOrNull(bar?.upper);
+    if (total === null || total <= 0 || lower === null || upper === null) return "";
+    const lowerPct = Math.min(100, Math.max(0, (lower / total) * 100));
+    const upperPct = Math.min(100, Math.max(lowerPct, (upper / total) * 100));
+    const aria = `${label} ${formatNumber(lower, 1)}${lower === upper ? "" : `~${formatNumber(upper, 1)}`}점 / 배점 ${formatNumber(total, 1)}점`;
+    return `<span class="quant-forecast-bar" role="img" aria-label="${escapeAttribute(aria)}"><i class="is-lower" style="width:${lowerPct.toFixed(1)}%"></i><i class="is-range" style="width:${(upperPct - lowerPct).toFixed(1)}%"></i></span>`;
   }
 
   function quantStatusLabel(status) {
@@ -7796,11 +7832,12 @@
     return {
       value: `${formatNumber(lower, 1)} / ${formatNumber(total, 1)}점`,
       status: confirmed ? "confirmed" : "estimated",
-      label: confirmed ? "확정" : betaLowerBound ? "베타 하한 합계" : partialSource ? "부분 소계 · 일부 첨부 미해소" : "잠정 · 보수 기준",
+      label: confirmed ? "확정" : betaLowerBound ? "하한 예측" : partialSource ? "부분 소계 · 일부 첨부 미해소" : "잠정 · 보수 기준",
+      bar: { lower, upper, total },
       reason: confirmed
         ? "현재 근거로 확정된 정량점수입니다. 참가자격·담당자 판단과는 별도입니다."
         : betaLowerBound
-          ? "베타·회사 기준 역산·하한 추정 · 미충족 → 최하점 적용(하한) · 공고 총점 아님"
+          ? "회사 자료로 역산한 하한 예측 · 확인 안 된 조건은 최하점 적용 · 공고 총점 아님"
           : partialSource
           ? `원문 검증이 끝난 첨부만의 소계이며 공고 총점이 아닙니다. 미확정 사유: ${reason}`
           : `미확정 사유: ${reason}`,
@@ -7809,7 +7846,7 @@
 
   function noticeQuantitativeContent(notice) {
     const summary = noticeQuantitativeSummary(notice);
-    return `<span class="notice-quantitative__line"><small>정량 점수</small><strong>${escapeHtml(summary.value)}</strong><span class="notice-quantitative__status is-${summary.status}">${escapeHtml(summary.label)}</span></span><span class="notice-quantitative__reason" title="${escapeAttribute(summary.reason)}">${escapeHtml(summary.reason)}</span>`;
+    return `<span class="notice-quantitative__line"><small>정량 점수 예측</small><strong>${escapeHtml(summary.value)}</strong><span class="notice-quantitative__status is-${summary.status}">${escapeHtml(summary.label)}</span></span>${summary.bar ? quantForecastBar(summary.bar) : ""}<span class="notice-quantitative__reason" title="${escapeAttribute(summary.reason)}">${escapeHtml(summary.reason)}</span>`;
   }
 
   function renderNoticeQuantitativeSummary(notice) {
@@ -9233,14 +9270,26 @@
       const status = String(value || "UNKNOWN").toUpperCase();
       return STATUS_LABELS[status] ? status : "UNKNOWN";
     };
-    const candidates = [normalize(notice?.eligibilityStatus)];
-    arrayValue(notice?.requirements).forEach((requirement) => {
+    // 저장된 요구조건이 없으면 상세 카드는 현재 정책(requirement-policy) 판정으로 채워진다.
+    // 저장된 종합값은 이전 정책 기준이라 카드가 모두 P·F여도 "확인 필요"로 남으므로,
+    // 카드가 있으면 카드 판정으로 종합한다. 저장된 FAIL만 보수적으로 유지한다.
+    const stored = arrayValue(notice?.requirements);
+    const policyCards = stored.length ? [] : currentPolicyEligibilityCards(notice);
+    const persisted = normalize(notice?.eligibilityStatus);
+    const candidates = policyCards.length ? (persisted === "FAIL" ? ["FAIL"] : []) : [persisted];
+    (stored.length ? stored : policyCards).forEach((requirement) => {
       if (requirement?.mandatory !== false) candidates.push(normalize(requirement?.status));
     });
     const worst = candidates.reduce((current, candidate) => (
       severity[candidate] > severity[current] ? candidate : current
     ), "PASS");
     return worst === "UNKNOWN" ? "REVIEW" : worst;
+  }
+
+  function currentPolicyEligibilityCards(notice) {
+    if (typeof state === "undefined" || !state?.privateMatchPreviews || !notice?.noticeKey) return [];
+    if (state.privateMatchPreviews[notice.noticeKey]?.status !== "ready") return [];
+    return typeof eligibilityRequirementsForDisplay === "function" ? eligibilityRequirementsForDisplay(notice) : [];
   }
 
   function effectiveRecommendation(notice) {

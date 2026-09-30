@@ -8006,3 +8006,28 @@ details.requirement-item.is-pass > summary, details.requirement-item.is-pass_cur
 .performance-editor-filters { grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.35fr) minmax(150px, 0.3fr) auto; }
 @media (max-width: 900px) { .performance-editor-filters { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 680px) { .performance-editor-filters { grid-template-columns: 1fr; } }
+/* 9/30 검토: 미리 정해진 표 머리글·상태 배지는 줄을 넘기지 않는다(자동 입력 문장만 줄바꿈). */
+.notice-table th { white-space: nowrap; }
+.notice-table th:first-child { width: 23%; }
+.notice-table th:nth-child(4) { width: 11%; }
+.notice-table .status-pill,
+.notice-table .analysis-state { white-space: nowrap; }
+/* 정량 점수 예측: 오픈페이지 예시처럼 "점수 / 배점 + 막대". 증빙 확정률 카드를 빼서 두 칸으로 둔다. */
+.score-overview { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
+.score-card--forecast { border-color: #d2e1ed; background: #e8f0f7; }
+.score-card--forecast > small { color: #466c89; font-weight: 700; }
+.score-card--forecast > strong { margin: 8px 0 10px; color: #245a82; font-size: 32px; line-height: 1.2; }
+.score-card--forecast > strong .quant-forecast__total { color: #7590a6; font-size: var(--fs-sm, 14px); font-weight: 600; letter-spacing: 0; }
+.quant-forecast-bar { display: flex; height: 6px; margin: 0 0 10px; overflow: hidden; border-radius: 999px; background: #d1e0ec; }
+.quant-forecast-bar > i { display: block; height: 100%; }
+.quant-forecast-bar > .is-lower { background: #4c88b4; }
+.quant-forecast-bar > .is-range { background: rgba(76, 136, 180, 0.35); }
+.notice-quantitative .quant-forecast-bar { height: 4px; margin: 6px 0 4px; max-width: 220px; }
+@media (max-width: 680px) { .score-overview { grid-template-columns: 1fr; } }
+/* 첨부문서 분석 현황: 파일명·상태만 보이고, 누르면 요약·요구조건 수를 연다. */
+details.document-analysis-item > summary.document-analysis-item__head { margin-bottom: 0; cursor: pointer; list-style: none; }
+details.document-analysis-item > summary::-webkit-details-marker { display: none; }
+details.document-analysis-item > summary::after { content: '+'; flex: 0 0 auto; color: var(--muted); }
+details.document-analysis-item[open] > summary::after { content: '−'; }
+details.document-analysis-item > summary > strong { flex: 1 1 auto; }
+details.document-analysis-item[open] > .document-analysis-item__body { margin-top: 8px; }
