@@ -62,6 +62,8 @@
     writeControlsEnabled: true,
     operatorDecisionEnabled: false,
     departmentCoverage: { status: "idle", data: null, openDepartmentId: null },
+    departmentComparisonId: null,
+    departmentCoverageRequestSequence: 0,
     manualAnalysisEnabled: false,
     manualAnalysisUnavailableReason: "분석 기능 상태를 확인하고 있습니다.",
     manualAnalysisAuthRequired: false,
@@ -549,7 +551,6 @@
     els.replayButton.addEventListener("click", runReplay);
 
     els.departmentSelect.addEventListener("change", applyDepartmentRanking);
-    document.getElementById("dashboardDepartmentSelect")?.addEventListener("change", applyDashboardDepartmentSelection);
     document.querySelectorAll("[data-dashboard-total-link], [data-notice-scope]").forEach((button) => {
       button.addEventListener("click", (event) => {
         event.preventDefault();
@@ -931,7 +932,7 @@
       loadDashboardTotals({ sequence, requestedStatusScope }),
       apiRequest("/departments/keyword-profiles"),
       // Coverage is additional reporting: a failure here never blocks the board.
-      loadDepartmentCoverage(),
+      loadDepartmentCoverage({ force: true }),
     ]);
     if (epoch !== state.accountEpoch) return;
     if (sequence !== state.requestSequence) return;
@@ -992,6 +993,7 @@
 
   async function refreshDashboardAfterMutation() {
     if (state.source === "api") {
+      void loadDepartmentCoverage({ force: true });
       await loadDashboardTotals();
       return;
     }
@@ -1371,6 +1373,9 @@
     clearTeamsFollowups();
     state.dashboard = {};
     state.dashboardStatus = "idle";
+    state.departmentCoverage = { status: "idle", data: null, openDepartmentId: null };
+    state.departmentComparisonId = null;
+    state.departmentCoverageRequestSequence += 1;
     state.dashboardRequestSequence += 1;
     state.keywordProfilesAvailable = false;
     els.sidebarAccount.hidden = true;
@@ -2135,7 +2140,7 @@
       ? selected
       : "organization";
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
-    syncDashboardDepartmentSelect();
+    syncDashboardDepartmentAccount();
     els.rankingProfileVersion.textContent = catalog.version
       ? `키워드 기준 ${catalog.version} · 목록 제외 없음`
       : "키워드 기준 확인됨 · 목록 제외 없음";
@@ -2144,7 +2149,7 @@
 
   function applyDepartmentRanking() {
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
-    syncDashboardDepartmentSelect();
+    syncDashboardDepartmentAccount();
     if (!isDepartmentProgressView()) els.sortSelect.value = "department";
     renderNoticeFilterTools();
     syncNoticeFilterLocation();
@@ -2171,27 +2176,19 @@
     }
     els.departmentSelect.value = departmentId;
     state.departmentSelectionAccountId = account.id;
-    syncDashboardDepartmentSelect();
+    syncDashboardDepartmentAccount();
   }
 
-  function syncDashboardDepartmentSelect() {
-    const select = document.getElementById("dashboardDepartmentSelect");
-    if (!select || !els.departmentSelect) return;
-    select.replaceChildren(...Array.from(els.departmentSelect.children, (child) => child.cloneNode(true)));
-    select.value = selectedDashboardDepartmentId();
-    select.disabled = !state.keywordProfilesAvailable;
-  }
-
-  function applyDashboardDepartmentSelection(event) {
-    els.departmentSelect.value = event.target.value;
-    applyDepartmentRanking();
+  function syncDashboardDepartmentAccount() {
+    const label = document.getElementById("dashboardDepartmentAccount");
+    if (label) label.textContent = state.accountSession?.account?.department_name || "전사 계정";
   }
 
   function resetPrioritySearch() {
     state.pendingNoticeDecisionFilter = null;
     els.departmentSelect.value = "organization";
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
-    syncDashboardDepartmentSelect();
+    syncDashboardDepartmentAccount();
     els.priorityKeywordInput.value = "";
     renderNoticeFilterTools();
     syncNoticeFilterLocation();
@@ -4872,23 +4869,26 @@
 
   async function loadDepartmentCoverage({ force = false } = {}) {
     // Coverage is a second, heavier read: it ranks every actionable notice
-    // against every department. Load it once per session unless asked again.
+    // against every department. Refresh after a board reload or a saved decision.
     if (state.source !== "api") return;
     if (!force && ["loading", "ready"].includes(state.departmentCoverage.status)) return;
+    const request = ++state.departmentCoverageRequestSequence;
     const epoch = state.accountEpoch;
     state.departmentCoverage = { ...state.departmentCoverage, status: "loading" };
     renderDepartmentCoverage();
+    renderDepartmentDashboard(state.dashboard.departmentStatistics);
     try {
       const payload = await apiRequest("/dashboard/departments", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
-      if (epoch !== state.accountEpoch) return;
+      if (epoch !== state.accountEpoch || request !== state.departmentCoverageRequestSequence) return;
       state.departmentCoverage = {
         status: "ready", data: payload, openDepartmentId: state.departmentCoverage.openDepartmentId,
       };
     } catch (error) {
-      if (epoch !== state.accountEpoch) return;
+      if (epoch !== state.accountEpoch || request !== state.departmentCoverageRequestSequence) return;
       state.departmentCoverage = { ...state.departmentCoverage, status: "error" };
     }
     renderDepartmentCoverage();
+    renderDepartmentDashboard(state.dashboard.departmentStatistics);
   }
 
   function toggleCoverageDepartment(departmentId) {
@@ -5067,57 +5067,119 @@
     }
   }
 
-  function renderDepartmentComparisonChart(departmentName, recommended, selected, total) {
+  function departmentComparisonRows() {
+    const rows = arrayValue(state.departmentCoverage.data?.departments)
+      .filter((row) => row.department_id && row.department_id !== "organization");
+    const ownId = state.accountSession?.account?.department_id;
+    const own = rows.find((row) => row.department_id === ownId);
+    const peers = rows.filter((row) => row.department_id !== ownId
+      && row.selection_available === true && numberOrNull(row.selected_count) !== null)
+      .sort((a, b) => b.selected_count - a.selected_count
+        || String(a.department_name).localeCompare(String(b.department_name), "ko")
+        || String(a.department_id).localeCompare(String(b.department_id)))
+      .slice(0, 4);
+    return own ? [own, ...peers] : peers;
+  }
+
+  function selectDepartmentComparison(departmentId) {
+    if (!departmentComparisonRows().some((row) => row.department_id === departmentId)) return;
+    state.departmentComparisonId = departmentId;
+    renderDepartmentDashboard(state.dashboard.departmentStatistics);
+    document.getElementById("departmentComparisonChart")
+      ?.querySelector(`[data-department-id="${CSS.escape(departmentId)}"]`)?.focus({ preventScroll: true });
+  }
+
+  function renderDepartmentComparisonChart(rows, selectedId) {
     const chart = document.getElementById("departmentComparisonChart");
     if (!chart) return;
-    const missing = [];
-    const descriptions = [];
-    for (const [key, label, count] of [["Recommended", "추천 공고", recommended], ["Selected", "선택한 공고", selected]]) {
-      const share = dashboardShare(count, total);
-      const available = share !== null;
-      const point = document.getElementById(`department${key}Point`);
-      const stem = document.getElementById(`department${key}Stem`);
-      const title = document.getElementById(`department${key}PointTitle`);
-      const description = available
-        ? `${label} ${displayNumber(count)}건 · 전체 ${displayNumber(total)}건 대비 ${formatDashboardShare(count, total)}`
-        : `${label} 집계 확인 필요`;
-      if (!available) missing.push(label);
-      descriptions.push(description);
-      if (point) {
-        point.removeAttribute("hidden");
-        point.setAttribute("visibility", available ? "visible" : "hidden");
-        point.setAttribute("aria-hidden", String(!available));
-        if (available) point.setAttribute("cy", String(220 - 2 * share));
-        else point.removeAttribute("cy");
-      }
-      if (stem) {
-        stem.removeAttribute("hidden");
-        stem.setAttribute("visibility", available ? "visible" : "hidden");
-        if (available) stem.setAttribute("y2", String(220 - 2 * share));
-        else stem.removeAttribute("y2");
-      }
-      if (title) title.textContent = `${departmentName || "전사 공통"} · ${description}`;
+    chart.replaceChildren();
+    const ownId = state.accountSession?.account?.department_id;
+    const scope = document.getElementById("departmentComparisonScope");
+    if (scope) scope.textContent = `${ownId ? "우리 부서 고정 · 다른 부서 " : ""}선택 공고 TOP ${ownId ? Math.max(0, rows.length - Number(rows.some((row) => row.department_id === ownId))) : rows.length}`;
+    const status = document.getElementById("departmentComparisonStatus");
+    const readState = state.departmentCoverage.status;
+    if (status) status.textContent = readState === "error"
+      ? `부서 비교 조회 실패${rows.length ? " · 마지막 확인 " + formatKstDateTime(state.departmentCoverage.data.generated_at) : ""}`
+      : readState === "loading" ? (rows.length ? "부서 비교 갱신 중 · 마지막 확인값" : "부서별 공고를 집계하고 있습니다.")
+      : rows.length ? "부서를 누르면 상세 현황을 확인할 수 있습니다." : "비교할 부서 집계를 확인하고 있습니다.";
+    const retry = document.getElementById("departmentComparisonRetry");
+    if (retry) {
+      retry.hidden = readState !== "error";
+      retry.onclick = () => loadDepartmentCoverage({ force: true });
     }
-    chart.setAttribute("aria-label", `${departmentName || "전사 공통"} 공고 비교. ${descriptions.join(". ")}.`);
-    const empty = document.getElementById("departmentComparisonEmpty");
-    if (empty) {
-      empty.setAttribute("visibility", missing.length ? "visible" : "hidden");
-      empty.textContent = missing.length ? `${missing.join("·")} 집계 확인 필요` : "";
+    if (!rows.length) return;
+    const counts = rows.flatMap((row) => [numberOrNull(row.recommended_count), row.selection_available === true ? numberOrNull(row.selected_count) : null]);
+    const max = Math.max(1, ...counts.filter((value) => value !== null && value >= 0));
+    const magnitude = 10 ** Math.floor(Math.log10(max / 4));
+    const step = Math.max(1, [1, 2, 5, 10].find((value) => value * magnitude >= max / 4) * magnitude);
+    const ceiling = step * 4;
+    const ticks = document.createElement("div");
+    ticks.className = "department-bars__ticks";
+    ticks.setAttribute("aria-hidden", "true");
+    for (let i = 0; i <= 4; i++) {
+      const tick = document.createElement("span");
+      tick.style.top = `${i * 25}%`;
+      tick.textContent = formatNumber(ceiling - step * i);
+      ticks.append(tick);
     }
+    const groups = document.createElement("div");
+    groups.className = "department-bars__groups";
+    groups.style.gridTemplateColumns = `repeat(${rows.length}, minmax(0, 1fr))`;
+    let peerRank = 0;
+    for (const row of rows) {
+      const own = row.department_id === ownId;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "department-bars__department";
+      button.dataset.departmentId = row.department_id;
+      button.setAttribute("aria-pressed", String(row.department_id === selectedId));
+      button.setAttribute("aria-controls", "departmentDashboardMetrics");
+      button.setAttribute("aria-label", `${row.department_name}${own ? " · 우리 부서 고정" : ""}, 추천 ${displayNumber(row.recommended_count)}건, 선택 ${displayNumber(row.selection_available === true ? row.selected_count : null)}건. 상세 보기`);
+      button.onclick = () => selectDepartmentComparison(row.department_id);
+      const bars = document.createElement("span");
+      bars.className = "department-bars__pair";
+      bars.setAttribute("aria-hidden", "true");
+      for (const [key, label] of [["recommended", "추천"], ["selected", "선택"]]) {
+        const count = key === "selected" && row.selection_available !== true ? null : numberOrNull(row[`${key}_count`]);
+        const bar = document.createElement("span");
+        bar.className = `department-bars__bar department-bars__bar--${key}`;
+        bar.style.height = `${count === null ? 0 : Math.max(0, count) / ceiling * 100}%`;
+        const value = document.createElement("span");
+        value.className = "department-bars__value";
+        value.textContent = displayNumber(count);
+        bar.title = `${label} ${displayNumber(count)}건`;
+        bar.append(value);
+        bars.append(bar);
+      }
+      const name = document.createElement("span");
+      name.className = "department-bars__name";
+      name.textContent = row.department_name;
+      const badge = document.createElement("small");
+      badge.className = "department-bars__badge";
+      badge.textContent = own ? "고정" : `비교 ${++peerRank}위`;
+      button.append(bars, name, badge);
+      groups.append(button);
+    }
+    chart.append(ticks, groups);
   }
 
   function renderDepartmentDashboard(stats) {
     const title = document.getElementById("departmentDashboardTitle");
     if (!title) return;
-    syncDashboardDepartmentSelect();
-    const selected = selectedDashboardDepartmentId();
+    syncDashboardDepartmentAccount();
+    const rows = departmentComparisonRows();
+    const ownId = state.accountSession?.account?.department_id;
+    if (state.departmentComparisonId && !rows.some((row) => row.department_id === state.departmentComparisonId)) state.departmentComparisonId = null;
+    const selected = state.departmentComparisonId || ownId || rows[0]?.department_id || selectedDashboardDepartmentId();
+    const comparison = rows.find((row) => row.department_id === selected);
+    if (comparison) stats = { ...comparison, total_notice_count: state.departmentCoverage.data.total_notice_count };
     const available = stats?.department_id === selected && stats.scope !== "UNAVAILABLE";
     const total = available ? numberOrNull(stats.total_notice_count) : null;
     const recommended = available ? numberOrNull(stats.recommended_count) : null;
     const selectedCount = available && stats.selection_available === true ? numberOrNull(stats.selected_count) : null;
     const selectedRecommended = available && stats.selection_available === true ? numberOrNull(stats.selected_recommended_count) : null;
     const departmentName = available ? stats.department_name
-      : els.departmentSelect.selectedOptions?.[0]?.textContent || "부서";
+      : ownId === selected ? state.accountSession.account.department_name : "부서";
     const account = state.accountSession?.account;
     const accountNote = account?.department_name ? ` · 로그인 부서 ${account.department_name}` : "";
     title.textContent = `${departmentName || "전사 공통"} 공고 현황`;
@@ -5125,14 +5187,16 @@
     document.getElementById("departmentSelectedCount").textContent = displayNumber(selectedCount);
     renderDashboardShare("departmentRecommended", recommended, total);
     renderDashboardShare("departmentSelected", selectedCount, total);
-    renderDepartmentComparisonChart(departmentName, recommended, selectedCount, total);
+    renderDepartmentComparisonChart(rows, selected);
     document.getElementById("departmentSelectionRate").textContent = formatDashboardShare(selectedRecommended, recommended);
     document.getElementById("departmentSelectionDetail").textContent = available
       ? `추천 ${displayNumber(recommended)}건 중 ${displayNumber(selectedRecommended)}건 선택` : "추천 공고 기준 · 집계 확인 대기";
-    const stale = state.dashboard.generatedAt && ["loading", "error"].includes(state.dashboardStatus);
+    const generatedAt = comparison ? state.departmentCoverage.data.generated_at : state.dashboard.generatedAt;
+    const readStatus = comparison ? state.departmentCoverage.status : state.dashboardStatus;
+    const stale = generatedAt && ["loading", "error"].includes(readStatus);
     document.getElementById("departmentDashboardMeta").textContent = !available
       ? `${state.dashboardStatus === "loading" ? "선택한 부서의 현황을 집계하고 있습니다." : "부서별 집계를 확인하지 못했습니다. 집계 다시 조회로 확인해 주세요."}${accountNote}`
-      : `전체 수집 공고 ${displayNumber(total)}건 기준${accountNote}${selectedCount === null ? " · 부서 선택 기록 조회 권한 필요" : ""}${stale ? ` · 마지막 확인 ${formatKstDateTime(state.dashboard.generatedAt)}` : ""}`;
+      : `전체 수집 공고 ${displayNumber(total)}건 기준${accountNote}${selectedCount === null ? " · 부서 선택 기록 조회 권한 필요" : ""}${stale ? ` · 마지막 확인 ${formatKstDateTime(generatedAt)}` : ""}`;
   }
 
   function renderDashboardSummary() {
@@ -6097,7 +6161,7 @@
     if (params.get("filters") !== "1") {
       els.sortSelect.value = "judgement";
       els.departmentSelect.value = state.accountSession?.account?.department_id || "organization";
-      syncDashboardDepartmentSelect();
+      syncDashboardDepartmentAccount();
       return;
     }
     Object.entries(NOTICE_FILTER_FIELDS).forEach(([key, [id, fallback, , maxLength]]) => {
@@ -6109,7 +6173,7 @@
     const decision = els.operatorDecisionFilter.value;
     state.pendingNoticeDecisionFilter = decision !== "all" ? decision : null;
     state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
-    syncDashboardDepartmentSelect();
+    syncDashboardDepartmentAccount();
     if (["cards", "table"].includes(params.get("layout"))) state.layout = params.get("layout");
   }
 
@@ -6143,7 +6207,7 @@
     if (key === "decision") state.pendingNoticeDecisionFilter = null;
     if (key === "department") {
       state.departmentSelectionAccountId = state.accountSession?.account?.id || null;
-      syncDashboardDepartmentSelect();
+      syncDashboardDepartmentAccount();
     }
     syncNoticeFilterLocation();
     renderNoticeFilterTools();
