@@ -22,6 +22,10 @@ from .outcome_participation import PARTICIPATION_KIND, provider_participation_ve
 OutcomeStatus = Literal["NO_BID", "SUBMITTED", "WON", "LOST", "CANCELLED"]
 WorkflowStatus = Literal["DRAFT", "VALIDATED", "ARCHIVED"]
 LearningScope = Literal["ENDED", "ALL", "WITH_OUTCOME"]
+LearningQueue = Literal["AUTO_REVIEW"]
+# Presentation rows carry this marker in ``evidence_json.demo_seed`` so the
+# screens can label them and a purge can remove exactly those rows.
+DEMO_SEED_MARKER = "DEMO_SEED"
 
 
 class ApiModel(BaseModel):
@@ -229,6 +233,7 @@ class ResultLearningOutcomeOut(ApiModel):
     observed_at: datetime
     created_at: datetime
     updated_at: datetime
+    demo: bool = False
 
 
 class ResultLearningNoticeOut(ApiModel):
@@ -241,6 +246,7 @@ class ResultLearningNoticeOut(ApiModel):
     notice_status: str
     latest_outcome: ResultLearningOutcomeOut | None
     outcomes: list[ResultLearningOutcomeOut] = Field(default_factory=list)
+    auto_review_pending: bool = False
 
 
 class ResultLearningListOut(ApiModel):
@@ -248,6 +254,8 @@ class ResultLearningListOut(ApiModel):
     offset: int
     limit: int
     records: list[ResultLearningNoticeOut]
+    with_outcome_count: int = 0
+    auto_review_count: int = 0
 
 
 class ResultLearningMutationOut(ApiModel):
@@ -351,6 +359,48 @@ def _workflow(item: BidOutcome) -> dict[str, Any]:
     }
 
 
+def is_demo_outcome(item: BidOutcome) -> bool:
+    evidence = item.evidence_json if isinstance(item.evidence_json, dict) else {}
+    demo = evidence.get("demo_seed")
+    return isinstance(demo, dict) and demo.get("marker") == DEMO_SEED_MARKER
+
+
+def _is_automatic(item: BidOutcome) -> bool:
+    return not item.department_id and item.source != "MANUAL_UI"
+
+
+def automatic_review_pending(items: list[BidOutcome], department_id: str | None = None) -> bool:
+    """An automatic result waits until a department records its own review.
+
+    A department viewer needs its own record written after the newest automatic
+    observation; any department's review settles it for an unscoped viewer.
+    """
+    automatic = [item for item in items if _is_automatic(item)]
+    if not automatic:
+        return False
+    newest = max(_utc(item.observed_at) for item in automatic)
+    return not any(
+        item.department_id and (not department_id or item.department_id == department_id)
+        and _utc(item.updated_at) >= newest
+        for item in items
+    )
+
+
+def _visible_outcome(items: list[BidOutcome], department_id: str | None) -> BidOutcome | None:
+    """The record a viewer's result card shows: own revision, else the provider's."""
+    if department_id:
+        own = [item for item in items if item.department_id == department_id]
+        if own:
+            return max(own, key=lambda item: (item.department_revision or 0, _utc(item.updated_at), item.id))
+        automatic = [item for item in items if _is_automatic(item)]
+        return max(automatic, key=lambda item: (_utc(item.observed_at), _utc(item.updated_at), item.id), default=None)
+    return max(items, key=lambda item: (_utc(item.observed_at), _utc(item.updated_at), item.id), default=None)
+
+
+def _viewer_department(identity: Identity | None) -> str | None:
+    return identity.department_id if identity is not None and identity.role == "DEPARTMENT" else None
+
+
 def result_entry_state(items: list[BidOutcome], department_id: str | None = None) -> str:
     """Own department revisions take priority; drafts never complete the queue."""
     own = [item for item in items if department_id and item.department_id == department_id]
@@ -418,6 +468,7 @@ def _out(item: BidOutcome) -> ResultLearningOutcomeOut:
         observed_at=item.observed_at,
         created_at=item.created_at,
         updated_at=item.updated_at,
+        demo=is_demo_outcome(item),
     )
 
 
@@ -605,7 +656,9 @@ def _notice(session: Session, notice_key: str) -> Notice:
     return notice
 
 
-def _notice_out(notice: Notice, *, include_outcomes: bool) -> ResultLearningNoticeOut:
+def _notice_out(
+    notice: Notice, *, include_outcomes: bool, department_id: str | None = None,
+) -> ResultLearningNoticeOut:
     latest = _latest_outcome(notice)
     return ResultLearningNoticeOut(
         notice_key=notice.notice_key,
@@ -624,6 +677,7 @@ def _notice_out(notice: Notice, *, include_outcomes: bool) -> ResultLearningNoti
                 reverse=True,
             )
         ] if include_outcomes else [],
+        auto_review_pending=automatic_review_pending(list(notice.bid_outcomes), department_id),
     )
 
 
@@ -633,7 +687,7 @@ def get_result_learning_notice(
     request: Request,
     session: DbSession,
 ) -> ResultLearningNoticeOut:
-    _operator_access(request, mutation=False)
+    identity = _operator_access(request, mutation=False)
     notice = session.scalar(
         select(Notice)
         .where(Notice.notice_key == notice_key)
@@ -641,7 +695,9 @@ def get_result_learning_notice(
     )
     if notice is None:
         raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다.")
-    return _notice_out(notice, include_outcomes=enabled(request))
+    return _notice_out(
+        notice, include_outcomes=enabled(request), department_id=_viewer_department(identity),
+    )
 
 
 @router.get("", response_model=ResultLearningListOut)
@@ -652,10 +708,11 @@ def list_result_learning(
     scope: LearningScope = "ENDED",
     outcome_status: OutcomeStatus | None = None,
     record_status: WorkflowStatus | None = None,
+    queue: LearningQueue | None = None,
     limit: int = Query(default=40, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> ResultLearningListOut:
-    _operator_access(request, mutation=False)
+    department_id = _viewer_department(_operator_access(request, mutation=False))
     query = select(Notice).options(selectinload(Notice.bid_outcomes))
     query_text = " ".join((q or "").split())
     if query_text:
@@ -670,6 +727,8 @@ def list_result_learning(
         )
     notices = list(session.scalars(query.order_by(Notice.deadline.desc())).unique().all())
     selected: list[tuple[Notice, BidOutcome | None]] = []
+    with_outcome_count = 0
+    auto_review_count = 0
     for notice in notices:
         latest = _latest_outcome(notice)
         lifecycle = _effective_notice_status(notice)
@@ -677,20 +736,42 @@ def list_result_learning(
             continue
         if scope == "WITH_OUTCOME" and latest is None:
             continue
+        items = list(notice.bid_outcomes)
+        visible = _visible_outcome(items, department_id)
+        pending = automatic_review_pending(items, department_id)
+        # Tab counts describe the searched scope before the narrowing filters.
+        with_outcome_count += int(visible is not None)
+        auto_review_count += int(pending)
+        if queue == "AUTO_REVIEW" and not pending:
+            continue
         if outcome_status and (latest is None or latest.status != outcome_status):
             continue
         if record_status and (latest is None or _workflow(latest)["record_status"] != record_status):
             continue
-        selected.append((notice, latest))
+        selected.append((notice, visible))
+
+    def recorded_first(entry: tuple[Notice, BidOutcome | None]) -> tuple[int, float, float, str]:
+        notice, visible = entry
+        deadline = -_utc(notice.deadline).timestamp()
+        if visible is None:
+            return (1, 0.0, deadline, notice.notice_key)
+        recorded = max(_utc(visible.observed_at), _utc(visible.updated_at))
+        return (0, -recorded.timestamp(), deadline, notice.notice_key)
+
+    # Notices that already carry a result for this viewer lead, newest record
+    # first; the rest keep the latest-deadline-first order.
+    selected.sort(key=recorded_first)
     page = selected[offset : offset + limit]
     return ResultLearningListOut(
         total=len(selected),
         offset=offset,
         limit=limit,
         records=[
-            _notice_out(notice, include_outcomes=enabled(request))
-            for notice, _latest in page
+            _notice_out(notice, include_outcomes=enabled(request), department_id=department_id)
+            for notice, _visible in page
         ],
+        with_outcome_count=with_outcome_count,
+        auto_review_count=auto_review_count,
     )
 
 

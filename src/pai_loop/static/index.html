@@ -17,8 +17,8 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260930-uiux-award-v21" />
-    <link rel="stylesheet" href="./top-navigation.css?v=20260930-uiux-award-v21" />
+    <link rel="stylesheet" href="./styles.css?v=20260930-result-review-v22" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260930-result-review-v22" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -111,6 +111,7 @@
                   <svg viewBox="0 0 24 24"><path d="M7 9h10v5.5H7z" /><path d="M7 16.5h10" /><path d="m8 5 2 2 2-2" /></svg>
                 </span>
                 <span>결과 기록</span>
+                <span class="nav-count nav-count--warning" id="navResultReviewCount" aria-label="확인이 필요한 자동 반영 결과 없음" hidden></span>
               </button>
               <button class="nav-item nav-item--sub" type="button" data-view="awards">
                 <span class="nav-icon" aria-hidden="true">
@@ -573,8 +574,12 @@
 
             <section class="performance-explorer operator-editor" aria-labelledby="resultLearningListHeading">
               <div class="section-heading performance-explorer__heading">
-                <div><p class="section-kicker">검증된 결과</p><h3 id="resultLearningListHeading">공고별 결과 기록</h3><p id="resultLearningSummary">운영 키로 결과 기록을 불러오세요.</p></div>
-                <button class="button button--primary" id="resultLearningUnlockButton" type="button">결과 기록 열기</button>
+                <div><p class="section-kicker">검증된 결과</p><h3 id="resultLearningListHeading">공고별 결과 기록</h3><p id="resultLearningSummary">결과 기록을 불러오고 있습니다.</p></div>
+                <button class="button button--secondary" id="resultLearningUnlockButton" type="button">결과 기록 열기</button>
+              </div>
+              <div class="result-queue-tabs" id="resultLearningQueueTabs" role="group" aria-label="결과 기록 보기">
+                <button type="button" data-result-queue="" aria-pressed="true"><span>전체</span><small id="resultLearningAllCount"></small></button>
+                <button type="button" data-result-queue="AUTO_REVIEW" aria-pressed="false"><span>나라장터 자동 반영 · 확인 필요</span><small id="resultLearningReviewCount"></small></button>
               </div>
               <form class="performance-filters operator-filters" id="resultLearningFilterForm" role="search">
                 <label class="search-field performance-search-field"><span class="sr-only">공고 검색</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg><input id="resultLearningSearchInput" type="search" maxlength="200" placeholder="공고명·기관·공고번호 검색" autocomplete="off" /></label>
@@ -1494,6 +1499,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260930-uiux-award-v21" defer></script>
+    <script src="./app.js?v=20260930-result-review-v22" defer></script>
   </body>
 </html>

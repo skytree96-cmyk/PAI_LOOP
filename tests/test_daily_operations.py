@@ -893,7 +893,11 @@ def test_quantitative_engine_stale_open_snapshot_enters_daily_and_backfill(
 def test_requirement_policy_v4_open_snapshot_enters_daily_and_backfill_once(
     client: TestClient,
 ) -> None:
-    notice_key = _seed_stale_analysis_snapshot(client)
+    # The backfill plan checks the notice against the real clock; the fixed
+    # seed deadline (2026-09-30 09:00 UTC) closed it (failed on 2026-09-30).
+    notice_key = _seed_stale_analysis_snapshot(
+        client, deadline=datetime.now(timezone.utc) + timedelta(days=30),
+    )
 
     briefing = client.get(
         "/api/v1/operations/daily-briefing",
