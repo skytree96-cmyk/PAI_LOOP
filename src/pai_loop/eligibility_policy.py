@@ -1626,6 +1626,18 @@ def _company_status_item(
 ) -> dict[str, Any] | None:
     if _STATUS_UNCOVERED_RE.search(text) or _is_future_sanction_consequence(text):
         return None
+    # A negated predicate offered as an alternative is not an AND of
+    # clearances. Positive status predicates joined to another requirement
+    # likewise cannot be established by a declaration of absence.
+    if re.search(r"(?:아니|없|않)[^.;。]{0,24}(?:거나|또는|혹은)", text) or re.search(
+        r"(?:법정\s*관리|화의|회생|청산|파산)\s*중"
+        r"(?:이며|이고|인\s*(?:업체|기업|법인)(?:이면서|이며|이고|로서))",
+        text,
+    ):
+        return _unmapped_eligibility_item(
+            requirement, fact_key="compound_company_status_qualification", deadline=deadline,
+            message="선택 조건 또는 서로 다른 방향의 회사 상태 조건이 섞여 있어 개별 경로 확인이 필요합니다.",
+        )
     if not re.search(r"아닌|아니|없|않|제외|불가|불허|제한|금지", text):
         return None
     keys = [key for key, pattern in _STATUS_COMPONENT_PATTERNS if re.search(pattern, text, re.I)]
@@ -2659,13 +2671,7 @@ def classify_requirements(
                 message=_DECLARED_CLEARANCE_MESSAGES[declared_clearance_key],
                 failure_message="회사 확인값상 해당 제한 사유 없음 조건을 충족하지 않습니다.",
             )
-        elif (
-            re.search(r"법정\s*관리", text) and _contains(
-                text, "화의", "회생", "파산", "휴업", "폐업", "청산", "합병", "매각", "부정당"
-            )
-        ) or (
-            "부정당" in text and re.search(r"체납|계약.*(?:불이행|이행하지 않은).*(?:사실|이력)", text)
-        ):
+        elif sum(bool(re.search(pattern, text, re.I)) for _, pattern in _STATUS_COMPONENT_PATTERNS) >= 2:
             item = _company_status_item(
                 requirement, profile=profile, text=text, deadline=as_of, today=today,
             ) or _unmapped_eligibility_item(

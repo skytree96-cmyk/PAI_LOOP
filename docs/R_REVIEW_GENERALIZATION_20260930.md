@@ -26,7 +26,9 @@ prototype/current-facts mode; deadline-evidence mode retains validity checks.
   OR alternatives and additional permit, personnel or performance duties are
   not reduced to registration plus sanction clearance.
 - All named company-status facts must be available. A missing component keeps
-  REVIEW and a confirmed failing component keeps FAIL.
+  REVIEW and a confirmed failing component keeps FAIL. Alternative clearance
+  paths and mixed positive/negative status predicates remain REVIEW rather than
+  being reduced to an AND or satisfied by a single sanction-clearance fact.
 - Region alternatives may PASS through a verified head office or registered
   branch. An unknown head office and an absent branch do not establish FAIL.
   Facility ownership is not inferred from company location.

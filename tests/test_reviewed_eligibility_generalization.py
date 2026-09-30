@@ -136,6 +136,20 @@ def test_company_status_confirmed_failure_remains_failure():
     assert item["outcome"] == "FAIL_CONFIRMED"
 
 
+@pytest.mark.parametrize("text", [
+    "국세 체납이 없거나 부정당 제재를 받지 않는 업체",
+    "법정관리 중이 아니거나 부정당업자로 지정되지 않은 업체",
+    "법정관리 중인 업체이면서 국세 체납이 없는 업체",
+    "회생 중이며 부정당업자로 지정되지 않은 업체",
+])
+@pytest.mark.parametrize("clear", [True, False, None])
+def test_alternative_or_positive_status_is_not_an_and_of_clearances(text, clear):
+    profile = load_public_company_profile()
+    for key in ("public_dues_arrears_clear", "court_receivership_clear", "business_continuity_clear"):
+        profile["facts"][key]["value"] = clear
+    assert classify([row(text, "SANCTION")], profile)[0]["outcome"] == "REVIEW"
+
+
 def test_different_status_components_keep_distinct_display_rows():
     result = classify_requirements([
         row("청산·합병·매각 중이 아닌 업체", "SANCTION", key="SYN-STATUS-A"),
