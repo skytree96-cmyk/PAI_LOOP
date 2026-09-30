@@ -101,7 +101,7 @@ def test_table_and_card_actions_keep_detail_view_and_label_direct_result_entry()
     assert "width: 100vw" in styles
     assert "styles.css?v=20260930-quant-autoload-v23" in html
     assert "top-navigation.css?v=20260930-quant-autoload-v23" in html
-    assert "app.js?v=20260930-quant-autoload-v23" in html
+    assert "app.js?v=20260930-department-progress-v24" in html
 
 
 def test_manual_analysis_actions_are_functional() -> None:
@@ -122,4 +122,4 @@ def test_manual_analysis_actions_are_functional() -> None:
     assert "/analysis/requests/${encodeURIComponent(requestId)}`" in source
     assert "for (let poll = 0; poll < MANUAL_ANALYSIS_MAX_POLLS; poll += 1)" in source
     assert "data-manual-analysis" in source
-    assert "공고 분석 요청 실패" in source
+    assert "공고 분석 요청 실패" in source
