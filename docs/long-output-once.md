@@ -1,8 +1,21 @@
 # 확인된 출력 상한 실패의 단건 재처리
 
 `LONG_OUTPUT_ONCE`는 서버 키 전용 frozen `FAILED_ATTACHMENTS` plan에서 명시적으로
-선택하는 고정 예산 정책이다. 실제 운영 호출이나 자동 재처리를 활성화하지 않는다.
-일반 분석은 기존 20,000 출력 토큰 / HTTP 180초 / 첨부당 모델 최대 2회다.
+선택하는 고정 예산 정책이다. 일반 분석은 기존 20,000 출력 토큰 / HTTP 180초 / 첨부당
+모델 최대 2회다.
+
+## 같은 요청 안의 자동 전환 (2026-09-30)
+
+일반 분석이나 일반 `FAILED_ATTACHMENTS` 재시도에서 첨부가 20,000 출력 한도 또는 게이트웨이
+180초 시간 초과(`eligible_long_output_failure`)로 끝나면, 같은 요청 안에서 곧바로 이 정책의
+32,000 토큰 / 300초 / 1회 호출을 한 번 시도한다. 운영자가 별도 plan을 만들 때와 같은 frozen
+scope(`failed_attachment_retry_snapshot`)를 만들고, 원본 실패 지문·source boundary·1회 소비
+기록(`consume_long_output`) 검사를 그대로 거친다.
+
+- 남은 요청 시간이 다운로드 + 300초 + 여유보다 짧으면 시도하지 않는다(다음 요청이나 운영자 plan이 처리).
+- 이미 소비된 실패, 32k 결과 자체, 명시적 `LONG_OUTPUT_ONCE` 요청에는 다시 적용하지 않는다.
+- frozen 재시도에서는 선택된 대상 첨부에만 적용한다.
+- 끄려면 `PAI_AUTO_LONG_OUTPUT=0`.
 
 엄격히 확인된 20,000 `max_tokens` 실패는 24시간이 지나거나 일반 재시도를 명시해도,
 다시 다운로드·파싱한 현재 문서/전체 source/input 지문과 manifest·추출 계약·모델이
