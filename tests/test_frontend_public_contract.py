@@ -228,7 +228,7 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
     assert 'noticeLifecycleStatus(notice) === "OPEN" && !notice.decision' in derived_body
     assert 'collected: ["공고 찾기", "저장된 전체 공고"]' in view_body
     assert 'go: ["GO 후보", "시스템이 GO로 추천한 공고"]' in view_body
-    assert '"in-progress": ["검토 중인 공고", "마감 직전 공고"]' in view_body
+    assert '"in-progress": ["진행 건", "참여·조건부 참여로 결정한 공고"]' in view_body
     assert 'ended: ["보관함", "마감·종료·취소된 공고와 당시 분석 이력"]' in view_body
     assert '"result-missing": ["결과 입력 필요 공고", "PASS·REVIEW 중 입찰마감 후 결과를 기록해야 할 공고"]' in view_body
     assert "resetNoticeFiltersForView()" in view_body
@@ -249,7 +249,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
 
     assert 'href="./styles.css?v=20260930-quant-autoload-v23"' in html
     assert 'href="./top-navigation.css?v=20260930-quant-autoload-v23"' in html
-    assert 'src="./app.js?v=20260930-quant-autoload-v23"' in html
+    assert 'src="./app.js?v=20260930-department-progress-v24"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -1279,6 +1279,7 @@ const globalNoticeSearchActive = () => Boolean(els.searchInput.value.trim());
 const renderNoticeList = () => {};
 const renderNoticeFilterTools = () => {};
 const window = {clearTimeout() {}};
+const document = {getElementById() {return null;}};
 const formatNumber = value => String(value);
 const unwrapObject = value => value || {};
 const firstObject = (...values) => values.find(value => value && typeof value === "object") || {};
