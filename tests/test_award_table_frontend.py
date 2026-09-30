@@ -181,7 +181,7 @@ renderAnnualAwardTable({
   },
 }, "ready");
 const html = els.historyAwardTableBody.innerHTML;
-assert.match(els.historyAwardTableBasis.textContent, /동일 사업명 · 동일 발주기관/);
+assert.match(els.historyAwardTableBasis.textContent, /동일 발주처 · 동일 사업/);
 assert.match(html, /SYN-기관A/);
 assert.match(html, /낙찰<\/span>/);
 assert.match(html, /참여<\/span>/);
@@ -210,7 +210,7 @@ renderAnnualAwardTable({
   },
 }, "ready");
 const candidate = els.historyAwardTableBody.innerHTML;
-assert.match(candidate, /유사 사업 후보 · 제목 유사도 71\.4% · 동일 발주 확정 아님/);
+assert.match(candidate, /동일 발주처의 유사 사업 · 제목 유사도 71\.4% · 같은 사업 확정 아님/);
 assert.match(candidate, /is-candidate/);
 assert.match(candidate, /구분 미확인/);
 
@@ -367,8 +367,8 @@ const uncertain = renderAwardProject(groupAnnualAwardRows([row({
   company_name: "<script>SYN-unknown</script>", project_title: "<img src=x>SYN task", source_notice_url: "javascript:SYN",
 })])[0], true);
 assert.doesNotMatch(uncertain, /<script>|<img src=x>|href="javascript:/);
-assert.match(uncertain, /유사 사업 후보/);
-assert.match(uncertain, /동일 발주 확정 아님/);
+assert.match(uncertain, /동일 발주처 · 유사 사업/);
+assert.match(uncertain, /같은 사업 확정 아님/);
 assert.match(uncertain, /부분 응답/);
 assert.match(uncertain, /구분 미확인/);
 assert.doesNotMatch(uncertain, /participation is-winner/);
@@ -456,16 +456,16 @@ const row = { year: 2025, result_group_key: "award-9", project_title: "KERIS ISM
   bid_amount: null, technical_evaluation: null, price_evaluation: null, total_evaluation: null,
   opening_rank: null, participation_kind: "WINNER" };
 const match = awardMatchPresentation(row);
-assert.equal(match.badge, "타 기관 유사");
-assert.match(match.note, /다른 발주기관의 유사 사업 · 제목 유사도 63\.8% · 이 발주처의 이력 아님/);
+assert.equal(match.badge, "타 기관 · 유사 사업");
+assert.match(match.note, /타 기관의 유사 사업 · 제목 유사도 63\.8% · 이 발주처의 이력 아님/);
 const tableRow = renderAwardTableRow(row);
 assert.match(tableRow, /is-other-agency/);
 assert.match(tableRow, /이 발주처의 이력 아님/);
 const card = renderAwardProject({ row, rows: [row], year: 2025, key: "k" }, false);
-assert.match(card, /history-award-project__badge is-candidate is-other-agency">타 기관 유사</);
-assert.equal(AWARD_TABLE_BASIS_LABELS.OTHER_AGENCY_ONLY, "다른 발주기관 · 유사 사업 참고");
-assert.equal(awardMatchPresentation({ match_kind: "SAME_PROJECT" }).badge, "동일 사업 · 기관");
-assert.equal(awardMatchPresentation({ match_kind: "SIMILAR_CANDIDATE", similarity_score: 40 }).badge, "유사 후보");
+assert.match(card, /history-award-project__badge is-candidate is-other-agency">타 기관 · 유사 사업</);
+assert.equal(AWARD_TABLE_BASIS_LABELS.OTHER_AGENCY_ONLY, "동일 발주처 기록 없음 · 타 기관 유사 사업 참고");
+assert.equal(awardMatchPresentation({ match_kind: "SAME_PROJECT" }).badge, "동일 발주처 · 동일 사업");
+assert.equal(awardMatchPresentation({ match_kind: "SIMILAR_CANDIDATE", similarity_score: 40 }).badge, "동일 발주처 · 유사 사업");
 """
     result = subprocess.run(["node", "-e", adapter + "\n" + script], capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr

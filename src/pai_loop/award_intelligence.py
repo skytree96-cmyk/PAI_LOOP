@@ -539,6 +539,26 @@ def build_award_intelligence(
     }
 
 
+# The same agency rewords one recurring project from year to year (숙박형,
+# (대만), 통합, 및 운영환경 개선). On 2026-09-29 production data every
+# same-agency pair at title similarity >= 60 was the same project except
+# where one title named a companion service of the other (its 감리, its
+# 개인정보 영향평가); below 60 almost none were. The agency name must match too.
+SAME_PROJECT_MIN_SIMILARITY = 60.0
+_ROLE_WORDS = ("감리", "영향평가", "isp", "ismp", "설계", "공모", "건설사업관리")
+
+
+def _role_words(value: Any) -> set[str]:
+    folded = str(value or "").casefold()
+    return {word for word in _ROLE_WORDS if word in folded}
+
+
+def is_same_project_by_similarity(target_title: Any, title: Any, similarity: Any) -> bool:
+    score = _number(similarity)
+    return bool(target_title and title and score is not None and score >= SAME_PROJECT_MIN_SIMILARITY
+                and _role_words(target_title) == _role_words(title))
+
+
 def normalise_project_title(value: Any) -> str:
     """Reduce a procurement title to its edition-independent core.
 
@@ -650,12 +670,15 @@ def build_annual_award_table(
         title = str(_value(row, "title") or "")
         agency = str(_value(row, "agency") or "")
         winner_name = str(_value(row, "winner_name") or "").strip()
-        is_same_project = not is_other_agency and bool(
+        is_same_project = not is_other_agency and (bool(
             target_key
             and normalise_project_title(title) == target_key
             and target_agency_key
             and _normalise_agency(agency) == target_agency_key
-        )
+        ) or bool(
+            target_agency_key and _normalise_agency(agency) == target_agency_key
+            and is_same_project_by_similarity(target_title, title, _value(row, "similarity_score"))
+        ))
         companies = _opening_companies(row)
         source_status = (
             str(_value(row, "opening_results_status") or "")
