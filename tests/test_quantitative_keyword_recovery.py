@@ -1,5 +1,6 @@
 """Synthetic production persistence boundary; no external calls."""
 import json
+import sys
 from datetime import datetime, timezone
 
 import httpx
@@ -65,11 +66,19 @@ def test_failed_sibling_refresh_preserves_next_attempt_and_accounting(first_rais
 
 
 @pytest.mark.parametrize("defer", [False, True])
-def test_ordinary_then_long_failure_automatically_recovers_once(defer, monkeypatch):
+@pytest.mark.parametrize("mislabeled_hwp", [False, True])
+def test_ordinary_then_long_failure_automatically_recovers_once(defer, mislabeled_hwp, monkeypatch):
     payload, source = fixture(inline=True)
     source = "SYN unrelated task description\n" * 100 + source
     engine, factory, notice_id, download = _single_hwpx_reuse_case(
         notice_key="SYN-AUTO-RECOVERY", source_text=source)
+    if mislabeled_hwp:
+        from test_document_extraction import _fake_olefile_module, _hwp_record, _raw_deflate
+        section = b"".join(_hwp_record(67, line.encode("utf-16le")) for line in source.splitlines())
+        monkeypatch.setitem(sys.modules, "olefile", _fake_olefile_module([_raw_deflate(section)]))
+        download = httpx.MockTransport(lambda request: httpx.Response(
+            200, content=b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1SYN-HWP",
+            headers={"Content-Type": "application/octet-stream"}))
     calls, budgets = [], []
     clock = [1000.0]
     monkeypatch.setattr("pai_loop.pps_enrichment.time.monotonic", lambda: clock[0])
@@ -117,6 +126,11 @@ def test_ordinary_then_long_failure_automatically_recovers_once(defer, monkeypat
         stored = session.get(NoticeVersion, result.version_id)
         assert stored.source_payload["status"] == "ACCEPTED"
         assert not stored.document_complete
+        if mislabeled_hwp:
+            recovery = stored.source_payload["document_processing"]["quantitative_recovery"]
+            assert recovery["native_hwpx_context_status"] == "NOT_HWPX"
+            assert recovery["native_hwpx_table_context"] is False
+            assert recovery["xml_fallback_used"] is True
         assert session.query(IngestionJob).filter_by(source="QUANTITATIVE_RECOVERY_ONCE").count() == 1
     with factory() as session:
         reused = enrich_notice_from_pps(session, **options, deadline_monotonic=2600.0)

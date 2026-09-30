@@ -4225,7 +4225,11 @@ def _enrich_selected_pps_attachment(
             outcome, recovery_audit = client.extract_quantitative_recovery(
                 document_text=source_text,
                 allowed_attachment_ids={attachment["attachment_id"]},
-                hwpx_content=content if attachment["file_name"].lower().endswith(".hwpx") else None,
+                # Match the bounded document reader: an OLE compound file
+                # mislabeled .hwpx is HWP5, not native HWPX XML. Its canonical
+                # text has already passed the HWP reader's security checks.
+                hwpx_content=(content if attachment["file_name"].lower().endswith(".hwpx")
+                              and not content.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") else None),
             )
             processing_audit.update({
                 "analysis_input_complete": False,

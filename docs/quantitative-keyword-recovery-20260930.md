@@ -93,6 +93,12 @@ does not expand the retry scope or commit pending caller writes.
 
 ## Image and provider behavior
 
+An attachment named `.hwpx` whose bytes have the HWP5 OLE signature uses the
+already validated HWP text for keyword/XML excerpt recovery. It must not be
+reopened by the native HWPX ZIP reader. Actual HWPX archives retain their native
+table context and all archive/source-binding checks. This does not convert HWP
+to HWPX, bypass extraction guards, or renew an already consumed recovery claim.
+
 HWPX BinData inspection reads only 16 bytes instead of inflating an entire unused
 image. Signature-verified PNG/JPEG/GIF members do not consume the XML/text
 decompression budget. Disguised files still consume that budget; embedded
