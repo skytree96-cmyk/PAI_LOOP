@@ -9,7 +9,7 @@ menu.addEventListener('click', () => {
 });
 nav.addEventListener('click', event => { if (event.target.closest('a')) closeMenu(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && menu.getAttribute('aria-expanded') === 'true') { closeMenu(); menu.focus(); } });
-// Product film uses real PAI UI with explicitly labelled synthetic example data.
+// Product film illustrates PAI workflows with explicitly labelled synthetic UI and data.
 const productVideo = document.getElementById('heroVideo');
 if (productVideo) {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');

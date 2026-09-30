@@ -9,7 +9,7 @@
   const panels = steps.map(step => step.querySelector('.ps-panel'));
   const template = runway.querySelector('[data-ps-stage-template]');
   if (steps.length < 2 || !template || copies.some(copy => !copy) || panels.some(panel => !panel)) return;
-  const desktop = window.matchMedia('(min-width: 1001px) and (min-height: 650px)');
+  const desktop = window.matchMedia('(min-width: 901px) and (min-height: 650px)');
   const motionToggle = story.querySelector('[data-ps-motion]');
   // Native scrolling enhances the complete HTML; respect reduced motion on load.
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -65,7 +65,9 @@
     // A 54% reading plateau leaves room for a longer, flowing transition.
     // The same continuous mapping works in reverse, without scroll snapping.
     const transition = Math.max(0, Math.min(1, (fraction - .27) / .46));
-    const position = segment + transition * transition * (3 - 2 * transition);
+    const flowingPosition = segment + transition * transition * (3 - 2 * transition);
+    // Reduced motion keeps the product stage and changes scenes without camera motion.
+    const position = userMotion ? flowingPosition : Math.round(flowingPosition);
     showActive(Math.min(steps.length - 1, Math.round(position)));
     copies.forEach((copy, i) => {
       const distance = i - position;
@@ -79,7 +81,7 @@
       copy.style.visibility = opacity < .01 ? 'hidden' : 'visible';
       // A newly active copy can still be entering below the masked glass.
       // Enable its link only once the copy reaches the sharp reading plateau.
-      const canUseCta = i === active && absolute < .001;
+      const canUseCta = i === active && absolute < .02;
       copy.querySelectorAll('.ps-cta').forEach(cta => {
         cta.inert = !canUseCta;
         cta.tabIndex = canUseCta ? 0 : -1;
@@ -87,8 +89,8 @@
     });
     story.style.setProperty('--ps-progress', (0.1 + progress * .9).toFixed(4));
     story.style.setProperty('--ps-light-x', `${(progress * 74 - 20).toFixed(2)}px`);
-    story.style.setProperty('--ps-rotate-y', `${(-12 + Math.sin(position * 1.15) * 2.2).toFixed(2)}deg`);
-    story.style.setProperty('--ps-rotate-x', `${(6 + Math.sin(position * 1.4) * 1.25).toFixed(2)}deg`);
+    story.style.setProperty('--ps-rotate-y', `${(userMotion ? -9 + Math.sin(position * 1.15) * 2.2 : -7).toFixed(2)}deg`);
+    story.style.setProperty('--ps-rotate-x', `${(userMotion ? 4 + Math.sin(position * 1.4) * 1.25 : 3).toFixed(2)}deg`);
   }
 
   function paint(timestamp) {
@@ -99,7 +101,7 @@
     previousFrameTime = timestamp;
     // Time-based damping stays consistent across refresh rates. Only visuals
     // follow the native scroll position; wheel, touch and page scrolling stay native.
-    renderedProgress += (target - renderedProgress) * (1 - Math.exp(-elapsed / 135));
+    renderedProgress = userMotion ? renderedProgress + (target - renderedProgress) * (1 - Math.exp(-elapsed / 135)) : target;
     const unsettled = Math.abs(target - renderedProgress) > .00002;
     if (!unsettled) renderedProgress = target;
     render(renderedProgress);
@@ -114,7 +116,7 @@
   function goTo(index, keyboard = false) {
     if (!stage) return;
     measure();
-    window.scrollTo({top: start + range * index / (steps.length - 1), behavior: 'smooth'});
+    window.scrollTo({top: start + range * index / (steps.length - 1), behavior: userMotion ? 'smooth' : 'instant'});
     if (keyboard) controls[index].focus({preventScroll: true});
   }
 
@@ -180,9 +182,9 @@
   }
 
   function syncMode() {
-    if (desktop.matches && userMotion) enable();
+    if (desktop.matches) enable();
     else disable();
-    story.dataset.motionState = stage ? 'on' : 'off';
+    story.dataset.motionState = stage && userMotion ? 'on' : 'off';
     if (motionToggle) {
       motionToggle.hidden = !desktop.matches;
       motionToggle.textContent = userMotion ? '모션 끄기' : '스크롤 모션 켜기';

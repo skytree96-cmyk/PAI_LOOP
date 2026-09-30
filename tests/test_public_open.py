@@ -30,7 +30,7 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert all(route == href and href.startswith("/") for route, href in links)
     assert "run.app" not in response.text and "onrender.com" not in response.text
     assets = re.findall(r'(?:src|poster|href)="(/open/[^"?]+)', response.text)
-    assert len(assets) == 7
+    assert len(assets) == 15
     for asset in assets:
         assert public_client.get(asset).status_code == 200
     assert re.findall(r'data-ps-step="(\d+)"', response.text) == [str(i) for i in range(8)]
@@ -49,7 +49,7 @@ def test_open_media_supports_range_requests(public_client):
     assert response.headers["content-range"].startswith("bytes 0-99/")
 
 
-@pytest.mark.parametrize("path", ["/open/README.md", "/open/build.mjs", "/open/_headers", "/open/api/v1/notices", "/open/assets/unknown.webp", "/open/%2e%2e/main.py", "/api/v1/dashboard"])
+@pytest.mark.parametrize("path", ["/open/README.md", "/open/build.mjs", "/open/_headers", "/open/api/v1/notices", "/open/assets/unknown.webp", "/open/assets/pai-screen-9.webp", "/open/%2e%2e/main.py", "/api/v1/dashboard"])
 def test_open_allowlist_does_not_expose_other_files_or_api(public_client, path):
     assert public_client.get(path).status_code in (401, 404)
 

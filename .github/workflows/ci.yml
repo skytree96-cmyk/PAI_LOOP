@@ -113,6 +113,7 @@ jobs:
               "pai_loop/open/favicon.svg",
               "pai_loop/open/assets/pai-product-poster.webp",
               "pai_loop/open/assets/pai-product-tour.webm",
+              *(f"pai_loop/open/assets/pai-screen-{i}.webp" for i in range(1, 9)),
               "pai_loop/static/index.html",
               "pai_loop/static/styles.css",
               "pai_loop/static/top-navigation.css",
