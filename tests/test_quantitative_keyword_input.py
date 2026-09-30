@@ -6,7 +6,7 @@ from xml.etree import ElementTree as ET
 import httpx
 import pytest
 
-from pai_loop.quantitative_keyword_input import select_quantitative_keyword_input
+from pai_loop.quantitative_keyword_input import select_quantitative_keyword_input, hwpx_quantitative_table_context
 from pai_loop.pps_enrichment import _extract_hwpx_text, PpsEnrichmentError
 from test_quantitative_probe_client import make_client, probe_fixture, response
 from test_quantitative_count_ranges import ATT
@@ -82,3 +82,51 @@ def test_disguised_non_image_still_counts_and_embedded_pdf_stays_blocked(monkeyp
         _extract_hwpx_text(hwpx([('BinData/image.png', b'x' * 2000)]))
     with pytest.raises(PpsEnrichmentError, match='EMBEDDED_ATTACHMENT'):
         _extract_hwpx_text(hwpx([('BinData/image.png', b'%PDF-SYN')] ))
+
+
+def native_table_hwpx():
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('Contents/section0.xml', '<section><p><t>SYN unrelated task</t></p>'
+            '<tbl><tr><tc><cellAddr rowAddr="0" colAddr="0"/><p><t>정량 배점표</t></p></tc>'
+            '<tc><p><t>5건 이상 6점</t></p><pic private="SYN-image-metadata"/></tc></tr></tbl></section>')
+    return stream.getvalue()
+
+
+def test_native_hwpx_context_keeps_cells_but_excludes_images_and_unrelated_text():
+    content = native_table_hwpx()
+    canonical = _extract_hwpx_text(content)
+    xml = hwpx_quantitative_table_context(content, canonical)
+    assert '5건 이상 6점' in xml and 'rowAddr="0"' in xml
+    assert 'SYN unrelated task' not in xml and 'SYN-image-metadata' not in xml
+    assert '<pic' not in xml
+
+
+def test_native_hwpx_mismatched_source_is_rejected_before_transport():
+    seen = []
+    with make_client(lambda request: seen.append(request)) as client:
+        with pytest.raises(ValueError, match='SOURCE_MISMATCH'):
+            client.extract_quantitative_keywords(document_text='정량 배점표 다른 문서',
+                allowed_attachment_ids={ATT}, hwpx_content=native_table_hwpx())
+    assert seen == []
+
+
+def test_native_xml_fallback_rejects_quotes_from_a_different_document():
+    content = native_table_hwpx()
+    canonical = _extract_hwpx_text(content)
+    payload, _ = probe_fixture()
+    seen = []
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body['input'][1]['content'][0]['text'])
+        if len(seen) == 1:
+            return httpx.Response(200, json={'status': 'completed', 'output_text': '{"requirements": []}'})
+        return response(payload)
+    with make_client(handler) as client:
+        result = client.extract_quantitative_keywords(document_text=canonical,
+            allowed_attachment_ids={ATT}, hwpx_content=content)
+    assert len(seen) == 2
+    assert '<hwpx_scoring_tables' in seen[1]
+    assert result.source_audit['native_hwpx_table_context'] is True
+    assert result.outcome.status == 'REVIEW'
+    assert result.outcome.error_code == 'UNVERIFIED_QUOTE'

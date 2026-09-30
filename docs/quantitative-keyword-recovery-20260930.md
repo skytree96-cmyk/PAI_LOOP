@@ -18,6 +18,18 @@ single-call budget policies cannot use this two-step entry point. The XML is
 escaped original text, not a binary HWP-to-HWPX conversion. Output remains the
 strict JSON schema. Both attempts verify quotes against canonical original text.
 
+When original HWPX bytes are supplied, the caller also gets bounded native table
+XML on the fallback call. The existing archive security checks run first, and
+the original HWPX must extract to the same canonical text before either provider
+call. Only scoring table text and row/cell structure are included; images,
+unrelated document text and metadata attributes are excluded. The XML context
+is still untrusted and never replaces the canonical evidence verifier.
+
+`tools/probe_quantitative_keywords.py --source <local.txt-or.hwpx>` checks the
+selection without provider calls. Add `--execute` only for an authorized live
+diagnostic with the existing server-to-server gateway environment configured.
+The CLI prints summary fields only and never writes a score or raw source.
+
 The result wrapper remains `QUANTITATIVE_PROBE_ONLY` with
 `persistence_eligible=false` and `attachment_coverage_complete=false`. Existing
 eligibility extraction and score persistence do not consume this diagnostic.

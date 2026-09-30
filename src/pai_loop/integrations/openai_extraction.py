@@ -751,8 +751,8 @@ class OpenAIExtractionClient:
         timeout_seconds: float = DEFAULT_EXTRACTION_CLIENT_TIMEOUT_SECONDS,
         max_retries: int = 2,
         max_input_chars: int = 120_000,
-        # Keep the existing 20k output budget when moving to the native Messages
-        # gateway. Adaptive thinking shares this budget with the final JSON.
+        # Keep the existing 20k structured-output budget. The native gateway
+        # explicitly disables thinking.
         max_output_tokens: int = 20_000,
         max_total_api_calls: int = 2,
         budget_policy: Literal["LONG_OUTPUT_ONCE", "QUANTITATIVE_PROBE_ONCE"] | None = None,
@@ -1288,18 +1288,26 @@ class OpenAIExtractionClient:
 
     def extract_quantitative_keywords(
         self, *, document_text: str, allowed_attachment_ids: set[str],
+        hwpx_content: bytes | None = None,
     ) -> QuantitativeProbeOutcome:
         """Read-only keyword extraction, then one XML-framed retry on failure.
 
         Each transport call has its own one-call budget. The returned wrapper
         cannot be used as complete eligibility or attachment evidence.
         """
-        from ..quantitative_keyword_input import select_quantitative_keyword_input
+        from ..quantitative_keyword_input import (
+            select_quantitative_keyword_input, hwpx_quantitative_table_context,
+        )
 
         if (self.provider != "n8n_claude" or self.max_total_api_calls != 1
                 or self.max_retries != 0 or self.budget_policy is not None):
             raise ValueError("QUANTITATIVE_KEYWORDS_REQUIRES_SINGLE_GATEWAY_CALL")
         document_text = document_text.replace("\x00", "")
+        # Bind native XML before spending even the first provider call.
+        native_context = (
+            hwpx_quantitative_table_context(hwpx_content, document_text)
+            if hwpx_content is not None else None
+        )
         instruction = (
             "QUANTITATIVE-ONLY DIAGNOSTIC. Return requirements=[]. Extract only "
             "scoring tables, formulas, bands, subtotals and complete recognition "
@@ -1318,6 +1326,7 @@ class OpenAIExtractionClient:
                 document_text=selected, verification_source=document_text,
                 allowed_attachment_ids=allowed_attachment_ids,
                 probe_instruction=instruction, quantitative_only=True,
+                untrusted_source_context=native_context if xml else None,
             )
             if first is not None:
                 outcome = outcome.model_copy(update={
@@ -1326,6 +1335,7 @@ class OpenAIExtractionClient:
                 })
             outcome = outcome.model_copy(update={"prompt_version": QUANTITATIVE_PROBE_PROMPT_VERSION})
             audit["xml_fallback_used"] = xml
+            audit["native_hwpx_table_context"] = xml and native_context is not None
             if outcome.status == "ACCEPTED" or outcome.error_code not in {
                 "SCHEMA_VALIDATION_ERROR", "UNVERIFIED_QUOTE", "INCOMPLETE_RESPONSE",
             }:
