@@ -7911,29 +7911,30 @@
   }
 
   const AWARD_TABLE_BASIS_LABELS = {
-    SAME_PROJECT_AND_AGENCY: "동일 사업명 · 동일 발주기관",
-    SIMILAR_CANDIDATES_ONLY: "동일 발주처 · 유사 사업 후보",
-    MIXED_BY_YEAR: "연도별 동일 사업 우선 · 없는 연도는 후보",
-    OTHER_AGENCY_ONLY: "다른 발주기관 · 유사 사업 참고",
+    SAME_PROJECT_AND_AGENCY: "동일 발주처 · 동일 사업",
+    SIMILAR_CANDIDATES_ONLY: "동일 발주처 · 유사 사업",
+    MIXED_BY_YEAR: "동일 발주처 우선 · 없는 연도는 유사 사업",
+    OTHER_AGENCY_ONLY: "동일 발주처 기록 없음 · 타 기관 유사 사업 참고",
     NONE: "표시할 기록 없음",
   };
   const AWARD_PARTICIPATION_LABELS = { WINNER: "낙찰", PARTICIPANT: "참여", UNKNOWN: "구분 미확인" };
 
-  // Three kinds, never blurred: this agency's same project, this agency's
-  // similar candidate, and another agency's similar project shown only for a
-  // year in which this agency has no record at all.
+  // The demand agency is the first thing a reader checks, so every label
+  // starts with it: this agency's same project, this agency's similar
+  // project, and another agency's similar project shown only for a year in
+  // which this agency has no record at all.
   function awardMatchPresentation(row) {
     const similarity = numberOrNull(row.similarity_score);
     const score = similarity === null ? "" : ` · 제목 유사도 ${formatNumber(similarity, 1)}%`;
     if (row.match_kind === "SAME_PROJECT") {
-      return { className: "is-same-project", badge: "동일 사업 · 기관", note: "동일 사업명 · 동일 발주기관", flag: "" };
+      return { className: "is-same-project", badge: "동일 발주처 · 동일 사업", note: `동일 발주처 · 동일 사업${score}`, flag: "" };
     }
     if (row.match_kind === "OTHER_AGENCY_SIMILAR") {
-      const note = `다른 발주기관의 유사 사업${score} · 이 발주처의 이력 아님`;
-      return { className: "is-candidate is-other-agency", badge: "타 기관 유사", note, flag: note };
+      const note = `타 기관의 유사 사업${score} · 이 발주처의 이력 아님`;
+      return { className: "is-candidate is-other-agency", badge: "타 기관 · 유사 사업", note, flag: note };
     }
-    const note = `유사 사업 후보${score} · 동일 발주 확정 아님`;
-    return { className: "is-candidate", badge: "유사 후보", note, flag: note };
+    const note = `동일 발주처의 유사 사업${score} · 같은 사업 확정 아님`;
+    return { className: "is-candidate is-same-agency", badge: "동일 발주처 · 유사 사업", note, flag: note };
   }
   const AWARD_TABLE_COLUMNS = 7;
 

@@ -115,10 +115,10 @@ def test_same_project_and_agency_outranks_similar_candidates() -> None:
 
     rows = build_annual_award_table(
         [
-            _award(title="2024년 SYN 유사 리더십 세미나", year=2024, winner="SYN-기관C"),
+            _award(title="2024년 SYN 유사 리더십 세미나", year=2024, winner="SYN-기관C", similarity_score=40),
             _award(title="2025년 SYN 리더십 교육과정 위탁운영", year=2025, winner="SYN-기관A"),
-            _award(title="2025년 SYN 유사 세미나", year=2025, winner="SYN-기관B"),
-            _award(title="2026년 SYN 유사 세미나", year=2026, winner="SYN-기관D"),
+            _award(title="2025년 SYN 유사 세미나", year=2025, winner="SYN-기관B", similarity_score=40),
+            _award(title="2026년 SYN 유사 세미나", year=2026, winner="SYN-기관D", similarity_score=40),
         ],
         target_title=TARGET_TITLE,
         target_agency=TARGET_AGENCY,
@@ -135,7 +135,7 @@ def test_same_project_and_agency_outranks_similar_candidates() -> None:
 
 def test_similar_candidates_appear_only_when_no_same_project_row_exists() -> None:
     table = build_annual_award_table(
-        [_award(title="2025년 SYN 유사 리더십 세미나", year=2025, winner="SYN-기관C")],
+        [_award(title="2025년 SYN 유사 리더십 세미나", year=2025, winner="SYN-기관C", similarity_score=40)],
         target_title=TARGET_TITLE,
         target_agency=TARGET_AGENCY,
         as_of=AS_OF,
@@ -155,6 +155,30 @@ def test_a_matching_title_at_another_agency_is_only_a_candidate() -> None:
     )
 
     assert table["match_basis"] == "SIMILAR_CANDIDATES_ONLY"
+
+
+@pytest.mark.parametrize("past, similarity, kind", [
+    # Production pairs (2026-09-29): the same project reworded by the same agency.
+    ("2026학년도 SYN 리더십 숙박형 교육과정 위탁 용역", 64.6, "SAME_PROJECT"),
+    ("2025년 SYN 리더십 교육과정(대만) 위탁운영", 63.8, "SAME_PROJECT"),
+    # A companion service of the project is a different procurement.
+    ("2026년도 SYN 리더십 교육과정 위탁운영 개인정보 영향평가", 66.0, "SIMILAR_CANDIDATE"),
+    ("2026년도 SYN 리더십 교육과정 위탁운영 감리", 90.0, "SIMILAR_CANDIDATE"),
+    ("2025년 SYN 리더십 워크숍", 59.9, "SIMILAR_CANDIDATE"),
+])
+def test_same_agency_rewording_counts_as_the_same_project(past, similarity, kind) -> None:
+    table = build_annual_award_table(
+        [_award(title=past, year=2025, winner="SYN-기관A", similarity_score=similarity)],
+        target_title=TARGET_TITLE, target_agency=TARGET_AGENCY, as_of=AS_OF)
+    assert [row["match_kind"] for row in table["rows"]] == [kind]
+
+
+def test_similarity_never_makes_another_agency_the_same_project() -> None:
+    table = build_annual_award_table(
+        [_award(title="2025년 SYN 리더십 교육과정", year=2025, winner="SYN-기관A", agency="SYN 다른기관",
+                similarity_score=95)],
+        target_title=TARGET_TITLE, target_agency=TARGET_AGENCY, as_of=AS_OF)
+    assert [row["match_kind"] for row in table["rows"]] == ["SIMILAR_CANDIDATE"]
 
 
 def test_other_agency_projects_fill_only_years_without_any_own_record() -> None:
