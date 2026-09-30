@@ -20,7 +20,9 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # new notices only and every existing decision keeps the answer it already had.
 # v14 applies the approved current-company prototype baseline and groups
 # equivalent display rows without removing their evaluation/source records.
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.29-v16"
+# v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
+# (see docs/R_REVIEW_GENERALIZATION_20260930.md).
+POLICY_VERSION = "pai-loop-requirement-policy-2026.09.30-v17"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -30,6 +32,8 @@ PROTOTYPE_FACT_KEYS = frozenset({
     "conviction_clear", "disqualification_clear", "bidder_identity_consistent",
     "domestic_entity", "nonprofit_entity",
     "public_dues_arrears_clear", "court_receivership_clear", "contract_nonperformance_clear",
+    "business_continuity_clear", "nonprofit_priority_procurement_exception",
+    "large_enterprise_software_clear",
 })
 
 
@@ -432,7 +436,7 @@ _NONPROFIT_NEAR = r"[^.。]{0,45}?"
 # allowance below: "일부 비영리법인 및 부실기업은 참가 불가" both allows and
 # forbids in one sentence, and the forbidding half governs.
 _NONPROFIT_EXCLUDED_RE = re.compile(
-    rf"{_NONPROFIT_SUBJECT}\s*(?:은|는|도|의\s*경우)?\s*(?:제외|배제)"
+    rf"{_NONPROFIT_SUBJECT}\s*(?:은|는|도|의\s*경우)?\s*(?:제외|배제)(?!\s*가능)"
     rf"|(?:일부\s*)?{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}"
     rf"(?:참가|참여|입찰)\s*(?:불가|불허|할\s*수\s*없)"
 )
@@ -478,6 +482,9 @@ _NONPROFIT_VAGUE_RE = re.compile(
     rf"|{_NONPROFIT_SUBJECT}\s*(?:특례\s*대상|예외\s*규정에\s*해당|특례)"
     rf"|{_NONPROFIT_SUBJECT}\s*\(\s*(?:예외|우선)"
     rf"|해당\s*{_NONPROFIT_SUBJECT}"
+    # "예외 비영리법인 해당", "예외 특별법인·비영리법인 포함": the exception is
+    # named but its scope is not.
+    rf"|예외\s*[^.。]{{0,10}}?{_NONPROFIT_SUBJECT}"
 )
 
 # The nonprofit's own founding purpose is narrowed, so eligibility depends on
@@ -486,6 +493,7 @@ _NONPROFIT_PURPOSE_RE = re.compile(
     rf"(?:학술|연구|조사|검사|평가|개발)[^.。]{{0,14}}(?:등을\s*)?위한\s*{_NONPROFIT_SUBJECT}"
     rf"|{_NONPROFIT_SUBJECT}[^.。]{{0,20}}학술\s*연구"
     rf"|(?:정책연구|학술연구)\s*용역[^.。]{{0,10}}{_NONPROFIT_SUBJECT}"
+    rf"|(?:학술|연구|조사)[^.。]{{0,30}}용역의\s*경우[^.。]{{0,10}}{_NONPROFIT_SUBJECT}"
 )
 
 # Participation is open but conditioned on filing proof of nonprofit status.
@@ -512,8 +520,11 @@ _NONPROFIT_UNCONDITIONAL_RE = re.compile(
     rf"|{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}예외\s*(?:적용|가능|있음|대상|허용|인정)"
     rf"|예외\s*{_NONPROFIT_SUBJECT}\s*허용"
     rf"|{_NONPROFIT_SUBJECT}\s*(?:은|는|도|의\s*경우)?\s*(?:예외적으로\s*)?"
-    rf"(?:입찰\s*)?(?:참가|참여)\s*(?:가능|허용)"
-    rf"|(?:이거나|또는|,)\s*{_NONPROFIT_SUBJECT}(?:에\s*해당|이어야|이면|,|/|\s*중\s*하나)"
+    rf"(?:경쟁\s*)?(?:입찰\s*)?(?:참가|참여)\s*(?:가능|허용)"
+    rf"|(?:이거나|또는|,)\s*{_NONPROFIT_SUBJECT}(?:에\s*해당|이어야|이면|,|/|\s*중\s*하나|\s*\))"
+    rf"|{_NONPROFIT_SUBJECT}{_NONPROFIT_NEAR}별도로\s*(?:참가|참여)\s*가능"
+    rf"|{_NONPROFIT_SUBJECT}\s*(?:은|는|도)?\s*참가\s*자격\s*(?:부여|인정)"
+    rf"|{_NONPROFIT_SUBJECT}\s*(?:은|는)?\s*제외\s*가능"
 )
 
 # "일부 비영리법인 및 부실기업은 참가 불가" forbids some of the group, so it
@@ -619,6 +630,8 @@ def _nonprofit_route_for_absent_certificate(
             message=message,
         )
     if structure == "QUALIFIED_STATUTE":
+        # A confirmed statutory exception does not prove an unnamed subset or
+        # a founding-purpose requirement. Those retain their own review below.
         # Registered determination passes; its absence reviews rather than fails.
         return _eligibility_item(
             requirement,
@@ -1270,6 +1283,8 @@ def expand_statutory_qualification_requirements(
             _performance_qualification_and_parts(text)
             if bool(requirement.get("mandatory", True)) else None
         )
+        if parts is None and bool(requirement.get("mandatory", True)):
+            parts = _registration_and_sanction_parts(text)
         if parts is None:
             expanded.append(requirement)
             continue
@@ -1324,8 +1339,10 @@ def _is_bidder_registration_eligibility(text: str) -> bool:
     )
     qualification_possession = bool(
         re.search(
-            r"(?:입찰\s*참가\s*)?자격(?:\s*요건)?\s*(?:을|를)?\s*"
-            r"(?:갖춘|갖출|갖추어야|갖추고|구비한|구비하고|충족한|보유한)",
+            r"(?:입찰\s*참가\s*)?(?:자격|요건)(?:\s*요건)?\s*(?:을|를)?\s*"
+            r"(?:갖춘|갖출|갖추어야|갖추고|구비한|구비하고|구비해야|구비\s*및|충족한|보유한)"
+            r"|유\s*자격\s*(?:자|업체)"
+            r"|(?:입찰|참가)\s*등록을\s*(?:마친|완료한|필한)",
             text,
         )
     )
@@ -1413,12 +1430,20 @@ def _is_current_sanction_clearance(text: str) -> bool:
         "제한 처분을 받지 아니",
         "제재를 받지 아니",
         "제한) 상태가 아닌",
+        "사유가 없",
+        "받은 사실이 없",
+        "제재 중이 아닌",
+        "제한 중이 아닌",
+        "제한기간 중이 아",
+        "제한기간에 있지 아니",
+        "기간 중에 있지 않",
+        "지정되지 아니",
     )
     return sanction_context and clear_condition
 
 
 def _is_current_disqualification_clearance(text: str) -> bool:
-    if not _contains(text, "결격사유", "결격 사유"):
+    if not _contains(text, "결격사유", "결격 사유", "결격사항", "결격 사항"):
         return False
     return _contains(
         text,
@@ -1427,7 +1452,561 @@ def _is_current_disqualification_clearance(text: str) -> bool:
         "없는 자",
         "없는 업체",
         "없어야",
+    ) or bool(re.search(r"결격\s*(?:사유|사항)(?:이|가)?\s*있는\s*(?:업체|자)[^.]{0,30}(?:탈락|제외|불가)", text))
+
+
+# --- 2026-09-30 reviewer generalizations ------------------------------------
+# A reviewer decided the REVIEW conditions shown on 58 live notices. The shapes
+# below turn the repeatable decisions into rules. Each one only replaces a result
+# that previously fell through to an unmapped REVIEW; every mapped PASS/FAIL path
+# earlier in classify_requirements keeps its decision.
+
+# A penalty for a future breach ("적발 시 ... 제한", "처분일로부터 2년") is a
+# conduct or contract duty, not the bidder's present sanction state.
+_FUTURE_TRIGGER_RE = re.compile(
+    r"\S\s*(?:시|경우|때)(?:에는|에도|에)?(?=[\s,(]|$)"
+    r"|(?:되면|이면|하면)(?=[\s,])"
+    r"|처분일\s*(?:로)?부터|위반\s*정도에\s*따라"
+)
+_FUTURE_CONSEQUENCE_RE = re.compile(
+    r"제한|제재|취소|해지|해제|배상|위약금|조치|불이익|실격|무효|탈락|처분|부당업체|책임"
+)
+_PRESENT_SANCTION_MARKERS = (
+    "받고 있", "받은 사실이 없", "받지 않", "받지 아니", "기간 중", "중이 아닌", "중이 아니",
+    "중에 있지", "중인 업체", "중인 자", "중인 사업자", "경과한", "지정되지 아니", "지정되지 않",
+    "해당하지 않", "해당되지 않", "사유가 없", "아닌 자", "아닌 업체", "아니어야", "아닐 것", "현재",
+)
+
+
+def _is_future_sanction_consequence(text: str) -> bool:
+    if any(marker in text for marker in _PRESENT_SANCTION_MARKERS):
+        return False
+    return bool(_FUTURE_TRIGGER_RE.search(text) and _FUTURE_CONSEQUENCE_RE.search(text))
+
+
+def _is_present_sanction_exclusion(text: str) -> bool:
+    """A present exclusion of sanctioned bidders, satisfied by a clear record."""
+
+    if _is_future_sanction_consequence(text) or re.search(
+        r"또는|혹은|하거나|이거나|허가|면허|인증|확인서|증명서|실적|인력|별도|추가"
+        r"|자격\s*(?:요건)?\s*(?:을|를)?\s*(?:갖추|갖춘|구비|보유|충족)", text,
+    ):
+        return False
+    subject = re.search(
+        r"부정당\s*업(?:자|체)|입찰\s*참가(?:\s*자격)?\s*제한(?:을|이)?\s*(?:받|중|기간|사유|대상)"
+        r"|제한\s*기간|제\s*76\s*조[^.]{0,20}해당하는\s*(?:기업|업체|자)",
+        text,
     )
+    exclusion = re.search(
+        r"불가|제외|수\s*없|없는|없어야|아니|아닐|않|경과한\s*자|따름|의함|제한\s*(?:됨|된다|한다)?\s*\.?$",
+        text,
+    )
+    return bool(subject and exclusion)
+
+
+def _is_contract_conduct_duty(text: str) -> bool:
+    """Wage, ethics and similar duties the contractor must keep after award."""
+
+    return "최저임금" in text or bool(
+        re.search(r"(?:연구\s*윤리|보안\s*(?:정책|규정)|안전\s*수칙)[^.]{0,30}준수", text)
+    )
+
+
+def _is_evaluation_or_reference_rule(text: str) -> bool:
+    """Evaluation thresholds and statutory pointers carry no bidder gate."""
+
+    if re.search(r"보유|소지|등록|허가|면허|인증|증명서|확인서|실적|인력", text):
+        return False
+    return bool(
+        re.search(r"협상\s*대상(?:자)?에서\s*제외|평가\s*점수가[^.]{0,30}미만", text)
+        or re.search(r"입찰\s*무효는[^.]{0,40}(?:의함|따름|따른다)", text)
+        or re.search(r"가점|우대", text)
+    )
+
+
+def _is_large_enterprise_software_restriction(text: str) -> bool:
+    return bool(
+        re.search(r"대기업|중견\s*기업|상호\s*출자\s*제한", text)
+        and re.search(r"소프트웨어|\bSW\b", text)
+        and re.search(r"제한|불가|할\s*수\s*없|만\s*(?:참여|참가|입찰)\s*가능", text)
+    )
+
+
+def _is_business_registration_possession(text: str) -> bool:
+    return bool(
+        re.search(r"사업자\s*등록(?:증)?|고유\s*번호", text)
+        and re.search(r"(?:교부|부여|발급)\s*받|보유|소지|등록한", text)
+        and not re.search(r"제출|사본|첨부", text)
+    )
+
+
+def _is_non_restrictive_entity_statement(text: str) -> bool:
+    """Wording that widens participation instead of narrowing it."""
+
+    if re.search(r"보유|소지|등록|허가|면허|인증|실적|인력|자본금|매출|일부|특정|일정", text):
+        return False
+    performers = re.findall(r"기업|대학|학술\s*단체|협회|연구\s*기관|연구소", text)
+    return bool(
+        re.search(r"(?:기업\s*규모|자격)\s*제한\s*없이|제한\s*없이\s*(?:참가|참여)", text)
+        or (len(set(performers)) >= 3 and "등" in text)
+        or re.search(r"(?:법|규정)[^.]{0,20}계약\s*체결이\s*가능한\s*(?:업체|자)", text)
+        or re.search(rf"{_NONPROFIT_SUBJECT}\s*(?:도|은|는)\s*(?:입찰\s*)?(?:참여|참가)\s*가능", text)
+    )
+
+
+# Submission of a document or a contract-time step is a checklist task. An
+# earlier "…업체여야 하며" keeps the clause a qualification that only asks for
+# its proof ("파트너사여야 하며 확인서 제출").
+_DOCUMENT_NOUN_RE = re.compile(
+    r"등록증|등본|증명서|확인서(?:류)?|서약서|확약서|동의서|인감계|신청서|제안서|현황|사본|평가서|증권|회보서|서류"
+)
+
+
+def _is_document_or_contract_task(text: str) -> bool:
+    if re.search(r"보유|소지|취득한|등록한|인증받은", text):
+        return False
+    if re.search(r"자격\s*(?:이\s*)?없|참가\s*불가|입찰\s*불가|무효|실격", text):
+        return False
+    if re.search(r"(?<!제출하)(?<!첨부하)(?:여야|이어야)\s*(?:하며|함|하고|한다)", text):
+        return False
+    contract_time = re.search(r"계약\s*체결\s*(?:시|전|후)|영업\s*개시|가입\s*대상|낙찰\s*(?:후|시)", text)
+    submission = re.search(r"제출|첨부", text) and _DOCUMENT_NOUN_RE.search(text)
+    return bool(contract_time or submission or re.search(r"확약서를?\s*제출", text))
+
+
+def _is_document_submission_list(text: str) -> bool:
+    """A list of documents to file, which also names a certificate."""
+
+    if re.search(r"자격\s*(?:이\s*)?없|참가\s*불가|입찰\s*불가|직접\s*생산", text):
+        return False
+    return bool(re.search(r"제출|첨부|구비\s*서류", text)) and len(
+        set(_DOCUMENT_NOUN_RE.findall(text))
+    ) >= 3
+
+
+def _is_capability_prose(text: str) -> bool:
+    """Expertise the proposal evaluation judges; no licence is named."""
+
+    return bool(
+        re.search(r"전문성을?\s*보유", text)
+        and re.search(r"수행이?\s*가능한\s*(?:업체|자)", text)
+        and not re.search(r"인증|자격증|등록|허가|면허|신고|지정|확인서|증명서", text)
+    )
+
+
+# Company-status compounds ("청산·합병·매각 ... 화의·법정관리 ... 부정당") pass
+# only when every named predicate has its own confirmed company fact. One
+# clearance never stands in for another.
+_STATUS_COMPONENT_PATTERNS = (
+    ("court_receivership_clear", r"법정\s*관리"),
+    (
+        "business_continuity_clear",
+        r"청산|합병|매각|정리\s*절차|워크\s*아웃|work\s*-?\s*out|부도|파산|회생|화의"
+        r"|금융\s*(?:신용\s*)?(?:불량|부실)|휴\s*[·ㆍ]?\s*폐업|휴업|폐업|영업\s*정지|업무\s*정지"
+        r"|인허가\s*취소|등록\s*취소|행정\s*처분|당좌\s*거래\s*정지",
+    ),
+    ("sanction_clear", r"부정당|입찰\s*참가(?:\s*자격)?\s*(?:을|이)?\s*제한|자격이\s*제한"),
+    ("public_dues_arrears_clear", r"체납"),
+    ("contract_nonperformance_clear", r"계약\s*(?:을\s*)?(?:불이행|이행하지)"),
+    ("conviction_clear", r"유죄\s*판결|조세\s*포탈"),
+)
+# Predicates no company fact represents keep the whole clause in REVIEW.
+_STATUS_UNCOVERED_RE = re.compile(
+    r"소송|채무\s*불이행|신용\s*등급|신용\s*평가|실적|인력|기재|허가증|면허|인증|보유|소지"
+)
+
+
+def _company_status_item(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    if _STATUS_UNCOVERED_RE.search(text) or _is_future_sanction_consequence(text):
+        return None
+    if not re.search(r"아닌|아니|없|않|제외|불가|불허|제한|금지", text):
+        return None
+    keys = [key for key, pattern in _STATUS_COMPONENT_PATTERNS if re.search(pattern, text, re.I)]
+    if len(keys) < 2 and keys != ["business_continuity_clear"]:
+        return None
+    facts = profile.get("facts", {})
+    items = [
+        _eligibility_item(
+            requirement,
+            profile=profile,
+            fact_key=key,
+            deadline=deadline,
+            today=today,
+            message="",
+            fail_on_confirmed_absence=(facts.get(key) or {}).get("value") is False,
+            failure_message="회사 확인값상 함께 적힌 회사 상태 조건 중 하나를 충족하지 않습니다.",
+        )
+        for key in keys
+    ]
+    failed = next((item for item in items if item["outcome"] == "FAIL_CONFIRMED"), None)
+    if failed is not None:
+        return failed
+    if not all(item["outcome"].startswith("PASS") for item in items):
+        return _unmapped_eligibility_item(
+            requirement, fact_key=(
+                "compound_sanction_and_financial_qualification"
+                if "부정당" in text and _contains(text, "부도", "파산", "금융신용", "금융 신용")
+                and not re.search(r"법정\s*관리", text)
+                else "compound_company_status_qualification"
+            ), deadline=deadline,
+            message="함께 적힌 회사 상태 조건 중 확인되지 않은 사실이 있어 전체 조건을 충족으로 판정할 수 없습니다.",
+        )
+    lead = items[keys.index("business_continuity_clear") if "business_continuity_clear" in keys else 0]
+    lead["message"] = (
+        "프로토타입 회사 기준: " if lead.get("assessment_basis") == "PROTOTYPE_CURRENT_FACTS" else ""
+    ) + (
+        "함께 적힌 회사 상태 조건(" + ", ".join(keys) + ")마다 회사 확인값이 있어 모두 충족합니다."
+    )
+    lead["component_fact_keys"] = keys
+    return lead
+
+
+_REGION_CODES = (
+    ("SEOUL", r"서울"), ("BUSAN", r"부산"), ("DAEGU", r"대구"), ("INCHEON", r"인천"),
+    ("GWANGJU", r"광주\s*광역시|(?<!경기도\s)(?<!경기\s)광주(?!시)"), ("DAEJEON", r"대전"),
+    ("ULSAN", r"울산"), ("SEJONG", r"세종"), ("GYEONGGI", r"경기"), ("GANGWON", r"강원"),
+    ("CHUNGBUK", r"충청\s*북도|충북"), ("CHUNGNAM", r"충청\s*남도|충남"),
+    ("JEONBUK", r"전라\s*북도|전북"), ("JEONNAM", r"전라\s*남도|전남"),
+    ("GYEONGBUK", r"경상\s*북도|경북"), ("GYEONGNAM", r"경상\s*남도|경남"), ("JEJU", r"제주"),
+)
+_COMPANY_LOCATION_RE = re.compile(
+    r"본점|본사|주된\s*영업\s*소|사업장\s*소재지|소재지가|소재한\s*(?:업체|여행사|기업|사업자|법인)"
+    r"|소재\s*본점"
+)
+_NOT_COMPANY_LOCATION_RE = re.compile(r"시설|연수원|교육장|숙소|호텔|전국|도서|산간|납품|설치|인력\s*활용")
+
+
+def _region_gate_item(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    """Compare a named company-location restriction with verified locations."""
+
+    if re.search(r"지역\s*제한\s*(?:이\s*)?없", text):
+        return _information_item(
+            requirement, profile=profile, capability_key=None, message="지역 제한이 없다는 안내입니다.",
+        )
+    if not _COMPANY_LOCATION_RE.search(text) or _NOT_COMPANY_LOCATION_RE.search(text):
+        return None
+    allowed = [code for code, pattern in _REGION_CODES if re.search(pattern, text)]
+    if not allowed:
+        return None
+    branch_allowed = bool(re.search(r"지점", text)) and not re.search(r"지점\s*(?:은|는)?\s*(?:제외|불가|불인정)", text)
+    head = _eligibility_item(
+        requirement,
+        profile=profile,
+        fact_key="head_office_region_codes",
+        deadline=deadline,
+        today=today,
+        message="공식 입찰등록증의 본점 소재지가 공고가 허용한 지역에 포함됩니다.",
+        fail_on_confirmed_absence=True,
+        failure_message=(
+            "공식 입찰등록증의 본점 소재지가 공고가 허용한 지역에 없습니다. "
+            "회사가 선언한 지점은 본점 요건에 쓰이지 않습니다."
+        ),
+        operator="contains_any",
+        required_value=allowed,
+    )
+    head["required_region_codes"] = allowed
+    if head["outcome"].startswith("PASS") or not branch_allowed:
+        return head
+    branch = _eligibility_item(
+        requirement,
+        profile=profile,
+        fact_key="registered_bidder_branch_region_codes",
+        deadline=deadline,
+        today=today,
+        message="공식 입찰등록증에 등록된 지점이 공고가 허용한 지역에 있습니다.",
+        fail_on_confirmed_absence=True,
+        failure_message=(
+            "본점과 공식 등록 지점 모두 공고가 허용한 지역에 없습니다. 회사가 선언한 지점은 "
+            "법인등기·입찰등록에 오르기 전까지 쓰이지 않습니다."
+        ),
+        operator="contains_any",
+        required_value=allowed,
+    )
+    branch["required_region_codes"] = allowed
+    if branch["outcome"].startswith("PASS"):
+        return branch
+    if head["outcome"] == "REVIEW":
+        return head
+    return branch
+
+
+_TRAVEL_OR_RE = re.compile(
+    r"종합\s*여행업\s*(?:또는|이나|혹은|,|/)\s*(?:국내\s*외|국외|국내외|국내)\s*여행업"
+)
+
+
+def _general_travel_or_item(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    """종합여행업 offered as one OR alternative is met by the 종합여행업 permit."""
+
+    if not _TRAVEL_OR_RE.search(text):
+        return None
+    remainder = _TRAVEL_OR_RE.sub("", text)
+    if re.search(r"허가|면허|인증|확인서|증명서|직접\s*생산|중소기업|소상공인|등록증|실적|인력|부정당|제재|본점|소재|자본금|매출", remainder):
+        return None
+    registration_conjunct = _is_bidder_registration_eligibility(remainder) or bool(
+        re.search(r"입찰\s*등록을?\s*(?:필한|완료|마친)", remainder)
+    )
+    if registration_conjunct:
+        registration = _eligibility_item(
+            requirement, profile=profile, fact_key="bidder_registration",
+            deadline=deadline, today=today, message="함께 적힌 입찰등록 조건을 충족합니다.",
+        )
+        if not registration["outcome"].startswith("PASS"):
+            return registration
+    return _eligibility_item(
+        requirement,
+        profile=profile,
+        fact_key="general_travel_business",
+        deadline=deadline,
+        today=today,
+        message=(
+            "공고는 종합여행업 또는 국내외·국외여행업 중 하나를 요구하며, 검증된 인허가 모음의 "
+            "종합여행업 등록이 이를 충족합니다."
+            + (" 함께 적힌 입찰참가자격 등록도 회사 확인값으로 충족합니다." if registration_conjunct else "")
+        ),
+    )
+
+
+def _named_industry_codes(text: str, profile: dict[str, Any]) -> list[str]:
+    """Registered industry names the clause lists as alternatives."""
+
+    def key(name: str) -> str:
+        return re.sub(r"[\s·ㆍ,]|(?:용역|업|서비스)$", "", name)
+
+    inventory = (profile.get("facts", {}).get("industry_code_name_inventory") or {}).get("value") or []
+    compact = re.sub(r"[\s·ㆍ]", "", text)
+    return [
+        str(entry.get("code"))
+        for entry in inventory
+        if isinstance(entry, dict) and len(key(str(entry.get("name") or ""))) >= 3
+        and key(str(entry.get("name") or "")) in compact
+    ]
+
+
+def _industry_code_fallback_item(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    codes = [
+        code for code in re.findall(r"(?<!\d)(\d{4})(?!\d)", text)
+        if not re.fullmatch(r"(?:19|20)\d\d", code)
+    ]
+    if len(set(codes)) == 1 and "등록" in text:
+        return _eligibility_item(
+            requirement,
+            profile=profile,
+            fact_key="industry_code_inventory",
+            deadline=deadline,
+            today=today,
+            message="공고 요구 업종코드가 공식 입찰등록 업종에 있습니다.",
+            fail_on_confirmed_absence=True,
+            failure_message="공식 입찰등록 업종에 공고 요구 업종코드가 없습니다.",
+            operator="contains",
+            required_value=codes[0],
+        )
+    named = _named_industry_codes(text, profile)
+    if named and not re.search(r"및|모두|각각|동시|추가|별도", text) and re.search(r"등\s*관련\s*종목|중\s*하나|또는|등록된\s*업체", text):
+        return _eligibility_item(
+            requirement,
+            profile=profile,
+            fact_key="industry_code_inventory",
+            deadline=deadline,
+            today=today,
+            message="공고가 나열한 종목 중 하나가 공식 입찰등록 업종명과 일치합니다.",
+            operator="contains_any",
+            required_value=sorted(set(named)),
+        )
+    return None
+
+
+def _registration_and_sanction_parts(text: str) -> list[tuple[str, str, str]] | None:
+    """Split "자격을 갖추고 … 부정당업자가 아닐 것" at the conjunction.
+
+    Both halves are exact substrings of the clause, and each must be recognized
+    on its own (a bidder-registration clause and a present sanction clearance),
+    otherwise the clause stays whole.
+    """
+
+    if not ("부정당" in text or re.search(r"입찰\s*참가(?:\s*자격)?\s*제한", text)):
+        return None
+    if re.search(r"또는|혹은|하거나|이거나|허가|면허|인증|확인서|증명서|실적|인력|별도|추가", text):
+        return None
+    depths = _clause_depths(text)
+    if depths is None:
+        return None
+    for match in re.finditer(
+        r"(?:갖추고|갖춘\s*(?:자|업체)로서|구비하고|구비\s*및|(?:하|이|여|이어)며|이고)\s*,?\s*",
+        text,
+    ):
+        if depths[match.start()] != 0:
+            continue
+        left, right = text[:match.end()].rstrip(" ,"), text[match.end():]
+        if (
+            right
+            and _is_bidder_registration_eligibility(left)
+            and (_is_current_sanction_clearance(right) or _is_present_sanction_exclusion(right))
+        ):
+            return [("registration", "ENTITY", left), ("sanction", "SANCTION", right)]
+    return None
+
+
+def _reviewed_fallback_item(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    category: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    """Resolve the repeatable shapes that used to reach an unmapped REVIEW."""
+
+    if category not in {"ENTITY", "CERTIFICATION", "INDUSTRY_CODE", "SANCTION", "REGION"}:
+        return None
+    facts = profile.get("facts", {})
+    if _is_contract_conduct_duty(text):
+        return _checklist_item(
+            requirement,
+            profile=profile,
+            capability_key="standard_pledges",
+            message="계약 후 지켜야 할 임금·윤리·보안 의무입니다. 입찰 시점 참가자격이 아니라 준수 체크리스트로 관리합니다.",
+        )
+    if _is_evaluation_or_reference_rule(text):
+        return _information_item(
+            requirement,
+            profile=profile,
+            capability_key=None,
+            message="평가 기준·가점 또는 법령 안내이며 참가자격 조건이 아닙니다.",
+        )
+    if category == "REGION":
+        if re.search(r"지역\s*제한\s*(?:이\s*)?없", text):
+            return _information_item(
+                requirement, profile=profile, capability_key=None, message="지역 제한이 없다는 안내입니다.",
+            )
+        return _region_gate_item(requirement, profile=profile, text=text, deadline=deadline, today=today)
+    if category == "SANCTION" and _is_future_sanction_consequence(text):
+        capability = (
+            "safety_health_pledge" if re.search(r"안전|보건", text)
+            else "integrity_pledge" if re.search(r"청렴|금품|향응|담합|부정", text)
+            else "standard_pledges"
+        )
+        return _checklist_item(
+            requirement,
+            profile=profile,
+            capability_key=capability,
+            message=(
+                "위반·적발 시 제재나 계약 조치를 정한 조항입니다. 입찰 시점 참가자격이 아니라 "
+                "준수 체크리스트로 관리합니다."
+            ),
+        )
+    if category in {"SANCTION", "ENTITY"}:
+        if _is_large_enterprise_software_restriction(text):
+            return _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key="large_enterprise_software_clear",
+                deadline=deadline,
+                today=today,
+                message=(
+                    "회사는 대기업·중견기업 소프트웨어사업자나 상호출자제한기업집단 소속이 아니어서 "
+                    "이 참여 제한에 해당하지 않습니다."
+                ),
+                fail_on_confirmed_absence=(facts.get("large_enterprise_software_clear") or {}).get("value") is False,
+                failure_message="회사 확인값상 대기업·중견기업 소프트웨어사업자 참여 제한에 해당합니다.",
+            )
+        status = _company_status_item(requirement, profile=profile, text=text, deadline=deadline, today=today)
+        if status is not None:
+            return status
+        if _is_current_disqualification_clearance(text):
+            return _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key="disqualification_clear",
+                deadline=deadline,
+                today=today,
+                message="회사 확인값상 결격사유가 없어 충족합니다.",
+            )
+        if _is_present_sanction_exclusion(text):
+            return _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key="sanction_clear",
+                deadline=deadline,
+                today=today,
+                message="회사 확인값상 부정당 제재·입찰참가자격 제한 이력이 없어 충족합니다.",
+            )
+    if category == "ENTITY":
+        if _is_business_registration_possession(text):
+            return _eligibility_item(
+                requirement,
+                profile=profile,
+                fact_key="bidder_registration",
+                deadline=deadline,
+                today=today,
+                message="나라장터 입찰참가자격 등록(사업자등록번호 또는 고유번호 기반) 근거가 연결되어 충족합니다.",
+            )
+        if _is_non_restrictive_entity_statement(text):
+            return _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message="참가 범위를 넓히는 안내이며 제한 조건이 아닙니다.",
+            )
+        if re.search(r"확약서를?\s*제출", text):
+            return _checklist_item(
+                requirement,
+                profile=profile,
+                capability_key="proposal_submission",
+                message="확약서 제출은 제안 제출 체크리스트로 관리합니다.",
+            )
+    if category == "CERTIFICATION":
+        if _is_document_or_contract_task(text):
+            return _checklist_item(
+                requirement,
+                profile=profile,
+                capability_key="proposal_submission",
+                message=(
+                    "증빙 서류 제출 또는 계약 시점 조치입니다. 입찰 시점 보유 자격과 분리해 "
+                    "체크리스트로 관리합니다."
+                ),
+            )
+        if _is_capability_prose(text):
+            return _information_item(
+                requirement,
+                profile=profile,
+                capability_key=None,
+                message="제안 평가에서 판단하는 전문성 서술이며 보유 자격 조건이 아닙니다.",
+            )
+    if category == "INDUSTRY_CODE":
+        return _industry_code_fallback_item(
+            requirement, profile=profile, text=text, deadline=deadline, today=today,
+        )
+    return None
 
 
 def _as_date(value: Any) -> date | None:
@@ -1740,6 +2319,86 @@ def _information_item(
     return item
 
 
+def _notice_small_business_nonprofit_route(
+    requirements: list[dict[str, Any]],
+    normalized: list[str],
+) -> str | None:
+    """Return the nonprofit route the notice states for its SME-certificate duty.
+
+    A notice often restates one certificate duty in several clauses and puts the
+    nonprofit exception in only one of them. The stated route governs the
+    restatements. Submission lists are not duties. Any exclusion, duty
+    extension, legal-form narrowing, partial exclusion or unreadable nonprofit
+    wording among the duty clauses returns None, so every restatement keeps its
+    earlier REVIEW.
+    """
+
+    structures: list[str | None] = []
+    for requirement, text in zip(requirements, normalized, strict=True):
+        category = str(requirement.get("category") or "OTHER").upper()
+        if (
+            not bool(requirement.get("mandatory", True))
+            or requirement.get("ambiguity_reason")
+            or not _is_small_business_eligibility(text, category=category)
+            or _is_document_submission_list(text)
+            or not re.search(_NONPROFIT_SUBJECT, text)
+        ):
+            continue
+        if _has_explicit_nonprofit_small_business_alternative(text):
+            structures.append("UNCONDITIONAL")
+        elif _has_unresolved_nonprofit_small_business_subset(text):
+            # This complete legal-subset OR still has its own unresolved gate.
+            # It cannot supply a stronger result to a sibling than to itself.
+            structures.append(None)
+        elif _NONPROFIT_PARTIAL_EXCLUSION_RE.search(text):
+            structures.append(None)
+        else:
+            structures.append(classify_nonprofit_alternative(text))
+    resolvable = {"UNCONDITIONAL", "EVIDENCE", "QUALIFIED_STATUTE"}
+    if not structures or any(structure not in resolvable for structure in structures):
+        return None
+    if "QUALIFIED_STATUTE" in structures:
+        return "QUALIFIED_STATUTE"
+    return "EVIDENCE" if "EVIDENCE" in structures else "UNCONDITIONAL"
+
+
+def _inherited_nonprofit_route(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    route: str | None,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    text = _normalise(requirement.get("normalized_condition"))
+    if route is None or not _is_repeated_sme_certificate_clause(text):
+        return None
+    item = _nonprofit_route_for_absent_certificate(
+        requirement, profile=profile, structure=route, deadline=deadline, today=today,
+    )
+    if item is not None:
+        item["message"] = "같은 공고의 다른 조항에 적힌 비영리법인 예외를 이 확인서 조건에 적용합니다. " + item["message"]
+        item["nonprofit_route_source"] = "NOTICE_SIBLING_CLAUSE"
+    return item
+
+
+def _is_repeated_sme_certificate_clause(text: str) -> bool:
+    """Only restate a certificate duty, never waive an additional qualification."""
+    if _is_unqualified_small_business_certificate_clause(text):
+        return True
+    if re.search(
+        r"비영리|예외\s*없|반드시|별도|추가|등록|허가|면허|인증|직접\s*생산|실적|인력"
+        r"|대기업|중견|소프트웨어|특별\s*법인|협동\s*조합|벤처|창업|자본금|매출|소재|시설",
+        text,
+    ):
+        return False
+    return bool(
+        re.search(_SMALL_BUSINESS_CERT_PATTERN, text)
+        and re.search(r"소지|보유|유효\s*기간|발급", text)
+        and not re.search(r"외에|이외|그\s*밖|아울러|또한|그리고", text)
+    )
+
+
 def classify_requirements(
     requirements: list[dict[str, Any]],
     *,
@@ -1789,6 +2448,16 @@ def classify_requirements(
     # clause-scoped guard leaves a separate requirement denying a nonprofit
     # exception that another requirement in the same notice states verbatim.
     nonprofit_text_present_in_notice = any("비영리법인" in text for text in normalized)
+    notice_sme_route = _notice_small_business_nonprofit_route(requirements, normalized)
+    notice_sme_source_ids = [
+        requirement.get("requirement_id")
+        for requirement, text in zip(requirements, normalized, strict=True)
+        if bool(requirement.get("mandatory", True))
+        and not requirement.get("ambiguity_reason")
+        and _is_small_business_eligibility(text, category=str(requirement.get("category") or "OTHER").upper())
+        and not _is_document_submission_list(text)
+        and re.search(_NONPROFIT_SUBJECT, text)
+    ]
     items: list[dict[str, Any]] = []
 
     for requirement, text in zip(requirements, normalized, strict=True):
@@ -1932,6 +2601,12 @@ def classify_requirements(
                     operator=operator,
                     required_value=required_value,
                 )
+        elif (
+            travel_item := _general_travel_or_item(
+                requirement, profile=profile, text=text, deadline=as_of, today=today,
+            )
+        ) is not None:
+            item = travel_item
         elif ambiguous_named_permit:
             item = _unmapped_eligibility_item(
                 requirement,
@@ -1991,7 +2666,9 @@ def classify_requirements(
         ) or (
             "부정당" in text and re.search(r"체납|계약.*(?:불이행|이행하지 않은).*(?:사실|이력)", text)
         ):
-            item = _unmapped_eligibility_item(
+            item = _company_status_item(
+                requirement, profile=profile, text=text, deadline=as_of, today=today,
+            ) or _unmapped_eligibility_item(
                 requirement, fact_key="compound_company_status_qualification", deadline=as_of,
                 message="체납·법정관리·계약 불이행 없음 확인만으로 복합 조건 전체를 충족할 수 없어, 함께 적힌 조건의 관계를 추가 확인해야 합니다.",
             )
@@ -2030,7 +2707,9 @@ def classify_requirements(
                 message="납품·설치 장소 또는 입찰 범위 정보이며 업체 소재지 참가제한으로 사용하지 않습니다.",
             )
         elif "부정당" in text and _contains(text, "부도", "파산", "금융신용", "금융 신용"):
-            item = _unmapped_eligibility_item(
+            item = _company_status_item(
+                requirement, profile=profile, text=text, deadline=as_of, today=today,
+            ) or _unmapped_eligibility_item(
                 requirement,
                 fact_key="compound_sanction_and_financial_qualification",
                 deadline=as_of,
@@ -2094,6 +2773,16 @@ def classify_requirements(
                 capability_key="proposal_submission",
                 message="납품할 소프트웨어의 정품·활성화·호환 사양이며 회사 보유 자격으로 사용하지 않습니다.",
             )
+        elif small_business and _is_document_submission_list(text):
+            item = _checklist_item(
+                requirement,
+                profile=profile,
+                capability_key="proposal_submission",
+                message=(
+                    "기업 확인서가 포함된 제출서류 목록입니다. 확인서 보유 요건은 같은 공고의 "
+                    "자격 조항에서 따로 판정합니다."
+                ),
+            )
         elif small_business:
             # Both SME/nonprofit OR shapes below offer the certificate as their
             # own first alternative, so an independently satisfied certificate
@@ -2117,6 +2806,7 @@ def classify_requirements(
                     today=today,
                 )
                 if generic_nonprofit_alternative or legal_subset_alternative
+                or (notice_sme_route is not None and _is_repeated_sme_certificate_clause(text))
                 else None
             )
             if independent_certificate_pass is not None:
@@ -2142,7 +2832,9 @@ def classify_requirements(
                     ),
                 )
             elif sme_alternative_scope_present and _is_unqualified_small_business_certificate_clause(text):
-                item = _unmapped_eligibility_item(
+                item = _inherited_nonprofit_route(
+                    requirement, profile=profile, route=notice_sme_route, deadline=as_of, today=today,
+                ) or _unmapped_eligibility_item(
                     requirement,
                     fact_key="small_business_nonprofit_exception_scope",
                     deadline=as_of,
@@ -2151,8 +2843,12 @@ def classify_requirements(
                         "적용되는지 범위가 연결되지 않아 원문 검토가 필요합니다."
                     ),
                 )
-            elif nonprofit_exception_present:
-                item = _unmapped_eligibility_item(
+            elif nonprofit_exception_present and _is_repeated_sme_certificate_clause(text):
+                # A clause that names the nonprofit itself is decided by its own
+                # structure below; only a restatement looks at the notice.
+                item = _inherited_nonprofit_route(
+                    requirement, profile=profile, route=notice_sme_route, deadline=as_of, today=today,
+                ) or _unmapped_eligibility_item(
                     requirement,
                     fact_key="small_business_nonprofit_exception_scope",
                     deadline=as_of,
@@ -2210,6 +2906,12 @@ def classify_requirements(
                         requirement,
                         profile=profile,
                         structure=nonprofit_structure,
+                        deadline=as_of,
+                        today=today,
+                    ) if nonprofit_structure is not None else _inherited_nonprofit_route(
+                        requirement,
+                        profile=profile,
+                        route=notice_sme_route,
                         deadline=as_of,
                         today=today,
                     )
@@ -2323,7 +3025,9 @@ def classify_requirements(
                     message="공식 입찰등록증의 서울 본점 지역 사실이 공고 제한과 일치합니다.",
                 )
             else:
-                item = _unmapped_eligibility_item(
+                item = _region_gate_item(
+                    requirement, profile=profile, text=text, deadline=as_of, today=today,
+                ) or _unmapped_eligibility_item(
                     requirement,
                     fact_key="notice_region_eligibility",
                     deadline=as_of,
@@ -2332,6 +3036,12 @@ def classify_requirements(
                         "회사 선언 지점은 공식 지사 증빙 전까지 자동 PASS에 사용하지 않습니다."
                     ),
                 )
+        elif (
+            fallback_item := _reviewed_fallback_item(
+                requirement, profile=profile, text=text, category=category, deadline=as_of, today=today,
+            )
+        ) is not None:
+            item = fallback_item
         elif category == "ENTITY" and _is_explicit_entity_eligibility(text):
             item = _unmapped_eligibility_item(
                 requirement,
@@ -2412,6 +3122,8 @@ def classify_requirements(
                 condition_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 item["evaluation_fact_key"] = f"eligibility.performance.unbound.{condition_digest[:32]}"
                 item["requires_performance_scope_binding"] = True
+        if item.get("nonprofit_route_source") == "NOTICE_SIBLING_CLAUSE":
+            item["nonprofit_route_requirement_ids"] = list(notice_sme_source_ids)
         items.append(item)
 
     display_items = group_equivalent_policy_items(items)
@@ -2468,6 +3180,7 @@ def group_equivalent_policy_items(items: list[dict[str, Any]]) -> list[dict[str,
             "fact": fact_key, "operator": item.get("operator"),
             "required": item.get("required_value"), "outcome": item.get("outcome"),
             "mandatory": item.get("mandatory"),
+            "component_facts": item.get("component_fact_keys"),
             "products": sorted(re.findall(r"(?<!\d)\d{10}(?!\d)", str(item.get("condition")))),
         }, ensure_ascii=False, sort_keys=True) if groupable else f"row:{index}"
         if key not in groups:
