@@ -97,7 +97,7 @@ from .pps_enrichment import (
 from .pricing_profiles import pricing_profile_for_document
 from .quantitative_scoring import public_quantitative_snapshot_projection
 from .public_notice_seed import load_public_notice_seed
-from .result_learning import result_entry_state
+from .result_learning import automatic_review_pending, result_entry_state
 from .schemas import (
     AtomicRequirementCreate,
     AwardHistoryItemOut,
@@ -1098,6 +1098,20 @@ def _result_entry_states(session: Session, notice_ids: list[str], department_id:
     return {notice_id: result_entry_state(items, department_id) for notice_id, items in groups.items()}
 
 
+def _result_review_count(session: Session, department_id: str | None = None) -> int:
+    """Count notices whose automatic result still waits for a department review."""
+
+    groups: dict[str, list[BidOutcome]] = {}
+    statement = select(BidOutcome).options(load_only(
+        BidOutcome.id, BidOutcome.notice_id, BidOutcome.department_id, BidOutcome.source,
+        BidOutcome.observed_at, BidOutcome.updated_at,
+        raiseload=True,
+    ), raiseload("*"))
+    for item in session.scalars(statement):
+        groups.setdefault(item.notice_id, []).append(item)
+    return sum(automatic_review_pending(items, department_id) for items in groups.values())
+
+
 def _department_decision_index(
     session: Session,
     *,
@@ -1587,6 +1601,9 @@ def dashboard(
         "cancelled_count": cancelled_count,
         "visible_ended_count": visible_ended_count,
         "result_missing_count": result_missing_count,
+        "result_review_count": _result_review_count(
+            session, selected_department["id"] if selected_department else None
+        ),
         "closed_count": lifecycle_counts["CLOSED"],
         "expired_count": lifecycle_counts["EXPIRED"],
         "pending_review": eligibility_counts[Eligibility.REVIEW.value],

@@ -5792,6 +5792,69 @@ a.history-award-project__source:hover { text-decoration: underline; }
 .record-status--validated { color: var(--green); background: var(--green-pale); }
 .record-status--archived { color: #65716e; background: #edf0ee; }
 .record-status--missing { color: #8a4d47; background: var(--red-pale); }
+.record-status--review { color: var(--blue); background: var(--blue-pale); }
+
+/* Presentation rows stay recognisable without drawing more than a tag. */
+.demo-record-badge {
+  display: inline-flex;
+  margin-right: auto;
+  padding: 2px 7px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+}
+
+.demo-record-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.demo-record-note .demo-record-badge { margin-right: 0; }
+
+.result-queue-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+
+.result-queue-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.result-queue-tabs button small {
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+  font-weight: 800;
+}
+
+.result-queue-tabs button[aria-pressed="true"] {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-pale);
+}
+
+.result-queue-tabs button[aria-pressed="true"] small { color: var(--blue); }
+
+.result-queue-tabs button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
 .operator-record h4 {
   margin: 12px 0 5px;
