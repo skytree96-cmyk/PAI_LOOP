@@ -58,6 +58,7 @@ def select_quantitative_keyword_input(source: str, *, maximum: int = 60_000,
         "attachment_coverage_complete": False,
         "selection_method": "KEYWORD_XML" if xml else "KEYWORD_TEXT",
         "canonical_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "selected_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "original_characters": len(source), "selected_display_characters": len(text),
         "source_ranges": [list(pair) for pair in merged], "images_excluded": True,
     }

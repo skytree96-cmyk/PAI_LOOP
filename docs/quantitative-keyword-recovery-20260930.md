@@ -30,12 +30,37 @@ selection without provider calls. Add `--execute` only for an authorized live
 diagnostic with the existing server-to-server gateway environment configured.
 The CLI prints summary fields only and never writes a score or raw source.
 
-The result wrapper remains `QUANTITATIVE_PROBE_ONLY` with
-`persistence_eligible=false` and `attachment_coverage_complete=false`. Existing
-eligibility extraction and score persistence do not consume this diagnostic.
-Production integration and source-bound approval remain separate pending work;
-an accepted probe is not a persisted score or evidence that every condition was
-included. No HUMAN_REVIEWED_NOTICE_CONDITIONS flag is changed.
+The diagnostic wrapper remains `QUANTITATIVE_PROBE_ONLY` with
+`persistence_eligible=false` and `attachment_coverage_complete=false`. Production
+does not promote or persist this diagnostic outcome.
+
+## Production recovery
+
+An explicit retry of the latest current-contract, exact-document/manifest-bound
+failed attachment can use the separate `extract_quantitative_recovery` entry.
+Schema, quote and incomplete-response failures are eligible. A strictly parsed
+20k/32k output-limit or gateway timeout is eligible only when keyword selection
+actually reduces the input; identical full-input stops retain their existing
+no-repeat behavior. Scheduled reads and accepted extraction records do not
+activate this path. The separate LONG_OUTPUT_ONCE contract is unchanged.
+
+The recovery keeps the existing two-call attachment ceiling: one keyword text
+call, then XML on an eligible validation failure, without transport retries.
+Native HWPX tables are included when present; a paragraph-encoded HWPX table
+uses source-text XML framing. Source mismatches still fail before paid calls.
+
+Persistence stores the failed-version identity, canonical and selected hashes,
+source ranges, XML usage and `QUANTITATIVE_KEYWORD_RECOVERY` scope. Requirements
+must be empty, input coverage remains incomplete and the attachment result
+remains REVIEW even when quantitative extraction is accepted. The existing
+mechanical table validator and partial-source scoring path consume the verified
+table. Failed quotes do not become recovery scoring rows. No whole-document
+completion, eligibility approval or HUMAN_REVIEWED_NOTICE_CONDITIONS flag is
+created. An accepted recovery still requires bound company evidence for a score.
+
+Current-manifest reuse prevents a continuation from repeating a saved recovery.
+Notice lifecycle, queue admission, MANUAL_ONLY and existing scoped-retry guards
+continue to apply before this attachment path is reached.
 
 ## Image and provider behavior
 
@@ -55,6 +80,8 @@ before replacing anything. Local workflow changes do not prove live activation.
 ## Validation and release gate
 
 Run the focused keyword/HWPX/probe/PPS tests, native gateway and repository
-workflow validations, then full coverage CI on the exact PR head. Keep Teams
-flags false, W12 emergency-disabled, and do not perform a cohort backfill until
+workflow validations, then full coverage CI on the exact PR head. Preserve the
+latest user-managed Teams settings; the earlier instruction to disable Teams
+and lock W12 was superseded. Read the live values before any deployment and
+verify they remain unchanged afterward. Do not perform a cohort backfill until
 the operational score UI and all notice lifecycle gates have been reverified.

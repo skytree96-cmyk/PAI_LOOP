@@ -50,6 +50,7 @@ from .long_output_policy import (
     long_output_source_boundary,
 )
 from .notice_freshness import authoritative_pps_cancelled_notice_keys
+from .gateway_diagnostics import safe_gateway_failure
 from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
 from .quantitative_rule_extraction import (
     QUANTITATIVE_ATTACHMENT_VALIDATOR_VERSION,
@@ -3211,6 +3212,17 @@ def _persist_extraction_version(
     ):
         raise PpsEnrichmentError("PPS_MANIFEST_CHANGED_DURING_ENRICHMENT")
     accepted = outcome is not None and outcome.status == "ACCEPTED" and outcome.data is not None
+    recovery = (processing_audit or {}).get("quantitative_recovery")
+    if recovery is not None and (
+        not isinstance(recovery, dict)
+        or recovery.get("purpose") != "QUANTITATIVE_KEYWORD_RECOVERY"
+        or recovery.get("attachment_coverage_complete") is not False
+        or recovery.get("eligibility_complete") is not False
+        or processing_audit.get("analysis_input_complete") is not False
+        or not recovery.get("failed_version_id")
+        or (accepted and outcome.data.requirements)
+    ):
+        raise PpsEnrichmentError("QUANTITATIVE_RECOVERY_SCOPE_INVALID")
     if outcome is not None and (
         outcome.prompt_version != PROMPT_VERSION or outcome.schema_version != SCHEMA_VERSION
     ):
@@ -3748,6 +3760,22 @@ def _stored_attachment_result(
     )
 
 
+def _keyword_recovery_failure(version: NoticeVersion) -> bool:
+    payload = version.source_payload
+    if payload.get("status") != "REVIEW" or classify_attempt_header(payload) != "CURRENT":
+        return False
+    if payload.get("error_code") in {"SCHEMA_VALIDATION_ERROR", "UNVERIFIED_QUOTE", "INCOMPLETE_RESPONSE"}:
+        return True
+    failure = safe_gateway_failure(payload.get("gateway_failure"))
+    return bool(payload.get("error_code") == "HTTP_ERROR" and failure is not None and (
+        (failure.detail_code == "NATIVE_STOP_MAX_TOKENS" and failure.stop_reason == "max_tokens"
+         and failure.usage is not None and failure.usage.output_tokens in {20_000, 32_000})
+        or (failure.stage == "MODEL_EXECUTION"
+            and failure.detail_code in {"MODEL_TRANSPORT_TIMEOUT", "MODEL_TRANSPORT_UNKNOWN"}
+            and failure.upstream_http_status is None)
+    ))
+
+
 def _enrich_selected_pps_attachment(
     session: Session,
     *,
@@ -3894,6 +3922,43 @@ def _enrich_selected_pps_attachment(
         current_manifest_sha256=current_manifest_sha256,
         retry_reviewed_version_ids=retry_reviewed_version_ids,
     )
+    # Only an explicit retry of the latest exact source-bound failure may use
+    # the narrower recovery scope. Accepted requirement evidence is never
+    # replaced by a quantitative-only result.
+    recovery_source = next((item for item in sorted(versions, key=lambda v: v.version_no, reverse=True)
+        if isinstance(item.source_payload, dict)
+        and item.source_payload.get("kind") == "OPENAI_REQUIREMENT_EXTRACTION"
+        and item.source_payload.get("source_kind") == PPS_ATTACHMENT_SOURCE
+        and item.source_payload.get("attachment_id") == attachment["attachment_id"]
+        and item.source_payload.get("manifest_sha256") == manifest_sha256
+        and item.source_payload.get("current_manifest_sha256") == current_manifest_sha256
+        and item.source_payload.get("document_sha256") == document_sha256), None)
+    use_keyword_recovery = bool(
+        llm_provider == "n8n_claude" and long_output_scope is None
+        and recovery_source is not None
+        and recovery_source.id in retry_reviewed_version_ids
+        and recovery_source.file_sha256 == document_sha256
+        and _keyword_recovery_failure(recovery_source)
+    )
+    if use_keyword_recovery:
+        from .quantitative_keyword_input import select_quantitative_keyword_input
+        try:
+            keyword_text, _keyword_audit = select_quantitative_keyword_input(source_text)
+        except ValueError:
+            # No table heading or an oversized selection does not justify a
+            # narrower retry, a fabricated score, or another paid call.
+            return _stored_attachment_result(
+                recovery_source, attachments_discovered=attachments_discovered, reuse_only=True,
+            )
+        # An output-limit/timeout retry must actually shrink the source. Never
+        # repeat an identical expensive full input under a different label.
+        if (recovery_source.source_payload.get("error_code") == "HTTP_ERROR"
+                and len(keyword_text) >= selection.selected_characters):
+            use_keyword_recovery = False
+        else:
+            selection = replace(selection, text=keyword_text, complete=False,
+                                selected_characters=len(keyword_text))
+            processing_audit = _document_processing_audit(extraction, selection)
     if long_output_scope is None and llm_provider == "n8n_claude":
         output_limit_attempt = _same_input_output_limit_attempt(
             versions, attachment_id=attachment["attachment_id"],
@@ -4064,13 +4129,29 @@ def _enrich_selected_pps_attachment(
         provider=llm_provider,
         base_url=llm_gateway_base_url,
         timeout_seconds=openai_timeout_seconds,
-        max_retries=openai_max_retries,
+        max_retries=0 if use_keyword_recovery else openai_max_retries,
+        **({"max_total_api_calls": 1} if use_keyword_recovery else {}),
         **long_options,
     ) as client:
-        outcome = client.extract(
-            document_text=selection.text,
-            allowed_attachment_ids={attachment["attachment_id"]},
-        )
+        if use_keyword_recovery:
+            outcome, recovery_audit = client.extract_quantitative_recovery(
+                document_text=source_text,
+                allowed_attachment_ids={attachment["attachment_id"]},
+                hwpx_content=content if attachment["file_name"].lower().endswith(".hwpx") else None,
+            )
+            processing_audit.update({
+                "analysis_input_complete": False,
+                "analysis_input_sha256": recovery_audit["selected_sha256"],
+                "analysis_input_characters": recovery_audit["selected_display_characters"],
+                "analysis_selection": recovery_audit,
+                "quantitative_recovery": {**recovery_audit, "failed_version_id": recovery_source.id},
+            })
+            selection = replace(selection, selected_characters=recovery_audit["selected_display_characters"])
+        else:
+            outcome = client.extract(
+                document_text=selection.text,
+                allowed_attachment_ids={attachment["attachment_id"]},
+            )
     try:
         if outcome.api_calls > (LONG_OUTPUT_MAX_CALLS if long_output_scope else MAX_OPENAI_CALLS_PER_ATTACHMENT):
             raise PpsEnrichmentError("OPENAI_ATTACHMENT_CALL_LIMIT")

@@ -1290,6 +1290,39 @@ class OpenAIExtractionClient:
         self, *, document_text: str, allowed_attachment_ids: set[str],
         hwpx_content: bytes | None = None,
     ) -> QuantitativeProbeOutcome:
+        outcome, audit = self._extract_keyword_sequence(
+            document_text=document_text, allowed_attachment_ids=allowed_attachment_ids,
+            hwpx_content=hwpx_content,
+        )
+        return QuantitativeProbeOutcome(source_audit=audit, outcome=outcome.model_copy(
+            update={"prompt_version": QUANTITATIVE_PROBE_PROMPT_VERSION},
+        ))
+
+    def extract_quantitative_recovery(
+        self, *, document_text: str, allowed_attachment_ids: set[str],
+        hwpx_content: bytes | None = None,
+    ) -> tuple[ExtractionOutcome, dict[str, object]]:
+        """Source-verified partial extraction for an explicitly retried failure.
+
+        Persistence must retain the scope audit and incomplete input coverage.
+        This entry never consumes or promotes a diagnostic probe outcome.
+        """
+        outcome, audit = self._extract_keyword_sequence(
+            document_text=document_text, allowed_attachment_ids=allowed_attachment_ids,
+            hwpx_content=hwpx_content,
+        )
+        if outcome.status != "ACCEPTED":
+            outcome = outcome.model_copy(update={"unverified_quantitative_tables": None})
+        return outcome, {
+            **audit, "purpose": "QUANTITATIVE_KEYWORD_RECOVERY",
+            "persistence_eligible": True, "attachment_coverage_complete": False,
+            "eligibility_complete": False,
+        }
+
+    def _extract_keyword_sequence(
+        self, *, document_text: str, allowed_attachment_ids: set[str],
+        hwpx_content: bytes | None = None,
+    ) -> tuple[ExtractionOutcome, dict[str, object]]:
         """Read-only keyword extraction, then one XML-framed retry on failure.
 
         Each transport call has its own one-call budget. The returned wrapper
@@ -1304,12 +1337,17 @@ class OpenAIExtractionClient:
             raise ValueError("QUANTITATIVE_KEYWORDS_REQUIRES_SINGLE_GATEWAY_CALL")
         document_text = document_text.replace("\x00", "")
         # Bind native XML before spending even the first provider call.
-        native_context = (
-            hwpx_quantitative_table_context(hwpx_content, document_text)
-            if hwpx_content is not None else None
-        )
+        native_context = None
+        if hwpx_content is not None:
+            try:
+                native_context = hwpx_quantitative_table_context(hwpx_content, document_text)
+            except ValueError as exc:
+                # Some valid HWPX files encode a table as paragraphs. Retain
+                # exact text/XML framing, but never ignore a source mismatch.
+                if str(exc) != "HWPX_SCORING_TABLE_NOT_FOUND":
+                    raise
         instruction = (
-            "QUANTITATIVE-ONLY DIAGNOSTIC. Return requirements=[]. Extract only "
+            "QUANTITATIVE-ONLY PARTIAL EXTRACTION. Return requirements=[]. Extract only "
             "scoring tables, formulas, bands, subtotals and complete recognition "
             "conditions including dates, VAT, shares, exclusions and footnotes. "
             "Never calculate company scores. Omitted source and images are not "
@@ -1333,7 +1371,6 @@ class OpenAIExtractionClient:
                     "api_calls": first.api_calls + outcome.api_calls,
                     "openai_telemetry": merge_openai_telemetry(first.openai_telemetry, outcome.openai_telemetry),
                 })
-            outcome = outcome.model_copy(update={"prompt_version": QUANTITATIVE_PROBE_PROMPT_VERSION})
             audit["xml_fallback_used"] = xml
             audit["native_hwpx_table_context"] = xml and native_context is not None
             if outcome.status == "ACCEPTED" or outcome.error_code not in {
@@ -1341,7 +1378,7 @@ class OpenAIExtractionClient:
             }:
                 break
             first = outcome
-        return QuantitativeProbeOutcome(source_audit=audit, outcome=outcome)
+        return outcome, audit
 
     def extract_quantitative_probe(
         self,
