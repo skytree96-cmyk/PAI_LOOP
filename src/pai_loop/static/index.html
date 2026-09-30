@@ -17,8 +17,8 @@
       href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css"
     />
     <!-- Legacy contract marker: href="./styles.css?v=20260824-decision1" -->
-    <link rel="stylesheet" href="./styles.css?v=20260929-uiux-review-v1" />
-    <link rel="stylesheet" href="./top-navigation.css?v=20260929-uiux-review-v1" />
+    <link rel="stylesheet" href="./styles.css?v=20260929-uiux-review-v2" />
+    <link rel="stylesheet" href="./top-navigation.css?v=20260929-uiux-review-v2" />
   </head>
   <body hidden>
     <a class="skip-link" href="#mainContent">본문으로 건너뛰기</a>
@@ -728,8 +728,18 @@
                   <button class="button button--primary" id="performanceEditorCreateButton" type="button" hidden>새 실적 등록</button>
                 </div>
               </div>
+              <form class="performance-filters performance-editor-filters" id="performanceEditorFilterForm" role="search" aria-label="운영 실적 목록 조건" hidden>
+                <label class="search-field performance-search-field"><span class="sr-only">사업명·발주기관·수행부서 검색</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg><input id="performanceEditorSearchInput" type="search" maxlength="200" placeholder="사업명 · 발주기관 · 수행부서 검색" autocomplete="off" /></label>
+                <label class="select-field"><span class="sr-only">수행부서</span><select id="performanceEditorDivisionFilter"><option value="">전체 부서</option></select></label>
+                <label class="select-field"><span class="sr-only">정렬</span><select id="performanceEditorSort"><option value="newest">최신 계약일순</option><option value="amount">계약금 높은순</option><option value="division">부서순</option><option value="name">사업명순</option></select></label>
+                <button class="button button--ghost" type="reset">선택한 조건 초기화</button>
+              </form>
               <div class="operator-list operator-list--compact" id="performanceEditorList" role="list"></div>
               <div class="state-view operator-empty" id="performanceEditorState"><strong>부서 로그인이 필요합니다</strong><p>공개·비식별 실적 후보는 수정되지 않습니다.</p></div>
+              <footer class="performance-pagination" id="performanceEditorPagination" hidden>
+                <div><strong id="performanceEditorPageRange">—</strong><span>직접 등록한 운영 실적</span></div>
+                <nav aria-label="운영 실적 페이지"><button class="button button--ghost" id="performanceEditorPreviousButton" type="button">이전</button><span id="performanceEditorPageLabel">1 / 1</span><button class="button button--ghost" id="performanceEditorNextButton" type="button">다음</button></nav>
+              </footer>
             </section>
 
             <section class="performance-explorer" aria-labelledby="performanceListHeading">
@@ -1484,6 +1494,6 @@
       })();
     </script>
     <!-- Legacy contract marker: src="./app.js?v=20260824-decision1" -->
-    <script src="./app.js?v=20260929-uiux-review-v1" defer></script>
+    <script src="./app.js?v=20260929-uiux-review-v2" defer></script>
   </body>
 </html>
