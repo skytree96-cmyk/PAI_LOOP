@@ -777,7 +777,8 @@ def _seed_stale_analysis_snapshot(
         run.basis_versions = stale_basis
         run.status = "COMPLETED"
         notice.published_at = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)
-        notice.deadline = deadline or datetime(2026, 9, 30, 9, 0, tzinfo=timezone.utc)
+        # A fixed calendar deadline expired on 2026-09-30 and the plan API uses the real clock.
+        notice.deadline = deadline or datetime.now(timezone.utc) + timedelta(days=30)
         notice.status = status
         session.commit()
     return notice_key
