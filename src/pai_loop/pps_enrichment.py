@@ -3768,6 +3768,10 @@ def _keyword_recovery_failure(version: NoticeVersion) -> bool:
         return True
     failure = safe_gateway_failure(payload.get("gateway_failure"))
     return bool(payload.get("error_code") == "HTTP_ERROR" and failure is not None and (
+        (failure.stage == "OUTPUT_NORMALIZATION" and failure.stop_reason in {None, "end_turn"}
+         and failure.detail_code in {"NATIVE_SCHEMA_DECODE_INVALID", "OUTPUT_JSON_INVALID",
+                                     "OUTPUT_NOT_OBJECT", "OUTPUT_FENCE_INVALID"})
+        or
         (failure.detail_code == "NATIVE_STOP_MAX_TOKENS" and failure.stop_reason == "max_tokens"
          and failure.usage is not None and failure.usage.output_tokens in {20_000, 32_000})
         or (failure.stage == "MODEL_EXECUTION"
@@ -3952,8 +3956,11 @@ def _enrich_selected_pps_attachment(
             )
         # An output-limit/timeout retry must actually shrink the source. Never
         # repeat an identical expensive full input under a different label.
-        if (recovery_source.source_payload.get("error_code") == "HTTP_ERROR"
-                and len(keyword_text) >= selection.selected_characters):
+        prior_gateway_failure = safe_gateway_failure(recovery_source.source_payload.get("gateway_failure"))
+        needs_smaller_input = bool(prior_gateway_failure is not None and (
+            prior_gateway_failure.detail_code == "NATIVE_STOP_MAX_TOKENS"
+            or prior_gateway_failure.stage == "MODEL_EXECUTION"))
+        if needs_smaller_input and len(keyword_text) >= selection.selected_characters:
             use_keyword_recovery = False
         else:
             selection = replace(selection, text=keyword_text, complete=False,

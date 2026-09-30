@@ -44,6 +44,11 @@ actually reduces the input; identical full-input stops retain their existing
 no-repeat behavior. Scheduled reads and accepted extraction records do not
 activate this path. The separate LONG_OUTPUT_ONCE contract is unchanged.
 
+A completed gateway JSON/schema normalization failure also permits the one XML
+fallback. An ambiguous transport timeout, refusal, provider error or token stop
+does not trigger an immediate second call. Failed quote output is not persisted
+as unverified recovery scoring rows.
+
 The recovery keeps the existing two-call attachment ceiling: one keyword text
 call, then XML on an eligible validation failure, without transport retries.
 Native HWPX tables are included when present; a paragraph-encoded HWPX table

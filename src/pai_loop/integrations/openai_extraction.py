@@ -1379,9 +1379,19 @@ class OpenAIExtractionClient:
             audit["xml_fallback_used"] = xml
             audit["native_hwpx_table_context"] = xml and native_context is not None
             audit["native_hwpx_context_status"] = native_context_status
-            if outcome.status == "ACCEPTED" or outcome.error_code not in {
+            retryable_output = outcome.error_code in {
                 "SCHEMA_VALIDATION_ERROR", "UNVERIFIED_QUOTE", "INCOMPLETE_RESPONSE",
-            }:
+            }
+            failure = outcome.gateway_failure
+            if (outcome.error_code == "HTTP_ERROR" and failure is not None
+                    and failure.stage == "OUTPUT_NORMALIZATION"
+                    and failure.detail_code in {"NATIVE_SCHEMA_DECODE_INVALID", "OUTPUT_JSON_INVALID",
+                                                "OUTPUT_NOT_OBJECT", "OUTPUT_FENCE_INVALID"}
+                    and failure.stop_reason in {None, "end_turn"}):
+                retryable_output = True
+            # A known completed but malformed output may use XML. Transport
+            # ambiguity, provider errors, refusals and token stops never do.
+            if outcome.status == "ACCEPTED" or not retryable_output:
                 break
             first = outcome
         return outcome, audit

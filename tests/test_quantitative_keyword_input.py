@@ -153,3 +153,26 @@ def test_oversized_optional_native_structure_does_not_block_bounded_text():
     assert result.outcome.api_calls == 1
     assert result.source_audit['native_hwpx_context_status'] == 'HWPX_CONTEXT_SIZE_LIMIT'
     assert result.source_audit['native_hwpx_table_context'] is False
+
+
+@pytest.mark.parametrize('detail,stage,code,expected_calls', [
+    ('NATIVE_SCHEMA_DECODE_INVALID', 'OUTPUT_NORMALIZATION', 'OUTPUT_REJECTED', 2),
+    ('MODEL_TRANSPORT_TIMEOUT', 'MODEL_EXECUTION', 'MODEL_EXECUTION_FAILED', 1),
+])
+def test_completed_gateway_schema_error_can_retry_but_ambiguous_timeout_cannot(detail, stage, code, expected_calls):
+    payload, review = probe_fixture()
+    seen = []
+    def handler(request):
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(500, json={'gateway_error': {
+                'version': 'gateway-failure-v1', 'stage': stage, 'code': code,
+                'detail_code': detail, 'upstream_http_status': None,
+            }})
+        return response(payload)
+    with make_client(handler) as client:
+        result = client.extract_quantitative_keywords(document_text='정량 배점표\n' + review.canonical_text,
+                                                     allowed_attachment_ids={ATT})
+    assert len(seen) == result.outcome.api_calls == expected_calls
+    assert result.source_audit['xml_fallback_used'] is (expected_calls == 2)
+    assert result.outcome.status == ('ACCEPTED' if expected_calls == 2 else 'REVIEW')
