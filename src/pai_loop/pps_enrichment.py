@@ -1307,6 +1307,77 @@ def _numeric_demotion_preserves_scope(
     return outline(old.available_candidates) == outline(new.review_candidates)
 
 
+# Failures that say nothing about the document's content: the bytes never
+# arrived, a resource limit refused them, or the model reply was unusable.
+# Parser/content failures (empty text, broken archive, ...) are not listed:
+# on the same bytes they contradict the earlier read and stay a barrier.
+EVIDENCE_FREE_FAILURE_CODES = (FAILED_ATTACHMENT_RETRY_CODES - {
+    "XLS_PARSE_FAILED", "XLS_EXTRACTOR_UNAVAILABLE", "XLS_CODEPAGE_UNVERIFIED",
+    "XLS_TEXT_NOT_SEMANTIC", "ATTACHMENT_EMPTY",
+}) | {
+    "UNVERIFIED_QUOTE", "ATTACHMENT_TOO_LARGE", "PDF_PAGE_LIMIT",
+    "HWPX_UNCOMPRESSED_LIMIT", "DOCUMENT_TEXT_TOO_LARGE",
+}
+
+
+def _is_evidence_free_failure(version: NoticeVersion, accepted_sha256: str) -> bool:
+    payload = version.source_payload
+    if (
+        not isinstance(payload, dict)
+        or payload.get("status") == "ACCEPTED"
+        or payload.get("error_code") not in EVIDENCE_FREE_FAILURE_CODES
+        or classify_attempt_header(payload) == "UNSUPPORTED"
+    ):
+        return False
+    processing = payload.get("document_processing")
+    if (
+        isinstance(processing, dict)
+        and processing.get("document_digest_basis") == "FAILED_DOWNLOAD_MARKER"
+    ):
+        return True
+    # Bytes were read: only the very same document keeps the older proof.
+    return str(version.file_sha256 or "").casefold() == accepted_sha256 == str(
+        payload.get("document_sha256") or ""
+    ).casefold()
+
+
+def _accepted_behind_evidence_free_failures(
+    versions: list[NoticeVersion],
+) -> NoticeVersion | None:
+    """Keep the newest valid ACCEPTED read when only evidence-free failures follow it.
+
+    A retry that could not download the file or got an unusable model reply
+    did not re-read the document, so it must not erase the earlier extraction
+    of the same current-manifest attachment. Any other newer attempt -- a
+    different file, a parser/content failure, an unknown contract or another
+    ACCEPTED/REVIEW read -- remains a barrier. Read-only; history is unchanged.
+    """
+    for index, previous in enumerate(versions):
+        if _quantitative_read_identity(previous) is None:
+            continue
+        payload = previous.source_payload
+        if not index or not _has_valid_quantitative_record(
+            previous, attachment_id=payload["attachment_id"],
+            current_manifest_sha256=payload["current_manifest_sha256"],
+        ):
+            return None
+        accepted_sha256 = str(previous.file_sha256).casefold()
+        contract = classify_attempt_header(payload)
+        if all(
+            _is_evidence_free_failure(later, accepted_sha256)
+            # A new parser/prompt generation never revives older source text.
+            and classify_attempt_header(later.source_payload) == contract
+            and later.source_payload.get("attachment_id") == payload["attachment_id"]
+            and later.source_payload.get("current_manifest_sha256")
+            == payload["current_manifest_sha256"]
+            and later.source_payload.get("manifest_sha256") == payload["manifest_sha256"]
+            for later in versions[:index]
+        ):
+            return previous
+        return None
+    return None
+
+
 def preserved_quantitative_read_proof(
     history: Iterable[NoticeVersion],
 ) -> NoticeVersion | None:
@@ -1324,7 +1395,7 @@ def preserved_quantitative_read_proof(
     newest = versions[0]
     identity = _quantitative_read_identity(newest)
     if identity is None:
-        return None
+        return _accepted_behind_evidence_free_failures(versions)
     attachment_id, current_manifest = identity[0], newest.source_payload["current_manifest_sha256"]
     proof_args = dict(attachment_id=attachment_id, current_manifest_sha256=current_manifest)
     if quantitative_record_proves_available(newest, **proof_args):

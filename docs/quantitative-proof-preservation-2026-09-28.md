@@ -28,6 +28,27 @@ A prior proof may be selected only when all of these checks pass:
 - No source-gap warning, additional criterion, missing provenance, unsupported
   generation, failed extraction, or other validation issue is crossed.
 
+### Retries that never re-read the document (2026-10-01)
+
+A second, separate path keeps the newest valid `ACCEPTED` read (any record
+status, not only `AVAILABLE`) when every newer attempt for the same attachment
+is a failure that carries no evidence about the document's content:
+
+- the error code is a download/transport, resource-limit or unusable model
+  reply code (`EVIDENCE_FREE_FAILURE_CODES` in `pps_enrichment.py`, e.g.
+  `ATTACHMENT_NETWORK_ERROR`, `HTTP_ERROR`, `SCHEMA_VALIDATION_ERROR`,
+  `UNVERIFIED_QUOTE`, `ATTACHMENT_TOO_LARGE`);
+- the failed attempt either never received bytes (`FAILED_DOWNLOAD_MARKER`) or
+  read the very same native document digest;
+- attachment identity, descriptor and full-manifest hashes match, and the
+  failure has the same released contract as the accepted read.
+
+Parser/content failures (`DOCUMENT_TEXT_EMPTY`, broken archives, XLS parse
+failures), a different file, a new contract generation, an unknown contract, or
+any other newer read remain barriers. This closes the 2026-10-01 regression in
+which a broad retry replaced 28 notices' accepted extractions with download and
+model failures. It reads history only; nothing is rewritten.
+
 `NO_TABLE` and `NOT_APPLICABLE` results are not treated as numeric extraction
 losses. A newer usable candidate remains authoritative. A changed source never
 borrows the previous source's proof. Unsupported newer contracts also block

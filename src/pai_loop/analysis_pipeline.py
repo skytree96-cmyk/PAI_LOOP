@@ -468,7 +468,12 @@ def _select_source_versions_from_list(
         )
         if payload.get("source_kind") == PPS_ATTACHMENT_SOURCE:
             aid = _attachment_identity(payload, version)
-            if version.version_no < latest_pps_numbers.get(aid, -1):
+            if (
+                version.version_no < latest_pps_numbers.get(aid, -1)
+                # A proof kept behind evidence-free failures (e.g. a failed
+                # download marker) was already bound to its own bytes.
+                and preserved_proof.get(aid) != version.version_no
+            ):
                 latest_digest = latest_native_digests.get(aid, "")
                 if (
                     re.fullmatch(r"[a-f0-9]{64}", latest_digest) is None
