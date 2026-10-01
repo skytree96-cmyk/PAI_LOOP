@@ -339,3 +339,19 @@ def test_card_from_a_freshly_loaded_pps_notice_reads_every_version(client):
     assert fresh == preloaded
     reason = fresh["body"][5]["items"][0]["text"]
     assert "일일 분석 대상으로 선택되지 않은" not in reason
+
+
+def test_card_links_can_use_the_sign_in_domain_without_moving_the_sso_host(monkeypatch):
+    from pai_loop.teams_bot import TeamsBotSettings
+
+    monkeypatch.setenv("PAI_TEAMS_BOT_APP_ID", "4da4ecbc-67cb-44d9-91bf-920571217e13")
+    monkeypatch.setenv("PAI_TEAMS_BOT_APP_SECRET", "SYN-secret")
+    monkeypatch.setenv("PAI_TEAMS_TENANT_ID", "5de0d1a0-f5ff-453e-8ddf-521b803aa5ce")
+    monkeypatch.setenv("PAI_TEAMS_PUBLIC_BASE_URL", "https://syn-run.example.test")
+    monkeypatch.delenv("PAI_TEAMS_LINK_BASE_URL", raising=False)
+    assert teams_cards.link_base_url() == "https://syn-run.example.test"
+    monkeypatch.setenv("PAI_TEAMS_LINK_BASE_URL", "https://syn-signin.example.test")
+    assert teams_cards.link_base_url() == "https://syn-signin.example.test"
+    assert teams_cards._detail_url(teams_cards.link_base_url(), "SYN") == "https://syn-signin.example.test/?notice=SYN"
+    # The tab SSO audience still names the registered public host.
+    assert "api://syn-run.example.test/botid-4da4ecbc-67cb-44d9-91bf-920571217e13" in TeamsBotSettings.from_env().sso_audiences

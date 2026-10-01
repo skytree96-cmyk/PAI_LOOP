@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlsplit
@@ -41,6 +42,20 @@ RECOMMENDATION_LABELS = {"GO": "적극 검토", "HOLD": "조건부 검토", "NO_
 QUALIFICATION_STYLES = {"PASS": "good", "REVIEW": "warning", "FAIL": "attention"}
 WEEKDAYS = "월화수목금토일"
 DETAILS_ID = "pai-analysis-details"
+
+
+def link_base_url() -> str:
+    """The origin a card's buttons open.
+
+    `PAI_TEAMS_PUBLIC_BASE_URL` also names the host in the Teams tab SSO
+    audience (`api://<host>/botid-<app id>`), so it must keep matching the Entra
+    registration. People sign in to the custom domain instead, and a link to the
+    Cloud Run host lands them in a separate, signed-out session. The optional
+    `PAI_TEAMS_LINK_BASE_URL` moves only the links.
+    """
+
+    return (os.getenv("PAI_TEAMS_LINK_BASE_URL", "").strip()
+            or os.getenv("PAI_TEAMS_PUBLIC_BASE_URL", "").strip())
 
 
 def _plain(value: object, limit: int = 240) -> str:
