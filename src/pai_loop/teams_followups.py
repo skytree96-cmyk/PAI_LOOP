@@ -308,30 +308,53 @@ def _deliver_claim(session_factory, claim: tuple[str, str], now: datetime,
     from .teams_identity_models import TeamsRecipient
 
     delivery_id, token = claim
+
+    def still_claimed(session: Session) -> tuple[TeamsFollowDelivery, TeamsFollow, Notice] | str:
+        """Re-check the lease and replan the follow; a string is the final outcome."""
+        row = session.get(TeamsFollowDelivery, delivery_id)
+        if not row or row.status != "CLAIMED" or row.lease_token != token or row.lease_until <= now:
+            return "LOST_LEASE"
+        follow = session.get(TeamsFollow, row.follow_id)
+        notice = session.get(Notice, follow.notice_id) if follow else None
+        if not follow or not notice or row.generation != follow.generation:
+            row.status, row.error_code = "CANCELLED", "SUBSCRIPTION_CHANGED"
+            return "CANCELLED"
+        reconcile_follow(session, follow, notice, now)
+        session.flush()
+        session.refresh(row)
+        if row.status != "CLAIMED" or row.lease_token != token:
+            return row.status
+        return row, follow, notice
+
     # Build from current state while still before the durable send boundary.
     try:
         with session_factory() as session:
             serial_transaction(session, scope="teams-followups")
-            row = session.get(TeamsFollowDelivery, delivery_id)
-            if not row or row.status != "CLAIMED" or row.lease_token != token or row.lease_until <= now:
+            checked = still_claimed(session)
+            if isinstance(checked, str):
                 session.commit()
-                return "LOST_LEASE"
-            follow = session.get(TeamsFollow, row.follow_id)
-            notice = session.get(Notice, follow.notice_id) if follow else None
-            if not follow or not notice or row.generation != follow.generation:
-                row.status, row.error_code = "CANCELLED", "SUBSCRIPTION_CHANGED"
-                session.commit()
-                return "CANCELLED"
-            reconcile_follow(session, follow, notice, now)
-            session.flush()
-            session.refresh(row)
-            if row.status != "CLAIMED" or row.lease_token != token:
-                session.commit()
-                return row.status
-            recipient = session.get(TeamsRecipient, follow.recipient_id)
+                return checked
+            row, follow, notice = checked
             account = session.get(DepartmentAccount, follow.account_id)
-            card = card_builder(session, notice, row.event_kind, now=now, base_url=base_url,
-                                department_id=account.department_id if account else None)
+            notice_id, event_kind = notice.id, row.event_kind
+            department_id = account.department_id if account else None
+            session.commit()
+        # Rendering reads the whole analysis and can take tens of seconds, so it
+        # runs outside the global lock: holding it here made every interest
+        # registration wait behind a card. The committed lease alone keeps this
+        # delivery ours, and the lease is checked again before the send boundary.
+        with session_factory() as session:
+            card = card_builder(session, session.get(Notice, notice_id), event_kind, now=now,
+                                base_url=base_url, department_id=department_id)
+            session.rollback()
+        with session_factory() as session:
+            serial_transaction(session, scope="teams-followups")
+            checked = still_claimed(session)
+            if isinstance(checked, str):
+                session.commit()
+                return checked
+            row, follow, _notice = checked
+            recipient = session.get(TeamsRecipient, follow.recipient_id)
             row.status, row.attempts = "SENDING", row.attempts + 1
             row.lease_until, row.updated_at = now + timedelta(seconds=LEASE_SECONDS), now
             session.commit()
