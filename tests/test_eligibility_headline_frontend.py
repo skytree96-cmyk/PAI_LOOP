@@ -135,3 +135,42 @@ setTimeout(() => {
 }, 0);
 """
     subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
+
+
+def test_manager_go_shows_review_or_fail_as_pass_for_display_only() -> None:
+    """담당자 판단이 참여(GO)면 확인 필요·미충족을 화면에서 충족으로 보여준다."""
+    source = APP_JS.read_text(encoding="utf-8")
+    helpers = "function managerOverridesEligibility" + _function_body(
+        source, "managerOverridesEligibility", "displayedEligibilityStatus"
+    )
+    helpers += "\nfunction displayedEligibilityStatus" + _function_body(
+        source, "displayedEligibilityStatus", "statusPill"
+    )
+    script = r"""
+const assert = require("node:assert/strict");
+let automatic = "REVIEW";
+const effectiveEligibilityStatus = () => automatic;
+const go = { decision: "GO" };
+
+for (automatic of ["REVIEW", "FAIL"]) {
+  assert.equal(displayedEligibilityStatus(go), "PASS");
+  assert.equal(displayedEligibilityStatus({ decision: "HOLD" }), automatic);
+  assert.equal(displayedEligibilityStatus({ decision: "NO_GO" }), automatic);
+  assert.equal(displayedEligibilityStatus({}), automatic);
+}
+// 이미 충족 계열이면 손대지 않는다.
+for (automatic of ["PASS", "PASS_CURRENT", "PASS_EXCEPTION"]) {
+  assert.equal(displayedEligibilityStatus(go), automatic);
+}
+"""
+    subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
+
+
+def test_manager_go_override_does_not_reach_ai_opinion_or_teams() -> None:
+    source = APP_JS.read_text(encoding="utf-8")
+    recommendation = _function_body(source, "effectiveRecommendation", "aiJudgmentMarkup")
+    teams = _function_body(source, "renderTeamsPreview", "buildAdaptiveCardPayload")
+    teams += _function_body(source, "buildAdaptiveCardPayload", "normalizeTeamsMockLog")
+    assert "displayedEligibilityStatus" not in recommendation
+    assert "effectiveEligibilityStatus(notice)" in recommendation
+    assert "displayedEligibilityStatus" not in teams

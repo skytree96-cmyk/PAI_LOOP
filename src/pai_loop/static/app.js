@@ -5398,7 +5398,7 @@
         if (state.currentView === "closed" && !notice.resultStatus) return false;
       }
       const qualification = ["fail", "review", "urgent", "cancelled", "result-missing"].includes(state.currentView)
-        ? dashboardEligibilityStatus(notice) : effectiveEligibilityStatus(notice);
+        ? dashboardEligibilityStatus(notice) : displayedEligibilityStatus(notice);
       if (eligibility !== "all" && qualification !== eligibility) return false;
       if (recommendation !== "all" && effectiveRecommendation(notice) !== recommendation) return false;
       const decision = notice.decision || (hasKnownOperatorDecision(notice) ? "UNDECIDED" : "UNAVAILABLE");
@@ -6769,7 +6769,7 @@
     const historicalAnalyzed = notice.historicalAnalysis && !cancelled;
     const displayAnalyzed = !cancelled && (analyzed || historicalAnalyzed);
     const qualityReview = isDocumentQualityReview(notice);
-    const effectiveEligibility = effectiveEligibilityStatus(notice);
+    const effectiveEligibility = displayedEligibilityStatus(notice);
     const eligibilitySummaryClass = cancelled || !analyzed || qualityReview
       ? "summary-metric--pending"
       : `summary-metric--eligibility summary-metric--eligibility-${effectiveEligibility.toLowerCase()}`;
@@ -7046,7 +7046,7 @@
       if (metric.querySelector("small")?.textContent !== "참가자격 확인 결과") return;
       const value = metric.querySelector("strong");
       if (value) value.textContent = analysisStatusLabel(notice);
-      const status = effectiveEligibilityStatus(notice).toLowerCase();
+      const status = displayedEligibilityStatus(notice).toLowerCase();
       metric.className = metric.className.replace(/summary-metric--eligibility-[a-z_]+/, `summary-metric--eligibility-${status}`);
     });
   }
@@ -9171,6 +9171,8 @@
       if (state.selectedNotice?.noticeKey === notice.noticeKey) {
         renderExistingDecision(updated);
         renderPipelineIntoExisting(updated);
+        els.eligibilityOverall.innerHTML = analysisStatusPill(updated);
+        refreshEligibilitySummaryMetric(updated);
         setDecisionDockExpanded(false);
         els.decisionDockToggle.focus({ preventScroll: true });
       }
@@ -9399,6 +9401,17 @@
     window.setTimeout(remove, type === "error" ? 7000 : 5000);
   }
 
+  // 담당자가 참여(GO)로 판단한 공고는 확인 필요·미충족 판정도 화면에는 충족으로 보인다.
+  // 표시 전용이다. AI 검토 의견, 판단 저장 시 사유 요구, Teams 알림은 자동 판정을 그대로 쓴다.
+  function managerOverridesEligibility(notice, status = effectiveEligibilityStatus(notice)) {
+    return notice?.decision === "GO" && ["REVIEW", "FAIL"].includes(status);
+  }
+
+  function displayedEligibilityStatus(notice) {
+    const status = effectiveEligibilityStatus(notice);
+    return managerOverridesEligibility(notice, status) ? "PASS" : status;
+  }
+
   function statusPill(status) {
     const value = STATUS_LABELS[status] ? status : "UNKNOWN";
     return `<span class="status-pill status-pill--${value.toLowerCase()}">${STATUS_LABELS[value]}</span>`;
@@ -9415,7 +9428,11 @@
       return `<span class="status-pill status-pill--${value.toLowerCase()}" title="${escapeAttribute(notice.historicalAnalysisReason)}">당시 ${escapeHtml(STATUS_LABELS[value])}</span>`;
     }
     if (isDocumentQualityReview(notice)) return '<span class="analysis-state" title="원문 근거 검증을 보완해야 참가자격을 판단할 수 있습니다">분석 보완</span>';
-    if (notice.analysisState === "EVALUATED") return statusPill(effectiveEligibilityStatus(notice));
+    if (notice.analysisState === "EVALUATED") {
+      const status = effectiveEligibilityStatus(notice);
+      if (!managerOverridesEligibility(notice, status)) return statusPill(status);
+      return `<span class="status-pill status-pill--pass" title="${escapeAttribute(`담당자 참여 판단으로 충족 표시 · 자동 판정 ${STATUS_LABELS[status]}`)}">${STATUS_LABELS.PASS}</span>`;
+    }
     if (notice.analysisState === "ANALYZED") return '<span class="analysis-state" title="첨부 분석은 완료됐지만 현재 판단이 저장되지 않았습니다">판단 대기</span>';
     if (notice.analysisState === "FAILED") return '<span class="analysis-state analysis-state--error">분석 오류</span>';
     return '<span class="analysis-state">미분석</span>';
@@ -9658,7 +9675,7 @@
     if (isCancelledNotice(notice)) return "취소 공고";
     if (notice.historicalAnalysis) return `당시 ${STATUS_LABELS[notice.eligibilityStatus] || "미확인"}`;
     if (notice.analysisState === "ANALYZED") return "판단 대기";
-    return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[effectiveEligibilityStatus(notice)];
+    return isDocumentQualityReview(notice) ? "근거 보완" : STATUS_LABELS[displayedEligibilityStatus(notice)];
   }
 
   function analysisRecommendationLabel(notice) {
