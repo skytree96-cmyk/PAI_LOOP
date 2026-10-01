@@ -8205,14 +8205,16 @@
         throw new Error("낙찰 표 응답이 불완전하여 이전 저장본을 유지합니다.");
       }
       const rows = payload.records.map(normalizeHistory);
-      const updated = {
-        ...notice,
+      // 응답을 기다리는 동안 담당자 판단 등이 새로 붙었을 수 있다. 요청 전 사본이 아니라
+      // 지금의 목록·선택 공고에 낙찰 이력만 덧붙인다.
+      const withHistory = (item) => ({
+        ...item,
         awardHistory: rows,
-        raw: sanitizeNoticeAwardHistory(notice.raw, rows),
-      };
+        raw: sanitizeNoticeAwardHistory(item.raw, rows),
+      });
       const index = state.notices.findIndex((item) => item.noticeKey === noticeKey);
-      if (index >= 0) state.notices[index] = updated;
-      if (state.selectedNotice?.noticeKey === noticeKey) state.selectedNotice = updated;
+      if (index >= 0) state.notices[index] = withHistory(state.notices[index]);
+      if (state.selectedNotice?.noticeKey === noticeKey) state.selectedNotice = withHistory(state.selectedNotice);
       state.awardHistoryMeta[noticeKey] = { status: table.rows.length ? "ready" : "empty", message: "", intelligence: payload };
     } catch (error) {
       state.awardHistoryMeta[noticeKey] = { ...current, status: "error", message: humanizeError(error) };

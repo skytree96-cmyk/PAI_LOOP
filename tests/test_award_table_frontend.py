@@ -294,6 +294,38 @@ const apiRequest = async () => { if (response instanceof Error) throw response; 
     assert result.returncode == 0, result.stderr
 
 
+
+def test_award_reload_keeps_a_decision_that_arrived_while_loading() -> None:
+    """낙찰 이력을 기다리는 동안 붙은 담당자 판단을 요청 전 사본으로 지우지 않는다."""
+    source = APP_JS.read_text(encoding="utf-8")
+    loader = "async function loadStoredAwardHistory" + _function_body(source, "loadStoredAwardHistory", "renderAwardHistoryPanel")
+    script = r"""
+const assert = require("node:assert/strict");
+const before = { noticeKey: "SYN-current", awardHistory: [], raw: {} };
+const row = { year: 2025, company_name: "SYN-A", bid_notice_no: "SYN-old", match_kind: "SAME_PROJECT", bid_amount: 10, technical_evaluation: null, price_evaluation: null, total_evaluation: null };
+const valid = { notice_key: "SYN-current", records: [{ winner: "SYN-A" }], annual_award_table: { rows: [row], row_count: 1, years: [2026, 2025, 2024] } };
+const state = { source: "api", notices: [before], selectedNotice: before, awardHistoryMeta: {} };
+const normalizeHistory = (row) => row;
+const sanitizeNoticeAwardHistory = (raw) => raw;
+const humanizeError = (error) => error.message;
+const updateAwardHistorySummaryMetric = () => {};
+const renderAwardHistoryPanel = () => {};
+const apiRequest = async () => {
+  // 응답 대기 중 상세가 담당자 판단까지 불러와 선택 공고를 바꾼다.
+  state.selectedNotice = { ...before, decision: "GO" };
+  state.notices[0] = { ...before, decision: "GO" };
+  return valid;
+};
+(async () => {
+  await loadStoredAwardHistory("SYN-current");
+  assert.equal(state.selectedNotice.decision, "GO");
+  assert.equal(state.notices[0].decision, "GO");
+  assert.equal(state.selectedNotice.awardHistory[0].winner, "SYN-A");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(["node", "-e", loader + "\n" + script], capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+
 def test_award_groups_preserve_project_identity_facts_and_year_view_selection() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     script = r"""
