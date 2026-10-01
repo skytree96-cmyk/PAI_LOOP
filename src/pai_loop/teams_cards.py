@@ -9,7 +9,13 @@ from urllib.parse import urlencode, urlsplit
 from sqlalchemy.orm import Session
 
 from .analysis_pipeline import _select_source_versions
-from .api import _curated_public_extraction, _detail, _pps_authorities_by_notice_id
+from .api import (
+    _curated_public_extraction,
+    _detail,
+    _pps_authorities_by_notice_id,
+    department_manager_go,
+    manager_go_qualification,
+)
 from .award_intelligence import build_award_intelligence
 from .eligibility_policy import classify_requirements, load_public_company_profile
 from .integrations.openai_extraction import PROMPT_VERSION
@@ -134,7 +140,8 @@ def _current_requirement_groups(session: Session, notice: Notice, now: datetime)
 
 
 def build_notice_card(session: Session, notice: Notice, event_kind: str, *,
-                      now: datetime | None = None, base_url: str) -> dict:
+                      now: datetime | None = None, base_url: str,
+                      department_id: str | None = None) -> dict:
     """No provider calls, score recomputation, or persistence while rendering.
 
     The visible part mirrors the web "Teams 알림 미리보기": source, title, status
@@ -153,9 +160,13 @@ def build_notice_card(session: Session, notice: Notice, event_kind: str, *,
     event_label = EVENT_LABELS.get(event_kind, "관심 공고 알림")
     title = _plain(detail.title, 350)
 
-    qualification = STATUS_LABELS.get(detail.qualification_status, "미판정") if current else "현재 검토 제외"
+    # 받는 사람 부서가 참여로 판단한 공고는 웹 화면과 같이 참가자격을 충족으로 보낸다.
+    qualification_status = manager_go_qualification(
+        detail.qualification_status, department_manager_go(session, notice.id, department_id),
+    )
+    qualification = STATUS_LABELS.get(qualification_status, "미판정") if current else "현재 검토 제외"
     badges = [
-        _badge(f"자격 {qualification}", QUALIFICATION_STYLES.get(detail.qualification_status, "emphasis"))
+        _badge(f"자격 {qualification}", QUALIFICATION_STYLES.get(qualification_status, "emphasis"))
         if current else _badge(qualification, "emphasis"),
         _deadline_badge(deadline, now),
     ]

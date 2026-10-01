@@ -1116,12 +1116,41 @@ def _result_review_count(session: Session, department_id: str | None = None) -> 
     return sum(automatic_review_pending(items, department_id) for items in groups.values())
 
 
+def manager_go_qualification(qualification: str, manager_go: bool) -> str:
+    """담당자가 참여(GO)로 판단한 공고는 확인 필요·미충족 참가자격을 충족으로 본다."""
+
+    if manager_go and qualification in {Eligibility.FAIL.value, Eligibility.REVIEW.value}:
+        return Eligibility.PASS.value
+    return qualification
+
+
+def department_manager_go(session: Session, notice_id: str, department_id: str | None) -> bool:
+    """Whether this department's latest decision on the notice is 참여(GO)."""
+
+    if not department_id:
+        return False
+    choice = session.scalar(
+        select(UserDecision.choice)
+        .where(UserDecision.notice_id == notice_id, UserDecision.department_id == department_id)
+        .order_by(
+            func.coalesce(UserDecision.department_revision, -1).desc(),
+            UserDecision.created_at.desc(),
+            UserDecision.id.desc(),
+        )
+        .limit(1)
+    )
+    return choice == "GO"
+
+
 def _department_decision_index(
     session: Session,
     *,
     department: dict[str, Any] | None,
-) -> tuple[set[str], set[str]]:
-    """Return notice ids this department has already judged, and its GO set.
+) -> tuple[set[str], set[str], set[str]]:
+    """Return notice ids this department has judged, its GO set, and its 참여 set.
+
+    The GO set also counts legacy CONDITIONAL_GO work; the 참여 set is the
+    plain GO choice that also overrides the eligibility verdict.
 
     Only the latest decision of the same department counts, using the exact
     ordering the department statistics already apply. A decision by another
@@ -1146,13 +1175,16 @@ def _department_decision_index(
     ).where(UserDecision.department_id.in_(department_ids)).subquery()
     decided: set[str] = set()
     go: set[str] = set()
+    participate: set[str] = set()
     for notice_id, choice in session.execute(
         select(ranked.c.notice_id, ranked.c.choice).where(ranked.c.decision_rank == 1)
     ).all():
         decided.add(notice_id)
         if choice in ("GO", "CONDITIONAL_GO"):
             go.add(notice_id)
-    return decided, go
+        if choice == "GO":
+            participate.add(notice_id)
+    return decided, go, participate
 
 
 def _department_keyword_matched_ids(
@@ -1368,7 +1400,7 @@ def dashboard(
             "pending_decision", "in_progress", "urgent_in_progress", "result_missing_decided",
         )
     }
-    decided_notice_ids, go_notice_ids = _department_decision_index(
+    decided_notice_ids, go_notice_ids, participate_notice_ids = _department_decision_index(
         session, department=selected_department
     )
     keyword_matched_ids = _department_keyword_matched_ids(
@@ -1429,7 +1461,10 @@ def dashboard(
                 if effective_status in lifecycle_counts:
                     lifecycle_counts[effective_status] += 1
                 valid_evaluation = _latest_evaluation(notice)
-                valid_qualification = _dashboard_qualification(notice, valid_evaluation)
+                valid_qualification = manager_go_qualification(
+                    _dashboard_qualification(notice, valid_evaluation),
+                    selected_department is not None and notice.id in participate_notice_ids,
+                )
                 latest = None if is_cancelled else valid_evaluation
                 qualified = (
                     not is_cancelled
@@ -1689,7 +1724,7 @@ def dashboard_departments(request: Request, session: DbSession) -> dict[str, Any
         selected_matched_count = 0
         selected_recommended_count = 0
         region_gate_blocked_count = 0
-        _decided, go_ids = _department_decision_index(session, department=profile)
+        _decided, go_ids, _participate = _department_decision_index(session, department=profile)
         for notice_id, title, agency, category in actionable:
             ranking = rank_notice_for_department(
                 title=title, agency=agency, category=category, department_id=profile["id"],

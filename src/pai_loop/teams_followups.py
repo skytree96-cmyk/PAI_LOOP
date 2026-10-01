@@ -231,12 +231,13 @@ def unregister_follow(notice_id: str, request: Request) -> dict:
 def preview_follow(notice_id: str, request: Request) -> dict:
     from .teams_bot import recipient_for_request
     from .teams_cards import build_notice_card
-    authenticated_account(request)
+    identity = authenticated_account(request)
     with request.app.state.session_factory() as session:
         recipient_for_request(request, session)
         notice = _notice(session, notice_id)
         return {"card": build_notice_card(session, notice, "REGISTERED", now=now_utc(),
-                                         base_url=os.getenv("PAI_TEAMS_PUBLIC_BASE_URL", ""))}
+                                         base_url=os.getenv("PAI_TEAMS_PUBLIC_BASE_URL", ""),
+                                         department_id=identity.department_id)}
 
 
 def synchronize_schedules(session_factory, now: datetime) -> None:
@@ -328,7 +329,9 @@ def _deliver_claim(session_factory, claim: tuple[str, str], now: datetime,
                 session.commit()
                 return row.status
             recipient = session.get(TeamsRecipient, follow.recipient_id)
-            card = card_builder(session, notice, row.event_kind, now=now, base_url=base_url)
+            account = session.get(DepartmentAccount, follow.account_id)
+            card = card_builder(session, notice, row.event_kind, now=now, base_url=base_url,
+                                department_id=account.department_id if account else None)
             row.status, row.attempts = "SENDING", row.attempts + 1
             row.lease_until, row.updated_at = now + timedelta(seconds=LEASE_SECONDS), now
             session.commit()

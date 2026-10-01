@@ -378,3 +378,35 @@ def test_other_department_completed_result_does_not_hide_our_missing_result(clie
     params = {"department_id": "future-ai-education"}
     assert client.get("/api/v1/notices", params=params).json()[0]["result_entry_status"] == "MISSING"
     assert client.get("/api/v1/dashboard", params=params).json()["work_queue_counts"]["result_missing_decided"] == 1
+
+
+def test_department_participation_turns_fail_and_review_into_pass(client, monkeypatch):
+    """담당자(내 부서)가 참여로 판단한 공고는 미충족·확인 필요 집계에서 빠지고 충족으로 본다."""
+
+    monkeypatch.setattr(api_module, "datetime", FixedDateTime)
+    with client.app.state.session_factory() as session:
+        go_fail = _notice(session, "go-fail", "FAIL")
+        hold_fail = _notice(session, "hold-fail", "FAIL")
+        other_fail = _notice(session, "other-fail", "FAIL")
+        _notice(session, "plain-fail", "FAIL")
+        session.flush()
+        _decide(session, go_fail, "GO")
+        _decide(session, hold_fail, "HOLD")
+        _decide(session, other_fail, "GO", department_id="future-ai-capability")
+        session.commit()
+
+    mine = client.get("/api/v1/dashboard", params={"department_id": "future-ai-education"}).json()
+    assert mine["work_queue_counts"]["fail"] == 3  # only our GO is lifted
+    other = client.get("/api/v1/dashboard", params={"department_id": "future-ai-capability"}).json()
+    assert other["work_queue_counts"]["fail"] == 3
+    organisation = client.get("/api/v1/dashboard").json()
+    assert organisation["work_queue_counts"]["fail"] == 4  # no single department speaks for all
+
+
+def test_manager_go_qualification_rule():
+    rule = api_module.manager_go_qualification
+    assert rule("FAIL", True) == "PASS"
+    assert rule("REVIEW", True) == "PASS"
+    assert rule("PASS", True) == "PASS"
+    assert rule("NOT_EVALUATED", True) == "NOT_EVALUATED"
+    assert rule("FAIL", False) == "FAIL"
