@@ -377,3 +377,34 @@ def test_cli_validates_production_security_before_opening_database(monkeypatch):
     monkeypatch.setattr("pai_loop.database.build_engine", lambda *args: pytest.fail("unsafe CLI opened DB"))
     with pytest.raises(RuntimeError):
         module.main()
+
+
+def test_rendering_a_card_does_not_block_another_registration(store):
+    """Rendering can take tens of seconds in production; registrations must not queue behind it."""
+    register(store)
+    registered_while_rendering = []
+
+    def slow_builder(session, notice, kind, **kwargs):
+        # Under the old lock this second writer waited for the dispatcher.
+        registered_while_rendering.append(register(store, recipient="SYN-BOB"))
+        return {"type": "AdaptiveCard"}
+
+    assert dispatch(store, kst(10), builder=slow_builder)["outcomes"] == {"SENT": 2}
+    assert len(registered_while_rendering) == 2
+    with store() as session:
+        assert session.scalar(select(TeamsFollow).where(TeamsFollow.recipient_id == "SYN-BOB")).active
+
+
+def test_unsubscribe_during_rendering_is_honoured_before_send(store):
+    follow_id = register(store)
+
+    def builder(session, notice, kind, **kwargs):
+        with store() as other:
+            serial_transaction(other, scope="teams-followups")
+            other.get(TeamsFollow, follow_id).active = False
+            other.commit()
+        return {"type": "AdaptiveCard"}
+
+    result = dispatch(store, kst(10), builder=builder, sender=lambda *args: pytest.fail("unsubscribed sent"))
+    assert result["outcomes"] == {"CANCELLED": 1}
+    assert records(store)["REGISTERED"].status == "CANCELLED"
