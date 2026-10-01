@@ -2411,6 +2411,49 @@ def _is_repeated_sme_certificate_clause(text: str) -> bool:
     )
 
 
+_OVERALL_SEVERITY = {"PASS": 0, "PASS_CURRENT": 1, "PASS_EXCEPTION": 2, "REVIEW": 3, "FAIL": 4}
+
+
+def _eligibility_card_status(item: dict[str, Any]) -> str:
+    outcome = str(item.get("outcome") or "").upper()
+    if outcome in {"PASS_CURRENT", "PASS_EXCEPTION"}:
+        return outcome
+    if outcome == "FAIL_CONFIRMED":
+        return "FAIL"
+    return "REVIEW"
+
+
+def reconcile_eligibility_overall(
+    persisted: str | None,
+    display_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Combine the stored eligibility verdict with current-policy cards.
+
+    Opening a notice's detail loads the current policy cards and the list badge
+    is redrawn from this result, so the cards may only improve the stored
+    verdict: a stored PASS is not demoted to 조건부/현재 충족 or 확인 필요 by
+    policy nuance. A confirmed FAIL, stored or on a card, always wins.
+    """
+
+    stored = str(persisted or "").upper()
+    stored = stored if stored in _OVERALL_SEVERITY else None
+    cards = [
+        _eligibility_card_status(item)
+        for item in display_items
+        if item.get("policy_class") == "ELIGIBILITY" and item.get("mandatory", True) is not False
+    ]
+    cards_status = max(cards, key=_OVERALL_SEVERITY.__getitem__) if cards else None
+    if stored == "FAIL" or cards_status == "FAIL":
+        status = "FAIL"
+    elif cards_status is None:
+        status = stored or "REVIEW"
+    elif stored is not None and _OVERALL_SEVERITY[stored] < _OVERALL_SEVERITY[cards_status]:
+        status = stored
+    else:
+        status = cards_status
+    return {"status": status, "cards_status": cards_status}
+
+
 def classify_requirements(
     requirements: list[dict[str, Any]],
     *,

@@ -11,6 +11,7 @@ from pai_loop.eligibility_policy import (
     classify_nonprofit_alternative,
     classify_requirements,
     load_public_company_profile as _load_public_company_profile,
+    reconcile_eligibility_overall,
 )
 
 
@@ -1789,6 +1790,8 @@ def test_profile_and_policy_api_use_repository_data(client: TestClient) -> None:
     assert payload["counts"]["ACTION_REQUIRED"] == 1
     assert payload["blocking_actions"] == 1
     assert payload["groups"]["ELIGIBILITY"][0]["evidence"]["sha256"]
+    # 저장된 평가가 없으면 현재 정책 카드로만 종합한다.
+    assert payload["eligibility_overall"]["status"] == payload["eligibility_overall"]["cards_status"]
 
 
 def test_policy_api_combines_latest_requirements_from_every_attachment(
@@ -2193,3 +2196,43 @@ def test_negation_or_an_added_duty_voids_the_nonprofit_route(clause):
     """부정·추가의무·별도승인이 붙으면 구조적 대안 경로 자체가 성립하지 않는다."""
 
     assert classify_nonprofit_alternative(clause) is None
+
+
+def _card(outcome: str, *, mandatory: bool = True) -> dict[str, object]:
+    return {"policy_class": "ELIGIBILITY", "outcome": outcome, "mandatory": mandatory}
+
+
+@pytest.mark.parametrize(
+    ("persisted", "outcomes", "expected"),
+    [
+        # 상세 카드가 저장된 충족을 조건부·현재 충족·확인 필요로 내리지 않는다.
+        ("PASS", ["PASS_CURRENT", "PASS_EXCEPTION"], "PASS"),
+        ("PASS", ["REVIEW"], "PASS"),
+        # 확인 필요였던 공고는 카드가 모두 충족이면 올라간다.
+        ("REVIEW", ["PASS_CURRENT", "PASS_EXCEPTION"], "PASS_EXCEPTION"),
+        ("REVIEW", ["PASS_CURRENT"], "PASS_CURRENT"),
+        (None, ["PASS_CURRENT"], "PASS_CURRENT"),
+        ("REVIEW", ["PASS_CURRENT", "REVIEW"], "REVIEW"),
+        # 확정 미충족은 어느 쪽에서 와도 이긴다.
+        ("PASS", ["PASS_CURRENT", "FAIL_CONFIRMED"], "FAIL"),
+        ("FAIL", ["PASS_CURRENT"], "FAIL"),
+        # 카드가 없으면 저장된 값을 그대로 쓴다.
+        ("PASS", [], "PASS"),
+        (None, [], "REVIEW"),
+    ],
+)
+def test_current_policy_cards_only_raise_the_stored_eligibility(persisted, outcomes, expected):
+    result = reconcile_eligibility_overall(persisted, [_card(outcome) for outcome in outcomes])
+    assert result["status"] == expected
+
+
+def test_overall_ignores_optional_and_non_eligibility_items():
+    items = [
+        _card("PASS_CURRENT"),
+        _card("FAIL_CONFIRMED", mandatory=False),
+        {"policy_class": "ACTION_REQUIRED", "outcome": "BLOCK_UNTIL_CONFIRMED", "blocking": True},
+    ]
+    assert reconcile_eligibility_overall("REVIEW", items) == {
+        "status": "PASS_CURRENT",
+        "cards_status": "PASS_CURRENT",
+    }

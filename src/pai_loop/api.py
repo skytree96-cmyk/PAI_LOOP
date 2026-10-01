@@ -22,7 +22,11 @@ from .demo import FIXTURE_VERSION, seed_synthetic_replay
 from .auth import public_read_allowed, require_api_key
 from .enums import Eligibility
 from .evaluator import evaluate_notice
-from .eligibility_policy import classify_requirements, load_public_company_profile
+from .eligibility_policy import (
+    classify_requirements,
+    load_public_company_profile,
+    reconcile_eligibility_overall,
+)
 from .department_ranking import (
     get_department_profile,
     load_department_keyword_profiles,
@@ -4014,6 +4018,11 @@ def requirement_policy(
         requirements,
         profile=load_public_company_profile(),
         deadline=notice.deadline,
+    )
+    stored_evaluation = _latest_evaluation(notice)
+    classified["eligibility_overall"] = reconcile_eligibility_overall(
+        stored_evaluation.eligibility if stored_evaluation else None,
+        classified["display_items"],
     )
     analysis_version_ids = [version.id for version, _requirements in selected]
     latest_analysis_version = max(

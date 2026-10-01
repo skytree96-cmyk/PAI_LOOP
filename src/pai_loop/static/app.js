@@ -7072,6 +7072,7 @@
       note: stringValue(firstValue(source.decision_boundary, source.decisionBoundary), "적격성, 행동필요, 체크리스트, 정보를 서로 분리합니다."),
       matches: arrayValue(firstValue(source.display_items, source.items)).map(normalizePrivateMatchItem),
       verdictCounts: firstObject(source.verdict_counts),
+      eligibilityOverall: stringValue(firstObject(firstValue(source.eligibility_overall, source.eligibilityOverall)).status).toUpperCase(),
     };
   }
 
@@ -9504,19 +9505,30 @@
       return STATUS_LABELS[status] ? status : "UNKNOWN";
     };
     // 저장된 요구조건이 없으면 상세 카드는 현재 정책(requirement-policy) 판정으로 채워진다.
-    // 저장된 종합값은 이전 정책 기준이라 카드가 모두 P·F여도 "확인 필요"로 남으므로,
-    // 카드가 있으면 카드 판정으로 종합한다. 저장된 FAIL만 보수적으로 유지한다.
+    // 카드는 저장된 종합값을 올리기만 한다(확인 필요 → 충족). 저장된 충족을 조건부·확인 필요로
+    // 내리지 않고, 확정 미충족(F)만 언제나 이긴다. 서버가 같은 규칙으로 종합한 값을 우선한다.
     const stored = arrayValue(notice?.requirements);
     const policyCards = stored.length ? [] : currentPolicyEligibilityCards(notice);
+    if (policyCards.length) {
+      const serverOverall = normalize(currentPolicyEligibilityOverall(notice));
+      if (serverOverall !== "UNKNOWN") return serverOverall;
+    }
     const persisted = normalize(notice?.eligibilityStatus);
     const candidates = policyCards.length ? (persisted === "FAIL" ? ["FAIL"] : []) : [persisted];
     (stored.length ? stored : policyCards).forEach((requirement) => {
       if (requirement?.mandatory !== false) candidates.push(normalize(requirement?.status));
     });
-    const worst = candidates.reduce((current, candidate) => (
+    let worst = candidates.reduce((current, candidate) => (
       severity[candidate] > severity[current] ? candidate : current
     ), "PASS");
+    if (policyCards.length && worst !== "FAIL" && severity[persisted] < severity[worst]) worst = persisted;
     return worst === "UNKNOWN" ? "REVIEW" : worst;
+  }
+
+  function currentPolicyEligibilityOverall(notice) {
+    if (typeof state === "undefined" || !state?.privateMatchPreviews || !notice?.noticeKey) return "";
+    const preview = state.privateMatchPreviews[notice.noticeKey];
+    return preview?.status === "ready" ? stringValue(preview.data?.eligibilityOverall) : "";
   }
 
   function currentPolicyEligibilityCards(notice) {
