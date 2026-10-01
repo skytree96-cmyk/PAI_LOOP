@@ -26,6 +26,7 @@ def test_headline_follows_current_policy_cards_and_keeps_stored_fail() -> None:
 const assert = require("node:assert/strict");
 const STATUS_LABELS = {PASS:"충족",PASS_EXCEPTION:"조건부 충족",PASS_CURRENT:"현재 충족",REVIEW:"확인 필요",FAIL:"미충족",UNKNOWN:"확인 필요"};
 const arrayValue = x => Array.isArray(x) ? x : [];
+const stringValue = (v, f = "") => (v === undefined || v === null || String(v).trim() === "" ? f : String(v).trim());
 let cards = [];
 const eligibilityRequirementsForDisplay = () => cards;
 const state = { privateMatchPreviews: { N1: { status: "ready" } } };
@@ -51,6 +52,39 @@ assert.equal(effectiveEligibilityStatus(notice), "REVIEW");
 state.privateMatchPreviews.N1.status = "ready";
 cards = [{ status: "FAIL" }];
 assert.equal(effectiveEligibilityStatus({ ...notice, eligibilityStatus: "PASS", requirements: [{ status: "PASS" }] }), "PASS");
+"""
+    subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
+
+
+def test_detail_cards_never_demote_a_stored_pass_in_the_list() -> None:
+    """상세에 들어갔다 나오면 목록 배지는 올라가기만 한다(충족 → 조건부 충족 금지)."""
+    source = APP_JS.read_text(encoding="utf-8")
+    helpers = "function effectiveEligibilityStatus" + _function_body(
+        source, "effectiveEligibilityStatus", "effectiveRecommendation"
+    )
+    script = r"""
+const assert = require("node:assert/strict");
+const STATUS_LABELS = {PASS:"충족",PASS_EXCEPTION:"조건부 충족",PASS_CURRENT:"현재 충족",REVIEW:"확인 필요",FAIL:"미충족",UNKNOWN:"확인 필요"};
+const arrayValue = x => Array.isArray(x) ? x : [];
+const stringValue = (v, f = "") => (v === undefined || v === null || String(v).trim() === "" ? f : String(v).trim());
+let cards = [{ status: "PASS_CURRENT" }, { status: "PASS_EXCEPTION" }];
+const eligibilityRequirementsForDisplay = () => cards;
+const state = { privateMatchPreviews: { N1: { status: "ready", data: {} } } };
+const notice = { noticeKey: "N1", eligibilityStatus: "PASS" };
+
+// 서버 종합값이 없는 응답(배포 전 서버)도 같은 규칙으로 저장된 충족을 지킨다.
+assert.equal(effectiveEligibilityStatus(notice), "PASS");
+cards = [{ status: "REVIEW" }];
+assert.equal(effectiveEligibilityStatus(notice), "PASS");
+cards = [{ status: "FAIL" }];
+assert.equal(effectiveEligibilityStatus(notice), "FAIL");
+
+// 서버가 종합한 값이 있으면 그 값을 쓴다.
+cards = [{ status: "PASS_EXCEPTION" }];
+state.privateMatchPreviews.N1.data.eligibilityOverall = "PASS";
+assert.equal(effectiveEligibilityStatus(notice), "PASS");
+state.privateMatchPreviews.N1.data.eligibilityOverall = "PASS_EXCEPTION";
+assert.equal(effectiveEligibilityStatus({ ...notice, eligibilityStatus: "REVIEW" }), "PASS_EXCEPTION");
 """
     subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
 
