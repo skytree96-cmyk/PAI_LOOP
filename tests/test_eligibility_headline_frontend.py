@@ -181,3 +181,13 @@ def test_queue_views_and_teams_preview_follow_the_manager_go_rule() -> None:
     assert "managerOverridesEligibility(notice, status)" in dashboard
     assert "!isCancelledNotice(notice)" in dashboard
     assert "effectiveEligibilityStatus(notice)" in teams
+
+
+def test_policy_preview_redraws_the_detail_from_the_selected_notice() -> None:
+    """판정 카드 도착 시 상세는 담당자 판단까지 불러온 선택 공고로 다시 그린다(목록 사본 아님)."""
+    source = APP_JS.read_text(encoding="utf-8")
+    body = _function_body(source, "loadPrivateMatchPreview", "normalizePrivateMatchPreview")
+    finally_block = body[body.index("} finally {"):]
+    assert "const shown = state.selectedNotice;" in finally_block
+    for call in ("renderPrivateMatchPreview", "renderEligibilityPanel", "renderActions", "refreshEligibilitySummaryMetric"):
+        assert f"{call}(shown)" in finally_block

@@ -7035,10 +7035,12 @@
       if (!noVerifiedPolicy && force) showToast("회사 데이터 매칭 조회 오류", humanizeError(error), "warning");
     } finally {
       if (state.selectedNotice?.noticeKey === noticeKey) {
-        renderPrivateMatchPreview(notice);
-        renderEligibilityPanel(notice);
-        renderActions(notice);
-        refreshEligibilitySummaryMetric(notice);
+        // 목록 사본에는 담당자 판단이 없을 수 있다. 상세는 판단까지 불러온 선택 공고로 다시 그린다.
+        const shown = state.selectedNotice;
+        renderPrivateMatchPreview(shown);
+        renderEligibilityPanel(shown);
+        renderActions(shown);
+        refreshEligibilitySummaryMetric(shown);
       }
       refreshNoticeEligibilityCell(notice);
     }

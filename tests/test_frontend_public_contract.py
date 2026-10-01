@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20261001-eligibility-manager-go-full-v28"' in html
-    assert 'href="./top-navigation.css?v=20261001-eligibility-manager-go-full-v28"' in html
-    assert 'src="./app.js?v=20261001-previous-score-v29"' in html
+    assert 'href="./styles.css?v=20261001-eligibility-detail-selected-v30"' in html
+    assert 'href="./top-navigation.css?v=20261001-eligibility-detail-selected-v30"' in html
+    assert 'src="./app.js?v=20261001-eligibility-detail-selected-v30"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -892,8 +892,8 @@ def test_public_eligibility_policy_is_supplemental_and_422_is_not_an_error() -> 
     assert "error?.status === 422" in load_body
     assert 'status: noVerifiedPolicy ? "unavailable" : "error"' in load_body
     assert "종합 판단을 임의로 보완하지 않습니다" in load_body
-    assert "renderEligibilityPanel(notice)" in load_body
-    assert "renderActions(notice)" in load_body
+    assert "renderEligibilityPanel(shown)" in load_body
+    assert "renderActions(shown)" in load_body
 
     assert '.filter((item) => item?.category === "ELIGIBILITY")' in adapter_body
     assert 'source: "PUBLIC_POLICY_SUPPLEMENT"' in adapter_body
