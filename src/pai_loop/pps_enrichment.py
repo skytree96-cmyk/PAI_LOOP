@@ -2040,6 +2040,14 @@ def public_analysis_reason(
     )
 
 
+# Total GET attempts on a transport failure. The attachment-start reservation
+# already budgets three download timeouts (extraction_time_budget), and a
+# public PPS file GET is free and idempotent. HTTP status, size and content
+# failures are never retried here.
+ATTACHMENT_DOWNLOAD_ATTEMPTS = 3
+_ATTACHMENT_RETRY_BACKOFF_SECONDS = (0.5, 1.5)
+
+
 def download_public_attachment(
     attachment: dict[str, Any],
     *,
@@ -2047,6 +2055,31 @@ def download_public_attachment(
     max_redirects: int = 2,
     timeout_seconds: float = 20,
     transport: httpx.BaseTransport | None = None,
+    attempts: int = ATTACHMENT_DOWNLOAD_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bytes:
+    for attempt in range(max(1, attempts)):
+        try:
+            return _download_public_attachment_once(
+                attachment, max_bytes=max_bytes, max_redirects=max_redirects,
+                timeout_seconds=timeout_seconds, transport=transport,
+            )
+        except PpsEnrichmentError as exc:
+            if str(exc) != "ATTACHMENT_NETWORK_ERROR" or attempt + 1 >= max(1, attempts):
+                raise
+            sleep(_ATTACHMENT_RETRY_BACKOFF_SECONDS[
+                min(attempt, len(_ATTACHMENT_RETRY_BACKOFF_SECONDS) - 1)
+            ])
+    raise PpsEnrichmentError("ATTACHMENT_NETWORK_ERROR")
+
+
+def _download_public_attachment_once(
+    attachment: dict[str, Any],
+    *,
+    max_bytes: int,
+    max_redirects: int,
+    timeout_seconds: float,
+    transport: httpx.BaseTransport | None,
 ) -> bytes:
     current_url = _safe_g2b_attachment_url(attachment.get("url"))
     filename, _media_type = _safe_filename(attachment.get("file_name"))
