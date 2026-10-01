@@ -25,6 +25,8 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert 'entryLoginForm' not in response.text
     assert response.headers["cache-control"] == "no-cache"
     assert "connect-src 'none'" in response.headers["content-security-policy"]
+    assert "frame-ancestors 'self' https://dancing-smakager-57e08c.netlify.app;" in response.headers["content-security-policy"]
+    assert "x-frame-options" not in response.headers
     links = re.findall(r'data-app-path="([^"]+)" href="([^"]+)"', response.text)
     assert len(links) == 13
     assert all(route == href and href.startswith("/") for route, href in links)
