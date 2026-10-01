@@ -307,3 +307,35 @@ def test_card_shows_pass_when_the_recipient_department_decided_to_participate(cl
         assert "자격 충족" in facts("future-ai-education")
         assert "자격 미충족" in facts("future-ai-capability")
         assert "자격 미충족" in facts(None)
+
+
+def test_card_from_a_freshly_loaded_pps_notice_reads_every_version(client):
+    """The dispatcher loads a notice and renders at once (2026-10-01 incident).
+
+    The PPS authority projection re-selects the same notice with only its
+    metadata version. Rendered from a fresh session, that partial collection
+    used to become `notice.versions`, so a fully analysed notice went out as
+    "0/4 · 분석 대상 아님 · 미판정 · 미산정" while the web showed its result.
+    """
+
+    condition = "지방계약법령상 입찰참가 자격요건을 갖춘 업체여야 함."
+    factory = client.app.state.session_factory
+    with factory() as session:
+        notice = Notice(notice_key="PPS-TESTCARD-000", bid_notice_no="TESTCARD", title="PPS 카드 공고",
+                        agency="PPS 기관", deadline=NOW + timedelta(days=10), status="OPEN")
+        session.add(notice)
+        session.commit()
+        _append_card_attachment(session, notice, version_no=1, identity="a", conditions=[("ENTITY", condition)])
+        notice_id = notice.id
+        total_versions = len(notice.versions)
+        preloaded = teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW,
+                                                  base_url="https://example.test")
+    with factory() as session:
+        # Exactly the dispatcher: fetch by id, render immediately.
+        fresh_notice = session.get(Notice, notice_id)
+        fresh = teams_cards.build_notice_card(session, fresh_notice, "REGISTERED", now=NOW,
+                                              base_url="https://example.test")
+        assert len(fresh_notice.versions) == total_versions == 2
+    assert fresh == preloaded
+    reason = fresh["body"][5]["items"][0]["text"]
+    assert "일일 분석 대상으로 선택되지 않은" not in reason

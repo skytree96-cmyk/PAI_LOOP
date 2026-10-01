@@ -151,6 +151,11 @@ def build_notice_card(session: Session, notice: Notice, event_kind: str, *,
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    # Load every version first. The authority projection re-selects this notice
+    # with only its metadata version; in a freshly loaded notice (the dispatcher
+    # renders right after `session.get`) that partial collection would become
+    # `notice.versions`, and an analysed notice would render as never analysed.
+    notice.versions  # noqa: B018 - populate the full collection
     authority = _pps_authorities_by_notice_id(session, [notice]).get(notice.id)
     detail = _detail(notice, public_view=True, provider_authority=authority, now=now)
     evaluation = detail.latest_evaluation if detail.qualification_status != "NOT_EVALUATED" else None
