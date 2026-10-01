@@ -123,7 +123,7 @@ def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
 
     assert 'href="./styles.css?v=20261001-eligibility-manager-go-full-v28"' in html
     assert 'href="./top-navigation.css?v=20261001-eligibility-manager-go-full-v28"' in html
-    assert 'src="./app.js?v=20261001-eligibility-manager-go-full-v28"' in html
+    assert 'src="./app.js?v=20261001-previous-score-v29"' in html
 
 
 def test_pre_specification_completion_uses_one_fail_closed_coverage_helper() -> None:

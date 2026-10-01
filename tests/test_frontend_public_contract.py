@@ -249,7 +249,7 @@ def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
 
     assert 'href="./styles.css?v=20261001-eligibility-manager-go-full-v28"' in html
     assert 'href="./top-navigation.css?v=20261001-eligibility-manager-go-full-v28"' in html
-    assert 'src="./app.js?v=20261001-eligibility-manager-go-full-v28"' in html
+    assert 'src="./app.js?v=20261001-previous-score-v29"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
