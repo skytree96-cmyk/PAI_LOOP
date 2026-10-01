@@ -10,10 +10,13 @@ OPEN_FILES = frozenset({
     *(f"assets/pai-screen-{i}.webp" for i in range(1, 9)),
 })
 OPEN_PATHS = frozenset({"/open", "/open/", *(f"/open/{name}" for name in OPEN_FILES)})
+# The contest judging site embeds this data-free page in an iframe. Allow only
+# that exact origin; the authenticated app keeps its own Teams-only list.
+OPEN_FRAME_ANCESTORS = ("'self'", "https://dancing-smakager-57e08c.netlify.app")
 OPEN_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' https://cdn.jsdelivr.net; "
     "font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; media-src 'self'; "
-    "connect-src 'none'; frame-ancestors 'none'; base-uri 'self'; "
+    f"connect-src 'none'; frame-ancestors {' '.join(OPEN_FRAME_ANCESTORS)}; base-uri 'self'; "
     "form-action 'none'; object-src 'none'"
 )
 router = APIRouter(include_in_schema=False)
