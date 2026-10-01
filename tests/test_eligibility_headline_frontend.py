@@ -137,40 +137,47 @@ setTimeout(() => {
     subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
 
 
-def test_manager_go_shows_review_or_fail_as_pass_for_display_only() -> None:
-    """담당자 판단이 참여(GO)면 확인 필요·미충족을 화면에서 충족으로 보여준다."""
+
+def test_manager_go_turns_review_or_fail_into_pass_everywhere() -> None:
+    """담당자 판단이 참여(GO)면 참가자격 판정 자체가 충족이 된다(AI 의견 포함)."""
     source = APP_JS.read_text(encoding="utf-8")
-    helpers = "function managerOverridesEligibility" + _function_body(
-        source, "managerOverridesEligibility", "displayedEligibilityStatus"
+    helpers = "function effectiveEligibilityStatus" + _function_body(
+        source, "effectiveEligibilityStatus", "effectiveRecommendation"
     )
-    helpers += "\nfunction displayedEligibilityStatus" + _function_body(
-        source, "displayedEligibilityStatus", "statusPill"
+    helpers += "\nfunction effectiveRecommendation" + _function_body(
+        source, "effectiveRecommendation", "aiJudgmentMarkup"
     )
     script = r"""
 const assert = require("node:assert/strict");
-let automatic = "REVIEW";
-const effectiveEligibilityStatus = () => automatic;
-const go = { decision: "GO" };
+const STATUS_LABELS = {PASS:"충족",PASS_EXCEPTION:"조건부 충족",PASS_CURRENT:"현재 충족",REVIEW:"확인 필요",FAIL:"미충족",UNKNOWN:"확인 필요"};
+const RECOMMENDATION_LABELS = {GO:"적극 검토",CONDITIONAL_GO:"조건부 검토",HOLD:"조건부 검토",NO_GO:"비추천",DEFERRED:"판단 보류",UNKNOWN:"확인 필요"};
+const arrayValue = x => Array.isArray(x) ? x : [];
+const stringValue = (v, f = "") => (v === undefined || v === null || String(v).trim() === "" ? f : String(v).trim());
+const state = { privateMatchPreviews: {} };
+const eligibilityRequirementsForDisplay = () => [];
 
-for (automatic of ["REVIEW", "FAIL"]) {
-  assert.equal(displayedEligibilityStatus(go), "PASS");
-  assert.equal(displayedEligibilityStatus({ decision: "HOLD" }), automatic);
-  assert.equal(displayedEligibilityStatus({ decision: "NO_GO" }), automatic);
-  assert.equal(displayedEligibilityStatus({}), automatic);
+for (const stored of ["REVIEW", "FAIL"]) {
+  const base = { noticeKey: "N", eligibilityStatus: stored, recommendation: "GO" };
+  assert.equal(effectiveEligibilityStatus({ ...base, decision: "GO" }), "PASS");
+  assert.equal(automaticEligibilityStatus({ ...base, decision: "GO" }), stored);
+  for (const decision of ["HOLD", "CONDITIONAL_GO", "NO_GO", undefined]) {
+    assert.equal(effectiveEligibilityStatus({ ...base, decision }), stored);
+  }
+  // AI 검토 의견도 담당자 참여를 반영해 자격 때문에 보류로 내리지 않는다.
+  assert.equal(effectiveRecommendation({ ...base, decision: "GO" }), "GO");
+  assert.equal(effectiveRecommendation(base), "DEFERRED");
 }
-// 이미 충족 계열이면 손대지 않는다.
-for (automatic of ["PASS", "PASS_CURRENT", "PASS_EXCEPTION"]) {
-  assert.equal(displayedEligibilityStatus(go), automatic);
-}
+// 이미 충족 계열이면 그대로 둔다.
+assert.equal(effectiveEligibilityStatus({ noticeKey: "N", eligibilityStatus: "PASS", decision: "GO" }), "PASS");
 """
     subprocess.run(["node", "-e", helpers + "\n" + script], check=True)
 
 
-def test_manager_go_override_does_not_reach_ai_opinion_or_teams() -> None:
+def test_queue_views_and_teams_preview_follow_the_manager_go_rule() -> None:
     source = APP_JS.read_text(encoding="utf-8")
-    recommendation = _function_body(source, "effectiveRecommendation", "aiJudgmentMarkup")
+    dashboard = _function_body(source, "dashboardEligibilityStatus", "storedDashboardEligibilityStatus")
     teams = _function_body(source, "renderTeamsPreview", "buildAdaptiveCardPayload")
     teams += _function_body(source, "buildAdaptiveCardPayload", "normalizeTeamsMockLog")
-    assert "displayedEligibilityStatus" not in recommendation
-    assert "effectiveEligibilityStatus(notice)" in recommendation
-    assert "displayedEligibilityStatus" not in teams
+    assert "managerOverridesEligibility(notice, status)" in dashboard
+    assert "!isCancelledNotice(notice)" in dashboard
+    assert "effectiveEligibilityStatus(notice)" in teams

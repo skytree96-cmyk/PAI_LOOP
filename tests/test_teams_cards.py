@@ -282,3 +282,28 @@ def test_the_card_reads_the_clock_it_was_given_not_the_wall_clock(client):
             ensure_ascii=False,
         )
         assert "현재 검토 제외" in after
+
+
+def test_card_shows_pass_when_the_recipient_department_decided_to_participate(client, monkeypatch):
+    from pai_loop.models import UserDecision
+
+    real_detail = teams_cards._detail
+    monkeypatch.setattr(
+        teams_cards, "_detail",
+        lambda *args, **kwargs: real_detail(*args, **kwargs).model_copy(update={"qualification_status": "FAIL"}),
+    )
+    with client.app.state.session_factory() as session:
+        notice = _notice(session)
+        session.add(UserDecision(notice_id=notice.id, choice="GO", rationale="SYN 참여",
+                                 department_id="future-ai-education", department_name="SYN 부서",
+                                 department_revision=1))
+        session.commit()
+
+        def facts(department_id):
+            card = teams_cards.build_notice_card(session, notice, "REGISTERED", now=NOW,
+                                                 base_url="https://example.test", department_id=department_id)
+            return json.dumps(card, ensure_ascii=False)
+
+        assert "자격 충족" in facts("future-ai-education")
+        assert "자격 미충족" in facts("future-ai-capability")
+        assert "자격 미충족" in facts(None)
