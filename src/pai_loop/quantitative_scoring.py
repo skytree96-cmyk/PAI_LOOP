@@ -497,6 +497,23 @@ class EvidenceObservation(QuantModel):
     rationale: str
 
 
+class PreviousEstimateItem(QuantModel):
+    label: str
+    points: float
+    max_points: float
+
+
+class PreviousEstimateDisplay(QuantModel):
+    """Historical display only; never an input to scoring or execution gates."""
+
+    generated_at: datetime
+    source_status: Literal["SAME_MANIFEST", "SOURCE_CHANGED_OR_UNVERIFIED"]
+    items: list[PreviousEstimateItem]
+    subtotal_points: float
+    subtotal_max_points: float
+    warning: str = "이전 분석 당시의 저장값입니다. 최신 분석은 미산출이며 현재 점수·자동 분석 조건에 반영하지 않습니다."
+
+
 class QuantitativeEstimateResult(QuantModel):
     engine_version: str
     ruleset_version: str
@@ -527,6 +544,7 @@ class QuantitativeEstimateResult(QuantModel):
     evidence_observations: list[EvidenceObservation] = Field(default_factory=list)
     opinion: str
     separation_notice: str
+    previous_estimate: PreviousEstimateDisplay | None = None
 
 
 class QuantitativeProfileError(RuntimeError):
@@ -6652,6 +6670,58 @@ def public_quantitative_snapshot_projection(
         return None
 
 
+def _with_previous_estimate_display(
+    session: Session, notice: Notice, result: QuantitativeEstimateResult,
+) -> QuantitativeEstimateResult:
+    """Expose a validated historical snapshot without replacing current results.
+
+    Use only the existing public allowlist projection, even for authenticated
+    readers. Changed source remains explicitly historical; no old evidence is
+    promoted into the current manifest, company facts or analysis readiness.
+    """
+    if (result.estimated_points is not None or result.confirmed_points not in {None, 0}
+            or any(row.estimated_points is not None for row in result.criteria)):
+        return result
+    runs = list(session.scalars(select(AnalysisRun).where(
+        AnalysisRun.notice_id == notice.id, AnalysisRun.status.in_(["COMPLETED", "PARTIAL"]),
+    ).order_by(AnalysisRun.generated_at.desc(), AnalysisRun.created_at.desc(),
+               AnalysisRun.id.desc()).limit(20)))
+    scores = list(session.scalars(select(ScoreSnapshot).where(
+        ScoreSnapshot.analysis_run_id.in_([run.id for run in runs]),
+        ScoreSnapshot.score_key == "quantitative.total",
+    ))) if runs else []
+    versions = {version.id: version for version in notice.versions}
+    metadata = [v for v in notice.versions if isinstance(v.source_payload, dict)
+                and v.source_payload.get("kind") == PPS_METADATA_KIND]
+    latest = max(metadata, key=lambda v: v.version_no, default=None)
+    manifest = latest.source_payload.get("attachment_manifest") if latest else None
+    manifest_sha = hashlib.sha256(json.dumps(manifest, sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode()).hexdigest() if isinstance(manifest, list) else None
+    for run in runs:
+        matching = [score for score in scores if score.analysis_run_id == run.id]
+        if len(matching) != 1:
+            continue
+        old = public_quantitative_snapshot_projection(run, matching[0])
+        if old is None:
+            continue
+        items = [PreviousEstimateItem(label=row.label, points=row.estimated_points,
+                    max_points=row.max_points) for row in old.criteria
+                 if row.estimated_points is not None and row.status != "OUT_OF_SCOPE"]
+        if not items:
+            continue
+        basis_version = versions.get(run.notice_version_id)
+        basis = basis_version.source_payload if basis_version and isinstance(basis_version.source_payload, dict) else {}
+        same_manifest = bool(manifest_sha and basis.get("current_manifest_sha256") == manifest_sha)
+        display = PreviousEstimateDisplay(
+            generated_at=run.generated_at,
+            source_status="SAME_MANIFEST" if same_manifest else "SOURCE_CHANGED_OR_UNVERIFIED",
+            items=items, subtotal_points=_round_points(sum(item.points for item in items)),
+            subtotal_max_points=_round_points(sum(item.max_points for item in items)),
+        )
+        return result.model_copy(update={"previous_estimate": display})
+    return result
+
+
 @quantitative_scoring_router.get(
     "/notices/{notice_key}/quantitative-estimate",
     response_model=QuantitativeEstimateResult,
@@ -6676,7 +6746,7 @@ def get_notice_quantitative_estimate(
             session, notice
         )
         if stored_public_result is not None:
-            return stored_public_result
+            return _with_previous_estimate_display(session, notice, stored_public_result)
     company_facts = (
         []
         if public_view
@@ -6702,4 +6772,5 @@ def get_notice_quantitative_estimate(
         if performance_records
         else estimate_for_notice(notice, company_facts)
     )
-    return _public_quantitative_projection(result) if public_view else result
+    projected = _public_quantitative_projection(result) if public_view else result
+    return _with_previous_estimate_display(session, notice, projected)

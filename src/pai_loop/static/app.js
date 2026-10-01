@@ -7977,6 +7977,17 @@
       + (separateRows.length
         ? `<tr class="quant-scope-divider"><th colspan="4" scope="colgroup">정량 외 항목 · 아래 배점은 정량 합계에 포함하지 않습니다</th></tr>${separateRows.map((item) => renderQuantitativeEstimateRow(item, { publicEvidenceHidden })).join("")}`
         : "");
+    const previous = data.previous_estimate;
+    if (previous && Array.isArray(previous.items) && previous.items.length
+        && !criteria.some((item) => numberOrNull(item.estimated_points) !== null)) {
+      const previousDate = new Date(previous.generated_at).toLocaleString("ko-KR");
+      const sourceNote = previous.source_status === "SAME_MANIFEST"
+        ? "동일 첨부 목록 · 최신 원문 재확인 필요" : "현재 공고와 원문 일치 여부 미확인";
+      els.quantTableBody.innerHTML += `<tr class="quant-scope-divider"><th colspan="4" scope="colgroup">이전 저장 점수 · 현재 적용 보류</th></tr>`
+        + `<tr><td colspan="4">${escapeHtml(previousDate)} · ${escapeHtml(sourceNote)}<br>${escapeHtml(previous.warning)}</td></tr>`
+        + previous.items.map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>이전 분석 기록</td><td>${formatNumber(item.points, 1)} / ${formatNumber(item.max_points, 1)}</td><td>현재 점수에 미반영</td></tr>`).join("")
+        + `<tr><th colspan="2">이전 항목 부분소계 · 공고 총점 아님</th><td colspan="2">${formatNumber(previous.subtotal_points, 1)} / ${formatNumber(previous.subtotal_max_points, 1)}</td></tr>`;
+    }
     els.quantObservationList.innerHTML = Array.isArray(data.evidence_observations) && data.evidence_observations.length
       ? data.evidence_observations.map(renderQuantObservation).join("")
       : publicEvidenceHidden
