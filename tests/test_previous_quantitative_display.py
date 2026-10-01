@@ -12,7 +12,7 @@ from test_quantitative_public_snapshot import (
 )
 
 
-@pytest.mark.parametrize("case", ["same", "changed", "invalid", "absent", "current", "private"])
+@pytest.mark.parametrize("case", ["same", "changed", "invalid", "absent", "current", "private", "partial"])
 def test_saved_history_is_separate_sanitised_and_never_current(monkeypatch, case):
     app = _public_app(monkeypatch)
     now = datetime(2026, 9, 1, tzinfo=timezone.utc)
@@ -33,6 +33,8 @@ def test_saved_history_is_separate_sanitised_and_never_current(monkeypatch, case
                 old = _quantitative_snapshot(value=20, lower=20, upper=20, status="CONFIRMED",
                     band="GREEN", confirmed=20, coverage=100, public_criteria=_public_criteria_snapshot())
                 run = _run(notice, basis, label="old", generated_at=now - timedelta(hours=1), score=old)
+                if case == "partial":
+                    run.status = "PARTIAL"
                 if case == "invalid":
                     old.basis_json = {**old.basis_json, "input_sha256": "e" * 64}
                 session.add(run)

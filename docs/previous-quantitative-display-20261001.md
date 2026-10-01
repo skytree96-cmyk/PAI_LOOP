@@ -3,7 +3,8 @@
 The detail endpoint keeps the latest score, readiness and automation gate
 unchanged. When the current result has no scored rows, it may additionally show
 the most recent valid stored public item snapshot from the last 20 completed
-analysis runs. The original values are read from immutable score snapshots;
+or partial analysis runs. Partial runs can contain previously displayed beta
+estimates. The original values are read from immutable score snapshots;
 there is no model call, company-fact substitution or mutation of prior results.
 
 The UI labels this separate section **previous saved score / current application

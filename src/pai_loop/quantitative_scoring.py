@@ -6683,7 +6683,7 @@ def _with_previous_estimate_display(
             or any(row.estimated_points is not None for row in result.criteria)):
         return result
     runs = list(session.scalars(select(AnalysisRun).where(
-        AnalysisRun.notice_id == notice.id, AnalysisRun.status == "COMPLETED",
+        AnalysisRun.notice_id == notice.id, AnalysisRun.status.in_(["COMPLETED", "PARTIAL"]),
     ).order_by(AnalysisRun.generated_at.desc(), AnalysisRun.created_at.desc(),
                AnalysisRun.id.desc()).limit(20)))
     scores = list(session.scalars(select(ScoreSnapshot).where(
