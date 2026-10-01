@@ -230,13 +230,13 @@ def unregister_follow(notice_id: str, request: Request) -> dict:
 @router.get("/{notice_id}/preview")
 def preview_follow(notice_id: str, request: Request) -> dict:
     from .teams_bot import recipient_for_request
-    from .teams_cards import build_notice_card
+    from .teams_cards import build_notice_card, link_base_url
     identity = authenticated_account(request)
     with request.app.state.session_factory() as session:
         recipient_for_request(request, session)
         notice = _notice(session, notice_id)
         return {"card": build_notice_card(session, notice, "REGISTERED", now=now_utc(),
-                                         base_url=os.getenv("PAI_TEAMS_PUBLIC_BASE_URL", ""),
+                                         base_url=link_base_url(),
                                          department_id=identity.department_id)}
 
 
@@ -389,7 +389,7 @@ def dispatch_due(session_factory, *, now: datetime | None = None, enabled: bool 
     if not (followups_enabled() if enabled is None else enabled):
         return {"enabled": False, "processed": 0, "outcomes": {}}
     from .teams_bot import send_personal_card
-    from .teams_cards import build_notice_card
+    from .teams_cards import build_notice_card, link_base_url
     fixed_now = utc(now) if now is not None else None
     tick_now = fixed_now or now_utc()
     synchronize_schedules(session_factory, tick_now)
@@ -401,7 +401,7 @@ def dispatch_due(session_factory, *, now: datetime | None = None, enabled: bool 
             break
         result = _deliver_claim(session_factory, claim, current, sender or send_personal_card,
                                 card_builder or build_notice_card,
-                                base_url if base_url is not None else os.getenv("PAI_TEAMS_PUBLIC_BASE_URL", ""))
+                                base_url if base_url is not None else link_base_url())
         outcomes[result] = outcomes.get(result, 0) + 1
     return {"enabled": True, "processed": sum(outcomes.values()), "outcomes": outcomes}
 

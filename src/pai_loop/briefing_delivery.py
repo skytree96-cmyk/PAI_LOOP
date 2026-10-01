@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from .briefing_cards import build_briefing_card
 from .briefing_models import TeamsBriefingDelivery
+from .teams_cards import link_base_url
 from .teams_bot import TeamsBotSettings, TeamsDeliveryError, send_personal_card
 from .teams_identity_models import TeamsRecipient
 
@@ -302,7 +303,7 @@ def dispatch_briefings(
     origin = (
         base_url
         if base_url is not None
-        else os.getenv("PAI_TEAMS_PUBLIC_BASE_URL", "")
+        else link_base_url()
     )
     for _ in range(max(1, limit)):
         with session_factory() as session:
