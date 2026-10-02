@@ -386,3 +386,76 @@ def test_beta_reads_tables_kept_from_an_unverified_response():
     assert [(key[2], item.state) for key, item in sources.items()] == [("performance_count", "UNVERIFIED")]
     notice.versions[1].source_payload = {**notice.versions[1].source_payload, "error_code": "HTTP_ERROR"}
     assert qs._extracted_row_sources(notice) == {}  # only quote failures keep their tables
+
+
+def _one_attachment_restated(client, key, *, change_rows):
+    """One document printing the same item in its body and again in an appendix table."""
+    import hashlib
+    from test_quantitative_sufficient_row import (
+        Notice, NoticeVersion, PPS_ATTACHMENT_SOURCE, PPS_METADATA_SCHEMA, PPS_PROCESSING_VERSION,
+        PROMPT_VERSION, SCHEMA_VERSION, _digest, validate_quantitative_attachment_extraction,
+    )
+
+    payload, source = hyphen_payload()
+    attachment_id = payload.quantitative_tables[0].criteria[0].evidence.attachment_id
+    url = f"https://www.g2b.go.kr/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo={key}&fileSeq=1"
+    manifest = [dict(attachment_id=attachment_id, file_name="SYN 과업지시서.hwp", media_type="application/x-hwp",
+                     slot=1, url=url)]
+    raw = json.loads(payload.model_dump_json())
+    appendix = json.loads(json.dumps(raw["quantitative_tables"][0]))
+    appendix["table_id"] += "-APPENDIX"
+    appendix["label"] += " - 붙임"
+    for criterion in appendix["criteria"]:
+        criterion["criterion_id"] += "-APPENDIX"
+        criterion["label"] += " - 붙임 상세표"
+        if change_rows:  # a different item: same label stem and maximum, other awards
+            for case in criterion["cases"]:
+                case["award_value"] = max(0.0, case["award_value"] - 1)
+    raw["quantitative_tables"].append(appendix)
+    body = type(payload).model_validate(raw)
+    document_sha = hashlib.sha256(source.encode()).hexdigest()
+    record = validate_quantitative_attachment_extraction(
+        body, source_text=source, attachment_id=attachment_id,
+        document_sha256=document_sha, manifest_sha256=_digest(manifest))
+    notice = Notice(notice_key=key, bid_notice_no=key, revision_no="00", title="SYN restated", agency="SYN agency",
+                    status="OPEN", published_at=datetime(2030, 1, 1, tzinfo=timezone.utc), deadline=DEADLINE)
+    notice.versions = [
+        NoticeVersion(version_no=1, file_sha256="c" * 64, extraction_status="METADATA", document_complete=False,
+                      source_payload={"kind": "PPS_NOTICE_METADATA", "schema_version": PPS_METADATA_SCHEMA,
+                                      "attachment_manifest": manifest}),
+        NoticeVersion(version_no=2, file_sha256=document_sha, extraction_status="ACCEPTED", document_complete=True,
+                      extraction_confidence=1, source_payload={
+                          "kind": "OPENAI_REQUIREMENT_EXTRACTION", "source_kind": PPS_ATTACHMENT_SOURCE,
+                          "attachment_id": attachment_id, "source_label": manifest[0]["file_name"],
+                          "document_sha256": document_sha, "manifest_sha256": _digest(manifest[0]),
+                          "current_manifest_sha256": _digest(manifest), "prompt_version": PROMPT_VERSION,
+                          "schema_version": SCHEMA_VERSION, "processing_version": PPS_PROCESSING_VERSION,
+                          "status": "ACCEPTED", "result": body.model_dump(mode="json"),
+                          "document_processing": {"source_read_complete": True, "analysis_input_complete": True},
+                          "quantitative_validation_record": record.model_dump(mode="json")}),
+    ]
+    with client.app.state.session_factory() as session:
+        session.add(notice)
+        session.commit()
+    estimate = _estimate(client, key)
+    return [item for item in estimate["criteria"] if item["estimated_points"] is not None], estimate
+
+
+def test_body_and_appendix_copy_in_one_attachment_is_counted_once(client, beta_on):
+    scored, estimate = _one_attachment_restated(client, "SYN-BETA-RESTATED", change_rows=False)
+    assert len(scored) == 1
+    assert estimate["upper_points"] == scored[0]["estimated_points"]
+
+
+def test_same_attachment_items_with_other_awards_both_count(client, beta_on):
+    scored, _ = _one_attachment_restated(client, "SYN-BETA-RESTATED-OTHER", change_rows=True)
+    assert len(scored) == 2
+
+
+def test_row_signature_orders_mixed_numeric_and_categorical_rows():
+    from pai_loop.quantitative_scoring import _printed_row_signature, _restated_in_same_attachment
+    rows = (("5건 이상 5점", "GTE", 5.0, None, (), 5.0), ("해당 없음 2점", "IN", None, None, ("해당 없음",), 2.0),
+            ("2건 이상 3점", "GTE", 2.0, None, (), 3.0))
+    first = _printed_row_signature(_raw("수행실적", "PERFORMANCE_COUNT", rows, max_points=5))
+    again = _printed_row_signature(_raw("수행실적 - 붙임", "PERFORMANCE_COUNT", tuple(reversed(rows)), max_points=5))
+    assert first is not None and _restated_in_same_attachment(first, again)

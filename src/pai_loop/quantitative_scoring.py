@@ -112,6 +112,7 @@ from .quantitative_company_first import (
     company_credit_grade,
     company_first_enabled,
     financial_ratios,
+    printed_rows,
 )
 from .quantitative_personnel import (
     DerivedPersonnelValue,
@@ -5265,6 +5266,28 @@ def _extracted_row_sources(notice: Notice) -> dict[tuple[str, str, str], ReviewR
     return sources
 
 
+def _printed_row_signature(raw: Any) -> tuple | None:
+    rows = printed_rows(raw)
+    if not rows:
+        return None
+    # Rows mix None and numbers (categorical vs. numeric); order by repr.
+    return tuple(sorted((
+        (row.points, row.operator, row.value, row.upper, row.min_value, row.max_value,
+         row.min_inclusive, row.max_inclusive, row.categories)
+        for row in rows
+    ), key=repr))
+
+
+def _restated_in_same_attachment(signature: tuple | None, other: tuple | None) -> bool:
+    """One document can print the same item twice (body and an appendix table).
+
+    Inside one attachment, distinct items may share a category, maximum and a
+    contained label (count vs. amount). Only an identical printed row set, every
+    award and bound equal, is the same item read twice.
+    """
+    return signature is not None and signature == other
+
+
 def _apply_company_first_beta(
     request: QuantitativeEstimateRequest,
     *,
@@ -5311,9 +5334,9 @@ def _apply_company_first_beta(
     seen: set[tuple[str, str, str, float]] = set()
     for item in request.criteria:
         seen.add((item.category, re.sub(r"\s+", "", item.label), re.sub(r"\s+", "", item.formula)[:200], item.max_points))
-    chosen: list[tuple[str, str, float, str]] = [
+    chosen: list[tuple[str, str, float, str, tuple | None]] = [
         (item.source_anchor.document_label if item.source_anchor else "", item.category, item.max_points,
-         re.sub(r"\s+", "", item.label))
+         re.sub(r"\s+", "", item.label), None)
         for item in request.criteria
     ]
     replaced: set[str] = set()
@@ -5326,10 +5349,13 @@ def _apply_company_first_beta(
             continue
         key = (raw.metric, re.sub(r"\s+", "", raw.label), re.sub(r"\s+", "", raw.criterion_literal)[:200], raw.max_points)
         compact_label = re.sub(r"\s+", "", raw.label)
+        signature = _printed_row_signature(raw)
         if criterion_id not in kept_ids and (key in seen or any(
-            other_attachment != attachment_id and metric == raw.metric and maximum == raw.max_points
+            metric == raw.metric and maximum == raw.max_points
             and (label in compact_label or compact_label in label)
-            for other_attachment, metric, maximum, label in chosen
+            and (other_attachment != attachment_id
+                 or _restated_in_same_attachment(signature, other_signature))
+            for other_attachment, metric, maximum, label, other_signature in chosen
         )):
             # The same printed row read twice: a summary and a detail table, or
             # one announcement uploaded as both HWP and PDF.
@@ -5351,7 +5377,7 @@ def _apply_company_first_beta(
         if score is None:
             continue
         seen.add(key)
-        chosen.append((attachment_id, raw.metric, raw.max_points, compact_label))
+        chosen.append((attachment_id, raw.metric, raw.max_points, compact_label, signature))
         metric_key = f"beta.company_first.{criterion_id}"
         points = _round_points(min(score.points, raw.max_points))
         try:
