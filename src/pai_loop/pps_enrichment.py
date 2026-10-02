@@ -3886,12 +3886,38 @@ def _keyword_recovery_failure(version: NoticeVersion) -> bool:
     ))
 
 
+FIRST_FAILURE_RECOVERY_ENV = "PAI_FIRST_FAILURE_RECOVERY"
+
+
+def first_failure_recovery_enabled() -> bool:
+    """Kill switch for keyword/XML recovery straight after an ordinary failure (default on)."""
+    return os.environ.get(FIRST_FAILURE_RECOVERY_ENV, "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _first_call_recovery_ready(session: Session, version: NoticeVersion, processing: dict[str, Any]) -> bool:
+    """An ordinary (non-32k) failure may enter recovery without a 32k stage.
+
+    A malformed or unverifiable completed output gains nothing from a larger
+    output budget, so it used to stop here. A 20k stop or gateway timeout still
+    goes to the one-shot 32k stage first while that stage is available.
+    """
+    if not first_failure_recovery_enabled() or processing.get("retry_budget_policy") is not None:
+        return False
+    return not (auto_long_output_enabled() and eligible_long_output_failure(version)
+                and not long_output_consumed(session, version.id))
+
+
 def _continue_quantitative_recovery(
     session: Session, *, result: PpsEnrichmentResult, attachment: dict[str, Any],
     current_manifest_sha256: str, deadline_monotonic: float | None,
-    remaining_calls: int, options: dict[str, Any],
+    remaining_calls: int, options: dict[str, Any], fresh_failure: bool = False,
 ) -> PpsEnrichmentResult:
-    """Continue a failed 32k stage once, including on a later queue lease."""
+    """Continue a failed 32k stage once, including on a later queue lease.
+
+    ``fresh_failure`` also admits an ordinary failure this request just paid
+    for. Stored ordinary failures never spend here; an explicit failed-attachment
+    retry already enters recovery directly.
+    """
     if deadline_monotonic is None or not result.version_id or options["llm_provider"] != "n8n_claude":
         return result
     with session.begin():
@@ -3900,7 +3926,8 @@ def _continue_quantitative_recovery(
         processing = payload.get("document_processing")
         if (version is None or not _keyword_recovery_failure(version)
                 or not isinstance(processing, dict)
-                or processing.get("retry_budget_policy") != LONG_OUTPUT_ONCE
+                or not (processing.get("retry_budget_policy") == LONG_OUTPUT_ONCE
+                        or (fresh_failure and _first_call_recovery_ready(session, version, processing)))
                 or processing.get("quantitative_recovery")
                 or payload.get("attachment_id") != attachment["attachment_id"]
                 or payload.get("current_manifest_sha256") != current_manifest_sha256
@@ -4935,7 +4962,7 @@ def enrich_notice_from_pps(
                 session, result=item_result, attachment=attachment,
                 current_manifest_sha256=current_manifest_sha256, deadline_monotonic=deadline_monotonic,
                 remaining_calls=MAX_OPENAI_CALLS_PER_NOTICE - openai_calls - item_result.openai_calls,
-                options=recovery_options)
+                options=recovery_options, fresh_failure=item_result.openai_calls > 0)
         audit = _audit_result_for_attachment(
             attachment,
             item_result,

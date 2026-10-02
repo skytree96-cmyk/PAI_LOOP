@@ -120,3 +120,25 @@ latest user-managed Teams settings; the earlier instruction to disable Teams
 and lock W12 was superseded. Read the live values before any deployment and
 verify they remain unchanged afterward. Do not perform a cohort backfill until
 the operational score UI and all notice lifecycle gates have been reverified.
+
+## First-call failures (2026-10-02)
+
+Automatic recovery used to start only after the 32k stage failed. An ordinary
+call that completed with malformed or unverifiable output (`SCHEMA_VALIDATION_ERROR`,
+`UNVERIFIED_QUOTE`, `INCOMPLETE_RESPONSE`, or `HTTP_ERROR` with
+`OUTPUT_NORMALIZATION` decode/JSON/fence details and `end_turn`) never reached it,
+because a 32k budget does not help such output. On 2026-10-02 nine attachments of
+six notices stopped there.
+
+Now such a failure continues into keyword text, then XML, in the same request:
+
+- Only a failure this request just paid for (`fresh_failure`). Stored failures do
+  not spend after deployment; an explicit failed-attachment retry already enters
+  recovery directly.
+- A 20k stop or gateway timeout still takes the one-shot 32k stage first while it
+  is available. With `PAI_AUTO_LONG_OUTPUT=0` it goes straight to keyword recovery,
+  which still must shrink the input.
+- Same once-per-source reservation, two-call cap, time reservation and
+  status/deadline/MANUAL_ONLY/manifest checks. If the time reservation does not
+  fit, the failure stays REVIEW until an explicit retry.
+- Kill switch: `PAI_FIRST_FAILURE_RECOVERY=false`.

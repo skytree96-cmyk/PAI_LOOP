@@ -284,3 +284,116 @@ def test_automatic_recovery_guards_and_failed_attempt_is_terminal(guard):
         assert result.status in {"REVIEW", "REUSED"}
     assert len(calls) == (2 if guard == "failed_recovery" else 0)
     engine.dispose()
+
+
+SCHEMA_DECODE = dict(version="gateway-failure-v1", stage="OUTPUT_NORMALIZATION", code="OUTPUT_REJECTED",
+                     upstream_http_status=None, detail_code="NATIVE_SCHEMA_DECODE_INVALID", stop_reason="end_turn",
+                     usage=dict(input_tokens=100, output_tokens=900, total_tokens=1000))
+GATEWAY_TIMEOUT = dict(version="gateway-failure-v1", stage="MODEL_EXECUTION", code="MODEL_EXECUTION_FAILED",
+                       upstream_http_status=None, detail_code="MODEL_TRANSPORT_UNKNOWN")
+
+
+def _first_failure_case(monkeypatch, *, first_failure, later_failures=1, notice_key="SYN-FIRST-FAILURE"):
+    payload, source = fixture(inline=True)
+    source = "SYN unrelated task description\n" * 100 + source
+    engine, factory, notice_id, download = _single_hwpx_reuse_case(notice_key=notice_key, source_text=source)
+    calls, budgets = [], []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if len(calls) == 1:
+            return httpx.Response(500, json={"gateway_error": json.loads(json.dumps(first_failure))})
+        if len(calls) <= 1 + later_failures:
+            return httpx.Response(200, json={"status": "completed", "output_text": '{"requirements": []}'})
+        with factory() as session:
+            metadata = next(v for v in session.get(Notice, notice_id).versions
+                            if v.source_payload.get("kind") == "PPS_NOTICE_METADATA")
+            attachment_id = metadata.source_payload["attachment_manifest"][0]["attachment_id"]
+        return response(json.loads(json.dumps(payload).replace(ATT, attachment_id)))
+
+    def client_factory(**kwargs):
+        budgets.append(kwargs.get("budget_policy"))
+        return OpenAIExtractionClient(**kwargs, transport=httpx.MockTransport(handler))
+
+    options = dict(notice_id=notice_id, openai_api_key="SYN-key", openai_model="claude-sonnet-5",
+                   llm_provider="n8n_claude", llm_gateway_base_url="https://syn-gateway.test/v1",
+                   transport=download, openai_client_factory=client_factory)
+    return engine, factory, options, calls, budgets
+
+
+def test_first_call_schema_failure_recovers_without_32k(monkeypatch):
+    import time
+    engine, factory, options, calls, budgets = _first_failure_case(monkeypatch, first_failure=SCHEMA_DECODE)
+    with factory() as session:
+        result = enrich_notice_from_pps(session, **options, deadline_monotonic=time.monotonic() + 900)
+    # ordinary call, keyword text, XML fallback; no 32k stage for a completed malformed output
+    assert len(calls) == result.openai_calls == 3
+    assert "LONG_OUTPUT_ONCE" not in budgets
+    assert "<source_excerpts" in calls[-1]["input"][1]["content"][0]["text"]
+    with factory() as session:
+        stored = session.get(NoticeVersion, result.version_id)
+        assert stored.source_payload["status"] == "ACCEPTED"
+        assert stored.source_payload["document_processing"]["quantitative_recovery"]["xml_fallback_used"] is True
+        assert not stored.document_complete
+        assert session.query(IngestionJob).filter_by(source="QUANTITATIVE_RECOVERY_ONCE").count() == 1
+    with factory() as session:
+        reused = enrich_notice_from_pps(session, **options, deadline_monotonic=time.monotonic() + 900)
+    assert reused.openai_calls == 0 and len(calls) == 3
+    engine.dispose()
+
+
+def test_stored_first_failure_never_spends_without_explicit_retry(monkeypatch):
+    """A failure stored before deployment stays put until an explicit retry asks for it."""
+    import time
+    engine, factory, options, calls, _ = _first_failure_case(
+        monkeypatch, first_failure=SCHEMA_DECODE, notice_key="SYN-FIRST-FAILURE-STORED")
+    with factory() as session:
+        first = enrich_notice_from_pps(session, **options)
+    assert first.status == "REVIEW" and len(calls) == 1
+    with factory() as session:
+        again = enrich_notice_from_pps(session, **options, deadline_monotonic=time.monotonic() + 900)
+    assert again.openai_calls == 0 and len(calls) == 1
+    with factory() as session:
+        result = enrich_notice_from_pps(session, **options, deadline_monotonic=time.monotonic() + 900,
+                                        retry_reviewed_version_ids=frozenset({first.version_id}))
+    assert len(calls) == 3 and result.openai_calls == 2
+    with factory() as session:
+        assert session.get(NoticeVersion, result.version_id).source_payload["status"] == "ACCEPTED"
+    engine.dispose()
+
+
+def test_first_failure_recovery_kill_switch(monkeypatch):
+    import time
+    monkeypatch.setenv("PAI_FIRST_FAILURE_RECOVERY", "false")
+    engine, factory, options, calls, _ = _first_failure_case(
+        monkeypatch, first_failure=SCHEMA_DECODE, notice_key="SYN-FIRST-FAILURE-OFF")
+    for _ in range(2):
+        with factory() as session:
+            result = enrich_notice_from_pps(session, **options, deadline_monotonic=time.monotonic() + 900)
+        assert result.status in {"REVIEW", "REUSED"}
+    assert len(calls) == 1
+    with factory() as session:
+        assert session.query(IngestionJob).filter_by(source="QUANTITATIVE_RECOVERY_ONCE").count() == 0
+    engine.dispose()
+
+
+@pytest.mark.parametrize("auto_long", [True, False])
+def test_gateway_timeout_keeps_32k_first_unless_disabled(monkeypatch, auto_long):
+    import time
+    monkeypatch.setenv("PAI_AUTO_LONG_OUTPUT", "1" if auto_long else "0")
+    # 32k (when taken) fails too, then keyword text fails, then XML succeeds.
+    engine, factory, options, calls, budgets = _first_failure_case(
+        monkeypatch, first_failure=GATEWAY_TIMEOUT, later_failures=2 if auto_long else 1,
+        notice_key=f"SYN-FIRST-TIMEOUT-{int(auto_long)}")
+    with factory() as session:
+        result = enrich_notice_from_pps(session, **options, deadline_monotonic=time.monotonic() + 1800)
+    if auto_long:
+        assert budgets[:2] == [None, "LONG_OUTPUT_ONCE"]
+    else:
+        assert "LONG_OUTPUT_ONCE" not in budgets
+    assert "<source_excerpts" in calls[-1]["input"][1]["content"][0]["text"]
+    with factory() as session:
+        assert session.get(NoticeVersion, result.version_id).source_payload["status"] == "ACCEPTED"
+        assert session.query(IngestionJob).filter_by(source="QUANTITATIVE_RECOVERY_ONCE").count() == 1
+    engine.dispose()
