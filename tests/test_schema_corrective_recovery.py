@@ -297,8 +297,11 @@ def test_boolean_case_numbers_are_never_coerced_by_schema_retry(field):
         QuantitativeCaseLiteral.model_validate(row)
     outcome, calls = run_responses([response_payload(bad), response_payload(bad)],
                                   source=source, aid="SYN-ATTACHMENT")
-    assert outcome.error_code == "SCHEMA_VALIDATION_ERROR" and outcome.data is None
-    assert field + ":value_error" in outcome.message
+    # Never coerced: after the corrective retry the malformed item is excluded
+    # and declared as a gap, not read as a number.
+    from pai_loop.integrations.openai_extraction import QUANTITATIVE_ROWS_ISOLATED_GAP
+    assert outcome.status == "ACCEPTED" and outcome.data.quantitative_tables == []
+    assert outcome.data.missing_or_unreadable == [QUANTITATIVE_ROWS_ISOLATED_GAP]
     assert outcome.api_calls == len(calls) == 2
 
 
@@ -339,3 +342,48 @@ def test_quote_review_cache_accepts_only_released_correction_contracts(
     assert _stored_attachment_result(row, attachments_discovered=1) is None
     assert _matching_extraction_version([row], **params) is None
     assert row.source_payload == original
+
+
+def _two_items_one_malformed(aid="SYN-ATTACHMENT"):
+    """The first item carries a malformed CASE row; the second is valid."""
+    bad, good, source = bad_case("numeric", aid)
+    sibling = deepcopy(good["quantitative_tables"][0]["criteria"][0])
+    sibling["criterion_id"] += "-SIBLING"
+    sibling["label"] += " 2"
+    bad["quantitative_tables"][0]["criteria"].append(sibling)
+    return bad, source
+
+
+def test_last_attempt_isolates_only_the_malformed_quantitative_item():
+    from pai_loop.integrations.openai_extraction import QUANTITATIVE_ROWS_ISOLATED_GAP
+    bad, source = _two_items_one_malformed()
+    outcome, calls = run_responses([response_payload(bad), response_payload(bad)],
+                                  source=source, aid="SYN-ATTACHMENT")
+    # The full corrective retry is still taken first; only its failure isolates.
+    assert len(calls) == outcome.api_calls == 2 and outcome.corrective_retry_used
+    assert outcome.status == "ACCEPTED"
+    criteria = outcome.data.quantitative_tables[0].criteria
+    assert [item.label for item in criteria] == [bad["quantitative_tables"][0]["criteria"][1]["label"]]
+    assert outcome.data.missing_or_unreadable[-1] == QUANTITATIVE_ROWS_ISOLATED_GAP
+
+
+def test_single_call_budget_isolates_without_a_second_request():
+    bad, source = _two_items_one_malformed()
+    outcome, calls = run_responses([response_payload(bad)], budget=1, source=source, aid="SYN-ATTACHMENT")
+    assert len(calls) == 1 and outcome.status == "ACCEPTED"
+    assert len(outcome.data.quantitative_tables[0].criteria) == 1
+
+
+def test_a_table_left_without_items_is_dropped_and_the_gap_declared():
+    from pai_loop.integrations.openai_extraction import QUANTITATIVE_ROWS_ISOLATED_GAP
+    bad, _good, source = bad_case("numeric")
+    outcome, calls = run_responses([response_payload(bad)], budget=1, source=source, aid="SYN-ATTACHMENT")
+    assert outcome.status == "ACCEPTED" and outcome.data.quantitative_tables == []
+    assert outcome.data.missing_or_unreadable == [QUANTITATIVE_ROWS_ISOLATED_GAP]
+
+
+def test_errors_outside_quantitative_items_still_reject_the_response():
+    bad, _good, source = bad_case("numeric")
+    bad["document_type"] = "SYN-NOT-A-TYPE"
+    outcome, calls = run_responses([response_payload(bad)], budget=1, source=source, aid="SYN-ATTACHMENT")
+    assert outcome.status == "REVIEW" and outcome.error_code == "SCHEMA_VALIDATION_ERROR"

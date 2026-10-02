@@ -343,6 +343,59 @@ def _safe_schema_error_summary(error: ValidationError) -> str:
     return "; ".join(summaries) or "$:validation_error"
 
 
+QUANTITATIVE_ROWS_ISOLATED_GAP = (
+    "정량평가표 일부 항목이 고정 스키마를 통과하지 못해 자동 판정에서 제외되었습니다."
+)
+
+
+def _isolate_quantitative_schema_rows(raw_data: dict[str, Any], error: ValidationError) -> ExtractionPayload | None:
+    """Drop only the quantitative items a schema error points at, keep the rest.
+
+    One malformed scoring row used to discard the whole attachment response,
+    including valid tables and every requirement. Errors anywhere else, or an
+    unlocatable error, still reject the response. Dropped items become a
+    declared source gap, so the attachment never reads as complete and no
+    score is inferred for them.
+    """
+    tables = raw_data.get("quantitative_tables")
+    if not isinstance(tables, list):
+        return None
+    drop_tables: set[int] = set()
+    drop_criteria: dict[int, set[int]] = {}
+    for item in error.errors(include_url=False, include_context=False, include_input=False):
+        loc = item.get("loc", ())
+        if len(loc) < 2 or loc[0] != "quantitative_tables" or not isinstance(loc[1], int):
+            return None
+        if not 0 <= loc[1] < len(tables):
+            return None
+        if len(loc) >= 4 and loc[2] == "criteria" and isinstance(loc[3], int):
+            drop_criteria.setdefault(loc[1], set()).add(loc[3])
+        else:
+            drop_tables.add(loc[1])
+    kept_tables = []
+    for index, table in enumerate(tables):
+        if index in drop_tables:
+            continue
+        if index in drop_criteria:
+            if not isinstance(table, dict) or not isinstance(table.get("criteria"), list):
+                continue
+            criteria = [criterion for position, criterion in enumerate(table["criteria"])
+                        if position not in drop_criteria[index]]
+            if not criteria:
+                continue
+            table = {**table, "criteria": criteria}
+        kept_tables.append(table)
+    gaps = raw_data.get("missing_or_unreadable")
+    if not isinstance(gaps, list):
+        return None
+    isolated = {**raw_data, "quantitative_tables": kept_tables,
+                "missing_or_unreadable": [*gaps, QUANTITATIVE_ROWS_ISOLATED_GAP]}
+    try:
+        return ExtractionPayload.model_validate(isolated)
+    except ValidationError:
+        return None
+
+
 class OpenAIProviderUsage(BaseModel):
     """Sanitised token counters returned by one Responses API attempt.
 
@@ -1082,6 +1135,7 @@ class OpenAIExtractionClient:
         schema_diagnostics: list[str] | None = None,
         correction_prompt_version: str | None = None,
         quantitative_only: bool = False,
+        isolate_quantitative_rows: bool = False,
     ) -> ExtractionOutcome:
         metadata = {
             "api_calls": api_calls,
@@ -1147,7 +1201,13 @@ class OpenAIExtractionClient:
         try:
             data = ExtractionPayload.model_validate(raw_data)
         except ValidationError as error:
-            return schema_failure(_safe_schema_error_summary(error))
+            # Only the last attempt isolates rows; an earlier one keeps its
+            # full corrective retry (or the XML step) for the whole table.
+            data = _isolate_quantitative_schema_rows(raw_data, error) if isolate_quantitative_rows else None
+            if data is None:
+                return schema_failure(_safe_schema_error_summary(error))
+            if schema_diagnostics is not None:
+                schema_diagnostics.append("ROWS_ISOLATED:" + _safe_schema_error_summary(error))
 
         # Dense count rows may need their source-owned recognition context to
         # form a verifiable quote. This changes evidence only; ordinary anchor
@@ -1271,6 +1331,7 @@ class OpenAIExtractionClient:
             openai_telemetry=total_telemetry,
             corrective_retry_used=True,
             correction_prompt_version=SCHEMA_CORRECTIVE_PROMPT_VERSION,
+            isolate_quantitative_rows=True,
         )
 
     def extract(
@@ -1370,6 +1431,7 @@ class OpenAIExtractionClient:
                 allowed_attachment_ids=allowed_attachment_ids,
                 probe_instruction=instruction, quantitative_only=True,
                 untrusted_source_context=native_context if xml else None,
+                final_attempt=xml,
             )
             if first is not None:
                 outcome = outcome.model_copy(update={
@@ -1442,6 +1504,7 @@ class OpenAIExtractionClient:
         probe_instruction: str | None = None,
         quantitative_only: bool = False,
         untrusted_source_context: str | None = None,
+        final_attempt: bool | None = None,
     ) -> ExtractionOutcome:
         if self.budget_policy == QUANTITATIVE_PROBE_ONCE and not quantitative_only:
             raise ValueError("QUANTITATIVE_PROBE_ONCE_REQUIRES_PROBE_ENTRY")
@@ -1693,6 +1756,10 @@ class OpenAIExtractionClient:
             parsed_payloads=initial_payloads,
             schema_diagnostics=schema_diagnostics,
             quantitative_only=quantitative_only,
+            isolate_quantitative_rows=(
+                final_attempt if final_attempt is not None
+                else self.max_total_api_calls - initial_calls <= 0
+            ),
         )
         if quantitative_only:
             return outcome
@@ -1779,6 +1846,7 @@ class OpenAIExtractionClient:
             openai_telemetry=total_telemetry,
             corrective_retry_used=True,
             parsed_payloads=corrected_payloads,
+            isolate_quantitative_rows=True,
         )
         if (
             corrected_outcome.status == "ACCEPTED"
