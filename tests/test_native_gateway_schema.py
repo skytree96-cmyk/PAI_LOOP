@@ -323,3 +323,18 @@ def test_new_case_valid_transport_still_requires_exact_range_and_submission_sour
     validated = validate_count_source(decoded, source)
     assert not validated.available_candidates
     assert "CASE_NUMBER_MISMATCH" in {issue.code for issue in validated.issues}
+
+
+@pytest.mark.parametrize("raw_break", [False, True])
+def test_a_raw_line_break_inside_the_inner_json_rejects_the_whole_response(raw_break):
+    """Table cells carry line breaks; only an escaped one survives the inner strict JSON."""
+    output = complete_output()
+    output["quantitative_tables"][0]["criteria"][0]["criterion_literal"] = "SYN 5회 이상\nSYN 5"
+    encoded = as_transport(output)
+    if raw_break:  # the inner JSON escape lost: a real control character in an inner string
+        encoded["quantitative_tables"] = encoded["quantitative_tables"].replace(chr(92) + "n", chr(10))
+        with pytest.raises(subprocess.CalledProcessError):
+            transform(encoded, encoded=True)
+    else:
+        decoded = transform(encoded, encoded=True)["decoded"]
+        assert decoded["quantitative_tables"][0]["criteria"][0]["criterion_literal"] == "SYN 5회 이상\nSYN 5"

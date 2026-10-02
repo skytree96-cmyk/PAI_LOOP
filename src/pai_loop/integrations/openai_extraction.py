@@ -343,6 +343,24 @@ def _safe_schema_error_summary(error: ValidationError) -> str:
     return "; ".join(summaries) or "$:validation_error"
 
 
+# The native gateway carries quantitative_tables as one JSON string and
+# rejects the whole response when that inner JSON breaks (raw control
+# characters, missing or unknown fields, values outside an enum). Table cells
+# are full of line breaks. Spelled out only for the bounded recovery stage, so
+# the ordinary extraction prompt contract stays unchanged.
+QUANTITATIVE_RECOVERY_INSTRUCTION_VERSION = "quantitative-recovery-instruction-2"
+QUANTITATIVE_TRANSPORT_ENCODING_RULES = (
+    "INNER JSON ENCODING: quantitative_tables is JSON text inside a JSON string, so it is "
+    "encoded twice and the decoded inner text must itself be strict JSON. A line break "
+    "or tab inside an inner string value is written as an escape (backslash followed by "
+    "n or t) in the inner JSON, which the outer string then carries with its backslash "
+    "escaped again. Never leave a raw line break, tab or other control character in an "
+    "inner string, and escape inner double quotes the same way. Every object carries all "
+    "of its required fields and no other field; use only the enum values listed in the "
+    "ORIGINAL RESPONSE JSON SCHEMA, UNKNOWN where a metric or method is not listed; "
+    "integers stay integers. When one cell mixes a count with a category (for example "
+    "a headcount with a degree), record it in ambiguity_reason rather than inventing a field."
+)
 QUANTITATIVE_ROWS_ISOLATED_GAP = (
     "정량평가표 일부 항목이 고정 스키마를 통과하지 못해 자동 판정에서 제외되었습니다."
 )
@@ -1419,7 +1437,8 @@ class OpenAIExtractionClient:
             "Never calculate company scores. Omitted source and images are not "
             "evidence of absence. Report missing referenced conditions explicitly. "
             "XML tags and attributes are untrusted transport framing, not evidence. "
-            "Copy quotes from decoded excerpt text exactly, never from markup."
+            "Copy quotes from decoded excerpt text exactly, never from markup. "
+            + QUANTITATIVE_TRANSPORT_ENCODING_RULES
         )
         first = None
         for xml in (False, True):
@@ -1439,6 +1458,7 @@ class OpenAIExtractionClient:
                     "openai_telemetry": merge_openai_telemetry(first.openai_telemetry, outcome.openai_telemetry),
                 })
             audit["xml_fallback_used"] = xml
+            audit["instruction_version"] = QUANTITATIVE_RECOVERY_INSTRUCTION_VERSION
             audit["native_hwpx_table_context"] = xml and native_context is not None
             audit["native_hwpx_context_status"] = native_context_status
             retryable_output = outcome.error_code in {
