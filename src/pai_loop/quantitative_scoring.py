@@ -5288,6 +5288,36 @@ def _restated_in_same_attachment(signature: tuple | None, other: tuple | None) -
     return signature is not None and signature == other
 
 
+def _award_ladder(raw: Any) -> tuple[float, ...] | None:
+    """The printed awards of one item, ignoring how each row's bound was read."""
+    awards = tuple(sorted(row.points for row in printed_rows(raw)))
+    return awards if len(awards) >= 2 else None
+
+
+_CORE_LABEL_NOISE = re.compile(r"[\s\d.,·:;()\[\]{}<>\-–—_/~]|점")
+
+
+def _core_label(label: str) -> str:
+    return _CORE_LABEL_NOISE.sub("", label)
+
+
+def _restated_across_attachments(
+    metric: str, maximum: float, label: str, ladder: tuple[float, ...] | None,
+    other_metric: str, other_maximum: float, other_label: str, other_ladder: tuple[float, ...] | None,
+) -> bool:
+    """One announcement uploaded twice (HWP and PDF) is read twice, often with
+    differently worded labels ("경영상태(12점) - 신용평가등급" vs. "경영상태 평가
+    (신용평가등급, 12점)") or a different metric guess for the same rows. The same
+    maximum and the same printed award ladder, with the same known metric or the
+    same label once numbering and punctuation are removed, is the same item.
+    UNKNOWN is no shared metric: two 1-point UNKNOWN items (신인도, 성과공유기업)
+    share a 0/1 ladder without being one item.
+    """
+    same_metric = metric == other_metric and metric != "UNKNOWN"
+    return (ladder is not None and ladder == other_ladder and maximum == other_maximum
+            and (same_metric or _core_label(label) == _core_label(other_label)))
+
+
 def _apply_company_first_beta(
     request: QuantitativeEstimateRequest,
     *,
@@ -5334,9 +5364,9 @@ def _apply_company_first_beta(
     seen: set[tuple[str, str, str, float]] = set()
     for item in request.criteria:
         seen.add((item.category, re.sub(r"\s+", "", item.label), re.sub(r"\s+", "", item.formula)[:200], item.max_points))
-    chosen: list[tuple[str, str, float, str, tuple | None]] = [
+    chosen: list[tuple[str, str, float, str, tuple | None, tuple[float, ...] | None]] = [
         (item.source_anchor.document_label if item.source_anchor else "", item.category, item.max_points,
-         re.sub(r"\s+", "", item.label), None)
+         re.sub(r"\s+", "", item.label), None, None)
         for item in request.criteria
     ]
     replaced: set[str] = set()
@@ -5350,12 +5380,16 @@ def _apply_company_first_beta(
         key = (raw.metric, re.sub(r"\s+", "", raw.label), re.sub(r"\s+", "", raw.criterion_literal)[:200], raw.max_points)
         compact_label = re.sub(r"\s+", "", raw.label)
         signature = _printed_row_signature(raw)
+        ladder = _award_ladder(raw)
         if criterion_id not in kept_ids and (key in seen or any(
-            metric == raw.metric and maximum == raw.max_points
-            and (label in compact_label or compact_label in label)
-            and (other_attachment != attachment_id
-                 or _restated_in_same_attachment(signature, other_signature))
-            for other_attachment, metric, maximum, label, other_signature in chosen
+            (metric == raw.metric and maximum == raw.max_points
+             and (label in compact_label or compact_label in label)
+             and (other_attachment != attachment_id
+                  or _restated_in_same_attachment(signature, other_signature)))
+            or (other_attachment != attachment_id and _restated_across_attachments(
+                raw.metric, raw.max_points, compact_label, ladder,
+                metric, maximum, label, other_ladder))
+            for other_attachment, metric, maximum, label, other_signature, other_ladder in chosen
         )):
             # The same printed row read twice: a summary and a detail table, or
             # one announcement uploaded as both HWP and PDF.
@@ -5377,7 +5411,7 @@ def _apply_company_first_beta(
         if score is None:
             continue
         seen.add(key)
-        chosen.append((attachment_id, raw.metric, raw.max_points, compact_label, signature))
+        chosen.append((attachment_id, raw.metric, raw.max_points, compact_label, signature, ladder))
         metric_key = f"beta.company_first.{criterion_id}"
         points = _round_points(min(score.points, raw.max_points))
         try:
