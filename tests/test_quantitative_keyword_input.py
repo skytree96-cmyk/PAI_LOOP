@@ -176,3 +176,27 @@ def test_completed_gateway_schema_error_can_retry_but_ambiguous_timeout_cannot(d
     assert len(seen) == result.outcome.api_calls == expected_calls
     assert result.source_audit['xml_fallback_used'] is (expected_calls == 2)
     assert result.outcome.status == ('ACCEPTED' if expected_calls == 2 else 'REVIEW')
+
+
+def test_recovery_calls_spell_out_the_inner_json_encoding_within_the_system_limit():
+    from pai_loop.integrations.openai_extraction import (
+        QUANTITATIVE_RECOVERY_INSTRUCTION_VERSION, QUANTITATIVE_TRANSPORT_ENCODING_RULES,
+    )
+    payload, review = probe_fixture()
+    payload['requirements'] = []
+    systems = []
+    def handler(request):
+        body = json.loads(request.content)
+        systems.append(body['input'][0]['content'][0]['text'])
+        if len(systems) == 1:
+            return httpx.Response(200, json={'status': 'completed', 'output_text': '{"requirements": []}'})
+        return response(payload)
+    with make_client(handler) as client:
+        result = client.extract_quantitative_keywords(document_text='정량 배점표\n' + review.canonical_text,
+                                                     allowed_attachment_ids={ATT})
+    assert len(systems) == 2
+    for system in systems:
+        assert QUANTITATIVE_TRANSPORT_ENCODING_RULES in system
+        # scripts/native-gateway-request.mjs rejects a system message over 12000 characters.
+        assert len(system) <= 12000
+    assert result.source_audit['instruction_version'] == QUANTITATIVE_RECOVERY_INSTRUCTION_VERSION
