@@ -103,7 +103,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.7"
+PIPELINE_VERSION = "analysis-pipeline-0.6.8"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -863,6 +863,52 @@ def _known_non_eligibility_gaps_only(sources: Sequence[_SourceDocument]) -> bool
     )
 
 
+_NOTICE_DOCUMENT_LABEL_RE = re.compile(r"입찰\s*공고|공고문|공고서|입찰\s*설명서")
+# A gap must name what is missing. These subjects are scoring, schedule, form,
+# contact and procedure material. Unnamed gaps ("일부 내용을 읽을 수 없음"),
+# agreements, required documents and briefing sessions stay closed.
+_NAMED_NON_ELIGIBILITY_GAP_TERMS = (
+    "배점", "평가", "산식", "점수", "기한", "날짜", "양식", "공란", "계약금액", "명단", "정성",
+    "제안요청서", "과업지시서", "과업내용서", "제안서", "표지", "사업명", "건명", "연혁", "월별",
+    "계획표", "실적 인정", "연락처", "전화번호", "파일명", "연구비", "계상기준", "협상적격",
+    "낙찰자 결정", "용어",
+)
+
+
+def _notice_read_unrelated_gaps(
+    sources: Sequence[_SourceDocument],
+    manifest_basis: dict[str, Any] | None,
+) -> bool:
+    """Every current attachment was read; the declared gaps never mention eligibility.
+
+    Models routinely note gaps such as "가격평가 산식 미기재" or "배점표는 제안요청서
+    참조". Those used to keep every read eligibility clause at R07 unless each gap
+    matched a short list of known non-eligibility words. Here the announcement
+    itself must be fully read, every attachment materialized, and every gap must
+    name a non-eligibility subject without naming eligibility. Mandatory
+    eligibility clauses must still carry verified anchors.
+    """
+
+    if not sources or manifest_basis is None or not manifest_basis["coverage_complete"]:
+        return False
+    if any(not source.materializable or source.data is None for source in sources):
+        return False
+    notice_read = any(
+        source.version.document_complete
+        and _NOTICE_DOCUMENT_LABEL_RE.search(str((source.version.source_payload or {}).get("source_label") or ""))
+        for source in sources
+    )
+    if not notice_read:
+        return False
+    gaps, _resolved = _aggregate_source_gaps(sources)
+    named = _KNOWN_NON_ELIGIBILITY_GAP_TERMS + _NAMED_NON_ELIGIBILITY_GAP_TERMS
+    return all(
+        not any(term in gap for term in _ELIGIBILITY_GAP_TERMS)
+        and any(term in gap for term in named)
+        for gap in gaps
+    )
+
+
 def _current_complete_pps_evidence(
     sources: Sequence[_SourceDocument],
     manifest_basis: dict[str, Any] | None,
@@ -915,7 +961,12 @@ def _partial_gate_candidate_keys(
         run_status in {"COMPLETED", "PARTIAL"}
         and _current_complete_pps_evidence(sources, pps_manifest_basis)
     )
-    if not complete_pps_evidence and (
+    notice_read_gate = (
+        not complete_pps_evidence and run_status == "PARTIAL"
+        and not _known_non_eligibility_gaps_only(sources)
+        and _notice_read_unrelated_gaps(sources, pps_manifest_basis)
+    )
+    if not complete_pps_evidence and not notice_read_gate and (
         run_status != "PARTIAL" or not _known_non_eligibility_gaps_only(sources)
     ):
         return frozenset(), frozenset()
@@ -925,7 +976,9 @@ def _partial_gate_candidate_keys(
         for item, policy in policy_items
         if item.requirement.mandatory and policy.get("policy_class") == "ELIGIBILITY"
     ]
-    anchor_check = _has_verified_anchor if complete_pps_evidence else _has_reviewable_anchor
+    anchor_check = (
+        _has_verified_anchor if complete_pps_evidence or notice_read_gate else _has_reviewable_anchor
+    )
     if not eligibility_items or not all(anchor_check(item) for item in eligibility_items):
         return frozenset(), frozenset()
 
@@ -2315,10 +2368,17 @@ def run_analysis_pipeline(
                 confidence_gate_applied = _current_complete_pps_evidence(
                     sources, pps_manifest_basis,
                 )
+                notice_read_gate_applied = (
+                    not confidence_gate_applied
+                    and not _known_non_eligibility_gaps_only(sources)
+                    and _notice_read_unrelated_gaps(sources, pps_manifest_basis)
+                )
                 warnings = sorted(
                     set(warnings) | {
                         "PER_REQUIREMENT_CONFIDENCE_GATE_APPLIED"
                         if confidence_gate_applied
+                        else "NOTICE_READ_UNRESOLVED_GAPS_GATE_APPLIED"
+                        if notice_read_gate_applied
                         else "NON_ELIGIBILITY_PARTIAL_GATE_APPLIED"
                     }
                 )
