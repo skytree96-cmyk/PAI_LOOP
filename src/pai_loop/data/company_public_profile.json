@@ -1,5 +1,5 @@
 {
-  "profile_version": "2026.09.30-v6",
+  "profile_version": "2026.10.03-v7",
   "published_at": "2026-09-30T00:00:00+09:00",
   "eligibility_assessment_mode": "PROTOTYPE_CURRENT_FACTS",
   "classification": "PUBLIC_SAFE_COMPANY_PROFILE",
@@ -391,7 +391,7 @@
       "evidence_state": "VERIFIED",
       "effective_from": "2025-04-23",
       "effective_to": null,
-      "last_verified_at": "2026-09-03",
+      "last_verified_at": "2026-10-03",
       "evidence_key": "EVIDENCE-BUSINESS-PERMIT-COLLECTION",
       "deadline_policy": "RECONFIRM_IF_NOTICE_REQUIRES_A_CURRENT_COPY"
     },
@@ -591,6 +591,193 @@
       "effective_from": "2026-09-03",
       "effective_to": null,
       "last_verified_at": "2026-09-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "international_sanction_clear": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "sme_procurement_restriction_clear": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "bank_delinquency_clear": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "conflict_of_interest_clear": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "travel_business_guarantee_insurance": {
+      "value": true,
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "iata_bsp_member": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "training_facility_region_codes": {
+      "value": [
+        "SEOUL"
+      ],
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "business_registration_types": {
+      "value": [
+        "교육서비스업",
+        "제조업",
+        "부동산",
+        "서비스"
+      ],
+      "evidence_state": "COMPANY_CONFIRMED",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "catering_business": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "telecom_carrier": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "information_system_audit_firm": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "construction_engineering_business": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "electric_power_engineering": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "fire_facility_engineering": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "ict_engineering_business": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "ict_construction_business": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "architect_office": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "iso_13485": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "aws_partner": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
+      "evidence_key": null,
+      "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
+    },
+    "web_accessibility_certification": {
+      "value": false,
+      "evidence_state": "COMPANY_CONFIRMED_ABSENT",
+      "effective_from": "2026-10-03",
+      "effective_to": null,
+      "last_verified_at": "2026-10-03",
       "evidence_key": null,
       "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
     }

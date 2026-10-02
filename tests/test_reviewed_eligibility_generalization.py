@@ -190,7 +190,8 @@ def test_unknown_head_office_cannot_be_failed_by_empty_branch_inventory():
 @pytest.mark.parametrize("text,outcome", [
     ("본점 소재지가 부산광역시인 업체", "FAIL_CONFIRMED"),
     ("본점 소재지가 서울특별시인 업체", "PASS_CURRENT"),
-    ("경기도에 교육시설을 보유해야 함", "REVIEW"),
+    # The company confirmed (2026-10-03) that it owns training facilities in Seoul only.
+    ("경기도에 교육시설을 보유해야 함", "FAIL_CONFIRMED"),
 ])
 def test_region_rules_distinguish_head_office_and_facility(text, outcome):
     assert classify([row(text, "REGION")])[0]["outcome"] == outcome
