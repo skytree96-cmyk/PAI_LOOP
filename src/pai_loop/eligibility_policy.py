@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.10.03-v18"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.03-v19"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -34,6 +34,14 @@ PROTOTYPE_FACT_KEYS = frozenset({
     "public_dues_arrears_clear", "court_receivership_clear", "contract_nonperformance_clear",
     "business_continuity_clear", "nonprofit_priority_procurement_exception",
     "large_enterprise_software_clear",
+    # 2026-10-03 company confirmations (see _company_profile_clause_item).
+    "international_sanction_clear", "sme_procurement_restriction_clear", "bank_delinquency_clear",
+    "conflict_of_interest_clear", "travel_business_guarantee_insurance", "iata_bsp_member",
+    "training_facility_region_codes", "business_registration_types",
+    "catering_business", "telecom_carrier", "information_system_audit_firm",
+    "construction_engineering_business", "electric_power_engineering", "fire_facility_engineering",
+    "ict_engineering_business", "ict_construction_business", "architect_office",
+    "iso_13485", "aws_partner", "web_accessibility_certification",
 })
 
 
@@ -1517,6 +1525,260 @@ def _is_sanction_penalty_schedule(text: str) -> bool:
     return bool(duration and restriction and cause)
 
 
+# ------------------------------------------------------------------ 2026-10-03
+# Notice clauses resolved by the company facts confirmed on 2026-10-03, or set
+# aside because they describe products, personnel, procedure or a location.
+
+_TRAVEL_FAMILY_RE = re.compile(r"(?:종합|일반|국내외|국외|국내)\s*여행업|국외\s*여행\s*알선업|유학\s*알선업")
+_HELD_PERMIT_RE = re.compile(
+    r"종합여행업|국제회의기획업|소프트웨어|이러닝|출판|원격평생교육|비디오물|직업소개|직업능력개발|학술\s*[·.]?\s*연구"
+)
+_ABSENT_PERMITS = (
+    ("catering_business", r"위탁\s*급식\s*영업|일반\s*음식점|식품\s*접객업|집단\s*급식소"),
+    ("telecom_carrier", r"기간\s*통신\s*사업자"),
+    ("information_system_audit_firm", r"정보\s*시스템\s*감리\s*법인"),
+    ("construction_engineering_business", r"건설\s*엔지니어링업"),
+    ("electric_power_engineering", r"전력\s*기술\s*관리법|전력\s*시설물|감리업\s*\(\s*(?:전문|종합)\s*감리\s*\)"),
+    ("fire_facility_engineering", r"소방\s*(?:시설)?\s*(?:공사)?\s*(?:감리업|설계업)|소방\s*감리업"),
+    ("ict_engineering_business", r"엔지니어링\s*사업자|기술사\s*사무소"),
+    ("ict_construction_business", r"정보\s*통신\s*공사업"),
+    ("architect_office", r"건축사\s*사무소"),
+    ("iso_13485", r"ISO\s*13485"),
+    ("aws_partner", r"AWS[^.]{0,30}파트너"),
+    ("web_accessibility_certification", r"웹\s*접근성\s*인증"),
+    ("iata_bsp_member", r"IATA|BSP"),
+)
+_PRODUCT_SPEC_RE = re.compile(
+    r"(?:제품|장비|S\s*/?\s*W|모듈)[^.]{0,60}(?:CC\s*인증|GS\s*인증|FIPS|보안\s*기능\s*확인서|암호\s*모듈)"
+    r"|(?:CC\s*인증|암호\s*모듈)[^.]{0,60}(?:제품|장비|도입)"
+)
+_PERSONNEL_QUALIFICATION_RE = re.compile(
+    r"현장\s*대리인|품질\s*관리자|안전\s*관리자|보건\s*관리자|기술인|기술\s*자격|자격증\s*보유자|TOEIC|영어\s*구사|인솔자|변호사는"
+)
+_PROCEDURE_DOCUMENT_RE = re.compile(
+    r"청렴\s*계약\s*이행\s*각서|보험\s*또는\s*공제|배상\s*책임\s*보험\s*증서|공제\s*증서|신원\s*확인\s*입찰"
+    r"|신용\s*평가\s*등급[^.]{0,40}(?:전송|유효\s*기간|제출용)|보증\s*이행\s*업체|독립된\s*제\s*3\s*자"
+    r"|에너지\s*절약\s*계획서|인증\s*및\s*필증|필요한\s*경우\s*해당\s*요건|사본[^.]{0,80}(?:사본|증명서|서약서)"
+    r"|배상\s*(?:책임)?\s*보험[^.]{0,20}가입"
+)
+_REGION_INFORMATION_RE = re.compile(
+    r"교육\s*지역은|대상지는|실시\s*장소는|국내\s*입찰로|국제\s*입찰로|국내입찰로|국제입찰로"
+)
+_TRAINING_FACILITY_RE = re.compile(r"(?:교육|연수)\s*(?:\(\s*연수\s*\)\s*)?시설을?\s*보유")
+_G2B_REGISTRATION_RE = re.compile(
+    r"(?:G2B|나라장터|국가\s*종합\s*전자\s*조달|전자\s*조달\s*시스템|조달청)[^.]{0,40}(?:입찰\s*참가\s*)?(?:이용자\s*)?등록"
+    r"|조달청에\s*사전\s*등록"
+)
+_COMPETITIVE_QUALIFICATION_RE = re.compile(
+    r"(?:국가\s*계약법|국가를\s*당사자로\s*하는\s*계약에\s*관한\s*법률|지방\s*(?:자치단체\s*)?계약법|동법)\s*"
+    r"시행령\s*제\s*1[23]\s*조[^.]{0,80}(?:참가\s*자격|유\s*자격)"
+    r"|관련\s*법령과\s*입찰\s*공고에서\s*정한\s*경쟁\s*입찰\s*참가\s*자격"
+)
+_SOFTWARE_BUSINESS_RE = re.compile(
+    r"소프트웨어\s*(?:산업)?\s*진흥법[^.]{0,40}(?:제\s*24\s*조|제\s*58\s*조)|소프트웨어\s*사업자\s*일반\s*현황\s*관리\s*확인서"
+)
+_NEW_CLEARANCES = (
+    ("international_sanction_clear", r"국제\s*기구|외국\s*정부"),
+    ("sme_procurement_restriction_clear", r"판로\s*지원[^.]{0,30}제\s*8\s*조의\s*2"),
+    ("bank_delinquency_clear", r"은행\s*연합회|불량\s*거래처"),
+    ("sanction_clear", r"부적합\s*업체|부정당"),
+    ("conflict_of_interest_clear", r"이해\s*상충"),
+)
+_CLEARANCE_UNCOVERED_RE = re.compile(r"퇴직|임직원|소송|물의|부과금|계열\s*회사")
+
+
+def _industry_code_boolean_item(
+    requirement: dict[str, Any], *, profile: dict[str, Any], text: str, category: str,
+    deadline: date | None, today: date,
+) -> dict[str, Any] | None:
+    """Resolve only the AND/OR shapes notices use for bidder industry codes.
+
+    1. "A, B, C 중 하나와 X"        -> one of A/B/C and X
+    2. "A와 B (두 업종) 모두"        -> A and B (exactly two codes)
+    3. "A와/및 B 또는 C (모두)"      -> A and one of B/C (exactly three codes)
+    4. "A 또는 B (중 하나)"          -> one of the codes, joined only by 또는/혹은/,/·
+    Anything else (nested pairs, extra permits) stays REVIEW. The verified
+    inventory decides; an unmet combination is a confirmed absence.
+    """
+    if not re.search(r"업종|코드|나라장터|G2B|조달청", text, re.I):
+        return None
+    found = [(m.group(1), m.start(), m.end()) for m in re.finditer(r"(?<!\d)(\d{4})(?!\d)", text)
+             if not re.match(r"(?:19|20)\d\d$", m.group(1))]
+    codes = list(dict.fromkeys(code for code, _s, _e in found))
+    if len(codes) < 2 or len(codes) != len(found):
+        return None
+    between = [text[found[i][2]:found[i + 1][1]] for i in range(len(found) - 1)]
+    joiner_or = (r"(?:[^\d]{0,40}?)(?:또는|혹은|,|·)" if re.search(r"중\s*하나", text)
+                 else r"(?:[^\d]{0,40}?)(?:또는|혹은)")
+    split = re.search(r"중\s*하나\s*(?:와|과|및)", text)
+    if split:
+        before = [code for code, start, _e in found if start < split.start()]
+        after = [code for code, start, _e in found if start > split.end()]
+        if len(after) != 1 or len(before) < 2:
+            return None
+        groups = [before, after]
+    elif len(codes) == 2 and re.search(r"(?:와|과|및)", between[0]) and re.search(r"모두|동시|각각", text):
+        groups = [[codes[0]], [codes[1]]]
+    elif (len(codes) == 3 and re.search(r"(?:와|과|및)", between[0])
+          and re.search(r"또는|혹은", between[1]) and re.search(r"모두|동시|각각", text)):
+        groups = [[codes[0]], codes[1:]]
+    elif all(re.fullmatch(joiner_or + r"[^\d]{0,40}", gap) for gap in between) and not re.search(
+        r"모두|동시|각각|(?:와|과|및)\s*\(", text
+    ):
+        groups = [codes]
+    else:
+        return None
+    if re.search(r"신고|허가|면허|인증|확인서|실적|인력|/", re.sub(r"\([^)]*\)", "", text)):
+        return None
+    inventory = (profile.get("facts", {}).get("industry_code_inventory") or {}).get("value") or []
+    held = set(inventory)
+    required = [next((code for code in group if code in held), group[0]) for group in groups]
+    return _eligibility_item(
+        requirement, profile=profile, fact_key="industry_code_inventory", deadline=deadline, today=today,
+        operator="contains_all", required_value=required,
+        message="나라장터 등록 업종코드가 공고의 업종 조합 조건을 충족합니다.",
+        fail_on_confirmed_absence=True,
+        failure_message="나라장터 등록 업종코드에 공고가 요구한 업종 조합이 없습니다.",
+    )
+
+
+def _composite_item(
+    requirement: dict[str, Any], *, profile: dict[str, Any], keys: list[str], deadline: date | None, today: date,
+    message: str, operators: dict[str, tuple[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Every named company fact must pass; the first confirmed absence fails the clause."""
+    facts = profile.get("facts", {})
+    items = []
+    for key in keys:
+        operator, required = (operators or {}).get(key, ("eq", True))
+        items.append(_eligibility_item(
+            requirement, profile=profile, fact_key=key, deadline=deadline, today=today, message=message,
+            operator=operator, required_value=required,
+            fail_on_confirmed_absence=str((facts.get(key) or {}).get("evidence_state") or "").startswith(
+                ("COMPANY_CONFIRMED", "VERIFIED")),
+            failure_message="회사 확인값상 이 조건을 충족하지 않습니다.",
+        ))
+    failed = next((item for item in items if item["outcome"] == "FAIL_CONFIRMED"), None)
+    if failed is not None:
+        return failed
+    if not all(item["outcome"].startswith("PASS") for item in items):
+        return next(item for item in items if not item["outcome"].startswith("PASS"))
+    lead = items[0]
+    if len(keys) > 1:
+        lead["component_fact_keys"] = keys
+    return lead
+
+
+def _company_profile_clause_item(
+    requirement: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    text: str,
+    category: str,
+    deadline: date | None,
+    today: date,
+) -> dict[str, Any] | None:
+    if category not in {"ENTITY", "CERTIFICATION", "INDUSTRY_CODE", "SANCTION", "REGION"}:
+        return None
+    code_item = _industry_code_boolean_item(requirement, profile=profile, text=text, category=category,
+                                            deadline=deadline, today=today)
+    if code_item is not None:
+        return code_item
+    if category == "REGION":
+        if _TRAINING_FACILITY_RE.search(text):
+            regions = [code for code, pattern in _REGION_CODES if re.search(pattern, text)]
+            if regions:
+                return _composite_item(
+                    requirement, profile=profile, keys=["training_facility_region_codes"], deadline=deadline,
+                    today=today, operators={"training_facility_region_codes": ("contains_any", regions)},
+                    message="회사 확인값상 보유 교육(연수) 시설 소재지가 공고 지역과 일치합니다.",
+                )
+        if _REGION_INFORMATION_RE.search(text) and not _COMPANY_LOCATION_RE.search(text):
+            return _information_item(
+                requirement, profile=profile, capability_key=None,
+                message="수행 장소 또는 입찰 구분 안내이며 업체 소재지 참가제한이 아닙니다.",
+            )
+        return None
+    if _PRODUCT_SPEC_RE.search(text):
+        return _information_item(
+            requirement, profile=profile, capability_key=None,
+            message="납품·도입 제품의 인증 사양이며 회사 참가자격이 아닙니다.",
+        )
+    if _PERSONNEL_QUALIFICATION_RE.search(text) and not _HELD_PERMIT_RE.search(text):
+        return _checklist_item(
+            requirement, profile=profile, capability_key="proposal_submission",
+            message="투입 인력의 자격·경력 조건입니다. 회사 참가자격이 아니라 인력 구성 체크리스트로 관리합니다.",
+        )
+    if re.search(r"관광\s*진흥법[^.]{0,20}제\s*9\s*조|보험\s*가입을\s*필한\s*여행", text):
+        return _composite_item(
+            requirement, profile=profile, keys=["travel_business_guarantee_insurance"], deadline=deadline,
+            today=today, message="회사 확인값상 관광진흥법에 따른 여행업 보증보험에 가입되어 있습니다.",
+        )
+    if _PROCEDURE_DOCUMENT_RE.search(text):
+        return _information_item(
+            requirement, profile=profile, capability_key=None,
+            message="제출 서류·보험·절차 안내이며 입찰 시점 회사 참가자격이 아닙니다.",
+        )
+    absent = [key for key, pattern in _ABSENT_PERMITS if re.search(pattern, text, re.I)]
+    if absent and not _HELD_PERMIT_RE.search(text) and not _TRAVEL_FAMILY_RE.search(text):
+        return _composite_item(
+            requirement, profile=profile, keys=absent, deadline=deadline, today=today,
+            message="회사 확인값에 따라 판정합니다.",
+        )
+    if _TRAVEL_FAMILY_RE.search(text) and not absent:
+        # 종합여행업 covers 일반·국내외·국외·국내 여행업 (관광진흥법 2021 명칭 개편).
+        remainder = _TRAVEL_FAMILY_RE.sub("", text)
+        if re.search(r"사본|서약서|증권", text) or re.search(
+            r"허가|면허|인증|확인서|증명서|등록증|실적|인력|업종\s*코드|\d{4}", remainder
+        ):
+            return None
+        if set(_named_permit_fact_keys(text, category=category)) - {"general_travel_business"}:
+            return None
+        keys = ["general_travel_business"]
+        if re.search(r"부정당", text):
+            keys.append("sanction_clear")
+        if re.search(r"서울[^.]{0,20}(?:주된\s*영업소|본점|본사)", text):
+            keys.append("head_office_region_seoul")
+        elif _COMPANY_LOCATION_RE.search(text):
+            return None
+        return _composite_item(
+            requirement, profile=profile, keys=keys, deadline=deadline, today=today,
+            message="회사는 관광진흥법상 종합여행업(일반·국내외·국외·국내여행업 포함)으로 등록되어 있습니다.",
+        )
+    if _SOFTWARE_BUSINESS_RE.search(text) and not re.search(r"정보\s*통신\s*공사|0036", text):
+        return _composite_item(
+            requirement, profile=profile, keys=["software_computer_related_services"], deadline=deadline,
+            today=today, message="회사는 소프트웨어사업자(컴퓨터관련서비스사업)로 신고되어 있습니다.",
+        )
+    if re.search(r"사업자\s*등록증\s*상?\s*교육\s*서비스업", text):
+        return _composite_item(
+            requirement, profile=profile, keys=["business_registration_types"], deadline=deadline, today=today,
+            operators={"business_registration_types": ("contains_any", ["교육서비스업"])},
+            message="회사 사업자등록증 업태에 교육서비스업이 있습니다.",
+        )
+    if category in {"ENTITY", "SANCTION"} and (
+        _COMPETITIVE_QUALIFICATION_RE.search(text)
+        or (_G2B_REGISTRATION_RE.search(text) and not re.search(r"KOICA|코이카|허가|면허|인증|확인서", text))
+    ) and not re.search(r"여행업|업종\s*코드|\(\d{4}\)", text):
+        keys = ["bidder_registration"]
+        if re.search(r"부정당|제\s*76\s*조", text):
+            keys.append("sanction_clear")
+        return _composite_item(
+            requirement, profile=profile, keys=keys, deadline=deadline, today=today,
+            message="나라장터 경쟁입찰참가자격 등록 근거가 연결되어 충족합니다.",
+        )
+    if category in {"SANCTION", "ENTITY"} and not _CLEARANCE_UNCOVERED_RE.search(text):
+        keys = [key for key, pattern in _NEW_CLEARANCES if re.search(pattern, text)]
+        if keys and any(key != "sanction_clear" for key in keys) and re.search(
+            r"없|않|아닌|아니|불가|제외", text
+        ):
+            return _composite_item(
+                requirement, profile=profile, keys=list(dict.fromkeys(keys)), deadline=deadline, today=today,
+                message="회사 확인값상 함께 적힌 제재·거래·이해상충 조건을 모두 충족합니다.",
+            )
+    return None
+
+
 def _is_present_sanction_exclusion(text: str) -> bool:
     """A present exclusion of sanctioned bidders, satisfied by a clear record."""
 
@@ -1531,7 +1793,8 @@ def _is_present_sanction_exclusion(text: str) -> bool:
     subject = re.search(
         r"부정당\s*업(?:자|체)|입찰\s*참가(?:\s*자격)?\s*제한(?:을|이)?\s*(?:받|중|기간|사유|대상)"
         r"|입찰\s*참가\s*자격을\s*제한\s*받|제한\s*처분(?:을|이)?\s*(?:받|중)"
-        r"|제한\s*기간|제\s*76\s*조[^.]{0,20}해당하는\s*(?:기업|업체|자)|제\s*76\s*조의?\s*(?:제한|제재)",
+        r"|제한\s*기간|제\s*76\s*조[^.]{0,20}해당하는\s*(?:기업|업체|자)|제\s*76\s*조의?\s*(?:제한|제재)"
+        r"|제\s*27\s*조[^.]{0,6}제한",
         text,
     )
     exclusion = re.search(
@@ -1961,6 +2224,11 @@ def _reviewed_fallback_item(
                 requirement, profile=profile, capability_key=None, message="지역 제한이 없다는 안내입니다.",
             )
         return _region_gate_item(requirement, profile=profile, text=text, deadline=deadline, today=today)
+    profile_item = _company_profile_clause_item(
+        requirement, profile=profile, text=text, category=category, deadline=deadline, today=today,
+    )
+    if profile_item is not None:
+        return profile_item
     if category == "SANCTION" and _is_award_procedure_or_contract_term(text):
         return _information_item(
             requirement,
@@ -3130,6 +3398,8 @@ def classify_requirements(
             else:
                 item = _region_gate_item(
                     requirement, profile=profile, text=text, deadline=as_of, today=today,
+                ) or _company_profile_clause_item(
+                    requirement, profile=profile, text=text, category=category, deadline=as_of, today=today,
                 ) or _unmapped_eligibility_item(
                     requirement,
                     fact_key="notice_region_eligibility",
@@ -3225,6 +3495,16 @@ def classify_requirements(
                 condition_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
                 item["evaluation_fact_key"] = f"eligibility.performance.unbound.{condition_digest[:32]}"
                 item["requires_performance_scope_binding"] = True
+        if (
+            item.get("policy_class") == "ELIGIBILITY" and item.get("outcome") == "REVIEW"
+            and not item.get("requires_performance_scope_binding")
+            and not item.get("performance_relation_unresolved")
+        ):
+            rescued = _company_profile_clause_item(
+                requirement, profile=profile, text=text, category=category, deadline=as_of, today=today,
+            )
+            if rescued is not None:
+                item = rescued
         if item.get("nonprofit_route_source") == "NOTICE_SIBLING_CLAUSE":
             item["nonprofit_route_requirement_ids"] = list(notice_sme_source_ids)
         items.append(item)
