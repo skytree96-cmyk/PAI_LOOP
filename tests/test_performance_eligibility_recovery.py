@@ -98,7 +98,7 @@ def test_provider_id_cannot_select_evaluation_fact_key():
     # Pinned on purpose: moving the policy version is the signal to re-check
     # that the key above still derives from the condition alone. v16 adds
     # company clearance declarations without changing performance scope keys.
-    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.09.30-v17"
+    assert POLICY_VERSION == "pai-loop-requirement-policy-2026.10.03-v18"
 
 
 def test_public_generic_or_exact_boolean_never_claims_scope_is_bound():

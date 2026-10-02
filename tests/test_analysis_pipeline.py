@@ -644,7 +644,7 @@ def test_pipeline_excludes_unverified_agency_awards_from_competition_and_profita
 def test_new_risk_semantics_have_versioned_non_reusable_idempotency(
     db_session: Session,
 ) -> None:
-    assert PIPELINE_VERSION == "analysis-pipeline-0.6.7"
+    assert PIPELINE_VERSION == "analysis-pipeline-0.6.8"
     assert MATERIALIZATION_VERSION == "atomic-materializer-0.3.1"
     assert SNAPSHOT_VERSION == "analysis-snapshot-0.3.0"
     notice = _notice(db_session, notice_key="RISK-VERSION", title="AI 리터러시 교육 용역")
@@ -2610,7 +2610,7 @@ def test_confidence_fix_recalculates_old_pipeline_run_once_without_extraction(mo
         assert not current.reused
         assert run_analysis_pipeline(case.session, notice_id=case.notice_id).reused
         assert case.client.calls == 1
-        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.7"
+        assert case.session.get(AnalysisRun, current.analysis_run_id).basis_versions["pipeline"] == "analysis-pipeline-0.6.8"
 
 
 @pytest.mark.parametrize("malformed", [None, {}, "invalid", "__MISSING__"])
@@ -2665,3 +2665,46 @@ def test_irrelevant_gap_no_longer_determines_strong_eligibility_outcome(gaps):
         result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
         assert result.eligibility == "PASS"
         assert case.client.calls == 1
+
+
+def _relabel_source(case, label):
+    version = case.session.get(NoticeVersion, case.source_id)
+    payload = copy.deepcopy(version.source_payload)
+    payload["source_label"] = label
+    version.source_payload = payload
+    case.session.commit()
+
+
+NAMED_SCHEDULE_GAP = ["입찰 건명 및 날짜 미기재로 구체적 사업명 확인 불가"]
+
+
+@pytest.mark.parametrize("fact,expected", [(True, "PASS"), (False, "FAIL")])
+def test_fully_read_notice_with_named_non_eligibility_gaps_releases_r07(fact, expected):
+    with _current_pps_confidence_source(missing=NAMED_SCHEDULE_GAP, company_fact=fact) as case:
+        _relabel_source(case, "SYN 입찰공고문.hwpx")
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.status == "PARTIAL"
+        assert result.eligibility == expected
+        assert "NOTICE_READ_UNRESOLVED_GAPS_GATE_APPLIED" in result.warnings
+        assert case.client.calls == 1
+
+
+@pytest.mark.parametrize("label,missing", [
+    ("SYN 제안요청서.hwpx", NAMED_SCHEDULE_GAP),          # the announcement itself was not read
+    ("SYN 입찰공고문.hwpx", ["일부 내용을 읽을 수 없음"]),     # the gap does not say what is missing
+    ("SYN 입찰공고문.hwpx", ["입찰참가자격 세부 원문 누락"]),   # the gap names eligibility
+    ("SYN 입찰공고문.hwpx", ["협약 체결 근거의 상세 협약서 내용은 본문에 없음"]),
+])
+def test_notice_read_gate_stays_closed_without_its_conditions(label, missing):
+    with _current_pps_confidence_source(missing=missing) as case:
+        _relabel_source(case, label)
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
+        assert "NOTICE_READ_UNRESOLVED_GAPS_GATE_APPLIED" not in result.warnings
+
+
+def test_notice_read_gate_still_needs_verified_mandatory_anchors():
+    with _current_pps_confidence_source(missing=NAMED_SCHEDULE_GAP, eligibility_confidence=0.85) as case:
+        _relabel_source(case, "SYN 입찰공고문.hwpx")
+        result = run_analysis_pipeline(case.session, notice_id=case.notice_id)
+        assert result.eligibility == "REVIEW"
