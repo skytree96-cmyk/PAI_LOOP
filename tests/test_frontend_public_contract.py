@@ -842,6 +842,9 @@ def test_department_recommendation_and_region_routing_are_rendered_separately() 
     assert '"부서 추천"' in badge_body
     assert '"추가 검토"' in badge_body
     assert '"관련 지역 부서"' in badge_body
+    # A department viewer still sees which other department owns a notice.
+    assert '"다른 부서 추천"' in badge_body
+    assert '"다른 부서 검토"' in badge_body
 
 
 def test_private_match_uses_public_text_lines_instead_of_a_dangling_label() -> None:
