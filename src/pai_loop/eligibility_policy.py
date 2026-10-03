@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.09.30-v17"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.03-v18"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -1373,7 +1373,7 @@ _DECLARED_CLEARANCE_MESSAGES = {
 def _declared_clearance_fact_key(text: str) -> str | None:
     """Bind only a complete, single clearance clause; never swallow other gates."""
     compact = re.sub(r"\s+", "", text).rstrip(".")
-    prefix = r"(?:(?:입찰)?공고일(?:현재|기준)|제안서제출일기준|현재)?"
+    prefix = r"(?:(?:입찰)?공고일(?:현재|기준)|입찰일(?:현재|기준)|제안서제출일기준|현재)?"
     party = r"(?:업체|사업자|자|법인)"
     ending = rf"(?:{party}(?:이어야함|여야함|일것|이어야한다)?)?"
     absent = rf"(?:이|사실이|내역이|이력이)?(?:없는{ending}|없어야(?:함|한다)|없음|없을것)"
@@ -1484,21 +1484,59 @@ def _is_future_sanction_consequence(text: str) -> bool:
     return bool(_FUTURE_TRIGGER_RE.search(text) and _FUTURE_CONSEQUENCE_RE.search(text))
 
 
+_AWARD_PROCEDURE_RE = re.compile(
+    r"계약\s*보증금|하자\s*보수|지체\s*상금|재\s*공고|협상\s*(?:적격자|대상)|기술능력\s*평가\s*점수"
+    r"|0\s*점\s*처리|확약|이의를?\s*제기|민\s*[·ㆍ]?\s*형사|임의\s*교체|교체할\s*수\s*없"
+    r"|입찰\s*(?:은|의)?\s*무효|무효\s*(?:및|사유)|허위로?\s*(?:확인|작성|판명)|입증\s*(?:요구|하지)"
+    r"|수의\s*계약|타인\s*명의|중복\s*배치|투입\s*인력으로\s*참여할\s*수\s*없"
+)
+# A present company-status exclusion still names who may not bid now.
+_PRESENT_EXCLUSION_RE = re.compile(
+    r"(?:업체|업자|사업자|자|기업|회사)(?:는|은)\s*(?:입찰\s*)?(?:참가|참여)\s*(?:불가|할\s*수\s*없)"
+)
+
+
+def _is_award_procedure_or_contract_term(text: str) -> bool:
+    """Bid procedure, award, contract and post-award terms filed under SANCTION."""
+    if not _AWARD_PROCEDURE_RE.search(text):
+        return False
+    # "부정당업자 ... 참가 불가" or a company-status exclusion is a real gate even
+    # when it also mentions a contract consequence.
+    return not (
+        re.search(r"부정당|체납|파산|부도|법정\s*관리|화의|청산", text) and _PRESENT_EXCLUSION_RE.search(text)
+    )
+
+
+def _is_sanction_penalty_schedule(text: str) -> bool:
+    """Penalty lengths for collusion/bribery (e.g. 주도 2년, 가담 1년), not a present gate."""
+    if any(marker in text for marker in _PRESENT_SANCTION_MARKERS):
+        return False
+    duration = re.search(r"\d+\s*(?:개월|년)\s*(?:간|~|이상|이하|\)|$)|금액에\s*따라|정도에\s*따라", text)
+    restriction = re.search(r"입찰\s*참가(?:\s*자격)?\s*제한|계약\s*제재", text)
+    cause = re.search(r"담합|뇌물|금품|알선|청탁|사망|중대\s*재해|위반", text)
+    return bool(duration and restriction and cause)
+
+
 def _is_present_sanction_exclusion(text: str) -> bool:
     """A present exclusion of sanctioned bidders, satisfied by a clear record."""
 
+    # "국가계약법, 지방계약법 또는 공공기관운영법" lists the statutes that may
+    # have imposed the restriction; it is not an alternative qualification.
+    guard_text = re.sub(r"(법률|법|규정|세칙|규칙)\s*」?\s*(?:,|또는|혹은)\s*「?", r"\1 및 ", text)
     if _is_future_sanction_consequence(text) or re.search(
         r"또는|혹은|하거나|이거나|허가|면허|인증|확인서|증명서|실적|인력|별도|추가"
-        r"|자격\s*(?:요건)?\s*(?:을|를)?\s*(?:갖추|갖춘|구비|보유|충족)", text,
+        r"|자격\s*(?:요건)?\s*(?:을|를)?\s*(?:갖추|갖춘|구비|보유|충족)", guard_text,
     ):
         return False
     subject = re.search(
         r"부정당\s*업(?:자|체)|입찰\s*참가(?:\s*자격)?\s*제한(?:을|이)?\s*(?:받|중|기간|사유|대상)"
-        r"|제한\s*기간|제\s*76\s*조[^.]{0,20}해당하는\s*(?:기업|업체|자)",
+        r"|입찰\s*참가\s*자격을\s*제한\s*받|제한\s*처분(?:을|이)?\s*(?:받|중)"
+        r"|제한\s*기간|제\s*76\s*조[^.]{0,20}해당하는\s*(?:기업|업체|자)|제\s*76\s*조의?\s*(?:제한|제재)",
         text,
     )
     exclusion = re.search(
-        r"불가|제외|수\s*없|없는|없어야|아니|아닐|않|경과한\s*자|따름|의함|제한\s*(?:됨|된다|한다)?\s*\.?$",
+        r"불가|제외|수\s*없|없는|없어야|아니|아닐|아닌|않|경과한\s*자|만료되어야|따름|의함"
+        r"|제한\s*(?:됨|된다|한다)?\s*\.?$",
         text,
     )
     return bool(subject and exclusion)
@@ -1525,11 +1563,13 @@ def _is_evaluation_or_reference_rule(text: str) -> bool:
 
 
 def _is_large_enterprise_software_restriction(text: str) -> bool:
-    return bool(
-        re.search(r"대기업|중견\s*기업|상호\s*출자\s*제한", text)
-        and re.search(r"소프트웨어|\bSW\b", text)
-        and re.search(r"제한|불가|할\s*수\s*없|만\s*(?:참여|참가|입찰)\s*가능", text)
-    )
+    restricted = re.search(r"제한|불가|할\s*수\s*없|만\s*(?:참여|참가|입찰)\s*가능|지정되지\s*않", text)
+    # Membership of a 상호출자제한기업집단 restricts on its own; plain 대기업/중견
+    # limits stay software-specific because the company fact only covers those.
+    return bool(restricted and (
+        re.search(r"상호\s*출자\s*제한\s*기업\s*집단", text)
+        or (re.search(r"대기업|중견\s*기업", text) and re.search(r"소프트웨어|\bSW\b", text))
+    ))
 
 
 def _is_business_registration_possession(text: str) -> bool:
@@ -1921,6 +1961,20 @@ def _reviewed_fallback_item(
                 requirement, profile=profile, capability_key=None, message="지역 제한이 없다는 안내입니다.",
             )
         return _region_gate_item(requirement, profile=profile, text=text, deadline=deadline, today=today)
+    if category == "SANCTION" and _is_award_procedure_or_contract_term(text):
+        return _information_item(
+            requirement,
+            profile=profile,
+            capability_key=None,
+            message="입찰·평가 절차 또는 계약 조건 안내이며 입찰 시점 회사 참가자격이 아닙니다.",
+        )
+    if category == "SANCTION" and _is_sanction_penalty_schedule(text):
+        return _checklist_item(
+            requirement,
+            profile=profile,
+            capability_key="integrity_pledge",
+            message="담합·금품 등 위반 시 제한 기간을 정한 조항입니다. 참가자격이 아니라 준수 체크리스트로 관리합니다.",
+        )
     if category == "SANCTION" and _is_future_sanction_consequence(text):
         capability = (
             "safety_health_pledge" if re.search(r"안전|보건", text)
