@@ -632,6 +632,16 @@ def _decode_hwp_bindata(
     except DocumentExtractionError as exc:
         if str(exc) == "HWP_SECTION_DEFLATE_INVALID":
             return content, kind
+        if str(exc) == "HWP_SECTION_SIZE_LIMIT":
+            # A huge metafile chart expands past the member bound. Images are
+            # skipped anyway, so classify from a bounded prefix instead of
+            # failing the whole document; any non-image still fails closed.
+            try:
+                prefix = zlib.decompressobj(-15).decompress(content, 64)
+            except zlib.error:
+                raise exc from None
+            if _hwp_bindata_kind(prefix) == "IMAGE":
+                return content, "IMAGE"
         raise
     return decoded, _hwp_bindata_kind(decoded)
 
@@ -665,6 +675,12 @@ def _hwp_bindata_kind(content: bytes) -> str:
         content.startswith((b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM"))
         or content.startswith(b"\x89PNG\r\n\x1a\n")
         or content.startswith(b"\xd7\xcd\xc6\x9a")
+        # Non-placeable Windows Metafile header: type 1/2, 9-word header,
+        # version 0x0100 or 0x0300.
+        or content[:6] in {
+            b"\x01\x00\x09\x00\x00\x01", b"\x01\x00\x09\x00\x00\x03",
+            b"\x02\x00\x09\x00\x00\x01", b"\x02\x00\x09\x00\x00\x03",
+        }
         or (
             len(content) >= 44
             and content[:4] == b"\x01\x00\x00\x00"
@@ -758,10 +774,16 @@ def _extract_hwp_para_text(payload: bytes) -> str:
         if not plain:
             return
         try:
-            decoded = bytes(plain).decode("utf-16le", errors="strict")
+            decoded = bytes(plain).decode("utf-16le", errors="surrogatepass")
         except UnicodeDecodeError as exc:
             raise DocumentExtractionError("HWP_PARA_TEXT_UTF16_INVALID") from exc
-        fragments.append(decoded)
+        # Hancom occasionally stores a lone surrogate (a broken symbol glyph).
+        # Keep every valid character and mark only that unit, as the PDF path
+        # does, instead of discarding the whole document.
+        fragments.append("".join(
+            "\ufffd" if 0xD800 <= ord(character) <= 0xDFFF else character
+            for character in decoded
+        ))
         plain.clear()
 
     offset = 0

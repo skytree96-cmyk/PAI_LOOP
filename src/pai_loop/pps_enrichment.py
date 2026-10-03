@@ -106,7 +106,9 @@ from .manifest_bounds import (  # noqa: F401  (재내보내기)
 )
 # 수집 단계가 공고번호로 조인한 전자주문 첨부 행을 원본 항목에 실어 보낸다.
 EORDER_ATTACHMENT_FIELD = "_eorder_attachments"
-DEFAULT_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+# Public RFPs embed scanned seals and charts; real ones measured 8.8-16 MB
+# (2026-10-03, five unscored notices). Text size is bounded separately.
+DEFAULT_MAX_DOWNLOAD_BYTES = 24 * 1024 * 1024
 MAX_NOTICE_DOWNLOAD_BYTES = MAX_ATTACHMENTS_IN_MANIFEST * DEFAULT_MAX_DOWNLOAD_BYTES
 MAX_EXTRACTED_DOCUMENT_CHARS = 2_000_000
 MAX_NOTICE_EXTRACTED_CHARS = MAX_ATTACHMENTS_IN_MANIFEST * MAX_EXTRACTED_DOCUMENT_CHARS
@@ -2318,7 +2320,103 @@ def _hwpx_paragraph_text(
     return parts
 
 
+# Hancom writes these two script members into every new document. Their
+# content is the editor's template: two host bindings plus empty event
+# handlers whose only body is a "//todo :" comment. Nothing there can change
+# the saved section text, so such a package is read like any other HWPX.
+_HWPX_INERT_SCRIPT_LINE = re.compile(
+    r"var Documents = XHwpDocuments;"
+    r"|var Document = Documents\.Active_XHwpDocument;"
+    r"|function On[A-Za-z0-9_]{1,80}\(\)"
+    r"|[{}]"
+    r"|//\s*todo\s*:?"
+)
+_HWPX_INERT_SCRIPT_MEMBERS = {
+    "scripts/headerscripts", "scripts/headerscripts.js",
+    "scripts/sourcescripts", "scripts/sourcescripts.js",
+}
+_HWPX_INERT_SCRIPT_MAX_BYTES = 16 * 1024
+
+
+def _hwpx_script_is_inert_default(archive: zipfile.ZipFile, item: zipfile.ZipInfo) -> bool:
+    if (
+        item.filename.casefold() not in _HWPX_INERT_SCRIPT_MEMBERS
+        or item.file_size > _HWPX_INERT_SCRIPT_MAX_BYTES
+    ):
+        return False
+    try:
+        raw = archive.read(item)
+    except Exception:
+        return False
+    for encoding in ("utf-16", "utf-8-sig"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" in text:
+            continue
+        lines = [line.strip() for line in text.splitlines()]
+        return all(not line or _HWPX_INERT_SCRIPT_LINE.fullmatch(line) for line in lines)
+    return False
+
+
+# HWPML 2.x is Hancom's flat-XML format. Agencies upload it under a .hwpx
+# name (seen: 조달청 특수조건 exported by 법제처). The only DOCTYPE accepted
+# declares numeric character entities; anything else stays fail-closed.
+_HWPML_DOCTYPE = re.compile(rb"<!DOCTYPE\s+HWPML\s*\[(?P<body>.*?)\]\s*>", re.S)
+_HWPML_ENTITY = re.compile(rb'<!ENTITY\s+(?P<name>[A-Za-z][A-Za-z0-9]{0,15})\s+"&#(?P<code>[0-9]{1,7});"\s*>')
+
+
+def _looks_like_hwpml(content: bytes) -> bool:
+    return content.lstrip()[:5] == b"<?xml" and b"<HWPML" in content[:4096]
+
+
+def _extract_hwpml_text(content: bytes) -> str:
+    entities: dict[bytes, bytes] = {}
+    matched = _HWPML_DOCTYPE.search(content, 0, 4096)
+    if matched:
+        body = matched.group("body")
+        if _HWPML_ENTITY.sub(b"", body).strip():
+            raise PpsEnrichmentError("HWPX_INVALID_ARCHIVE")
+        for entity in _HWPML_ENTITY.finditer(body):
+            code = int(entity.group("code"))
+            if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+                raise PpsEnrichmentError("HWPX_INVALID_ARCHIVE")
+            entities[entity.group("name")] = chr(code).encode("utf-8")
+        content = content[: matched.start()] + content[matched.end():]
+    if b"<!DOCTYPE" in content or b"<!ENTITY" in content:
+        raise PpsEnrichmentError("HWPX_INVALID_ARCHIVE")
+    for name, value in entities.items():
+        content = content.replace(b"&" + name + b";", value)
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as exc:
+        raise PpsEnrichmentError("HWPX_XML_INVALID") from exc
+    if root.tag != "HWPML":
+        raise PpsEnrichmentError("HWPX_INVALID_ARCHIVE")
+    parts: list[str] = []
+    total = 0
+    for paragraph in root.iter("P"):
+        # Own runs only: a table cell's paragraphs are visited on their own.
+        fragments = [
+            "".join(char.itertext())
+            for run in paragraph.findall("TEXT")
+            for char in run.findall("CHAR")
+        ]
+        text = unicodedata.normalize("NFC", "".join(fragments))
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+        total += len(text) + 1
+        if total > MAX_EXTRACTED_DOCUMENT_CHARS:
+            raise PpsEnrichmentError("DOCUMENT_TEXT_TOO_LARGE")
+        parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def _extract_hwpx_text(content: bytes) -> str:
+    if _looks_like_hwpml(content):
+        return _extract_hwpml_text(content)
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
     except (ValueError, zipfile.BadZipFile) as exc:
@@ -2342,7 +2440,8 @@ def _extract_hwpx_text(content: bytes) -> str:
                 suffix = PurePath(item.filename).suffix.casefold()
                 if ((suffix == ".png" and prefix.startswith(b"\x89PNG\r\n\x1a\n"))
                         or (suffix in {".jpg", ".jpeg"} and prefix.startswith(b"\xff\xd8\xff"))
-                        or (suffix == ".gif" and prefix.startswith((b"GIF87a", b"GIF89a")))):
+                        or (suffix == ".gif" and prefix.startswith((b"GIF87a", b"GIF89a")))
+                        or (suffix == ".bmp" and prefix.startswith(b"BM"))):
                     ignored_images.add(item.filename)
         total_uncompressed = sum(item.file_size for item in entries if item.filename not in ignored_images)
         if total_uncompressed > MAX_HWPX_UNCOMPRESSED_BYTES:
@@ -2361,7 +2460,9 @@ def _extract_hwpx_text(content: bytes) -> str:
                 raise PpsEnrichmentError("HWPX_ENCRYPTED_ENTRY")
             lowered = name.casefold()
             if not item.is_dir() and lowered.startswith("scripts/"):
-                raise PpsEnrichmentError("HWPX_ACTIVE_CONTENT_NOT_EXTRACTED")
+                if not _hwpx_script_is_inert_default(archive, item):
+                    raise PpsEnrichmentError("HWPX_ACTIVE_CONTENT_NOT_EXTRACTED")
+                continue
             if not item.is_dir() and lowered.startswith("bindata/"):
                 extension = PurePath(name).suffix.casefold()
                 try:
