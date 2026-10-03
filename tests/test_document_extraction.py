@@ -667,16 +667,20 @@ def test_hwp5_compressed_bindata_is_classified_after_bounded_inflate() -> None:
             )
         },
     )
+    # An oversized image is classified from a bounded prefix and skipped; it
+    # is never inflated in full. Oversized non-images still fail closed
+    # (tests/test_parser_recovery_1004.py).
     with _with_fake_module("olefile", oversized_module):
-        with pytest.raises(DocumentExtractionError, match="HWP_SECTION_SIZE_LIMIT"):
-            extract_document_content(
-                "압축한도공고.hwp",
-                b"synthetic",
-                limits=ExtractionLimits(
-                    max_member_uncompressed_bytes=256,
-                    max_total_uncompressed_bytes=512,
-                ),
-            )
+        oversized = extract_document_content(
+            "압축한도공고.hwp",
+            b"synthetic",
+            limits=ExtractionLimits(
+                max_member_uncompressed_bytes=256,
+                max_total_uncompressed_bytes=512,
+            ),
+        )
+    assert oversized.complete is True
+    assert oversized.warnings == ()
 
 
 def test_hwp5_embedded_ole_is_explicitly_incomplete_but_image_bindata_is_safe() -> None:
