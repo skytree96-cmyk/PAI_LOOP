@@ -6021,13 +6021,20 @@
     const businessOwner = notice.topDepartmentRankings[0] || null;
     const reviewOwner = notice.departmentReviewCandidates[0] || null;
     const regionOwner = notice.regionRouting[0] || null;
+    // A department login ranks its own matches first, but a notice another
+    // department owns must still name that owner instead of reading as
+    // "미분류" under the viewer's department.
+    const ownTier = ranking.recommendationTier;
+    const otherOwner = ranking.departmentId !== "organization" && !["TOP", "REVIEW", "ROUTING"].includes(ownTier)
+      ? (businessOwner || reviewOwner)
+      : null;
     const selectedOwner = ranking.departmentId === "organization"
       ? (businessOwner || reviewOwner || ranking)
-      : ranking;
+      : otherOwner || ranking;
     const label = selectedOwner.recommendationTier === "TOP"
-      ? "부서 추천"
+      ? (otherOwner ? "다른 부서 추천" : "부서 추천")
       : selectedOwner.recommendationTier === "REVIEW"
-        ? "추가 검토"
+        ? (otherOwner ? "다른 부서 검토" : "추가 검토")
         : selectedOwner.recommendationTier === "ROUTING"
           ? "관련 지역 부서"
           : "추천 부서 미분류";
