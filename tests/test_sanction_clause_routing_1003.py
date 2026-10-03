@@ -52,16 +52,29 @@ def test_penalty_schedules_are_pledge_checklists(condition):
     assert result["policy_class"] == "CHECKLIST"
 
 
-@pytest.mark.parametrize("condition", [
-    "국제기구나 외국정부로부터 입찰참가자격이 제한되거나 계약부적격자로 선언된 자, 또는 이에 대해 제재를 받은 자는 입찰 참가 불가",
-    "중소기업제품 구매촉진 및 판로지원에 관한 법률 제8조의2에 해당하는 자는 입찰 참여 불가",
-    "업체 및 대표자가 은행연합회 불량거래처 등으로 등재되어 있지 않고, 관련 법령상 제한·저촉 및 이해상충이 없어야 함",
-    "한국수출입은행 퇴직 후 2년 미경과자를 고용하여 입찰·계약 관련 업무를 담당시키는 업체는 참여 불가",
-    # A real gate that also mentions a contract consequence stays a gate.
-    "부정당업자 또는 부도 업체는 입찰 참가 불가하며 낙찰 후 확인 시 계약보증금이 귀속됨",
+@pytest.mark.parametrize("condition,fact", [
+    ("국제기구나 외국정부로부터 입찰참가자격이 제한되거나 계약부적격자로 선언된 자, 또는 이에 대해 제재를 받은 자는 입찰 참가 불가",
+     "international_sanction_clear"),
+    ("중소기업제품 구매촉진 및 판로지원에 관한 법률 제8조의2에 해당하는 자는 입찰 참여 불가", "sme_procurement_restriction_clear"),
+    ("업체 및 대표자가 은행연합회 불량거래처 등으로 등재되어 있지 않고, 관련 법령상 제한·저촉 및 이해상충이 없어야 함",
+     "bank_delinquency_clear"),
 ])
-def test_clauses_without_a_company_fact_stay_in_review(condition):
+def test_clearances_the_company_confirmed_on_2026_10_03_pass(condition, fact):
+    result = item(condition)
+    assert result["outcome"] == "PASS_CURRENT"
+    assert result["company_fact_key"] == fact
+
+
+@pytest.mark.parametrize("condition", [
+    "한국수출입은행 퇴직 후 2년 미경과자를 고용하여 입찰·계약 관련 업무를 담당시키는 업체는 참여 불가",
+    "입찰공고일 기준 2년 이내 본교 입찰·계약·계약이행 등에서 물의를 일으킨 업체는 입찰 참가 불가",
+])
+def test_customer_specific_clauses_without_a_company_fact_stay_in_review(condition):
     result = item(condition)
     assert result["policy_class"] == "ELIGIBILITY"
-    if "은행연합회" in condition or "국제기구" in condition or "판로지원" in condition or "수출입은행" in condition:
-        assert result["outcome"] == "REVIEW"
+    assert result["outcome"] == "REVIEW"
+
+
+def test_a_real_gate_with_a_contract_consequence_stays_a_gate():
+    result = item("부정당업자 또는 부도 업체는 입찰 참가 불가하며 낙찰 후 확인 시 계약보증금이 귀속됨")
+    assert result["policy_class"] == "ELIGIBILITY"
