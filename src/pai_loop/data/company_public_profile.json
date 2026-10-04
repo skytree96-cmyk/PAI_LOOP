@@ -1,5 +1,5 @@
 {
-  "profile_version": "2026.10.03-v7",
+  "profile_version": "2026.10.04-v8",
   "published_at": "2026-09-30T00:00:00+09:00",
   "eligibility_assessment_mode": "PROTOTYPE_CURRENT_FACTS",
   "classification": "PUBLIC_SAFE_COMPANY_PROFILE",
@@ -63,7 +63,7 @@
       "evidence_state": "COMPANY_CONFIRMED",
       "effective_from": "2026-09-29",
       "effective_to": null,
-      "last_verified_at": "2026-09-29",
+      "last_verified_at": "2026-10-04",
       "evidence_key": null,
       "deadline_policy": "RECONFIRM_BEFORE_EACH_SUBMISSION"
     },

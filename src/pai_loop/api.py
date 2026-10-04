@@ -80,6 +80,7 @@ from .notice_freshness import (
     latest_quantitative_snapshot_run,
     latest_current_evaluation,
     has_current_independent_failure,
+    has_current_independent_pass,
 )
 from .pps_enrichment import (
     EORDER_ATTACHMENT_FIELD,
@@ -175,6 +176,8 @@ def _dashboard_qualification(notice: Notice, evaluation: Evaluation | None) -> s
         return "NOT_EVALUATED"
     if evaluation.eligibility == "FAIL" and has_current_independent_failure(notice, evaluation):
         return "FAIL"
+    if evaluation.eligibility == "PASS" and has_current_independent_pass(notice, evaluation):
+        return "PASS"
     if _source_kind(notice) == "PPS" and (
         not pps_attachment_coverage(notice.versions).complete
         or public_analysis_reason(notice.versions, evaluated=True, source_kind="PPS").state != "ANALYZED"

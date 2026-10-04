@@ -103,7 +103,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.8"
+PIPELINE_VERSION = "analysis-pipeline-0.6.9"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -872,7 +872,67 @@ _NAMED_NON_ELIGIBILITY_GAP_TERMS = (
     "제안요청서", "과업지시서", "과업내용서", "제안서", "표지", "사업명", "건명", "연혁", "월별",
     "계획표", "실적 인정", "연락처", "전화번호", "파일명", "연구비", "계상기준", "협상적격",
     "낙찰자 결정", "용어",
+    "일정", "공고번호", "서식", "지도", "이미지", "여비", "상생결제", "체크리스트", "개찰", "벌칙",
+    "셀 구조", "표 구조", "페이지 경계",
 )
+# "본 과업지시서에는 입찰참가자격이 포함되어 있지 않음": a non-announcement document
+# saying it does not itself carry the eligibility section. Once the announcement
+# is fully read this is not an eligibility gap; the same words from the
+# announcement itself keep the gate closed.
+_OTHER_DOCUMENT_SCOPE_GAP_RE = re.compile(
+    r"(?:본|이|해당|제공된)\s*(?:문서|과업\s*지시서|과업\s*내용서|서식|발췌(?:본)?|source|소스|자료)"
+    r"[^.]{0,80}?(?:포함(?:되어\s*있지\s*않|되지\s*않|하지\s*않)|없(?:음|으며|고|다)|미포함"
+    r"|제공되(?:지\s*않|어\s*있지\s*않)|첨부되(?:지\s*않|어\s*있지\s*않))",
+    re.IGNORECASE,
+)
+# An annex named but not attached may itself hold eligibility detail.
+_UNATTACHED_ANNEX_GAP_RE = re.compile(
+    r"(?:별첨|별지|붙임)[^.]{0,40}?(?:미첨부|첨부되지\s*않|첨부되어\s*있지\s*않)"
+)
+_FORMAT_EXTENSION_RE = re.compile(r"\.(hwpx?|pdf|docx?)\s*$", re.IGNORECASE)
+
+
+def _format_stem(file_name: str) -> tuple[str, str] | None:
+    match = _FORMAT_EXTENSION_RE.search(file_name or "")
+    if match is None:
+        return None
+    stem = re.sub(r"\s+", "", file_name[: match.start()]).lower()
+    return (stem, match.group(1).lower()) if stem else None
+
+
+def _unread_format_twins(
+    sources: Sequence[_SourceDocument],
+    manifest_basis: dict[str, Any] | None,
+) -> list[str]:
+    """Unread attachments that are only another file format of a fully read one.
+
+    PPS often posts the same announcement as .hwp and .pdf. When one copy fails
+    to extract while its twin was read completely, nothing unread can hold an
+    extra eligibility clause. Returns the unread ids only when every unread
+    attachment has such a read twin; otherwise an empty list.
+    """
+
+    if manifest_basis is None or not manifest_basis["coverage_complete"]:
+        return []
+    names = manifest_basis.get("attachment_file_names") or {}
+    read_ids = {
+        source.attachment_id
+        for source in sources
+        if source.materializable and source.data is not None and source.version.document_complete
+    }
+    unread = [item for item in manifest_basis.get("expected_attachment_ids") or [] if item not in read_ids]
+    if not unread:
+        return []
+    read_formats: dict[str, set[str]] = {}
+    for attachment_id in read_ids:
+        stem = _format_stem(str(names.get(attachment_id) or ""))
+        if stem is not None:
+            read_formats.setdefault(stem[0], set()).add(stem[1])
+    for attachment_id in unread:
+        stem = _format_stem(str(names.get(attachment_id) or ""))
+        if stem is None or not (read_formats.get(stem[0], set()) - {stem[1]}):
+            return []
+    return sorted(unread)
 
 
 def _notice_read_unrelated_gaps(
@@ -891,7 +951,10 @@ def _notice_read_unrelated_gaps(
 
     if not sources or manifest_basis is None or not manifest_basis["coverage_complete"]:
         return False
-    if any(not source.materializable or source.data is None for source in sources):
+    # An unread copy of a fully read document (hwp/pdf twin) adds nothing unread.
+    twins = set(_unread_format_twins(sources, manifest_basis))
+    sources = [source for source in sources if source.attachment_id not in twins]
+    if not sources or any(not source.materializable or source.data is None for source in sources):
         return False
     notice_read = any(
         source.version.document_complete
@@ -902,9 +965,21 @@ def _notice_read_unrelated_gaps(
         return False
     gaps, _resolved = _aggregate_source_gaps(sources)
     named = _KNOWN_NON_ELIGIBILITY_GAP_TERMS + _NAMED_NON_ELIGIBILITY_GAP_TERMS
+    from_notice: set[str] = set()
+    for source in sources:
+        label = str((source.version.source_payload or {}).get("source_label") or "")
+        if _NOTICE_DOCUMENT_LABEL_RE.search(label):
+            from_notice.update(_normalise_text(gap) for gap in source.data.missing_or_unreadable)
     return all(
-        not any(term in gap for term in _ELIGIBILITY_GAP_TERMS)
-        and any(term in gap for term in named)
+        (
+            not any(term in gap for term in _ELIGIBILITY_GAP_TERMS)
+            and any(term in gap for term in named)
+        )
+        or (
+            gap not in from_notice
+            and _OTHER_DOCUMENT_SCOPE_GAP_RE.search(gap) is not None
+            and _UNATTACHED_ANNEX_GAP_RE.search(gap) is None
+        )
         for gap in gaps
     )
 
@@ -1416,6 +1491,10 @@ def _current_pps_manifest_basis(
         "audited_attachment_ids": audited_ids,
         "accepted_attachment_ids": accepted_ids,
         "selected_attempt_ids": sorted(version.id for version in attempts.values()),
+        "attachment_file_names": {
+            str(item.get("attachment_id") or ""): str(item.get("file_name") or "")
+            for item in validated_manifest
+        },
         "processing_version": PPS_PROCESSING_VERSION,
         "coverage_complete": coverage_complete,
     }
@@ -2411,6 +2490,27 @@ def run_analysis_pipeline(
                 risk_dimensions=derived_risk_dimensions,
                 risk_axis_basis=risk_axis_basis,
             )
+            # A gated PASS stays hidden while any attachment failed extraction.
+            # Record proof only when every unread attachment is another format
+            # of a fully read one, so the dashboard may show this PASS.
+            format_twins = (
+                _unread_format_twins(sources, pps_manifest_basis)
+                if evaluation_result.eligibility.value == "PASS"
+                and eligibility_gate_applied and not independent_failures
+                else []
+            )
+            if format_twins:
+                warnings = sorted(set(warnings) | {"UNREAD_ATTACHMENTS_ARE_FORMAT_TWINS"})
+                materialized_version.source_payload = {
+                    **(materialized_version.source_payload or {}),
+                    "warnings": warnings,
+                    "independent_pass": {
+                        "pipeline_version": PIPELINE_VERSION,
+                        "policy_version": POLICY_VERSION,
+                        "attachment_ids": format_twins,
+                        "source_version_ids": sorted(source.version.id for source in sources),
+                    },
+                }
             safe_atomics, safe_explanation = _sanitized_evaluation_payload(
                 evaluation_result.atomic_results,
                 evaluation_result.explanation,

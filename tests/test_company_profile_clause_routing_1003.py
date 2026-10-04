@@ -79,3 +79,22 @@ def test_training_facility_outside_seoul_fails_and_location_notes_are_informatio
 ])
 def test_product_procedure_and_personnel_clauses_are_not_company_gates(condition, policy_class):
     assert item(condition, "CERTIFICATION")["policy_class"] == policy_class
+
+
+@pytest.mark.parametrize("condition,category", [
+    ("입찰공고일 기준 2년 이내 영남대학교 발주 계약의 계약대상자로서 계약체결 이후부터 준공(완료)까지 계약불이행 또는 지체 등으로 부과금을 납부한 사업자는 입찰참가 불가", "ENTITY"),
+    ("입찰공고일 기준 2년 이내 우리대학교 발주 계약의 계약대상자로서 계약체결 이후부터 준공까지 계약불이행 또는 지체 등으로 부과금을 납부한 적이 있는 사업자는 입찰 참가 불가", "SANCTION"),
+])
+def test_agency_contract_penalty_history_uses_the_confirmed_clear_record(condition, category):
+    # Company confirmed no non-performance or penalty history on 2026-10-04.
+    result = item(condition, category)
+    assert result["outcome"] == "PASS_CURRENT"
+    assert result["company_fact_key"] == "contract_nonperformance_clear"
+
+
+@pytest.mark.parametrize("condition", [
+    "본교를 상대로 소송 이력(소송 중 포함)이 있거나 계약불이행으로 부과금을 납부한 사업자는 입찰 참가 불가",
+    "입찰공고일 기준 2년 이내 본교 입찰·계약·계약이행 등에서 물의를 일으킨 업체는 입찰 참가 불가",
+])
+def test_lawsuit_and_vague_misconduct_histories_stay_in_review(condition):
+    assert item(condition, "SANCTION")["outcome"] == "REVIEW"
