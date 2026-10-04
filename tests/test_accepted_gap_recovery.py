@@ -243,7 +243,7 @@ def test_non_pps_pipeline_cache_refreshes_when_local_gap_policy_changes(monkeypa
         with factory() as session:
             stale=pipeline.run_analysis_pipeline(session,notice_id=notice_id)
         assert stale.reused is True and stale.status == first.status == "PARTIAL"
-    assert pipeline.PIPELINE_VERSION == "analysis-pipeline-0.6.8"
+    assert pipeline.PIPELINE_VERSION == "analysis-pipeline-0.6.9"
     with factory() as session:
         current=pipeline.run_analysis_pipeline(session,notice_id=notice_id)
     assert current.reused is False and current.status == "COMPLETED"

@@ -140,14 +140,30 @@ def has_current_independent_failure(notice: Notice, evaluation: Evaluation) -> b
     This grants no current AnalysisRun, quantitative score or PASS. A changed
     attachment attempt, manifest, deadline or policy invalidates the proof.
     """
-    if evaluation.eligibility != "FAIL" or not analysis_basis_is_current(notice, evaluation.notice_version_id):
+    return _has_current_proof(notice, evaluation, "FAIL", "independent_failure", "requirement_keys")
+
+
+def has_current_independent_pass(notice: Notice, evaluation: Evaluation) -> bool:
+    """Expose a gated PASS whose only unread attachments are format twins.
+
+    The pipeline records the proof only when every unread attachment is another
+    file format of a fully read one. It grants no AnalysisRun or quantitative
+    score and expires exactly like the failure proof.
+    """
+    return _has_current_proof(notice, evaluation, "PASS", "independent_pass", "attachment_ids")
+
+
+def _has_current_proof(
+    notice: Notice, evaluation: Evaluation, eligibility: str, proof_key: str, list_key: str,
+) -> bool:
+    if evaluation.eligibility != eligibility or not analysis_basis_is_current(notice, evaluation.notice_version_id):
         return False
     if _as_utc(evaluation.deadline_snapshot_at) != _as_utc(notice.deadline):
         return False
     basis = next((v for v in notice.versions if v.id == evaluation.notice_version_id), None)
     payload = basis.source_payload if basis is not None else None
-    proof = payload.get("independent_failure") if isinstance(payload, dict) and payload.get("kind") == "ANALYSIS_PIPELINE_MATERIALIZATION" else None
-    if not isinstance(proof, dict) or not isinstance(proof.get("requirement_keys"), list) or not proof["requirement_keys"]:
+    proof = payload.get(proof_key) if isinstance(payload, dict) and payload.get("kind") == "ANALYSIS_PIPELINE_MATERIALIZATION" else None
+    if not isinstance(proof, dict) or not isinstance(proof.get(list_key), list) or not proof[list_key]:
         return False
     from .analysis_pipeline import PIPELINE_VERSION, PROMPT_VERSION, _select_source_versions_from_list
     from .eligibility_policy import POLICY_VERSION
@@ -174,7 +190,10 @@ def latest_current_evaluation(notice: Notice) -> Evaluation | None:
             continue
         basis = next((v for v in notice.versions if v.id == evaluation.notice_version_id), None)
         proof = (basis.source_payload or {}).get("independent_failure") if basis else None
-        if (proof or not audit_complete) and not has_current_independent_failure(notice, evaluation):
+        if (proof or not audit_complete) and not (
+            has_current_independent_failure(notice, evaluation)
+            or has_current_independent_pass(notice, evaluation)
+        ):
             return None
         return evaluation
     return None

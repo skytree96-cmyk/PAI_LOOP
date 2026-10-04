@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.10.03-v19"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.04-v20"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -1766,6 +1766,20 @@ def _company_profile_clause_item(
         return _composite_item(
             requirement, profile=profile, keys=keys, deadline=deadline, today=today,
             message="나라장터 경쟁입찰참가자격 등록 근거가 연결되어 충족합니다.",
+        )
+    # "N년 이내 본교 발주 계약에서 계약불이행·지체 등으로 부과금을 납부한 업체 불가":
+    # the company confirmed no non-performance or penalty history (2026-10-04).
+    # Lawsuits and vaguer "물의" histories have no company fact and stay REVIEW.
+    if (
+        category in {"SANCTION", "ENTITY"}
+        and re.search(r"계약\s*(?:을\s*)?(?:불이행|이행하지)", text)
+        and re.search(r"부과금|지체\s*상금|위약금", text)
+        and re.search(r"불가|제외|없는|아닌|할\s*수\s*없", text)
+        and not re.search(r"소송|물의|퇴직|임직원|계열|부정당|허가|면허|인증|실적", text)
+    ):
+        return _composite_item(
+            requirement, profile=profile, keys=["contract_nonperformance_clear"], deadline=deadline,
+            today=today, message="회사 확인값상 발주기관 계약의 불이행·지체로 부과금을 낸 이력이 없습니다.",
         )
     if category in {"SANCTION", "ENTITY"} and not _CLEARANCE_UNCOVERED_RE.search(text):
         keys = [key for key, pattern in _NEW_CLEARANCES if re.search(pattern, text)]
