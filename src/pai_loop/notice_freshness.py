@@ -144,11 +144,11 @@ def has_current_independent_failure(notice: Notice, evaluation: Evaluation) -> b
 
 
 def has_current_independent_pass(notice: Notice, evaluation: Evaluation) -> bool:
-    """Expose a gated PASS whose only unread attachments are format twins.
+    """Expose a gated PASS whose attachments were all read (or are format twins).
 
-    The pipeline records the proof only when every unread attachment is another
-    file format of a fully read one. It grants no AnalysisRun or quantitative
-    score and expires exactly like the failure proof.
+    The pipeline records the proof only when every current attachment was read
+    completely or is another file format of a fully read one. It grants no
+    AnalysisRun or quantitative score and expires exactly like the failure proof.
     """
     return _has_current_proof(notice, evaluation, "PASS", "independent_pass", "attachment_ids")
 
