@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from pai_loop.analysis_pipeline import (
-    _notice_read_unrelated_gaps, _unread_format_twins, run_analysis_pipeline,
+    _attachments_read_or_twinned, _notice_read_unrelated_gaps, _unread_format_twins, run_analysis_pipeline,
 )
 from pai_loop.database import Base, build_engine, build_session_factory
 from pai_loop.integrations.openai_extraction import OpenAIExtractionClient, OpenAITelemetry
@@ -229,8 +229,31 @@ SCOPE_GAP = "입찰참가자격, 제안서 제출 방식·마감일 등 공고 �
     # Newly named non-eligibility subjects.
     ([_source("SYN 입찰공고문.hwpx", ["입찰공고번호가 공란으로 표기되어 확인 불가",
                                       "사업대상지 지도 이미지는 판독 불가"])], True),
+    # Form names that merely contain an eligibility word, and briefing-session logistics.
+    ([_source("SYN 입찰공고문.hwpx", ["별지 서식 제1호(입찰참가신청서), 제2호(가격제안서) 서식 원문이 첨부되지 않아 세부 기재사항 확인 불가",
+                                      "입찰 건명, 주소, 상호, 사업자등록번호 등 실제 기재값은 공란으로 확인 불가",
+                                      "제안설명회의 확정 일시 및 장소가 개별 통보 예정으로 미확정"])], True),
+    # A real eligibility word next to a form name still closes the gate.
+    ([_source("SYN 입찰공고문.hwpx", ["입찰참가신청서와 세부 입찰참가자격 원문 미첨부로 확인 불가"])], False),
+    ([_source("SYN 입찰공고문.hwpx", ["투입인력 자격요건 표가 잘려 판독 불가"])], False),
     # Unread announcement: closed whatever the gaps say.
     ([_source("SYN 입찰공고문.hwpx", [], complete=False), _source("SYN 과업지시서.hwpx", [SCOPE_GAP])], False),
 ])
 def test_other_document_scope_gaps(sources, expected, plain_gaps):
     assert _notice_read_unrelated_gaps(sources, BASIS) is expected
+
+
+@pytest.mark.parametrize("file_names,read,covered", [
+    # Every attachment read: the audit may still lag (quantitative record, failed retry).
+    ({"A": "공고문.hwp", "B": "제안요청서.hwp"}, {"A", "B"}, True),
+    ({"A": "공고문.hwp", "B": "공고문.pdf"}, {"A"}, True),
+    ({"A": "공고문.hwp", "B": "제안요청서.hwp"}, {"A"}, False),
+    ({"A": "공고문.hwp"}, set(), False),
+])
+def test_pass_proof_needs_every_attachment_read_or_twinned(file_names, read, covered):
+    sources = [SimpleNamespace(attachment_id=key, materializable=True, data=SimpleNamespace(),
+                               version=SimpleNamespace(document_complete=True)) for key in sorted(read)]
+    basis = {"coverage_complete": True, "expected_attachment_ids": sorted(file_names),
+             "attachment_file_names": file_names}
+    assert _attachments_read_or_twinned(sources, basis) == (sorted(file_names) if covered else [])
+    assert _attachments_read_or_twinned(sources, {**basis, "coverage_complete": False}) == []
