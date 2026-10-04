@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -563,6 +564,8 @@ class ExtractionOutcome(BaseModel):
     # verification. Never used for eligibility; kept so a labeled estimate can
     # still read the printed scoring rows instead of discarding a paid call.
     unverified_quantitative_tables: list[dict[str, Any]] | None = None
+    # Failed-anchor diagnostics (hint, length, digest, SOURCE span; never model text).
+    unverified_quote_samples: list[dict[str, Any]] | None = None
 
 
 class QuantitativeProbeOutcome(BaseModel):
@@ -622,6 +625,60 @@ def _verified_quote_in_source(quote: str, source: str) -> bool:
     compact_quote = "".join(normalized_quote.split())
     compact_source = "".join(normalized_source.split())
     return len(compact_quote) >= 8 and compact_quote in compact_source
+
+
+_MAX_PERSISTED_QUOTE_SAMPLES = 5
+_QUOTE_SAMPLE_SOURCE_CHARS = 160
+
+
+def _indexed_characters(value: str, keep) -> tuple[str, list[int]]:
+    kept, positions = [], []
+    for index, character in enumerate(value):
+        if keep(character):
+            kept.append(character)
+            positions.append(index)
+    return "".join(kept), positions
+
+
+def _quote_failure_sample(quote: str, source: str) -> dict[str, Any]:
+    """Diagnose one failed anchor without persisting any model-produced text.
+
+    The model quote is untrusted output and is never stored. Only its length,
+    digest, a hint and the matching span of the trusted SOURCE are kept:
+    LETTERS_ONLY_MATCH (equal once punctuation and spaces are removed),
+    PREFIX_MATCH (its first 20 visible characters occur in SOURCE) or NO_MATCH.
+    Diagnostic only; never used to accept an anchor.
+    """
+
+    normalized_quote, normalized_source = _normalise_text(quote), _normalise_text(source)
+    sample: dict[str, Any] = {
+        "hint": "NO_MATCH",
+        "quote_chars": len(quote),
+        "quote_sha256": hashlib.sha256(quote.encode("utf-8", "surrogatepass")).hexdigest(),
+    }
+    for hint, keep, needle_length in (
+        ("LETTERS_ONLY_MATCH", str.isalnum, None),
+        ("PREFIX_MATCH", lambda character: not character.isspace(), 20),
+    ):
+        quote_kept, _ = _indexed_characters(normalized_quote, keep)
+        source_kept, positions = _indexed_characters(normalized_source, keep)
+        needle = quote_kept if needle_length is None else quote_kept[:needle_length]
+        if len(needle) < (8 if needle_length is None else needle_length):
+            continue
+        found = source_kept.find(needle)
+        if found < 0:
+            continue
+        begin = positions[found]
+        finish = positions[min(found + len(quote_kept), len(positions)) - 1] + 1
+        sample["hint"] = hint
+        sample["source_excerpt"] = normalized_source[begin:min(finish, begin + _QUOTE_SAMPLE_SOURCE_CHARS)]
+        break
+    return sample
+
+
+def _quote_samples(quotes: list[str], source: str) -> list[dict[str, Any]] | None:
+    samples = [_quote_failure_sample(quote, source) for quote in quotes[:_MAX_PERSISTED_QUOTE_SAMPLES]]
+    return samples or None
 
 
 def evidence_quote_matches_source(quote: str, source: str) -> bool:
@@ -1796,6 +1853,10 @@ class OpenAIExtractionClient:
                 remaining_calls=remaining_calls,
             )
         if outcome.error_code != "UNVERIFIED_QUOTE" or remaining_calls <= 0:
+            if outcome.error_code == "UNVERIFIED_QUOTE":
+                outcome = outcome.model_copy(update={
+                    "unverified_quote_samples": _quote_samples(unverified_quotes, canonical_source),
+                })
             return outcome
 
         failed_quotes_json = _bounded_untrusted_quotes_json(unverified_quotes)
@@ -1858,6 +1919,7 @@ class OpenAIExtractionClient:
             )
         assert corrected_response is not None
         corrected_payloads: list[ExtractionPayload] = []
+        corrected_quotes: list[str] = []
         corrected_outcome = self._validate_response(
             corrected_response,
             document_text=document_text,
@@ -1865,6 +1927,7 @@ class OpenAIExtractionClient:
             api_calls=total_calls,
             openai_telemetry=total_telemetry,
             corrective_retry_used=True,
+            unverified_quotes=corrected_quotes,
             parsed_payloads=corrected_payloads,
             isolate_quantitative_rows=True,
         )
@@ -1887,5 +1950,11 @@ class OpenAIExtractionClient:
                 openai_telemetry=corrected_outcome.openai_telemetry,
                 corrective_retry_used=True,
                 correction_prompt_version=CORRECTIVE_PROMPT_VERSION,
-            )
+            ).model_copy(update={
+                "unverified_quote_samples": _quote_samples(unverified_quotes, canonical_source),
+            })
+        if corrected_outcome.error_code == "UNVERIFIED_QUOTE":
+            corrected_outcome = corrected_outcome.model_copy(update={
+                "unverified_quote_samples": _quote_samples(corrected_quotes or unverified_quotes, document_text),
+            })
         return corrected_outcome

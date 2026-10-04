@@ -3480,6 +3480,12 @@ def _persist_extraction_version(
             and outcome.unverified_quantitative_tables
             else {}
         ),
+        **(
+            {"unverified_quote_samples": outcome.unverified_quote_samples}
+            if outcome is not None and not accepted and outcome.error_code == "UNVERIFIED_QUOTE"
+            and outcome.unverified_quote_samples
+            else {}
+        ),
         "document_processing": processing_audit,
         "quantitative_validation_record": (
             quantitative_validation_record.model_dump(mode="json")
