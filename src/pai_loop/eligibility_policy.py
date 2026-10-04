@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.10.04-v20"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.05-v21"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -1669,6 +1669,64 @@ def _composite_item(
     return lead
 
 
+# 2026-10-05: clauses left in REVIEW that only point elsewhere, describe how the
+# proposal is scored, or restate a clearance the company already confirmed.
+_REFERRAL_ONLY_RE = re.compile(
+    r"^(?:입찰\s*참가\s*자격|제안\s*업체의\s*자격\s*조건|참가\s*자격)(?:은|는)\s*"
+    r"(?:별도(?:의)?\s*)?(?:입찰\s*공고(?:문|서)?|조달청\s*공고서|공고문|공고서)"
+    r"(?:\s*제\s*\d+\s*항)?\s*(?:에|을|를)\s*따(?:름|른다|릅니다|라야\s*함)"
+    r"(?:\s*\([^)]*\))?\s*\.?$"
+)
+_SCORING_EFFECT_RE = re.compile(
+    r"평가에\s*반영|최저\s*등급으로\s*평가|평가\s*위원\s*(?:후보|선정)[^.]{0,20}제외"
+)
+_BID_EXCLUSION_RE = re.compile(r"참가\s*(?:불가|할\s*수\s*없)|자격\s*(?:이\s*)?(?:없|제한|박탈)|결격")
+
+
+def _review_clause_reclassification(
+    requirement: dict[str, Any], *, profile: dict[str, Any], text: str, category: str,
+    deadline: date | None, today: date,
+) -> dict[str, Any] | None:
+    if category not in {"ENTITY", "SANCTION", "CERTIFICATION", "CONSORTIUM"}:
+        return None
+    if _REFERRAL_ONLY_RE.search(text.strip()):
+        return _information_item(
+            requirement, profile=profile, capability_key=None,
+            message="입찰공고문의 자격 항목을 가리키는 안내입니다. 실제 자격은 공고문 항목으로 판정합니다.",
+        )
+    if _SCORING_EFFECT_RE.search(text) and not _BID_EXCLUSION_RE.search(text):
+        return _information_item(
+            requirement, profile=profile, capability_key=None,
+            message="제안서 평가나 평가위원 구성에 관한 안내이며 입찰 참가자격이 아닙니다.",
+        )
+    if re.search(r"업체\s*현황\s*조사서에\s*기재", text) and not _BID_EXCLUSION_RE.search(text):
+        return _checklist_item(
+            requirement, profile=profile, capability_key="standard_pledges",
+            message="업체현황조사서에 제재·계약해지·부도 여부를 적어 내는 제출 서류 항목입니다.",
+        )
+    if re.search(r"부정당\s*업자\s*제재[^.]{0,60}유\s*자격자", text) and not re.search(
+        r"또는|혹은|실적|허가|면허|인증|확인서|등록", text
+    ):
+        return _composite_item(
+            requirement, profile=profile, keys=["sanction_clear"], deadline=deadline, today=today,
+            message="회사 확인값상 부정당업자 제재가 없어 유자격자입니다.",
+        )
+    if re.search(r"조세\s*포탈[^.]*제\s*27\s*조의\s*5[^.]*아님을\s*서약", text):
+        return _composite_item(
+            requirement, profile=profile, keys=["conviction_clear"], deadline=deadline, today=today,
+            message="회사 확인값상 조세포탈 등 유죄판결 이력이 없어 서약할 수 있습니다.",
+        )
+    if category == "CONSORTIUM" and re.search(
+        r"공동\s*수급체\s*대표자[^.]*(?:부도|부정당|영업\s*정지)[^.]*결격", text
+    ) and not re.search(r"실적|허가|면허|인증|확인서|소송", text):
+        return _composite_item(
+            requirement, profile=profile, keys=["sanction_clear", "business_continuity_clear"],
+            deadline=deadline, today=today,
+            message="회사 확인값상 부도·부정당업자 제재·영업정지가 없어 대표자 결격 사유가 없습니다.",
+        )
+    return None
+
+
 def _company_profile_clause_item(
     requirement: dict[str, Any],
     *,
@@ -1678,6 +1736,11 @@ def _company_profile_clause_item(
     deadline: date | None,
     today: date,
 ) -> dict[str, Any] | None:
+    reclassified = _review_clause_reclassification(
+        requirement, profile=profile, text=text, category=category, deadline=deadline, today=today,
+    )
+    if reclassified is not None:
+        return reclassified
     if category not in {"ENTITY", "CERTIFICATION", "INDUSTRY_CODE", "SANCTION", "REGION"}:
         return None
     code_item = _industry_code_boolean_item(requirement, profile=profile, text=text, category=category,
