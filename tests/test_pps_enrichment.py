@@ -788,9 +788,11 @@ def test_profile_keyword_resolution_is_diverse_bounded_and_legacy_compatible() -
         use_profile_keywords=True,
         profile_department_ids=[],
     )
+    from pai_loop.pps_enrichment import PROFILE_DISCOVERY_INDUSTRY_CODES, PROFILE_DISCOVERY_KEYWORDS
+    expected = len(PROFILE_DISCOVERY_KEYWORDS) + 24 + len(PROFILE_DISCOVERY_INDUSTRY_CODES)
     assert profiled[:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
-    assert len(profiled) == 29
-    assert len(set(profiled)) == 29
+    assert len(profiled) == expected
+    assert len(set(profiled)) == expected
     assert truncated is False
     assert department_keyword_coverage_count(
         profiled,
@@ -802,10 +804,10 @@ def test_profile_keyword_resolution_is_diverse_bounded_and_legacy_compatible() -
         keywords=[],
         use_profile_keywords=True,
         profile_department_ids=[],
-        limit=6,
     )
-    assert explicit_profiled == ["교육", "컨설팅", "연수", "포럼", "위탁 운영", "경제안보외교"]
-    assert truncated is True
+    # Explicit operator terms follow the company-wide discovery terms and are never displaced.
+    assert explicit_profiled[:len(PROFILE_DISCOVERY_KEYWORDS) + 1] == [*PROFILE_DISCOVERY_KEYWORDS, "경제안보외교"]
+    assert truncated is False
 
 
 def test_live_public_extraction_exposes_only_validated_procurement_evidence() -> None:
