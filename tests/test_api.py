@@ -1425,11 +1425,16 @@ def test_profile_ingestion_queries_every_department_with_bounded_terms(
         )
     assert response.status_code == 200, response.text
     body = response.json()
+    from pai_loop.pps_enrichment import PROFILE_DISCOVERY_INDUSTRY_CODES, PROFILE_DISCOVERY_KEYWORDS
+    expected = len(PROFILE_DISCOVERY_KEYWORDS) + 24 + len(PROFILE_DISCOVERY_INDUSTRY_CODES)
     assert body["keywords_used"][:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
-    assert len(body["keywords_used"]) == 29
-    assert len(set(body["keywords_used"])) == 29
-    assert body["provider_queries"] == 29
+    assert len(body["keywords_used"]) == expected
+    assert len(set(body["keywords_used"])) == expected
+    assert body["provider_queries"] == expected
     assert body["department_coverage_count"] == 24
+    assert body["keywords_used"][-len(PROFILE_DISCOVERY_INDUSTRY_CODES):] == [
+        "업종코드:" + code for code in PROFILE_DISCOVERY_INDUSTRY_CODES
+    ]
 
 
 def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
@@ -1458,7 +1463,7 @@ def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
     body = response.json()
     assert body["status"] == "PARTIAL"
     assert body["provider_queries"] == 1
-    assert len(body["keywords_used"]) == 29
+    assert len(body["keywords_used"]) > 29
     assert body["department_coverage_count"] == 24
     assert any("시간 제한" in warning for warning in body["warnings"])
 
@@ -3429,3 +3434,34 @@ def test_review_extraction_is_not_reused_as_a_success(
         assert len(detail["versions"]) == 2
         assert len(detail["document_analyses"]) == 1
         assert detail["document_analyses"][0]["status"] == "REVIEW"
+
+
+def test_industry_code_queries_search_by_code_not_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    class _RecordingPpsClient(_FakePpsClient):
+        def iter_notices(self, **kwargs: object):
+            calls.append(dict(kwargs.get("extra_params") or {}))
+            yield from super().iter_notices(**kwargs)
+
+    monkeypatch.setenv("PPS_API_KEY", "server-side-key")
+    monkeypatch.setattr("pai_loop.api.PpsClient", _RecordingPpsClient)
+    app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
+    with internal_server_client(app) as live_client:
+        response = live_client.post(
+            "/api/v1/ingestion/pps/notices",
+            json={"from_date": "2026-08-16", "to_date": "2026-08-16", "use_profile_keywords": True,
+                  "max_pages": 1, "dry_run": True},
+        )
+    assert response.status_code == 200, response.text
+    assert {"indstrytyCd": "5608"} in calls
+    assert {"bidNtceNm": "아카데미"} in calls
+    assert not any("업종코드" in str(call.get("bidNtceNm", "")) for call in calls)
+
+
+@pytest.mark.parametrize("query,code", [
+    ("업종코드:5608", "5608"), ("업종코드: 6529", "6529"), ("업종코드:56O8", None), ("교육", None), (None, None),
+])
+def test_industry_code_query_parsing(query, code):
+    from pai_loop.pps_enrichment import industry_code_from_query
+    assert industry_code_from_query(query) == code

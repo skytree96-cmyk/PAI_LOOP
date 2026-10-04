@@ -96,6 +96,7 @@ from .pps_enrichment import (
     public_analysis_reason,
     public_attachment_analysis_statuses,
     resolve_ingestion_keywords,
+    industry_code_from_query,
     safe_public_live_extraction,
     safe_public_bound_extraction,
 )
@@ -2847,7 +2848,7 @@ def _persist_pps_ingestion_result(
     if provider_query_count < expected_provider_queries and not hit_time_limit:
         warnings.append("계획한 검색어 일부만 실행되어 확보한 공고만 저장했습니다.")
     if profile_truncated:
-        warnings.append("조직 프로필 검색어는 외부 호출 상한 30개로 잘랐습니다.")
+        warnings.append("조직 프로필 검색어는 외부 호출 상한으로 잘랐습니다.")
     if payload.dry_run:
         warnings.append("dry_run이므로 공고·첨부 manifest를 저장하지 않았습니다.")
 
@@ -3246,7 +3247,9 @@ def ingest_pps_notices(
                         rows=payload.page_size,
                         max_pages=payload.max_pages,
                         extra_params=(
-                            {"bidNtceNm": query_keyword}
+                            {"indstrytyCd": industry_code_from_query(query_keyword)}
+                            if industry_code_from_query(query_keyword)
+                            else {"bidNtceNm": query_keyword}
                             if query_keyword is not None
                             else None
                         ),

@@ -154,15 +154,15 @@ def test_keyword_and_metadata_boundaries_remain_bounded_and_public() -> None:
             limit=2,
         )
 
+    from pai_loop.pps_enrichment import PROFILE_QUERY_LIMIT
     profiled, truncated = resolve_ingestion_keywords(
         keyword=None,
-        keywords=[],
+        keywords=[f"운영자검색어{index}" for index in range(30)],
         use_profile_keywords=True,
-        profile_department_ids=["organization"],
-        limit=3,
+        profile_department_ids=[],
     )
-    assert profiled == ["교육", "컨설팅", "연수"]
-    assert len(profiled) == 3
+    assert profiled[:3] == ["교육", "컨설팅", "연수"]
+    assert len(profiled) == PROFILE_QUERY_LIMIT
     assert truncated is True
     assert department_keyword_coverage_count(
         ["K-12"],

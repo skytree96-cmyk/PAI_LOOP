@@ -161,7 +161,34 @@ SEMANTIC_SOURCE_GAPS_WARNING = "SEMANTIC_SOURCE_GAPS_REPORTED"
 # ``위탁 운영`` covers the common procurement phrasing without the much
 # noisier single token ``위탁``.  Department-specific strong terms still
 # provide explainable coverage after these organization-wide queries.
-PROFILE_DISCOVERY_KEYWORDS = ("교육", "컨설팅", "연수", "포럼", "위탁 운영")
+#
+# 2026-10-05: company-wide terms chosen from the company's 1,182 past contracts.
+# The original five plus one term per department recovered 50% of those titles;
+# these mid-volume terms (1-54 PPS service notices a week, almost no facility
+# noise) raise it to about 85%. Broad single tokens such as 운영·진단·평가·조사
+# return hundreds of unrelated notices and stay out.
+PROFILE_DISCOVERY_KEYWORDS = (
+    "교육", "컨설팅", "연수", "포럼", "위탁 운영",
+    "역량강화", "연구용역", "프로그램 운영", "창업", "캠프", "만족도", "진로", "채용",
+    "워크숍", "아카데미", "역량진단", "진단평가", "특강", "신입생", "비식별",
+)
+# Industry codes the company is registered for in G2B. Searching by
+# ``indstrytyCd`` returns notices whose bidder industry restriction names the
+# code, so the industry gate is met by construction. 1169 (학술연구용역, about
+# 225 a week across every research field) and 9999 are too broad to fetch whole.
+PROFILE_DISCOVERY_INDUSTRY_CODES = (
+    "5601", "5608", "5609", "5720", "6529", "6530", "9901", "1261", "3244", "1469",
+)
+INDUSTRY_CODE_QUERY_PREFIX = "업종코드:"
+PROFILE_QUERY_LIMIT = 60
+
+
+def industry_code_from_query(query: str | None) -> str | None:
+    """``업종코드:5608`` -> ``5608``; any other query is a title search."""
+    if not query or not query.startswith(INDUSTRY_CODE_QUERY_PREFIX):
+        return None
+    code = query[len(INDUSTRY_CODE_QUERY_PREFIX):].strip()
+    return code if re.fullmatch(r"\d{4}", code) else None
 
 _ATTACHMENT_ID_PATTERN = re.compile(r"^PPS-ATT-[a-f0-9]{24}$")
 _SAFE_QUERY_VALUE = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
@@ -638,9 +665,10 @@ def resolve_ingestion_keywords(
     """Resolve profile queries with one representative for every selected department.
 
     Baseline supporting terms remain ranking vocabulary only. Query expansion
-    uses five fixed discovery terms plus the first unique strong term from each
-    department (24 for the full profile), leaving one slot for an explicit user
-    term under the 30-query provider cap.
+    uses the fixed company-wide discovery terms, explicit operator terms, the
+    first unique strong term from each department (24 for the full profile) and
+    the company's industry-code queries, up to ``PROFILE_QUERY_LIMIT``. Explicit
+    operator terms alone stay under ``limit``.
     """
 
     explicit: list[str] = []
@@ -693,6 +721,8 @@ def resolve_ingestion_keywords(
             if cleaned.casefold() not in seen:
                 candidates.append(cleaned)
                 seen.add(cleaned.casefold())
+    candidates.extend(INDUSTRY_CODE_QUERY_PREFIX + code for code in PROFILE_DISCOVERY_INDUSTRY_CODES)
+    limit = max(limit, PROFILE_QUERY_LIMIT)
     unique: list[str] = []
     seen.clear()
     for candidate in candidates:
