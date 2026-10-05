@@ -24,6 +24,16 @@ def strict_quantitative_path(monkeypatch):
     monkeypatch.setenv("PAI_QUANT_COMPANY_FIRST_BETA", "false")
 
 
+@pytest.fixture(autouse=True)
+def fresh_board_ranking_cache():
+    """Board ranking memoizes per process; each test starts from a cold cache."""
+    from pai_loop.api import _ranking_projection
+
+    _ranking_projection.cache_clear()
+    yield
+    _ranking_projection.cache_clear()
+
+
 def internal_server_client(app, **kwargs) -> TestClient:
     """Explicit opt-in for internal API tests, never browser/auth rejection cases."""
     configured = app.state.settings.api_key
