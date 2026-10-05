@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -78,6 +79,23 @@ def _scrub_private_performance_search_query(request: Request) -> None:
     # after the response when it writes the access log.
     request.state.private_performance_query_blocked = True
     request.scope["query_string"] = b""
+
+
+class SecretSafeGZipMiddleware(GZipMiddleware):
+    """Compress responses except account responses that carry session secrets.
+
+    Compressing a secret next to request-reflected text over TLS is the BREACH
+    pattern, so CSRF-bearing account and Teams link-code responses are sent as-is.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and scope["path"].startswith(UNCOMPRESSED_PATH_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+UNCOMPRESSED_PATH_PREFIXES = ("/api/v1/accounts", "/api/v1/teams/link-")
 
 
 def create_app(*, database_url: str | None = None, seed_synthetic: bool | None = None) -> FastAPI:
@@ -152,6 +170,8 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.state.settings = settings
     application.state.engine = engine
     application.state.session_factory = session_factory
+    # The notice board and app.js are several hundred KB of repetitive text.
+    application.add_middleware(SecretSafeGZipMiddleware, minimum_size=1024, compresslevel=6)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
