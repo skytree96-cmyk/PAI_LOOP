@@ -1878,7 +1878,7 @@ def test_accepted_semantic_gap_does_not_downgrade_technical_document_coverage() 
     engine.dispose()
 
 
-def test_paid_usage_survives_post_openai_persistence_failure(monkeypatch) -> None:
+def test_paid_usage_survives_post_openai_persistence_failure(monkeypatch, caplog) -> None:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("mimetype", "application/hwp+zip")
@@ -1954,6 +1954,9 @@ def test_paid_usage_survives_post_openai_persistence_failure(monkeypatch) -> Non
 
     assert failed_paid_persist is True
     assert _CountingExtractionClient.calls == 1
+    # The public marker stays generic; the server log keeps the cause.
+    assert any(record.exc_info for record in caplog.records)
+    assert "synthetic post-provider persistence failure" in caplog.text
     assert result.status == "REVIEW"
     assert "INTERNAL_ENRICHMENT_ERROR" in result.warnings
     assert result.openai_calls == result.openai_telemetry.api_calls == 2
