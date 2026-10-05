@@ -1483,8 +1483,11 @@ class OpenAIExtractionClient:
                 # Optional native structure may exceed its separate budget or
                 # be encoded as paragraphs. Canonical source binding happens
                 # first; retain exact text framing without truncating a table.
+                # The 8 MB native-context cap predates the 24 MB download limit:
+                # a larger HWPX (seen: 8.8 MB with two 26 MB BMPs) is read as
+                # canonical text and only loses this optional context.
                 if str(exc) not in {"HWPX_SCORING_TABLE_NOT_FOUND", "HWPX_CONTEXT_SIZE_LIMIT",
-                                    "HWPX_CONTEXT_STRUCTURE_LIMIT"}:
+                                    "HWPX_CONTEXT_STRUCTURE_LIMIT", "HWPX_CONTEXT_INPUT_LIMIT"}:
                     raise
                 native_context_status = str(exc)
         instruction = (
