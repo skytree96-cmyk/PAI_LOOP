@@ -566,6 +566,8 @@ class ExtractionOutcome(BaseModel):
     unverified_quantitative_tables: list[dict[str, Any]] | None = None
     # Failed-anchor diagnostics (hint, length, digest, SOURCE span; never model text).
     unverified_quote_samples: list[dict[str, Any]] | None = None
+    # 2 when a long document was extracted as two consecutive halves.
+    split_parts: int | None = None
 
 
 class QuantitativeProbeOutcome(BaseModel):
@@ -854,6 +856,81 @@ def _corrective_structure_changed(
     return (
         _corrective_structure_snapshot(initial)
         != _corrective_structure_snapshot(corrected)
+    )
+
+
+# Long single-call extractions fail far more often: since 10/2 the native
+# schema decode failed for 0/57 calls under 20k input tokens but 13/31 at
+# 60k and above, and the failed calls carried ~3x the output. Above this size
+# the document is extracted as two consecutive halves (one call each, no
+# corrective retry) and merged. Every quote is still verified against the
+# whole document.
+SPLIT_EXTRACTION_ENV = "PAI_SPLIT_LONG_EXTRACTION"
+SPLIT_EXTRACTION_MIN_CHARS = 30_000
+SPLIT_PART_INSTRUCTION = (
+    "SOURCE is part {part} of 2 consecutive parts of one attachment, divided only "
+    "because of its length; the other part is extracted separately and merged with "
+    "this result. Extract what this part contains. Do not report text that may be in "
+    "the other part as missing or unreadable, and do not describe this SOURCE as "
+    "truncated or incomplete for that reason."
+)
+
+
+def split_extraction_enabled() -> bool:
+    return os.environ.get(SPLIT_EXTRACTION_ENV, "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def split_source_text(text: str) -> tuple[str, str]:
+    """Cut near the middle at a paragraph, else line, boundary; keep every character."""
+
+    middle = len(text) // 2
+    low, high = int(len(text) * 0.35), int(len(text) * 0.65)
+    for separator in ("\n\n", "\n"):
+        candidates = []
+        start = text.find(separator, low)
+        while start != -1 and start <= high:
+            candidates.append(start + len(separator))
+            start = text.find(separator, start + 1)
+        if candidates:
+            cut = min(candidates, key=lambda index: abs(index - middle))
+            return text[:cut], text[cut:]
+    return text[:middle], text[middle:]
+
+
+def _prefixed_id(prefix: str, value: str) -> str:
+    return (prefix + value)[:120]
+
+
+def merge_split_payloads(first: ExtractionPayload, second: ExtractionPayload) -> ExtractionPayload:
+    """Union two halves of one attachment; IDs of the second half are namespaced."""
+
+    second_requirements = [
+        item.model_copy(update={"requirement_id": _prefixed_id("p2-", item.requirement_id)})
+        for item in second.requirements
+    ]
+    second_tables = [
+        table.model_copy(update={
+            "table_id": _prefixed_id("p2-", table.table_id),
+            "criteria": [
+                criterion.model_copy(update={"criterion_id": _prefixed_id("p2-", criterion.criterion_id)})
+                for criterion in table.criteria
+            ],
+        })
+        for table in second.quantitative_tables
+    ]
+    tables = [*first.quantitative_tables, *second_tables][:16]
+    not_applicable = None if tables else (
+        first.quantitative_table_not_applicable or second.quantitative_table_not_applicable
+    )
+    gaps = list(dict.fromkeys([*first.missing_or_unreadable, *second.missing_or_unreadable]))
+    summary = " ".join(part for part in (first.summary.strip(), second.summary.strip()) if part)[:1000]
+    return ExtractionPayload(
+        document_type=first.document_type,
+        requirements=[*first.requirements, *second_requirements],
+        quantitative_tables=tables,
+        quantitative_table_not_applicable=not_applicable,
+        missing_or_unreadable=gaps,
+        summary=summary,
     )
 
 
@@ -1417,10 +1494,60 @@ class OpenAIExtractionClient:
     ) -> ExtractionOutcome:
         if self.budget_policy == QUANTITATIVE_PROBE_ONCE:
             raise ValueError("QUANTITATIVE_PROBE_ONCE_REQUIRES_PROBE_ENTRY")
+        if (
+            split_extraction_enabled()
+            and self.provider == "n8n_claude"
+            and self.budget_policy is None
+            and self.max_total_api_calls == 2
+            and len(document_text.replace("\x00", "")) >= SPLIT_EXTRACTION_MIN_CHARS
+        ):
+            return self._extract_split(
+                document_text=document_text,
+                allowed_attachment_ids=allowed_attachment_ids,
+            )
         return self._extract(
             document_text=document_text,
             allowed_attachment_ids=allowed_attachment_ids,
         )
+
+    def _extract_split(
+        self,
+        *,
+        document_text: str,
+        allowed_attachment_ids: set[str],
+    ) -> ExtractionOutcome:
+        full_text = document_text.replace("\x00", "")
+        parts = split_source_text(full_text)
+        outcomes: list[ExtractionOutcome] = []
+        saved_calls = self.max_total_api_calls
+        try:
+            # One call per half: the two halves use the whole two-call budget.
+            self.max_total_api_calls = 1
+            for index, part in enumerate(parts, start=1):
+                outcome = self._extract(
+                    document_text=part,
+                    allowed_attachment_ids=allowed_attachment_ids,
+                    verification_source=full_text,
+                    probe_instruction=SPLIT_PART_INSTRUCTION.format(part=index),
+                )
+                outcomes.append(outcome)
+                if outcome.status != "ACCEPTED" or outcome.data is None:
+                    break
+        finally:
+            self.max_total_api_calls = saved_calls
+        calls = sum(item.api_calls for item in outcomes)
+        telemetry = merge_openai_telemetry(*(item.openai_telemetry for item in outcomes))
+        last = outcomes[-1]
+        if last.status != "ACCEPTED" or last.data is None:
+            # Fail closed with the failing half's diagnosis and the full usage.
+            return last.model_copy(update={"api_calls": calls, "openai_telemetry": telemetry, "split_parts": 2})
+        merged = merge_split_payloads(outcomes[0].data, outcomes[1].data)
+        return outcomes[0].model_copy(update={
+            "data": merged,
+            "api_calls": calls,
+            "openai_telemetry": telemetry,
+            "split_parts": 2,
+        })
 
     def extract_quantitative_keywords(
         self, *, document_text: str, allowed_attachment_ids: set[str],

@@ -3516,6 +3516,7 @@ def _persist_extraction_version(
             and outcome.unverified_quantitative_tables
             else {}
         ),
+        **({"split_parts": outcome.split_parts} if getattr(outcome, "split_parts", None) else {}),
         **(
             {"unverified_quote_samples": outcome.unverified_quote_samples}
             if outcome is not None and not accepted and outcome.error_code == "UNVERIFIED_QUOTE"
