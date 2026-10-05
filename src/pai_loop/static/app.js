@@ -7880,7 +7880,7 @@
     const sourceDetail = sourceMissing || tableNotEstablished
       ? "배점표 미확보"
       : notApplicable
-        ? "정량평가 비적용"
+        ? activationReasonCodes.includes("QUALITATIVE_AND_PRICE_ONLY") ? "정성·가격만 평가 · 회사 정량 항목 없음" : "정량평가 비적용"
         : total === null
           ? "배점표 발견 · 검증 보류"
           : "원문상 조건부 하한~상한";
@@ -8050,6 +8050,9 @@
     const activation = String(data.activation_status || "").toUpperCase();
     const overall = String(data.overall_status || "").toUpperCase();
     if ([ruleSource, validation, activation].includes("NOT_APPLICABLE")) {
+      if (reasons.includes("QUALITATIVE_AND_PRICE_ONLY")) {
+        return { value: "정량 항목 없음", reason: "평가표가 정성평가와 입찰가격으로만 구성되어 회사 정량점수가 없습니다.", status: "pending", label: "정성·가격만" };
+      }
       return { value: "비적용", reason: "이 공고에는 회사 정량점수를 적용하지 않습니다.", status: "pending", label: "비적용" };
     }
     const reasonLabels = {

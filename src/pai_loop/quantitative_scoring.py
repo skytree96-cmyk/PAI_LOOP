@@ -83,6 +83,11 @@ from .quantitative_financial import (
     parse_financial_recognition_scope,
 )
 from .quantitative_out_of_scope import out_of_scope_reason
+from .quantitative_qualitative_only import (
+    QUALITATIVE_AND_PRICE_ONLY,
+    QUALITATIVE_AND_PRICE_ONLY_REASON,
+    qualitative_and_price_only,
+)
 from .quantitative_row_approval import (
     ROW_APPROVAL_ASSUMPTION,
     ROW_APPROVAL_FACT_KEY,
@@ -5987,6 +5992,62 @@ def bind_quantitative_company_inputs(
     return request.model_copy(update={"facts": merged_facts})
 
 
+def _qualitative_and_price_only_notice(
+    notice: Notice,
+    profile: QuantitativeCandidateProfile,
+    request: QuantitativeEstimateRequest,
+) -> bool:
+    """A complete manifest with no company row whose RFP is 정성 + 가격 only."""
+
+    if (
+        request.activation_status != "REVIEW_REQUIRED"
+        or request.criteria
+        or profile.available_candidates
+        or not profile.expected_attachment_ids
+        or set(profile.processed_attachment_ids) != set(profile.expected_attachment_ids)
+        or any(item.code == "ATTACHMENT_INCOMPLETE" for item in profile.issues)
+    ):
+        return False
+    versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
+    _read_attachments, _read_invalid, attempts = _current_manifest_attempts(
+        versions, validate_accepted=False, preserve_quantitative_proof=True,
+    )
+    results: list[dict[str, Any]] = []
+    for attachment_id in profile.expected_attachment_ids:
+        attempt = attempts.get(attachment_id)
+        payload = (
+            attempt.source_payload
+            if attempt is not None and isinstance(attempt.source_payload, dict)
+            else {}
+        )
+        result = payload.get("result")
+        if payload.get("status") != "ACCEPTED" or not isinstance(result, dict):
+            return False
+        results.append(result)
+    return qualitative_and_price_only(
+        results, [item.label for item in profile.review_candidates],
+    )
+
+
+def _qualitative_and_price_only_estimate(ruleset_version: str) -> QuantitativeEstimateResult:
+    result = estimate_quantitative_score(
+        QuantitativeEstimateRequest(
+            ruleset_version=ruleset_version,
+            rule_source_status="NOT_APPLICABLE",
+            source_validation_status="NOT_APPLICABLE",
+            activation_status="NOT_APPLICABLE",
+            activation_reasons=[QUALITATIVE_AND_PRICE_ONLY],
+            criteria=[],
+            facts=[],
+            missing_reason=QUALITATIVE_AND_PRICE_ONLY_REASON,
+        )
+    )
+    return result.model_copy(update={
+        "opinion": QUALITATIVE_AND_PRICE_ONLY_REASON
+        + " 기술평가는 제안서 내용으로, 가격평가는 입찰가로 결정됩니다.",
+    })
+
+
 def estimate_for_notice(
     notice: Notice,
     company_facts: Iterable[CompanyFact] = (),
@@ -6020,7 +6081,12 @@ def estimate_for_notice(
             request, notice=notice, profile=dynamic_profile,
             company_facts=stored_facts, performance_records=stored_records,
         )
-        return estimate_quantitative_score(beta_request or request)
+        final_request = beta_request or request
+        # Decided on the final request: row approvals, sufficient rows and the
+        # company-first beta may still have produced criteria, which must win.
+        if _qualitative_and_price_only_notice(notice, dynamic_profile, final_request):
+            return _qualitative_and_price_only_estimate(final_request.ruleset_version)
+        return estimate_quantitative_score(final_request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
     if profile is None:
