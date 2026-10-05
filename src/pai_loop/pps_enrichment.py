@@ -1750,6 +1750,86 @@ _SCORING_TABLE_LIKELIHOOD = (
 )
 
 
+_NOTICE_DOCUMENT_NAME_RE = re.compile(r"입찰\s*공고|공고문|공고서|입찰\s*설명서")
+# 2026-10-05: once the announcement alone confirms a mandatory clause the company
+# cannot meet, reading the RFP and forms costs paid calls for a notice that will
+# be FAIL anyway. Only facts no other document can overturn qualify: G2B
+# industry codes, head-office/branch/facility regions and permits the company
+# confirmed it does not hold. Certificate gates (소기업·중소기업·직접생산) are
+# excluded because a nonprofit exception may sit in another attachment.
+NOTICE_CONFIRMED_SKIP_FACTS = frozenset({
+    "industry_code_inventory", "head_office_region_codes", "registered_bidder_branch_region_codes",
+    "training_facility_region_codes", "catering_business", "telecom_carrier",
+    "information_system_audit_firm", "construction_engineering_business", "electric_power_engineering",
+    "fire_facility_engineering", "ict_engineering_business", "ict_construction_business",
+    "architect_office", "iso_13485", "aws_partner", "web_accessibility_certification", "iata_bsp_member",
+})
+NOTICE_CONFIRMED_INELIGIBLE_SKIP = "SKIPPED_NOTICE_CONFIRMED_INELIGIBLE"
+_NOTICE_GATE_MIN_CONFIDENCE = 0.90
+
+
+def _is_notice_document(attachment: dict[str, Any]) -> bool:
+    return bool(_NOTICE_DOCUMENT_NAME_RE.search(str(attachment.get("file_name") or "")))
+
+
+def _notice_first_reading_order(attachment: dict[str, Any]) -> tuple[int, int, int]:
+    """The announcement first (it decides eligibility), then likely scoring tables."""
+    return (0 if _is_notice_document(attachment) else 1, *_scoring_table_reading_order(attachment))
+
+
+def notice_document_confirms_ineligibility(
+    versions: list[NoticeVersion],
+    attachments: list[dict[str, Any]],
+    *,
+    current_manifest_sha256: str,
+    deadline: Any,
+) -> str | None:
+    """Return the company fact a fully read announcement already fails, else None.
+
+    Every mandatory clause of the latest accepted, complete announcement attempt
+    is classified together (so alternatives and exceptions in the same document
+    apply); only a FAIL_CONFIRMED item whose own clause is unambiguous and anchored
+    at or above the extraction confidence threshold, on a fact in
+    ``NOTICE_CONFIRMED_SKIP_FACTS``, counts.
+    """
+
+    from .eligibility_policy import classify_requirements, load_public_company_profile
+
+    notice_ids = {item["attachment_id"] for item in attachments if _is_notice_document(item)}
+    latest: dict[str, NoticeVersion] = {}
+    for version in versions:
+        payload = version.source_payload if isinstance(version.source_payload, dict) else {}
+        attachment_id = payload.get("attachment_id")
+        if (payload.get("kind") != "OPENAI_REQUIREMENT_EXTRACTION" or attachment_id not in notice_ids
+                or payload.get("current_manifest_sha256") != current_manifest_sha256):
+            continue
+        if attachment_id not in latest or version.version_no > latest[attachment_id].version_no:
+            latest[attachment_id] = version
+    profile = None
+    for version in latest.values():
+        payload = version.source_payload
+        result = payload.get("result")
+        if (payload.get("status") != "ACCEPTED" or not version.document_complete
+                or not isinstance(result, dict) or not isinstance(result.get("requirements"), list)):
+            continue
+        requirements = [item for item in result["requirements"] if isinstance(item, dict) and item.get("mandatory")]
+        if not requirements:
+            continue
+        profile = profile or load_public_company_profile()
+        strong = {
+            item.get("requirement_id") for item in requirements
+            if not item.get("ambiguity_reason") and item.get("evidence")
+            and all(float((anchor or {}).get("confidence") or 0) >= _NOTICE_GATE_MIN_CONFIDENCE
+                    for anchor in item["evidence"])
+        }
+        for item in classify_requirements(requirements, profile=profile, deadline=deadline)["items"]:
+            if (item.get("policy_class") == "ELIGIBILITY" and item.get("outcome") == "FAIL_CONFIRMED"
+                    and item.get("company_fact_key") in NOTICE_CONFIRMED_SKIP_FACTS
+                    and item.get("requirement_id") in strong):
+                return str(item["company_fact_key"])
+    return None
+
+
 def _scoring_table_reading_order(attachment: dict[str, Any]) -> tuple[int, int]:
     """배점표가 있을 법한 순서. 같은 등급 안에서는 원래의 순번을 지킨다."""
 
@@ -4833,8 +4913,9 @@ def enrich_notice_from_pps(
         llm_gateway_base_url=llm_gateway_base_url, transport=transport,
         openai_client_factory=openai_client_factory, download_timeout_seconds=download_timeout_seconds,
         openai_timeout_seconds=openai_timeout_seconds, openai_max_retries=openai_max_retries)
-    # 커버리지는 그대로다. 예산이 끊기기 전에 배점표를 만날 확률만 높인다.
-    for attachment in sorted(attachments, key=_scoring_table_reading_order):
+    # 커버리지는 그대로다. 공고문으로 자격을 먼저 보고, 그다음 배점표를 만날 확률을 높인다.
+    notice_gate_fact: str | None = None
+    for attachment in sorted(attachments, key=_notice_first_reading_order):
         # Source revalidation and a sibling rollback expire cached ORM rows.
         # Refresh the frozen history inside an owned read transaction so later
         # field access cannot implicitly start a transaction before a claim or
@@ -4918,6 +4999,23 @@ def enrich_notice_from_pps(
                 audits.append(_audit_result_for_attachment(attachment, PpsEnrichmentResult(status="REVIEW", warnings=[stop_code]), attempted=False))
                 warnings.append(stop_code)
                 break  # Keep earlier paid calls, download counts and audits.
+
+        if retry_targets is None and not long_output_once and not _is_notice_document(attachment):
+            if notice_gate_fact is None:
+                with session.begin():
+                    session.expire_all()
+                    active = session.get(Notice, notice_id, populate_existing=True)
+                    fresh = list(session.scalars(select(NoticeVersion).where(NoticeVersion.notice_id == notice_id)))
+                    notice_gate_fact = notice_document_confirms_ineligibility(
+                        fresh, attachments, current_manifest_sha256=current_manifest_sha256,
+                        deadline=active.deadline if active is not None else None,
+                    ) if active is not None else None
+            if notice_gate_fact is not None:
+                audits.append(_audit_result_for_attachment(
+                    attachment, PpsEnrichmentResult(status="REVIEW", warnings=[NOTICE_CONFIRMED_INELIGIBLE_SKIP]),
+                    attempted=False))
+                warnings.append(NOTICE_CONFIRMED_INELIGIBLE_SKIP)
+                continue
 
         # One missing attachment can require one download plus an initial and
         # corrective Responses call. Start it only when the enclosing request
