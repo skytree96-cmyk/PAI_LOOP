@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import time
@@ -51,6 +52,11 @@ from .long_output_policy import (
 )
 from .notice_freshness import authoritative_pps_cancelled_notice_keys
 from .analysis_selection import manual_only_notice_keys
+
+# Attachment-level failures are recorded as a public-safe marker only
+# (INTERNAL_ENRICHMENT_ERROR). The server log keeps the exception so an
+# operator can find the cause without another paid retry.
+logger = logging.getLogger(__name__)
 from . import quantitative_recovery_policy
 from .gateway_diagnostics import safe_gateway_failure
 from .source_gap_policy import is_quantitative_irrelevant_gap, normalise_source_gap
@@ -4949,6 +4955,10 @@ def enrich_notice_from_pps(
                     attachments_discovered=discovered,
                 )
             except Exception:
+                logger.exception(
+                    "PPS attachment record failed notice_id=%s attachment_id=%s",
+                    notice_id, attachment.get("attachment_id"),
+                )
                 session.rollback()
                 item_result = record_internal_pps_enrichment_failure(
                     session,
@@ -4992,6 +5002,10 @@ def enrich_notice_from_pps(
                 # The provider already processed a paid request.  Even if a
                 # later validation/DB step fails, retain its usage so callers
                 # cannot mistake the failure for a zero-cost attempt.
+                logger.exception(
+                    "PPS attachment post-provider processing failed notice_id=%s attachment_id=%s",
+                    notice_id, attachment.get("attachment_id"),
+                )
                 session.rollback()
                 item_result = record_internal_pps_enrichment_failure(
                     session,
@@ -5011,6 +5025,10 @@ def enrich_notice_from_pps(
             except Exception:
                 # Each exact attachment owns its failure marker. Continue with
                 # siblings so one corrupt document never discards successes.
+                logger.exception(
+                    "PPS attachment enrichment failed notice_id=%s attachment_id=%s",
+                    notice_id, attachment.get("attachment_id"),
+                )
                 session.rollback()
                 item_result = record_internal_pps_enrichment_failure(
                     session,
@@ -5084,6 +5102,10 @@ def enrich_notice_from_pps(
                         )
                     except Exception:
                         # Keep the 20k failure. A claim taken before the error stays spent.
+                        logger.exception(
+                            "PPS long-output retry failed notice_id=%s attachment_id=%s",
+                            notice_id, attachment.get("attachment_id"),
+                        )
                         session.rollback()
                         long_result = None
                     if long_result is not None:
