@@ -155,6 +155,29 @@ def test_oversized_optional_native_structure_does_not_block_bounded_text():
     assert result.source_audit['native_hwpx_table_context'] is False
 
 
+def test_oversized_hwpx_input_only_drops_optional_native_context(monkeypatch):
+    payload, review = probe_fixture()
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('Contents/section0.xml', '<section><tbl>' + ''.join(
+            '<tr><tc><p><t>' + line + '</t></p></tc></tr>'
+            for line in review.canonical_text.splitlines()) + '</tbl></section>')
+    content = stream.getvalue()
+    canonical = _extract_hwpx_text(content)
+    import pai_loop.quantitative_keyword_input as keyword_input
+
+    def oversized(*_args, **_kwargs):
+        raise ValueError('HWPX_CONTEXT_INPUT_LIMIT')
+
+    monkeypatch.setattr(keyword_input, 'hwpx_quantitative_table_context', oversized)
+    with make_client(lambda request: response(payload)) as client:
+        result = client.extract_quantitative_keywords(document_text=canonical,
+            allowed_attachment_ids={ATT}, hwpx_content=content)
+    assert result.outcome.status == 'ACCEPTED'
+    assert result.source_audit['native_hwpx_context_status'] == 'HWPX_CONTEXT_INPUT_LIMIT'
+    assert result.source_audit['native_hwpx_table_context'] is False
+
+
 @pytest.mark.parametrize('detail,stage,code,expected_calls', [
     ('NATIVE_SCHEMA_DECODE_INVALID', 'OUTPUT_NORMALIZATION', 'OUTPUT_REJECTED', 2),
     ('MODEL_TRANSPORT_TIMEOUT', 'MODEL_EXECUTION', 'MODEL_EXECUTION_FAILED', 1),
