@@ -77,6 +77,7 @@ from .models import (
     ScoreSnapshot,
     UserDecision,
 )
+from .version_payload_headers import attach_header_first_payloads
 from .notice_freshness import (
     authoritative_pps_notice_is_cancelled,
     latest_current_analysis_run,
@@ -1009,10 +1010,18 @@ class _ServerTiming:
         self.phases[name] = self.phases.get(name, 0.0) + now - self._last
         self._last = now
 
-    def apply(self, response: Response) -> None:
-        response.headers["Server-Timing"] = ", ".join(
-            f"{name};dur={seconds * 1000:.0f}" for name, seconds in self.phases.items()
-        )
+    def apply(self, response: Response, session: Session | None = None) -> None:
+        parts = [f"{name};dur={seconds * 1000:.0f}" for name, seconds in self.phases.items()]
+        stats = session.info.get("version_payload_stats") if session is not None else None
+        if stats:
+            parts.append("payload;desc=\"" + " ".join(f"{key}={value}" for key, value in stats.items()) + "\"")
+        response.headers["Server-Timing"] = ", ".join(parts)
+
+
+def _timing_mark(session: Session, name: str) -> None:
+    timing = session.info.get("server_timing")
+    if isinstance(timing, _ServerTiming):
+        timing.mark(name)
 
 
 def _load_board_notice_summary_batch(
@@ -1024,15 +1033,15 @@ def _load_board_notice_summary_batch(
     Choosing the current evaluation and analysis run reads only identifiers,
     timestamps and eligibility. Only the chosen evaluations (the current one and
     the one its current run was made from) and the current run's
-    recommendations are then read in full, in two bounded queries. Source
-    versions stay complete because the attachment audit reads them.
+    recommendations are then read in full, in two bounded queries. Superseded
+    extraction attempts are read header-first (see ``version_payload_headers``).
     """
 
     if not notice_ids:
         return []
     loaded = list(session.scalars(
         select(Notice).where(Notice.id.in_(notice_ids)).options(
-            selectinload(Notice.versions),
+            selectinload(Notice.versions).defer(NoticeVersion.source_payload),
             selectinload(Notice.evaluations).load_only(
                 Evaluation.id, Evaluation.notice_id, Evaluation.notice_version_id,
                 Evaluation.evaluated_at, Evaluation.deadline_snapshot_at,
@@ -1044,6 +1053,9 @@ def _load_board_notice_summary_batch(
             ),
         )
     ).all())
+    _timing_mark(session, "load_rows")
+    attach_header_first_payloads(session, loaded)
+    _timing_mark(session, "load_payloads")
     evaluation_ids: set[str] = set()
     current_runs: list[AnalysisRun] = []
     for notice in loaded:
@@ -1056,6 +1068,7 @@ def _load_board_notice_summary_batch(
             current_runs.append(run)
             if run.evaluation_id:
                 evaluation_ids.add(run.evaluation_id)
+    _timing_mark(session, "select_current")
     if evaluation_ids:
         # Refresh the already-mapped rows in place with every column.
         session.scalars(
@@ -1073,6 +1086,7 @@ def _load_board_notice_summary_batch(
             recommendations.setdefault(recommendation.analysis_run_id, []).append(recommendation)
         for run in current_runs:
             set_committed_value(run, "recommendations", recommendations.get(run.id, []))
+    _timing_mark(session, "hydrate")
     by_id = {notice.id: notice for notice in loaded}
     return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
 
@@ -1084,8 +1098,8 @@ def _load_dashboard_notice_batch(
     """Read counter inputs without historical evaluation/output payloads.
 
     This graph must never enter full summary serialization or a write path.
-    Source versions remain complete so current manifest/binding gates are
-    exactly the same as the ordinary summary contract.
+    Source versions keep the ordinary summary contract; superseded extraction
+    attempts are read header-first and load in full on any other access.
     """
 
     if not notice_ids:
@@ -1097,7 +1111,7 @@ def _load_dashboard_notice_batch(
                 Notice.title, Notice.status, Notice.published_at, Notice.deadline,
                 Notice.created_at, raiseload=True,
             ),
-            selectinload(Notice.versions),
+            selectinload(Notice.versions).defer(NoticeVersion.source_payload),
             selectinload(Notice.evaluations).load_only(
                 Evaluation.id, Evaluation.notice_id, Evaluation.notice_version_id,
                 Evaluation.evaluated_at, Evaluation.deadline_snapshot_at,
@@ -1111,6 +1125,9 @@ def _load_dashboard_notice_batch(
             raiseload("*"),
         )
     ).all())
+    _timing_mark(session, "load_rows")
+    attach_header_first_payloads(session, loaded)
+    _timing_mark(session, "load_payloads")
     by_id = {notice.id: notice for notice in loaded}
     return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
 
@@ -1447,6 +1464,7 @@ def dashboard(
     department_id: Annotated[str | None, Query(max_length=80)] = None,
 ) -> dict[str, Any]:
     timing = _ServerTiming()
+    session.info["server_timing"] = timing
     try:
         selected_department = get_department_profile(department_id)
     except KeyError as exc:
@@ -1702,7 +1720,7 @@ def dashboard(
         del open_runs, quantitative_runs, scores_by_run, recommendations_by_run
         timing.mark("snapshots")
 
-    timing.apply(response)
+    timing.apply(response, session)
     return {
         "generated_at": now,
         "last_sync": _comparable_utc(last_sync) if last_sync is not None else None,
@@ -2309,6 +2327,7 @@ def list_notices(
         )
 
     timing = _ServerTiming()
+    session.info["server_timing"] = timing
     ranked_candidates: list[dict[str, Any]] = []
     for notice in candidate_rows:
         views, selected_ranking, order = ranking_projection(notice)
@@ -2380,7 +2399,7 @@ def list_notices(
         session.expunge_all()
         del authorities, outcome_notice_ids, loaded_by_id, notices
         timing.mark("rows")
-    timing.apply(response)
+    timing.apply(response, session)
     return ranked
 
 
