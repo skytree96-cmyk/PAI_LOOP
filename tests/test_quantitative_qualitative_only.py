@@ -116,3 +116,19 @@ def test_failed_attempt_keeps_review(monkeypatch):
         {"A1": _attempt(NOTICE), "A2": _attempt(QUALITATIVE_RFP, status="DOCUMENT_EXTRACT_FAILED")},
     )
     assert estimate.activation_status == "REVIEW_REQUIRED"
+
+
+def test_rows_added_after_the_profile_still_win(monkeypatch):
+    # Row approvals, sufficient rows and the company-first beta run after the
+    # profile request; a criterion any of them adds must keep the scored path.
+    monkeypatch.setattr(
+        scoring, "_apply_company_first_beta",
+        lambda request, **kwargs: request.model_copy(update={"criteria": ["ROW"]}),
+    )
+    monkeypatch.setattr(
+        scoring, "estimate_quantitative_score",
+        lambda request, **kwargs: "SCORED" if request.criteria else "EMPTY",
+    )
+    assert _estimate(
+        monkeypatch, _profile(), {"A1": _attempt(NOTICE), "A2": _attempt(QUALITATIVE_RFP)},
+    ) == "SCORED"

@@ -6060,8 +6060,6 @@ def estimate_for_notice(
         request = quantitative_request_from_candidate_profile(
             dynamic_profile, allow_partial_source=True,
         )
-        if _qualitative_and_price_only_notice(notice, dynamic_profile, request):
-            return _qualitative_and_price_only_estimate(request.ruleset_version)
         request, approved_bindings = _apply_row_approvals(
             request, notice=notice, profile=dynamic_profile, company_facts=stored_facts,
         )
@@ -6083,7 +6081,12 @@ def estimate_for_notice(
             request, notice=notice, profile=dynamic_profile,
             company_facts=stored_facts, performance_records=stored_records,
         )
-        return estimate_quantitative_score(beta_request or request)
+        final_request = beta_request or request
+        # Decided on the final request: row approvals, sufficient rows and the
+        # company-first beta may still have produced criteria, which must win.
+        if _qualitative_and_price_only_notice(notice, dynamic_profile, final_request):
+            return _qualitative_and_price_only_estimate(final_request.ruleset_version)
+        return estimate_quantitative_score(final_request)
 
     profile, profile_binding_error = _profile_for_notice(notice)
     if profile is None:
