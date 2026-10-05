@@ -81,3 +81,22 @@ const rows=await reading;
 assert.equal(rows.length,1001);assert.equal(new Set(rows.map(r=>r.notice_key)).size,1001);
 assert.equal(rows.at(-1).notice_key,'SYN-1000');
 ''')
+
+
+def test_first_page_callback_fires_once_only_when_more_pages_follow():
+    harness = FILTER_HARNESS.replace("globalThis.ui={state,els,", "globalThis.ui={state,els,fetchNoticePages,")
+    run_js(harness, r'''
+const all=Array.from({length:450},(_,i)=>({notice_key:'SYN-'+i}));
+const seen=[];
+const reading=u.fetchNoticePages({statusScope:'OPEN',onFirstPage:rows=>seen.push(rows.map(r=>r.notice_key))});
+for(let offset=0;offset<450;offset+=200){
+ await new Promise(setImmediate);
+ requests.at(-1).resolve(all.slice(offset,offset+200));
+}
+assert.equal((await reading).length,450);
+assert.equal(seen.length,1);assert.equal(seen[0].length,200);assert.equal(seen[0][0],'SYN-0');
+const single=[];
+const short=u.fetchNoticePages({statusScope:'OPEN',onFirstPage:rows=>single.push(rows)});
+await new Promise(setImmediate);requests.at(-1).resolve(all.slice(0,120));
+assert.equal((await short).length,120);assert.equal(single.length,0);
+''')

@@ -30,6 +30,7 @@ globalThis.ui={state,els,normalizeDashboard,dashboardWithoutGlobalTotals,renderK
  useBootstrap(rows){fetchNoticePages=async()=>rows;applyRuntimeProfile=()=>{};loadAccountSession=async()=>{};
   setLoading=value=>{state.loading=value;};hideDemoBanner=()=>{};openNoticeFromRoute=()=>{};
   hydrateDepartmentDecisionList=async()=>{};},
+ useNoticePages(fetcher){fetchNoticePages=fetcher;},
 };`;
 vm.runInContext(source.replace(/\}\)\(\);\s*$/,exported+"\n})();"),context);
 const u=context.ui;
@@ -399,3 +400,31 @@ assert.equal(u.normalizeNotice(legacy).recommendation,"GO");
 const noEvaluation=u.normalizeNotice({notice_key:"SYN-CURRENT-SNAPSHOT",status:"OPEN",recommendation:"GO"});
 assert.equal(noEvaluation.storedSystemRecommendation,"GO");
 ''')
+
+
+def test_first_notice_page_renders_before_remaining_pages_and_dashboard():
+    _run(r"""
+const row=i=>({notice_key:"SYN-P"+i,status:"OPEN",title:"SYN page "+i,source_kind:"MANUAL"});
+const first=Array.from({length:200},(_,i)=>row(i)),all=Array.from({length:260},(_,i)=>row(i));
+let release;const remaining=new Promise(resolve=>{release=resolve;});
+u.useBootstrap([]);
+u.useNoticePages(async({onFirstPage})=>{onFirstPage(first);await remaining;return all;});
+const loading=u.loadApplicationData();await tick();
+assert.equal(u.state.notices.length,200);assert.equal(u.state.loading,false);
+assert.equal(u.state.noticeListPartial,true);
+assert.equal(requests.some(r=>r.path.startsWith("/dashboard?")),false);
+release();requests[0].resolve({});await loading;
+assert.equal(u.state.notices.length,260);assert.equal(u.state.noticeListPartial,false);
+assert.equal(requests.some(r=>r.path.startsWith("/dashboard?")),true);
+""")
+
+
+def test_stale_first_notice_page_is_ignored_after_a_newer_request():
+    _run(r"""
+u.useBootstrap([]);
+u.useNoticePages(async({onFirstPage})=>{u.state.requestSequence++;onFirstPage([{notice_key:"SYN-STALE",status:"OPEN",title:"SYN stale"}]);return [];});
+const before=u.state.notices.map(n=>n.noticeKey);
+const loading=u.loadApplicationData();await tick();requests[0]?.resolve({});await loading;
+assert.deepEqual(u.state.notices.map(n=>n.noticeKey),before);
+assert.equal(u.state.noticeListPartial,false);
+""")

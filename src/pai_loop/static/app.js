@@ -869,7 +869,15 @@
     // Render the usable board before scanning all-history aggregates. Running
     // both relationship-heavy reads together can exceed a small worker's
     // memory limit as the stored extraction history grows.
-    const noticesRequest = fetchNoticePages({ statusScope: requestedStatusScope });
+    state.noticeListPartial = false;
+    const noticesRequest = fetchNoticePages({
+      statusScope: requestedStatusScope,
+      onFirstPage: (firstPage) => {
+        if (sequence !== state.requestSequence) return;
+        if (requestedStatusScope !== noticeStatusScopeForView(state.currentView)) return;
+        applyLoadedNotices(firstPage, { partial: true });
+      },
+    });
     // Account discovery needs only the runtime profile. Finishing it as soon as
     // that arrives lets the results view read its own records instead of
     // waiting for every notice page, which takes tens of seconds on a full DB.
@@ -900,30 +908,38 @@
         state.manualAnalysisPolicy = null;
         state.manualAnalysisUnavailableReason = "분석 설정을 불러오지 못했습니다. 새로고침 후 다시 확인해 주세요.";
       }
-      state.quantitativeEstimates = {};
-      const list = extractList(noticesResult.value);
-      const previousNotices = new Map(state.notices.map((notice) => [notice.noticeKey, notice]));
-      const previousDashboard = state.source === "api" ? state.dashboard : {};
-      state.source = "api";
-      state.notices = list.map((raw) => {
-        const notice = normalizeNotice(raw);
-        return preserveOperatorDecision(notice, previousNotices.get(notice.noticeKey));
-      }).filter((notice) => notice.noticeKey);
-      state.dashboard = dashboardWithoutGlobalTotals(state.notices, previousDashboard);
-      state.sourceReason = "";
-      state.lastSuccessfulQueryAt = new Date().toISOString();
-      setSystemStatus("loading");
-      if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) showDemoBanner(state.dashboard.syntheticWarning);
-      else hideDemoBanner();
-      finishLoading();
+      applyLoadedNotices(extractList(noticesResult.value), { partial: false });
       openNoticeFromRoute();
       if (state.accountSession.enabled && state.accountSession.authenticated) void hydrateDepartmentDecisionList(sequence);
       void hydrateApplicationMetadata({ sequence, requestedStatusScope });
       return;
     }
 
+    state.noticeListPartial = false;
     const reason = humanizeError(noticesResult.reason);
     renderApplicationError(`운영 서버 연결 실패: ${reason}`);
+  }
+
+  // A partial list is the first page shown early; the full list replaces it.
+  // Dashboard totals and decision reads still start only from the full list so
+  // the relationship-heavy reads never run alongside the remaining pages.
+  function applyLoadedNotices(list, { partial }) {
+    state.quantitativeEstimates = {};
+    const previousNotices = new Map(state.notices.map((notice) => [notice.noticeKey, notice]));
+    const previousDashboard = state.source === "api" ? state.dashboard : {};
+    state.source = "api";
+    state.notices = list.map((raw) => {
+      const notice = normalizeNotice(raw);
+      return preserveOperatorDecision(notice, previousNotices.get(notice.noticeKey));
+    }).filter((notice) => notice.noticeKey);
+    state.noticeListPartial = partial;
+    state.dashboard = dashboardWithoutGlobalTotals(state.notices, previousDashboard);
+    state.sourceReason = "";
+    if (!partial) state.lastSuccessfulQueryAt = new Date().toISOString();
+    setSystemStatus("loading");
+    if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) showDemoBanner(state.dashboard.syntheticWarning);
+    else hideDemoBanner();
+    finishLoading();
   }
 
   async function hydrateApplicationMetadata({ sequence, requestedStatusScope }) {
@@ -1529,7 +1545,7 @@
     }
   }
 
-  async function fetchNoticePages({ statusScope = noticeStatusScopeForView(state.currentView) } = {}) {
+  async function fetchNoticePages({ statusScope = noticeStatusScopeForView(state.currentView), onFirstPage = null } = {}) {
     const timeoutMs = noticeRequestTimeoutMs();
     const notices = [];
     let offset = 0;
@@ -1541,6 +1557,9 @@
       const page = extractList(payload);
       notices.push(...page);
       if (page.length < NOTICE_PAGE_SIZE) return notices;
+      // Pages arrive in final priority order, so the first page is already the
+      // top of the board. Let the caller show it while the rest loads.
+      if (offset === 0 && onFirstPage) onFirstPage(notices.slice());
       offset += NOTICE_PAGE_SIZE;
     }
   }
@@ -5611,6 +5630,9 @@
         : count === total
           ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
           : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
+    if (state.noticeListPartial && state.noticeSearchMode === "stored") {
+      els.noticeSummary.textContent = `우선순위 상위 ${formatNumber(total)}건을 먼저 표시했습니다 · 나머지 공고를 불러오는 중입니다.`;
+    }
     if (state.currentView === "undecided" && state.noticeSearchMode === "stored") {
       els.noticeSummary.textContent = operatorDecisionListAvailable()
         ? `현재 조회 범위의 담당자 판단 · ${formatNumber(count)}건 표시`
