@@ -772,6 +772,41 @@ def _current_manifest_attempts(
     int,
     dict[str, NoticeVersion],
 ]:
+    """Return current attempts, reusing the result inside one read-only projection.
+
+    One board row asks for the same current attempts from the coverage, reason
+    and freshness checks. The read scope pins the version rows and their
+    payloads, so the result is keyed by those exact objects and handed out as
+    fresh containers.
+    """
+    cache = _attachment_validation_read_cache.get()
+    if cache is None:
+        return _compute_current_manifest_attempts(
+            versions, validate_accepted=validate_accepted,
+            preserve_quantitative_proof=preserve_quantitative_proof,
+        )
+    key = (
+        "current_manifest_attempts",
+        tuple(sorted(((version, id(version.source_payload)) for version in versions), key=lambda item: id(item[0]))),
+        validate_accepted, preserve_quantitative_proof,
+    )
+    if key not in cache:
+        cache[key] = _compute_current_manifest_attempts(
+            versions, validate_accepted=validate_accepted,
+            preserve_quantitative_proof=preserve_quantitative_proof,
+        )
+    attachments, invalid_count, attempts = cache[key]
+    return [dict(item) for item in attachments], invalid_count, dict(attempts)
+
+
+def _compute_current_manifest_attempts(
+    versions: list[NoticeVersion], *, validate_accepted: bool = True,
+    preserve_quantitative_proof: bool = False,
+) -> tuple[
+    list[dict[str, Any]],
+    int,
+    dict[str, NoticeVersion],
+]:
     """Return current attempts, with proof preservation only for opt-in reads."""
 
     metadata = next(
@@ -1143,7 +1178,7 @@ def valid_failed_attachment_retry_scope(scope: object) -> bool:
 # Enabled only while serializing one immutable, read-only notice projection.
 # No process-wide result survives the scope, so subsequent source/policy changes
 # always execute the full validation contract again.
-_attachment_validation_read_cache: ContextVar[dict[tuple[Any, ...], bool] | None] = (
+_attachment_validation_read_cache: ContextVar[dict[tuple[Any, ...], Any] | None] = (
     ContextVar("pps_attachment_validation_read_cache", default=None)
 )
 

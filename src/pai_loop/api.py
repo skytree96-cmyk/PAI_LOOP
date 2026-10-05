@@ -6,14 +6,16 @@ import re
 import time
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only, raiseload, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .daily_analysis_scope import material_scope_fields
 from .analysis_pipeline import _select_source_versions
@@ -30,6 +32,7 @@ from .eligibility_policy import (
 from .department_ranking import (
     get_department_profile,
     load_department_keyword_profiles,
+    _region_gate_enabled,
     parse_search_keywords,
     rank_notice_across_departments,
     rank_notice_department_views,
@@ -990,6 +993,90 @@ def _load_notice_summary_batch(
 
 
 
+class _ServerTiming:
+    """Accumulate named phases for a ``Server-Timing`` response header.
+
+    Production profiling is not available, so slow boards report where their
+    time went in a header any signed-in browser can read. Durations only.
+    """
+
+    def __init__(self) -> None:
+        self._last = time.perf_counter()
+        self.phases: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.phases[name] = self.phases.get(name, 0.0) + now - self._last
+        self._last = now
+
+    def apply(self, response: Response) -> None:
+        response.headers["Server-Timing"] = ", ".join(
+            f"{name};dur={seconds * 1000:.0f}" for name, seconds in self.phases.items()
+        )
+
+
+def _load_board_notice_summary_batch(
+    session: Session,
+    notice_ids: list[str],
+) -> list[Notice]:
+    """Load one board page without every historical evaluation and run payload.
+
+    Choosing the current evaluation and analysis run reads only identifiers,
+    timestamps and eligibility. Only the chosen evaluations (the current one and
+    the one its current run was made from) and the current run's
+    recommendations are then read in full, in two bounded queries. Source
+    versions stay complete because the attachment audit reads them.
+    """
+
+    if not notice_ids:
+        return []
+    loaded = list(session.scalars(
+        select(Notice).where(Notice.id.in_(notice_ids)).options(
+            selectinload(Notice.versions),
+            selectinload(Notice.evaluations).load_only(
+                Evaluation.id, Evaluation.notice_id, Evaluation.notice_version_id,
+                Evaluation.evaluated_at, Evaluation.deadline_snapshot_at,
+                Evaluation.eligibility,
+            ),
+            selectinload(Notice.analysis_runs).load_only(
+                AnalysisRun.id, AnalysisRun.notice_id, AnalysisRun.notice_version_id,
+                AnalysisRun.evaluation_id, AnalysisRun.generated_at,
+            ),
+        )
+    ).all())
+    evaluation_ids: set[str] = set()
+    current_runs: list[AnalysisRun] = []
+    for notice in loaded:
+        with pps_attachment_audit_read_scope():
+            evaluation = latest_current_evaluation(notice)
+            run = latest_current_analysis_run(notice)
+        if evaluation is not None:
+            evaluation_ids.add(evaluation.id)
+        if run is not None:
+            current_runs.append(run)
+            if run.evaluation_id:
+                evaluation_ids.add(run.evaluation_id)
+    if evaluation_ids:
+        # Refresh the already-mapped rows in place with every column.
+        session.scalars(
+            select(Evaluation)
+            .where(Evaluation.id.in_(evaluation_ids))
+            .execution_options(populate_existing=True)
+        ).all()
+    if current_runs:
+        recommendations: dict[str, list[RecommendationSnapshot]] = {}
+        for recommendation in session.scalars(
+            select(RecommendationSnapshot)
+            .where(RecommendationSnapshot.analysis_run_id.in_([run.id for run in current_runs]))
+            .order_by(RecommendationSnapshot.rank)
+        ).all():
+            recommendations.setdefault(recommendation.analysis_run_id, []).append(recommendation)
+        for run in current_runs:
+            set_committed_value(run, "recommendations", recommendations.get(run.id, []))
+    by_id = {notice.id: notice for notice in loaded}
+    return [by_id[notice_id] for notice_id in notice_ids if notice_id in by_id]
+
+
 def _load_dashboard_notice_batch(
     session: Session,
     notice_ids: list[str],
@@ -1240,7 +1327,7 @@ def _notice_summaries_for_ids(
     summaries: list[NoticeSummary] = []
     for offset in range(0, len(notice_ids), _NOTICE_SUMMARY_BATCH_SIZE):
         batch_ids = notice_ids[offset : offset + _NOTICE_SUMMARY_BATCH_SIZE]
-        notices = _load_notice_summary_batch(session, batch_ids)
+        notices = _load_board_notice_summary_batch(session, batch_ids)
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         result_states = _result_entry_states(session, batch_ids, department_id)
@@ -1355,9 +1442,11 @@ def _dashboard_department_statistics(
 @router.get("/dashboard")
 def dashboard(
     request: Request,
+    response: Response,
     session: DbSession,
     department_id: Annotated[str | None, Query(max_length=80)] = None,
 ) -> dict[str, Any]:
+    timing = _ServerTiming()
     try:
         selected_department = get_department_profile(department_id)
     except KeyError as exc:
@@ -1434,6 +1523,7 @@ def dashboard(
     # Keep the dashboard exact while bounding peak memory.  A version payload
     # can contain a complete extracted document, so loading every relationship
     # for the whole history in one ORM identity map can exceed a 512 MB worker.
+    timing.mark("prepare")
     for batch_offset in range(0, len(notice_ids), _NOTICE_SUMMARY_BATCH_SIZE):
         batch_ids = notice_ids[
             batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
@@ -1446,9 +1536,11 @@ def dashboard(
             if len(recent_notices) < 10
             else _load_dashboard_notice_batch(session, batch_ids)
         )
+        timing.mark("load")
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         result_states = _result_entry_states(session, batch_ids, selected_department["id"] if selected_department else None)
+        timing.mark("authority")
         open_runs: list[AnalysisRun | None] = []
         quantitative_runs: list[AnalysisRun | None] = []
         for notice in notices:
@@ -1582,6 +1674,7 @@ def dashboard(
                         ).model_dump(mode="json")
                     )
 
+        timing.mark("rows")
         scores_by_run, recommendations_by_run = _load_dashboard_run_snapshots(
             session, {run.id for run in (*open_runs, *quantitative_runs) if run is not None}
         )
@@ -1607,7 +1700,9 @@ def dashboard(
         session.expunge_all()
         del authorities, outcome_notice_ids, notices
         del open_runs, quantitative_runs, scores_by_run, recommendations_by_run
+        timing.mark("snapshots")
 
+    timing.apply(response)
     return {
         "generated_at": now,
         "last_sync": _comparable_utc(last_sync) if last_sync is not None else None,
@@ -1958,9 +2053,89 @@ def _stored_notice_matches_query_terms(notice: Notice, terms: list[str]) -> bool
     )
 
 
+@lru_cache(maxsize=2048)
+def _ranking_projection(
+    title: str,
+    agency: str,
+    category: str,
+    user_keywords: tuple[str, ...],
+    department_id: str | None,
+    selected_department_id: str | None,
+    catalog_identity: int,
+    region_gate: bool,
+) -> tuple[dict[str, Any], dict[str, Any], tuple[int, float, float]]:
+    """Rank one notice for the board; a pure function of its arguments.
+
+    The keyword catalog is fixed for the process, so every board page reuses
+    the scores of notices it already ranked instead of re-scoring the whole
+    candidate set for each page. The catalog object and the region gate are
+    part of the key so a reloaded catalog or a flipped gate never reuses old
+    scores. Callers must treat the result as read-only.
+    """
+    department_views = rank_notice_department_views(
+        title=title,
+        agency=agency,
+        category=category,
+        user_keywords=list(user_keywords),
+        top_limit=5,
+        review_limit=5,
+        region_limit=2,
+    )
+    selected_ranking = (
+        department_views["by_department_id"][selected_department_id]
+        if selected_department_id is not None
+        else rank_notice_for_department(
+            title=title,
+            agency=agency,
+            category=category,
+            department_id=department_id,
+            user_keywords=list(user_keywords),
+        )
+    )
+    # The full per-department map is only an intermediate used to select
+    # one ranking. It is not part of NoticeSummary, so release it before
+    # the candidate is retained for sorting. This keeps the public board
+    # from holding 24 unused ranking payloads for every OPEN notice.
+    department_views.pop("by_department_id", None)
+    department_id_value = str(selected_ranking.get("department_id") or "")
+    if department_id_value == "organization":
+        if department_views["top_department_rankings"]:
+            best = department_views["top_department_rankings"][0]
+            order = (
+                3,
+                float(best.get("business_score") or 0),
+                float(selected_ranking.get("score") or 0),
+            )
+        elif department_views["department_review_candidates"]:
+            candidate = department_views["department_review_candidates"][0]
+            order = (
+                2,
+                float(candidate.get("business_score") or 0),
+                float(selected_ranking.get("score") or 0),
+            )
+        else:
+            order = (0, 0.0, float(selected_ranking.get("score") or 0))
+    elif not selected_ranking:
+        order = (0, 0.0, 0.0)
+    else:
+        tier_order = {"TOP": 3, "ROUTING": 3, "REVIEW": 2, "NONE": 0}
+        fit_score = (
+            selected_ranking.get("routing_score")
+            if selected_ranking.get("ranking_scope") == "REGION"
+            else selected_ranking.get("business_score")
+        )
+        order = (
+            tier_order.get(str(selected_ranking.get("recommendation_tier")), 0),
+            float(fit_score or 0),
+            float(selected_ranking.get("score") or 0),
+        )
+    return department_views, selected_ranking, order
+
+
 @router.get("/notices", response_model=list[NoticeSummary])
 def list_notices(
     request: Request,
+    response: Response,
     session: DbSession,
     q: Annotated[str | None, Query(max_length=200)] = None,
     eligibility: Eligibility | None = None,
@@ -2122,65 +2297,18 @@ def list_notices(
     # stored notice.  Compute it from the lean candidate projection, then load
     # only the selected page's versions/evaluations/recommendations.
     def ranking_projection(notice) -> tuple[dict[str, Any], dict[str, Any], tuple[int, float, float]]:
-        department_views = rank_notice_department_views(
-            title=notice.title,
-            agency=notice.agency,
-            category=notice.category or "",
-            user_keywords=parsed_keywords,
-            top_limit=5,
-            review_limit=5,
-            region_limit=2,
+        return _ranking_projection(
+            notice.title,
+            notice.agency,
+            notice.category or "",
+            tuple(parsed_keywords),
+            department_id,
+            selected_department["id"] if selected_department is not None else None,
+            id(load_department_keyword_profiles()),
+            _region_gate_enabled(),
         )
-        selected_ranking = (
-            department_views["by_department_id"][selected_department["id"]]
-            if selected_department is not None
-            else rank_notice_for_department(
-                title=notice.title,
-                agency=notice.agency,
-                category=notice.category or "",
-                department_id=department_id,
-                user_keywords=parsed_keywords,
-            )
-        )
-        # The full per-department map is only an intermediate used to select
-        # one ranking. It is not part of NoticeSummary, so release it before
-        # the candidate is retained for sorting. This keeps the public board
-        # from holding 24 unused ranking payloads for every OPEN notice.
-        department_views.pop("by_department_id", None)
-        department_id_value = str(selected_ranking.get("department_id") or "")
-        if department_id_value == "organization":
-            if department_views["top_department_rankings"]:
-                best = department_views["top_department_rankings"][0]
-                order = (
-                    3,
-                    float(best.get("business_score") or 0),
-                    float(selected_ranking.get("score") or 0),
-                )
-            elif department_views["department_review_candidates"]:
-                candidate = department_views["department_review_candidates"][0]
-                order = (
-                    2,
-                    float(candidate.get("business_score") or 0),
-                    float(selected_ranking.get("score") or 0),
-                )
-            else:
-                order = (0, 0.0, float(selected_ranking.get("score") or 0))
-        elif not selected_ranking:
-            order = (0, 0.0, 0.0)
-        else:
-            tier_order = {"TOP": 3, "ROUTING": 3, "REVIEW": 2, "NONE": 0}
-            fit_score = (
-                selected_ranking.get("routing_score")
-                if selected_ranking.get("ranking_scope") == "REGION"
-                else selected_ranking.get("business_score")
-            )
-            order = (
-                tier_order.get(str(selected_ranking.get("recommendation_tier")), 0),
-                float(fit_score or 0),
-                float(selected_ranking.get("score") or 0),
-            )
-        return department_views, selected_ranking, order
 
+    timing = _ServerTiming()
     ranked_candidates: list[dict[str, Any]] = []
     for notice in candidate_rows:
         views, selected_ranking, order = ranking_projection(notice)
@@ -2203,16 +2331,18 @@ def list_notices(
         )
     )
     page_candidates = ranked_candidates[offset : offset + limit]
+    timing.mark("rank")
     ranked: list[NoticeSummary] = []
     public_view = public_read_allowed(request)
     for batch_offset in range(0, len(page_candidates), _NOTICE_SUMMARY_BATCH_SIZE):
         batch_candidates = page_candidates[
             batch_offset : batch_offset + _NOTICE_SUMMARY_BATCH_SIZE
         ]
-        notices = _load_notice_summary_batch(
+        notices = _load_board_notice_summary_batch(
             session,
             [item["notice"].id for item in batch_candidates],
         )
+        timing.mark("load")
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(
             session,
@@ -2249,6 +2379,8 @@ def list_notices(
             )
         session.expunge_all()
         del authorities, outcome_notice_ids, loaded_by_id, notices
+        timing.mark("rows")
+    timing.apply(response)
     return ranked
 
 

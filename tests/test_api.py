@@ -577,8 +577,13 @@ def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
 
     batch_sizes: list[int] = []
     outcome_batch_sizes: list[int] = []
+    original_board_loader = api_module._load_board_notice_summary_batch
     original_loader = api_module._load_notice_summary_batch
     original_outcome_loader = api_module._bid_outcome_notice_ids
+
+    def recording_board_loader(session, notice_ids):
+        batch_sizes.append(len(notice_ids))
+        return original_board_loader(session, notice_ids)
 
     def recording_loader(session, notice_ids, **kwargs):
         batch_sizes.append(len(notice_ids))
@@ -588,6 +593,7 @@ def test_public_summary_hydration_is_bounded_without_narrowing_limit_contract(
         outcome_batch_sizes.append(len(notice_ids))
         return original_outcome_loader(session, notice_ids)
 
+    monkeypatch.setattr(api_module, "_load_board_notice_summary_batch", recording_board_loader)
     monkeypatch.setattr(api_module, "_load_notice_summary_batch", recording_loader)
     monkeypatch.setattr(api_module, "_bid_outcome_notice_ids", recording_outcome_loader)
 
