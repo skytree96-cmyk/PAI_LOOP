@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.10.05-v21"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.05-v22"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -1587,6 +1587,54 @@ _NEW_CLEARANCES = (
 _CLEARANCE_UNCOVERED_RE = re.compile(r"퇴직|임직원|소송|물의|부과금|계열\s*회사")
 
 
+_NESTED_CODE_PREFIX_RE = re.compile(r"로서\s*,")
+_NESTED_PREFIX_ALLOWED_RE = re.compile(r"이러닝\s*사업자(?:로)?\s*신고(?:한|된)?")
+
+
+def _nested_industry_code_item(
+    requirement: dict[str, Any], *, profile: dict[str, Any], text: str,
+    deadline: date | None, today: date,
+) -> dict[str, Any] | None:
+    """"A 및 이러닝사업자 신고 업체로서, B+C 또는 B+D 또는 E로 등록" (2026-10-05).
+
+    Every code before "로서," is required; after it, alternatives separated by
+    또는/혹은 each require all of their codes (joined by +, 와, 과). The only other
+    prefix condition allowed is an e-learning business report, which is the
+    company's ``elearning_service`` fact. Anything else stays REVIEW.
+    """
+    boundary = _NESTED_CODE_PREFIX_RE.search(text)
+    if boundary is None or not re.search(r"업종|나라장터|G2B|등록", text, re.I):
+        return None
+    code_re = re.compile(r"(?<!\d)(\d{4})(?!\d)")
+    prefix, rest = text[:boundary.start()], text[boundary.end():]
+    prefix_codes = code_re.findall(prefix)
+    segments = [segment for segment in re.split(r"또는|혹은", rest)]
+    alternatives = [code_re.findall(segment) for segment in segments]
+    if not prefix_codes or len(alternatives) < 2 or any(not codes for codes in alternatives):
+        return None
+    if not any(len(codes) > 1 for codes in alternatives):
+        return None
+    for segment, codes in zip(segments, alternatives):
+        if len(codes) > 1 and not re.search(r"\+|와|과", segment):
+            return None
+    leftover = re.sub(r"\([^)]*\)", "", prefix)
+    leftover = _NESTED_PREFIX_ALLOWED_RE.sub("", leftover)
+    if re.search(r"허가|면허|인증|확인서|실적|인력|신고", leftover):
+        return None
+    if re.search(r"허가|면허|인증|확인서|실적|인력", re.sub(r"\([^)]*\)", "", rest)):
+        return None
+    held = set((profile.get("facts", {}).get("industry_code_inventory") or {}).get("value") or [])
+    chosen = next((codes for codes in alternatives if set(codes) <= held), alternatives[0])
+    keys = ["industry_code_inventory"]
+    if _NESTED_PREFIX_ALLOWED_RE.search(prefix):
+        keys.append("elearning_service")
+    return _composite_item(
+        requirement, profile=profile, keys=keys, deadline=deadline, today=today,
+        operators={"industry_code_inventory": ("contains_all", list(dict.fromkeys(prefix_codes + chosen)))},
+        message="나라장터 등록 업종코드가 공고의 중첩 업종 조합(필수 + 대안 중 하나)을 충족합니다.",
+    )
+
+
 def _industry_code_boolean_item(
     requirement: dict[str, Any], *, profile: dict[str, Any], text: str, category: str,
     deadline: date | None, today: date,
@@ -1743,8 +1791,10 @@ def _company_profile_clause_item(
         return reclassified
     if category not in {"ENTITY", "CERTIFICATION", "INDUSTRY_CODE", "SANCTION", "REGION"}:
         return None
-    code_item = _industry_code_boolean_item(requirement, profile=profile, text=text, category=category,
-                                            deadline=deadline, today=today)
+    code_item = _nested_industry_code_item(
+        requirement, profile=profile, text=text, deadline=deadline, today=today,
+    ) or _industry_code_boolean_item(requirement, profile=profile, text=text, category=category,
+                                     deadline=deadline, today=today)
     if code_item is not None:
         return code_item
     if category == "REGION":
