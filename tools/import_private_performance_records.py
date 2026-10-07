@@ -466,6 +466,92 @@ def _explicit_period_dates(text: str) -> tuple[date | None, date | None] | None:
     return start, end_date
 
 
+_DURATION_DAYS_RE = re.compile(r"(\d{1,4})\s*일")
+_MONTH_RANGE_RE = re.compile(
+    r"^\s*(?P<sy>20\d{2}|\d{2})\s*[./-]\s*(?P<sm>\d{1,2})\s*\.?\s*"
+    r"[~〜∼～–—-]\s*"
+    r"(?P<ey>20\d{2}|\d{2})\s*[./-]\s*(?P<em>\d{1,2})\s*\.?\s*$"
+)
+_EXCESS_YEAR_RE = re.compile(r"(?<!\d)(20\d{2})\d(?=\s*[./-]\s*\d)")
+_MISSING_DOT_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(?=\s*[./-]\s*\d{1,2})")
+
+
+def _full_year(value: int) -> int:
+    return value + 2000 if value < 100 else value
+
+
+def repair_period_text(value: object) -> str:
+    """워크북 표기의 흔들림만 되돌린다. 없는 날짜를 만들지는 않는다.
+
+    줄바꿈이 숫자 가운데 끼거나(``2022121\\n9``), 연도에 숫자가 하나 더 붙거나
+    (``20222.05.23``), 연·월 사이 구분점이 빠진 경우(``202512.15``)를 고친다.
+    """
+
+    # 줄바꿈은 _normalise_text 가 공백으로 바꾸기 전에 다뤄야 한다. 숫자 한가운데
+    # 끊긴 줄바꿈은 지우고, 두 날짜 사이를 끊은 줄바꿈은 구분자로 되살린다. 둘을
+    # 섞으면 ``2022121\n9`` 나 ``2022. 4.\n2022. 12.`` 중 하나가 깨진다.
+    raw = "" if value is None else str(value)
+    raw = re.sub(r"(?<=\d)[ \t]*\n[ \t]*(?=\d)", "", raw)
+    raw = re.sub(r"[ \t]*\n[ \t]*", "~", raw)
+    text = _normalise_text(raw) or ""
+    text = re.sub(r"\s*[~〜∼～–—-]\s*[~〜∼～–—-]\s*", "~", text)
+    text = _EXCESS_YEAR_RE.sub(r"\1", text)
+    return _MISSING_DOT_RE.sub(r"\1.\2", text)
+
+
+def infer_period(
+    value: object, contract_date: date | None
+) -> tuple[date | None, date | None, str | None]:
+    """정확한 구간이 없을 때 계약일을 기준으로 수행기간을 추론한다.
+
+    추론한 기간은 원문이 명시한 구간이 아니다. 어떤 근거로 만들었는지 이름을
+    함께 돌려주어 호출부가 기록하게 한다.
+    """
+
+    text = repair_period_text(value)
+    if not text:
+        return None, None, None
+
+    month_range = _MONTH_RANGE_RE.match(text)
+    if month_range:
+        try:
+            start_year = _full_year(int(month_range.group("sy")))
+            end_year = _full_year(int(month_range.group("ey")))
+            start = date(start_year, int(month_range.group("sm")), 1)
+            end_month = int(month_range.group("em"))
+            end = date(end_year, end_month, monthrange(end_year, end_month)[1])
+        except ValueError:
+            return None, None, None
+        return (start, end, "MONTH_RANGE") if start <= end else (None, None, None)
+
+    if contract_date is None:
+        return None, None, None
+
+    duration = _DURATION_DAYS_RE.search(text)
+    if duration and not re.search(r"\d\s*[./-]\s*\d", text):
+        days = int(duration.group(1))
+        if not 1 <= days <= 3650:
+            return None, None, None
+        return contract_date, contract_date + timedelta(days=days), "CONTRACT_PLUS_DAYS"
+
+    # 날짜가 둘 이상 적힌 칸은 구간이 잘못된 것이지 단일 날짜가 아니다.
+    tokens = (
+        len(_DATE_TOKEN_RE.findall(text))
+        + len(_COMPACT_DATE_RE.findall(text))
+        + len(_SHORT_DATE_RE.findall(text))
+    )
+    if tokens > 1:
+        return None, None, None
+    # 엑셀이 날짜를 시리얼 숫자로 준 칸은 문자열이 아니라 원래 값에서 읽어야 한다.
+    single = parse_date(value)
+    if single is None:
+        single = parse_date(text)
+    if single is not None and contract_date <= single:
+        # 계약기간 칸에 날짜가 하나만 적힌 경우 운영자는 종료일을 적는다.
+        return contract_date, single, "CONTRACT_TO_SINGLE_DATE"
+    return None, None, None
+
+
 def parse_period(value: object) -> tuple[date | None, date | None]:
     text = _normalise_text(value)
     if not text:
@@ -545,6 +631,7 @@ def normalize_rows(
     rows: Sequence[dict[str, object]],
     *,
     source_sha256: str,
+    archive_unresolved: bool = False,
 ) -> ImportBundle:
     if not _HEX64_RE.fullmatch(source_sha256):
         raise ImportErrorDetail("원본 SHA-256 형식이 유효하지 않습니다.")
@@ -574,6 +661,9 @@ def normalize_rows(
         overview = _normalise_text(row.get("D"), limit=4000) or None
         contract_date = parse_date(row.get("F"))
         start_date, end_date = parse_period(row.get("G"))
+        period_basis: str | None = None
+        if start_date is None or end_date is None:
+            start_date, end_date, period_basis = infer_period(row.get("G"), contract_date)
         gross_amount = _amount(row.get("H"))
         recognized_amount = _amount(row.get("J"))
         share_pct = normalise_share(row.get("I"))
@@ -588,6 +678,11 @@ def normalize_rows(
             issues.append("INVALID_CONTRACT_PERIOD")
             start_date = None
             end_date = None
+            period_basis = None
+        elif period_basis is not None:
+            # 워크북이 정확한 구간을 주지 않아 계약일·월말로 채운 행이다.
+            # 검증은 통과시키되 무엇을 채웠는지 남긴다.
+            issues.append(f"INFERRED_PERIOD_{period_basis}")
         if gross_amount is None:
             issues.append("MISSING_GROSS_AMOUNT")
         if recognized_amount is None:
@@ -595,7 +690,7 @@ def normalize_rows(
         if share_pct is None:
             issues.append("INVALID_SHARE")
 
-        record_status = "VALIDATED" if not {
+        blocking = {
             "MISSING_AGENCY",
             "MISSING_DIVISION",
             "MISSING_CONTRACT_DATE",
@@ -603,7 +698,14 @@ def normalize_rows(
             "MISSING_GROSS_AMOUNT",
             "MISSING_RECOGNIZED_AMOUNT",
             "INVALID_SHARE",
-        }.intersection(issues) else "DRAFT"
+        }.intersection(issues)
+        record_status = "VALIDATED" if not blocking else "DRAFT"
+        if record_status == "DRAFT" and archive_unresolved:
+            # 미해소 행은 기본적으로 DRAFT 로 남아 집계를 멈춘다. 운영자가 그
+            # 판단을 대신하기로 한 경우에만, 버리는 사실을 기록하고 보류 대상에서
+            # 내린다. 조용히 사라지지 않도록 사유를 함께 남긴다.
+            record_status = "ARCHIVED"
+            issues.append("ARCHIVED_UNRESOLVED_BY_OPERATOR")
         # An unknown consortium share must never silently become a full-share
         # record, even while it remains a DRAFT awaiting operator correction.
         safe_share = share_pct if share_pct is not None else 0.0
@@ -655,7 +757,7 @@ def normalize_rows(
     )
 
 
-def normalize_workbook(path: Path) -> ImportBundle:
+def normalize_workbook(path: Path, *, archive_unresolved: bool = False) -> ImportBundle:
     if path.suffix.casefold() != ".xlsx":
         raise ImportErrorDetail(".xlsx 원본만 지원합니다.")
     try:
@@ -669,7 +771,8 @@ def normalize_workbook(path: Path) -> ImportBundle:
     with _safe_zip_bytes(source_bytes) as archive:
         rows = _read_sheet_rows_from_archive(archive, sheet_name=SHEET_NAME)
     del source_bytes
-    return normalize_rows(rows, source_sha256=source_sha256)
+    return normalize_rows(rows, source_sha256=source_sha256,
+                          archive_unresolved=archive_unresolved)
 
 
 def _chunks(values: Sequence[NormalizedRecord], size: int) -> Iterator[Sequence[NormalizedRecord]]:
@@ -827,6 +930,13 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--archive-unresolved",
+        action="store_true",
+        help=("계약기간 등 필수 항목을 확정하지 못한 행을 DRAFT 로 남기지 않고 "
+              "ARCHIVED 로 내린다. 미해소 행 하나가 전체 실적 집계를 멈추는 것을 "
+              "운영자가 감수하고 제외하기로 한 경우에만 쓴다."),
+    )
     return parser
 
 
@@ -848,7 +958,8 @@ def _summary(bundle: ImportBundle, upload: dict[str, int] | None = None) -> dict
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        bundle = normalize_workbook(args.workbook)
+        bundle = normalize_workbook(
+            args.workbook, archive_unresolved=args.archive_unresolved)
         if args.dry_run:
             print(json.dumps(_summary(bundle), ensure_ascii=False, sort_keys=True))
             return 0

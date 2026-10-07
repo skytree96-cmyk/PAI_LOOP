@@ -5,6 +5,8 @@ import json
 import re
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
+from importlib.resources import files
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Iterable, Literal
 
@@ -235,12 +237,24 @@ _PUBLIC_AGENCY_RE = re.compile(
     r"시청|군청|구청|도청|국립|공립|정부|테크노파크)",
     re.IGNORECASE,
 )
+# 법정 공공기관에만 쓰이는 형태로 한정한다. '공사'는 공기업이자 건설공사를
+# 뜻하고, 연구소·교육원·연수원·박물관·대학은 민간도 같은 말을 쓴다. 그런 이름은
+# 형태만으로 단정하지 않고 레지스트리나 운영자 확인에 맡긴다. 표기에 오타나 공백이
+# 섞여도 이 접미사는 대개 온전하게 남는다.
+_PUBLIC_INSTITUTION_RE = re.compile(
+    r"(?:공단|진흥원|보장원|평가원|개발원|기술원|품질원|정보원|산학협력단)",
+)
+# 중앙행정기관은 부·처·청으로 끝나지만 '발주처'·'사업본부'처럼 기관이 아닌 말도
+# 같은 글자로 끝난다. 접미사로는 가를 수 없으므로 이름 자체를 레지스트리에 둔다.
 _PUBLIC_REGION_PREFIXES = (
     "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
     "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
     "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
     "경상남도", "제주특별자치도",
+    # 개칭 전 표기로 기록된 과거 실적이 남아 있다.
+    "강원도", "전라북도", "제주도",
 )
+_PUBLIC_AGENCY_REGISTRY_RESOURCE = "data/public_agency_registry.json"
 _NON_SERVICE_KEYWORD_SUFFIXES = (
     "교육지원청", "지원청", "교육청", "지원센터", "기관", "시설", "센터", "청", "부", "원", "장",
 )
@@ -612,14 +626,56 @@ def _record_service_matches(record: Any, keyword: str) -> bool:
     )
 
 
+@lru_cache(maxsize=1)
+def _public_agency_registry() -> tuple[frozenset[str], frozenset[str]]:
+    """발주 주체로 관측됐거나 운영자가 확인한 기관. (공공, 민간) 이름 집합.
+
+    나라장터 공고·낙찰 이력에 발주기관으로 나타났다는 것은 그 기관이 공공 조달의
+    발주 주체였다는 관측 증거다. 추정이 아니므로 형태 판정보다 앞에 둔다.
+
+    운영자가 민간으로 판정한 기관은 '모름'이 아니라 민간으로 답해야 한다. 모름은
+    호출부에서 계산을 멈추게 하므로, 민간이라고 아는 것을 모름으로 두면 그 발주처
+    하나가 공고 전체의 실적 집계를 막는다.
+    """
+
+    resource = files("pai_loop").joinpath(_PUBLIC_AGENCY_REGISTRY_RESOURCE)
+    payload = json.loads(resource.read_text(encoding="utf-8"))
+    public: set[str] = set()
+    private: set[str] = set()
+    for item in payload.get("observed_agencies") or []:
+        name = _compact_agency_name(item.get("name") if isinstance(item, dict) else item)
+        if name:
+            public.add(name)
+    for item in payload.get("operator_reviewed") or []:
+        name = _compact_agency_name(item.get("name"))
+        if not name:
+            continue
+        (public if item.get("public") else private).add(name)
+    return frozenset(public - private), frozenset(private)
+
+
+def _compact_agency_name(value: Any) -> str:
+    # 임포트된 발주처 표기에는 공백과 전각 괄호가 섞여 있다.
+    return re.sub(r"[\s（）()]+", "", str(value or ""))
+
+
 def _public_sector_agency_status(record: Any) -> bool | None:
-    agency = re.sub(r"\s+", "", str(getattr(record, "agency", "") or ""))
+    agency = _compact_agency_name(getattr(record, "agency", ""))
     if not agency:
         return None
     if _PRIVATE_AGENCY_RE.search(agency):
         return False
+    public_names, private_names = _public_agency_registry()
+    if agency in private_names:
+        return False
+    if agency in public_names:
+        return True
     if agency.startswith(_PUBLIC_REGION_PREFIXES) or _PUBLIC_AGENCY_RE.search(agency):
         return True
+    if _PUBLIC_INSTITUTION_RE.search(agency):
+        return True
+    # 확인되지 않은 발주처는 민간으로도 공공으로도 단정하지 않는다. 호출부가
+    # 계산을 멈추므로, 모르는 것이 점수를 부풀리지 않는다.
     return None
 
 
