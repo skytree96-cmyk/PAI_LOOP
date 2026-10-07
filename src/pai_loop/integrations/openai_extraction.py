@@ -622,11 +622,42 @@ def _verified_quote_in_source(quote: str, source: str) -> bool:
     # Some HWPX tables/runs introduce spaces between every visible glyph. A
     # whitespace-free comparison is still exact in character and punctuation
     # order, but is allowed only for a substantial anchor to avoid accepting a
-    # coincidental short token. No edit distance, synonym, punctuation folding,
-    # or paraphrase recovery is permitted.
+    # coincidental short token. No edit distance, synonym or paraphrase
+    # recovery is permitted.
     compact_quote = "".join(normalized_quote.split())
     compact_source = "".join(normalized_source.split())
     return len(compact_quote) >= 8 and compact_quote in compact_source
+
+
+def _anchor_quote_in_source(quote: str, source: str) -> bool:
+    """Extraction-time anchor check: the strict match, or word separators lost by the source text.
+
+    HWP/PDF text often loses or swaps separators between words (민·형사 is
+    read as "민 형사", 허위·모방·표절 as "허위 모방 표절") while the model quotes
+    the printed text. Measured 2026-10-06/07: 5 of 23 failed anchors differed
+    only so. Fold punctuation between letters for a long anchor, but keep any
+    separator between two digits, so 2.5억 never equals 25억 and 1,000 keeps
+    its grouping. Letters and digits must still match exactly and in order.
+    Deterministic validators keep the strict ``evidence_quote_matches_source``.
+    """
+
+    if _verified_quote_in_source(quote, source):
+        return True
+    compact_quote = "".join(_normalise_text(quote).split())
+    folded_quote = _fold_word_separators(compact_quote)
+    return len(folded_quote) >= 12 and folded_quote in _fold_word_separators(
+        "".join(_normalise_text(source).split()))
+
+
+def _fold_word_separators(compact: str) -> str:
+    kept = []
+    for index, character in enumerate(compact):
+        if character.isalnum():
+            kept.append(character)
+        elif (0 < index < len(compact) - 1 and compact[index - 1].isdigit()
+              and compact[index + 1].isdigit()):
+            kept.append(character)
+    return "".join(kept)
 
 
 _MAX_PERSISTED_QUOTE_SAMPLES = 5
@@ -1379,7 +1410,7 @@ class OpenAIExtractionClient:
                     "허용되지 않은 첨부파일 식별자가 반환되었습니다.",
                     **metadata,
                 )
-            if not _verified_quote_in_source(anchor.quote, document_text):
+            if not _anchor_quote_in_source(anchor.quote, document_text):
                 quote_verification_failed = True
                 bounded_quote = _bounded_untrusted_quote(anchor.quote)
                 if (
