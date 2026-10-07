@@ -221,7 +221,10 @@ class DepartmentRankingOut(ApiModel):
 class HistoricalQualificationOut(ApiModel):
     eligibility: Literal["PASS", "REVIEW", "FAIL"]
     evaluated_at: datetime
-    scope: Literal["LAST_VALID_STORED_EVALUATION"] = "LAST_VALID_STORED_EVALUATION"
+    # PREVIOUS_POLICY_PENDING_REANALYSIS: the PASS/FAIL proof still covers the
+    # current sources but was made under an older policy/pipeline release.
+    scope: Literal["LAST_VALID_STORED_EVALUATION", "PREVIOUS_POLICY_PENDING_REANALYSIS"] = (
+        "LAST_VALID_STORED_EVALUATION")
 
 
 class NoticeSummary(ApiModel):

@@ -139,3 +139,32 @@ def test_new_basis_invalidates_independent_failure_without_reviving_old_result(c
         case.session.expire_all()
         assert latest_current_evaluation(notice) is None
         assert latest_current_analysis_run(notice) is None
+
+
+@pytest.mark.parametrize("version_field", ["policy_version", "pipeline_version"])
+def test_policy_release_keeps_previous_failure_visible_until_reanalysis(version_field):
+    from pai_loop.api import _summary
+    from pai_loop.notice_freshness import previous_version_proof_evaluation
+
+    with _current_pps_confidence_source(eligibility_condition=DP, missing=["일부 내용을 읽을 수 없음"]) as case:
+        _result, notice, evaluation = _pps_run(case)
+        assert previous_version_proof_evaluation(notice) is None  # current proof: nothing pending
+        basis = case.session.get(NoticeVersion, evaluation.notice_version_id)
+        payload = copy.deepcopy(basis.source_payload)
+        payload["independent_failure"][version_field] = "SYN-OBSOLETE"
+        basis.source_payload = payload
+        case.session.commit()
+        case.session.expire_all()
+        # The decision is no longer current: queues and reuse still treat it as unevaluated.
+        assert latest_current_evaluation(notice) is None
+        summary = _summary(notice, public_view=True)
+        assert summary.qualification_status == "NOT_EVALUATED"
+        # ...but the board can show it, labelled, until the free reanalysis replaces it.
+        assert summary.historical_qualification is not None
+        assert summary.historical_qualification.eligibility == "FAIL"
+        assert summary.historical_qualification.scope == "PREVIOUS_POLICY_PENDING_REANALYSIS"
+        # A changed source (new deadline) is not the same material; nothing is shown.
+        notice.deadline += timedelta(days=1)
+        case.session.commit()
+        case.session.expire_all()
+        assert previous_version_proof_evaluation(notice) is None

@@ -88,6 +88,7 @@ from .notice_freshness import (
     latest_current_evaluation,
     has_current_independent_failure,
     has_current_independent_pass,
+    previous_version_proof_evaluation,
 )
 from .pps_enrichment import (
     EORDER_ATTACHMENT_FIELD,
@@ -672,9 +673,23 @@ def _summary(
                 "scope": "LAST_VALID_STORED_EVALUATION",
             }
             if authoritative_cancelled and valid_evaluation is not None and valid_qualification != "NOT_EVALUATED"
+            else _previous_policy_qualification(notice)
+            if not authoritative_cancelled and valid_qualification == "NOT_EVALUATED"
             else None
         ),
     )
+
+
+def _previous_policy_qualification(notice: Notice) -> dict[str, Any] | None:
+    """A decision superseded only by a policy/pipeline release, shown until reanalysis."""
+    evaluation = previous_version_proof_evaluation(notice)
+    if evaluation is None:
+        return None
+    return {
+        "eligibility": evaluation.eligibility,
+        "evaluated_at": _comparable_utc(evaluation.evaluated_at),
+        "scope": "PREVIOUS_POLICY_PENDING_REANALYSIS",
+    }
 
 
 def _public_contract_method(notice: Notice) -> str | None:

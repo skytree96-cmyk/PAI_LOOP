@@ -155,6 +155,7 @@ def has_current_independent_pass(notice: Notice, evaluation: Evaluation) -> bool
 
 def _has_current_proof(
     notice: Notice, evaluation: Evaluation, eligibility: str, proof_key: str, list_key: str,
+    *, any_versions: bool = False,
 ) -> bool:
     if evaluation.eligibility != eligibility or not analysis_basis_is_current(notice, evaluation.notice_version_id):
         return False
@@ -167,10 +168,36 @@ def _has_current_proof(
         return False
     from .analysis_pipeline import PIPELINE_VERSION, PROMPT_VERSION, _select_source_versions_from_list
     from .eligibility_policy import POLICY_VERSION
-    if proof.get("pipeline_version") != PIPELINE_VERSION or proof.get("policy_version") != POLICY_VERSION:
+    if not any_versions and (proof.get("pipeline_version") != PIPELINE_VERSION
+                             or proof.get("policy_version") != POLICY_VERSION):
         return False
     selected = _select_source_versions_from_list(notice.versions, prompt_version=PROMPT_VERSION)
     return bool(selected) and proof.get("source_version_ids") == sorted(v.id for v in selected)
+
+
+def previous_version_proof_evaluation(notice: Notice) -> Evaluation | None:
+    """The newest PASS/FAIL whose proof covers today's sources under an older policy.
+
+    A policy or pipeline release invalidates every proof at once, so between
+    deploy and the free reanalysis the board loses most decisions (2026-10-07:
+    3.5 hours). This returns that superseded decision for display only, labelled
+    as pending reanalysis. It is never a current evaluation: work queues,
+    reuse and recomputation keep using ``latest_current_evaluation``.
+    """
+
+    evaluations = sorted(notice.evaluations, key=lambda item: _as_utc(item.evaluated_at), reverse=True)
+    for evaluation in evaluations:
+        if not analysis_basis_is_current(notice, evaluation.notice_version_id):
+            continue
+        if _as_utc(evaluation.deadline_snapshot_at) != _as_utc(notice.deadline):
+            continue
+        if has_current_independent_failure(notice, evaluation) or has_current_independent_pass(notice, evaluation):
+            return None  # a current proof exists; nothing is pending
+        if (_has_current_proof(notice, evaluation, "FAIL", "independent_failure", "requirement_keys", any_versions=True)
+                or _has_current_proof(notice, evaluation, "PASS", "independent_pass", "attachment_ids", any_versions=True)):
+            return evaluation
+        return None
+    return None
 
 
 def latest_current_evaluation(notice: Notice) -> Evaluation | None:
