@@ -195,12 +195,12 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
             response.headers["Cache-Control"] = "no-store"
         if request.url.path == recovery_diagnostics_path:
             response.headers["Cache-Control"] = "no-store"
-        # Teams tabs are first-party HTTPS pages rendered by Microsoft inside
-        # an iframe. CSP is the standards-based allowlist; X-Frame-Options is
-        # intentionally omitted because DENY/SAMEORIGIN would block Teams.
+        # Teams and the KMA judging site may frame the application. This only
+        # permits embedding; login, roles and CSRF checks still apply.
+        # DENY/SAMEORIGIN would block these approved external frames.
         response.headers["Content-Security-Policy"] = (
             "frame-ancestors 'self' https://teams.microsoft.com "
-            "https://*.teams.microsoft.com https://*.cloud.microsoft"
+            "https://*.teams.microsoft.com https://*.cloud.microsoft https://aiedu.kma.or.kr"
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         if request.url.path in OPEN_PATHS:

@@ -67,18 +67,26 @@ def test_teams_config_initializes_sdk_and_keeps_content_in_iframe() -> None:
     assert "window.location.href =" not in source
 
 
-def test_teams_iframe_headers_allow_only_declared_microsoft_hosts(monkeypatch) -> None:
+def test_iframe_headers_allow_only_declared_teams_and_kma_hosts(monkeypatch) -> None:
     monkeypatch.setenv("PAI_LOOP_ENV", "development")
     app = create_app(database_url="sqlite:///:memory:", seed_synthetic=False)
     with TestClient(app) as client:
-        for path in ("/", "/teams-config.html", "/api/v1/runtime-profile"):
+        for path in ("/", "/notices", "/results", "/teams-config.html", "/api/v1/runtime-profile"):
             response = client.get(path)
-            assert response.status_code == (200 if path == "/" else 401)
+            assert response.status_code == (200 if path in {"/", "/notices", "/results"} else 401)
+            if response.status_code == 200:
+                assert 'id="entryLoginForm"' in response.text
             csp = response.headers["Content-Security-Policy"]
             assert "frame-ancestors 'self'" in csp
             assert "https://teams.microsoft.com" in csp
             assert "https://*.teams.microsoft.com" in csp
             assert "https://*.cloud.microsoft" in csp
+            assert csp.split() == [
+                "frame-ancestors", "'self'", "https://teams.microsoft.com",
+                "https://*.teams.microsoft.com", "https://*.cloud.microsoft",
+                "https://aiedu.kma.or.kr",
+            ]
+            assert "https://dancing-smakager-57e08c.netlify.app" not in csp
             assert "x-frame-options" not in response.headers
 
 

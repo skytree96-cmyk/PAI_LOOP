@@ -10,9 +10,13 @@ OPEN_FILES = frozenset({
     *(f"assets/pai-screen-{i}.webp" for i in range(1, 9)),
 })
 OPEN_PATHS = frozenset({"/open", "/open/", *(f"/open/{name}" for name in OPEN_FILES)})
-# The contest judging site embeds this data-free page in an iframe. Allow only
-# that exact origin; the authenticated app keeps its own Teams-only list.
-OPEN_FRAME_ANCESTORS = ("'self'", "https://dancing-smakager-57e08c.netlify.app")
+# Contest judging sites embed this data-free page in an iframe. Allow only
+# their exact origins; the app also allows KMA judging alongside Teams.
+OPEN_FRAME_ANCESTORS = (
+    "'self'",
+    "https://dancing-smakager-57e08c.netlify.app",
+    "https://aiedu.kma.or.kr",
+)
 OPEN_CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' https://cdn.jsdelivr.net; "
     "font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data:; media-src 'self'; "

@@ -25,7 +25,7 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert 'entryLoginForm' not in response.text
     assert response.headers["cache-control"] == "no-cache"
     assert "connect-src 'none'" in response.headers["content-security-policy"]
-    assert "frame-ancestors 'self' https://dancing-smakager-57e08c.netlify.app;" in response.headers["content-security-policy"]
+    assert "frame-ancestors 'self' https://dancing-smakager-57e08c.netlify.app https://aiedu.kma.or.kr;" in response.headers["content-security-policy"]
     assert "x-frame-options" not in response.headers
     links = re.findall(r'data-app-path="([^"]+)" href="([^"]+)"', response.text)
     assert len(links) == 13
@@ -39,8 +39,11 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert "MS Teams<br>맞춤 알림 연동" in response.text
     assert "데일리 브리핑" in response.text
     assert "로그인과 권한 관리는 현재 준비 중" not in response.text
-    assert public_client.head(path).status_code == 200
-    assert not public_client.head(path).content
+    head = public_client.head(path)
+    assert head.status_code == 200
+    assert not head.content
+    assert head.headers["content-security-policy"] == response.headers["content-security-policy"]
+    assert "x-frame-options" not in head.headers
 
 
 def test_open_media_supports_range_requests(public_client):
