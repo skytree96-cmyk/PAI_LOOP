@@ -66,6 +66,7 @@ class Settings:
     # 읽힌다(docs/EORDER_RFP_ATTACHMENTS_20260917.md 3.3).  규모를 알고 켜야
     # 하는 항목이라 기본값은 꺼짐이다.
     eorder_rfp_attachments_enabled: bool = False
+    store_only_discovery_enabled: bool = False
     public_manual_analysis_enabled: bool = False
     # Deprecated deployment compatibility only; never authenticates a request.
     public_manual_analysis_token: str | None = None
@@ -147,6 +148,9 @@ class Settings:
             department_accounts_enabled=_as_bool(os.getenv("PAI_LOOP_DEPARTMENT_ACCOUNTS_ENABLED")),
             eorder_rfp_attachments_enabled=_as_bool(
                 os.getenv("PAI_LOOP_EORDER_RFP_ATTACHMENTS_ENABLED")
+            ),
+            store_only_discovery_enabled=_as_bool(
+                os.getenv("PAI_LOOP_STORE_ONLY_DISCOVERY"), default=True
             ),
             public_manual_analysis_enabled=_as_bool(
                 os.getenv("PAI_LOOP_PUBLIC_MANUAL_ANALYSIS_ENABLED")
