@@ -181,6 +181,10 @@
     EVALUATION_MISSING: "첨부 분석은 완료됐지만 현재 공고 버전의 자격·정량 판단이 아직 저장되지 않았습니다.",
   };
 
+  // Server PARTIAL_READ_REASON (pps_enrichment.py): analysed, but part of the
+  // source was unreadable. Shown as sent instead of the extraction-failure label.
+  const PARTIAL_READ_REASON_PREFIX = "첨부 본문은 분석했지만";
+
   const VIEW_ROUTE_MAP = Object.freeze({
     all: "/",
     new: "/notices",
@@ -7899,7 +7903,13 @@
     const notApplicable = sourceValidation === "NOT_APPLICABLE" || activation === "NOT_APPLICABLE" || ruleSource === "NOT_APPLICABLE";
     const activationReasonCodes = Array.isArray(data.activation_reasons) ? data.activation_reasons : [];
     const tableNotEstablished = !notApplicable && activationReasonCodes.includes("QUANTITATIVE_TABLE_NOT_ESTABLISHED");
-    const sourceDetail = sourceMissing || tableNotEstablished
+    const pointsWithoutLadder = activationReasonCodes.includes("QUANTITATIVE_POINTS_WITHOUT_LADDER");
+    const qualificationStandard = activationReasonCodes.includes("QUALIFICATION_REVIEW_STANDARD");
+    const sourceDetail = qualificationStandard
+      ? "적격심사 · 표준 세부기준 적용"
+      : pointsWithoutLadder
+      ? "정량 배점 확인 · 점수 구간표 미첨부"
+      : sourceMissing || tableNotEstablished
       ? "배점표 미확보"
       : notApplicable
         ? activationReasonCodes.includes("QUALITATIVE_AND_PRICE_ONLY") ? "정성·가격만 평가 · 회사 정량 항목 없음" : "정량평가 비적용"
@@ -7976,6 +7986,8 @@
       UNKNOWN_METRIC: "제안서·제품·수기평가 항목이라 회사 사실만으로 자동 계산할 수 없습니다.",
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
       COMPANY_FIRST_BETA: "베타: 회사 사실을 배점 행에 대입했고, 확인 안 된 조건은 미충족 → 최하점 적용(하한)했습니다.",
+      QUANTITATIVE_POINTS_WITHOUT_LADDER: "원문에 정량 배점(실적·신용등급 등)은 있지만 점수 구간표가 첨부되지 않았습니다. 발주처 세부 기준 확인이 필요합니다.",
+      QUALIFICATION_REVIEW_STANDARD: "적격심사 공고로 세부 배점은 조달청 표준 세부기준을 따릅니다. 공고 첨부에는 점수표가 없습니다.",
     };
     // Preserve the server blockers; only omit the legacy display fallback when
     // the more specific extraction-gap diagnosis is present.
@@ -7986,7 +7998,11 @@
     els.quantAssumptionList.innerHTML = quantitativeAssumptions.length
       ? quantitativeAssumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
       : "<li>추가 가정 없음</li>";
-    const emptyCriteria = sourceMissing || tableNotEstablished
+    const emptyCriteria = qualificationStandard
+      ? emptyPanel("적격심사 공고", "세부 배점은 조달청 적격심사 표준 세부기준을 따르며 공고 첨부에는 점수표가 없습니다.")
+      : pointsWithoutLadder
+      ? emptyPanel("정량 배점은 있으나 점수 구간표 미첨부", "원문에 실적·신용등급 등 정량 배점은 있지만 구간별 점수가 없어 임의로 계산하지 않습니다.")
+      : sourceMissing || tableNotEstablished
       ? emptyPanel("정량점수를 표시하지 않습니다", "배점표와 인정 산식이 확보될 때까지 확인 필요로 유지합니다.")
       : notApplicable
         ? emptyPanel("정량평가 비적용", "이 공고에는 회사 정량점수를 적용하지 않습니다.")
@@ -8087,6 +8103,8 @@
       TABLE_TOTAL_INCOMPLETE: "정량 평가의 총배점을 완전히 확인하지 못했습니다.",
       PUBLIC_ANALYSIS_REVIEW_REQUIRED: "저장된 평가 기준 또는 회사 증빙의 검증이 끝나지 않았습니다.",
       COMPANY_FIRST_BETA: "베타: 회사 사실을 배점 행에 대입했고, 확인 안 된 조건은 미충족 → 최하점 적용(하한)했습니다.",
+      QUANTITATIVE_POINTS_WITHOUT_LADDER: "정량 배점은 있으나 점수 구간표가 첨부되지 않아 계산하지 않았습니다.",
+      QUALIFICATION_REVIEW_STANDARD: "적격심사 공고 · 조달청 표준 세부기준 적용(공고에 점수표 없음).",
     };
     const unresolved = Array.isArray(data.criteria) ? data.criteria.find((item) => !["CONFIRMED", "OUT_OF_SCOPE"].includes(item.status) && item.rationale) : null;
     const reason = reasons.length
@@ -9898,6 +9916,7 @@
     if (analysisState === "ANALYZED" && code === "ANALYZED") {
       return { code: "EVALUATION_MISSING", message: ANALYSIS_REASON_LABELS.EVALUATION_MISSING };
     }
+    if (detail.startsWith(PARTIAL_READ_REASON_PREFIX)) return { code, message: detail };
     const mapped = ANALYSIS_REASON_LABELS[code];
     if (mapped) return { code, message: mapped };
     if (detail && detail.toUpperCase() !== code) return { code: code || "PUBLIC_DESCRIPTION", message: detail };

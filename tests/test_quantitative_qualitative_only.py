@@ -132,3 +132,28 @@ def test_rows_added_after_the_profile_still_win(monkeypatch):
     assert _estimate(
         monkeypatch, _profile(), {"A1": _attempt(NOTICE), "A2": _attempt(QUALITATIVE_RFP)},
     ) == "SCORED"
+
+
+from pai_loop.quantitative_qualitative_only import (  # noqa: E402
+    QUALIFICATION_REVIEW_STANDARD,
+    QUANTITATIVE_POINTS_WITHOUT_LADDER,
+    unscored_source_hint,
+)
+
+
+@pytest.mark.parametrize(("summary", "expected"), [
+    ("기술능력 90점(정량 20점+정성 70점)과 가격 10점으로 구성된다.", QUANTITATIVE_POINTS_WITHOUT_LADDER),
+    ("신용평가등급 배점표(별표 8)는 원문 미첨부이다.", QUANTITATIVE_POINTS_WITHOUT_LADDER),
+    ("적격심사 종합평점 85점 이상, 세부 배점표는 조달청 별표를 참조한다.", QUALIFICATION_REVIEW_STANDARD),
+    ("평가배점표는 우수/보통/미흡 등급 기준의 정성 평가이다.", None),
+])
+def test_unscored_source_hint(summary, expected):
+    assert unscored_source_hint([{"document_type": "RFP", "summary": summary}]) == expected
+
+
+def test_unscored_notice_gets_points_without_ladder_label(monkeypatch):
+    rfp = {**QUALITATIVE_RFP, "summary": "정량평가 10점(경영상태2, 실적3, 상생협력5)과 정성평가 90점으로 구성된다."}
+    estimate = _estimate(monkeypatch, _profile(), {"A1": _attempt(NOTICE), "A2": _attempt(rfp)})
+    assert estimate.activation_status == "REVIEW_REQUIRED"
+    assert estimate.activation_reasons[0] == QUANTITATIVE_POINTS_WITHOUT_LADDER
+    assert estimate.lower_points is None

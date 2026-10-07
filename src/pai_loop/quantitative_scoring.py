@@ -87,6 +87,7 @@ from .quantitative_qualitative_only import (
     QUALITATIVE_AND_PRICE_ONLY,
     QUALITATIVE_AND_PRICE_ONLY_REASON,
     qualitative_and_price_only,
+    unscored_source_hint,
 )
 from .quantitative_row_approval import (
     ROW_APPROVAL_ASSUMPTION,
@@ -6008,6 +6009,19 @@ def _qualitative_and_price_only_notice(
         or any(item.code == "ATTACHMENT_INCOMPLETE" for item in profile.issues)
     ):
         return False
+    results = _accepted_extraction_results(notice, profile)
+    if len(results) != len(profile.expected_attachment_ids):
+        return False
+    return qualitative_and_price_only(
+        results, [item.label for item in profile.review_candidates],
+    )
+
+
+def _accepted_extraction_results(
+    notice: Notice, profile: QuantitativeCandidateProfile,
+) -> list[dict[str, Any]]:
+    """Stored extraction results of the current manifest's ACCEPTED attempts."""
+
     versions = sorted(notice.versions, key=lambda item: item.version_no, reverse=True)
     _read_attachments, _read_invalid, attempts = _current_manifest_attempts(
         versions, validate_accepted=False, preserve_quantitative_proof=True,
@@ -6021,12 +6035,9 @@ def _qualitative_and_price_only_notice(
             else {}
         )
         result = payload.get("result")
-        if payload.get("status") != "ACCEPTED" or not isinstance(result, dict):
-            return False
-        results.append(result)
-    return qualitative_and_price_only(
-        results, [item.label for item in profile.review_candidates],
-    )
+        if payload.get("status") == "ACCEPTED" and isinstance(result, dict):
+            results.append(result)
+    return results
 
 
 def _qualitative_and_price_only_estimate(ruleset_version: str) -> QuantitativeEstimateResult:
@@ -6086,7 +6097,22 @@ def estimate_for_notice(
         # company-first beta may still have produced criteria, which must win.
         if _qualitative_and_price_only_notice(notice, dynamic_profile, final_request):
             return _qualitative_and_price_only_estimate(final_request.ruleset_version)
-        return estimate_quantitative_score(final_request)
+        result = estimate_quantitative_score(final_request)
+        if (
+            final_request.activation_status == "REVIEW_REQUIRED"
+            and not final_request.criteria
+            and result.lower_points is None
+        ):
+            # Label only: the source names company points but no ladder was
+            # extracted. The estimate itself is unchanged.
+            hint = unscored_source_hint(
+                _accepted_extraction_results(notice, dynamic_profile)
+            )
+            if hint is not None:
+                result = result.model_copy(update={
+                    "activation_reasons": [hint, *result.activation_reasons][:100],
+                })
+        return result
 
     profile, profile_binding_error = _profile_for_notice(notice)
     if profile is None:
