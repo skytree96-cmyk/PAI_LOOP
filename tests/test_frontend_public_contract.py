@@ -247,9 +247,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20261007-store-only-v33"' in html
-    assert 'href="./top-navigation.css?v=20261007-store-only-v33"' in html
-    assert 'src="./app.js?v=20261007-store-only-v33"' in html
+    assert 'href="./styles.css?v=20261007-board-cache-v35"' in html
+    assert 'href="./top-navigation.css?v=20261007-board-cache-v35"' in html
+    assert 'src="./app.js?v=20261007-board-cache-v35"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:

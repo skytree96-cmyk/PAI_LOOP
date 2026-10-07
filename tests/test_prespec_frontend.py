@@ -121,9 +121,9 @@ def test_pre_specification_styles_distinguish_sources_and_cover_teams_mobile() -
 def test_pre_specification_assets_use_the_current_release_cache_key() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20261007-store-only-v33"' in html
-    assert 'href="./top-navigation.css?v=20261007-store-only-v33"' in html
-    assert 'src="./app.js?v=20261007-store-only-v33"' in html
+    assert 'href="./styles.css?v=20261007-board-cache-v35"' in html
+    assert 'href="./top-navigation.css?v=20261007-board-cache-v35"' in html
+    assert 'src="./app.js?v=20261007-board-cache-v35"' in html
 
 
 def test_pre_specification_completion_uses_one_fail_closed_coverage_helper() -> None:
