@@ -166,6 +166,7 @@
 
   const ANALYSIS_REASON_LABELS = {
     NOT_SELECTED: "자동 분석 우선순위에 아직 선정되지 않아 분석 대기 중입니다. 폐기된 공고가 아닙니다.",
+    MANUAL_ONLY: "회사 실적·보유 업종과 맞아 관련 공고로 저장했습니다. 자동 분석 대상은 아니며, 필요하면 '분석'을 눌러 직접 분석하세요.",
     ATTACHMENT_MANIFEST_MISSING: "조달청 응답에 분석할 첨부파일 목록이 없어 문서 분석을 시작하지 못했습니다.",
     ATTACHMENT_MANIFEST_EMPTY: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않았습니다.",
     ATTACHMENT_NONE: "조달청 공고에 분석 가능한 첨부파일이 확인되지 않아 자동 문서 분석을 시작하지 못했습니다.",
@@ -9932,6 +9933,9 @@
     }
     if (analysisState === "VERSIONED") {
       return { code: "READY", message: ANALYSIS_REASON_LABELS.READY };
+    }
+    if (source.analysis_manual_only === true) {
+      return { code: "MANUAL_ONLY", message: ANALYSIS_REASON_LABELS.MANUAL_ONLY };
     }
     return { code: "NOT_SELECTED", message: ANALYSIS_REASON_LABELS.NOT_SELECTED };
   }

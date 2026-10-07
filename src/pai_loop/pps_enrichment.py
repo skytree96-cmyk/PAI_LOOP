@@ -186,6 +186,16 @@ PROFILE_DISCOVERY_INDUSTRY_CODES = (
     "5601", "5608", "5609", "5720", "6529", "6530", "9901", "1261", "3244", "1469",
 )
 INDUSTRY_CODE_QUERY_PREFIX = "업종코드:"
+# 2026-10-07: notices the daily search terms miss but the company's past
+# contracts and G2B industry registrations point at (measured 9/28~10/5: about
+# 20 relevant notices a day). They are stored for people to see and are
+# MANUAL_ONLY, so no daily, backlog or retry path ever spends a paid call on
+# them; an operator analyses one explicitly when it looks worth it.
+STORE_ONLY_DISCOVERY_QUERIES = (
+    "채용", "만족도", "창업", "캠프", "아카데미", "워크숍", "진로", "진단평가", "역량진단", "특강", "신입생",
+    "프로그램 운영", "비식별",
+    *(INDUSTRY_CODE_QUERY_PREFIX + code for code in ("9901", "1261", "5720", "6529", "6530", "5601", "5608", "5609")),
+)
 PROFILE_QUERY_LIMIT = 60
 
 
