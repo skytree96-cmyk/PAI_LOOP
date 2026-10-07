@@ -75,3 +75,24 @@ def qualitative_and_price_only(
         text for item, text in zip(results, texts) if item.get("document_type") == "RFP"
     )
     return bool(_QUALITATIVE.search(rfp_text))
+
+
+QUANTITATIVE_POINTS_WITHOUT_LADDER = "QUANTITATIVE_POINTS_WITHOUT_LADDER"
+QUALIFICATION_REVIEW_STANDARD = "QUALIFICATION_REVIEW_STANDARD"
+
+
+def unscored_source_hint(results: Sequence[Mapping[str, Any]]) -> str | None:
+    """Why an unscored notice has company points the source does not ladder.
+
+    Used only to label a notice that already has no score: the stored
+    summaries name company-scored items (정량 N점, 신용등급·실적 배점) or a
+    qualification review under the procurement standard, but no scoring
+    ladder was extracted.
+    """
+
+    combined = " ".join(_attachment_text(item) for item in results)
+    if _QUALIFICATION_REVIEW.search(combined):
+        return QUALIFICATION_REVIEW_STANDARD
+    if _QUANTITATIVE_POINTS.search(combined) or _COMPANY_SCORED.search(combined):
+        return QUANTITATIVE_POINTS_WITHOUT_LADDER
+    return None
