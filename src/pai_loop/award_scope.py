@@ -65,14 +65,56 @@ def award_query_term(keyword: str) -> str:
     return max(terms, key=len) if terms else keyword
 
 
+def _compact_title(title: str) -> str:
+    # Spacing and punctuation vary between editions (청렴교육 / 청렴 교육,
+    # 제1·2차 / 제1 2차); terms are alphanumeric runs, so comparing against the
+    # compacted title keeps every old match and adds those spelling variants.
+    return "".join(re.findall(r"[0-9A-Za-z가-힣]+", unicodedata.normalize("NFKC", title).casefold()))
+
+
 def award_title_matches(keyword: str, title: Any) -> bool:
     """Every search term must appear in the award title, in any position."""
 
     if not isinstance(title, str):
         return False
-    folded = title.casefold()
+    compact = _compact_title(title)
     terms = keyword.casefold().split()
-    return bool(terms) and all(term in folded for term in terms)
+    return bool(terms) and all(term in compact for term in terms)
+
+
+def _agency_shaped(term: str, agency_blob: str) -> bool:
+    return bool(_INSTITUTION_TOKEN.fullmatch(term) or _MINISTRY_TOKEN.fullmatch(term)
+                or (agency_blob and term in agency_blob))
+
+
+def award_same_agency_title_matches(notice_title: str, agency_names: Iterable[Any], title: Any) -> bool:
+    """Title rule for an award whose demand agency already matched by code or name.
+
+    The search keyword usually opens with the agency's own name, which last
+    year's title of the same agency often leaves out, and a recurring project
+    is renamed between editions. Once the agency itself is verified, accept:
+    the full keyword; the keyword without agency-shaped words; or at least two
+    of the project's core words (the other-agency rule, applied inside the
+    agency). Weaker matches are labelled by the annual table as similar
+    projects, never as the same project.
+    """
+
+    if not isinstance(title, str):
+        return False
+    try:
+        keyword = derive_award_keyword(notice_title)
+    except ValueError:
+        return False
+    if award_title_matches(keyword, title):
+        return True
+    names = [name for name in agency_names if name]
+    agency_blob = "".join(normalize_award_agency(name) for name in names)
+    compact = _compact_title(title)
+    terms = [term for term in keyword.casefold().split() if not _agency_shaped(term, agency_blob)]
+    specific = [term for term in terms if term not in _GENERIC_PROJECT_WORDS]
+    if specific and (len(terms) >= 2 or len(specific[0]) >= 3) and all(term in compact for term in terms):
+        return True
+    return award_core_matches(award_core_terms(notice_title, names), title)
 
 
 # --- Other-agency similar projects -------------------------------------------
@@ -125,8 +167,8 @@ def award_core_matches(core_terms: list[str], title: Any) -> bool:
 
     if len(core_terms) < 2 or not isinstance(title, str):
         return False
-    folded = title.casefold()
-    return sum(term in folded for term in core_terms) >= 2
+    compact = _compact_title(title)
+    return sum(term in compact for term in core_terms) >= 2
 
 
 def filter_other_agency_awards(notice: Notice, rows: Iterable[_AwardRow]) -> list[_AwardRow]:
@@ -150,12 +192,9 @@ def filter_notice_awards(notice: Notice, rows: Iterable[_AwardRow]) -> list[_Awa
     scope = resolve_notice_award_scope(notice)
     if not scope.available:
         return []
-    try:
-        keyword = derive_award_keyword(notice.title)
-    except ValueError:
-        return []
+    names = (scope.demand_agency_name, scope.announcing_agency_name)
     return [row for row in rows if scope.matches_award(row)
-            and award_title_matches(keyword, _value(row, "title"))]
+            and award_same_agency_title_matches(notice.title, names, _value(row, "title"))]
 
 
 def _agency_text(value: Any) -> str | None:
