@@ -405,6 +405,14 @@ _PUBLIC_ANALYSIS_MESSAGES: dict[AnalysisReasonCode, str] = {
     "QUOTE_UNVERIFIED": "LLM이 제시한 인용문을 첨부 원문에서 정확히 대조하지 못했습니다.",
     "NOT_SELECTED": "아직 일일 분석 대상으로 선택되지 않은 공고입니다.",
 }
+# An ACCEPTED attachment whose model analysis finished but whose source or
+# model input was only partly read keeps its failure code (retry selection is
+# unchanged), but it is not a download or text-extraction failure. The front
+# end matches this exact prefix (static/app.js PARTIAL_READ_REASON_PREFIX).
+PARTIAL_READ_REASON = (
+    "첨부 본문은 분석했지만 이미지·내장 개체 등 일부 내용을 읽지 못했거나 분량이 커서 "
+    "일부만 분석했습니다. 해당 부분은 원문 확인이 필요합니다."
+)
 
 
 def _digest(value: Any) -> str:
@@ -2154,6 +2162,7 @@ def public_analysis_reason(
         )
 
     failures: list[tuple[dict[str, Any], NoticeVersion, str]] = []
+    partial_read_only = True
     for attachment in attachments:
         latest = attempts[attachment["attachment_id"]]
         payload = latest.source_payload if isinstance(latest.source_payload, dict) else {}
@@ -2166,6 +2175,7 @@ def public_analysis_reason(
             error_code = "DOCUMENT_PROCESSING_INCOMPLETE"
             failures.append((attachment, latest, error_code))
             continue
+        partial_read_only = False
         failures.append((attachment, latest, str(payload.get("error_code") or "")))
     if not failures:
         return result(
@@ -2195,12 +2205,15 @@ def public_analysis_reason(
         )
         if candidate in codes
     )
-    return result(
+    reason = result(
         "REVIEW",
         code,  # type: ignore[arg-type]
         attachment_count=attachment_count,
         attempted=True,
     )
+    if partial_read_only:
+        return replace(reason, reason=PARTIAL_READ_REASON)
+    return reason
 
 
 # Total GET attempts on a transport failure. The attachment-start reservation
