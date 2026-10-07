@@ -79,6 +79,8 @@ def test_teams_iframe_headers_allow_only_declared_microsoft_hosts(monkeypatch) -
             assert "https://teams.microsoft.com" in csp
             assert "https://*.teams.microsoft.com" in csp
             assert "https://*.cloud.microsoft" in csp
+            assert "https://aiedu.kma.or.kr" not in csp
+            assert "https://dancing-smakager-57e08c.netlify.app" not in csp
             assert "x-frame-options" not in response.headers
 
 

@@ -15,6 +15,12 @@ Normal main-branch Cloud Build publishes them together with the application.
 Same-origin application links retain the existing login. Public pages perform
 no API calls, production reads, analysis calls, messages or data writes.
 
+The public page permits iframe embedding from its own origin and the exact
+judging-site origins `https://dancing-smakager-57e08c.netlify.app` and
+`https://aiedu.kma.or.kr` through CSP `frame-ancestors`. Keep the static `_headers`
+policy aligned with `OPEN_CSP`. The authenticated application retains its
+separate Teams frame allowlist.
+
 ## Design and interaction
 
 - The pinned desktop story combines glass panels, a metallic device exterior,
