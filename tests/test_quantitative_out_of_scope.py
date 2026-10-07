@@ -350,3 +350,30 @@ def test_all_excluded_engine_result_preserves_public_rows_without_a_zero_score()
     assert public.estimated_points is public.readiness_pct is None
     assert public.readiness_band == "GRAY"
     assert "RED 구간" not in result.opinion
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "수행실적(정량평가)",          # 2026-09-29 사법부 보안컨설팅: 개별 5점 항목
+        "참여인력 보유현황 (정량평가)",
+        "정량평가 - 유사용역 수행실적",
+        "신용평가등급(정량적 평가)",
+    ],
+)
+def test_an_item_that_only_names_its_section_is_not_a_total_row(label: str) -> None:
+    assert reason_for(label) is None
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "정량평가 소계",
+        "정량평가(실적 5점, 인력 5점)",   # the annotation lists items; the row is the section
+        "기술능력평가 총괄",
+        "정량평가 합계",
+        "(정량평가)",                      # an annotation alone keeps its own words
+    ],
+)
+def test_section_totals_and_headings_are_still_set_aside(label: str) -> None:
+    assert reason_for(label) == "표의 총괄·기준선 행이라 개별 배점 대상이 아닙니다."
