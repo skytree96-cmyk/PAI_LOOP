@@ -280,6 +280,7 @@
     state.accountSession = { enabled: true, authenticated: false, status: "expired", account: null, csrfToken: "", capabilities: {} };
     document.body.hidden = true;
     clearAccountPrivateState();
+    clearSavedBoards();
     document.body.replaceChildren();
     if (retry || relogin) {
       // An uncertain session check must stop here, not reload the same document forever.
@@ -877,11 +878,15 @@
     // both relationship-heavy reads together can exceed a small worker's
     // memory limit as the stored extraction history grows.
     state.noticeListPartial = false;
+    const listCacheKey = buildNoticeRequestPath({ statusScope: requestedStatusScope, offset: 0 });
+    showSavedBoard(listCacheKey);
     const noticesRequest = fetchNoticePages({
       statusScope: requestedStatusScope,
       onFirstPage: (firstPage) => {
         if (sequence !== state.requestSequence) return;
         if (requestedStatusScope !== noticeStatusScopeForView(state.currentView)) return;
+        // A saved full board is already on screen; do not shrink it to one page.
+        if (state.noticeListSavedAt) return;
         applyLoadedNotices(firstPage, { partial: true });
       },
     });
@@ -915,7 +920,9 @@
         state.manualAnalysisPolicy = null;
         state.manualAnalysisUnavailableReason = "분석 설정을 불러오지 못했습니다. 새로고침 후 다시 확인해 주세요.";
       }
-      applyLoadedNotices(extractList(noticesResult.value), { partial: false });
+      const freshList = extractList(noticesResult.value);
+      applyLoadedNotices(freshList, { partial: false });
+      saveBoard({ list: { key: listCacheKey, savedAt: new Date().toISOString(), rows: freshList } });
       openNoticeFromRoute();
       if (state.accountSession.enabled && state.accountSession.authenticated) void hydrateDepartmentDecisionList(sequence);
       void hydrateApplicationMetadata({ sequence, requestedStatusScope });
@@ -923,8 +930,76 @@
     }
 
     state.noticeListPartial = false;
+    state.noticeListSavedAt = null;
     const reason = humanizeError(noticesResult.reason);
     renderApplicationError(`운영 서버 연결 실패: ${reason}`);
+  }
+
+  // The last full board of this browser's account is shown at once while the
+  // fresh read runs, then replaced. Only the shared notice list and dashboard
+  // totals are kept: department decisions are always read again. Another
+  // account's board is removed when this one is saved, and every saved board is
+  // removed when the session ends.
+  const SAVED_BOARD_PREFIX = "pai-loop.saved-board.v1:";
+  const SAVED_BOARD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+  function savedBoardKey() {
+    const accountId = state.accountSession?.authenticated ? state.accountSession.account?.id : null;
+    return accountId ? SAVED_BOARD_PREFIX + accountId : null;
+  }
+
+  function readSavedBoard() {
+    const key = savedBoardKey();
+    if (!key) return null;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(key) || "null");
+      return saved && typeof saved === "object" ? saved : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function savedPartIsFresh(part) {
+    const savedAt = Date.parse(part?.savedAt || "");
+    return Number.isFinite(savedAt) && Date.now() - savedAt <= SAVED_BOARD_MAX_AGE_MS;
+  }
+
+  function saveBoard(part) {
+    const key = savedBoardKey();
+    if (!key) return;
+    try {
+      clearSavedBoards(key);
+      window.localStorage.setItem(key, JSON.stringify({ ...(readSavedBoard() || {}), ...part }));
+    } catch (_) {
+      // Storage may be full or blocked; the board works without a saved copy.
+    }
+  }
+
+  function clearSavedBoards(keep = null) {
+    try {
+      for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+        const key = window.localStorage.key(index);
+        if (key && key.startsWith(SAVED_BOARD_PREFIX) && key !== keep) window.localStorage.removeItem(key);
+      }
+    } catch (_) {
+      // Nothing was saved if storage is unavailable.
+    }
+  }
+
+  function showSavedBoard(listKey) {
+    state.noticeListSavedAt = null;
+    // Only the first board of a page load; later reads already show live data.
+    if (state.source === "api") return;
+    const saved = readSavedBoard();
+    if (!saved || saved.list?.key !== listKey || !Array.isArray(saved.list.rows) || !savedPartIsFresh(saved.list)) return;
+    const dashboard = saved.dashboard;
+    state.source = "api";
+    state.dashboard = dashboard?.departmentId === selectedDashboardDepartmentId() && savedPartIsFresh(dashboard)
+      ? normalizeDashboard(dashboard.payload, [])
+      : {};
+    applyLoadedNotices(saved.list.rows, { partial: true });
+    state.noticeListSavedAt = saved.list.savedAt;
+    renderAll();
   }
 
   // A partial list is the first page shown early; the full list replaces it.
@@ -940,6 +1015,7 @@
       return preserveOperatorDecision(notice, previousNotices.get(notice.noticeKey));
     }).filter((notice) => notice.noticeKey);
     state.noticeListPartial = partial;
+    state.noticeListSavedAt = null;
     state.dashboard = dashboardWithoutGlobalTotals(state.notices, previousDashboard);
     state.sourceReason = "";
     if (!partial) state.lastSuccessfulQueryAt = new Date().toISOString();
@@ -986,6 +1062,7 @@
       const payload = await apiRequest(`/dashboard?${params.toString()}`, { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS });
       if (!current()) return;
       state.dashboard = normalizeDashboard(payload, state.notices);
+      saveBoard({ dashboard: { departmentId, savedAt: new Date().toISOString(), payload } });
       const departmentStats = state.dashboard.departmentStatistics;
       const departmentAvailable = departmentStats?.department_id === departmentId
         && numberOrNull(departmentStats.total_notice_count) !== null
@@ -5638,7 +5715,9 @@
           ? `총 ${formatNumber(total)}건 · ${context} 기준 우선순위입니다.`
           : `전체 ${formatNumber(total)}건 중 ${formatNumber(count)}건이 표시됩니다.`;
     if (state.noticeListPartial && state.noticeSearchMode === "stored") {
-      els.noticeSummary.textContent = `우선순위 상위 ${formatNumber(total)}건을 먼저 표시했습니다 · 나머지 공고를 불러오는 중입니다.`;
+      els.noticeSummary.textContent = state.noticeListSavedAt
+        ? `${formatKstDateTime(state.noticeListSavedAt)} 조회 기준 ${formatNumber(total)}건을 먼저 표시했습니다 · 최신 공고를 불러오는 중입니다.`
+        : `우선순위 상위 ${formatNumber(total)}건을 먼저 표시했습니다 · 나머지 공고를 불러오는 중입니다.`;
     }
     if (state.currentView === "undecided" && state.noticeSearchMode === "stored") {
       els.noticeSummary.textContent = operatorDecisionListAvailable()
