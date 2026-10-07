@@ -428,3 +428,85 @@ const loading=u.loadApplicationData();await tick();requests[0]?.resolve({});awai
 assert.deepEqual(u.state.notices.map(n=>n.noticeKey),before);
 assert.equal(u.state.noticeListPartial,false);
 """)
+
+
+SAVED_BOARD_HARNESS = HARNESS.replace(
+    'window:{location:{search:"",href:"https://example.test/"},',
+    'window:{localStorage:(()=>{const m=new Map();return {get length(){return m.size;},key:i=>[...m.keys()][i]??null,'
+    'getItem:k=>m.has(k)?m.get(k):null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)};})(),'
+    'location:{search:"",href:"https://example.test/"},',
+).replace(
+    "loadApplicationData,clearAccountPrivateState,normalizeNotice,",
+    "loadApplicationData,clearAccountPrivateState,normalizeNotice,saveBoard,readSavedBoard,clearSavedBoards,buildNoticeRequestPath,",
+)
+
+
+def _run_saved(script):
+    result = subprocess.run(
+        ["node", "-e", SAVED_BOARD_HARNESS + "\n(async()=>{\n" + script
+         + "\n})().catch(e=>{console.error(e);process.exitCode=1;});"],
+        input=APP.read_text(encoding="utf-8"),
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_saved_board_shows_at_once_and_is_replaced_by_the_fresh_read():
+    _run_saved(r"""
+const row=i=>({notice_key:"SYN-S"+i,status:"OPEN",title:"SYN saved "+i,source_kind:"MANUAL"});
+const store=context.window.localStorage;
+u.state.source="loading";u.state.notices=[];
+const key=u.buildNoticeRequestPath({statusScope:"OPEN",offset:0});
+u.saveBoard({list:{key,savedAt:"2026-09-08T00:30:00Z",rows:[row(1),row(2),row(3)]},
+ dashboard:{departmentId:"organization",savedAt:"2026-09-08T00:30:00Z",payload}});
+let release;const remaining=new Promise(resolve=>{release=resolve;});
+u.useBootstrap([]);
+u.useNoticePages(async({onFirstPage})=>{onFirstPage([row(9)]);await remaining;return [row(7),row(8)];});
+const loading=u.loadApplicationData();await tick();
+assert.deepEqual(Array.from(u.state.notices,n=>n.noticeKey),["SYN-S1","SYN-S2","SYN-S3"]);
+assert.equal(u.state.noticeListSavedAt,"2026-09-08T00:30:00Z");
+assert.equal(u.state.dashboard.totalNotices,800);
+release();requests[0].resolve({});await loading;
+assert.deepEqual(Array.from(u.state.notices,n=>n.noticeKey),["SYN-S7","SYN-S8"]);
+assert.equal(u.state.noticeListSavedAt,null);
+const saved=JSON.parse(store.getItem("pai-loop.saved-board.v1:SYN-A"));
+assert.deepEqual(saved.list.rows.map(r=>r.notice_key),["SYN-S7","SYN-S8"]);
+assert.equal(saved.dashboard.payload.totals.notices,800);
+""")
+
+
+def test_saved_board_is_ignored_for_another_scope_or_when_a_day_old():
+    _run_saved(r"""
+const row={notice_key:"SYN-OLD",status:"OPEN",title:"SYN old",source_kind:"MANUAL"};
+const key=u.buildNoticeRequestPath({statusScope:"OPEN",offset:0});
+for (const saved of [
+  {list:{key:key+"&q=other",savedAt:"2026-09-08T00:30:00Z",rows:[row]}},
+  {list:{key,savedAt:"2026-09-06T00:30:00Z",rows:[row]}},
+]) {
+  u.clearSavedBoards();u.saveBoard(saved);
+  u.state.source="loading";u.state.notices=[];
+  let release;const remaining=new Promise(resolve=>{release=resolve;});
+  u.useBootstrap([]);
+  u.useNoticePages(async()=>{await remaining;return [];});
+  const loading=u.loadApplicationData();await tick();
+  assert.equal(u.state.notices.length,0);assert.equal(u.state.noticeListSavedAt,null);
+  release();requests.at(-1).resolve({});await loading;
+}
+""")
+
+
+def test_saving_a_board_removes_other_accounts_and_clear_removes_all():
+    _run_saved(r"""
+const store=context.window.localStorage;
+store.setItem("pai-loop.saved-board.v1:SYN-OTHER","{}");
+store.setItem("pai-loop.unrelated","keep");
+u.saveBoard({list:{key:"k",savedAt:"2026-09-08T00:30:00Z",rows:[]}});
+assert.equal(store.getItem("pai-loop.saved-board.v1:SYN-OTHER"),null);
+assert.notEqual(store.getItem("pai-loop.saved-board.v1:SYN-A"),null);
+u.clearSavedBoards();
+assert.equal(store.getItem("pai-loop.saved-board.v1:SYN-A"),null);
+assert.equal(store.getItem("pai-loop.unrelated"),"keep");
+u.state.accountSession={enabled:true,authenticated:false,account:null,capabilities:{}};
+u.saveBoard({list:{key:"k",savedAt:"2026-09-08T00:30:00Z",rows:[]}});
+assert.equal(store.length,1);
+""")
