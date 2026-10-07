@@ -29,8 +29,10 @@ TeamsJS 공식 CDN만 등록합니다.
 
 ## iframe·보안 경계
 
-- 모든 응답은 CSP `frame-ancestors`로 자기 자신, `teams.microsoft.com`,
-  `*.teams.microsoft.com`, `*.cloud.microsoft`만 허용합니다.
+- 본 서비스 응답은 CSP `frame-ancestors`로 자기 자신, `teams.microsoft.com`,
+  `*.teams.microsoft.com`, `*.cloud.microsoft`, `https://aiedu.kma.or.kr`만 허용합니다.
+  KMA 심사 사이트는 전체 페이지를 iframe으로 표시할 수 있으며, 기존 로그인·역할·API 권한은 유지됩니다.
+  공개 소개 `/open`은 별도 허용 목록으로 KMA 심사 사이트와 기존 Netlify 심사 사이트를 허용합니다.
 - `X-Frame-Options: DENY|SAMEORIGIN`은 Teams iframe을 막으므로 설정하지 않습니다.
 - TeamsJS 2.19.0을 초기화하고, 앱 내부 상세 이동은 URL query + History API로 처리해
   Teams 탭을 벗어나지 않습니다.

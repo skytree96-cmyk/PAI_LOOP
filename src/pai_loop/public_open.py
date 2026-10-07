@@ -11,7 +11,7 @@ OPEN_FILES = frozenset({
 })
 OPEN_PATHS = frozenset({"/open", "/open/", *(f"/open/{name}" for name in OPEN_FILES)})
 # Contest judging sites embed this data-free page in an iframe. Allow only
-# their exact origins; the authenticated app keeps its own Teams-only list.
+# their exact origins; the app also allows KMA judging alongside Teams.
 OPEN_FRAME_ANCESTORS = (
     "'self'",
     "https://dancing-smakager-57e08c.netlify.app",
