@@ -50,6 +50,8 @@ def test_all_read_surfaces_filter_agency_and_keyword_without_deleting_audit(clie
     assert intelligence['search_criteria'] == {
         'version': 'demand-agency-keyword-v1', 'years': 3, 'status': 'AVAILABLE',
         'demand_agency_name': 'SYN 수요기관', 'keyword': 'syn 통합교육',
+        # Rows were stored directly; no search has run, so the table is not "none found".
+        'lookup': 'NOT_YET_SEARCHED', 'searched_at': None,
     }
     with client.app.state.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(AwardHistoryItem)
