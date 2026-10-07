@@ -283,3 +283,32 @@ def test_sweep_keeps_other_agency_projects_as_their_own_kind(bulk, client) -> No
     assert [(row.target_notice_id, row.bid_notice_no, row.source) for row in stored] == [
         (target, "O1", OTHER_AGENCY_SOURCE)]
     assert stored[0].similarity_score >= 30
+
+
+def test_same_agency_match_ignores_agency_name_spacing_and_renamed_editions(bulk) -> None:
+    add, run, history, _jobs, _settings = bulk
+    notice = add("U", "2026년 SYN대학교 교직원 청렴교육 위탁 용역", code="SYN-UNIV", name="SYN대학교")
+    rows = [
+        _award("U1", "2025년 교직원 청렴 교육 운영", code="SYN-UNIV", name="SYN대학교"),   # no agency name, spaced
+        _award("U2", "2024 교직원 청렴교육 및 갑질예방", code="SYN-UNIV", name="SYN대학교"),  # renamed edition
+        _award("U3", "2025년 교직원 성희롱 예방교육", code="SYN-UNIV", name="SYN대학교"),     # different project
+        _award("U4", "2025년 교직원 청렴 교육 운영", code="SYN-OTHER", name="다른대학교"),    # other agency
+    ]
+    run(_FakePps(rows))
+    assert [title for target, title, _winner in history() if target == notice] == [
+        "2024 교직원 청렴교육 및 갑질예방", "2025년 교직원 청렴 교육 운영"]
+
+
+def test_finished_sweep_turns_an_empty_table_into_searched_none_found(bulk, client) -> None:
+    add, run, _history, _jobs, _settings = bulk
+    notice_id = add("E", "2026년 SYN 전혀새로운 사업명 기획")
+    key = "SYN-BULK-E"
+    with client.app.state.session_factory() as session:
+        session.get(Notice, notice_id).created_at = NOW - timedelta(hours=1)  # stored before the sweep
+        session.commit()
+    before = client.get(f"/api/v1/notices/{key}/award-intelligence").json()["search_criteria"]
+    assert before["lookup"] == "NOT_YET_SEARCHED" and before["searched_at"] is None
+    assert run(_FakePps([]))["status"] == "COMPLETED"
+    after = client.get(f"/api/v1/notices/{key}/award-intelligence").json()
+    assert after["annual_award_table"]["rows"] == []
+    assert after["search_criteria"]["lookup"] == "SEARCHED" and after["search_criteria"]["searched_at"]

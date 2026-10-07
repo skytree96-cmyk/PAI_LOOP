@@ -3718,6 +3718,36 @@ def list_award_history(notice_key: str, session: DbSession) -> list[AwardHistory
     ))
 
 
+def _award_lookup_completed_at(session: Session, notice: Notice) -> datetime | None:
+    """When a three-year search last covered this notice, or None if none has yet.
+
+    Either the per-notice W14 search finished (with or without matches), or a
+    full bulk sweep that started after the notice was stored reached its end.
+    An empty table then means "searched, nothing found" instead of "unknown".
+    """
+
+    from .award_automation_models import AwardRefreshState
+    from .award_bulk import BULK_SOURCE
+
+    found: list[datetime] = []
+    state = session.get(AwardRefreshState, notice.id)
+    if state is not None and state.status in {"COMPLETED", "NO_RESULTS"} and state.refreshed_at:
+        found.append(_comparable_utc(state.refreshed_at))
+    stored_at = _comparable_utc(notice.created_at)
+    sweeps: dict[str, list[IngestionJob]] = {}
+    for job in session.scalars(select(IngestionJob).where(
+            IngestionJob.source == BULK_SOURCE, IngestionJob.created_at >= stored_at)):
+        sweeps.setdefault(str((job.request_json or {}).get("sweep")), []).append(job)
+    for jobs in sweeps.values():
+        started = any(((job.request_json or {}).get("start") or {}).get("window") == 0
+                      and ((job.request_json or {}).get("start") or {}).get("page") == 1 for job in jobs)
+        finished = [job for job in jobs if job.status == "COMPLETED"
+                    and (job.request_json or {}).get("next") is None and job.completed_at]
+        if started and finished:
+            found.append(max(_comparable_utc(job.completed_at) for job in finished))
+    return max(found) if found else None
+
+
 @router.get("/notices/{notice_key}/award-intelligence", response_model=AwardIntelligenceOut)
 def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any]:
     """Analyse only stored three-year candidates; never performs a PPS request."""
@@ -3758,6 +3788,9 @@ def get_award_intelligence(notice_key: str, session: DbSession) -> dict[str, Any
         "demand_agency_name": scope.demand_agency_name,
         "keyword": keyword,
     }
+    searched_at = _award_lookup_completed_at(session, notice) if scope.available and keyword else None
+    result["search_criteria"]["lookup"] = "SEARCHED" if searched_at else "NOT_YET_SEARCHED"
+    result["search_criteria"]["searched_at"] = searched_at
     if not scope.available:
         result["warnings"].append("실제 발주처가 아직 확인되지 않아 낙찰 이력을 표시하지 않습니다.")
     result["period"] = {"from": cutoff.isoformat(), "to": as_of.date().isoformat(), "years": 3}

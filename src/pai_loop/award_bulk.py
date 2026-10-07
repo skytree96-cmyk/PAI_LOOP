@@ -30,7 +30,7 @@ from .api import _award_similarity, _comparable_utc
 from .award_automation import _active_notice_ids, _classification
 from .award_intelligence import build_annual_award_table
 from .award_scope import (OTHER_AGENCY_MIN_SIMILARITY, OTHER_AGENCY_SOURCE, award_core_matches, award_core_terms,
-                          award_title_matches, derive_award_keyword, filter_notice_awards,
+                          award_same_agency_title_matches, derive_award_keyword, filter_notice_awards,
                           filter_other_agency_awards, normalize_award_agency, resolve_notice_award_scope)
 from .integrations.awards import OpeningResultsIncomplete, PpsAwardClient, is_pps_rate_limit_error, normalise_award
 from .integrations.pps import PpsApiError, PpsClient, parse_paged_response, split_date_range
@@ -114,7 +114,9 @@ class _TargetIndex:
         candidates = list(self.by_code.get(code, ())) if code else list(self.coded_by_name.get(name, ()))
         candidates += self.uncoded_by_name.get(name, ())
         return [target for target in candidates
-                if target[1].matches_award(award) and award_title_matches(target[2], award.get("title"))]
+                if target[1].matches_award(award) and award_same_agency_title_matches(
+                    target[0].title, (target[1].demand_agency_name, target[1].announcing_agency_name),
+                    award.get("title"))]
 
 
 def _history_row(notice: Notice, award: dict[str, Any], *, source: str = "PPS",

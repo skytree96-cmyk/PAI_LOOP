@@ -348,3 +348,17 @@ def test_agency_migration_is_additive_idempotent_and_leaves_legacy_codes_unknown
             pending_migrations(engine)
     finally:
         engine.dispose()
+
+
+def test_same_agency_title_rule_accepts_editions_but_not_other_projects() -> None:
+    from pai_loop.award_scope import award_same_agency_title_matches as matches
+
+    title = "2026년 경찰청 공무원 리더십 역량강화 교육"
+    assert matches(title, ["경찰청"], "2025년 경찰 공무원 리더십 교육 위탁")
+    assert matches(title, ["경찰청"], "2025 경찰청공무원 리더십")  # spacing only
+    assert not matches(title, ["경찰청"], "2025 경찰청 홈페이지 유지보수")
+    assert not matches(title, ["경찰청"], "2024 리더십 역량강화 교육")  # one core word is not enough
+    # Generic words alone never stand in for the project once the agency name is dropped.
+    assert not matches("2026 SYN공단 교육 운영", ["SYN공단"], "2025 신입사원 교육")
+    # The strict keyword rule still holds and now tolerates punctuation.
+    assert award_title_matches("정당원 해외정책연수", "제1·2차 정당원 해외 정책연수")

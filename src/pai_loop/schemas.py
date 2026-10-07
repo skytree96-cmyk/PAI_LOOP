@@ -466,6 +466,10 @@ class AwardSearchCriteriaOut(ApiModel):
     status: Literal["AVAILABLE", "UNAVAILABLE"]
     demand_agency_name: str | None = None
     keyword: str | None = None
+    # Whether a three-year search has covered this notice yet, so an empty
+    # table can say "searched, none found" rather than "unknown".
+    lookup: Literal["SEARCHED", "NOT_YET_SEARCHED"] | None = None
+    searched_at: datetime | None = None
 
 
 class AwardIntelligenceOut(ApiModel):

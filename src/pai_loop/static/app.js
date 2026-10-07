@@ -8481,6 +8481,14 @@
       } else {
         const otherAgency = (meta.intelligence?.annual_award_table?.rows || []).some((row) => row.match_kind === "OTHER_AGENCY_SIMILAR");
         els.historyStatusText.textContent = `최근 3년 · ${criteria.demand_agency_name || "동일 발주처"} · ${criteria.keyword || "사업 키워드"} 기준입니다.${otherAgency ? " 이 발주처 기록이 없는 연도는 다른 기관의 유사 사업을 참고로 보여 줍니다." : ""}`;
+        const emptyTable = !(meta.intelligence?.annual_award_table?.rows || []).length;
+        if (emptyTable && criteria.lookup === "SEARCHED") {
+          els.historyStatusLabel.textContent = "조회 완료 · 기록 없음";
+          els.historyStatusText.textContent = `${criteria.searched_at ? `${formatKstDateTime(criteria.searched_at)}에 ` : ""}최근 3년 나라장터 낙찰 기록을 조회했지만 이 발주처의 같거나 비슷한 사업이 없습니다. 신규 사업이거나 수의계약·기관 자체 조달로 진행됐을 수 있습니다.`;
+        } else if (emptyTable && criteria.lookup === "NOT_YET_SEARCHED") {
+          els.historyStatusLabel.textContent = "조회 대기";
+          els.historyStatusText.textContent = "아직 최근 3년 낙찰 조회가 끝나지 않았습니다. 매일 새벽 일괄 조회에 포함되며, 끝나면 이 자리에 결과나 '기록 없음'이 표시됩니다.";
+        }
       }
     }
 
