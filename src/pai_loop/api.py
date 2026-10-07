@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import hashlib
 import json
 import re
@@ -60,6 +62,7 @@ from .integrations.openai_extraction import (
     SCHEMA_VERSION,
     OpenAIExtractionClient,
 )
+from .analysis_selection import MANUAL_ONLY_POLICY, manual_only_notice_keys
 from .models import (
     AnalysisRun,
     AtomicRequirement,
@@ -71,6 +74,7 @@ from .models import (
     IngestionJob,
     MockNotification,
     Notice,
+    NoticeAnalysisPolicy,
     NoticeVersion,
     PpsNoticeAuthority,
     RecommendationSnapshot,
@@ -100,6 +104,7 @@ from .pps_enrichment import (
     public_attachment_analysis_statuses,
     resolve_ingestion_keywords,
     industry_code_from_query,
+    STORE_ONLY_DISCOVERY_QUERIES,
     safe_public_live_extraction,
     safe_public_bound_extraction,
 )
@@ -139,6 +144,8 @@ from .schemas import (
 # 쌓지 않기 위한 경계이며, 초과분은 잘렸음을 표시하고 버린다.
 MAX_EORDER_NOTICES_PER_INGESTION = 5000
 MAX_EORDER_ROWS_PER_NOTICE = 4
+
+logger = logging.getLogger(__name__)
 
 
 def _revision_key(value: object) -> str:
@@ -553,6 +560,7 @@ def _summary(
     has_bid_outcome: bool = False,
     result_entry_status: str | None = None,
     now: datetime | None = None,
+    analysis_manual_only: bool = False,
 ) -> NoticeSummary:
     source_kind = _source_kind(notice)
     (
@@ -656,6 +664,7 @@ def _summary(
             latest is not None and has_current_independent_failure(notice, latest)
         ),
         qualification_status="NOT_EVALUATED" if authoritative_cancelled else valid_qualification,
+        analysis_manual_only=analysis_manual_only,
         historical_qualification=(
             {
                 "eligibility": valid_evaluation.eligibility,
@@ -1331,6 +1340,7 @@ def _notice_summaries_for_ids(
         authorities = _pps_authorities_by_notice_id(session, notices)
         outcome_notice_ids = _bid_outcome_notice_ids(session, batch_ids)
         result_states = _result_entry_states(session, batch_ids, department_id)
+        manual_only = manual_only_notice_keys(session, (notice.notice_key for notice in notices))
         summaries.extend(
             _summary(
                 notice,
@@ -1338,6 +1348,7 @@ def _notice_summaries_for_ids(
                 provider_authority=authorities.get(notice.id),
                 has_bid_outcome=notice.id in outcome_notice_ids,
                 result_entry_status=result_states.get(notice.id, "MISSING"),
+                analysis_manual_only=notice.notice_key in manual_only,
             )
             for notice in notices
         )
@@ -3464,7 +3475,7 @@ def ingest_pps_notices(
         raise
 
     try:
-        return _persist_pps_ingestion_result(
+        result = _persist_pps_ingestion_result(
             payload=payload,
             session=session,
             job=job,
@@ -3486,6 +3497,115 @@ def ingest_pps_notices(
             warning="수집 결과 저장 중 오류가 발생해 실행을 실패 처리했습니다.",
         )
         raise
+    if (
+        not payload.dry_run
+        and settings.store_only_discovery_enabled
+        and str(request.headers.get("x-pai-request-source") or "").startswith("n8n-daily")
+    ):
+        # The daily response the orchestrator analyses is final above; the
+        # store-only pass never changes it and never fails the daily run.
+        try:
+            stored = _run_store_only_discovery(
+                session, settings=settings, payload=payload,
+                main_bid_numbers={str(item.get("bid_notice_no") or "") for item in fetched_rows},
+            )
+            result.warnings.append(f"분석 없이 저장한 관련 공고 {stored}건(수동 분석 전용).")
+        except Exception:
+            session.rollback()
+            logger.exception("store-only discovery failed")
+            result.warnings.append("관련 공고 추가 저장(분석 없음)을 이번 실행에서 건너뛰었습니다.")
+    return result
+
+
+def _run_store_only_discovery(
+    session: Session,
+    *,
+    settings: Any,
+    payload: PpsIngestionRequest,
+    main_bid_numbers: set[str],
+) -> int:
+    """Store notices only the extra terms find, as MANUAL_ONLY, without analysis.
+
+    A notice whose bid number is already stored (any revision) or was found by
+    the daily terms is left alone, so an automatically analysed notice and its
+    amendments never lose their automation. The policy row is written before
+    the notice becomes visible, exactly like an operator's manual save.
+    """
+
+    deadline = time.monotonic() + 120
+    rows: list[dict[str, Any]] = []
+    with PpsClient(
+        service_key=settings.pps_api_key,
+        base_url=settings.pps_base_url,
+        timeout_seconds=12,
+        max_retries=1,
+    ) as client:
+        for query in STORE_ONLY_DISCOVERY_QUERIES:
+            if time.monotonic() >= deadline:
+                break
+            code = industry_code_from_query(query)
+            for item in client.iter_notices(
+                operation_path=settings.pps_notice_operation,
+                start=payload.from_date,
+                end=payload.to_date,
+                rows=payload.page_size,
+                max_pages=payload.max_pages,
+                extra_params={"indstrytyCd": code} if code else {"bidNtceNm": query},
+                deadline_monotonic=deadline,
+            ):
+                safe_item = dict(item)
+                safe_item["_search_keywords"] = [query]
+                rows.append(safe_item)
+        api_calls = client.request_count
+    bid_numbers = {
+        str(item.get("bid_notice_no") or "") for item in rows
+        if item.get("bid_notice_no") and item.get("title") and item.get("deadline") is not None
+        and str(item.get("notice_kind") or "").strip() != "취소공고"
+    } - main_bid_numbers - {""}
+    if not bid_numbers:
+        return 0
+    stored = set(session.scalars(select(Notice.bid_notice_no).where(Notice.bid_notice_no.in_(bid_numbers))).all())
+    fresh = bid_numbers - stored
+    new_rows = [item for item in rows if str(item.get("bid_notice_no") or "") in fresh
+                and item.get("deadline") is not None and item.get("title")]
+    if not new_rows:
+        return 0
+    for item in new_rows:
+        key = _pps_notice_key(item)
+        policy = session.get(NoticeAnalysisPolicy, key)
+        if policy is None:
+            session.add(NoticeAnalysisPolicy(
+                notice_key=key, bid_notice_no=str(item["bid_notice_no"]),
+                analysis_policy=MANUAL_ONLY_POLICY, policy_source="STORE_ONLY_DISCOVERY",
+            ))
+    session.commit()
+    job = IngestionJob(
+        source="PPS_STORE_ONLY", mode="LIVE", status="RUNNING",
+        window_json={"from": payload.from_date.isoformat(), "to": payload.to_date.isoformat()},
+        keyword=f"MULTI:{len(STORE_ONLY_DISCOVERY_QUERIES)}",
+        request_json={"scope": "STORE_ONLY_DISCOVERY", "analysis_requested": False,
+                      "queries": list(STORE_ONLY_DISCOVERY_QUERIES)},
+        notice_keys=[], warnings=[],
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    store_payload = PpsIngestionRequest(
+        from_date=payload.from_date, to_date=payload.to_date,
+        page_size=payload.page_size, max_pages=payload.max_pages, dry_run=False,
+    )
+    try:
+        stored_result = _persist_pps_ingestion_result(
+            payload=store_payload, session=session, job=job, fetched_rows=new_rows, api_calls=api_calls,
+            hit_page_limit=False, hit_time_limit=False, profile_truncated=False,
+            keywords_used=[], provider_query_count=len(STORE_ONLY_DISCOVERY_QUERIES),
+            department_coverage_count=0,
+        )
+    except Exception:
+        _mark_pps_job_failed(session, job_id=job.id, error_code="PPS_PERSISTENCE_ERROR",
+                             warning="분석 없이 저장하는 관련 공고 수집이 실패했습니다.")
+        raise
+    return len(stored_result.created_notice_keys)
 
 
 @router.get("/ingestion/jobs", response_model=list[IngestionJobOut])
