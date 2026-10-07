@@ -4776,6 +4776,14 @@
     return !isCancelledNotice(notice) && managerOverridesEligibility(notice, status) ? "PASS" : status;
   }
 
+  // 판정 기준(정책) 배포 직후 재분석 전까지, 원문이 그대로인 이전 충족·부적격 판정을 표시한다.
+  function previousPolicyQualification(notice) {
+    const historical = notice?.historicalQualification;
+    return !isCancelledNotice(notice) && notice.qualificationStatus === "NOT_EVALUATED"
+      && historical?.scope === "PREVIOUS_POLICY_PENDING_REANALYSIS"
+      && ["PASS", "FAIL"].includes(historical.eligibility);
+  }
+
   function storedDashboardEligibilityStatus(notice) {
     // Current qualification and retained cancellation history are separate.
     // In particular, UNKNOWN/NOT_EVALUATED must never become REVIEW here.
@@ -4787,6 +4795,7 @@
         ? historical.eligibility : "NOT_EVALUATED";
     }
     if (notice.eligibilityIndependentFailure && notice.qualificationStatus === "FAIL") return "FAIL";
+    if (previousPolicyQualification(notice)) return notice.historicalQualification.eligibility;
     if (notice.sourceKind === "PPS" && !notice.analysisAttachmentCoverageComplete) return "NOT_EVALUATED";
     if (["PASS", "REVIEW", "FAIL", "NOT_EVALUATED"].includes(notice.qualificationStatus)) return notice.qualificationStatus;
     return notice.analysisState === "EVALUATED"
@@ -9635,6 +9644,10 @@
       const historical = dashboardEligibilityStatus(notice);
       const label = historical === "NOT_EVALUATED" ? "당시 자격 미확인" : `당시 ${historical}`;
       return `<span class="analysis-state" title="취소 공고로 과거 자격 판정을 현재 상태로 사용하지 않습니다">취소 공고 · ${label}</span>`;
+    }
+    if (previousPolicyQualification(notice)) {
+      const value = notice.historicalQualification.eligibility;
+      return `<span class="status-pill status-pill--${value.toLowerCase()}" title="판정 기준이 바뀌어 재분석을 기다리는 중입니다. 원문은 그대로라 이전 기준 판정을 표시합니다.">${escapeHtml(STATUS_LABELS[value])} · 이전 기준</span>`;
     }
     if (notice.historicalAnalysis) {
       const value = STATUS_LABELS[notice.eligibilityStatus] ? notice.eligibilityStatus : "UNKNOWN";
