@@ -331,6 +331,26 @@ class PpsNoticeAuthority(Base, TimestampMixin):
     authority_sha256: Mapped[str] = mapped_column(String(64))
 
 
+class EligibilityConfirmation(Base, TimestampMixin):
+    """A person's answer to a notice-level eligibility question (2026-10-07).
+
+    Bound to the PPS metadata version it answered; a newer version asks again.
+    Revoked rows stay for the audit trail.
+    """
+
+    __tablename__ = "eligibility_confirmations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    notice_id: Mapped[str] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), index=True)
+    notice_key: Mapped[str] = mapped_column(String(160), index=True)
+    question_key: Mapped[str] = mapped_column(String(64))
+    answer: Mapped[str] = mapped_column(String(8))
+    basis_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_account_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_label: Mapped[str] = mapped_column(String(160), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class NoticeAnalysisPolicy(Base, TimestampMixin):
     """Durable opt-in boundary for notices discovered outside automation.
 

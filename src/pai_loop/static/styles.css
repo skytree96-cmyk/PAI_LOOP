@@ -8094,3 +8094,11 @@ details.document-analysis-item > summary::after { content: '+'; flex: 0 0 auto; 
 details.document-analysis-item[open] > summary::after { content: '−'; }
 details.document-analysis-item > summary > strong { flex: 1 1 auto; }
 details.document-analysis-item[open] > .document-analysis-item__body { margin-top: 8px; }
+
+.eligibility-question { border: 1px solid var(--amber); background: var(--amber-pale); border-radius: 10px; padding: 12px 14px; margin: 0 0 10px; }
+.eligibility-question.is-answered { border-color: var(--line, #d9ded9); background: transparent; }
+.eligibility-question-title { font-weight: 600; margin: 0 0 4px; }
+.eligibility-question-context, .eligibility-question-meta { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+.eligibility-question-answer { margin: 0 0 4px; }
+.eligibility-question-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.requirement-action { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; font-weight: 400; }
