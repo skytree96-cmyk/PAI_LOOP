@@ -4307,11 +4307,15 @@ def requirement_policy(
             requirements_by_fingerprint[fingerprint] = requirement
 
     requirements = list(requirements_by_fingerprint.values())
+    from .eligibility_confirmations import confirmation_records, current_confirmations
+
     classified = classify_requirements(
         requirements,
         profile=load_public_company_profile(),
         deadline=notice.deadline,
+        confirmations=current_confirmations(session, notice),
     )
+    classified["confirmations"] = [] if public_view else confirmation_records(session, notice)
     stored_evaluation = _latest_evaluation(notice)
     classified["eligibility_overall"] = reconcile_eligibility_overall(
         stored_evaluation.eligibility if stored_evaluation else None,

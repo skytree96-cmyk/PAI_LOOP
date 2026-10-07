@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.10.05-v22"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.07-v23"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -2903,12 +2903,99 @@ def reconcile_eligibility_overall(
     return {"status": status, "cards_status": cards_status}
 
 
+# 2026-10-07: a person answers the one question the company's nonprofit status
+# leaves open in a notice ("does this service fall within the exception?").
+# The answer maps the clause onto facts the company already confirmed: YES ->
+# the nonprofit route (nonprofit_entity), NO -> the certificate it lacks. Nothing
+# passes automatically; without an answer the clause stays REVIEW.
+NONPROFIT_CONFIRMATION_QUESTION_KEY = "NONPROFIT_EXCEPTION_APPLIES"
+CONFIRMABLE_NONPROFIT_FACT_KEYS = frozenset({
+    "nonprofit_alternative_qualified_vague", "nonprofit_alternative_purpose",
+    "nonprofit_alternative_unrecognised", "nonprofit_alternative_qualified_form",
+    "small_business_nonprofit_exception_scope", "direct_production_nonprofit_exception_scope",
+})
+# What a person should do next for clauses the company profile cannot decide.
+REVIEW_ACTIONS = {
+    "notice_entity_eligibility": "공고 원문에서 법인·사업자 유형 조건을 회사가 충족하는지 확인하세요.",
+    "notice_sanction_eligibility": "발주기관이 정한 제재·결격 사유에 회사가 해당하지 않는지 확인하세요.",
+    "compound_notice_specific_qualification": "함께 적힌 등록·확인서를 하나씩 최신본으로 확인하세요.",
+    "compound_company_status_qualification": "회사 정보에 없는 상태 조건(소송·정리절차 등)만 따로 확인하세요.",
+    "compound_sanction_and_financial_qualification": "부정당 제재와 부도·신용 상태를 각각 확인하세요.",
+    "notice_industry_code_eligibility": "나라장터 등록 업종·종목이 공고 조건과 맞는지 확인하세요.",
+    "notice_certification_eligibility": "공고가 요구한 인증·등록을 회사가 보유했는지 확인하세요.",
+    "notice_region_eligibility": "본점·사업장 소재지가 공고의 지역 제한에 맞는지 확인하세요.",
+    "general_travel_business": "여행업 등록증이 공고일 현재 유효한지 사본으로 확인하세요.",
+}
+
+
+def _nonprofit_question_text(condition: str) -> str:
+    purpose = re.search(r"([가-힣·ㆍ\s]{2,20}?)\s*(?:용역|분야|목적)(?:의|인)?\s*경우", condition)
+    if re.search(r"학술|연구", condition):
+        return "이 용역이 공고가 비영리법인 참여를 허용한 학술·연구 용역에 해당하나요?"
+    if purpose:
+        return f"이 용역이 공고가 비영리법인 참여를 허용한 '{purpose.group(1).strip()}' 범위에 해당하나요?"
+    if re.search(r"사회\s*복지|특별\s*법인|법인\s*형태", condition):
+        return "회사가 공고가 허용한 법인 형태(예: 사회복지법인·특별법인)에 해당하나요?"
+    return "회사(비영리법인)가 공고가 확인서 조건의 예외로 허용한 비영리법인에 해당하나요?"
+
+
+def _certificate_fact_for(condition: str) -> str:
+    if re.search(r"직접\s*생산", condition):
+        return "direct_production_certificate"
+    if re.search(r"소기업|소상공인", condition):
+        return "small_business_certificate"
+    return "sme_certificate"
+
+
+def nonprofit_confirmation_question(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The single notice-level question, or None when no clause needs it."""
+    confirmable = [item for item in items
+                   if item.get("company_fact_key") in CONFIRMABLE_NONPROFIT_FACT_KEYS
+                   or item.get("confirmation_answer") is not None]
+    if not confirmable:
+        return None
+    ordered = sorted(confirmable, key=lambda item: 0 if re.search(r"학술|연구|경우", item.get("condition") or "") else 1)
+    return {
+        "key": NONPROFIT_CONFIRMATION_QUESTION_KEY,
+        "question": _nonprofit_question_text(ordered[0].get("condition") or ""),
+        "context": "회사는 소기업·중소기업 확인서가 없는 비영리법인입니다. 해당하면 충족, 아니면 부적격으로 확정합니다.",
+        "requirement_ids": [item.get("requirement_id") for item in confirmable],
+        "conditions": [item.get("condition") for item in confirmable],
+        "answer": next((item.get("confirmation_answer") for item in confirmable if item.get("confirmation_answer")), None),
+    }
+
+
+def _apply_nonprofit_confirmation(
+    item: dict[str, Any], requirement: dict[str, Any], *, answer: str, profile: dict[str, Any],
+    deadline: date | None, today: date,
+) -> dict[str, Any]:
+    condition = item.get("condition") or ""
+    if answer == "YES":
+        confirmed = _eligibility_item(
+            requirement, profile=profile, fact_key="nonprofit_entity", deadline=deadline, today=today,
+            pass_outcome="PASS_EXCEPTION",
+            message="담당자가 이 공고의 비영리법인 예외에 회사가 해당한다고 확인했습니다.",
+        )
+    else:
+        fact_key = _certificate_fact_for(condition)
+        confirmed = _eligibility_item(
+            requirement, profile=profile, fact_key=fact_key, deadline=deadline, today=today,
+            message="담당자가 비영리법인 예외에 해당하지 않는다고 확인했습니다.",
+            fail_on_confirmed_absence=True,
+            failure_message="담당자가 비영리법인 예외에 해당하지 않는다고 확인했고, 회사는 이 확인서가 없습니다.",
+        )
+    confirmed["confirmation_answer"] = answer
+    confirmed["confirmation_question_key"] = NONPROFIT_CONFIRMATION_QUESTION_KEY
+    return confirmed
+
+
 def classify_requirements(
     requirements: list[dict[str, Any]],
     *,
     profile: dict[str, Any],
     deadline: date | datetime | str | None,
     evaluation_date: date | datetime | str | None = None,
+    confirmations: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Classify extracted conditions without turning every clause into eligibility.
 
@@ -3636,6 +3723,23 @@ def classify_requirements(
             item["nonprofit_route_requirement_ids"] = list(notice_sme_source_ids)
         items.append(item)
 
+    answer = (confirmations or {}).get(NONPROFIT_CONFIRMATION_QUESTION_KEY)
+    if answer in {"YES", "NO"}:
+        by_id = {str(requirement.get("requirement_id")): requirement for requirement in requirements}
+        items = [
+            _apply_nonprofit_confirmation(item, by_id[str(item.get("requirement_id"))], answer=answer,
+                                          profile=profile, deadline=as_of, today=today)
+            if item.get("company_fact_key") in CONFIRMABLE_NONPROFIT_FACT_KEYS
+            and str(item.get("requirement_id")) in by_id else item
+            for item in items
+        ]
+    question = nonprofit_confirmation_question(items)
+    for item in items:
+        if item.get("policy_class") == "ELIGIBILITY" and item.get("outcome") == "REVIEW":
+            if item.get("company_fact_key") in CONFIRMABLE_NONPROFIT_FACT_KEYS and question:
+                item["action"] = "담당자 판단 필요: " + question["question"]
+            elif item.get("company_fact_key") in REVIEW_ACTIONS:
+                item["action"] = REVIEW_ACTIONS[item["company_fact_key"]]
     display_items = group_equivalent_policy_items(items)
     counts = Counter(item["policy_class"] for item in display_items)
     groups = {
@@ -3656,6 +3760,7 @@ def classify_requirements(
         "blocking_items": sum(bool(item["blocking"]) for item in items),
         "items": items,
         "display_items": display_items,
+        "confirmation_questions": [question] if question else [],
         "duplicate_count": len(items) - len(display_items),
         "verdict_counts": dict(Counter(
             "P" if item["outcome"].startswith("PASS") else "F" if item["outcome"] == "FAIL_CONFIRMED" else "R"

@@ -787,6 +787,12 @@
     });
     els.historyAwardYearFilters.addEventListener("click", handleAwardHistoryViewChange);
     els.historyAwardViewButtons.addEventListener("click", handleAwardHistoryViewChange);
+    els.requirementList.addEventListener("click", (event) => {
+      const answer = event.target.closest("[data-confirm-answer]");
+      const revoke = event.target.closest("[data-confirm-revoke]");
+      if (answer) submitEligibilityConfirmation(answer.dataset.confirmKey, answer.dataset.confirmAnswer);
+      else if (revoke) submitEligibilityConfirmation(revoke.dataset.confirmRevoke, "REVOKE");
+    });
     [els.requirementList, els.actionList].forEach((list) => {
       list.addEventListener("click", (event) => {
         const button = event.target.closest("[data-evidence-jump]");
@@ -7191,6 +7197,8 @@
       policyVersion: stringValue(firstValue(source.policy_version, source.policyVersion), "미확인"),
       note: stringValue(firstValue(source.decision_boundary, source.decisionBoundary), "적격성, 행동필요, 체크리스트, 정보를 서로 분리합니다."),
       matches: arrayValue(firstValue(source.display_items, source.items)).map(normalizePrivateMatchItem),
+      confirmationQuestions: arrayValue(source.confirmation_questions).filter((item) => item && item.key && item.question),
+      confirmations: arrayValue(source.confirmations),
       verdictCounts: firstObject(source.verdict_counts),
       eligibilityOverall: stringValue(firstObject(firstValue(source.eligibility_overall, source.eligibilityOverall)).status).toUpperCase(),
     };
@@ -7221,6 +7229,7 @@
       evidenceState: stringValue(firstValue(source.evidence_state, source.evidenceState), "NOT_REQUIRED"),
       deadlineCheckRequired: booleanValue(firstValue(source.deadline_check_required, source.deadlineCheckRequired)) ?? false,
       message: stringValue(source.message),
+      action: stringValue(source.action),
       detailLines: collectPrivateMatchDetails(source, condition),
       evidence: Object.keys(evidence).length ? {
         name: stringValue(firstValue(evidence.display_name, evidence.displayName), "공개 증빙"),
@@ -7264,6 +7273,7 @@
           description,
           sourceConditions: item.sourceConditions,
           duplicateCount: item.duplicateCount,
+          action: item.action,
           status,
           evidenceId: "",
           reasonCode: outcome,
@@ -7282,9 +7292,16 @@
     // The aggregate pill follows effectiveEligibilityStatus, which derives it
     // from the displayed cards (F → 미충족, 모두 P → 충족) so the two never disagree.
     els.eligibilityOverall.innerHTML = analysisStatusPill(notice);
+    const previewData = state.privateMatchPreviews[notice?.noticeKey]?.status === "ready"
+      ? state.privateMatchPreviews[notice.noticeKey].data : null;
+    const actionsById = new Map(arrayValue(previewData?.matches)
+      .filter((item) => item.action).map((item) => [item.requirementId, item.action]));
+    const questionHtml = renderEligibilityQuestions(notice, previewData);
     if (requirements.length) {
       const order = { FAIL: 0, REVIEW: 1, UNKNOWN: 1, PASS_EXCEPTION: 2, PASS_CURRENT: 3, PASS: 3 };
-      els.requirementList.innerHTML = requirements.slice().sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1)).map(renderRequirement).join("");
+      els.requirementList.innerHTML = questionHtml + requirements.slice()
+        .map((item) => (item.action || !actionsById.has(item.id) ? item : { ...item, action: actionsById.get(item.id) }))
+        .sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1)).map(renderRequirement).join("");
       return;
     }
     if (publicEligibilityPolicyPending(notice)) {
@@ -7480,6 +7497,63 @@
       </div>`).join("");
   }
 
+  // 2026-10-07: the one question a person answers when the company's nonprofit
+  // status leaves a notice's certificate exception open. The answer is saved,
+  // the free analysis re-runs, and an amended notice asks again.
+  function renderEligibilityQuestions(notice, previewData) {
+    const questions = arrayValue(previewData?.confirmationQuestions);
+    if (!questions.length || isCancelledNotice(notice)) return "";
+    const canAnswer = state.source === "api" && Boolean(state.accountSession?.authenticated);
+    const records = arrayValue(previewData?.confirmations);
+    return questions.map((question) => {
+      const answer = stringValue(question.answer).toUpperCase();
+      const record = records.find((item) => item?.question_key === question.key && item.current);
+      if (answer === "YES" || answer === "NO") {
+        const who = record ? `${escapeHtml(stringValue(record.confirmed_by))} · ${escapeHtml(formatRelativeDateTime(record.confirmed_at))}` : "담당자 확인";
+        return `
+      <div class="eligibility-question is-answered" data-question-key="${escapeAttribute(question.key)}">
+        <p class="eligibility-question-title">${escapeHtml(question.question)}</p>
+        <p class="eligibility-question-answer">${answer === "YES" ? "해당함 → 충족으로 확정" : "해당 안 함 → 부적격으로 확정"}</p>
+        <p class="eligibility-question-meta">${who}${canAnswer ? ` · <button type="button" class="link-button" data-confirm-revoke="${escapeAttribute(question.key)}">되돌리기</button>` : ""}</p>
+      </div>`;
+      }
+      const conditions = arrayValue(question.conditions).map((text) => `<li>${escapeHtml(stringValue(text))}</li>`).join("");
+      return `
+      <div class="eligibility-question" data-question-key="${escapeAttribute(question.key)}">
+        <p class="eligibility-question-title">담당자 판단 필요 · ${escapeHtml(question.question)}</p>
+        <p class="eligibility-question-context">${escapeHtml(stringValue(question.context))}</p>
+        ${conditions ? `<details><summary>근거 조항 ${arrayValue(question.conditions).length}개 보기</summary><ul>${conditions}</ul></details>` : ""}
+        ${canAnswer ? `<div class="eligibility-question-actions">
+          <button type="button" data-confirm-answer="YES" data-confirm-key="${escapeAttribute(question.key)}">해당함 → 충족</button>
+          <button type="button" data-confirm-answer="NO" data-confirm-key="${escapeAttribute(question.key)}">해당 안 함 → 부적격</button>
+        </div>` : `<p class="eligibility-question-meta">부서 계정으로 로그인하면 답할 수 있습니다.</p>`}
+      </div>`;
+    }).join("");
+  }
+
+  async function submitEligibilityConfirmation(questionKey, answer) {
+    const notice = state.selectedNotice;
+    if (!notice || state.source !== "api") return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    const path = `/notices/${encodeURIComponent(notice.noticeKey)}/eligibility-confirmations`;
+    try {
+      if (answer === "REVOKE") {
+        await apiRequest(`${path}/${encodeURIComponent(questionKey)}`, { method: "DELETE", headers });
+      } else {
+        await apiRequest(path, { method: "POST", headers, body: JSON.stringify({ question_key: questionKey, answer }) });
+      }
+      const refreshed = await hydrateNoticeByKey(notice.noticeKey, { force: true });
+      if (state.selectedNotice?.noticeKey === notice.noticeKey) state.selectedNotice = refreshed;
+      await loadPrivateMatchPreview(notice.noticeKey, { force: true });
+      renderAll();
+      showToast(answer === "REVOKE" ? "확인을 되돌렸습니다" : "확인을 저장했습니다",
+        answer === "REVOKE" ? "다시 담당자 판단 필요 상태로 돌아갑니다." : "자격 판정을 다시 계산했습니다.", "success");
+    } catch (error) {
+      showToast("확인 저장 오류", humanizeError(error), "warning");
+    }
+  }
+
   function renderRequirement(requirement) {
     const verdictLabel = ({ PASS: "P · 충족", PASS_CURRENT: "P · 충족", PASS_EXCEPTION: "P · 예외 충족", FAIL: "F · 미충족", REVIEW: "R · 확인 필요" })[requirement.status];
     const mode = requirement.status.toLowerCase();
@@ -7492,7 +7566,7 @@
       <details class="requirement-item is-${escapeAttribute(mode)}">
         <summary>
         <span class="requirement-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${icon}</svg></span>
-        <span class="requirement-copy"><strong>${escapeHtml(requirement.title)}</strong></span>
+        <span class="requirement-copy"><strong>${escapeHtml(requirement.title)}</strong>${requirement.action && requirement.status === "REVIEW" ? `<small class="requirement-action">할 일 · ${escapeHtml(requirement.action)}</small>` : ""}</span>
         <span class="requirement-status">${escapeHtml(verdictLabel || STATUS_LABELS[requirement.status] || STATUS_LABELS.UNKNOWN)}</span>
         </summary>
         <div class="requirement-description"><p>${escapeHtml(requirement.description)}</p>

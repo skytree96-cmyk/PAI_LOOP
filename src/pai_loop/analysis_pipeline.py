@@ -733,6 +733,7 @@ def _policy_items(
     *,
     notice: Notice,
     profile: dict[str, Any],
+    confirmations: dict[str, str] | None = None,
 ) -> list[tuple[_MergedRequirement, dict[str, Any]]]:
     expanded: list[_MergedRequirement] = []
     for item in merged:
@@ -759,6 +760,7 @@ def _policy_items(
         requirements,
         profile=profile,
         deadline=notice.deadline,
+        confirmations=confirmations,
     )
     classified_items = classified["items"]
     expected_keys = [item.requirement_key for item in merged]
@@ -2105,7 +2107,10 @@ def run_analysis_pipeline(
                 for version in selected_versions
             ]
             merged = _merge_requirements(sources)
-            policy_items = _policy_items(merged, notice=notice, profile=profile)
+            from .eligibility_confirmations import current_confirmations
+
+            confirmations = current_confirmations(session, notice)
+            policy_items = _policy_items(merged, notice=notice, profile=profile, confirmations=confirmations)
             materialized_policy_items = [
                 pair for pair in policy_items if _is_materialized_policy_item(*pair)
             ]
@@ -2251,6 +2256,7 @@ def run_analysis_pipeline(
                         for fact in prototype_company_facts
                     ]),
                     "notice_basis_sha256": notice_basis_sha256,
+                    "eligibility_confirmations": confirmations,
                     "sources": source_semantics,
                     "pps_manifest_basis": pps_manifest_basis,
                     "company_facts": fact_manifest,
