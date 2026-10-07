@@ -302,6 +302,8 @@ class NoticeSummary(ApiModel):
     top_department_rankings: list[DepartmentRankingOut] = Field(default_factory=list)
     department_review_candidates: list[DepartmentRankingOut] = Field(default_factory=list)
     region_routing: list[DepartmentRankingOut] = Field(default_factory=list)
+    # Stored for people to see but excluded from every automatic analysis path.
+    analysis_manual_only: bool = False
 
     @field_serializer("provider_changed_at", when_used="json")
     def serialize_provider_changed_at(
