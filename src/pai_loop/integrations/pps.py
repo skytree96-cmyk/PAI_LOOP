@@ -311,6 +311,25 @@ class PpsClient:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
+    def _get_bounded(self, path: str, params: dict[str, Any], timeout: float) -> httpx.Response:
+        """GET with a wall-clock ceiling of twice the phase timeout.
+
+        httpx timeouts bound each connect/read wait, not the whole response, so
+        a provider that keeps trickling bytes could hold the caller forever.
+        """
+        deadline = time.monotonic() + 2 * timeout
+        with self._client.stream("GET", path, params=params, timeout=timeout) as response:
+            chunks = []
+            for chunk in response.iter_bytes():
+                chunks.append(chunk)
+                if time.monotonic() > deadline:
+                    raise httpx.ReadTimeout("PPS response exceeded its wall-clock limit", request=response.request)
+        # iter_bytes already decoded any content encoding.
+        headers = [(k, v) for k, v in response.headers.multi_items()
+                   if k.lower() not in {"content-encoding", "content-length", "transfer-encoding"}]
+        return httpx.Response(response.status_code, headers=headers, content=b"".join(chunks),
+                              request=response.request)
+
     def _request(
         self,
         operation_path: str,
@@ -330,11 +349,7 @@ class PpsClient:
                     self._request_budget.reserve()
                 with self._request_count_lock:
                     self.request_count += 1
-                response = self._client.get(
-                    operation_path.lstrip("/"),
-                    params=request_params,
-                    timeout=request_timeout,
-                )
+                response = self._get_bounded(operation_path.lstrip("/"), request_params, request_timeout)
             except httpx.RequestError as exc:
                 if attempt >= self._max_retries:
                     raise PpsApiError("PPS API 네트워크 요청이 실패했습니다.", error_type="NETWORK_ERROR") from exc

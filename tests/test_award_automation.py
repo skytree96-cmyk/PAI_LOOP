@@ -534,3 +534,51 @@ def test_scope_changed_after_plan_is_recorded_when_claimed(client, setup, monkey
         session.commit()
     assert post(client, "run")["complete"] == 1
     assert post(client, "plan")["requeued"] == 0
+
+
+def test_plan_fails_fast_instead_of_parking_a_worker_behind_a_held_lock(client, setup, monkeypatch):
+    # 2026-10-07: one stuck /plan held the lock and every later W14 cycle
+    # queued a thread behind it until the site stopped answering.
+    monkeypatch.setattr(module, "LOCK_WAIT_SECONDS", 0.05)
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with module._PROCESS_LOCK:
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert held.wait(5)
+        result = client.post(f"{BASE}/plan", json={})
+        assert result.status_code == 503
+        assert result.json()["detail"] == "AWARD_REFRESH_BUSY"
+    finally:
+        release.set()
+        holder.join(5)
+    assert client.post(f"{BASE}/plan", json={}).status_code == 200
+
+
+def test_only_one_plan_cycle_runs_provider_steps_at_a_time(client, setup, monkeypatch):
+    from pai_loop import award_bulk
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slow_step(session, settings, now):
+        calls.append("slow")
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(module, "_run_follows", lambda snapshot: False)
+    monkeypatch.setattr(award_bulk, "advance_bulk_sweep", slow_step)
+    monkeypatch.setattr(award_bulk, "advance_opening_backfill", lambda *args: calls.append("opening"))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(client.post, f"{BASE}/plan", json={})
+        assert entered.wait(5)
+        # A later cycle answers at once and never queues behind the provider I/O.
+        assert client.post(f"{BASE}/plan", json={}).status_code == 200
+        assert calls == ["slow"]
+        release.set()
+        assert first.result(5).status_code == 200
+    assert calls == ["slow", "opening"]

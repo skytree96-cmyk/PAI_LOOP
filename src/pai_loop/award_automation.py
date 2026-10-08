@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import case, or_, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, selectinload
 
 from .api import (DbSession, _comparable_utc, _derive_award_keyword,
@@ -33,6 +34,13 @@ BATCH_WALL_SECONDS = 480
 MIN_NOTICE_WALL_SECONDS = 60
 _LOCK_KEY = 0x504149415752
 _PROCESS_LOCK = threading.RLock()
+# Waiting on the queue lock is bounded. On 2026-10-07 one stuck /plan held the
+# lock and every later W14 cycle parked a worker thread behind it until the
+# 40-thread pool was gone and the whole site stopped answering.
+LOCK_WAIT_SECONDS = 30
+# At most one planner thread spends its cycle on provider I/O; later cycles
+# skip the step instead of queueing behind it.
+_PROVIDER_STEP_LOCK = threading.Lock()
 _SERVICE_CATEGORIES = {"용역", "일반용역", "학술연구용역", "기술용역", "SERVICE", "SERVICES"}
 router = APIRouter(prefix="/api/v1/operations/award-refresh", tags=["operations"],
                    dependencies=[Depends(require_api_key)])
@@ -59,15 +67,25 @@ def _now() -> datetime:
 @contextmanager
 def _serialized(session: Session):
     """Serialize claims and budget reservations across production processes."""
-    with _PROCESS_LOCK:
+    if not _PROCESS_LOCK.acquire(timeout=LOCK_WAIT_SECONDS):
+        raise HTTPException(503, "AWARD_REFRESH_BUSY")
+    try:
         if session.get_bind().dialect.name == "postgresql":
-            session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _LOCK_KEY})
+            # lock_timeout bounds the advisory wait as well as row locks.
+            session.execute(text(f"SET LOCAL lock_timeout = '{LOCK_WAIT_SECONDS}s'"))
+            try:
+                session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _LOCK_KEY})
+            except OperationalError as exc:
+                session.rollback()
+                raise HTTPException(503, "AWARD_REFRESH_BUSY") from exc
         try:
             yield
             session.commit()
         except Exception:
             session.rollback()
             raise
+    finally:
+        _PROCESS_LOCK.release()
 
 
 def _classification(notice: Notice, active_ids: set[str]) -> tuple[str, str | None]:
@@ -292,11 +310,15 @@ def plan_award_refresh(payload: PlanRequest, request: Request, session: DbSessio
         # which has its own PPS quota; the W14 execution limit (570 s) cannot
         # hold both this step and a /run batch, so they never share a cycle.
         from . import award_bulk
-        for step in (award_bulk.advance_bulk_sweep, award_bulk.advance_opening_backfill):
+        if _PROVIDER_STEP_LOCK.acquire(blocking=False):
             try:
-                step(session, request.app.state.settings, now)
-            except Exception:
-                session.rollback()
+                for step in (award_bulk.advance_bulk_sweep, award_bulk.advance_opening_backfill):
+                    try:
+                        step(session, request.app.state.settings, now)
+                    except Exception:
+                        session.rollback()
+            finally:
+                _PROVIDER_STEP_LOCK.release()
     return {**result, "status": "PLANNED", "enrolled": enrolled, "requeued": requeued}
 
 
