@@ -25,13 +25,17 @@ from .models import IngestionJob, Notice, PpsNoticeAuthority, new_id
 from .schemas import AwardHistoryRefreshRequest
 
 SCHEMA = "award-refresh-automation-1.0"
-LEASE_SECONDS = 900  # Longer than the existing 480-second collector wall limit.
+LEASE_SECONDS = 900  # Longer than the 480-second collector wall limit and the 400-second batch.
 MAX_CYCLE_ATTEMPTS = 3
 # W10 ingests daily, so notices that arrived within this window are the fresh
 # intake and outrank the historical backlog for whatever budget exists.
 NEW_ARRIVAL_WINDOW = timedelta(days=2)
-BATCH_WALL_SECONDS = 480
-MIN_NOTICE_WALL_SECONDS = 60
+# n8n W14 calls /run with a 520-second HTTP timeout. A notice's provider reads
+# stop at this deadline, but its stores and opening-result follow-up run after
+# it; 2026-10-08 12:00 KST a batch took 429 s. Keep 120 s of headroom and start
+# no notice that has less than 90 s left.
+BATCH_WALL_SECONDS = 400
+MIN_NOTICE_WALL_SECONDS = 90
 _LOCK_KEY = 0x504149415752
 _PROCESS_LOCK = threading.RLock()
 # Waiting on the queue lock is bounded. On 2026-10-07 one stuck /plan held the
