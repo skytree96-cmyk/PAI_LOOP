@@ -4,7 +4,6 @@ The shared fixture rejects remote/production URLs, creates one generated SYN
 schema, and skips unconfigured local runs. No real provider is called.
 """
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from threading import Event
 from types import SimpleNamespace
@@ -34,7 +33,7 @@ def _app(engine, monkeypatch):
     monkeypatch.setattr(module, "_source_kind", lambda notice: "PPS")
     # Remove the single-process fallback: these tests must prove that the real
     # PostgreSQL transaction lock alone arbitrates different worker sessions.
-    monkeypatch.setattr(module, "_PROCESS_LOCK", nullcontext())
+    monkeypatch.setattr(module, "_PROCESS_LOCK", SimpleNamespace(acquire=lambda timeout: True, release=lambda: None))
     now = datetime.now(timezone.utc)
     with app.state.session_factory() as session:
         notice = Notice(notice_key="SYN-PG-AWARD-QUEUE", bid_notice_no="SYN-PG-AWARD",
