@@ -60,7 +60,7 @@ def test_remaining_budget_is_reserved_without_wasting_full_cap(client, setup, mo
         assert result["status"] == "DAILY_BUDGET_REACHED" and not captured
 
 
-def test_batch_stops_before_next_notice_with_less_than_sixty_seconds(client, setup, monkeypatch):
+def test_batch_stops_before_next_notice_with_less_than_ninety_seconds(client, setup, monkeypatch):
     _clock, add = setup
     add("A")
     add("B")
@@ -72,12 +72,12 @@ def test_batch_stops_before_next_notice_with_less_than_sixty_seconds(client, set
     def collect(*args):
         deadlines.append(args[2].state.award_automation_deadline)
         result = original(*args)
-        monotonic[0] += 430
+        monotonic[0] += 320  # 80 s left: under the 90-second minimum
         return result
     monkeypatch.setattr(module, "refresh_award_history", collect)
     post(client, "plan")
     result = post(client, "run", {"max_notices": 10})
-    assert deadlines == [480] and len(captured) == result["attempted"] == 1
+    assert deadlines == [400] and len(captured) == result["attempted"] == 1
     assert result["pending"] == 1
 
 
@@ -185,3 +185,10 @@ def test_midnight_preserves_running_and_cross_day_completed_reservations(client,
         session.commit()
     result = client.get(f"{BASE}/status").json()
     assert result["api_calls_24h"] == 12 and result["budget_reserved_24h"] == 150
+
+
+def test_batch_budget_leaves_headroom_under_the_n8n_http_timeout():
+    # W14's HTTP node waits 520 s; the last notice may start with 90 s left and
+    # still has post-collection work, so the batch wall must stay well below.
+    assert module.BATCH_WALL_SECONDS + 120 <= 520
+    assert module.MIN_NOTICE_WALL_SECONDS >= 90
