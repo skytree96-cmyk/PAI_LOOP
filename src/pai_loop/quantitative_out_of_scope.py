@@ -42,6 +42,13 @@ _AGGREGATE_RE = re.compile(
 _BID_PRICE_RE = re.compile(
     r"입찰\s*가격|가격\s*평가|투찰|제안\s*가격|견적\s*가격|낙찰\s*률|낙찰\s*하한"
 )
+# 배점표 안의 개별 측정 항목. "수행실적(정량평가) 5점"처럼 총괄 단어가 괄호 주석이나
+# 수식어로만 붙은 행은 합계행이 아니다(2026-09-29 사법부 보안컨설팅).
+_MEASURABLE_ITEM_RE = re.compile(
+    r"실적|인력|기술자|전문가|자격증|신용|경영\s*상태|재무|부채|유동|자기\s*자본|인증|수상|건수|보유"
+)
+_TOTAL_RE = re.compile(r"총점|합계|소계|종합\s*평(?:점|가)|합산\s*점수|총괄")
+_PARENTHETICAL_RE = re.compile(r"[(\[（［][^)\]）］]*[)\]）］]")
 # 항목명이 아니라 번호 칸을 라벨로 잡은 추출 결함.
 _DEGENERATE_RE = re.compile(r"^(?:[0-9]+(?:[-.][0-9]+)*|[A-Za-z]|[①-⑳])$")
 
@@ -82,9 +89,25 @@ def out_of_scope_reason(
         return "평가항목명이 아니라 번호 칸이 추출되어 산정 대상이 아닙니다."
 
     for pattern, reason in _REASONS:
+        if pattern is _AGGREGATE_RE:
+            if _is_aggregate_row(text):
+                return reason
+            continue
         if pattern.search(text):
             return reason
     return None
+
+
+def _is_aggregate_row(text: str) -> bool:
+    """A heading, total or baseline row -- not one item that merely names its section."""
+
+    # "(정량평가)" annotates which section an item belongs to; it does not make
+    # the item a heading. A label that is only an annotation keeps its words.
+    head = " ".join(_PARENTHETICAL_RE.sub(" ", text).split()) or text
+    if not _AGGREGATE_RE.search(head):
+        return False
+    # "정량평가 수행실적" names a measurable item; "정량평가 소계" is still a total.
+    return bool(_TOTAL_RE.search(head)) or not _MEASURABLE_ITEM_RE.search(head)
 
 
 __all__ = ["OutOfScopeReason", "out_of_scope_reason"]
