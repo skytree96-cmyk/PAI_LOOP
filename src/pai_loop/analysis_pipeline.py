@@ -103,7 +103,7 @@ from .pps_enrichment import (
 )
 
 
-PIPELINE_VERSION = "analysis-pipeline-0.6.10"
+PIPELINE_VERSION = "analysis-pipeline-0.6.11"
 MATERIALIZATION_VERSION = "atomic-materializer-0.3.1"
 SNAPSHOT_VERSION = "analysis-snapshot-0.3.0"
 SOURCE_KIND = "OPENAI_REQUIREMENT_EXTRACTION"
@@ -865,7 +865,54 @@ def _known_non_eligibility_gaps_only(sources: Sequence[_SourceDocument]) -> bool
     )
 
 
-_NOTICE_DOCUMENT_LABEL_RE = re.compile(r"입찰\s*공고|공고문|공고서|입찰\s*설명서")
+_NOTICE_DOCUMENT_LABEL_RE = re.compile(
+    r"입찰\s*재?\s*공고|공고문|공고서|입찰\s*설명서|(?:^|[\s_.\]])재\s*공고(?:[\s_.(]|$)"
+)
+# "(재공고) 제안요청서" marks a re-issued RFP, not the announcement itself.
+_REISSUE_MARKER_RE = re.compile(r"[(\[]\s*재\s*공고\s*[)\]]")
+_NON_NOTICE_DOCUMENT_LABEL_RE = re.compile(r"제안\s*요청서|과업|서식|양식|평가\s*위원")
+
+
+def _is_notice_document_label(label: str) -> bool:
+    core = _REISSUE_MARKER_RE.sub(" ", label or "")
+    return bool(_NOTICE_DOCUMENT_LABEL_RE.search(core)) and not (
+        _NON_NOTICE_DOCUMENT_LABEL_RE.search(core) and not re.search(r"입찰\s*재?\s*공고|공고문|공고서", core)
+    )
+
+
+# Document kinds a gap may say "is not in this source". Each is checked
+# against the labels of the other attachments that were read completely.
+_REFERENCED_DOCUMENT_KINDS = (
+    ("RFP", re.compile(r"제안\s*요청서")),
+    ("NOTICE", re.compile(r"입찰\s*재?\s*공고(?:문|서)?|공고문|공고서")),
+    ("SCOPE", re.compile(r"과업\s*(?:지시|내용|내역)서")),
+    ("FORMS", re.compile(r"서식|양식|별지")),
+    ("INSTRUCTIONS", re.compile(r"입찰\s*유의서")),
+)
+_ABSENT_FROM_THIS_SOURCE_RE = re.compile(
+    r"포함(?:되어\s*있지\s*않|되지\s*않|하지\s*않|돼\s*있지\s*않)|미포함|미첨부"
+    r"|첨부(?:되어\s*있지|되지)\s*않|(?:본|이|해당|제공된)\s*(?:source|소스|문서|자료|첨부\S*|본문)[^.]{0,20}?없"
+)
+
+
+def _gap_names_read_sibling_documents(gap: str, own_label: str, read_labels: Sequence[str]) -> bool:
+    """A gap that only says another document is absent from this one, when that document was read.
+
+    "참가자격 세부 내용은 제안요청서 참조 … 본 소스에 포함되어 있지 않음" from the
+    announcement is answered by the attached RFP once it was read completely;
+    its own eligibility clauses were extracted from it and still need verified
+    anchors. The gap's own document kind never answers it, and an annex named
+    but not attached keeps the gate closed.
+    """
+
+    if _ABSENT_FROM_THIS_SOURCE_RE.search(gap) is None or _UNATTACHED_ANNEX_GAP_RE.search(gap):
+        return False
+    own_kinds = {kind for kind, pattern in _REFERENCED_DOCUMENT_KINDS if pattern.search(own_label)}
+    named = {kind for kind, pattern in _REFERENCED_DOCUMENT_KINDS if pattern.search(gap)} - own_kinds
+    if not named:
+        return False
+    read_kinds = {kind for label in read_labels for kind, pattern in _REFERENCED_DOCUMENT_KINDS if pattern.search(label)}
+    return named <= read_kinds
 # A gap must name what is missing. These subjects are scoring, schedule, form,
 # contact and procedure material. Unnamed gaps ("일부 내용을 읽을 수 없음"),
 # agreements, required documents and briefing sessions stay closed.
@@ -877,6 +924,8 @@ _NAMED_NON_ELIGIBILITY_GAP_TERMS = (
     "일정", "공고번호", "서식", "지도", "이미지", "여비", "상생결제", "체크리스트", "개찰", "벌칙",
     "셀 구조", "표 구조", "페이지 경계",
     "설명회", "실제 값", "기재값", "마감일", "일자",
+    # Event, build and research-spec details; masked counterparty in a contract form.
+    "행사장", "공사범위", "공사 범위", "연구목표", "검수기준", "오탈자", "마스킹",
 )
 # Form and field names that merely contain an eligibility word: "입찰참가신청서",
 # "입찰참가 구비서류 양식", "입찰참가통지서", "사업자등록번호" are forms to fill in.
@@ -989,9 +1038,11 @@ def _notice_read_unrelated_gaps(
     sources = [source for source in sources if source.attachment_id not in twins]
     if not sources or any(not source.materializable or source.data is None for source in sources):
         return False
+    def label_of(source: _SourceDocument) -> str:
+        return str((source.version.source_payload or {}).get("source_label") or "")
+
     notice_read = any(
-        source.version.document_complete
-        and _NOTICE_DOCUMENT_LABEL_RE.search(str((source.version.source_payload or {}).get("source_label") or ""))
+        source.version.document_complete and _is_notice_document_label(label_of(source))
         for source in sources
     )
     if not notice_read:
@@ -999,10 +1050,20 @@ def _notice_read_unrelated_gaps(
     gaps, _resolved = _aggregate_source_gaps(sources)
     named = _KNOWN_NON_ELIGIBILITY_GAP_TERMS + _NAMED_NON_ELIGIBILITY_GAP_TERMS
     from_notice: set[str] = set()
+    answered_by_read_sibling: set[str] = set()
     for source in sources:
-        label = str((source.version.source_payload or {}).get("source_label") or "")
-        if _NOTICE_DOCUMENT_LABEL_RE.search(label):
+        label = label_of(source)
+        if _is_notice_document_label(label):
             from_notice.update(_normalise_text(gap) for gap in source.data.missing_or_unreadable)
+        read_sibling_labels = [
+            label_of(other) for other in sources
+            if other is not source and other.version.document_complete and other.materializable
+        ]
+        for raw_gap in source.data.missing_or_unreadable:
+            gap = _normalise_text(raw_gap)
+            if _gap_names_read_sibling_documents(gap, label, read_sibling_labels):
+                answered_by_read_sibling.add(gap)
+    gaps = [gap for gap in gaps if gap not in answered_by_read_sibling]
     return all(
         (
             not any(term in _FORM_NAME_GAP_RE.sub("", gap) for term in _ELIGIBILITY_GAP_TERMS)
