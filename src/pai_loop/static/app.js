@@ -4347,6 +4347,7 @@
       evaluatedAt: firstValue(evaluation.evaluated_at, evaluation.evaluatedAt, null),
       historicalAnalysis: useHistoricalEvaluation,
       historicalQualification: firstObject(source.historical_qualification, source.historicalQualification),
+      ppsRestrictionCheck: firstObject(source.pps_restriction_check, source.ppsRestrictionCheck),
       historicalEvaluatedAt: useHistoricalEvaluation
         ? firstValue(historicalEvaluation.evaluated_at, historicalEvaluation.evaluatedAt, null)
         : null,
@@ -7305,7 +7306,7 @@
       ? state.privateMatchPreviews[notice.noticeKey].data : null;
     const actionsById = new Map(arrayValue(previewData?.matches)
       .filter((item) => item.action).map((item) => [item.requirementId, item.action]));
-    const questionHtml = renderEligibilityQuestions(notice, previewData);
+    const questionHtml = renderPpsRestrictionWarning(notice) + renderEligibilityQuestions(notice, previewData);
     if (requirements.length) {
       const order = { FAIL: 0, REVIEW: 1, UNKNOWN: 1, PASS_EXCEPTION: 2, PASS_CURRENT: 3, PASS: 3 };
       els.requirementList.innerHTML = questionHtml + requirements.slice()
@@ -7504,6 +7505,22 @@
         <span class="pipeline-step__icon" aria-hidden="true"><svg viewBox="0 0 24 24">${step.status === "done" ? '<path d="m5 12 4 4L19 6" />' : step.status === "review" ? '<path d="M12 7v6M12 17h.01" />' : '<circle cx="12" cy="12" r="7" />'}</svg></span>
         <span><strong>${escapeHtml(step.name)}</strong><small>${escapeHtml(step.detail)}</small></span>
       </div>`).join("");
+  }
+
+  // 2026-10-08: PPS's structured licence/region limits contradict a non-failing
+  // eligibility. A guard against a clause the document analysis missed; it does
+  // not change the decision, it asks a person to re-read the notice.
+  function renderPpsRestrictionWarning(notice) {
+    const check = notice?.ppsRestrictionCheck;
+    if (!check || check.status !== "CONFLICT" || isCancelledNotice(notice)
+        || dashboardEligibilityStatus(notice) === "FAIL") return "";
+    const reasons = arrayValue(check.reasons).map((text) => `<li>${escapeHtml(stringValue(text))}</li>`).join("");
+    return `
+      <div class="eligibility-question is-restriction-conflict">
+        <p class="eligibility-question-title">나라장터 제한 불일치 · 공고 원문으로 참가자격을 다시 확인하세요</p>
+        <ul>${reasons}</ul>
+        <p class="eligibility-question-meta">나라장터에 등록된 업종·지역 제한 정보와 자동 판정이 다릅니다. 판정은 바꾸지 않았습니다.</p>
+      </div>`;
   }
 
   // 2026-10-07: the one question a person answers when the company's nonprofit

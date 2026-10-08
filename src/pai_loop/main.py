@@ -37,6 +37,7 @@ from .manual_analysis import router as manual_analysis_router
 from .outcomes_api import router as bid_outcomes_router
 from .outcome_feedback import router as outcome_feedback_router
 from .eligibility_confirmations import router as eligibility_confirmations_router
+from .pps_restrictions import router as pps_restrictions_router
 from .operator_decisions import router as operator_decisions_router
 from .performance_records import router as performance_records_router
 from .prespec_api import router as prespec_router
@@ -227,6 +228,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(result_learning_router)
     application.include_router(operator_decisions_router)
     application.include_router(eligibility_confirmations_router)
+    application.include_router(pps_restrictions_router)
     application.include_router(manual_analysis_router)
     application.include_router(recovery_diagnostics_router)
     application.include_router(pps_discovery_router)

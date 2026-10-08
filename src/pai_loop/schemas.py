@@ -514,6 +514,8 @@ class NoticeDetail(NoticeSummary):
     attachment_analysis_statuses: list[AttachmentAnalysisStatusOut] = Field(
         default_factory=list, max_length=MAX_ATTACHMENT_STATUS_ROWS
     )
+    # PPS's structured licence/region limits vs. the company (cross-check only, 2026-10-08).
+    pps_restriction_check: dict[str, Any] | None = None
     award_history: list[AwardHistoryItemOut] = Field(default_factory=list)
 
 
