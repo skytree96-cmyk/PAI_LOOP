@@ -351,6 +351,23 @@ class EligibilityConfirmation(Base, TimestampMixin):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PpsParticipationRestriction(Base, TimestampMixin):
+    """PPS's structured licence-limit groups and eligible regions for one notice revision (2026-10-08).
+
+    Used only to flag a PASS that PPS's own structure contradicts; never a decision source.
+    """
+
+    __tablename__ = "pps_participation_restrictions"
+
+    notice_id: Mapped[str] = mapped_column(ForeignKey("notices.id", ondelete="CASCADE"), primary_key=True)
+    bid_notice_no: Mapped[str] = mapped_column(String(40))
+    revision_no: Mapped[str] = mapped_column(String(8))
+    license_groups: Mapped[list[Any] | None] = mapped_column(JSON)
+    regions: Mapped[list[Any] | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class NoticeAnalysisPolicy(Base, TimestampMixin):
     """Durable opt-in boundary for notices discovered outside automation.
 

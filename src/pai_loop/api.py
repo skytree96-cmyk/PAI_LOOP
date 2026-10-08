@@ -12,7 +12,7 @@ from functools import lru_cache
 from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -2432,12 +2432,15 @@ def get_notice(notice_key: str, request: Request, session: DbSession, department
     provider_authority = _pps_authorities_by_notice_id(session, [notice]).get(
         notice.id
     )
-    return _detail(
+    detail = _detail(
         notice,
         public_view=public_read_allowed(request),
         provider_authority=provider_authority,
         result_entry_status=result_entry_state(list(notice.bid_outcomes), department["id"] if department else None),
     )
+    from .pps_restrictions import restriction_check_for
+
+    return detail.model_copy(update={"pps_restriction_check": restriction_check_for(session, notice)})
 
 
 @router.post("/notices/{notice_key}/versions", status_code=status.HTTP_201_CREATED)
@@ -3323,6 +3326,7 @@ def ingest_pps_notices(
     payload: PpsIngestionRequest,
     request: Request,
     session: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> PpsIngestionResponse:
     """Fetch a bounded live PPS window and idempotently upsert canonical metadata.
 
@@ -3529,6 +3533,12 @@ def ingest_pps_notices(
             session.rollback()
             logger.exception("store-only discovery failed")
             result.warnings.append("관련 공고 추가 저장(분석 없음)을 이번 실행에서 건너뛰었습니다.")
+    if not payload.dry_run and str(request.headers.get("x-pai-request-source") or "").startswith("n8n-daily"):
+        # PPS licence/region limits for the eligibility cross-check, after the
+        # response so the daily run's time budget is untouched.
+        from .pps_restrictions import refresh_in_background
+
+        background_tasks.add_task(refresh_in_background, request.app.state.session_factory, settings.pps_api_key)
     return result
 
 
