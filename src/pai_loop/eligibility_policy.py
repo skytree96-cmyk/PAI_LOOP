@@ -22,7 +22,7 @@ PROFILE_PATH = Path(__file__).with_name("data") / "company_public_profile.json"
 # equivalent display rows without removing their evaluation/source records.
 # v17 generalizes the 2026-09-30 reviewer decisions on live REVIEW conditions
 # (see docs/R_REVIEW_GENERALIZATION_20260930.md).
-POLICY_VERSION = "pai-loop-requirement-policy-2026.10.07-v23"
+POLICY_VERSION = "pai-loop-requirement-policy-2026.10.08-v24"
 
 # Approved prototype scope: assess these known company facts as they stand now.
 # Other qualifications retain deadline-based evidence checks.
@@ -922,6 +922,13 @@ def _is_explicit_performance_eligibility(text: str) -> bool:
             + forbidden + r"\s*$", clause,
         ):
             return True
+        # A clause that is itself the bidder description: "…5천만원 이상 실적이 있는 업체
+        # (공동도급 제외)", "…유사 실적 보유 업체여야 함" (2026-10-08 운영 공고).
+        if re.search(
+            subject + r"(?:보유한|갖춘|보유하고\s*있는|있는|보유)\s*" + actor
+            + r"(?:\s*[(（][^)）]{0,80}[)）])?\s*(?:(?:이어야|여야)\s*(?:한다|합니다|함))?\s*$", clause,
+        ):
+            return True
     return False
 
 
@@ -1764,6 +1771,11 @@ def _review_clause_reclassification(
             requirement, profile=profile, keys=["conviction_clear"], deadline=deadline, today=today,
             message="회사 확인값상 조세포탈 등 유죄판결 이력이 없어 서약할 수 있습니다.",
         )
+    company_clause = _confirmed_company_clause_item(
+        requirement, profile=profile, text=text, deadline=deadline, today=today,
+    )
+    if company_clause is not None:
+        return company_clause
     if category == "CONSORTIUM" and re.search(
         r"공동\s*수급체\s*대표자[^.]*(?:부도|부정당|영업\s*정지)[^.]*결격", text
     ) and not re.search(r"실적|허가|면허|인증|확인서|소송", text):
@@ -1772,6 +1784,69 @@ def _review_clause_reclassification(
             deadline=deadline, today=today,
             message="회사 확인값상 부도·부정당업자 제재·영업정지가 없어 대표자 결격 사유가 없습니다.",
         )
+    return None
+
+
+# Clauses whose every predicate is a confirmed company clearance, written in
+# wordings the status-compound reader leaves at REVIEW (2026-10-08 운영 검토 조항).
+# Each rule is narrow and steps aside when any uncovered predicate appears.
+_CLAUSE_UNCOVERED_RE = re.compile(r"소송|실적|인력|허가|인증|확인서|신용|물의|목적|보유|소지|자격증")
+_DUES_ARREARS_RE = re.compile(
+    r"(?:국세|지방세|부가(?:가치)?세|과태료|제세\s*공과금|공과금|(?:사업장\s*)?4대\s*(?:사회\s*)?보험료?|사회\s*보험료?)"
+)
+
+
+def _confirmed_company_clause_item(
+    requirement: dict[str, Any], *, profile: dict[str, Any], text: str, deadline: date | None, today: date,
+) -> dict[str, Any] | None:
+    facts = profile.get("facts", {})
+
+    def composite(keys: list[str], message: str) -> dict[str, Any] | None:
+        # A clearance the profile does not record (or records as unknown) leaves the clause in REVIEW.
+        if any((facts.get(key) or {}).get("value") is None for key in keys):
+            return None
+        return _composite_item(requirement, profile=profile, keys=keys, deadline=deadline, today=today,
+                               message=message)
+
+    # Obligations while bidding and consequences after award are not a current status.
+    if (re.search(r"(?:금품|향응)[^.]{0,30}금지|담합\s*금지", text) and re.search(r"준수", text)
+            and not re.search(r"불가|제외|자격|제한을\s*받은", text)):
+        return _information_item(requirement, profile=profile, capability_key=None,
+                                 message="입찰 참가 뒤 지켜야 할 청렴계약 의무 안내이며 현재 참가자격이 아닙니다.")
+    if re.search(r"(?:낙찰자|계약\s*상대자)[^.]{0,40}(?:이행하지\s*않을\s*경우|불이행\s*시)"
+                 r"[^.]{0,60}(?:제한|제재)을?\s*받을\s*수\s*있", text):
+        return _information_item(requirement, profile=profile, capability_key=None,
+                                 message="낙찰 뒤 계약을 이행하지 않으면 받을 수 있는 제재 안내이며 현재 참가자격이 아닙니다.")
+    if _CLAUSE_UNCOVERED_RE.search(text):
+        return None
+    # "조세포탈 … 유죄판결 2년 미경과자 또는 입찰참가자격 제한기간 미경과자는 참여 불가":
+    # an exclusion list joined by 또는 needs neither, i.e. both clearances.
+    if (re.search(r"조세\s*포탈|유죄\s*판결", text)
+            and re.search(r"입찰\s*참가\s*자격\s*(?:을\s*)?제한|부정당", text)
+            and re.search(r"불가|제외|제한\s*대상|참여할\s*수\s*없|참가할\s*수\s*없", text)):
+        return composite(["conviction_clear", "sanction_clear"],
+                         "회사 확인값상 조세포탈 등 유죄판결과 입찰참가자격 제한 이력이 없어 충족합니다.")
+    if (re.search(r"체납", text) and _DUES_ARREARS_RE.search(text)
+            and re.search(r"없|아닌|아니|완납|불가|제외", text)
+            and not re.search(r"있는\s*(?:업체|자|사업자)\s*만|법정\s*관리|부정당|파산|부도|영업\s*정지", text)):
+        return composite(["public_dues_arrears_clear"],
+                         "회사 확인값상 국세·지방세·사회보험료 등 체납이 없어 충족합니다.")
+    if (re.search(r"부정당", text) and re.search(r"법정\s*관리", text)
+            and re.search(r"면허\s*취소|영업\s*정지", text)):
+        return composite(["sanction_clear", "court_receivership_clear", "business_continuity_clear"],
+                         "회사 확인값상 부정당업자 제재·법정관리·면허취소·영업정지가 없어 충족합니다.")
+    if re.search(r"부가가치세법[^.]{0,20}제\s*8\s*조[^.]{0,40}사업자\s*등록", text) and not re.search(
+            r"또는|업종|업태|종목", text):
+        return composite(["bidder_registration"],
+                         "사업자등록을 마친 법인으로 조달청 경쟁입찰참가자격 등록이 확인됩니다.")
+    if (re.search(r"시행령\s*제\s*12\s*조", text) and re.search(r"부정당", text)
+            and not re.search(r"또는|거나|혹은|업종|면허", text)):
+        return composite(["bidder_registration", "sanction_clear"],
+                         "조달청 경쟁입찰참가자격 등록이 확인되고 부정당업자 제재가 없어 충족합니다.")
+    if (re.search(r"입찰\s*등록\s*사항", text) and "대표자" in text and "상호" in text
+            and re.search(r"법인\s*등기|사업자\s*등록증", text) and re.search(r"일치", text)):
+        return composite(["bidder_identity_consistent"],
+                         "회사 확인값상 입찰 등록사항과 등기·사업자등록 정보가 일치합니다.")
     return None
 
 
@@ -3502,7 +3577,12 @@ def classify_requirements(
                     )
                     if rescued is not None:
                         item = rescued
-        elif _contains(text, "하도급", "단독입찰"):
+        elif _contains(text, "하도급", "단독입찰") and not (
+            # "건축사사무소 신고(등록)한 업체여야 하며 공동도급 및 하도급 불가": the
+            # trailing subcontracting note must not swallow a permit/registration gate.
+            any(re.search(pattern, text, re.I) for _key, pattern in _ABSENT_PERMITS)
+            or re.search(r"신고|등록(?:한|된)\s*(?:업체|자|사업자)|면허|허가|확인서|증명서|업종|실적", text)
+        ):
             item = _checklist_item(
                 requirement,
                 profile=profile,
