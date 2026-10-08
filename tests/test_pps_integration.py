@@ -414,3 +414,34 @@ def test_eorder_windows_never_exceed_the_provider_one_month_limit() -> None:
         ("202607310000", "202608292359"),
         ("202608300000", "202609282359"),
     ]
+
+
+def test_trickling_response_is_cut_at_the_wall_clock_limit(monkeypatch) -> None:
+    # Each chunk arrives inside the read timeout, so only a wall-clock ceiling
+    # stops a provider that never finishes the body.
+    clock = [0.0]
+    monkeypatch.setattr("pai_loop.integrations.pps.time.monotonic", lambda: clock[0])
+
+    class Trickle(httpx.SyncByteStream):
+        def __iter__(self):
+            while True:
+                clock[0] += 1.0
+                yield b" "
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Trickle()))
+    with PpsClient(service_key="SYN", base_url="https://example.test", timeout_seconds=5,
+                   max_retries=0, transport=transport) as client:
+        with pytest.raises(PpsApiError) as caught:
+            client._request("op", {})
+    assert caught.value.error_type == "NETWORK_ERROR"
+    assert clock[0] <= 12
+
+
+def test_bounded_get_still_decodes_compressed_json() -> None:
+    import gzip
+    import json as _json
+    body = gzip.compress(_json.dumps({"ok": 1}).encode())
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={"Content-Encoding": "gzip"}, content=body))
+    with PpsClient(service_key="SYN", base_url="https://example.test", transport=transport) as client:
+        assert client._request("op", {}) == {"ok": 1}
