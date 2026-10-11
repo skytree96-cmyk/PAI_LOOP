@@ -53,12 +53,17 @@ const view=u.buildCompanyBasisGroups(PROFILE);
 assert.equal(view.organization,"사단법인 한국능률협회");
 assert.equal(view.factCount,Object.keys(PROFILE.facts).length);
 assert.equal(view.unlabeledCount,0,"새 회사 사실 키는 한글 묶음에 등록해야 한다");
-assert.deepEqual(JSON.parse(JSON.stringify(view.groups.map(g=>g.key))),["registration","industries","licenses","clearances","absent","evidence"]);
+assert.deepEqual(JSON.parse(JSON.stringify(view.groups.map(g=>g.key))),["registration","industries","clearances","absent","evidence"]);
 const byKey=Object.fromEntries(view.groups.map(g=>[g.key,g]));
 assert.equal(byKey.registration.headline,"경쟁입찰참가자격 등록");
-assert.equal(byKey.industries.headline,`${PROFILE.facts.industry_code_name_inventory.value.length}개 업종`);
+assert.equal(byKey.industries.headline,`${PROFILE.facts.industry_code_name_inventory.value.length}개 업종 등록`);
 assert.ok(byKey.industries.items.some(i=>i.label==="5608 직업능력개발훈련수탁기관"));
-assert.ok(byKey.licenses.note.startsWith("지정 직업훈련시설 NCS "));
+assert.ok(byKey.industries.note.startsWith("지정 직업훈련시설 NCS "));
+assert.ok(byKey.industries.items.some(i=>i.label==="여행업 보증보험"));
+// 같은 사실이 두 번 보이지 않는다(업종코드로 보이는 인허가는 따로 나열하지 않음)
+const all=view.groups.flatMap(g=>[g.headline,...g.items.map(i=>i.label)]);
+assert.equal(new Set(all).size,all.length);
+assert.ok(!all.includes("종합여행업"));
 assert.equal(byKey.clearances.headline,`${byKey.clearances.items.length}개 항목 확인`);
 assert.ok(byKey.clearances.items.some(i=>i.label==="부정당 제재 없음"));
 assert.ok(byKey.absent.items.some(i=>i.label==="직접생산확인증명서"&&i.tag==="미보유 확인"));
@@ -121,9 +126,9 @@ def test_long_groups_show_six_items_and_fold_the_rest() -> None:
 context.respond=()=>PROFILE;
 await u.loadCompanyBasis();
 const grid=u.els.companyBasisGrid.innerHTML;
-const industries=grid.slice(grid.indexOf('data-group="industries"'),grid.indexOf('data-group="licenses"'));
+const industries=grid.slice(grid.indexOf('data-group="industries"'),grid.indexOf('data-group="clearances"'));
 const total=PROFILE.facts.industry_code_name_inventory.value.length;
-assert.match(industries,new RegExp(`<summary>전체 ${total}개 보기</summary>`));
-assert.equal((industries.match(/<li>/g)||[]).length,total);
+assert.match(industries,new RegExp(`<summary>전체 ${total+1}개 보기</summary>`));
+assert.equal((industries.match(/<li>/g)||[]).length,total+1);
 assert.equal((industries.split("<details>")[0].match(/<li>/g)||[]).length,6);
 ''', _repository_profile())

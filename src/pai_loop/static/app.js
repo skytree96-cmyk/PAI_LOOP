@@ -2314,6 +2314,22 @@
     COMPANY_DECLARATION: "회사 신고",
     COMPANY_CONFIRMED_ABSENT: "미보유 확인",
   };
+  // 인허가 사실과 같은 내용을 보여 주는 등록 업종 코드(코드가 없으면 업종 카드에 따로 덧붙인다)
+  const COMPANY_BASIS_LICENSE_CODES = {
+    designated_vocational_training: "5609",
+    remote_lifelong_education: "3156",
+    elearning_service: "6529",
+    other_elearning: "6530",
+    international_conference_planning: "5720",
+    general_travel_business: "1261",
+    publisher: "1517",
+    video_production: "3244",
+    free_job_placement: "5601",
+    software_computer_related_services: "1468",
+    software_package_development_supply: "1426",
+    software_digital_content_development: "1469",
+    software_database_production_search: "1470",
+  };
   const COMPANY_BASIS_LICENSES = {
     designated_vocational_training: "지정 직업훈련시설",
     remote_lifelong_education: "원격 평생교육시설",
@@ -2333,7 +2349,7 @@
   const COMPANY_BASIS_CLEARANCES = {
     sanction_clear: "부정당 제재 없음",
     disqualification_clear: "입찰 결격 사유 없음",
-    conviction_clear: "관련 유죄판결 없음",
+    conviction_clear: "유죄판결 이력 없음",
     international_sanction_clear: "국제 제재 대상 아님",
     public_dues_arrears_clear: "공과금 체납 없음",
     bank_delinquency_clear: "금융기관 연체 없음",
@@ -2384,22 +2400,21 @@
     const registration = [];
     if (value("bidder_registration") === true) registration.push(item("경쟁입찰참가자격 등록", "bidder_registration"));
     if (value("nonprofit_entity") === true) registration.push(item("비영리법인", "nonprofit_entity"));
-    if (value("nonprofit_priority_procurement_exception") === true) registration.push(item("공고에 비영리법인 예외가 있으면 적용", "nonprofit_priority_procurement_exception"));
+    if (value("nonprofit_priority_procurement_exception") === true) registration.push(item("비영리법인 예외 적용 대상", "nonprofit_priority_procurement_exception"));
     if (value("head_office_region_seoul") === true) registration.push(item("본점 서울", "head_office_region_seoul"));
     if (registration.length) groups.push({ key: "registration", title: "입찰 등록·법인", headline: registration[0].label, headlineTag: registration[0].tag, items: registration.slice(1) });
 
-    const industries = arrayValue(value("industry_code_name_inventory"))
-      .filter((entry) => entry && entry.code && entry.name)
-      .map((entry) => ({ label: `${entry.code} ${entry.name}`, tag: "" }));
-    if (industries.length) groups.push({ key: "industries", title: "등록 업종", headline: `${industries.length}개 업종`, items: industries });
-
-    const licenses = Object.entries(COMPANY_BASIS_LICENSES)
-      .filter(([key]) => value(key) === true)
+    const industryEntries = arrayValue(value("industry_code_name_inventory")).filter((entry) => entry && entry.code && entry.name);
+    const industryCodes = new Set(industryEntries.map((entry) => String(entry.code)));
+    const industries = industryEntries.map((entry) => ({ label: `${entry.code} ${entry.name}`, tag: "" }));
+    const uncodedLicenses = Object.entries(COMPANY_BASIS_LICENSES)
+      .filter(([key]) => value(key) === true && !industryCodes.has(COMPANY_BASIS_LICENSE_CODES[key]))
       .map(([key, label]) => item(label, key));
     const ncs = arrayValue(value("designated_vocational_training_ncs_names")).filter(Boolean);
-    if (licenses.length) {
+    if (industries.length || uncodedLicenses.length) {
       groups.push({
-        key: "licenses", title: "인허가", headline: `${licenses.length}개 인허가`, items: licenses,
+        key: "industries", title: "등록 업종·인허가", headline: `${industries.length}개 업종 등록`,
+        headlineTag: tag("industry_code_name_inventory"), items: [...industries, ...uncodedLicenses],
         note: ncs.length ? `지정 직업훈련시설 NCS ${ncs.length}개 분야: ${ncs.join(" · ")}` : "",
       });
     }
