@@ -131,7 +131,9 @@ assert.equal(cards.length,5);
 assert.ok(cards.every(card=>!/\bopen\b/.test(card)),"카드는 기본으로 접혀 있어야 한다");
 const industries=grid.slice(grid.indexOf('data-group="industries"'),grid.indexOf('data-group="clearances"'));
 const total=PROFILE.facts.industry_code_name_inventory.value.length+1;
-assert.match(industries,new RegExp(`<span class="company-basis-card__toggle">${total}개 항목 보기</span>`));
+assert.match(industries,/<span class="company-basis-card__toggle">목록 보기<\/span>/);
+// 접힌 카드의 숫자는 요약 한 곳에만 나온다
+assert.doesNotMatch(grid,/개 항목 보기/);
 assert.match(industries,/<ul class="company-basis-list">/);
 assert.equal((industries.match(/<li>/g)||[]).length,total);
 assert.match(industries,/title="1426 [^"]+"/);
