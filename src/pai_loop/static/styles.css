@@ -5413,6 +5413,70 @@ a.history-award-project__source:hover { text-decoration: underline; }
   font-size: var(--fs-xs);
 }
 
+.company-basis { margin-bottom: 22px; }
+
+.company-basis-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.company-basis-card {
+  min-width: 0;
+  padding: 16px 18px 14px;
+  border: 1px solid rgb(22 57 53 / 0.08);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+
+.company-basis-card__title {
+  display: block;
+  color: var(--ink-soft);
+  font-size: var(--fs-xs);
+  font-weight: 750;
+}
+
+.company-basis-card strong {
+  display: block;
+  margin: 6px 0 8px;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.company-basis-card ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.company-basis-card details { margin-top: 4px; font-size: var(--fs-sm); }
+
+.company-basis-card summary {
+  color: var(--ink-soft);
+  font-size: var(--fs-xs);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.company-basis-card small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.company-basis-card p,
+.company-basis-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+
+@media (max-width: 960px) {
+  .company-basis-grid { grid-template-columns: 1fr; }
+}
+
 .performance-explorer {
   min-width: 0;
   padding: 27px 29px 25px;
