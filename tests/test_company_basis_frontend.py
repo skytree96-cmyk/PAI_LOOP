@@ -91,7 +91,7 @@ await u.loadCompanyBasis();
 await u.loadCompanyBasis();
 assert.deepEqual(requests,["/company-profile"]);
 const grid=u.els.companyBasisGrid.innerHTML;
-assert.equal((grid.match(/<article/g)||[]).length,4);
+assert.equal((grid.match(/<details class="company-basis-card"/g)||[]).length,4);
 assert.doesNotMatch(grid,/<img/);
 assert.match(grid,/&lt;img src=x onerror=alert\(1\)&gt;/);
 assert.match(grid,/회사 신고/);
@@ -121,14 +121,18 @@ def test_performance_screen_contains_the_panel_and_wires_the_loader() -> None:
     assert "void loadCompanyBasis();" in loader[:400]
 
 
-def test_long_groups_show_six_items_and_fold_the_rest() -> None:
+def test_cards_start_folded_and_list_every_item_in_two_columns() -> None:
     _run(r'''
 context.respond=()=>PROFILE;
 await u.loadCompanyBasis();
 const grid=u.els.companyBasisGrid.innerHTML;
+const cards=grid.match(/<details class="company-basis-card"[^>]*>/g)||[];
+assert.equal(cards.length,5);
+assert.ok(cards.every(card=>!/\bopen\b/.test(card)),"카드는 기본으로 접혀 있어야 한다");
 const industries=grid.slice(grid.indexOf('data-group="industries"'),grid.indexOf('data-group="clearances"'));
-const total=PROFILE.facts.industry_code_name_inventory.value.length;
-assert.match(industries,new RegExp(`<summary>전체 ${total+1}개 보기</summary>`));
-assert.equal((industries.match(/<li>/g)||[]).length,total+1);
-assert.equal((industries.split("<details>")[0].match(/<li>/g)||[]).length,6);
+const total=PROFILE.facts.industry_code_name_inventory.value.length+1;
+assert.match(industries,new RegExp(`<span class="company-basis-card__toggle">${total}개 항목 보기</span>`));
+assert.match(industries,/<ul class="company-basis-list">/);
+assert.equal((industries.match(/<li>/g)||[]).length,total);
+assert.match(industries,/title="1426 [^"]+"/);
 ''', _repository_profile())

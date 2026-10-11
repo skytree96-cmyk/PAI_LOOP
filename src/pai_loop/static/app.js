@@ -2458,10 +2458,9 @@
     };
   }
 
-  const COMPANY_BASIS_VISIBLE_ITEMS = 6;
-
   function companyBasisItemHtml(entry) {
-    return `<li>${escapeHtml(entry.label)}${entry.tag ? ` <small>${escapeHtml(entry.tag)}</small>` : ""}</li>`;
+    const label = escapeHtml(entry.label);
+    return `<li><span class="company-basis-item__label" title="${label}">${label}</span>${entry.tag ? `<small>${escapeHtml(entry.tag)}</small>` : ""}</li>`;
   }
 
   function renderCompanyBasis() {
@@ -2479,14 +2478,17 @@
     }
     const view = buildCompanyBasisGroups(basis.profile);
     els.companyBasisSummary.textContent = `${view.organization || "우리 회사"} · 참가자격 판정에 쓰는 공개 회사 정보 ${view.factCount}개 항목`;
+    // 카드는 제목과 요약만 보이고, 누르면 목록이 펼쳐진다(기본 접힘). 펼친 카드는 한 줄을 차지하고 목록은 2열.
     els.companyBasisGrid.innerHTML = view.groups.map((group) => `
-      <article class="company-basis-card" data-group="${escapeHtml(group.key)}">
-        <span class="company-basis-card__title">${escapeHtml(group.title)}</span>
-        <strong>${escapeHtml(group.headline)}${group.headlineTag ? ` <small>${escapeHtml(group.headlineTag)}</small>` : ""}</strong>
-        ${group.items.length ? `<ul>${group.items.slice(0, COMPANY_BASIS_VISIBLE_ITEMS).map(companyBasisItemHtml).join("")}</ul>` : ""}
-        ${group.items.length > COMPANY_BASIS_VISIBLE_ITEMS ? `<details><summary>전체 ${group.items.length}개 보기</summary><ul>${group.items.slice(COMPANY_BASIS_VISIBLE_ITEMS).map(companyBasisItemHtml).join("")}</ul></details>` : ""}
+      <details class="company-basis-card" data-group="${escapeHtml(group.key)}">
+        <summary class="company-basis-card__head">
+          <span class="company-basis-card__title">${escapeHtml(group.title)}</span>
+          <strong>${escapeHtml(group.headline)}${group.headlineTag ? ` <small>${escapeHtml(group.headlineTag)}</small>` : ""}</strong>
+          ${group.items.length ? `<span class="company-basis-card__toggle">${group.items.length}개 항목 보기</span>` : ""}
+        </summary>
+        ${group.items.length ? `<ul class="company-basis-list">${group.items.map(companyBasisItemHtml).join("")}</ul>` : ""}
         ${group.note ? `<p>${escapeHtml(group.note)}</p>` : ""}
-      </article>`).join("");
+      </details>`).join("");
     const extra = view.unlabeledCount ? ` · 이 화면에 따로 표시하지 않은 항목 ${view.unlabeledCount}개` : "";
     els.companyBasisNote.textContent = `프로필 ${view.version || "버전 미확인"} · 증명서 원문·등록번호·주소는 싣지 않습니다${extra}`;
   }

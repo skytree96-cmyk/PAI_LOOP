@@ -5418,17 +5418,50 @@ a.history-award-project__source:hover { text-decoration: underline; }
 .company-basis-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  grid-auto-flow: row dense;
   gap: 12px;
   margin-top: 16px;
 }
 
 .company-basis-card {
   min-width: 0;
-  padding: 16px 18px 14px;
   border: 1px solid rgb(22 57 53 / 0.08);
   border-radius: var(--radius-md);
   background: #fff;
 }
+
+.company-basis-card[open] {
+  grid-column: 1 / -1;
+  padding-bottom: 14px;
+}
+
+.company-basis-card__head {
+  display: block;
+  position: relative;
+  padding: 16px 44px 14px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.company-basis-card__head::-webkit-details-marker { display: none; }
+
+.company-basis-card__head::after {
+  content: "";
+  position: absolute;
+  top: 22px;
+  right: 20px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--ink-soft);
+  border-bottom: 2px solid var(--ink-soft);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.company-basis-card[open] .company-basis-card__head::after { transform: rotate(-135deg); top: 26px; }
+
+.company-basis-card__head:focus-visible { outline: 2px solid var(--ink-soft); outline-offset: -2px; border-radius: var(--radius-md); }
 
 .company-basis-card__title {
   display: block;
@@ -5439,35 +5472,65 @@ a.history-award-project__source:hover { text-decoration: underline; }
 
 .company-basis-card strong {
   display: block;
-  margin: 6px 0 8px;
+  margin: 6px 0 6px;
   font-size: 18px;
   line-height: 1.3;
 }
 
-.company-basis-card ul {
+.company-basis-card__toggle {
+  color: var(--ink-soft);
+  font-size: var(--fs-xs);
+  font-weight: 750;
+}
+
+.company-basis-card[open] .company-basis-card__toggle { display: none; }
+
+.company-basis-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 24px;
   margin: 0;
-  padding-left: 16px;
+  padding: 0 18px;
+  list-style: none;
   font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
-.company-basis-card details { margin-top: 4px; font-size: var(--fs-sm); }
+.company-basis-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
 
-.company-basis-card summary {
-  color: var(--ink-soft);
-  font-size: var(--fs-xs);
-  font-weight: 750;
-  cursor: pointer;
+.company-basis-list li::before {
+  content: "";
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ink-soft);
+  transform: translateY(-3px);
+}
+
+.company-basis-item__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .company-basis-card small {
+  flex: none;
   color: var(--muted);
   font-size: var(--fs-xs);
 }
 
+.company-basis-card p { padding: 0 18px; }
+
 .company-basis-card p,
 .company-basis-note {
-  margin: 8px 0 0;
+  margin: 10px 0 0;
   color: var(--muted);
   font-size: var(--fs-xs);
   line-height: 1.6;
@@ -5475,6 +5538,7 @@ a.history-award-project__source:hover { text-decoration: underline; }
 
 @media (max-width: 960px) {
   .company-basis-grid { grid-template-columns: 1fr; }
+  .company-basis-list { grid-template-columns: 1fr; }
 }
 
 .performance-explorer {
