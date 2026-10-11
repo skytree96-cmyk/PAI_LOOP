@@ -112,6 +112,7 @@
       loading: false,
       error: null,
     },
+    companyBasis: { loaded: false, loading: false, error: null, profile: null },
     performance: {
       summary: null,
       records: [],
@@ -361,6 +362,7 @@
       "resultLearningWinningRateMode", "resultLearningWinningRateBasisKind", "resultLearningWinningRateBasisAmount", "resultLearningWinningRateBasisReference", "resultLearningWinningRateStatus", "resultLearningOrigin",
       "resultLearningOpeningNotice", "resultLearningOpeningRevision", "resultLearningOpeningClassification", "resultLearningOpeningRebid",
       "resultLearningFields", "resultLearningError", "detailResultButton",
+      "companyBasisSection", "companyBasisSummary", "companyBasisGrid", "companyBasisNote",
     ];
 
     ids.forEach((id) => {
@@ -2302,8 +2304,198 @@
     void loadApplicationData({ forceApi: true });
   }
 
+  // 판정에 쓰는 회사 정보: 이미 배포된 공개 회사 프로필(/company-profile)을 읽기 전용으로 보여 준다.
+  // 참가자격 판정이 쓰는 값과 같은 출처이며, 증명서 원문·등록번호·주소는 프로필에 없다.
+  const COMPANY_BASIS_STATE_LABELS = {
+    VERIFIED: "증빙 확인",
+    VERIFIED_CURRENT_SNAPSHOT: "최신 증빙 확인",
+    VERIFIED_CURRENT_COMPLETE_SNAPSHOT: "최신 증빙 확인",
+    COMPANY_CONFIRMED: "회사 확인",
+    COMPANY_DECLARATION: "회사 신고",
+    COMPANY_CONFIRMED_ABSENT: "미보유 확인",
+  };
+  const COMPANY_BASIS_LICENSES = {
+    designated_vocational_training: "지정 직업훈련시설",
+    remote_lifelong_education: "원격 평생교육시설",
+    elearning_service: "이러닝서비스업",
+    other_elearning: "기타 이러닝업",
+    international_conference_planning: "국제회의기획업",
+    general_travel_business: "종합여행업",
+    travel_business_guarantee_insurance: "여행업 보증보험",
+    publisher: "출판사",
+    video_production: "비디오물제작업",
+    free_job_placement: "무료직업소개사업",
+    software_computer_related_services: "소프트웨어사업자(컴퓨터관련서비스)",
+    software_package_development_supply: "소프트웨어사업자(패키지 개발·공급)",
+    software_digital_content_development: "소프트웨어사업자(디지털콘텐츠 개발)",
+    software_database_production_search: "소프트웨어사업자(데이터베이스 제작·검색)",
+  };
+  const COMPANY_BASIS_CLEARANCES = {
+    sanction_clear: "부정당 제재 없음",
+    disqualification_clear: "입찰 결격 사유 없음",
+    conviction_clear: "관련 유죄판결 없음",
+    international_sanction_clear: "국제 제재 대상 아님",
+    public_dues_arrears_clear: "공과금 체납 없음",
+    bank_delinquency_clear: "금융기관 연체 없음",
+    court_receivership_clear: "회생·법정관리 없음",
+    contract_nonperformance_clear: "계약 불이행 없음",
+    business_continuity_clear: "휴업·폐업 없음",
+    conflict_of_interest_clear: "이해충돌 없음",
+    sme_procurement_restriction_clear: "중소기업 제품 구매 제한 비해당",
+    large_enterprise_software_clear: "대기업 소프트웨어사업 참여 제한 비해당",
+  };
+  const COMPANY_BASIS_ABSENT = {
+    direct_production_certificate: "직접생산확인증명서",
+    sme_certificate: "중소기업 확인서",
+    small_business_certificate: "소기업·소상공인 확인서",
+    catering_business: "음식점업",
+    telecom_carrier: "기간통신사업자",
+    information_system_audit_firm: "정보시스템 감리법인",
+    construction_engineering_business: "건설기술용역업",
+    electric_power_engineering: "전력기술 감리업",
+    fire_facility_engineering: "소방시설업",
+    ict_engineering_business: "정보통신용역업",
+    ict_construction_business: "정보통신공사업",
+    architect_office: "건축사사무소",
+    iso_13485: "ISO 13485",
+    aws_partner: "AWS 파트너",
+    web_accessibility_certification: "웹 접근성 인증",
+    iata_bsp_member: "IATA BSP 회원",
+  };
+  // 위 묶음 밖에서 직접 쓰거나 다른 사실의 상세인 키(입찰 등록·법인·지역·업종·NCS 목록 등)
+  const COMPANY_BASIS_OTHER_KEYS = new Set([
+    "bidder_registration", "bidder_identity_consistent", "domestic_entity", "nonprofit_entity",
+    "nonprofit_priority_procurement_exception", "head_office_region_seoul", "head_office_region_codes",
+    "registered_bidder_branch_region_codes", "declared_branch_region_codes", "training_facility_region_codes",
+    "industry_code_inventory", "industry_code_name_inventory", "designated_vocational_training_ncs_subclasses",
+    "designated_vocational_training_ncs_codes", "designated_vocational_training_ncs_names",
+    "public_software_bid_ceiling_krw", "business_registration_types",
+  ]);
+
+  function buildCompanyBasisGroups(profile) {
+    const source = profile && typeof profile === "object" ? profile : {};
+    const facts = source.facts && typeof source.facts === "object" ? source.facts : {};
+    const fact = (key) => (facts[key] && typeof facts[key] === "object" ? facts[key] : null);
+    const value = (key) => fact(key)?.value;
+    const tag = (key) => COMPANY_BASIS_STATE_LABELS[fact(key)?.evidence_state] || "";
+    const item = (label, key) => ({ label, tag: key ? tag(key) : "" });
+    const groups = [];
+
+    const registration = [];
+    if (value("bidder_registration") === true) registration.push(item("경쟁입찰참가자격 등록", "bidder_registration"));
+    if (value("nonprofit_entity") === true) registration.push(item("비영리법인", "nonprofit_entity"));
+    if (value("nonprofit_priority_procurement_exception") === true) registration.push(item("공고에 비영리법인 예외가 있으면 적용", "nonprofit_priority_procurement_exception"));
+    if (value("head_office_region_seoul") === true) registration.push(item("본점 서울", "head_office_region_seoul"));
+    if (registration.length) groups.push({ key: "registration", title: "입찰 등록·법인", headline: registration[0].label, headlineTag: registration[0].tag, items: registration.slice(1) });
+
+    const industries = arrayValue(value("industry_code_name_inventory"))
+      .filter((entry) => entry && entry.code && entry.name)
+      .map((entry) => ({ label: `${entry.code} ${entry.name}`, tag: "" }));
+    if (industries.length) groups.push({ key: "industries", title: "등록 업종", headline: `${industries.length}개 업종`, items: industries });
+
+    const licenses = Object.entries(COMPANY_BASIS_LICENSES)
+      .filter(([key]) => value(key) === true)
+      .map(([key, label]) => item(label, key));
+    const ncs = arrayValue(value("designated_vocational_training_ncs_names")).filter(Boolean);
+    if (licenses.length) {
+      groups.push({
+        key: "licenses", title: "인허가", headline: `${licenses.length}개 인허가`, items: licenses,
+        note: ncs.length ? `지정 직업훈련시설 NCS ${ncs.length}개 분야: ${ncs.join(" · ")}` : "",
+      });
+    }
+
+    const clearances = Object.entries(COMPANY_BASIS_CLEARANCES)
+      .filter(([key]) => value(key) === true)
+      .map(([key, label]) => item(label, key));
+    if (clearances.length) {
+      groups.push({
+        key: "clearances", title: "제재·결격", headline: `${clearances.length}개 항목 확인`, items: clearances,
+        note: "변할 수 있는 사실이라 공고 마감일 기준으로 다시 확인합니다.",
+      });
+    }
+
+    const absent = Object.entries(COMPANY_BASIS_ABSENT)
+      .filter(([key]) => value(key) === false)
+      .map(([key, label]) => item(label, key));
+    if (absent.length) {
+      groups.push({
+        key: "absent", title: "보유하지 않은 증명·등록", headline: `${absent.length}개 항목`, items: absent,
+        note: "공고가 요구하면 미충족으로 판정하고, 비영리법인 예외가 원문에 있으면 예외 충족으로 판정합니다.",
+      });
+    }
+
+    const evidence = arrayValue(source.evidence)
+      .filter((entry) => entry && entry.display_name)
+      .map((entry) => ({ label: entry.display_name, tag: entry.last_observed_at ? `${String(entry.last_observed_at).slice(0, 10)} 확인` : "" }));
+    if (evidence.length) groups.push({ key: "evidence", title: "근거 문서", headline: `증명서 ${evidence.length}종`, items: evidence });
+
+    const known = new Set([
+      ...Object.keys(COMPANY_BASIS_LICENSES), ...Object.keys(COMPANY_BASIS_CLEARANCES),
+      ...Object.keys(COMPANY_BASIS_ABSENT), ...COMPANY_BASIS_OTHER_KEYS,
+    ]);
+    const unlabeled = Object.keys(facts).filter((key) => !known.has(key) && !/^industry_code_\d+_registration$/.test(key));
+    return {
+      organization: stringValue(source.organization?.display_name, ""),
+      version: stringValue(source.profile_version, ""),
+      factCount: Object.keys(facts).length,
+      unlabeledCount: unlabeled.length,
+      groups,
+    };
+  }
+
+  const COMPANY_BASIS_VISIBLE_ITEMS = 6;
+
+  function companyBasisItemHtml(entry) {
+    return `<li>${escapeHtml(entry.label)}${entry.tag ? ` <small>${escapeHtml(entry.tag)}</small>` : ""}</li>`;
+  }
+
+  function renderCompanyBasis() {
+    if (!els.companyBasisGrid) return;
+    const basis = state.companyBasis;
+    if (basis.error) {
+      els.companyBasisSummary.textContent = "회사 정보를 불러오지 못했습니다. 잠시 뒤 다시 열어 주세요.";
+      els.companyBasisGrid.replaceChildren();
+      els.companyBasisNote.textContent = "";
+      return;
+    }
+    if (!basis.profile) {
+      els.companyBasisSummary.textContent = "회사 정보를 불러오는 중입니다.";
+      return;
+    }
+    const view = buildCompanyBasisGroups(basis.profile);
+    els.companyBasisSummary.textContent = `${view.organization || "우리 회사"} · 참가자격 판정에 쓰는 공개 회사 정보 ${view.factCount}개 항목`;
+    els.companyBasisGrid.innerHTML = view.groups.map((group) => `
+      <article class="company-basis-card" data-group="${escapeHtml(group.key)}">
+        <span class="company-basis-card__title">${escapeHtml(group.title)}</span>
+        <strong>${escapeHtml(group.headline)}${group.headlineTag ? ` <small>${escapeHtml(group.headlineTag)}</small>` : ""}</strong>
+        ${group.items.length ? `<ul>${group.items.slice(0, COMPANY_BASIS_VISIBLE_ITEMS).map(companyBasisItemHtml).join("")}</ul>` : ""}
+        ${group.items.length > COMPANY_BASIS_VISIBLE_ITEMS ? `<details><summary>전체 ${group.items.length}개 보기</summary><ul>${group.items.slice(COMPANY_BASIS_VISIBLE_ITEMS).map(companyBasisItemHtml).join("")}</ul></details>` : ""}
+        ${group.note ? `<p>${escapeHtml(group.note)}</p>` : ""}
+      </article>`).join("");
+    const extra = view.unlabeledCount ? ` · 이 화면에 따로 표시하지 않은 항목 ${view.unlabeledCount}개` : "";
+    els.companyBasisNote.textContent = `프로필 ${view.version || "버전 미확인"} · 증명서 원문·등록번호·주소는 싣지 않습니다${extra}`;
+  }
+
+  async function loadCompanyBasis() {
+    const basis = state.companyBasis;
+    if (basis.loaded || basis.loading) return;
+    basis.loading = true;
+    basis.error = null;
+    renderCompanyBasis();
+    try {
+      basis.profile = unwrapObject(await apiRequest("/company-profile"));
+      basis.loaded = true;
+    } catch (error) {
+      basis.error = error;
+    } finally {
+      basis.loading = false;
+      renderCompanyBasis();
+    }
+  }
+
   async function loadPerformance({ force = false, refreshSummary = force } = {}) {
     if (state.performance.loading && !force) return;
+    void loadCompanyBasis();
     const sequence = ++state.performance.requestSequence;
     state.performance.loading = true;
     state.performance.error = null;
