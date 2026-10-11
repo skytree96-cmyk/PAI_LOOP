@@ -2484,7 +2484,7 @@
         <summary class="company-basis-card__head">
           <span class="company-basis-card__title">${escapeHtml(group.title)}</span>
           <strong>${escapeHtml(group.headline)}${group.headlineTag ? ` <small>${escapeHtml(group.headlineTag)}</small>` : ""}</strong>
-          ${group.items.length ? `<span class="company-basis-card__toggle">${group.items.length}개 항목 보기</span>` : ""}
+          ${group.items.length ? `<span class="company-basis-card__toggle">목록 보기</span>` : ""}
         </summary>
         ${group.items.length ? `<ul class="company-basis-list">${group.items.map(companyBasisItemHtml).join("")}</ul>` : ""}
         ${group.note ? `<p>${escapeHtml(group.note)}</p>` : ""}
