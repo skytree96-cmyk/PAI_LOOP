@@ -127,3 +127,21 @@ def test_board_marks_manual_only_notices_and_the_ui_explains_them(app):
     script = Path(__file__).resolve().parents[1].joinpath("src", "pai_loop", "static", "app.js").read_text(encoding="utf-8")
     assert "source.analysis_manual_only === true" in script
     assert "MANUAL_ONLY:" in script
+
+
+def test_a_notice_found_by_two_extra_queries_is_stored_once(app):
+    # 2026-10-10~12: two discovery queries returned the same new notice, the
+    # second policy insert hit the primary key and the whole extra pass was
+    # skipped every morning.
+    shared = _row("R26BK90000005", title="채용 연계 워크숍 운영")
+    _Client.rows_by_query["채용"] = [*_Client.rows_by_query["채용"], shared]
+    _Client.rows_by_query["워크숍"] = [*_Client.rows_by_query["워크숍"], shared]
+    with internal_server_client(app) as client:
+        body = _post(client)
+        assert not any("건너뛰었습니다" in warning for warning in body["warnings"])
+        session = app.state.session_factory()
+        policies = [p for p in session.scalars(select(NoticeAnalysisPolicy)) if p.bid_notice_no == "R26BK90000005"]
+        assert len(policies) == 1
+        assert policies[0].analysis_policy == MANUAL_ONLY_POLICY
+        assert session.scalar(select(Notice).where(Notice.bid_notice_no == "R26BK90000005")) is not None
+        session.close()

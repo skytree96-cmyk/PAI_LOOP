@@ -3595,10 +3595,17 @@ def _run_store_only_discovery(
                 and item.get("deadline") is not None and item.get("title")]
     if not new_rows:
         return 0
+    # Several discovery queries often return the same notice. session.get()
+    # does not see a policy that was only added (not yet flushed), so track
+    # the keys added in this pass to avoid a duplicate primary key.
+    added_keys: set[str] = set()
     for item in new_rows:
         key = _pps_notice_key(item)
+        if key in added_keys:
+            continue
         policy = session.get(NoticeAnalysisPolicy, key)
         if policy is None:
+            added_keys.add(key)
             session.add(NoticeAnalysisPolicy(
                 notice_key=key, bid_notice_no=str(item["bid_notice_no"]),
                 analysis_policy=MANUAL_ONLY_POLICY, policy_source="STORE_ONLY_DISCOVERY",

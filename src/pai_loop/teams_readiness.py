@@ -452,20 +452,37 @@ def teams_daily_readiness(session: DbSession) -> TeamsDailyReadinessResponse:
                 ingestion=ingestion,
                 analysis=analysis,
             )
-        ready = (
-            parent.status == "COMPLETED"
-            and analysis.terminal
+        finished = (
+            analysis.terminal
             and analysis.remaining == 0
             and analysis.in_flight == 0
-            and analysis.failed == 0
-            and analysis.partial == 0
             and analysis.attempted == analysis.planned
         )
+        clean = (
+            finished
+            and parent.status == "COMPLETED"
+            and analysis.failed == 0
+            and analysis.partial == 0
+        )
+        # One notice the pipeline rejects (a cancelled notice, a source it
+        # cannot pair) must not hold back the whole team briefing for the
+        # day. The briefing still goes out when at least one notice finished;
+        # the card then states how many did not. A day where nothing finished
+        # stays fail-closed: that is an outage, not a single bad notice.
+        with_failures = (
+            not clean
+            and finished
+            and parent.status == "PARTIAL"
+            and analysis.completed > 0
+            and analysis.failed + analysis.partial > 0
+        )
         return _response(
-            status="READY" if ready else "FAILED",
+            status="READY" if clean or with_failures else "FAILED",
             reason_code=(
                 "DAILY_ANALYSIS_COMPLETE"
-                if ready
+                if clean
+                else "DAILY_ANALYSIS_COMPLETE_WITH_FAILURES"
+                if with_failures
                 else "DAILY_ANALYSIS_TERMINAL_FAILURE"
             ),
             kst_date=kst_date,
