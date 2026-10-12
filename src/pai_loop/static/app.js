@@ -4421,7 +4421,7 @@
     els.awardCandidatesEmptyState.hidden = count !== 0;
     if (!state.accountSession?.authenticated) {
       els.awardCandidatesSummary.textContent = "부서 계정으로 로그인하면 저장한 실적 후보를 볼 수 있습니다.";
-      els.awardCandidatesList.replaceChildren();
+      els.awardCandidatesList.innerHTML = "";
       return;
     }
     if (data.loading && !data.loaded) {
