@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import date, datetime, time as day_time, timedelta, timezone
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -24,6 +24,9 @@ from .briefing_models import TeamsBriefingDelivery
 from .teams_cards import link_base_url
 from .teams_bot import TeamsBotSettings, TeamsDeliveryError, send_personal_card
 from .teams_identity_models import TeamsRecipient
+
+if TYPE_CHECKING:
+    from .teams_readiness import TeamsDailyReadinessResponse
 
 KST = timezone(timedelta(hours=9), "Asia/Seoul")
 KINDS = ("SUBSCRIBED", "DAILY")
@@ -218,6 +221,7 @@ def _deliver(
     sender: Callable[..., str],
     card_builder: Callable[..., dict],
     now: datetime,
+    unfinished: tuple[date, int, int] | None = None,
 ) -> str:
     recipient = session.get(TeamsRecipient, row.recipient_id)
     # Re-checked at send time: a person may unsubscribe after this was queued.
@@ -242,6 +246,13 @@ def _deliver(
     # expunges everything its session holds, which would silently detach this
     # outbox row and throw away every status write that follows.
     kind, department_id = row.kind, row.department_id
+    # The shortfall belongs to the verdict's own KST day, so a DAILY row for any
+    # other day never borrows it.
+    shortfall = (
+        unfinished[1:]
+        if unfinished and kind == "DAILY" and unfinished[0] == row.kst_date
+        else None
+    )
     with session_factory() as card_session:
         card = card_builder(
             card_session,
@@ -249,6 +260,7 @@ def _deliver(
             department_id=department_id,
             base_url=base_url,
             now=now,
+            unfinished=shortfall,
         )
     row.status = "SENDING"
     row.attempts += 1
@@ -280,6 +292,7 @@ def dispatch_briefings(
     *,
     now: datetime | None = None,
     ready: bool | None = None,
+    readiness: TeamsDailyReadinessResponse | None = None,
     base_url: str | None = None,
     sender: Callable[..., str] | None = None,
     card_builder: Callable[..., dict] | None = None,
@@ -289,6 +302,8 @@ def dispatch_briefings(
 
     ``now`` is injectable so a caller, and every test, decides which KST day and
     delivery window this tick belongs to instead of inheriting the wall clock.
+    ``ready`` overrides the gate alone; ``readiness`` stands in for the whole
+    verdict, including how many of the day's notices did not finish.
     """
 
     if not briefings_enabled():
@@ -296,10 +311,15 @@ def dispatch_briefings(
     now = now or now_utc()
     outcomes: dict[str, int] = {}
     with session_factory() as session:
-        queued = schedule_daily(
-            session, now=now, ready=_readiness(session) if ready is None else ready
-        )
+        if readiness is None and ready is None:
+            readiness = _readiness(session)
+        if ready is None:
+            ready = bool(readiness is not None and readiness.ready)
+        queued = schedule_daily(session, now=now, ready=ready)
         session.commit()
+    # Re-read every tick rather than stored on the row: a day's verdict is final
+    # once its analysis is terminal, so a retried row gets the same note.
+    unfinished = _unfinished(readiness)
     origin = (
         base_url
         if base_url is not None
@@ -318,6 +338,7 @@ def dispatch_briefings(
                 sender=sender or (lambda r, c: send_personal_card(r, c)),
                 card_builder=card_builder or build_briefing_card,
                 now=now,
+                unfinished=unfinished,
             )
         outcomes[result] = outcomes.get(result, 0) + 1
     return {
@@ -328,14 +349,31 @@ def dispatch_briefings(
     }
 
 
-def _readiness(session: Session) -> bool:
-    """Today's ingestion and analysis are confirmed complete."""
+def _readiness(session: Session) -> TeamsDailyReadinessResponse | None:
+    """Today's verdict on whether ingestion and analysis are complete."""
     from .teams_readiness import teams_daily_readiness
 
     try:
-        return teams_daily_readiness(session).ready
+        return teams_daily_readiness(session)
     except Exception:  # pragma: no cover - defensive operational boundary
-        return False
+        return None
+
+
+def _unfinished(
+    readiness: TeamsDailyReadinessResponse | None,
+) -> tuple[date, int, int] | None:
+    """``(day, planned, unfinished)`` when the day went out with failures."""
+    if (
+        readiness is None
+        or not readiness.ready
+        or readiness.reason_code != "DAILY_ANALYSIS_COMPLETE_WITH_FAILURES"
+    ):
+        return None
+    analysis = readiness.analysis
+    missing = analysis.failed + analysis.partial
+    if missing <= 0:
+        return None
+    return readiness.kst_date, analysis.planned, missing
 
 
 def enabled_or_reason() -> tuple[bool, str]:
