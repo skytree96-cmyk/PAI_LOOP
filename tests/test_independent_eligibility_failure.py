@@ -98,7 +98,9 @@ def test_current_pps_failure_exposed_without_completing_documents_or_scores():
         assert public.analysis_state == "REVIEW"
         assert public.latest_evaluation.eligibility == "FAIL"
         assert not public.latest_evaluation.atomic_results
-        assert set(public.latest_evaluation.explanation) == {"public_view", "note"}
+        assert set(public.latest_evaluation.explanation) == {"public_view", "note", "risk"}
+        assert public.latest_evaluation.explanation["risk"]["status"] == "INSUFFICIENT_EVIDENCE"
+        assert public.latest_evaluation.risk_score is None
         assert case.client.calls == 1
         case.session.expunge_all()
         compact = _load_dashboard_notice_batch(case.session, [case.notice_id])[0]

@@ -4749,7 +4749,9 @@
         [],
       ))
         .map(normalizeQuantItem),
+      riskDetails: firstObject(explanation.risk),
       riskAxes: normalizeRiskAxes(firstValue(
+        explanation.risk?.axis_values,
         displayEvaluation.risk_dimensions,
         displayEvaluation.risk_axes,
         allowCurrentProjection ? firstValue(source.risk_dimensions, source.risk_axes, source.riskAxes, source.risks) : null,
@@ -8463,40 +8465,75 @@
     };
   }
 
+  function riskAxisCalculation(axis, details) {
+    const basis = firstObject(details.axis_basis?.[axis.key]);
+    const value = (name) => numberOrNull(basis[name]);
+    const result = `${axis.score}점`;
+    if (basis.source === "NOTICE_RISK_DIMENSIONS_AUTHORITATIVE_OVERRIDE") return `검증된 개별 입력값 = ${result}`;
+    if (basis.source === "DETERMINISTIC_ELIGIBILITY_EVALUATION" && ["PASS", "REVIEW", "FAIL"].includes(basis.outcome)) {
+      return `자격 판정 ${basis.outcome} → ${result} (충족 10 · 확인 필요 60 · 미충족 100)`;
+    }
+    if (basis.source === "DETERMINISTIC_READINESS_EVALUATION" && value("readiness_score") !== null) {
+      return `100 − 준비도 ${value("readiness_score")} = ${result} · 증빙 준비도 기반 보조지표`;
+    }
+    if (basis.source === "MATERIALIZED_POLICY_REQUIREMENTS" && value("incomplete_action_count") !== null && value("mandatory_checklist_count") !== null) {
+      return `미완료 필수조치 ${value("incomplete_action_count")}건 × 20 + 필수 체크리스트 ${value("mandatory_checklist_count")}건 × 5 = ${result} (최대 100점)`;
+    }
+    if (basis.source === "VALIDATED_EXTRACTION_STATUS" && value("minimum_extraction_confidence") !== null) {
+      return basis.run_status === "COMPLETED"
+        ? `100 − 최소 문서 추출 신뢰도 ${Math.round(value("minimum_extraction_confidence") * 10000) / 100}% = ${result}`
+        : `문서 분석 미완료에 따른 보수적 산정 = ${result}`;
+    }
+    if (basis.source === "STORED_3Y_AWARD_HISTORY") {
+      return `최근 3년 저장 낙찰 이력 기반 경쟁 추정 = ${result}${value("sample_count") === null ? "" : ` · 표본 ${value("sample_count")}건`} · 전체 시장 확정치 아님`;
+    }
+    if (basis.source === "STORED_3Y_AWARD_RATE_PREDICTION" && value("award_rate_center") !== null) {
+      return `100 − 예측 낙찰률 ${value("award_rate_center")}% = ${result} (0~100점) · 가격 압박 보조지표이며 실제 이익률 아님`;
+    }
+    return "저장된 분석 점수 · 세부 계산 근거가 저장되지 않았습니다.";
+  }
+
   function renderRiskPanel(notice) {
     const cancelled = isCancelledNotice(notice);
     const analyzed = notice.historicalAnalysis || (notice.analysisState === "EVALUATED" && !cancelled);
     const risk = notice.riskScore;
+    const details = analyzed ? firstObject(notice.riskDetails) : {};
     const axes = analyzed ? notice.riskAxes : [];
     const verifiedAxes = axes.filter((axis) => numberOrNull(axis.score) !== null).length;
-    const riskReady = risk !== null && verifiedAxes >= 4;
+    const riskReady = risk !== null && verifiedAxes >= 4 && details.status !== "WITHHELD_R07";
     els.riskTotalLabel.textContent = !analyzed
       ? "분석 전"
       : !riskReady
         ? `산정 보류 · 확인된 축 ${verifiedAxes}/6`
         : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${Math.round(risk)}/100`;
     const checks = [
-      { label: "자격 조건", hint: "공고의 필수 자격, 예외 적용 조건과 유효한 회사 증빙을 확인하세요." },
-      { label: "수행 역량", hint: "필요 인력·실적·수행 일정과 투입 가능 여부를 확인하세요." },
-      { label: "경쟁 강도", hint: "유사 공고의 참여업체 수와 낙찰 이력을 확인하세요." },
-      { label: "수익성", hint: "예상 투입비용·계약금액·대금 지급 조건을 확인하세요." },
-      { label: "운영 부담", hint: "현장 운영·보고·산출물·계약 이행 조건을 확인하세요." },
-      { label: "문서 품질", hint: "최신 첨부의 누락·판독 실패와 원문 근거 연결을 확인하세요." },
+      { key: "qualification", label: "자격 조건", hint: "필수 자격 판정과 유효한 회사 증빙이 필요합니다." },
+      { key: "execution", label: "수행 역량", hint: "자격 평가에 연결된 증빙 준비도 산정이 필요합니다." },
+      { key: "competition", label: "경쟁 강도", hint: "유사 공고의 참여업체 수·낙찰 이력과 충분한 표본이 필요합니다." },
+      { key: "profitability", label: "수익성", hint: "유효한 낙찰률 예측이 필요합니다. 이 항목은 가격 압박 보조지표입니다." },
+      { key: "operation", label: "운영 부담", hint: "필수조치·체크리스트 분류와 완료 상태 확인이 필요합니다." },
+      { key: "document", label: "문서 품질", hint: "최신 첨부의 추출 신뢰도와 분석 상태가 필요합니다." },
     ];
     // A checklist is guidance, never a substitute score or proof of a risk.
-    const canonicalAxes = axes.every((axis) => checks.some((check) => check.label === axis.label));
-    const displayAxes = canonicalAxes
-      ? checks.map((check) => ({ ...check, score: axes.find((axis) => axis.label === check.label)?.score ?? null }))
-      : axes.map((axis) => ({ ...axis, hint: checks.find((check) => check.label === axis.label)?.hint }));
+    const displayAxes = checks.map((check) => ({ ...check, score: axes.find((axis) => axis.label === check.label)?.score ?? null }));
+    const weightedAxes = displayAxes.filter((axis) => axis.score !== null);
+    const hasWeights = weightedAxes.length > 0 && weightedAxes.every((axis) => numberOrNull(details.weights?.[axis.key]) > 0);
+    const weightSum = hasWeights ? weightedAxes.reduce((sum, axis) => sum + Number(details.weights[axis.key]), 0) : 0;
+    const totalNote = details.status === "WITHHELD_R07"
+      ? "원문 근거 검증이 완료되지 않아 총점 산정을 보류합니다. 아래 값은 확정 총점에 반영되지 않은 항목별 계산값입니다."
+      : riskReady && hasWeights
+        ? `총점 계산: (${weightedAxes.map((axis) => `${axis.score} × ${Math.round(details.weights[axis.key] * 100)}%`).join(" + ")}) ÷ ${Math.round(weightSum * 100)}% = ${risk}점. 미확인 항목은 제외하고 확인된 가중치로 환산합니다.`
+        : "총점은 근거가 확보된 항목이 4개 이상이고 원문 검증이 완료됐을 때 산정합니다.";
     els.riskBars.innerHTML = `<p class="evidence-summary-note">${!analyzed ? "아직 리스크 분석 전입니다. 아래는 분석 후 확인할 항목입니다." : "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다. 미확인 항목은 위험이 없다는 뜻이 아닙니다."}</p>`
+      + `<p class="evidence-summary-note">${escapeHtml(totalNote)}</p>`
       + displayAxes.map((axis) => {
         const score = numberOrNull(axis.score);
         return `
         <div class="risk-row ${score === null ? "is-unknown" : riskClass(score)}">
           <strong>${escapeHtml(axis.label)}</strong>
           <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${score === null ? "미확인" : `${Math.round(score)}점`}"><span style="width:${score === null ? 0 : clamp(score, 0, 100)}%"></span></span>
-          <span>${score === null ? "미확인" : Math.round(score)}</span>
-          <small class="risk-check-note">${escapeHtml(score === null ? `확인할 내용 · ${axis.hint || "이 항목의 산정 근거를 확인하세요."}` : "저장된 분석 점수 · 세부 근거와 최신 조건을 함께 확인하세요.")}</small>
+          <span>${score === null ? "미확인" : score}</span>
+          <small class="risk-check-note">${escapeHtml(score === null ? `${analyzed ? "미산정" : "분석 전"} · ${axis.hint}` : riskAxisCalculation(axis, details))}${numberOrNull(details.weights?.[axis.key]) > 0 ? ` · 가중치 ${Math.round(details.weights[axis.key] * 100)}%` : ""}</small>
         </div>`;
       }).join("");
   }

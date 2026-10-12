@@ -99,6 +99,11 @@ def test_public_notice_response_removes_company_values_and_internal_decisions(mo
         assert payload["requirements"] == []
         assert payload["latest_evaluation"]["atomic_results"] == []
         assert payload["latest_evaluation"]["explanation"]["public_view"] is True
+        public_risk = payload["latest_evaluation"]["explanation"]["risk"]
+        stored_risk = private_detail["latest_evaluation"]["explanation"]["risk"]
+        assert public_risk["axis_values"] == stored_risk["axis_values"]
+        assert public_risk["weights"] == stored_risk["weights"]
+        assert public_risk["axis_values"]
         serialized = public_detail.text
         assert "masked-reviewer" not in serialized
         assert "server-only decision" not in serialized
