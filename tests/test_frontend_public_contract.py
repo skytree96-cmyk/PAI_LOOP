@@ -1060,7 +1060,7 @@ def test_missing_risk_is_labeled_as_insufficient_evidence_not_zero() -> None:
     assert "riskReady" in render_body
     assert "산정 보류 · 확인된 축" in render_body
     assert "score === null ? null" in source
-    assert 'score === null ? "미확인"' in render_body
+    assert 'analyzed ? "산정불가" : "분석 전"' in render_body
     assert "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다" in render_body
     assert "verifiedAxes < 4" in display_body
     assert "산정 보류" in display_body

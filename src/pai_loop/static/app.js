@@ -8465,6 +8465,20 @@
     };
   }
 
+  function riskReferenceScore(notice) {
+    if (!notice?.historicalAnalysis && (notice?.analysisState !== "EVALUATED" || isCancelledNotice(notice))) return null;
+    const details = firstObject(notice.riskDetails);
+    if (details.status !== "INSUFFICIENT_EVIDENCE") return null;
+    const values = firstObject(details.axis_values);
+    const weights = firstObject(details.weights);
+    const keys = ["qualification", "execution", "competition", "profitability", "operation", "document"]
+      .filter((key) => typeof values[key] === "number" && Number.isFinite(values[key]) && values[key] >= 0 && values[key] <= 100);
+    if (!keys.length || keys.length >= 4 || keys.some((key) => typeof weights[key] !== "number" || !Number.isFinite(weights[key]) || weights[key] <= 0 || weights[key] > 1)) return null;
+    const weightSum = keys.reduce((sum, key) => sum + weights[key], 0);
+    const score = Math.round(keys.reduce((sum, key) => sum + values[key] * weights[key], 0) / weightSum * 10) / 10;
+    return { score, count: keys.length, weightSum };
+  }
+
   function riskAxisCalculation(axis, details) {
     const basis = firstObject(details.axis_basis?.[axis.key]);
     const value = (name) => numberOrNull(basis[name]);
@@ -8501,11 +8515,14 @@
     const axes = analyzed ? notice.riskAxes : [];
     const verifiedAxes = axes.filter((axis) => numberOrNull(axis.score) !== null).length;
     const riskReady = risk !== null && verifiedAxes >= 4 && details.status !== "WITHHELD_R07";
+    const reference = riskReferenceScore(notice);
     els.riskTotalLabel.textContent = !analyzed
       ? "분석 전"
+      : reference
+        ? `${notice.historicalAnalysis ? "당시 " : ""}참고 환산 ${reference.score}/100 · 산정 ${reference.count}/6개`
       : !riskReady
         ? `산정 보류 · 확인된 축 ${verifiedAxes}/6`
-        : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${Math.round(risk)}/100`;
+        : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${risk}/100 · 산정 ${verifiedAxes}/6개`;
     const checks = [
       { key: "qualification", label: "자격 조건", hint: "필수 자격 판정과 유효한 회사 증빙이 필요합니다." },
       { key: "execution", label: "수행 역량", hint: "자격 평가에 연결된 증빙 준비도 산정이 필요합니다." },
@@ -8524,19 +8541,20 @@
     const weightSum = hasWeights ? weightedAxes.reduce((sum, axis) => sum + Number(details.weights[axis.key]), 0) : 0;
     const totalNote = details.status === "WITHHELD_R07"
       ? "원문 근거 검증이 완료되지 않아 총점 산정을 보류합니다. 아래 값은 확정 총점에 반영되지 않은 항목별 계산값입니다."
-      : riskReady && hasWeights
-        ? `총점 계산: (${weightedAxes.map((axis) => `${axis.score} × ${Math.round(details.weights[axis.key] * 100)}%`).join(" + ")}) ÷ ${Math.round(weightSum * 100)}% = ${risk}점. 미확인 항목은 제외하고 확인된 가중치로 환산합니다.`
+      : (riskReady || reference) && hasWeights
+        ? `${reference ? "참고 환산" : "총점"} 계산: (${weightedAxes.map((axis) => `${axis.score} × ${Math.round(details.weights[axis.key] * 100)}%`).join(" + ")}) ÷ ${Math.round(weightSum * 100)}% = ${reference ? reference.score : risk}점. 산정불가 항목은 분자와 분모에서 모두 제외합니다.${reference ? " 4개 미만의 일부 항목만 반영한 참고값이며, 공식 총점·등급·입찰 판단에는 반영하지 않습니다." : ""}`
         : "총점은 근거가 확보된 항목이 4개 이상이고 원문 검증이 완료됐을 때 산정합니다.";
     els.riskBars.innerHTML = `<p class="evidence-summary-note">${!analyzed ? "아직 리스크 분석 전입니다. 아래는 분석 후 확인할 항목입니다." : "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다. 미확인 항목은 위험이 없다는 뜻이 아닙니다."}</p>`
       + `<p class="evidence-summary-note">${escapeHtml(totalNote)}</p>`
       + displayAxes.map((axis) => {
         const score = numberOrNull(axis.score);
+        const missingLabel = analyzed ? "산정불가" : "분석 전";
         return `
         <div class="risk-row ${score === null ? "is-unknown" : riskClass(score)}">
           <strong>${escapeHtml(axis.label)}</strong>
-          <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${score === null ? "미확인" : `${Math.round(score)}점`}"><span style="width:${score === null ? 0 : clamp(score, 0, 100)}%"></span></span>
-          <span>${score === null ? "미확인" : score}</span>
-          <small class="risk-check-note">${escapeHtml(score === null ? `${analyzed ? "미산정" : "분석 전"} · 확인할 내용 · ${axis.hint}` : riskAxisCalculation(axis, details))}${numberOrNull(details.weights?.[axis.key]) > 0 ? ` · 가중치 ${Math.round(details.weights[axis.key] * 100)}%` : ""}</small>
+          <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${score === null ? missingLabel : `${Math.round(score)}점`}"><span style="width:${score === null ? 0 : clamp(score, 0, 100)}%"></span></span>
+          <span>${score === null ? missingLabel : score}</span>
+          <small class="risk-check-note">${escapeHtml(score === null ? `${analyzed ? "현재 산정불가" : "분석 전"} · 확인할 내용 · ${axis.hint}` : riskAxisCalculation(axis, details))}${numberOrNull(details.weights?.[axis.key]) > 0 ? ` · 가중치 ${Math.round(details.weights[axis.key] * 100)}%` : ""}</small>
         </div>`;
       }).join("");
   }
@@ -10464,6 +10482,8 @@
   }
 
   function riskDisplayValue(notice) {
+    const reference = riskReferenceScore(notice);
+    if (reference) return `참고 ${reference.score}/100 · ${reference.count}/6`;
     const verifiedAxes = arrayValue(notice?.riskAxes).filter((axis) => numberOrNull(axis?.score) !== null).length;
     return notice.riskScore === null || verifiedAxes < 4
       ? `산정 보류 · ${verifiedAxes}/6`

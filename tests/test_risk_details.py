@@ -65,7 +65,7 @@ assert.equal((u.els.riskBars.innerHTML.match(/class="risk-row /g)||[]).length,6)
 assert.match(u.els.riskBars.innerHTML,/100 − 준비도 80 = 20점/);
 assert.match(u.els.riskBars.innerHTML,/필수조치 1건 × 20/);
 assert.match(u.els.riskBars.innerHTML,/÷ 75% = 14.7점/);
-assert.match(u.els.riskBars.innerHTML,/미산정/);
+assert.match(u.els.riskBars.innerHTML,/현재 산정불가/);
 assert.match(u.els.riskTotalLabel.textContent,/총점/);
 raw.latest_evaluation.explanation.risk.status='WITHHELD_R07';
 n=u.normalizeNotice(raw);u.renderRiskPanel(n);
@@ -90,6 +90,48 @@ raw.historical_evaluation={id:'SYN-HISTORY',eligibility:'PASS',risk_score:10,exp
 n=u.normalizeNotice(raw);u.renderRiskPanel(n);
 assert.equal(n.riskAxes[0].score,10);
 assert.match(u.els.riskTotalLabel.textContent,/당시 총점/);
+'''
+    result = subprocess.run(["node", "-e", harness + script],
+                            input=APP.read_text(encoding="utf-8"),
+                            capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+
+
+def test_partial_risk_reference_excludes_missing_axes_and_keeps_document_gate():
+    harness = BEHAVIOR_HARNESS.replace(
+        "normalizeNotice,normalizeResultLearningNotice,",
+        "normalizeNotice,normalizeResultLearningNotice,renderRiskPanel,riskReferenceScore,riskDisplayValue,",
+    )
+    script = r'''
+const raw={...noticeRaw,source_kind:'SYNTHETIC',analysis_state:'ANALYZED',
+ latest_evaluation:{id:'SYN-PARTIAL',eligibility:'PASS',risk_score:null,risk_band:'UNKNOWN',
+ explanation:{risk:{status:'INSUFFICIENT_EVIDENCE',
+ axis_values:{qualification:10,execution:20,document:0},
+ weights:{qualification:.25,execution:.2,competition:.15,profitability:.1,operation:.1,document:.2}}}}};
+let n=u.normalizeNotice(raw);u.renderRiskPanel(n);
+assert.equal(n.riskScore,null);assert.equal(u.riskReferenceScore(n).score,10);
+assert.match(u.els.riskTotalLabel.textContent,/참고 환산 10\/100.*3\/6개/);
+assert.equal(u.riskDisplayValue(n),'참고 10/100 · 3/6');
+assert.match(u.els.riskBars.innerHTML,/÷ 65% = 10점/);
+assert.match(u.els.riskBars.innerHTML,/문서 품질 0점/);
+assert.equal((u.els.riskBars.innerHTML.match(/<span>산정불가<\/span>/g)||[]).length,3);
+assert.match(u.els.riskBars.innerHTML,/공식 총점·등급·입찰 판단에는 반영하지 않습니다/);
+raw.latest_evaluation.explanation.risk.axis_values={document:0};
+n=u.normalizeNotice(raw);assert.equal(u.riskReferenceScore(n).score,0);
+raw.latest_evaluation.explanation.risk.status='WITHHELD_R07';
+n=u.normalizeNotice(raw);u.renderRiskPanel(n);
+assert.equal(u.riskReferenceScore(n),null);assert.doesNotMatch(u.els.riskTotalLabel.textContent,/참고/);
+raw.latest_evaluation.explanation.risk.status='INSUFFICIENT_EVIDENCE';
+raw.latest_evaluation.explanation.risk.axis_values={};
+n=u.normalizeNotice(raw);assert.equal(u.riskReferenceScore(n),null);
+raw.latest_evaluation.explanation.risk.axis_values={document:20};
+raw.latest_evaluation.explanation.risk.weights={};
+n=u.normalizeNotice(raw);assert.equal(u.riskReferenceScore(n),null);
+raw.latest_evaluation.explanation.risk.weights={document:true};
+n=u.normalizeNotice(raw);assert.equal(u.riskReferenceScore(n),null);
+raw.latest_evaluation.explanation.risk.weights={document:.2};
+raw.analysis_state='PENDING';n=u.normalizeNotice(raw);
+assert.equal(u.riskReferenceScore(n),null);
 '''
     result = subprocess.run(["node", "-e", harness + script],
                             input=APP.read_text(encoding="utf-8"),
