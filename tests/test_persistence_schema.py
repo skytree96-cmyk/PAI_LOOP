@@ -36,6 +36,7 @@ from pai_loop.migrations import (
     PRESPEC_MIGRATION_ID,
     TEAMS_FOLLOWUPS_MIGRATION_ID,
     TEAMS_BRIEFING_MIGRATION_ID,
+    AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID,
     MigrationError,
     apply_additive_migrations,
     main as migration_main,
@@ -281,6 +282,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         AWARD_AGENCY_METADATA_MIGRATION_ID,
         TEAMS_FOLLOWUPS_MIGRATION_ID,
     TEAMS_BRIEFING_MIGRATION_ID,
+    AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == [
         MIGRATION_ID,
@@ -295,6 +297,7 @@ def test_additive_migration_upgrades_an_existing_base_schema_idempotently() -> N
         AWARD_AGENCY_METADATA_MIGRATION_ID,
         TEAMS_FOLLOWUPS_MIGRATION_ID,
     TEAMS_BRIEFING_MIGRATION_ID,
+    AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID,
     ]
     assert apply_additive_migrations(engine) == []
     assert pending_migrations(engine) == []
@@ -497,6 +500,7 @@ def test_notice_policy_migration_upgrades_a_legacy_migration_ledger() -> None:
         AWARD_AGENCY_METADATA_MIGRATION_ID,
         TEAMS_FOLLOWUPS_MIGRATION_ID,
     TEAMS_BRIEFING_MIGRATION_ID,
+    AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID,
     ]
     assert pending_migrations(engine) == expected
     assert apply_additive_migrations(engine) == expected

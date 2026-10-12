@@ -5241,6 +5241,51 @@ a.history-award-project__source:hover { text-decoration: underline; }
 .award-result-card footer span { color: #315f82; font-size: var(--fs-2xs); font-weight: 850; }
 .award-result-card footer small { color: var(--muted); font-size: var(--fs-2xs); text-align: right; }
 
+/* Kept award candidates stay apart from verified company performance. */
+.award-result-card__action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  margin-top: 10px;
+}
+
+.award-result-card__action .button { min-height: 34px; padding: 7px 12px; font-size: var(--fs-xs); }
+.award-result-card__action small { color: var(--muted); font-size: var(--fs-2xs); text-align: right; }
+
+.award-candidates { margin-top: 14px; }
+
+.award-candidate-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.award-candidate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+.award-candidate-row strong { display: block; overflow-wrap: anywhere; color: var(--ink); font-size: var(--fs-sm); }
+.award-candidate-row div span { display: block; margin-top: 3px; color: var(--muted); font-size: var(--fs-2xs); overflow-wrap: anywhere; }
+.award-candidate-row__amount { color: var(--ink-soft); font-size: var(--fs-xs); font-weight: 750; white-space: nowrap; }
+.award-candidate-row .button { min-height: 32px; padding: 6px 11px; font-size: var(--fs-xs); }
+.award-candidate-empty { margin: 12px 0 0; color: var(--muted); font-size: var(--fs-xs); }
+
+@media (max-width: 640px) {
+  .award-candidate-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .award-candidate-row__amount { grid-column: 1; }
+  .award-result-card__action { flex-wrap: wrap; }
+}
+
 /* Public, de-identified company performance explorer */
 .performance-section {
   min-width: 0;

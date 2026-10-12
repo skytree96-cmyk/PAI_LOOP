@@ -32,6 +32,7 @@ from .briefing_models import TeamsBriefingDelivery
 from .models import (
     AnalysisRun,
     AwardHistoryItem,
+    AwardPerformanceCandidate,
     BidOutcome,
     CompanyPerformanceRecord,
     UserDecision,
@@ -145,6 +146,10 @@ TEAMS_BRIEFING_MIGRATION_CHECKSUM = hashlib.sha256(
     b"teams_briefing_deliveries:v1;"
     b"teams_recipients:briefing_enabled:boolean|null-means-subscribed"
 ).hexdigest()
+AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID = "20261012_01_award_performance_candidates"
+AWARD_PERFORMANCE_CANDIDATE_MIGRATION_CHECKSUM = hashlib.sha256(
+    b"award_performance_candidates:v1"
+).hexdigest()
 _migrations = (
     (MIGRATION_ID, MIGRATION_CHECKSUM, _migration_tables),
     (
@@ -201,6 +206,11 @@ _migrations = (
         TEAMS_BRIEFING_MIGRATION_ID,
         TEAMS_BRIEFING_MIGRATION_CHECKSUM,
         (TeamsBriefingDelivery.__table__,),
+    ),
+    (
+        AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID,
+        AWARD_PERFORMANCE_CANDIDATE_MIGRATION_CHECKSUM,
+        (AwardPerformanceCandidate.__table__,),
     ),
 )
 _required_base_tables = {

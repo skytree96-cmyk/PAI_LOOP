@@ -755,3 +755,40 @@ class PerformanceNormalizationRevision(Base):
     before_state: Mapped[dict[str, Any]] = mapped_column(JSON)
     after_state: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+
+
+class AwardPerformanceCandidate(Base, TimestampMixin):
+    """Operator-selected PPS award kept apart from company performance.
+
+    An award proves only that the company won a notice.  Project period,
+    completion, consortium share and certificate issuance are unknown, so these
+    rows never enter ``company_performance_records`` or quantitative scoring.
+    """
+
+    __tablename__ = "award_performance_candidates"
+    __table_args__ = (
+        UniqueConstraint("candidate_key", name="uq_award_performance_candidate_key"),
+        Index("ix_award_performance_candidate_status_opened", "candidate_status", "opened_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_key: Mapped[str] = mapped_column(String(180))
+    candidate_status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", index=True)
+    scope: Mapped[str] = mapped_column(String(24))
+    bid_notice_no: Mapped[str] = mapped_column(String(64), index=True)
+    revision_no: Mapped[str] = mapped_column(String(16), default="")
+    classification_no: Mapped[str] = mapped_column(String(16), default="")
+    rebid_no: Mapped[str] = mapped_column(String(16), default="")
+    title: Mapped[str] = mapped_column(String(500))
+    agency: Mapped[str] = mapped_column(String(300), default="")
+    winner_name: Mapped[str] = mapped_column(String(300))
+    award_amount_krw: Mapped[int | None] = mapped_column(BigInteger)
+    award_rate: Mapped[float | None] = mapped_column(Float)
+    participant_count: Mapped[int | None] = mapped_column(Integer)
+    opened_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    awarded_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    source: Mapped[str] = mapped_column(String(48), default="PPS_COMPANY_AWARD")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_by_account_id: Mapped[str | None] = mapped_column(String(36))
+    created_by: Mapped[str] = mapped_column(String(120), default="KMA 입찰팀")
+    updated_by: Mapped[str] = mapped_column(String(120), default="KMA 입찰팀")
