@@ -312,6 +312,33 @@ assert.equal(one(
   { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
 ).readiness.ready, true);
 
+// 2026-10-12: one rejected notice used to hold back the whole team briefing.
+const withFailuresResponse = structuredClone(readyResponse);
+withFailuresResponse.reason_code = "DAILY_ANALYSIS_COMPLETE_WITH_FAILURES";
+withFailuresResponse.analysis = { ...withFailuresResponse.analysis, parent_status: "PARTIAL", planned: 40, attempted: 40, completed: 39, failed: 1 };
+const validatedWithFailures = one(
+  "Validate Today's Daily Analysis Readiness",
+  withFailuresResponse,
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+);
+assert.equal(validatedWithFailures.readiness.ready, true);
+assert.equal(validatedWithFailures.readiness.contractValid, true);
+assert.equal(validatedWithFailures.readiness.reasonCode, "DAILY_ANALYSIS_COMPLETE_WITH_FAILURES");
+const nothingFinished = structuredClone(withFailuresResponse);
+nothingFinished.analysis = { ...nothingFinished.analysis, planned: 1, attempted: 1, completed: 0, failed: 1 };
+assert.equal(one(
+  "Validate Today's Daily Analysis Readiness",
+  nothingFinished,
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+).readiness.contractValid, false);
+const failuresAsComplete = structuredClone(withFailuresResponse);
+failuresAsComplete.reason_code = "DAILY_ANALYSIS_COMPLETE";
+assert.equal(one(
+  "Validate Today's Daily Analysis Readiness",
+  failuresAsComplete,
+  { node: { "Validate Teams Delivery Config": { json: approvedResult } } },
+).readiness.contractValid, false);
+
 const runningResponse = structuredClone(readyResponse);
 runningResponse.status = "RUNNING";
 runningResponse.ready = false;
@@ -382,6 +409,16 @@ assert(!previewSerialised.includes("TOP-PROVIDER-MARKER"));
 assert(!previewSerialised.includes("REVIEW-PII-MARKER"));
 assert(!previewSerialised.includes("REGION-PII-MARKER"));
 assert(Buffer.byteLength(previewSerialised, "utf8") <= 24 * 1024);
+
+assert(!preview.delivery.htmlMessage.includes("분석을 마치지 못해"));
+const unfinishedPreview = one(
+  "Build Sanitized Dedupe Envelope",
+  { ...structuredClone(fixture), readiness: validatedWithFailures.readiness },
+  { execution: { id: "preview-execution" } },
+);
+assert(unfinishedPreview.delivery.htmlMessage.includes("오늘 분석 대상 40건 중 1건은 분석을 마치지 못해"));
+assert(unfinishedPreview.adaptiveCard.body.some((item) => item.type === "TextBlock" && String(item.text).includes("1건은 분석을 마치지 못해")));
+assert.notEqual(unfinishedPreview.delivery.fingerprint, preview.delivery.fingerprint);
 
 const requiredHtmlLabels = ["공고명", "발주처", "마감일", "추정금액", "참가자격", "리스크", "추천 부서"];
 for (const label of requiredHtmlLabels) {

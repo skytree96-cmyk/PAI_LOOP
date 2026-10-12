@@ -55,6 +55,7 @@ from .pps_enrichment import (
     MAX_ATTACHMENTS_IN_MANIFEST,
     MAX_NEW_ATTACHMENTS_PER_REQUEST,
     MAX_OPENAI_CALLS_PER_ATTACHMENT,
+    MAX_OPENAI_CALLS_PER_NOTICE,
     PpsEnrichmentResult,
     current_pps_attachment_coverage,
     current_retryable_review_version_ids,
@@ -200,7 +201,12 @@ class AnalysisAttachmentEnrichmentOut(ApiModel):
     analysis_input_characters: int = Field(default=0, ge=0, le=120_000)
     members_discovered: int = Field(default=0, ge=0, le=1_024)
     members_processed: int = Field(default=0, ge=0, le=1_024)
-    openai_calls: int = Field(default=0, ge=0, le=2)
+    # One attachment can use its first extraction, a long-output retry and a
+    # bounded quantitative recovery, so the per-attachment count may exceed
+    # MAX_OPENAI_CALLS_PER_ATTACHMENT. The notice-level budget is the real cap
+    # (enforced in pps_enrichment); a tighter bound here turned an already
+    # paid analysis into a 500.
+    openai_calls: int = Field(default=0, ge=0, le=MAX_OPENAI_CALLS_PER_NOTICE)
     openai_telemetry: OpenAITelemetry = Field(default_factory=OpenAITelemetry)
     version_id: str | None = None
 

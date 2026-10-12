@@ -407,9 +407,73 @@ def test_terminal_partial_or_inconsistent_daily_parent_fails_closed(
         source_material_keys=[key],
     )
     body = _readiness(client)
+    # Nothing finished: an outage, not one bad notice, so stay fail-closed.
     assert body["status"] == "FAILED"
     assert body["reason_code"] == "DAILY_ANALYSIS_TERMINAL_FAILURE"
     assert body["analysis"]["failed"] == 1
+    assert body["analysis"]["completed"] == 0
+    assert body["ready"] is False
+
+
+def test_finished_daily_parent_with_some_failures_is_ready_with_failures(
+    client: TestClient,
+) -> None:
+    keys = ["PPS-MIXED-001", "PPS-MIXED-002", "PPS-MIXED-003"]
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=3,
+        matched=3,
+        material_keys=keys,
+    )
+    parent_id = _add_daily_parent(
+        client,
+        status="PARTIAL",
+        notice_keys=keys,
+        child_outcomes={
+            "PPS-MIXED-001": "COMPLETED",
+            "PPS-MIXED-002": "COMPLETED",
+            "PPS-MIXED-003": "FAILED",
+        },
+        completed=True,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=keys,
+    )
+    body = _readiness(client)
+    assert body["status"] == "READY"
+    assert body["ready"] is True
+    assert body["reason_code"] == "DAILY_ANALYSIS_COMPLETE_WITH_FAILURES"
+    assert body["retry_after_seconds"] is None
+    assert body["analysis"]["parent_job_id"] == parent_id
+    assert body["analysis"]["parent_status"] == "PARTIAL"
+    assert body["analysis"]["completed"] == 2
+    assert body["analysis"]["failed"] == 1
+    assert body["analysis"]["remaining"] == 0
+
+
+def test_daily_parent_with_failures_still_running_is_not_ready(
+    client: TestClient,
+) -> None:
+    keys = ["PPS-MIXED-RUN-001", "PPS-MIXED-RUN-002"]
+    ingestion_id = _add_ingestion(
+        client,
+        status="COMPLETED",
+        created=2,
+        matched=2,
+        material_keys=keys,
+    )
+    _add_daily_parent(
+        client,
+        status="PARTIAL",
+        notice_keys=keys,
+        child_outcomes={"PPS-MIXED-RUN-001": "FAILED"},
+        completed=False,
+        source_ingestion_job_id=ingestion_id,
+        source_material_keys=keys,
+    )
+    body = _readiness(client)
+    assert body["status"] == "RUNNING"
+    assert body["reason_code"] == "DAILY_ANALYSIS_RUNNING"
     assert body["ready"] is False
 
 
