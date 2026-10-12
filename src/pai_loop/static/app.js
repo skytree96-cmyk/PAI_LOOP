@@ -3674,16 +3674,29 @@
   function normalizeResultLearningNotice(raw = {}) {
     const outcomes = Array.isArray(raw.outcomes) ? raw.outcomes : raw.latest_outcome ? [raw.latest_outcome] : [];
     const own = ownDepartmentRecords(outcomes).slice().sort(compareDepartmentRevision);
-    const outcome = state.accountSession?.enabled && state.accountSession.account?.role === "DEPARTMENT"
+    const departmentViewer = state.accountSession?.enabled && state.accountSession.account?.role === "DEPARTMENT";
+    const outcome = departmentViewer
       ? own[0] || outcomes.find((row) => !row.department_id && row.source !== "MANUAL_UI") || null
       : raw.latest_outcome && typeof raw.latest_outcome === "object" ? raw.latest_outcome : null;
+    // 내 부서 기록이 없어도 다른 부서가 넣은 결과는 읽기 전용으로 보여 준다.
+    // 수정 대상(outcome·expectedOutcomeId)은 계속 내 부서 기록만이다.
+    const shared = departmentViewer && !outcome
+      ? outcomes.find((row) => row.department_id && !own.includes(row)) || null
+      : null;
     return {
       noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), revisionNo: stringValue(raw.revision_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
       deadline: stringValue(raw.deadline), noticeStatus: stringValue(raw.notice_status),
       autoReviewPending: raw.auto_review_pending === true,
       expectedOutcomeId: own[0]?.id || null,
       departmentOutcomes: outcomes.map((row) => ({ departmentName: stringValue(row.department_name, row.source === "MANUAL_UI" ? "기존 기록" : "나라장터"), status: stringValue(row.status), note: stringValue(row.operator_note), updatedAt: row.updated_at })),
-      outcome: outcome ? {
+      outcome: normalizeResultOutcome(outcome),
+      sharedOutcome: normalizeResultOutcome(shared),
+      sharedDepartmentName: shared ? stringValue(shared.department_name, "다른 부서") : "",
+    };
+  }
+
+  function normalizeResultOutcome(outcome) {
+    return outcome ? {
         id: stringValue(outcome.id), outcomeKey: stringValue(outcome.outcome_key), recordStatus: stringValue(outcome.record_status, "DRAFT").toUpperCase(),
         revision: numberOrNull(outcome.revision) ?? 1, status: stringValue(outcome.status).toUpperCase(), submittedBidAmount: numberOrNull(outcome.submitted_bid_amount),
         submittedBidRate: numberOrNull(outcome.submitted_bid_rate), winningBidAmount: numberOrNull(outcome.winning_bid_amount), winningBidRate: numberOrNull(outcome.winning_bid_rate),
@@ -3695,8 +3708,7 @@
         basisOutcomeId: stringValue(outcome.basis_outcome_id), basisSource: stringValue(outcome.basis_source),
         operatorNote: stringValue(outcome.operator_note), occurredAt: stringValue(outcome.occurred_at), updatedAt: stringValue(outcome.updated_at),
         demo: outcome.demo === true,
-      } : null,
-    };
+      } : null;
   }
 
   function renderResultLearningQueueTabs() {
@@ -3725,19 +3737,25 @@
     }
     els.resultLearningList.innerHTML = data.records.map((notice, index) => {
       const outcome = notice.outcome;
-      const outcomeLabel = outcome ? resultStatusLabel(outcome.status) : "결과 미입력";
+      // 내 부서 기록이 없으면 다른 부서가 넣은 결과를 대신 보여 주고, 누가 넣었는지 밝힌다.
+      const shown = outcome || notice.sharedOutcome;
+      const sharedOnly = !outcome && Boolean(notice.sharedOutcome);
+      const outcomeLabel = shown ? resultStatusLabel(shown.status) : "결과 미입력";
       // A provider result the department has not reviewed yet reads as work to
       // confirm, whatever its stored workflow state.
       const awaitingReview = Boolean(outcome && notice.autoReviewPending && outcome.source !== "MANUAL_UI");
-      const statusClass = awaitingReview ? "review" : (outcome?.recordStatus || "missing").toLowerCase();
-      const statusLabel = awaitingReview ? "확인 필요" : outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력";
+      const statusClass = awaitingReview ? "review" : sharedOnly ? "shared" : (outcome?.recordStatus || "missing").toLowerCase();
+      const statusLabel = awaitingReview ? "확인 필요" : sharedOnly ? `입력 완료 · ${notice.sharedDepartmentName}` : outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력";
+      const footerText = sharedOnly
+        ? `${notice.sharedDepartmentName} 입력 결과 · 내 부서 기록은 아직 없습니다`
+        : outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요";
       return `<article class="operator-record result-record" role="listitem">
-        <div><span class="record-status record-status--${escapeAttribute(statusClass)}">${escapeHtml(statusLabel)}</span>${outcome?.demo ? '<span class="demo-record-badge" title="발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.">시연</span>' : ""}<small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
+        <div><span class="record-status record-status--${escapeAttribute(statusClass)}">${escapeHtml(statusLabel)}</span>${shown?.demo ? '<span class="demo-record-badge" title="발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.">시연</span>' : ""}<small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
-        ${outcome?.openingIdentity ? `<p>${outcome.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(outcome.openingIdentity.revision_no)} / 분류 ${escapeHtml(outcome.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(outcome.openingIdentity.rebid_no)}</p>` : ""}
-        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(outcome?.submittedBidAmount == null ? "미입력" : formatBudget(outcome.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(outcome?.winningBidAmount == null ? "미확인" : formatBudget(outcome.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome, "winning"))}</dd></div></dl>
-        ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
-        <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
+        ${shown?.openingIdentity ? `<p>${shown.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(shown.openingIdentity.revision_no)} / 분류 ${escapeHtml(shown.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(shown.openingIdentity.rebid_no)}</p>` : ""}
+        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(shown?.submittedBidAmount == null ? "미입력" : formatBudget(shown.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(shown))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(shown?.winningBidAmount == null ? "미확인" : formatBudget(shown.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(shown, "winning"))}</dd></div></dl>
+        ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details${sharedOnly ? " open" : ""}><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
+        <footer><small>${escapeHtml(footerText)}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : sharedOnly ? "내 부서 결과 입력" : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
       </article>`;
     }).join("");
     const start = data.total ? data.offset + 1 : 0;
@@ -9430,9 +9448,11 @@
   }
 
   function renderDetailResult(record) {
-    const outcome = record.outcome;
+    // 내 부서 기록이 없으면 다른 부서 기록을 읽기 전용으로 보인다. 버튼은 내 부서 기록을 만든다.
+    const sharedOnly = !record.outcome && Boolean(record.sharedOutcome);
+    const outcome = record.outcome || record.sharedOutcome;
     els.detailResultEditButton.hidden = !canWriteResults() || isCancelledNotice(state.selectedNotice);
-    els.detailResultEditButton.textContent = outcome ? "결과 수정" : "결과 입력";
+    els.detailResultEditButton.textContent = record.outcome ? "결과 수정" : sharedOnly ? "내 부서 결과 입력" : "결과 입력";
     els.detailResultRetryButton.hidden = true;
     if (!outcome) {
       els.detailResultContent.textContent = "아직 입력한 결과가 없습니다. 결과 입력 버튼으로 기록을 시작하세요.";
@@ -9453,7 +9473,8 @@
     ];
     if (outcome.source && outcome.source !== "MANUAL_UI") rows.unshift(["기록 출처", resultSourceLabel(outcome.source)]);
     const demoNote = outcome.demo ? '<p class="demo-record-note"><span class="demo-record-badge">시연</span>발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.</p>' : "";
-    els.detailResultContent.innerHTML = `${demoNote}<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
+    const sharedNote = sharedOnly ? `<p class="result-shared-note">${escapeHtml(record.sharedDepartmentName)} 입력 결과입니다 · 내 부서 기록은 아직 없습니다.</p>` : "";
+    els.detailResultContent.innerHTML = `${sharedNote}${demoNote}<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
   }
 
   function selectTab(tabName, { evidenceId = "", focusEvidence = false, resetScroll = true } = {}) {
