@@ -28,6 +28,7 @@ from .accounts import router as accounts_router
 from .accounts import authenticated_account
 from .app_access import FRONTEND_PATHS, require_app_access
 from .company_awards import router as company_awards_router
+from .award_performance_candidates import router as award_performance_candidates_router
 from .config import Settings
 from .database import Base, build_engine, build_session_factory
 from .daily_operations import router as daily_operations_router
@@ -235,6 +236,7 @@ def create_app(*, database_url: str | None = None, seed_synthetic: bool | None =
     application.include_router(prespec_router)
     application.include_router(private_company_evidence_router)
     application.include_router(company_awards_router)
+    application.include_router(award_performance_candidates_router)
     application.include_router(analysis_persistence_router)
     application.include_router(teams_readiness_router)
     application.include_router(teams_bot_router)

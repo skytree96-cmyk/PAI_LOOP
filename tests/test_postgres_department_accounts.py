@@ -219,7 +219,8 @@ def test_postgres_account_migration_preserves_unassigned_history_and_reapplies(p
     # Only this test's account and dependent Teams migration entries are removed;
     # identity values are null and Teams tables are empty before reconstruction.
     expected_migrations = [ACCOUNT_MIGRATION_ID, migrations.TEAMS_FOLLOWUPS_MIGRATION_ID,
-                           migrations.TEAMS_BRIEFING_MIGRATION_ID]
+                           migrations.TEAMS_BRIEFING_MIGRATION_ID,
+                           migrations.AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID]
     with engine.begin() as connection:
         connection.execute(schema_migrations.delete().where(schema_migrations.c.migration_id.in_(expected_migrations)))
         _drop_empty_teams_tables(connection)
@@ -298,6 +299,7 @@ def test_postgres_concurrent_combined_legacy_migrations_preserve_rows_and_nullab
         migrations.AWARD_AGENCY_METADATA_MIGRATION_ID: migrations.AWARD_AGENCY_METADATA_MIGRATION_CHECKSUM,
         migrations.TEAMS_FOLLOWUPS_MIGRATION_ID: migrations.TEAMS_FOLLOWUPS_MIGRATION_CHECKSUM,
         migrations.TEAMS_BRIEFING_MIGRATION_ID: migrations.TEAMS_BRIEFING_MIGRATION_CHECKSUM,
+        migrations.AWARD_PERFORMANCE_CANDIDATE_MIGRATION_ID: migrations.AWARD_PERFORMANCE_CANDIDATE_MIGRATION_CHECKSUM,
     }
     with ThreadPoolExecutor(max_workers=2) as pool:
         with _hold_department_lock(engine, migrations._MIGRATION_ADVISORY_LOCK_KEY):

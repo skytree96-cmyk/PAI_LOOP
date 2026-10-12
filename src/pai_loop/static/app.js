@@ -113,6 +113,8 @@
       loading: false,
       error: null,
     },
+    // Kept awards are separate from verified company performance (no certificate yet).
+    awardCandidates: { loaded: false, loading: false, error: null, items: [], counts: {}, saving: new Set() },
     companyBasis: { loaded: false, loading: false, error: null, profile: null },
     performance: {
       summary: null,
@@ -346,6 +348,7 @@
       "prespecLiveForm", "prespecLiveQuery", "prespecLiveFromDate", "prespecLiveToDate", "prespecLiveLimit", "prespecLiveSearchButton", "prespecLiveSummary", "prespecLiveList", "prespecLiveState",
       "prespecDetailDialog", "prespecDetailTitle", "prespecDetailMeta", "prespecDetailCloseButton", "prespecDetailCancelButton", "prespecDetailBody", "prespecAnalysisStatus", "prespecAnalysisButton",
       "awardResultsSummary", "awardSearchForm", "awardCompanyName", "awardBusinessNumber", "awardStartDate", "awardEndDate", "awardSearchButton",
+      "awardCandidatesSummary", "awardCandidatesList", "awardCandidatesEmptyState",
       "awardResultsPanel", "awardResultsList", "awardResultsLoadingState", "awardResultsErrorState", "awardResultsErrorMessage", "awardResultsEmptyState",
       "performanceTotal", "performancePeriod", "performanceYears", "performancePrivacy", "performanceResultSummary",
       "performanceFilterForm", "performanceSearchInput", "performanceYearFilter", "performanceDivisionFilter",
@@ -633,6 +636,8 @@
 
     els.awardSearchForm.addEventListener("submit", searchCompanyAwards);
     els.awardBusinessNumber.addEventListener("input", formatAwardBusinessNumberInput);
+    els.awardResultsList.addEventListener("click", handleAwardResultsClick);
+    els.awardCandidatesList.addEventListener("click", handleAwardCandidatesClick);
 
     els.performanceFilterForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -1505,6 +1510,7 @@
     if (state.selectedNotice) closeDetail();
     state.selectedNotice = null;
     state.privateMatchPreviews = {};
+    state.awardCandidates = { loaded: false, loading: false, error: null, items: [], counts: {}, saving: new Set() };
     state.performanceEditor.records = [];
     state.performanceEditor.loaded = false;
     state.performanceEditor.loading = false;
@@ -4189,7 +4195,14 @@
 
   function normalizeCompanyAward(raw) {
     const source = raw && typeof raw === "object" ? raw : {};
+    const keyPart = (...values) => stringValue(firstValue(...values)).trim();
+    const rawNoticeNo = keyPart(source.bid_notice_no, source.bidNoticeNo);
     return {
+      // Mirrors the server candidate key so saved rows are recognised after a new search.
+      candidateKey: rawNoticeNo
+        ? `award:${stringValue(source.scope, "service").toLowerCase()}|${rawNoticeNo}|${keyPart(source.revision_no, source.revisionNo)}|${keyPart(source.classification_no, source.classificationNo)}|${keyPart(source.rebid_no, source.rebidNo)}`
+        : "",
+      raw: source,
       scope: stringValue(source.scope, "service").toLowerCase(),
       bidNoticeNo: stringValue(firstValue(source.bid_notice_no, source.bidNoticeNo), "공고번호 미확인"),
       revisionNo: stringValue(firstValue(source.revision_no, source.revisionNo), "00"),
@@ -4339,7 +4352,7 @@
     renderDataSource();
   }
 
-  function renderCompanyAwardCard(record) {
+  function renderCompanyAwardCard(record, index) {
     const scopeLabels = { service: "용역", goods: "물품", construction: "공사", foreign: "외자" };
     const opened = record.openedAt || record.awardedAt || record.registeredAt;
     const rate = record.awardRate === null ? "낙찰률 미확인" : `${formatNumber(record.awardRate, 4)}%`;
@@ -4358,7 +4371,172 @@
         <div><dt>참가업체</dt><dd>${escapeHtml(participants)}</dd></div>
       </dl>
       <footer><span>나라장터 낙찰 관측</span><small>수행·완료·실적증명 여부 미확인</small></footer>
+      ${renderAwardCandidateAction(record, index)}
     </article>`;
+  }
+
+  function isDefaultAwardCompany(name) {
+    const compact = String(name || "").normalize("NFKC").replace(/\s+/g, "");
+    return compact === "사단법인한국능률협회" || compact === "한국능률협회";
+  }
+
+  function savedAwardCandidate(record) {
+    return state.awardCandidates.items.find((item) => item.candidateKey === record.candidateKey) || null;
+  }
+
+  function renderAwardCandidateAction(record, index) {
+    if (!record.candidateKey || !isDefaultAwardCompany(record.winnerName)) return "";
+    const saving = state.awardCandidates.saving.has(record.candidateKey);
+    const saved = Boolean(savedAwardCandidate(record));
+    const label = saving ? "저장 중…" : saved ? "실적 후보 저장됨" : "실적 후보로 저장";
+    return `<div class="award-result-card__action">
+      <button class="button button--secondary award-candidate-save" type="button" data-award-candidate-index="${index}" ${saving || saved ? "disabled" : ""} aria-label="${escapeAttribute(record.title)} ${escapeAttribute(label)}">${escapeHtml(label)}</button>
+      <small>실적증명 전 별도 목록 · 정량점수 미반영</small>
+    </div>`;
+  }
+
+  function normalizeAwardCandidate(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    return {
+      id: stringValue(source.id),
+      candidateKey: stringValue(source.candidate_key),
+      status: stringValue(source.candidate_status, "CANDIDATE"),
+      bidNoticeNo: stringValue(source.bid_notice_no, "공고번호 미확인"),
+      revisionNo: stringValue(source.revision_no),
+      title: stringValue(source.title, "공고명 미확인"),
+      agency: stringValue(source.agency, "발주기관 미확인"),
+      awardAmount: numberOrNull(source.award_amount_krw),
+      openedAt: stringValue(firstValue(source.opened_at, source.awarded_at)),
+    };
+  }
+
+  async function loadAwardCandidates() {
+    const data = state.awardCandidates;
+    if (!state.accountSession?.authenticated) {
+      renderAwardCandidates();
+      return;
+    }
+    const epoch = state.accountEpoch;
+    data.loading = true;
+    data.error = null;
+    renderAwardCandidates();
+    try {
+      const payload = unwrapObject(await apiRequest("/award-performance-candidates"));
+      if (epoch !== state.accountEpoch) return;
+      data.items = arrayValue(payload.items).map(normalizeAwardCandidate);
+      data.counts = firstObject(payload.counts);
+      data.loaded = true;
+    } catch (error) {
+      if (epoch !== state.accountEpoch) return;
+      data.error = error;
+    } finally {
+      if (epoch === state.accountEpoch) {
+        data.loading = false;
+        renderAwardCandidates();
+        if (state.companyAwards.searched) renderCompanyAwardsView();
+      }
+    }
+  }
+
+  function renderAwardCandidates() {
+    const data = state.awardCandidates;
+    const count = data.items.length;
+    els.awardCandidatesList.hidden = count === 0;
+    els.awardCandidatesEmptyState.hidden = count !== 0;
+    if (!state.accountSession?.authenticated) {
+      els.awardCandidatesSummary.textContent = "부서 계정으로 로그인하면 저장한 실적 후보를 볼 수 있습니다.";
+      els.awardCandidatesList.innerHTML = "";
+      return;
+    }
+    if (data.loading && !data.loaded) {
+      els.awardCandidatesSummary.textContent = "저장한 실적 후보를 불러오고 있습니다.";
+      return;
+    }
+    if (data.error) {
+      els.awardCandidatesSummary.textContent = `실적 후보를 불러오지 못했습니다 · ${humanizeError(data.error)}`;
+      return;
+    }
+    const dismissed = numberOrNull(data.counts?.DISMISSED) ?? 0;
+    els.awardCandidatesSummary.textContent = `저장한 실적 후보 ${formatNumber(count)}건${dismissed ? ` · 제외 ${formatNumber(dismissed)}건` : ""}`;
+    els.awardCandidatesList.innerHTML = data.items.map((item) => {
+      const busy = data.saving.has(item.id);
+      return `<li class="award-candidate-row">
+        <div>
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(item.agency)} · ${escapeHtml(item.bidNoticeNo)}${item.revisionNo ? `-${escapeHtml(item.revisionNo)}` : ""} · ${escapeHtml(formatShortDateTime(item.openedAt))}</span>
+        </div>
+        <span class="award-candidate-row__amount">${escapeHtml(formatBudget(item.awardAmount))}</span>
+        <button class="button button--ghost" type="button" data-award-candidate-dismiss="${escapeAttribute(item.id)}" ${busy ? "disabled" : ""} aria-label="${escapeAttribute(item.title)} 실적 후보에서 제외">${busy ? "처리 중…" : "제외"}</button>
+      </li>`;
+    }).join("");
+  }
+
+  function handleAwardResultsClick(event) {
+    const button = event.target.closest("[data-award-candidate-index]");
+    if (!button) return;
+    const record = state.companyAwards.records[Number(button.dataset.awardCandidateIndex)];
+    if (record) void saveAwardCandidate(record);
+  }
+
+  function handleAwardCandidatesClick(event) {
+    const button = event.target.closest("[data-award-candidate-dismiss]");
+    if (!button) return;
+    void dismissAwardCandidate(button.dataset.awardCandidateDismiss);
+  }
+
+  async function saveAwardCandidate(record) {
+    const data = state.awardCandidates;
+    if (!record.candidateKey || data.saving.has(record.candidateKey) || savedAwardCandidate(record)) return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    data.saving.add(record.candidateKey);
+    renderCompanyAwardsView();
+    try {
+      const result = unwrapObject(await apiRequest("/award-performance-candidates", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(record.raw),
+      }));
+      const saved = normalizeAwardCandidate(result.candidate);
+      data.items = [saved, ...data.items.filter((item) => item.id !== saved.id)];
+      data.counts = { ...data.counts, CANDIDATE: data.items.length };
+      showToast("실적 후보로 저장했습니다", "회사 실적과 별도로 보관하며 실적증명 확인 전에는 정량점수에 쓰지 않습니다.", "success");
+    } catch (error) {
+      showToast("실적 후보 저장 실패", humanizeError(error), "error");
+    } finally {
+      data.saving.delete(record.candidateKey);
+      renderCompanyAwardsView();
+      renderAwardCandidates();
+    }
+  }
+
+  async function dismissAwardCandidate(candidateId) {
+    const data = state.awardCandidates;
+    if (!candidateId || data.saving.has(candidateId)) return;
+    const headers = await manualAnalysisAuthHeaders();
+    if (!headers) return;
+    data.saving.add(candidateId);
+    renderAwardCandidates();
+    try {
+      await apiRequest(`/award-performance-candidates/${encodeURIComponent(candidateId)}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ status: "DISMISSED" }),
+      });
+      data.items = data.items.filter((item) => item.id !== candidateId);
+      data.counts = {
+        ...data.counts,
+        CANDIDATE: data.items.length,
+        DISMISSED: (numberOrNull(data.counts?.DISMISSED) ?? 0) + 1,
+      };
+      showToast("실적 후보에서 제외했습니다", "같은 낙찰 건을 다시 저장하면 목록으로 돌아옵니다.", "success");
+    } catch (error) {
+      showToast("실적 후보 제외 실패", humanizeError(error), "error");
+    } finally {
+      data.saving.delete(candidateId);
+      renderAwardCandidates();
+      if (state.companyAwards.searched) renderCompanyAwardsView();
+    }
   }
 
   function extractList(payload) {
@@ -5683,7 +5861,7 @@
     if (state.currentView === "awards") {
       const data = state.companyAwards;
       els.dataSourceLabel.textContent = data.searched
-        ? `나라장터 낙찰정보 실시간 조회 · 외부 조회 ${formatNumber(data.apiCalls)}회 · PAI 미저장`
+        ? `나라장터 낙찰정보 실시간 조회 · 외부 조회 ${formatNumber(data.apiCalls)}회 · 조회 결과 자동 저장 안 함`
         : "나라장터 낙찰정보 · 버튼 실행 시에만 외부 조회";
       return;
     }
@@ -6799,6 +6977,8 @@
     } else if (awardsView) {
       els.demoBanner.hidden = true;
       renderCompanyAwardsView();
+      if (!state.awardCandidates.loaded && !state.awardCandidates.loading) void loadAwardCandidates();
+      else renderAwardCandidates();
     } else if (state.source === "demo") {
       showDemoBanner(state.sourceReason);
     } else if (state.dashboard.syntheticWarning && state.notices.some((notice) => notice.isSynthetic)) {
