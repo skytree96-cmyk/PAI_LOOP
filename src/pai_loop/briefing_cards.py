@@ -112,6 +112,18 @@ def _summary(items: list[dict[str, Any]]) -> dict:
     return {"type": "ColumnSet", "spacing": "Small", "columns": columns}
 
 
+def _unfinished_note(unfinished: tuple[int, int] | None) -> str | None:
+    if not unfinished:
+        return None
+    planned, missing = unfinished
+    if missing <= 0:
+        return None
+    return (
+        f"오늘 분석 대상 {planned}건 중 {missing}건은 분석을 마치지 못해 "
+        "이 브리핑에 없을 수 있습니다. 웹에서 확인해 주세요."
+    )
+
+
 def build_briefing_card(
     session: Session,
     *,
@@ -119,6 +131,7 @@ def build_briefing_card(
     department_id: str | None,
     base_url: str,
     now: datetime | None = None,
+    unfinished: tuple[int, int] | None = None,
 ) -> dict:
     """Build one briefing card scoped to a department.
 
@@ -126,6 +139,10 @@ def build_briefing_card(
     is sent after the day's analysis is confirmed ready; a SUBSCRIBED ping is
     sent on pairing without that gate, so it says it is a snapshot instead of
     presenting itself as the settled view of the day.
+
+    ``unfinished`` is ``(planned, unfinished)`` from a readiness verdict that
+    let the day through with some notices failed. Only a DAILY card claims to be
+    the day's view, so only a DAILY card says what that view is missing.
     """
 
     now = now or datetime.now(timezone.utc)
@@ -153,6 +170,10 @@ def build_briefing_card(
         _block(heading, weight="Bolder", size="Medium", color="Accent"),
         _block(f"{now.astimezone(KST):%Y-%m-%d} · {basis}", size="Small", isSubtle=True, spacing="None"),
     ]
+    note = _unfinished_note(unfinished) if kind == "DAILY" else None
+    if note:
+        # Same wording and colour as the team channel card (n8n W12).
+        body.append(_block(note, color="Warning", size="Small"))
     if items:
         body.append(_summary(items))
     else:
@@ -179,7 +200,7 @@ def build_briefing_card(
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "version": "1.4",
         "msteams": {"width": "Full"},
-        "fallbackText": f"{heading} · {basis}",
+        "fallbackText": f"{heading} · {basis}" + (f" · {note}" if note else ""),
         "body": body,
         "actions": actions,
     }

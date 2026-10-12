@@ -298,3 +298,103 @@ def test_briefing_amounts_are_short_enough_for_a_row():
     assert _won(300_000_000) == "3억원"
     assert _won(35_000_000) == "3,500만원"
     assert _won(None) == "금액 미확인"
+
+
+UNFINISHED_NOTE = "오늘 분석 대상 40건 중 2건은 분석을 마치지 못해 이 브리핑에 없을 수 있습니다. 웹에서 확인해 주세요."
+
+
+def _verdict(reason_code: str, *, now: datetime, failed: int = 0, partial: int = 0):
+    from pai_loop.teams_readiness import (
+        DailyAnalysisReadiness,
+        DailyIngestionReadiness,
+        TeamsDailyReadinessResponse,
+    )
+
+    return TeamsDailyReadinessResponse(
+        status="READY", ready=True, reason_code=reason_code, kst_date=kst_day(now),
+        checked_at=now, ingestion=DailyIngestionReadiness(completed=True),
+        analysis=DailyAnalysisReadiness(
+            terminal=True, planned=40, attempted=40,
+            completed=40 - failed - partial, failed=failed, partial=partial,
+        ),
+        source_calls={"pps": 0, "openai": 0, "teams": 0},
+    )
+
+
+def _notes(card: dict) -> list[dict]:
+    return [block for block in card["body"]
+            if block.get("type") == "TextBlock" and block.get("color") == "Warning"]
+
+
+def test_daily_card_says_how_many_notices_did_not_finish(store):
+    with store() as session:
+        card = build_briefing_card(session, kind="DAILY", department_id=None,
+                                   base_url=BASE_URL, now=kst(22, 9), unfinished=(40, 2))
+    # Right under the heading and its basis line, as on the team channel card.
+    assert card["body"][2] == {"type": "TextBlock", "text": UNFINISHED_NOTE, "wrap": True,
+                               "color": "Warning", "size": "Small"}
+    assert UNFINISHED_NOTE in card["fallbackText"]
+
+
+def test_note_is_absent_without_failures_and_on_a_pairing_ping(store):
+    with store() as session:
+        clean = build_briefing_card(session, kind="DAILY", department_id=None,
+                                    base_url=BASE_URL, now=kst(22, 9))
+        zero = build_briefing_card(session, kind="DAILY", department_id=None,
+                                   base_url=BASE_URL, now=kst(22, 9), unfinished=(40, 0))
+        # A ping skips the gate, so it never speaks for the day's analysis.
+        ping = build_briefing_card(session, kind="SUBSCRIBED", department_id=None,
+                                   base_url=BASE_URL, now=kst(22, 14), unfinished=(40, 2))
+    for card in (clean, zero, ping):
+        assert _notes(card) == []
+        assert "분석을 마치지 못해" not in str(card)
+
+
+def test_dispatch_carries_the_failure_count_into_the_daily_card(store):
+    sent: list[dict] = []
+    now = kst(22, 9)
+    result = dispatch_briefings(
+        store, now=now, base_url=BASE_URL,
+        readiness=_verdict("DAILY_ANALYSIS_COMPLETE_WITH_FAILURES", now=now, failed=1, partial=1),
+        sender=lambda recipient, card: sent.append(card) or "SYN",
+    )
+    assert result["queued"] == 2 and result["outcomes"] == {"SENT": 2}
+    assert [[block["text"] for block in _notes(card)] for card in sent] == [[UNFINISHED_NOTE]] * 2
+
+
+def test_dispatch_leaves_the_note_off_a_clean_day_and_off_a_ping(store):
+    now = kst(22, 9)
+    with store() as session:
+        enqueue_subscription_ping(session, session.get(TeamsRecipient, "SYN-ALICE"), now=now)
+        session.commit()
+    sent: list[tuple[str, dict]] = []
+    dispatch_briefings(
+        store, now=now, base_url=BASE_URL,
+        readiness=_verdict("DAILY_ANALYSIS_COMPLETE_WITH_FAILURES", now=now, failed=2),
+        sender=lambda recipient, card: sent.append(("x", card)) or "SYN",
+    )
+    pings = [card for _, card in sent if "지금 기준 공고 브리핑" in str(card)]
+    dailies = [card for _, card in sent if "오늘의 공고 브리핑" in str(card)]
+    assert len(pings) == 1 and len(dailies) == 2
+    assert _notes(pings[0]) == []
+    assert all(_notes(card) for card in dailies)
+
+    sent.clear()
+    dispatch_briefings(
+        store, now=kst(23, 9), base_url=BASE_URL,
+        readiness=_verdict("DAILY_ANALYSIS_COMPLETE", now=kst(23, 9)),
+        sender=lambda recipient, card: sent.append(("x", card)) or "SYN",
+    )
+    assert len(sent) == 2
+    assert all(_notes(card) == [] for _, card in sent)
+
+
+def test_a_failure_count_from_another_day_is_never_borrowed(store):
+    sent: list[dict] = []
+    dispatch_briefings(
+        store, now=kst(22, 9), base_url=BASE_URL,
+        readiness=_verdict("DAILY_ANALYSIS_COMPLETE_WITH_FAILURES", now=kst(21, 9), failed=2),
+        sender=lambda recipient, card: sent.append(card) or "SYN",
+    )
+    assert len(sent) == 2
+    assert all(_notes(card) == [] for card in sent)
