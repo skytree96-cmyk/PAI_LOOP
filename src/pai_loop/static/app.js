@@ -8515,7 +8515,10 @@
       { key: "document", label: "문서 품질", hint: "최신 첨부의 추출 신뢰도와 분석 상태가 필요합니다." },
     ];
     // A checklist is guidance, never a substitute score or proof of a risk.
-    const displayAxes = checks.map((check) => ({ ...check, score: axes.find((axis) => axis.label === check.label)?.score ?? null }));
+    const canonicalAxes = axes.every((axis) => checks.some((check) => check.label === axis.label));
+    const displayAxes = canonicalAxes
+      ? checks.map((check) => ({ ...check, score: axes.find((axis) => axis.label === check.label)?.score ?? null }))
+      : axes.map((axis) => ({ ...checks.find((check) => check.label === axis.label), ...axis, hint: checks.find((check) => check.label === axis.label)?.hint || "이 항목의 산정 근거를 확인하세요." }));
     const weightedAxes = displayAxes.filter((axis) => axis.score !== null);
     const hasWeights = weightedAxes.length > 0 && weightedAxes.every((axis) => numberOrNull(details.weights?.[axis.key]) > 0);
     const weightSum = hasWeights ? weightedAxes.reduce((sum, axis) => sum + Number(details.weights[axis.key]), 0) : 0;
@@ -8533,7 +8536,7 @@
           <strong>${escapeHtml(axis.label)}</strong>
           <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${score === null ? "미확인" : `${Math.round(score)}점`}"><span style="width:${score === null ? 0 : clamp(score, 0, 100)}%"></span></span>
           <span>${score === null ? "미확인" : score}</span>
-          <small class="risk-check-note">${escapeHtml(score === null ? `${analyzed ? "미산정" : "분석 전"} · ${axis.hint}` : riskAxisCalculation(axis, details))}${numberOrNull(details.weights?.[axis.key]) > 0 ? ` · 가중치 ${Math.round(details.weights[axis.key] * 100)}%` : ""}</small>
+          <small class="risk-check-note">${escapeHtml(score === null ? `${analyzed ? "미산정" : "분석 전"} · 확인할 내용 · ${axis.hint}` : riskAxisCalculation(axis, details))}${numberOrNull(details.weights?.[axis.key]) > 0 ? ` · 가중치 ${Math.round(details.weights[axis.key] * 100)}%` : ""}</small>
         </div>`;
       }).join("");
   }
