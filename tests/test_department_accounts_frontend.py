@@ -112,6 +112,31 @@ assert.equal(u.els.sidebarAccountLabel.textContent,'');
 ''')
 
 
+def test_result_card_shows_other_department_result_without_making_it_editable():
+    _run_behavior(r'''
+u.applyAccountSession(payload('SYN-A'));
+const other={id:'SYN-other',department_id:'SYN-B',department_name:'SYN 다른 부서',department_revision:1,
+ source:'MANUAL_UI',status:'WON',record_status:'VALIDATED',submitted_bid_amount:1000,winning_bid_amount:1000,
+ updated_at:'2026-10-01T00:00:00Z'};
+const notice=u.normalizeResultLearningNotice({notice_key:'SYN-N',bid_notice_no:'SYN-NUMBER',title:'SYN notice',outcomes:[other]});
+assert.equal(notice.outcome,null,'another department record is never the editable record');
+assert.equal(notice.expectedOutcomeId,null);
+assert.equal(notice.sharedOutcome.status,'WON');
+assert.equal(notice.sharedDepartmentName,'SYN 다른 부서');
+Object.assign(u.state.resultLearning,{loaded:true,queue:'',records:[notice],total:1,offset:0,limit:20});
+u.renderResults();
+const html=u.els.resultLearningList.innerHTML;
+assert.match(html,/record-status--shared">입력 완료 · SYN 다른 부서</);
+assert.doesNotMatch(html,/결과 미입력/);
+assert.match(html,/<details open>/);
+assert.match(html,/SYN 다른 부서 입력 결과 · 내 부서 기록은 아직 없습니다/);
+const own={...other,id:'SYN-own',department_id:'SYN-A',department_name:'SYN 내 부서',status:'LOST'};
+const mine=u.normalizeResultLearningNotice({notice_key:'SYN-N',outcomes:[other,own]});
+assert.equal(mine.outcome.id,'SYN-own');
+assert.equal(mine.sharedOutcome,null,'my own record always wins');
+''')
+
+
 def test_provider_review_form_preserves_exact_opening_without_sending_server_proof():
     _run_behavior(r'''
 const opening={bid_notice_no:'SYN-NUMBER',revision_no:'0',classification_no:'1',rebid_no:'2'};
