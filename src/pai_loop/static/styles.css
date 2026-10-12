@@ -3669,7 +3669,7 @@ svg {
   font-size: var(--fs-xs);
 }
 
-.risk-row > span:last-child {
+.risk-row > span:nth-child(3) {
   color: var(--muted);
   text-align: right;
 }
@@ -8201,6 +8201,43 @@ details.requirement-item.is-pass > summary, details.requirement-item.is-pass_cur
 .notice-table th { white-space: nowrap; }
 .notice-table th:first-child { width: 23%; }
 .notice-table th:nth-child(4) { width: 11%; }
+.notice-table th:nth-child(7) { width: 10%; }
+.notice-table th:last-child { width: 10%; }
+.notice-detail-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.notice-detail-actions .detail-link-button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.notice-card__actions .notice-detail-actions { flex-direction: row; flex-wrap: wrap; }
+.notice-card__actions .notice-detail-actions .detail-link-button { width: auto; }
+.evidence-summary {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  overflow-wrap: anywhere;
+}
+.evidence-summary h4 { margin: 0 0 8px; font-size: var(--fs-sm); }
+.evidence-summary ul { margin: 0; padding-left: 20px; line-height: 1.65; }
+.evidence-summary li + li { margin-top: 6px; }
+.evidence-summary--pending { border-color: #ddcba5; background: #fffcf5; }
+.evidence-summary-note { margin: 8px 0 0; color: var(--muted); font-size: var(--fs-xs); line-height: 1.6; }
+.risk-check-note { grid-column: 1 / -1; color: var(--muted); line-height: 1.6; }
+.risk-bars .risk-row { grid-template-columns: minmax(78px, auto) minmax(0, 1fr) 52px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.risk-bars .risk-row.is-unknown .risk-bar { background: repeating-linear-gradient(90deg, #e3e8ed 0 5px, transparent 5px 9px); }
+.quant-observation-list > .empty-panel { grid-column: 1 / -1; min-height: 0; padding: 20px; }
 .notice-table .status-pill,
 .notice-table .analysis-state { white-space: nowrap; }
 /* 정량 점수 예측: 오픈페이지 예시처럼 "점수 / 배점 + 막대". 증빙 확정률 카드를 빼서 두 칸으로 둔다. */

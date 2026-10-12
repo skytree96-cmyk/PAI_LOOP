@@ -71,11 +71,13 @@ def test_all_pages_are_read_past_one_thousand_notices_without_duplicates():
     run_js(harness, r'''
 const all=Array.from({length:1001},(_,i)=>({notice_key:'SYN-'+i}));
 const reading=u.fetchNoticePages({statusScope:'ALL'});
-for(let offset=0;offset<1001;offset+=200){
+for(let offset=0;offset<1001;){
  await new Promise(setImmediate);
  const request=requests.at(-1), params=new URL(request.path,'https://syn.invalid').searchParams;
  assert.equal(Number(params.get('offset')),offset);assert.equal(params.has('status'),false);
- request.resolve(all.slice(offset,offset+200));
+ const limit=offset===0?24:200;
+ assert.equal(Number(params.get('limit')),limit);
+ request.resolve(all.slice(offset,offset+limit));offset+=limit;
 }
 const rows=await reading;
 assert.equal(rows.length,1001);assert.equal(new Set(rows.map(r=>r.notice_key)).size,1001);
@@ -83,20 +85,36 @@ assert.equal(rows.at(-1).notice_key,'SYN-1000');
 ''')
 
 
-def test_first_page_callback_fires_once_only_when_more_pages_follow():
+def test_small_first_page_is_shown_once_and_short_lists_do_not_wait_for_discovery():
     harness = FILTER_HARNESS.replace("globalThis.ui={state,els,", "globalThis.ui={state,els,fetchNoticePages,")
     run_js(harness, r'''
 const all=Array.from({length:450},(_,i)=>({notice_key:'SYN-'+i}));
 const seen=[];
 const reading=u.fetchNoticePages({statusScope:'OPEN',onFirstPage:rows=>seen.push(rows.map(r=>r.notice_key))});
-for(let offset=0;offset<450;offset+=200){
+for(let offset=0;offset<450;){
  await new Promise(setImmediate);
- requests.at(-1).resolve(all.slice(offset,offset+200));
+ const limit=offset===0?24:200;
+ requests.at(-1).resolve(all.slice(offset,offset+limit));offset+=limit;
 }
 assert.equal((await reading).length,450);
-assert.equal(seen.length,1);assert.equal(seen[0].length,200);assert.equal(seen[0][0],'SYN-0');
+assert.equal(seen.length,1);assert.equal(seen[0].length,24);assert.equal(seen[0][0],'SYN-0');
 const single=[];
 const short=u.fetchNoticePages({statusScope:'OPEN',onFirstPage:rows=>single.push(rows)});
-await new Promise(setImmediate);requests.at(-1).resolve(all.slice(0,120));
-assert.equal((await short).length,120);assert.equal(single.length,0);
+await new Promise(setImmediate);requests.at(-1).resolve(all.slice(0,12));
+assert.equal((await short).length,12);assert.equal(single.length,1);
+''')
+
+
+def test_paging_retains_original_filters_when_controls_change_mid_request():
+    harness = FILTER_HARNESS.replace("globalThis.ui={state,els,", "globalThis.ui={state,els,fetchNoticePages,")
+    run_js(harness, r'''
+u.els.searchInput.value='SYN original';
+const reading=u.fetchNoticePages({statusScope:'OPEN'});
+const first=requests.at(-1);
+u.els.searchInput.value='SYN changed';
+first.resolve(Array.from({length:24},(_,i)=>({notice_key:'SYN-'+i})));
+await new Promise(setImmediate);
+const params=new URL(requests.at(-1).path,'https://syn.invalid').searchParams;
+assert.equal(params.get('q'),'SYN original');assert.equal(params.get('offset'),'24');
+requests.at(-1).resolve([]);assert.equal((await reading).length,24);
 ''')

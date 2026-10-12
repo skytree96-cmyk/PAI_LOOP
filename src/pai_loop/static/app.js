@@ -8,6 +8,7 @@
   const RANKING_REQUEST_TIMEOUT_MS = 60000;
   const EXTERNAL_PPS_REQUEST_TIMEOUT_MS = 90000;
   const NOTICE_PAGE_SIZE = 200;
+  const NOTICE_FIRST_PAGE_SIZE = 24;
   const URGENT_DEADLINE_DAYS = 5;
   const TEAMS_LINK_POLL_MS = 3000;
   const MANUAL_ANALYSIS_POLL_INTERVAL_MS = 3000;
@@ -1637,20 +1638,26 @@
 
   async function fetchNoticePages({ statusScope = noticeStatusScopeForView(state.currentView), onFirstPage = null } = {}) {
     const timeoutMs = noticeRequestTimeoutMs();
+    // Capture filters once: later pages must belong to the same query even if
+    // the user changes a control while this request is in flight.
+    const requestUrl = new URL(buildNoticeRequestPath({ statusScope }), window.location.href);
     const notices = [];
     let offset = 0;
     while (true) {
+      const pageSize = offset === 0 ? NOTICE_FIRST_PAGE_SIZE : NOTICE_PAGE_SIZE;
+      requestUrl.searchParams.set("limit", String(pageSize));
+      requestUrl.searchParams.set("offset", String(offset));
       const payload = await apiRequest(
-        buildNoticeRequestPath({ statusScope, limit: NOTICE_PAGE_SIZE, offset }),
+        `${requestUrl.pathname}${requestUrl.search}`,
         { timeoutMs },
       );
       const page = extractList(payload);
       notices.push(...page);
-      if (page.length < NOTICE_PAGE_SIZE) return notices;
       // Pages arrive in final priority order, so the first page is already the
-      // top of the board. Let the caller show it while the rest loads.
+      // top of the board. Also show short pages without waiting for discovery.
       if (offset === 0 && onFirstPage) onFirstPage(notices.slice());
-      offset += NOTICE_PAGE_SIZE;
+      if (page.length < pageSize) return notices;
+      offset += page.length;
     }
   }
 
@@ -5981,6 +5988,8 @@
     const auto = observeVisibleQuantitativeSummaries.auto ||= { observer: null, queue: [], active: 0 };
     auto.observer?.disconnect();
     auto.queue = [];
+    // Let the remaining list pages finish before starting optional score reads.
+    if (state.noticeListPartial) return;
     auto.observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
@@ -6092,7 +6101,7 @@
     const action = notice.resultEntryStatus === "DRAFT" ? "이어서 입력" : "결과 입력";
     return resultEntry
       ? `<span class="result-entry-actions">${notice.resultEntryStatus === "DRAFT" ? '<span class="record-status record-status--draft">작성 중</span>' : ""}<button class="button button--primary" type="button" data-open-notice aria-label="${label} ${action}">${action}</button><button class="button button--ghost" type="button" data-open-notice data-result-detail aria-label="${label} 전체 상세 보기">공고 상세</button></span>`
-      : `${noticeQuantitativeAction(notice)}<button class="detail-link-button" type="button" data-open-notice aria-label="${label} 전체 상세 보기">전체 상세 보기</button>`;
+      : `<span class="notice-detail-actions">${noticeQuantitativeAction(notice)}<button class="detail-link-button" type="button" data-open-notice aria-label="${label} 전체 상세 보기">전체 상세 보기</button></span>`;
   }
 
   function manualAnalysisAvailability(
@@ -8223,17 +8232,30 @@
       : !riskReady
         ? `산정 보류 · 확인된 축 ${verifiedAxes}/6`
         : `${notice.historicalAnalysis ? "당시 " : ""}총점 ${Math.round(risk)}/100`;
-    els.riskBars.innerHTML = axes.length
-      ? axes.map((axis) => {
+    const checks = [
+      { label: "자격 조건", hint: "공고의 필수 자격, 예외 적용 조건과 유효한 회사 증빙을 확인하세요." },
+      { label: "수행 역량", hint: "필요 인력·실적·수행 일정과 투입 가능 여부를 확인하세요." },
+      { label: "경쟁 강도", hint: "유사 공고의 참여업체 수와 낙찰 이력을 확인하세요." },
+      { label: "수익성", hint: "예상 투입비용·계약금액·대금 지급 조건을 확인하세요." },
+      { label: "운영 부담", hint: "현장 운영·보고·산출물·계약 이행 조건을 확인하세요." },
+      { label: "문서 품질", hint: "최신 첨부의 누락·판독 실패와 원문 근거 연결을 확인하세요." },
+    ];
+    // A checklist is guidance, never a substitute score or proof of a risk.
+    const canonicalAxes = axes.every((axis) => checks.some((check) => check.label === axis.label));
+    const displayAxes = canonicalAxes
+      ? checks.map((check) => ({ ...check, score: axes.find((axis) => axis.label === check.label)?.score ?? null }))
+      : axes.map((axis) => ({ ...axis, hint: checks.find((check) => check.label === axis.label)?.hint }));
+    els.riskBars.innerHTML = `<p class="evidence-summary-note">${!analyzed ? "아직 리스크 분석 전입니다. 아래는 분석 후 확인할 항목입니다." : "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다. 미확인 항목은 위험이 없다는 뜻이 아닙니다."}</p>`
+      + displayAxes.map((axis) => {
         const score = numberOrNull(axis.score);
         return `
         <div class="risk-row ${score === null ? "is-unknown" : riskClass(score)}">
           <strong>${escapeHtml(axis.label)}</strong>
           <span class="risk-bar" aria-label="${escapeAttribute(axis.label)} ${score === null ? "미확인" : `${Math.round(score)}점`}"><span style="width:${score === null ? 0 : clamp(score, 0, 100)}%"></span></span>
           <span>${score === null ? "미확인" : Math.round(score)}</span>
+          <small class="risk-check-note">${escapeHtml(score === null ? `확인할 내용 · ${axis.hint || "이 항목의 산정 근거를 확인하세요."}` : "저장된 분석 점수 · 세부 근거와 최신 조건을 함께 확인하세요.")}</small>
         </div>`;
-      }).join("")
-      : emptyPanel(analyzed ? "리스크 근거가 아직 부족합니다" : "아직 리스크 분석 전입니다", analyzed ? "임의의 0점 대신 근거가 확보된 위험 축만 계산합니다. 자격·실행·경쟁·수익성·운영·문서 근거 연결이 필요합니다." : "수집된 공고의 첨부·조건 분석이 완료된 뒤 실제 산정값을 표시합니다.");
+      }).join("");
   }
 
   function renderQuantitativePending(status, message) {
@@ -8422,15 +8444,32 @@
         + previous.items.map((item) => `<tr><td>${escapeHtml(item.label)}</td><td>이전 분석 기록</td><td>${formatNumber(item.points, 1)} / ${formatNumber(item.max_points, 1)}</td><td>현재 점수에 미반영</td></tr>`).join("")
         + `<tr><th colspan="2">이전 항목 부분소계 · 공고 총점 아님</th><td colspan="2">${formatNumber(previous.subtotal_points, 1)} / ${formatNumber(previous.subtotal_max_points, 1)}</td></tr>`;
     }
-    els.quantObservationList.innerHTML = Array.isArray(data.evidence_observations) && data.evidence_observations.length
-      ? data.evidence_observations.map(renderQuantObservation).join("")
-      : publicEvidenceHidden
-        ? emptyPanel("내부 검증 근거 보존", "회사 사실값과 원문·내부 증빙은 공개 화면에서 숨깁니다.")
-        : emptyPanel("적용 전 공개 근거 없음", "공고별 배점 산식과 연결된 공개 근거가 없습니다.");
+    els.quantObservationList.innerHTML = renderQuantitativeEvidenceSummary(data, {
+      publicEvidenceHidden,
+      sourceLabel: els.quantSourceAnchor.textContent,
+      activationReasons,
+      notApplicable,
+    });
     els.quantSeparationNote.textContent = [
       outOfScope > 0 ? `정량 외 배점 ${formatNumber(outOfScope, 1)}점은 정량 점수·총배점·예상 상한에서 제외했습니다.` : "",
       data.separation_notice || "정량 준비도는 참가자격과 입찰 판단을 바꾸지 않습니다.",
     ].filter(Boolean).join(" ");
+  }
+
+  function renderQuantitativeEvidenceSummary(data, { publicEvidenceHidden, sourceLabel, activationReasons = [], notApplicable = false }) {
+    const criteria = (Array.isArray(data.criteria) ? data.criteria : []).filter((item) => item.status !== "OUT_OF_SCOPE");
+    const scored = criteria.filter((item) => numberOrNull(item.lower_points) !== null && numberOrNull(item.upper_points) !== null);
+    const pending = criteria.filter((item) => item.status !== "CONFIRMED" || numberOrNull(item.lower_points) === null || numberOrNull(item.upper_points) === null);
+    const list = (items) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    const basis = [sourceLabel || "연결된 배점표 원문 위치 확인 필요"];
+    if (criteria.length) basis.push(`정량 대상 ${criteria.length}개 항목 중 점수 표시 ${scored.length}개 · 확정과 추정은 항목별 상태로 구분합니다.`);
+    else basis.push(notApplicable ? "이 공고는 회사 정량점수 적용 대상이 아닙니다." : "현재 화면에는 항목별 산출 근거가 없습니다. 합계만으로 항목 점수를 확인할 수 없습니다.");
+    const needs = notApplicable ? ["정량평가 비적용 · 참가자격과 제출 조건은 별도로 확인하세요."]
+      : [...new Set([...pending.map((item) => `${item.label || "평가 항목"} · ${item.rationale || "배점 조건과 회사 증빙의 적용 여부 확인 필요"}`), ...activationReasons])];
+    if (!needs.length) needs.push(criteria.length ? "추가 미확인 항목이 표시되지 않았습니다. 제출 전 증빙 유효기간과 최종 배점표를 확인하세요." : "항목별 배점표·산식·적용 증빙 연결을 확인하세요.");
+    return `<article class="evidence-summary"><h4>산출 근거</h4>${list(basis)}<p class="evidence-summary-note">${publicEvidenceHidden ? "회사 사실값과 원문·내부 증빙은 공개 화면에서 숨깁니다. 공개 가능한 산정 상태만 표시합니다." : "아래 공개 근거는 항목별 적용 여부를 확인해야 하며, 존재만으로 점수가 확정되지 않습니다."}</p></article>`
+      + `<article class="evidence-summary evidence-summary--pending"><h4>확인 필요 사항</h4>${list(needs)}</article>`
+      + (Array.isArray(data.evidence_observations) && data.evidence_observations.length ? data.evidence_observations.map(renderQuantObservation).join("") : "");
   }
 
   function quantSummaryCard(label, value, detail, className, bar = null) {
@@ -8546,7 +8585,7 @@
   function noticeQuantitativeAction(notice) {
     if (state.source !== "api" || isCancelledNotice(notice) || notice.historicalAnalysis) return "";
     const cached = state.quantitativeEstimates[notice.noticeKey];
-    const label = cached?.status === "loading" ? "정량 조회 중…" : cached?.status === "ready" ? "정량 점수 새로 확인" : "점수 확인";
+    const label = cached?.status === "loading" ? "조회 중…" : cached?.status === "ready" ? "점수 갱신" : "점수 확인";
     return `<button class="detail-link-button notice-quantitative-action" type="button" data-load-quantitative="${escapeAttribute(notice.noticeKey)}" aria-disabled="${cached?.status === "loading"}" aria-busy="${cached?.status === "loading"}" aria-label="${escapeAttribute(notice.title)} ${label}">${label}</button>`;
   }
 
@@ -8566,7 +8605,7 @@
       // duplicate requests while aria-disabled keeps keyboard focus stable.
       button.setAttribute("aria-disabled", String(loading));
       button.setAttribute("aria-busy", String(loading));
-      const label = loading ? "정량 조회 중…" : cached?.status === "ready" ? "정량 점수 새로 확인" : "점수 확인";
+      const label = loading ? "조회 중…" : cached?.status === "ready" ? "점수 갱신" : "점수 확인";
       button.textContent = label;
       button.setAttribute("aria-label", `${notice.title} ${label}`);
     });

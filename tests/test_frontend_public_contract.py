@@ -80,7 +80,8 @@ def test_notice_search_contract_is_global_across_stored_notices() -> None:
     assert 'noticeLifecycleStatus(notice) !== "OPEN"' in filter_body
     assert "!notice.isNew" not in filter_body
     assert "NOTICE_PAGE_SIZE = 200" in source
-    assert "offset += NOTICE_PAGE_SIZE" in fetch_body
+    assert "NOTICE_FIRST_PAGE_SIZE = 24" in source
+    assert "offset += page.length" in fetch_body
     assert 'params.set("offset", String(offset))' in request_body
     assert 'params.set("department_id", departmentId)' in request_body
     assert "explicitRanking" not in request_body
@@ -247,9 +248,9 @@ def test_kpi_cards_are_keyboard_buttons_and_open_matching_views() -> None:
 def test_static_assets_have_a_deterministic_ui_cache_buster() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
 
-    assert 'href="./styles.css?v=20261012-company-basis-v46"' in html
+    assert 'href="./styles.css?v=20261012-notice-evidence-v47"' in html
     assert 'href="./top-navigation.css?v=20261012-company-basis-v46"' in html
-    assert 'src="./app.js?v=20261012-company-basis-v46"' in html
+    assert 'src="./app.js?v=20261012-notice-evidence-v47"' in html
 
 
 def test_uiux_handoff_contract_separates_states_and_uses_full_screen_detail() -> None:
@@ -1246,7 +1247,9 @@ assert.doesNotMatch(els.scoreOverview.innerHTML,/증빙 확정률/);
 assert.match(els.quantSourceStatus.textContent,/원문 검증 완료.*일부 항목 미산정/);
 assert.match(els.quantTableBody.innerHTML,/원문 위치 세부 비공개/);
 assert.doesNotMatch(els.quantTableBody.innerHTML,/원문 위치 없음/);
-assert.match(els.quantObservationList.innerHTML,/내부 검증 근거 보존/);
+assert.match(els.quantObservationList.innerHTML,/산출 근거/);
+assert.match(els.quantObservationList.innerHTML,/확인 필요 사항/);
+assert.match(els.quantObservationList.innerHTML,/내부 증빙은 공개 화면에서 숨깁니다/);
 renderQuantitativeEstimate({...data, ruleset_version:"SYN-internal", assumptions:[]});
 assert.match(els.quantTableBody.innerHTML,/원문 위치 없음/);
 assert.match(renderQuantitativeEstimateRow({...criterion,source_anchor:{page:2}}, {publicEvidenceHidden:true}),/원문 2쪽/);
