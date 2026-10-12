@@ -615,12 +615,16 @@ def _summary(
         recommendation=recommendation_snapshot,
     )
     if evaluation is not None and public_view:
+        from .risk_projection import public_risk_basis
+
+        risk_basis = public_risk_basis(evaluation.explanation)
         evaluation = evaluation.model_copy(
             update={
                 "atomic_results": [],
                 "explanation": {
                     "public_view": True,
                     "note": "회사 사실값과 내부 증빙 식별자는 공개 화면에서 제외됩니다.",
+                    **({"risk": risk_basis} if risk_basis is not None else {}),
                 },
             }
         )
