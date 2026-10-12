@@ -1618,6 +1618,8 @@ svg {
 .department-priority--medium strong { color: #68731f; }
 .department-priority--watch { border-color: #e3d8c2; background: #fff9ef; }
 .department-priority--watch strong { color: #94640f; }
+.department-priority--progress { border-color: #b8cfe6; color: #1f4f7f; background: #eef5fc; }
+.department-priority--progress strong { color: #155a9b; }
 
 .deadline {
   display: block;
@@ -5921,6 +5923,9 @@ a.history-award-project__source:hover { text-decoration: underline; }
 .record-status--archived { color: #65716e; background: #edf0ee; }
 .record-status--missing { color: #8a4d47; background: var(--red-pale); }
 .record-status--review { color: var(--blue); background: var(--blue-pale); }
+/* 회사 안 다른 부서가 넣은 결과도 회사 기준으로는 입력 완료다. */
+.record-status--shared { color: var(--green); background: var(--green-pale); }
+.result-shared-note { margin: 0 0 10px; color: #155a9b; font-size: var(--fs-sm); font-weight: 700; }
 
 /* Presentation rows stay recognisable without drawing more than a tag. */
 .demo-record-badge {
@@ -6891,6 +6896,50 @@ body {
 .operator-decision--hold { border-color: #b7a5d0; color: #654780; }
 .operator-decision--decline { border-color: #aeb6bd; color: #46505a; }
 .operator-decision--undecided { border-style: dashed; color: #68747e; }
+
+/* 진행 건: 어느 부서가 무엇을 골랐는지 한 줄로 읽히게 한다. */
+.progress-decisions {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* 담당자 판단 칸은 폭이 좁다(약 108px). 부서명은 칸 안에서 줄바꿈하고 배지는 아래에 둔다. */
+.progress-decision {
+  display: inline-flex;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 5px 7px;
+  border: 1px solid #92b7de;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.progress-decision strong {
+  color: #1f2d3a;
+  font-size: var(--fs-sm);
+  font-weight: 800;
+  line-height: 1.3;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.progress-decision em {
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: #155a9b;
+  font-size: var(--fs-xs);
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.progress-decision--conditional { border-color: #b7a5d0; }
+.progress-decision--conditional em { background: #654780; }
 
 .detail-link-button {
   min-height: 36px;

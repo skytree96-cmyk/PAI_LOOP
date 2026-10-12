@@ -564,6 +564,12 @@
       button.addEventListener("click", (event) => {
         event.preventDefault();
         const view = button.dataset.dashboardTotalLink || button.dataset.noticeScope;
+        // 진행 건에서 범위를 넓히면 전체 공고로 빠지지 않고, 과거에 참여로 정한
+        // 종료·취소·결과 기록 공고까지 같은 진행 부서 기준으로 보여 준다.
+        if (button.dataset.noticeScope && isDepartmentProgressView()) {
+          setView("in-progress", { scopeChoice: view === "new" ? "OPEN" : "ALL" });
+          return;
+        }
         setView(view, { scopeChoice: view === "new" ? "OPEN" : "ALL" });
       });
     });
@@ -1701,7 +1707,7 @@
   }
 
   function noticeStatusScopeForView(view) {
-    if (["new", "collected"].includes(view) && state.noticeScopeChoice) return state.noticeScopeChoice;
+    if (["new", "collected", "in-progress"].includes(view) && state.noticeScopeChoice) return state.noticeScopeChoice;
     if (globalNoticeSearchActive()) return "ALL";
     if (["ended", "cancelled", "result-missing", "result-missing-decided"].includes(view)) return "ENDED";
     return ["collected", "closed", "fail"].includes(view) ? "ALL" : "OPEN";
@@ -3668,16 +3674,29 @@
   function normalizeResultLearningNotice(raw = {}) {
     const outcomes = Array.isArray(raw.outcomes) ? raw.outcomes : raw.latest_outcome ? [raw.latest_outcome] : [];
     const own = ownDepartmentRecords(outcomes).slice().sort(compareDepartmentRevision);
-    const outcome = state.accountSession?.enabled && state.accountSession.account?.role === "DEPARTMENT"
+    const departmentViewer = state.accountSession?.enabled && state.accountSession.account?.role === "DEPARTMENT";
+    const outcome = departmentViewer
       ? own[0] || outcomes.find((row) => !row.department_id && row.source !== "MANUAL_UI") || null
       : raw.latest_outcome && typeof raw.latest_outcome === "object" ? raw.latest_outcome : null;
+    // 내 부서 기록이 없어도 다른 부서가 넣은 결과는 읽기 전용으로 보여 준다.
+    // 수정 대상(outcome·expectedOutcomeId)은 계속 내 부서 기록만이다.
+    const shared = departmentViewer && !outcome
+      ? outcomes.find((row) => row.department_id && !own.includes(row)) || null
+      : null;
     return {
       noticeKey: stringValue(raw.notice_key), bidNoticeNo: stringValue(raw.bid_notice_no), revisionNo: stringValue(raw.revision_no), title: stringValue(raw.title), agency: stringValue(raw.agency),
       deadline: stringValue(raw.deadline), noticeStatus: stringValue(raw.notice_status),
       autoReviewPending: raw.auto_review_pending === true,
       expectedOutcomeId: own[0]?.id || null,
       departmentOutcomes: outcomes.map((row) => ({ departmentName: stringValue(row.department_name, row.source === "MANUAL_UI" ? "기존 기록" : "나라장터"), status: stringValue(row.status), note: stringValue(row.operator_note), updatedAt: row.updated_at })),
-      outcome: outcome ? {
+      outcome: normalizeResultOutcome(outcome),
+      sharedOutcome: normalizeResultOutcome(shared),
+      sharedDepartmentName: shared ? stringValue(shared.department_name, "다른 부서") : "",
+    };
+  }
+
+  function normalizeResultOutcome(outcome) {
+    return outcome ? {
         id: stringValue(outcome.id), outcomeKey: stringValue(outcome.outcome_key), recordStatus: stringValue(outcome.record_status, "DRAFT").toUpperCase(),
         revision: numberOrNull(outcome.revision) ?? 1, status: stringValue(outcome.status).toUpperCase(), submittedBidAmount: numberOrNull(outcome.submitted_bid_amount),
         submittedBidRate: numberOrNull(outcome.submitted_bid_rate), winningBidAmount: numberOrNull(outcome.winning_bid_amount), winningBidRate: numberOrNull(outcome.winning_bid_rate),
@@ -3689,8 +3708,7 @@
         basisOutcomeId: stringValue(outcome.basis_outcome_id), basisSource: stringValue(outcome.basis_source),
         operatorNote: stringValue(outcome.operator_note), occurredAt: stringValue(outcome.occurred_at), updatedAt: stringValue(outcome.updated_at),
         demo: outcome.demo === true,
-      } : null,
-    };
+      } : null;
   }
 
   function renderResultLearningQueueTabs() {
@@ -3719,19 +3737,25 @@
     }
     els.resultLearningList.innerHTML = data.records.map((notice, index) => {
       const outcome = notice.outcome;
-      const outcomeLabel = outcome ? resultStatusLabel(outcome.status) : "결과 미입력";
+      // 내 부서 기록이 없으면 다른 부서가 넣은 결과를 대신 보여 주고, 누가 넣었는지 밝힌다.
+      const shown = outcome || notice.sharedOutcome;
+      const sharedOnly = !outcome && Boolean(notice.sharedOutcome);
+      const outcomeLabel = shown ? resultStatusLabel(shown.status) : "결과 미입력";
       // A provider result the department has not reviewed yet reads as work to
       // confirm, whatever its stored workflow state.
       const awaitingReview = Boolean(outcome && notice.autoReviewPending && outcome.source !== "MANUAL_UI");
-      const statusClass = awaitingReview ? "review" : (outcome?.recordStatus || "missing").toLowerCase();
-      const statusLabel = awaitingReview ? "확인 필요" : outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력";
+      const statusClass = awaitingReview ? "review" : sharedOnly ? "shared" : (outcome?.recordStatus || "missing").toLowerCase();
+      const statusLabel = awaitingReview ? "확인 필요" : sharedOnly ? `입력 완료 · ${notice.sharedDepartmentName}` : outcome ? resultRecordStatusLabel(outcome.recordStatus) : "미입력";
+      const footerText = sharedOnly
+        ? `${notice.sharedDepartmentName} 입력 결과 · 내 부서 기록은 아직 없습니다`
+        : outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요";
       return `<article class="operator-record result-record" role="listitem">
-        <div><span class="record-status record-status--${escapeAttribute(statusClass)}">${escapeHtml(statusLabel)}</span>${outcome?.demo ? '<span class="demo-record-badge" title="발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.">시연</span>' : ""}<small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
+        <div><span class="record-status record-status--${escapeAttribute(statusClass)}">${escapeHtml(statusLabel)}</span>${shown?.demo ? '<span class="demo-record-badge" title="발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.">시연</span>' : ""}<small>${escapeHtml(resultNoticeStatusLabel(notice.noticeStatus))}</small></div>
         <h4>${escapeHtml(notice.title)}</h4><p>${escapeHtml(notice.agency)} · ${escapeHtml(notice.bidNoticeNo)}</p>
-        ${outcome?.openingIdentity ? `<p>${outcome.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(outcome.openingIdentity.revision_no)} / 분류 ${escapeHtml(outcome.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(outcome.openingIdentity.rebid_no)}</p>` : ""}
-        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(outcome?.submittedBidAmount == null ? "미입력" : formatBudget(outcome.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(outcome?.winningBidAmount == null ? "미확인" : formatBudget(outcome.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(outcome, "winning"))}</dd></div></dl>
-        ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
-        <footer><small>${escapeHtml(outcome ? `${resultSourceLabel(outcome.source)}${outcome.basisSource ? ` · 기준 ${resultSourceLabel(outcome.basisSource)}` : ""} · ${outcome.sourceReference || "근거 미입력"}` : "종료 공고 · 결과 확인 필요")}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
+        ${shown?.openingIdentity ? `<p>${shown.participationVerified ? "나라장터 참여 확인" : "기록된 개찰 회차"} · 차수 ${escapeHtml(shown.openingIdentity.revision_no)} / 분류 ${escapeHtml(shown.openingIdentity.classification_no)} / 재입찰 ${escapeHtml(shown.openingIdentity.rebid_no)}</p>` : ""}
+        <dl><div><dt>입찰 결과</dt><dd>${escapeHtml(outcomeLabel)}</dd></div><div><dt>우리 투찰</dt><dd>${escapeHtml(shown?.submittedBidAmount == null ? "미입력" : formatBudget(shown.submittedBidAmount))}</dd></div><div><dt>우리 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(shown))}</dd></div><div><dt>낙찰금액</dt><dd>${escapeHtml(shown?.winningBidAmount == null ? "미확인" : formatBudget(shown.winningBidAmount))}</dd></div><div><dt>낙찰자 투찰률</dt><dd>${escapeHtml(resultLearningRateLabel(shown, "winning"))}</dd></div></dl>
+        ${state.accountSession?.enabled && notice.departmentOutcomes.length ? `<details${sharedOnly ? " open" : ""}><summary>부서별 결과 기록</summary><ul>${notice.departmentOutcomes.map((row) => `<li>${escapeHtml(row.departmentName)} · ${escapeHtml(resultStatusLabel(row.status))} · ${escapeHtml(row.note || "의견 없음")}</li>`).join("")}</ul></details>` : ""}
+        <footer><small>${escapeHtml(footerText)}</small>${canWriteResults() ? `<button class="button button--primary" type="button" data-edit-result="${index}">${outcome ? (outcome.source === "MANUAL_UI" ? "내 부서 결과 수정" : "검토본 만들기") : sharedOnly ? "내 부서 결과 입력" : "결과 입력"}</button>` : '<span>결과 조회 전용</span>'}</footer>
       </article>`;
     }).join("");
     const start = data.total ? data.offset + 1 : 0;
@@ -5053,6 +5077,12 @@
     return ["in-progress", "urgent-in-progress"].includes(view);
   }
 
+  // 진행 건의 "종료·취소 포함 전체": 마감·취소·결과 기록과 관계없이 부서의
+  // 최신 판단이 참여·조건부 참여인 공고를 모두 보인다. 대시보드 집계는 바꾸지 않는다.
+  function progressHistoryScope(view = state.currentView) {
+    return view === "in-progress" && state.noticeScopeChoice === "ALL";
+  }
+
   function progressDepartmentDecisions(notice) {
     if (!hasKnownOperatorDecision(notice) || !notice.decisions?.length) return [];
     const departmentId = selectedDashboardDepartmentId();
@@ -5727,10 +5757,12 @@
       if (progress && !decisionFilterAvailable) return false;
       if (state.noticeScopeChoice === "OPEN" && noticeLifecycleStatus(notice) !== "OPEN") return false;
       if (state.pendingNoticeDecisionFilter) return false;
-      if (["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)
+      const historyScope = progressHistoryScope();
+      if (historyScope && !progressDepartmentDecisions(notice).length) return false;
+      if (!historyScope && ["fail", "review", "urgent", "cancelled", "result-missing", "go", ...PIPELINE_QUEUES].includes(state.currentView)
         && !matchesDashboardQueue(notice, state.currentView)) return false;
       if (!globalSearch) {
-        if (["all", "new", "review", "undecided", "go", "urgent", "pending-decision", "in-progress", "urgent-in-progress"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
+        if (!historyScope && ["all", "new", "review", "undecided", "go", "urgent", "pending-decision", "in-progress", "urgent-in-progress"].includes(state.currentView) && noticeLifecycleStatus(notice) !== "OPEN") return false;
         if (state.currentView === "ended" && !isVisibleEndedNotice(notice)) return false;
         if (state.currentView === "undecided" && decisionFilterAvailable && operatorDecision === "all" && notice.decision) return false;
         if (state.currentView === "closed" && !notice.resultStatus) return false;
@@ -5956,8 +5988,11 @@
     }
     if (isDepartmentProgressView() && state.noticeSearchMode === "stored") {
       const failed = state.notices.some((notice) => operatorDecisionReadStatus(notice) === "ERROR");
+      const range = state.currentView === "urgent-in-progress" ? `${URGENT_DEADLINE_DAYS}일 이내 마감`
+        : progressHistoryScope() ? "종료·취소·결과 기록 포함" : "입찰 마감 전";
+      const breakdown = progressDepartmentBreakdown(state.filteredNotices);
       els.noticeSummary.textContent = progressDecisionListAvailable()
-        ? `${ownerLabel} · 참여·조건부 참여로 결정한 공고 ${formatNumber(count)}건 · ${state.currentView === "urgent-in-progress" ? `${URGENT_DEADLINE_DAYS}일 이내 마감` : "입찰 마감 전"}`
+        ? `${ownerLabel} · 참여·조건부 참여로 결정한 공고 ${formatNumber(count)}건 · ${range}${breakdown ? ` · 부서별 ${breakdown}` : ""}`
         : failed ? "부서별 판단 조회에 실패했습니다. 새로고침해 주세요."
           : "부서별 판단을 불러오고 있습니다.";
     }
@@ -6355,7 +6390,35 @@
     return `<button class="manual-analysis-action manual-analysis-action--${escapeAttribute(context)}" type="button" data-manual-analysis data-notice-key="${escapeAttribute(notice.noticeKey)}" ${disabled ? "disabled" : ""} title="${escapeAttribute(availability.reason)}" aria-label="${escapeAttribute(notice.title)} ${escapeAttribute(label)}${availability.enabled ? "" : ` · ${escapeAttribute(availability.reason)}`}">${running ? '<span class="button-spinner" aria-hidden="true"></span>' : ""}${escapeHtml(label)}</button>`;
   }
 
+  function progressDecisionLabel(choice) {
+    return choice === "CONDITIONAL_GO" ? "조건부 참여" : "참여";
+  }
+
+  function progressDepartmentLabel(record) {
+    return record.departmentName || record.departmentId;
+  }
+
+  // 전사 조회에서 어느 부서가 몇 건을 참여로 정했는지 요약한다. 한 부서만 보면 생략한다.
+  function progressDepartmentBreakdown(notices) {
+    if (selectedDashboardDepartmentId() !== "organization") return "";
+    const counts = new Map();
+    arrayValue(notices).forEach((notice) => progressDepartmentDecisions(notice).forEach((record) => {
+      const label = progressDepartmentLabel(record);
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }));
+    return Array.from(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "ko-KR"))
+      .map(([label, value]) => `${label} ${formatNumber(value)}건`).join(", ");
+  }
+
+  function progressDepartmentBadge(notice) {
+    const names = progressDepartmentDecisions(notice).map(progressDepartmentLabel);
+    if (!names.length) return "";
+    return `<span class="department-priority department-priority--progress" title="${escapeAttribute(`진행 부서 · ${names.join(", ")}`)}"><strong>진행</strong><span>${escapeHtml(names.join(" · "))}</span></span>`;
+  }
+
   function departmentPriorityBadge(notice) {
+    // 진행 건에서는 "추천 부서 미분류" 대신 참여로 정한 부서를 보여 준다.
+    if (isDepartmentProgressView()) return progressDepartmentBadge(notice);
     const ranking = notice.departmentRanking;
     if (!ranking) return "";
     const businessOwner = notice.topDepartmentRankings[0] || null;
@@ -6508,7 +6571,7 @@
 
   function restoreNoticeFiltersFromRoute() {
     const params = new URLSearchParams(window.location.search);
-    state.noticeScopeChoice = ["new", "collected"].includes(state.currentView) && ["OPEN", "ALL"].includes(params.get("scope")) ? params.get("scope") : null;
+    state.noticeScopeChoice = ["new", "collected", "in-progress"].includes(state.currentView) && ["OPEN", "ALL"].includes(params.get("scope")) ? params.get("scope") : null;
     if (!noticeFilterViewSupported()) return;
     if (params.get("filters") !== "1") {
       els.sortSelect.value = "judgement";
@@ -6657,7 +6720,7 @@
       state.noticeSearchMode = "stored";
     }
     state.currentView = nextView;
-    state.noticeScopeChoice = ["new", "collected"].includes(nextView) && ["OPEN", "ALL"].includes(scopeChoice) ? scopeChoice : null;
+    state.noticeScopeChoice = ["new", "collected", "in-progress"].includes(nextView) && ["OPEN", "ALL"].includes(scopeChoice) ? scopeChoice : null;
     if (restoreFilters) restoreNoticeFiltersFromRoute();
     const titles = {
       all: ["오늘 할 일", "오늘의 확인 항목"],
@@ -9385,9 +9448,11 @@
   }
 
   function renderDetailResult(record) {
-    const outcome = record.outcome;
+    // 내 부서 기록이 없으면 다른 부서 기록을 읽기 전용으로 보인다. 버튼은 내 부서 기록을 만든다.
+    const sharedOnly = !record.outcome && Boolean(record.sharedOutcome);
+    const outcome = record.outcome || record.sharedOutcome;
     els.detailResultEditButton.hidden = !canWriteResults() || isCancelledNotice(state.selectedNotice);
-    els.detailResultEditButton.textContent = outcome ? "결과 수정" : "결과 입력";
+    els.detailResultEditButton.textContent = record.outcome ? "결과 수정" : sharedOnly ? "내 부서 결과 입력" : "결과 입력";
     els.detailResultRetryButton.hidden = true;
     if (!outcome) {
       els.detailResultContent.textContent = "아직 입력한 결과가 없습니다. 결과 입력 버튼으로 기록을 시작하세요.";
@@ -9408,7 +9473,8 @@
     ];
     if (outcome.source && outcome.source !== "MANUAL_UI") rows.unshift(["기록 출처", resultSourceLabel(outcome.source)]);
     const demoNote = outcome.demo ? '<p class="demo-record-note"><span class="demo-record-badge">시연</span>발표용 시연 데이터입니다. 실제 개찰 결과가 아닙니다.</p>' : "";
-    els.detailResultContent.innerHTML = `${demoNote}<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
+    const sharedNote = sharedOnly ? `<p class="result-shared-note">${escapeHtml(record.sharedDepartmentName)} 입력 결과입니다 · 내 부서 기록은 아직 없습니다.</p>` : "";
+    els.detailResultContent.innerHTML = `${sharedNote}${demoNote}<dl class="result-detail-grid">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>`;
   }
 
   function selectTab(tabName, { evidenceId = "", focusEvidence = false, resetScroll = true } = {}) {
@@ -10085,9 +10151,11 @@
 
   function operatorDecisionIndicator(notice) {
     if (isDepartmentProgressView()) {
-      return progressDepartmentDecisions(notice).map((record) =>
-        `<span class="operator-decision operator-decision--${record.choice === "GO" ? "participate" : "hold"}"><small>${escapeHtml(record.departmentName || record.departmentId)}</small><strong>${escapeHtml(DECISION_LABELS[record.choice])}</strong></span>`
-      ).join(" ");
+      // 부서 이름을 진하게, 판단을 색 배지로 한 줄에 쓴다. 여러 부서면 부서마다 한 줄.
+      const rows = progressDepartmentDecisions(notice).map((record) =>
+        `<span class="progress-decision progress-decision--${record.choice === "GO" ? "participate" : "conditional"}"><strong>${escapeHtml(progressDepartmentLabel(record))}</strong><em>${escapeHtml(progressDecisionLabel(record.choice))}</em></span>`
+      ).join("");
+      return rows ? `<span class="progress-decisions">${rows}</span>` : "";
     }
     const label = operatorDecisionLabel(notice);
     const tone = notice.decision === "GO" ? "participate" : notice.decision === "NO_GO" ? "decline" : notice.decision ? "hold" : hasKnownOperatorDecision(notice) ? "undecided" : "unavailable";

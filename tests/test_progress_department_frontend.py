@@ -18,7 +18,8 @@ const context = vm.createContext({URL, URLSearchParams, Intl,
 const exported = `
 renderNoticeList=()=>{}; renderNoticeSearchScope=()=>{}; renderNoticeFilterTools=()=>{};
 globalThis.ui={state,els,normalizeNotice,applyFilters,progressDepartmentDecisions,
-operatorDecisionIndicator,renderProgressDepartmentControl,noticeFilterHref,ownDepartmentRecords};`;
+operatorDecisionIndicator,renderProgressDepartmentControl,noticeFilterHref,ownDepartmentRecords,
+progressDepartmentBreakdown,departmentPriorityBadge,noticeStatusScopeForView};`;
 vm.runInContext(source.replace(/\}\)\(\);\s*$/, exported+'\n})();'), context);
 const u=context.ui;
 for(const key of ['searchInput','priorityKeywordInput','eligibilityFilter','recommendationFilter',
@@ -86,6 +87,26 @@ assert.equal(keys().length,0,'failed/partial reads must not appear complete');
 u.state.notices[0].decisionReadStatus='KNOWN';
 const tie=row('SYN-TIE',[decision('SYN-A','GO',3,'a'),decision('SYN-A','HOLD',3,'z')]);
 assert.equal(u.progressDepartmentDecisions(tie).length,0,'latest tie follows the server id ordering');
+assert.match(u.operatorDecisionIndicator(shared),/progress-decision--participate"><strong>A부서<\/strong><em>참여<\/em>/);
+assert.match(u.operatorDecisionIndicator(bOnly),/<em>조건부 참여<\/em>/);
+assert.match(u.departmentPriorityBadge(shared),/<strong>진행<\/strong><span>B&lt;부서&gt; · A부서<\/span>/);
+assert.equal(u.departmentPriorityBadge(u.state.notices.find(n=>n.noticeKey==='SYN-NONE')),'');
+u.applyFilters();
+assert.equal(u.progressDepartmentBreakdown(u.state.filteredNotices),'B<부서> 3건, A부서 2건');
+assert.equal(u.noticeStatusScopeForView('in-progress'),'OPEN');
+u.state.noticeScopeChoice='ALL';u.applyFilters();
+assert.deepEqual(keys(),['SYN-A-ONLY','SYN-B-ONLY','SYN-CANCELLED','SYN-CHANGED','SYN-CLOSED','SYN-RESULT','SYN-SHARED'],
+  'history scope keeps past GO decisions on ended, cancelled and recorded notices');
+assert.equal(u.noticeStatusScopeForView('in-progress'),'ALL');
+assert.equal(u.progressDepartmentBreakdown(u.state.filteredNotices),'A부서 5건, B<부서> 3건');
+assert.equal(new URL(u.noticeFilterHref()).searchParams.get('scope'),'ALL');
+u.els.departmentSelect.value='SYN-B';u.applyFilters();
+assert.deepEqual(keys(),['SYN-B-ONLY','SYN-CHANGED','SYN-SHARED']);
+assert.equal(u.progressDepartmentBreakdown(u.state.filteredNotices),'','one department needs no breakdown');
+u.els.departmentSelect.value='organization';
+u.state.currentView='urgent-in-progress';u.applyFilters();
+assert.ok(!keys().includes('SYN-CLOSED'),'urgent progress never includes ended notices');
+u.state.currentView='in-progress';u.state.noticeScopeChoice=null;
 u.state.currentView='new';u.applyFilters();
 assert.equal(nodes.get('departmentSelectLabel').textContent,'추천 부서');
 assert.equal(common.textContent,'전사 공통 (교육·컨설팅)');
