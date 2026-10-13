@@ -839,7 +839,9 @@ def test_department_recommendation_and_region_routing_are_rendered_separately() 
     assert "departmentSortSignal" in compare_body
     assert "topDepartmentRankings[0]" in badge_body
     assert "departmentReviewCandidates[0]" in badge_body
-    assert "regionRouting[0]" in badge_body
+    # Shared territories route to a regional office and 역량솔루션본부 together.
+    assert "regionRouting.slice(0, 2)" in badge_body
+    assert "otherRegionOwners.map((owner) => owner.departmentName).join(\" · \")" in badge_body
     assert '"부서 추천"' in badge_body
     assert '"추가 검토"' in badge_body
     assert '"관련 지역 부서"' in badge_body

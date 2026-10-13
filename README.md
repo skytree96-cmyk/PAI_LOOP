@@ -399,7 +399,7 @@ OpenAI 계약은
 ## 설계 문서
 
 - [Product blueprint](docs/PRODUCT_BLUEPRINT_v0.1.0.md)
-- [Department recommendation and region routing v0.4.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.4.0.md)
+- [Department recommendation and region routing v0.6.0](docs/DEPARTMENT_KEYWORD_RANKING_v0.6.0.md)
 - [Quantitative scoring v0.3.0](docs/QUANTITATIVE_SCORING_v0.3.0.md)
 - [Award and pricing intelligence v0.3.0](docs/PPS_AWARD_INTELLIGENCE_v0.3.0.md)
 - [Analysis backfill and 08:00 continuation runbook v0.8.0](docs/ANALYSIS_BACKFILL_AND_CONTINUATION_v0.8.0.md)

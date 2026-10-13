@@ -279,9 +279,9 @@ def test_pipeline_queues_follow_this_department_decision(client, monkeypatch):
     with client.app.state.session_factory() as session:
         # Titles carry this department's own registered keyword: the waiting
         # queue is what our keywords brought in, not every qualified notice.
-        waiting = _notice(session, "pipe-waiting", "REVIEW", title="SYN 디지털교육 위탁 운영")
+        waiting = _notice(session, "pipe-waiting", "REVIEW", title="SYN 디지털 교육 위탁 운영")
         other_department = _notice(
-            session, "pipe-other-dept", "REVIEW", title="SYN 디지털교육 교사 연수"
+            session, "pipe-other-dept", "REVIEW", title="SYN 디지털 교육 교사 연수"
         )
         _notice(session, "pipe-foreign-topic", "REVIEW", title="SYN 도로 포장 정비")
         running = _notice(session, "pipe-running", "PASS", deadline=NOW + timedelta(days=20))

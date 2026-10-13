@@ -1432,12 +1432,14 @@ def test_profile_ingestion_queries_every_department_with_bounded_terms(
     assert response.status_code == 200, response.text
     body = response.json()
     from pai_loop.pps_enrichment import PROFILE_DISCOVERY_INDUSTRY_CODES, PROFILE_DISCOVERY_KEYWORDS
-    expected = len(PROFILE_DISCOVERY_KEYWORDS) + 24 + len(PROFILE_DISCOVERY_INDUSTRY_CODES)
+    # 24 departments, but 경영기획실 and 재무팀 have no strong keyword since
+    # profile 2026.10.13-1, so they contribute no collection term.
+    expected = len(PROFILE_DISCOVERY_KEYWORDS) + 22 + len(PROFILE_DISCOVERY_INDUSTRY_CODES)
     assert body["keywords_used"][:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
     assert len(body["keywords_used"]) == expected
     assert len(set(body["keywords_used"])) == expected
     assert body["provider_queries"] == expected
-    assert body["department_coverage_count"] == 24
+    assert body["department_coverage_count"] == 22
     assert body["keywords_used"][-len(PROFILE_DISCOVERY_INDUSTRY_CODES):] == [
         "업종코드:" + code for code in PROFILE_DISCOVERY_INDUSTRY_CODES
     ]
@@ -1470,7 +1472,7 @@ def test_profile_ingestion_reports_partial_when_only_subset_of_terms_execute(
     assert body["status"] == "PARTIAL"
     assert body["provider_queries"] == 1
     assert len(body["keywords_used"]) > 29
-    assert body["department_coverage_count"] == 24
+    assert body["department_coverage_count"] == 22
     assert any("시간 제한" in warning for warning in body["warnings"])
 
 

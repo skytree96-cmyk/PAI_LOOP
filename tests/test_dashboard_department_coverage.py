@@ -53,10 +53,10 @@ def test_department_coverage_counts_only_actionable_notices(client):
     """Ended and cancelled notices must not inflate a keyword's coverage."""
 
     with client.app.state.session_factory() as session:
-        _notice(session, "live", "초중고 AI 디지털교육 위탁 운영", evaluated=True)
-        _notice(session, "live2", "디지털교육 교사 연수 운영")
-        _notice(session, "ended", "디지털교육 종료 사업", ended=True)
-        _notice(session, "cancelled", "디지털교육 취소 사업", cancelled=True)
+        _notice(session, "live", "초중고 AI 디지털 교육 위탁 운영", evaluated=True)
+        _notice(session, "live2", "디지털 교육 교사 연수 운영")
+        _notice(session, "ended", "디지털 교육 종료 사업", ended=True)
+        _notice(session, "cancelled", "디지털 교육 취소 사업", cancelled=True)
         session.commit()
 
     payload = client.get("/api/v1/dashboard/departments").json()
@@ -67,7 +67,7 @@ def test_department_coverage_counts_only_actionable_notices(client):
     assert education["matched_count"] == 2
     assert education["evaluated_count"] == 1
     counts = {item["keyword"]: item["count"] for item in education["keywords"]}
-    assert counts["디지털교육"] == 2
+    assert counts["디지털 교육"] == 2
     assert counts["K-12"] == 0  # A registered keyword that brought in nothing.
 
 
@@ -167,7 +167,11 @@ def test_bare_region_name_does_not_fill_a_regional_department_queue(client):
 
 
 def test_capital_area_fills_competency_solution_queue_not_central(client):
-    """서울·경기·인천 belong to 역량솔루션본부; 중부본부 keeps 충청·강원."""
+    """서울·경기·인천 belong to 역량솔루션본부 alone; 중부본부 keeps 충청·강원.
+
+    Since 2026.10.13-1 역량솔루션본부 also works 강원 together with 중부본부,
+    so a 강원 notice fills both queues and neither pushes the other out.
+    """
 
     with client.app.state.session_factory() as session:
         _notice(session, "capital-only", "서울 청사 도로 포장 보수 공사")
@@ -181,11 +185,12 @@ def test_capital_area_fills_competency_solution_queue_not_central(client):
     )
     central = next(item for item in departments if item["department_id"] == "region-central")
 
-    assert competency["matched_count"] == 1
-    assert competency["recommended_count"] == 1
+    assert competency["matched_count"] == 2
+    assert competency["recommended_count"] == 2
     assert competency["region_gate_blocked_count"] == 1
     competency_counts = {item["keyword"]: item["count"] for item in competency["keywords"]}
     assert competency_counts["서울"] == 1
+    assert competency_counts["강원"] == 1
     assert {"서울", "경기", "인천"} <= set(competency_counts)
     assert central["matched_count"] == 1
     central_counts = {item["keyword"]: item["count"] for item in central["keywords"]}
@@ -197,7 +202,7 @@ def test_capital_area_fills_competency_solution_queue_not_central(client):
         assert response.status_code == 200
         return response.json()["department_statistics"]["recommended_count"]
 
-    assert dashboard_recommended("future-competency-solution") == 1
+    assert dashboard_recommended("future-competency-solution") == 2
     assert dashboard_recommended("region-central") == 1
 
 
@@ -211,3 +216,20 @@ def test_region_tokens_appear_in_the_keyword_table(client):
     )
     keywords = {item["keyword"] for item in row["keywords"]}
     assert "충청" in keywords  # Declared in regions only, never as a keyword.
+
+
+def test_shared_territory_fills_regional_and_competency_queues_together(client):
+    """역량솔루션본부 works 중부 with 중부본부; neither queue loses the notice."""
+
+    with client.app.state.session_factory() as session:
+        _notice(session, "shared-route", "충남 직원 교육 운영")
+        _notice(session, "shared-top", "충남 공무원 교육 운영")
+        session.commit()
+
+    def dashboard_recommended(department_id):
+        response = client.get("/api/v1/dashboard", params={"department_id": department_id})
+        assert response.status_code == 200
+        return response.json()["department_statistics"]["recommended_count"]
+
+    assert dashboard_recommended("region-central") == 2
+    assert dashboard_recommended("future-competency-solution") == 2

@@ -23,7 +23,7 @@ from pai_loop.department_ranking import (
 def test_profile_catalog_is_versioned_and_contains_no_personnel_fields() -> None:
     catalog = load_department_keyword_profiles()
 
-    assert catalog["version"] == "2026.09.29-1"
+    assert catalog["version"] == "2026.10.13-1"
     assert catalog["baseline"]["strong_keywords"] == ["교육", "컨설팅"]
     assert len(catalog["departments"]) >= 24
     serialized = json.dumps(catalog, ensure_ascii=False).casefold()
@@ -123,9 +123,12 @@ def test_generic_overseas_training_routes_global_not_ai_future_education() -> No
     assert "future-ai-education" not in generic_ids
     assert "future-global-education" in university_ids
     assert "future-ai-education" not in university_ids
-    assert "future-ai-education" in {
-        item["department_id"] for item in university_review
-    }
+    # 대학생 moved from AI미래교육본부 to 일자리창출본부 (2026.10.13-1), and a
+    # lone 연수 is only a supporting word for 역량솔루션본부.
+    review_ids = {item["department_id"] for item in university_review}
+    assert "future-job-creation" in review_ids
+    assert "future-ai-education" not in review_ids
+    assert "future-competency-solution" not in university_ids
 
 
 def test_top_departments_only_include_differentiated_matches() -> None:
@@ -493,25 +496,30 @@ def test_region_owner_receives_region_weight() -> None:
 
 def test_internal_support_profiles_are_present_but_conservatively_weighted() -> None:
     catalog = load_department_keyword_profiles()
-    profile_ids = {item["id"] for item in catalog["departments"]}
-    assert {"management-planning", "finance-support"} <= profile_ids
+    by_id = {item["id"]: item for item in catalog["departments"]}
+    assert {"management-planning", "finance-support"} <= set(by_id)
+    # 2026.10.13-1: the entries stay so decisions and logins keep resolving,
+    # but they carry no keywords and recommend nothing on purpose.
+    for profile_id in ("management-planning", "finance-support"):
+        assert by_id[profile_id]["strong_keywords"] == []
+        assert by_id[profile_id]["supporting_keywords"] == []
 
-    planning = rank_notice_for_department(
-        title="공공기관 경영전략 및 성과관리 컨설팅",
-        department_id="management-planning",
+    title = "공공기관 경영전략 및 성과관리 컨설팅"
+    planning = rank_notice_for_department(title=title, department_id="management-planning")
+    competency = rank_notice_for_department(
+        title=title, department_id="future-competency-solution",
     )
-    business = rank_notice_for_department(
-        title="공공기관 경영전략 및 성과관리 컨설팅",
-        department_id="talent-development",
-    )
+    assert planning["recommendation_tier"] == "NONE"
+    assert planning["department_score"] == 0
+    assert competency["recommendation_tier"] == "TOP"
+    assert competency["department_score"] > planning["department_score"]
 
-    planning_weights = [
-        item["weight"]
-        for item in planning["score_breakdown"]
-        if item["source"].startswith("DEPARTMENT")
-    ]
-    assert planning["department_score"] > business["department_score"]
-    assert max(planning_weights) <= 10
+    finance_title = "공공기관 재무교육 위탁운영"
+    finance = rank_notice_for_department(title=finance_title, department_id="finance-support")
+    talent = rank_notice_for_department(title=finance_title, department_id="talent-development")
+    assert finance["recommendation_tier"] == "NONE"
+    assert talent["recommendation_tier"] == "TOP"
+    assert "재무교육" in talent["matched_department_keywords"]
 
 
 def test_user_keyword_parser_is_bounded_and_filter_uses_or_semantics() -> None:
@@ -785,8 +793,151 @@ def test_daily_teams_card_separates_business_review_and_region_labels() -> None:
 
     assert "item.top_departments?.[0]" in source
     assert "item.department_review_candidates?.[0]" in source
-    assert "item.region_routing?.[0]" in source
+    assert "(item.region_routing ?? []).slice(0, 2)" in source
+    assert ".join(' · ')" in source
     assert "title: '사업부 추천'" in source
     assert "title: '추가 검토'" in source
     assert "title: '지역 라우팅'" in source
     assert "부서 우선순위" not in source
+
+
+# Profile 2026.10.13-1 regressions. Each case is a notice title that drove the
+# keyword reorganisation; the expected tiers are the corrected-plan results.
+
+
+def _views(title: str, agency: str = "") -> dict:
+    return rank_notice_department_views(
+        title=title, agency=agency, top_limit=5, review_limit=5, region_limit=5,
+    )
+
+
+def test_staff_overseas_training_stays_with_global_education() -> None:
+    views = _views("2026년도 충남대학교병원 직원 해외연수 대행 용역", "충남대학교병원")
+
+    top = views["top_department_rankings"]
+    assert top[0]["department_id"] == "future-global-education"
+    assert "future-competency-solution" not in {item["department_id"] for item in top}
+    # A lone 연수 is only supporting evidence for 역량솔루션본부.
+    competency = views["by_department_id"]["future-competency-solution"]
+    assert competency["recommendation_tier"] != "TOP"
+
+
+def test_bare_ai_is_supporting_not_strong_for_ai_capability() -> None:
+    system = _views("AI기반 감사업무시스템 재구축 용역")["by_department_id"]
+    assert system["future-ai-capability"]["recommendation_tier"] == "REVIEW"
+
+    bootcamp = _views(
+        "가천대학교 AI부트캠프 사업 생성형 AI 심화 교육 기획·운영 위탁 용역", "가천대학교",
+    )["by_department_id"]
+    assert bootcamp["future-ai-capability"]["recommendation_tier"] in {"REVIEW", "TOP"}
+
+
+def test_management_strategy_moves_from_planning_office_to_competency_solution() -> None:
+    views = _views("중장기 경영전략 수립 연구용역")["by_department_id"]
+    assert views["future-competency-solution"]["recommendation_tier"] == "TOP"
+    assert views["management-planning"]["recommendation_tier"] == "NONE"
+
+
+def test_job_creation_keeps_employment_and_anchor_notices() -> None:
+    busan = _views("청년 취업 역량강화 프로그램 운영", "부산광역시")
+    assert busan["by_department_id"]["future-job-creation"]["recommendation_tier"] == "TOP"
+    assert busan["by_department_id"]["region-busan-gyeongnam"]["recommendation_tier"] == "ROUTING"
+    assert "region-busan-gyeongnam" in {
+        item["department_id"] for item in busan["region_routing"]
+    }
+
+    anchor = _views(
+        "[재공고][2차년도 앵커사업] 초등돌봄・교육 프로그램 북 제작", "대구가톨릭대학교",
+    )["by_department_id"]
+    assert anchor["future-job-creation"]["recommendation_tier"] == "TOP"
+
+
+def test_place_names_are_not_competency_solution_business_keywords() -> None:
+    catalog = load_department_keyword_profiles()
+    competency = next(
+        item for item in catalog["departments"] if item["id"] == "future-competency-solution"
+    )
+    keywords = {*competency["strong_keywords"], *competency["supporting_keywords"]}
+    for place in ("부산광역시", "경상남도", "대구광역시", "경상북도", "충남", "제주특별자치도"):
+        assert place not in keywords
+
+    camp = _views(
+        "대구광역시청소년수련원 동계 청소년 해외캠프 항공권 구매대행", "대구광역시청소년수련원",
+    )["by_department_id"]["future-competency-solution"]
+    assert camp["recommendation_tier"] not in {"REVIEW", "TOP"}
+    assert camp["matched_department_keywords"] == []
+
+
+@pytest.mark.parametrize(
+    ("title", "competency_tier"),
+    [
+        # Territory only: both route, and the regional office comes first.
+        ("충남 직원 교육 운영", "ROUTING"),
+        # 역량솔루션본부 owns the work; 중부본부 still routes the territory.
+        ("충남 공무원 교육 운영", "TOP"),
+    ],
+)
+def test_shared_territory_keeps_both_regional_office_and_competency_solution(
+    title: str, competency_tier: str,
+) -> None:
+    views = _views(title, "충청남도")
+    by_id = views["by_department_id"]
+
+    assert by_id["region-central"]["recommendation_tier"] == "ROUTING"
+    assert by_id["future-competency-solution"]["recommendation_tier"] == competency_tier
+    routes = [item["department_id"] for item in views["region_routing"]]
+    assert routes[0] == "region-central"
+    if competency_tier == "ROUTING":
+        assert routes[:2] == ["region-central", "future-competency-solution"]
+        # Even a one-slot display keeps the regional office.
+        one_slot = rank_notice_department_views(
+            title=title, agency="충청남도", top_limit=1, review_limit=0, region_limit=1,
+        )
+        assert [item["department_id"] for item in one_slot["region_routing"]] == [
+            "region-central"
+        ]
+    else:
+        assert views["top_department_rankings"][0]["department_id"] == (
+            "future-competency-solution"
+        )
+
+
+def test_region_routing_tie_prefers_regional_office_over_name_order() -> None:
+    def route(department_id: str, name: str, group: str) -> dict:
+        return {
+            "department_id": department_id,
+            "department_name": name,
+            "group": group,
+            "recommendation_tier": "ROUTING",
+            "routing_score": 28.0,
+        }
+
+    ordered = ranking_module._region_rankings(
+        [
+            route("future-competency-solution", "역량솔루션본부", "미래혁신그룹"),
+            route("region-central", "중부본부", "지역그룹"),
+        ],
+        limit=2,
+    )
+    assert [item["department_id"] for item in ordered] == [
+        "region-central",
+        "future-competency-solution",
+    ]
+
+
+def test_emptied_departments_drop_out_of_collection_terms() -> None:
+    from pai_loop.pps_enrichment import resolve_ingestion_keywords
+
+    terms, _truncated = resolve_ingestion_keywords(
+        keyword=None, keywords=[], profile_department_ids=[], use_profile_keywords=True,
+    )
+    assert "사업기획" not in terms
+    assert "재무교육" not in terms
+    for profile_id in ("management-planning", "finance-support"):
+        scoped, _ = resolve_ingestion_keywords(
+            keyword=None, keywords=[], profile_department_ids=[profile_id],
+            use_profile_keywords=True,
+        )
+        # Only the fixed discovery set and industry codes remain.
+        unscoped_extra = set(scoped) - set(terms)
+        assert unscoped_extra == set()

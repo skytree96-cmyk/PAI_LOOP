@@ -700,9 +700,14 @@ def _region_rankings(
     limit: int,
 ) -> list[dict[str, Any]]:
     routes = [item for item in rankings if item["recommendation_tier"] == "ROUTING"]
+    # A business department that also owns a territory (역량솔루션본부) works
+    # it together with the regional office. On equal routing scores the
+    # regional office comes first, so a name sort can never push it out of a
+    # one-slot display.
     routes.sort(
         key=lambda item: (
             -float(item["routing_score"]),
+            0 if item.get("group") == REGION_GROUP else 1,
             str(item["department_name"]),
         )
     )
