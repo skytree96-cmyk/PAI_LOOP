@@ -6603,7 +6603,10 @@
     if (!ranking) return "";
     const businessOwner = notice.topDepartmentRankings[0] || null;
     const reviewOwner = notice.departmentReviewCandidates[0] || null;
-    const regionOwner = notice.regionRouting[0] || null;
+    // 역량솔루션본부 works some territories together with the regional
+    // office, so one notice can route to both. Name both instead of letting
+    // one push the other out.
+    const regionOwners = notice.regionRouting.slice(0, 2);
     // A department login ranks its own matches first, but a notice another
     // department owns must still name that owner instead of reading as
     // "미분류" under the viewer's department.
@@ -6624,12 +6627,13 @@
     const fitScore = selectedOwner.rankingScope === "REGION"
       ? selectedOwner.routingScore
       : selectedOwner.businessScore;
-    const region = regionOwner && selectedOwner.departmentId !== regionOwner.departmentId
-      ? ` · 관련 지역 부서 ${regionOwner.departmentName}`
+    const otherRegionOwners = regionOwners.filter((owner) => owner.departmentId !== selectedOwner.departmentId);
+    const region = otherRegionOwners.length
+      ? ` · 관련 지역 부서 ${otherRegionOwners.map((owner) => owner.departmentName).join(" · ")}`
       : "";
     const reasons = [
       ...selectedOwner.reasons,
-      ...(regionOwner?.reasons || []),
+      ...otherRegionOwners.flatMap((owner) => owner.reasons || []),
     ].join(" · ");
     return `<span class="department-priority department-priority--${escapeAttribute(selectedOwner.priority.toLowerCase())}" title="${escapeAttribute(reasons)}"><strong>${escapeHtml(label)}${fitScore > 0 ? ` ${formatScore(fitScore)}` : ""}</strong><span>${escapeHtml(selectedOwner.departmentName + region)}</span></span>`;
   }

@@ -58,18 +58,18 @@ def _seed_portfolio(client):
                 created_at=created_at,
             ))
 
-        decision(0, "management-planning", "GO")
+        decision(0, "future-competency-solution", "GO")
         # Revision wins even if the earlier record has a later timestamp.
-        decision(0, "management-planning", "HOLD", 2, created_at=NOW - timedelta(hours=1))
-        decision(0, "finance-support", "GO")
-        decision(1, "management-planning", "GO")
-        decision(1, "management-planning", "CONDITIONAL_GO", 2)
-        decision(1, "finance-support", "NO_GO")
-        decision(2, "finance-support", "GO")
-        decision(2, "management-planning", "NO_GO")
+        decision(0, "future-competency-solution", "HOLD", 2, created_at=NOW - timedelta(hours=1))
+        decision(0, "talent-development", "GO")
+        decision(1, "future-competency-solution", "GO")
+        decision(1, "future-competency-solution", "CONDITIONAL_GO", 2)
+        decision(1, "talent-development", "NO_GO")
+        decision(2, "talent-development", "GO")
+        decision(2, "future-competency-solution", "NO_GO")
         for index in (5, 6, 9, 30):
-            decision(index, "management-planning", "GO")
-        decision(9, "finance-support", "GO")
+            decision(index, "future-competency-solution", "GO")
+        decision(9, "talent-development", "GO")
         # Unowned/legacy decisions must not be attributed to a department.
         decision(10, None, "GO", None)
         session.commit()
@@ -78,18 +78,28 @@ def _seed_portfolio(client):
 def test_department_counts_use_complete_store_and_latest_decision_per_department(client, monkeypatch):
     monkeypatch.setattr(api_module, "datetime", FixedDateTime)
     _seed_portfolio(client)
-    response = client.get("/api/v1/dashboard", params={"department_id": "management-planning"})
+    # 경영전략·정책연구 moved to 역량솔루션본부 and 재무교육 to 인재개발센터 in
+    # profile 2026.10.13-1. 경영기획실 and 재무팀 keep their entries with no
+    # keywords, so they intentionally recommend nothing.
+    for emptied in ("management-planning", "finance-support"):
+        emptied_stats = client.get(
+            "/api/v1/dashboard", params={"department_id": emptied}
+        ).json()["department_statistics"]
+        assert emptied_stats["recommended_count"] == 0
+        assert emptied_stats["selection_rate"] is None
+    response = client.get("/api/v1/dashboard", params={"department_id": "future-competency-solution"})
     assert response.status_code == 200, response.text
     dashboard = response.json()
     stats = dashboard["department_statistics"]
     assert dashboard["totals"]["notices"] == stats["total_notice_count"] == 31
     assert len(dashboard["recent_notices"]) == 10
-    assert stats["recommended_count"] == 4
+    # 0·1·9·30 (경영전략), 3 (정책연구) and 8 (부산 territory routing).
+    assert stats["recommended_count"] == 6
     assert stats["selected_count"] == 5
     assert stats["selected_recommended_count"] == 3
-    assert stats["recommended_ratio"] == pytest.approx(4 / 31)
+    assert stats["recommended_ratio"] == pytest.approx(6 / 31)
     assert stats["selected_ratio"] == pytest.approx(5 / 31)
-    assert stats["selection_rate"] == pytest.approx(3 / 4)
+    assert stats["selection_rate"] == pytest.approx(3 / 6)
     assert stats["recommendation_scope"] == "OPEN_NOT_CANCELLED"
     assert stats["selection_scope"] == "ALL_STORED_NOTICES"
     assert stats["recommended_definition"] == "OPEN_KEYWORD_TOP_OR_REGION_ROUTING"
@@ -98,19 +108,19 @@ def test_department_counts_use_complete_store_and_latest_decision_per_department
     assert comparison["total_notice_count"] == 31
     comparison_rows = {row["department_id"]: row for row in comparison["departments"]}
     for key in ("recommended_count", "selected_count", "selected_recommended_count", "selection_available"):
-        assert comparison_rows["management-planning"][key] == stats[key]
+        assert comparison_rows["future-competency-solution"][key] == stats[key]
     # Independent discovery and human selection counts require no qualification.
     assert dashboard["totals"]["evaluations"] == 0
     assert dashboard["go_count"] == 0
 
-    finance = client.get("/api/v1/dashboard", params={"department_id": "finance-support"}).json()
+    finance = client.get("/api/v1/dashboard", params={"department_id": "talent-development"}).json()
     finance_stats = finance["department_statistics"]
     assert finance_stats["recommended_count"] == 1
     assert finance_stats["selected_count"] == 3
     assert finance_stats["selected_recommended_count"] == 1
     assert finance_stats["selection_rate"] == 1
     for key in ("recommended_count", "selected_count", "selected_recommended_count"):
-        assert comparison_rows["finance-support"][key] == finance_stats[key]
+        assert comparison_rows["talent-development"][key] == finance_stats[key]
     # Department selection does not narrow the global queues or denominator.
     assert finance["totals"] == dashboard["totals"]
     assert finance["work_queue_denominator"] == dashboard["work_queue_denominator"]
@@ -122,7 +132,7 @@ def test_department_counts_use_complete_store_and_latest_decision_per_department
     # by this department is work only this department can still act on.
     assert finance["work_queue_counts"]["result_missing_decided"] == 0
     assert dashboard["work_queue_counts"]["result_missing_decided"] == 1
-    alias = client.get("/api/v1/dashboard", params={"department_id": "경영기획팀"}).json()
+    alias = client.get("/api/v1/dashboard", params={"department_id": "역량솔루션"}).json()
     assert alias["department_statistics"] == stats
 
 
