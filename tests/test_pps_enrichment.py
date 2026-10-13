@@ -789,7 +789,9 @@ def test_profile_keyword_resolution_is_diverse_bounded_and_legacy_compatible() -
         profile_department_ids=[],
     )
     from pai_loop.pps_enrichment import PROFILE_DISCOVERY_INDUSTRY_CODES, PROFILE_DISCOVERY_KEYWORDS
-    expected = len(PROFILE_DISCOVERY_KEYWORDS) + 24 + len(PROFILE_DISCOVERY_INDUSTRY_CODES)
+    # 24 departments, but 경영기획실 and 재무팀 have no strong keyword since
+    # profile 2026.10.13-1, so they contribute no collection term.
+    expected = len(PROFILE_DISCOVERY_KEYWORDS) + 22 + len(PROFILE_DISCOVERY_INDUSTRY_CODES)
     assert profiled[:5] == ["교육", "컨설팅", "연수", "포럼", "위탁 운영"]
     assert len(profiled) == expected
     assert len(set(profiled)) == expected
@@ -797,7 +799,7 @@ def test_profile_keyword_resolution_is_diverse_bounded_and_legacy_compatible() -
     assert department_keyword_coverage_count(
         profiled,
         profile_department_ids=[],
-    ) == 24
+    ) == 22
 
     explicit_profiled, truncated = resolve_ingestion_keywords(
         keyword="경제안보외교",
