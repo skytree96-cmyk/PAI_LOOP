@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 
 OPEN_FILES = frozenset({
     "index.html", "styles.css", "app.js", "favicon.svg", "story.css", "story.js",
+    "assets/pai-ad-v11.mp4", "assets/pai-ad-poster.webp",
     "assets/pai-product-poster.webp", "assets/pai-product-tour.webm",
     *(f"assets/pai-screen-{i}.webp" for i in range(1, 9)),
 })

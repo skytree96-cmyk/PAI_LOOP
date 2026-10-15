@@ -32,7 +32,7 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert all(route == href and href.startswith("/") for route, href in links)
     assert "run.app" not in response.text and "onrender.com" not in response.text
     assets = re.findall(r'(?:src|poster|href)="(/open/[^"?]+)', response.text)
-    assert len(assets) == 15
+    assert len(assets) == 17
     for asset in assets:
         assert public_client.get(asset).status_code == 200
     assert re.findall(r'data-ps-step="(\d+)"', response.text) == [str(i) for i in range(8)]
@@ -46,11 +46,12 @@ def test_open_is_public_with_same_origin_buttons_and_scoped_assets(public_client
     assert "x-frame-options" not in head.headers
 
 
-def test_open_media_supports_range_requests(public_client):
-    response = public_client.get("/open/assets/pai-product-tour.webm", headers={"Range": "bytes=0-99"})
+@pytest.mark.parametrize("filename,media_type", [("pai-product-tour.webm", "video/webm"), ("pai-ad-v11.mp4", "video/mp4")])
+def test_open_media_supports_range_requests(public_client, filename, media_type):
+    response = public_client.get(f"/open/assets/{filename}", headers={"Range": "bytes=0-99"})
     assert response.status_code == 206
     assert len(response.content) == 100
-    assert response.headers["content-type"].startswith("video/webm")
+    assert response.headers["content-type"].startswith(media_type)
     assert response.headers["content-range"].startswith("bytes 0-99/")
 
 

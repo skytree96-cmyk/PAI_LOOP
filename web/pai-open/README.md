@@ -57,7 +57,7 @@ node build.mjs
 ```
 
 Preview: `http://127.0.0.1:8788/open`. The build validates IDs, anchors, ARIA
-references and the ten-file media allowlist, then creates `dist/`. Cloud Run
+references and the twelve-file media allowlist, then creates `dist/`. Cloud Run
 packages source files directly; no Node runtime is needed in production.
 
 From the repository root, with Playwright and Chrome available:
@@ -98,3 +98,20 @@ verify dimensions/duration/frame rate and test native playback before publishing
 `prepare_open_assets.cjs` copies the eight 1600x1000 WebP screen textures and the
 film/poster. Refresh asset query versions when changing media. Intermediate
 captures, local font files, encoders and QA outputs stay outside source control.
+
+## Video tabs (2026-10-15)
+
+The hero defaults to **광고영상**, the approved 99.4-second FHD V11 rhythm edit.
+**기능 소개** retains the existing 60-second QHD studio tour. Clicking a tab or
+using Left/Right/Home/End selects its panel and pauses the other film. Only the
+selected tab participates in the tab order. Both films remain accessible in
+sequence without JavaScript. The inactive tour uses `preload="none"`.
+
+Autoplay starts muted when motion is allowed; native controls let viewers enable
+the advertisement's original soundtrack. Reduced motion disables autoplay, and
+backgrounding the page pauses playback. The MP4 is copied without transcoding;
+its poster is a frame from that same film. The two named assets are explicitly
+allowlisted in the server, static build, wheel packaging and CI checks.
+
+Run `node tools/test_open_video_tabs.cjs .local/video-qa` against the preview
+server for playback, keyboard, mobile, reduced-motion and no-JavaScript checks.

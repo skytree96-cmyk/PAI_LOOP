@@ -319,3 +319,12 @@ h1{font-size:45px}
 .product-film__caption small{display:block;margin-top:12px;font-size:12px;color:#526777}
 @media(max-width:1000px){.hero-grid{grid-template-columns:1fr;gap:38px}.product-film{width:100%;max-width:760px;margin:auto}.hero-copy h1{font-size:clamp(34px,5vw,48px)}.hero-lead{max-width:700px}}
 @media(max-width:600px){.hero-bottom{flex-direction:column;align-items:flex-start;gap:10px}.hero-bottom i{display:none}.product-film__head{padding:13px 15px;gap:8px;font-size:12px}.product-film__caption{padding:17px}.product-film__caption h2{font-size:17px}.hero-copy h1{font-size:34px}.hero-lead{font-size:16px}}
+
+/* Film selection shares the existing player card on every screen size. */
+.film-tabs{display:flex;gap:6px;padding:12px 16px;background:#f3f7fb;border-bottom:1px solid var(--line)}
+.film-tabs[hidden],.film-panel[hidden]{display:none}
+.film-tab{flex:1;min-height:44px;padding:10px 16px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted);font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.film-tab[aria-selected="true"]{background:var(--blue);color:white;box-shadow:0 3px 8px #17436b20}
+.film-tab:focus-visible{outline:3px solid #308cce;outline-offset:3px}
+.film-panel:focus-visible{outline:3px solid #308cce;outline-offset:-3px}
+@media(max-width:600px){.film-tabs{padding:10px 12px}.film-tab{padding:9px 12px}}

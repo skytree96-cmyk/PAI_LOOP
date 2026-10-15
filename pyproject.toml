@@ -46,6 +46,8 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
+"web/pai-open/assets/pai-ad-v11.mp4" = "pai_loop/open/assets/pai-ad-v11.mp4"
+"web/pai-open/assets/pai-ad-poster.webp" = "pai_loop/open/assets/pai-ad-poster.webp"
 "web/pai-open/index.html" = "pai_loop/open/index.html"
 "web/pai-open/styles.css" = "pai_loop/open/styles.css"
 "web/pai-open/app.js" = "pai_loop/open/app.js"
