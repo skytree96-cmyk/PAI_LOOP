@@ -55,6 +55,35 @@ def test_open_media_supports_range_requests(public_client, filename, media_type)
     assert response.headers["content-range"].startswith("bytes 0-99/")
 
 
+@pytest.mark.parametrize("range_header", [None, "bytes=0-", "bytes=100-"])
+def test_large_advertisement_streams_without_buffered_content_length(public_client, range_header):
+    import hashlib
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "web/pai-open/assets/pai-ad-v11.mp4"
+    offset = 100 if range_header == "bytes=100-" else 0
+    expected = source.read_bytes()[offset:]
+    response = public_client.get(
+        "/open/assets/pai-ad-v11.mp4",
+        headers={"Range": range_header} if range_header else {},
+    )
+    assert response.status_code == (206 if range_header else 200)
+    assert "content-length" not in response.headers
+    assert response.headers["accept-ranges"] == "bytes"
+    assert hashlib.sha256(response.content).digest() == hashlib.sha256(expected).digest()
+    if range_header:
+        assert response.headers["content-range"] == f"bytes {offset}-{source.stat().st_size - 1}/{source.stat().st_size}"
+    head = public_client.head("/open/assets/pai-ad-v11.mp4")
+    assert head.status_code == 200 and not head.content
+    assert int(head.headers["content-length"]) == source.stat().st_size
+
+
+def test_advertisement_invalid_range_keeps_standard_error(public_client):
+    response = public_client.get("/open/assets/pai-ad-v11.mp4", headers={"Range": "bytes=999999999-"})
+    assert response.status_code == 416
+    assert response.headers["content-range"].startswith("bytes */")
+
+
 @pytest.mark.parametrize("path", ["/open/README.md", "/open/build.mjs", "/open/_headers", "/open/api/v1/notices", "/open/assets/unknown.webp", "/open/assets/pai-screen-9.webp", "/open/%2e%2e/main.py", "/api/v1/dashboard"])
 def test_open_allowlist_does_not_expose_other_files_or_api(public_client, path):
     assert public_client.get(path).status_code in (401, 404)
