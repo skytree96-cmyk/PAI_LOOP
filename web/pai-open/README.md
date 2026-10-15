@@ -113,5 +113,11 @@ backgrounding the page pauses playback. The MP4 is copied without transcoding;
 its poster is a frame from that same film. The two named assets are explicitly
 allowlisted in the server, static build, wheel packaging and CI checks.
 
+Cloud Run limits non-streamed HTTP/1 responses to 32 MiB. `PublicFileResponse`
+omits Content-Length for bodies larger than that threshold so Uvicorn streams
+them with chunked transfer encoding. This also covers open-ended video Range
+requests; Content-Range, validators, HEAD metadata and small ranges are retained.
+The original advertisement's video and audio bytes remain unchanged.
+
 Run `node tools/test_open_video_tabs.cjs .local/video-qa` against the preview
 server for playback, keyboard, mobile, reduced-motion and no-JavaScript checks.

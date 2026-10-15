@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from starlette.types import Message, Receive, Scope, Send
 
 OPEN_FILES = frozenset({
     "index.html", "styles.css", "app.js", "favicon.svg", "story.css", "story.js",
@@ -27,6 +28,25 @@ OPEN_CSP = (
 router = APIRouter(include_in_schema=False)
 
 
+class PublicFileResponse(FileResponse):
+    """Stream large public files past Cloud Run's 32 MiB buffered-response cap."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def stream_large_body(message: Message) -> None:
+            if message["type"] == "http.response.start" and scope["method"] != "HEAD":
+                headers = message.get("headers", [])
+                length = next((int(value) for key, value in headers if key.lower() == b"content-length"), 0)
+                if length > 32 * 1024 * 1024:
+                    # FileResponse already sends bounded body chunks. Omitting
+                    # Content-Length lets Uvicorn use HTTP/1.1 chunked transfer,
+                    # including for browser requests such as Range: bytes=0-.
+                    # Keep Content-Range, validators and small response lengths.
+                    message = {**message, "headers": [(key, value) for key, value in headers if key.lower() != b"content-length"]}
+            await send(message)
+
+        await super().__call__(scope, receive, stream_large_body)
+
+
 def _open_file(name: str) -> FileResponse:
     if name not in OPEN_FILES:
         raise HTTPException(404, "Not found")
@@ -35,7 +55,7 @@ def _open_file(name: str) -> FileResponse:
     root = Path(__file__).parent / "open"
     if not root.is_dir():
         root = Path(__file__).resolve().parents[2] / "web" / "pai-open"
-    return FileResponse(root / name, headers={
+    return PublicFileResponse(root / name, headers={
         "Cache-Control": "no-cache" if name == "index.html" else "public, max-age=300",
         "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     })
