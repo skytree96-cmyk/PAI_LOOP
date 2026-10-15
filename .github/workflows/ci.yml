@@ -111,6 +111,8 @@ jobs:
               "pai_loop/open/story.css",
               "pai_loop/open/story.js",
               "pai_loop/open/favicon.svg",
+              "pai_loop/open/assets/pai-ad-v11.mp4",
+              "pai_loop/open/assets/pai-ad-poster.webp",
               "pai_loop/open/assets/pai-product-poster.webp",
               "pai_loop/open/assets/pai-product-tour.webm",
               *(f"pai_loop/open/assets/pai-screen-{i}.webp" for i in range(1, 9)),

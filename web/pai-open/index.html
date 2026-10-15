@@ -9,10 +9,10 @@
   <link rel="icon" href="/open/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/fonts-archive/Paperlogy/subsets/Paperlogy-dynamic-subset.css">
-  <link rel="stylesheet" href="/open/styles.css?v=20260930-glass-1">
+  <link rel="stylesheet" href="/open/styles.css?v=20261015-video-tabs-1">
   <link rel="stylesheet" href="/open/story.css?v=20260930-glass-1">
   <script src="/open/story.js?v=20260930-glass-1" defer></script>
-  <script src="/open/app.js?v=20260930-glass-1" defer></script>
+  <script src="/open/app.js?v=20261015-video-tabs-1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">본문 바로가기</a>
@@ -35,10 +35,21 @@
           <div class="hero-actions"><a class="button button-primary" data-app-path="/" href="/" target="_blank" rel="noopener">PAI 시작하기 <span aria-hidden="true">↗</span><span class="sr-only"> 새 탭</span></a><a class="button button-outline" href="#features">AI 검토 흐름 보기 <span aria-hidden="true">↓</span></a></div>
           <p class="hero-note">AI의 문서 분석부터 담당자의 최종 결정까지, 한곳에서.</p>
         </div>
-        <div class="product-film" aria-labelledby="productFilmTitle">
+        <div class="product-film" aria-label="PAI 영상">
+          <div class="film-tabs" role="tablist" aria-label="영상 선택" hidden>
+            <button id="filmTabAd" class="film-tab" type="button" role="tab" aria-selected="true" aria-controls="filmPanelAd">광고영상</button>
+            <button id="filmTabTour" class="film-tab" type="button" role="tab" aria-selected="false" aria-controls="filmPanelTour" tabindex="-1">기능 소개</button>
+          </div>
+          <section id="filmPanelAd" class="film-panel" aria-labelledby="advertFilmTitle" data-film-panel>
+            <div class="product-film__head"><span class="preview-wordmark">PAI</span><span>PAI와 달라지는 하루</span><span class="film-duration">1분 39초 · FHD</span></div>
+            <video id="heroVideo" controls muted playsinline preload="metadata" poster="/open/assets/pai-ad-poster.webp?v=20261015-v11" aria-label="PAI 광고영상, 1분 39초" aria-describedby="advertFilmCaption"><source src="/open/assets/pai-ad-v11.mp4?v=20261015-v11" type="video/mp4"></video>
+            <div class="product-film__caption"><h2 id="advertFilmTitle">이제, 수주에만 집중</h2><p id="advertFilmCaption">출근부터 퇴근까지, PAI와 함께하는 업무의 변화를 만나보세요.</p><small>1920 × 1080 · 소리를 켜면 음악과 함께 감상할 수 있습니다.</small></div>
+          </section>
+          <section id="filmPanelTour" class="film-panel" aria-labelledby="productFilmTitle" data-film-panel>
           <div class="product-film__head"><span class="preview-wordmark">PAI</span><span>실제 화면으로 보는 PAI 기능</span><span class="film-duration">60초 · QHD</span></div>
-          <video id="heroVideo" controls muted loop playsinline preload="metadata" poster="/open/assets/pai-product-poster.webp?v=20260930-studio-2" aria-label="PAI 검색부터 결과 환류까지 소개 영상, 60초" aria-describedby="productFilmCaption"><source src="/open/assets/pai-product-tour.webm?v=20260930-studio-2" type="video/webm"></video>
+          <video id="tourVideo" controls muted loop playsinline preload="none" poster="/open/assets/pai-product-poster.webp?v=20260930-studio-2" aria-label="PAI 검색부터 결과 환류까지 소개 영상, 60초" aria-describedby="productFilmCaption"><source src="/open/assets/pai-product-tour.webm?v=20260930-studio-2" type="video/webm"></video>
           <div class="product-film__caption"><h2 id="productFilmTitle">공고 탐색부터 결과 기록과 환류까지</h2><p id="productFilmCaption">실제 PAI 화면으로 검색, 원문 근거와 점수 확인, 담당자 판단, Teams 알림을 살펴보세요. 개찰 결과를 자동으로 기록하고, 축적된 입찰 이력을 다음 검토에 활용합니다.</p><small>2560 × 1440 · 실제 PAI 화면 · 예시 데이터</small></div>
+          </section>
         </div>
       </div>
       <div class="container hero-bottom"><span><b>AI</b> 문서를 읽고 정리</span><i aria-hidden="true">→</i><span><b>PAI</b> 근거를 검증하고 비교</span><i aria-hidden="true">→</i><span><b>담당자</b> 판단하고 기록</span></div>
