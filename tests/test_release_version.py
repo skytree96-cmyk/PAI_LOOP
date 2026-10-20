@@ -15,6 +15,6 @@ def test_release_version_is_aligned_across_package_and_documentation() -> None:
 
     assert __version__ == "0.11.0"
     assert project["project"]["version"] == __version__
-    assert "현재 구현 범위: v0.10.5" in readme
+    assert f"현재 구현 범위: v{__version__}" in readme
     assert "SOURCE_VALIDATED / AUTO_ACTIVE" in readme
     assert "fact_binding_sha256" in readme
